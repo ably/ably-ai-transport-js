@@ -34,6 +34,7 @@ All generic components are parameterized by `Codec<TEvent, TMessage>`. Transport
 - **Tests**: Unit tests mock everything (`flushMicrotasks()`, mock writers/channels); integration tests hit real Ably with unique channel names and cleanup. Custom Vitest matchers in `test/helper/expectations.ts`.
 - **Imports**: Always include `.js` extension. Ably types via namespace (`import type * as Ably from "ably"`), Vercel types directly.
 
-## Submodule
+## Submodules
 
-`ably-common/` is a git submodule containing `protocol/errors.json` — the canonical Ably error code definitions. Run `npm run check:error-codes` to validate `ErrorCode` enum values.
+- `ably-common/` — shared Ably protocol resources. Contains `protocol/errors.json` with canonical error code definitions. Run `npm run check:error-codes` to validate `ErrorCode` enum values.
+- `specification/` — the Ably specification repo, on the `ai-transport-features` branch. Contains `specifications/ai-transport-features.md` with the AI Transport features spec using `AIT-` prefixed spec points. Reference spec points in code comments as `// Spec: AIT-CT2a`. Run `/spec` to cross-reference code against the specification. **Never commit changes to the specification submodule without explicit user approval** — always present proposed spec changes for review first.

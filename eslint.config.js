@@ -31,6 +31,7 @@ export default [
       '**/dist',
       '**/node_modules',
       '**/ably-common',
+      '**/specification',
       'scripts/**',
       '**/vitest.config.ts',
       '**/vite.config.ts',

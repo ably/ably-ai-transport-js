@@ -1,3 +1,7 @@
 [submodule "ably-common"]
 	path = ably-common
 	url = git@github.com:ably/ably-common.git
+[submodule "specification"]
+	path = specification
+	url = git@github.com:ably/specification.git
+	branch = ai-transport-features

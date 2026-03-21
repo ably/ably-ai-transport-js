@@ -1,5 +1,7 @@
 import * as Ably from 'ably';
 
+import { ErrorCode } from './errors.js';
+
 /**
  * Interface for loggers.
  */
@@ -188,7 +190,7 @@ class DefaultLogger implements Logger {
 
     const levelNumber = logLevelNumberMap.get(level);
     if (levelNumber === undefined) {
-      throw new Ably.ErrorInfo(`unable to create logger; invalid log level: ${level}`, 40003, 400);
+      throw new Ably.ErrorInfo(`unable to create logger; invalid log level: ${level}`, ErrorCode.InvalidArgument, 400);
     }
 
     this._levelNumber = levelNumber;

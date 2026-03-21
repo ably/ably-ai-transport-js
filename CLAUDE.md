@@ -36,6 +36,7 @@ Detailed guidance lives in `.claude/rules/`:
 Additional conventions not covered by rule files:
 
 - **Imports**: Always include `.js` extension. Import peer dependency types as namespaces (`import type * as Ably from "ably"`, `import type * as AI from "ai"`).
+- **JSDoc on exported types**: Every property and method on an exported interface or type must have a JSDoc comment. Exported interfaces themselves should also have a JSDoc comment describing their purpose. JSDoc comments must describe the **contract** — what the caller or implementor needs to know — not just restate the name. For callbacks and hooks, state whether they are called with a value to observe, to mutate in place, or to return a replacement.
 
 ## Workflow rules
 

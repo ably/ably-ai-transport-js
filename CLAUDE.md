@@ -19,20 +19,23 @@ npm run check:error-codes # Validate ErrorCode enum against ably-common
 npm run precommit         # format:check + lint + typecheck
 ```
 
-## Architecture
+## Architecture & conventions
 
-Two-layer design: a **generic layer** (`src/core/`, `src/react/`) that is codec-agnostic and framework-agnostic, and a **Vercel layer** (`src/vercel/`) that implements the codec for Vercel AI SDK v6. The generic layer uses only `x-ably-*` headers; domain-specific headers belong in the Vercel layer.
+Detailed guidance lives in `.claude/rules/`:
 
-All generic components are parameterized by `Codec<TEvent, TMessage>`. Transports are assembled via composition (not inheritance) with all dependencies passed through constructors.
+| Rule file | Covers |
+|---|---|
+| `ABSTRACTIONS.md` | Two-layer architecture, directory layout, class pattern, composition, dependency injection |
+| `ERRORS.md` | Error type (`Ably.ErrorInfo`), error codes, message format, wrapping, testing |
+| `LOGGING.md` | Logger interface, log levels, message format, context propagation |
+| `PROMISES.md` | async/await policy, exception handling |
+| `TYPES.md` | Type safety rules, import conventions, no `any`/`as`/`!` policy |
+| `TESTS.md` | Unit vs integration tests, mocking strategy, coverage expectations |
+| `AISDK.md` | Vercel AI SDK v6 specifics |
 
-## Key conventions
+Additional conventions not covered by rule files:
 
-- **Error type**: `Ably.ErrorInfo` exclusively — no custom error classes. Error codes come from ably-common or the `104xxx` range. Message format: `"unable to <operation>; <reason>"`.
-- **Logging**: `Logger` interface with `trace`/`debug`/`info`/`warn`/`error`/`withContext()`. Create once at top level with `makeLogger()`, propagate down via constructors, add context at each layer with `withContext()`. Message format: `ClassName.methodName(); <description>`.
-- **Async**: `async`/`await` with `try`/`catch` — not `.then()` chains (exceptions must be commented).
-- **Type safety**: No `any`, no `as` casts without `// CAST:` comment, no `!` assertions, no `@ts-ignore`. Import types from peer deps (`ably`, `ai`), don't redefine.
-- **Tests**: Unit tests mock everything (`flushMicrotasks()`, mock writers/channels); integration tests hit real Ably with unique channel names and cleanup. Custom Vitest matchers in `test/helper/expectations.ts`.
-- **Imports**: Always include `.js` extension. Ably types via namespace (`import type * as Ably from "ably"`), Vercel types directly.
+- **Imports**: Always include `.js` extension. Import peer dependency types as namespaces (`import type * as Ably from "ably"`, `import type * as AI from "ai"`).
 
 ## Workflow rules
 

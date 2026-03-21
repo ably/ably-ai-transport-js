@@ -41,9 +41,11 @@ Additional conventions not covered by rule files:
 
 - **Never commit changes.** All changes must be reviewed by a human before committing. Stage files and present a summary of changes, but wait for the user to approve via `/commit` or explicit instruction.
 - **Never push or pull the remote.** Do not run `git push`, `git pull`, `git fetch`, or any command that interacts with the remote repository.
-- **Run validation after every change.** After modifying source or test files, run `npm run typecheck` and `npm run lint`. Fix any errors before presenting changes. If tests exist for the changed code, run `npm test` too.
+- **Run validation after every change.** After modifying source or test files, run `npm run typecheck` and `npm run lint`. Fix all errors **and warnings** before presenting changes. If tests exist for the changed code, run `npm test` too.
 - **Include test coverage with every change.** Every code change must include appropriate tests. New functions and modules need unit tests. Bug fixes need a test that would have caught the bug. Behavioral changes need updated tests. Only purely cosmetic changes (formatting, comments, renames) are exempt.
 - **Keep the specification in sync.** When implementing a new feature or changing behavior covered by the spec, update `specification/specifications/ai-transport-features.md` with new or amended `AIT-` spec points. Never commit spec changes — present them to the user for review alongside the code changes.
+- **Review changes with an independent subagent.** After completing implementation work, use an independent subagent to review the changes against the plan (if one exists) and the project guidance in `.claude/rules/`. Address any issues found before presenting changes to the user.
+- **YAGNI — no unused or speculative code.** Never include unused, redundant, or speculative code. Do not add anything "in case we need it later." Every added line must be used and necessary for the current task. Remove dead code, unused imports, unused parameters, placeholder implementations, and premature abstractions.
 
 ## Submodules
 

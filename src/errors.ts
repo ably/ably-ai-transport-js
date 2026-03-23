@@ -15,6 +15,12 @@ export enum ErrorCode {
   InvalidArgument = 40003,
 
   // 104000 - 104999 are reserved for AI Transport SDK errors
+
+  /**
+   * Encoder recovery failed after flush — one or more updateMessage calls
+   * could not recover a failed append pipeline.
+   */
+  EncoderRecoveryFailed = 104000,
 }
 
 /**

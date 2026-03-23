@@ -38,6 +38,7 @@ export default [
       '**/__mocks__',
       '**/coverage/',
       '.github',
+      '.claude/worktrees/**',
     ],
   },
   ...fixupConfigRules(

@@ -3,7 +3,8 @@ import * as Ably from 'ably';
 import { ErrorCode } from './errors.js';
 
 /**
- * Interface for loggers.
+ * Structured logger with leveled output and hierarchical context.
+ * Implementations filter messages by level and delegate to a {@link LogHandler}.
  */
 export interface Logger {
   /**

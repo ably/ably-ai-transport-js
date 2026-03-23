@@ -34,6 +34,7 @@ export default [
       '**/specification',
       'scripts/**',
       '**/vitest.config.ts',
+      '**/vitest.config.integration.ts',
       '**/vite.config.ts',
       '**/__mocks__',
       '**/coverage/',

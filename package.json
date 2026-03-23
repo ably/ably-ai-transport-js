@@ -13,6 +13,7 @@
     "format:check": "prettier --check src",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:integration": "vitest run --config vitest.config.integration.ts",
     "check:error-codes": "tsx scripts/validate-error-codes.ts",
     "precommit": "npm run format:check && npm run lint && npm run typecheck"
   },

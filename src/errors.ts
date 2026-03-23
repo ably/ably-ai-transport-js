@@ -21,6 +21,21 @@ export enum ErrorCode {
    * could not recover a failed append pipeline.
    */
   EncoderRecoveryFailed = 104000,
+
+  /**
+   * A transport-level channel subscription callback threw unexpectedly.
+   */
+  TransportSubscriptionError = 104001,
+
+  /**
+   * Cancel listener or onCancel hook threw while processing a cancel message.
+   */
+  CancelListenerError = 104002,
+
+  /**
+   * A turn lifecycle event (turn-start or turn-end) failed to publish.
+   */
+  TurnLifecycleError = 104003,
 }
 
 /**

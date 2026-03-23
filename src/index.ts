@@ -1,3 +1,19 @@
+// Core transport
+export type {
+  AddMessageOptions,
+  CancelFilter,
+  CancelRequest,
+  InputMessage,
+  NewTurnOptions,
+  ServerTransport,
+  ServerTransportOptions,
+  StreamResponseOptions,
+  StreamResult,
+  Turn,
+  TurnEndReason,
+} from './core/transport/index.js';
+export { buildTransportHeaders, createServerTransport } from './core/transport/index.js';
+
 // Core codec
 export type {
   ChannelWriter,

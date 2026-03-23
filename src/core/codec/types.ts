@@ -212,7 +212,7 @@ export interface EncoderOptions {
  *
  * Combines factory methods (createEncoder, createDecoder, createAccumulator)
  * with protocol knowledge (isTerminal). Transport-level concerns like turn
- * correlation, echo detection, cancel signals, and abort/error signaling
+ * correlation, echo detection, and cancel signals
  * are handled by the transport layer using standard `x-ably-*` headers.
  */
 export interface Codec<TEvent, TMessage> {

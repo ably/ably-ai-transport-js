@@ -23,6 +23,10 @@ consistency with the project's principles and voice.
    or enables one task. If the page covers two distinct developer intents,
    it should be two pages.
 
+4. **Read `docs/internals/glossary.md`** before writing any internals page.
+   Use glossary links for Ably-specific or architecture terms at first
+   mention rather than re-explaining them inline.
+
 ## Doc principles
 
 These principles come from the project's documentation strategy. Follow them
@@ -106,6 +110,28 @@ This page covers the cancellation feature of the AI Transport SDK.
 - **No hedging.** Don't say "you may want to" or "consider using." Say
   "use X when Y."
 
+### Define jargon on first use
+
+Every technical term that a reader might not know needs either an inline
+definition or a link to the [glossary](../../docs/internals/glossary.md) at
+its first mention within a page. This applies to:
+
+- **Ably-specific terms:** serial, mutable message, channel attach,
+  untilAttach, message actions, extras.headers
+- **Architecture terms:** transport layer vs domain layer, own turn vs
+  observer turn, turn ID vs message ID
+- **Protocol jargon:** terminal event, fire-and-forget, prefix-match,
+  first-contact, echo detection, serial promotion, codec key
+
+For internals pages, prefer linking to the glossary
+(`[serial](glossary.md#serial-ably)`) over repeating the definition. For
+feature and concept pages aimed at external developers, prefer a brief
+inline explanation on first use — don't force readers to click away.
+
+**After writing a page, audit it for unexplained terms.** Read each
+paragraph as if you don't know the codebase. Any term that would make you
+pause and think "what does that mean?" needs a definition or a link.
+
 ### Structure patterns
 
 Feature pages follow this flow:
@@ -152,6 +178,23 @@ Reference pages follow this flow:
 4. **Return type** — what comes back, with property/method tables for complex returns
 5. **Behavior notes** — brief description of what it does, when it updates
 6. **Code example** — minimal usage (only where the signature isn't self-evident)
+
+Internals pages follow this flow:
+
+1. **Opening definition** — what this component is and what problem it solves
+2. **Key concepts** — the mental model (data structures, state machines,
+   lifecycles) needed to understand the component
+3. **Operations/methods** — what you can do with it, typically as a table
+4. **Algorithms/flows** — step-by-step or pseudocode for non-trivial
+   processes (flatten, flush/recovery, prefix-match, etc.)
+5. **Edge cases and recovery** — what happens when things go wrong
+6. **Cross-references** — inline links to related internals pages, the
+   glossary, and the corresponding feature/concept pages
+
+Internals pages differ from concept pages: concept pages explain what
+developers need to know to *use* the SDK. Internals pages explain how the
+SDK works *internally* for contributors and curious engineers. Internals
+pages can reference source file paths and internal class names.
 
 ### Tables
 
@@ -200,11 +243,31 @@ Link to related pages with relative markdown links. Every feature page should
 link to at least the relevant reference page. Use inline links, not a
 "See also" section at the bottom.
 
+**Link densely, not just at the end.** Every mention of a concept that is
+explained in detail on another page should be an inline link at first mention
+within the current section. Don't rely on a trailing "See also" paragraph —
+readers skim, and the link needs to be where the concept appears.
+
 ```markdown
-See [Cancel](../features/cancel.md) for cancellation options during barge-in.
-See [React hooks reference](../reference/react-hooks.md) for the full
-`useActiveTurns` API.
+<!-- Good: inline link where the concept is mentioned -->
+The [decoder](decoder.md) accumulates deltas via string concatenation and
+uses [prefix-matching](decoder.md#known-serial-prefix-match) to detect
+whether an update is incremental or a replacement.
+
+<!-- Bad: concept mentioned without link, with "See also" at the bottom -->
+The decoder accumulates deltas via string concatenation and uses
+prefix-matching to detect whether an update is incremental or a replacement.
+...
+See [Decoder](decoder.md) for details.
 ```
+
+For internals pages, link to specific heading anchors (e.g.
+`encoder.md#recovery-mechanism`) rather than just the page. This lets
+readers jump directly to the relevant section.
+
+Feature/concept pages should link to the corresponding internals page at the
+end for readers who want to go deeper (e.g. "For the internal mechanics, see
+[Conversation tree](../internals/conversation-tree.md).").
 
 ### Section headers
 
@@ -233,6 +296,19 @@ should understand what the page covers without reading the body.
   internally.
 - **Don't invent API surface.** Only document methods, options, and
   behaviors that exist in the source code. Read the code first.
+- **Don't simplify interface signatures.** When showing a TypeScript
+  interface or method signature, include all parameters (even optional ones)
+  and mark optional fields with `?`. Omitting a parameter or showing a
+  required field as optional leads to incorrect mental models.
+- **Don't describe behavior without verifying the code path.** Common
+  mistakes: describing which method is called in error vs success paths
+  incorrectly, getting the priority order of layered operations wrong
+  (e.g. header merge order), or confusing `close()` with `abort()`.
+  Verify each claim against the actual implementation.
+- **Don't use concepts without explaining or linking them.** Every
+  technical term — Ably-specific, architecture-specific, or protocol
+  jargon — must be either defined inline or linked to the glossary at
+  its first mention on the page.
 
 ## File placement
 
@@ -245,7 +321,9 @@ docs/
 ├── get-started/      # Quickstarts — working app in minutes, per integration path
 ├── frameworks/       # Framework guides — why AIT + framework X, integration paths
 ├── features/         # Feature pages — one developer intent per page, atomic
-└── reference/        # API reference — signatures, params, return types
+├── reference/        # API reference — signatures, params, return types
+└── internals/        # Under the hood — wire protocol, encoder, decoder, tree, etc.
+    └── glossary.md   # Definitions for Ably-specific and architecture terms
 ```
 
 **Page type by directory:**
@@ -257,6 +335,7 @@ docs/
 | `frameworks/` | Framework guide | What the framework provides → what's missing → how AIT fills gaps → integration paths |
 | `features/` | Feature page | Definition → problem framing → mechanism → client code → server code → edge cases |
 | `reference/` | Reference page | One section per API item: signature, params table, return type, example |
+| `internals/` | Internals page | Definition → concepts → operations → algorithms → edge cases → cross-refs |
 
 If a page doesn't fit these categories, discuss placement before writing.
 
@@ -264,19 +343,48 @@ If a page doesn't fit these categories, discuss placement before writing.
 
 After writing a doc page, verify:
 
-- [ ] Opening sentence defines the concept in one direct statement
-- [ ] Feature pages have 1-2 sentence problem framing after the opening
-- [ ] Single developer intent per page
+**Content accuracy:**
+
 - [ ] Code examples are copy-pasteable and use real API surface
 - [ ] Code examples match current source code (read the implementation)
 - [ ] Code examples have all variables defined (no undefined references)
 - [ ] Import paths use real package entry points (`@ably/ably-ai-transport-js`, `/react`, `/vercel`, `/vercel/react`)
+- [ ] Interface signatures match the source exactly — optional fields (`?`),
+      parameter names, parameter order, return types
+- [ ] Wire protocol values match source (`streaming`/`finished`/`aborted`, not `open`/`closed`)
+- [ ] Chunk/event type names match the actual codec implementation
+- [ ] No undocumented or invented API surface
+- [ ] Method behavior descriptions match the actual implementation (e.g.
+      which method is called in the error path — `close()` vs `abort()`)
+- [ ] Priority/ordering claims match the code (e.g. header merge order)
+
+**Structure and style:**
+
+- [ ] Opening sentence defines the concept in one direct statement
+- [ ] Feature pages have 1-2 sentence problem framing after the opening
+- [ ] Single developer intent per page
 - [ ] Both client and server sides shown (for feature pages)
 - [ ] No marketing language, no hedging, no meta-commentary
 - [ ] Tables used for structured comparisons
+- [ ] Headers work as a scannable table of contents
+
+**Cross-references and definitions:**
+
 - [ ] Cross-references to related pages and at least one reference page
 - [ ] All cross-reference paths are correct relative paths to existing files
-- [ ] Headers work as a scannable table of contents
-- [ ] No undocumented or invented API surface
-- [ ] Wire protocol values match source (`streaming`/`finished`/`aborted`, not `open`/`closed`)
-- [ ] Chunk/event type names match the actual codec implementation
+- [ ] Cross-reference anchors point to headings that actually exist
+- [ ] Every concept mentioned that is explained elsewhere is linked at first
+      mention (not just in a "See also" at the bottom)
+- [ ] Internals pages link to specific heading anchors, not just page-level
+
+**Concept audit (do this last):**
+
+- [ ] Read each paragraph as an outsider — flag any term that isn't obvious
+- [ ] Ably-specific terms (serial, mutable message, channel attach) are
+      defined or linked to the glossary at first mention
+- [ ] Architecture terms (own turn, observer turn, transport layer, domain
+      layer) are defined or linked at first mention
+- [ ] Protocol jargon (terminal event, fire-and-forget, prefix-match,
+      first-contact, echo detection) is defined or linked at first mention
+- [ ] No concept is mentioned in passing without the reader being able to
+      understand it from context, an inline definition, or a link

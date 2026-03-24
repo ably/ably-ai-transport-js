@@ -16,16 +16,9 @@ import type { ActiveTurn, ClientTransport, SendOptions } from '../core/transport
  */
 export const useEdit = <TEvent, TMessage>(
   transport: ClientTransport<TEvent, TMessage>,
-): ((
-  messageId: string,
-  newMessages: TMessage | TMessage[],
-  options?: SendOptions,
-) => Promise<ActiveTurn<TEvent>>) =>
+): ((messageId: string, newMessages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>) =>
   useCallback(
-    async (
-      messageId: string,
-      newMessages: TMessage | TMessage[],
-      options?: SendOptions,
-    ): Promise<ActiveTurn<TEvent>> => transport.edit(messageId, newMessages, options),
+    async (messageId: string, newMessages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveTurn<TEvent>> =>
+      transport.edit(messageId, newMessages, options),
     [transport],
   );

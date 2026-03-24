@@ -69,6 +69,8 @@ const createMockEncoder = (): StreamEncoder<TestEvent, TestMessage> => ({
   // eslint-disable-next-line @typescript-eslint/no-empty-function -- mock
   appendEvent: vi.fn(async () => {}),
   // eslint-disable-next-line @typescript-eslint/no-empty-function -- mock
+  abort: vi.fn(async () => {}),
+  // eslint-disable-next-line @typescript-eslint/no-empty-function -- mock
   close: vi.fn(async () => {}),
   // eslint-disable-next-line @typescript-eslint/require-await -- mock
   writeMessage: vi.fn(async () => mockPublishResult),

@@ -8,6 +8,7 @@ import {
   HEADER_MSG_ID,
   HEADER_PARENT,
   HEADER_ROLE,
+  HEADER_STATUS,
   HEADER_TURN_CLIENT_ID,
   HEADER_TURN_ID,
   HEADER_TURN_REASON,
@@ -402,6 +403,20 @@ describe('ClientTransport', () => {
       expect(body.messages).toBeDefined();
       expect(body.history).toBeDefined();
       expect(Array.isArray(body.messages)).toBe(true);
+    });
+
+    it('does not include the new message in history (avoids duplication)', async () => {
+      await transport.send({ id: 'user-1', content: 'hello' });
+      await mockFetch.waitForCalls(1);
+
+      const body = mockFetch.body(0);
+      const historyIds = (body.history as { message: { id: string } }[]).map((h) => h.message.id);
+      const messageIds = (body.messages as { message: { id: string } }[]).map((m) => m.message.id);
+
+      // The new message should only appear in messages, not in history
+      for (const id of messageIds) {
+        expect(historyIds).not.toContain(id);
+      }
     });
 
     it('includes Content-Type header in POST', async () => {
@@ -1108,6 +1123,56 @@ describe('ClientTransport', () => {
 
       expect(messageHandler).toHaveBeenCalled();
     });
+
+    it('updates observer headers even when decoder produces no outputs', async () => {
+      const mockAccum = createMockAccumulator();
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      vi.mocked(codec.createAccumulator).mockReturnValue(mockAccum);
+      Object.defineProperty(mockAccum, 'messages', {
+        get: () => [{ id: 'acc-msg', content: 'partial' }],
+        configurable: true,
+      });
+
+      const turn = await transport.send({ id: 'u1', content: 'hi' });
+      await mockFetch.waitForCalls(1);
+
+      // Stream an event to establish the observer with x-ably-status: streaming
+      decoder.outputs.push({ kind: 'event', event: { type: 'text', text: 'hello' } });
+      simulateMessage(
+        channel,
+        ablyMsg('codec-msg', {
+          [HEADER_TURN_ID]: turn.turnId,
+          [HEADER_MSG_ID]: 'msg-1',
+          [HEADER_STATUS]: 'streaming',
+        }),
+      );
+
+      // Cancel to close the stream (but keep observer alive)
+      await transport.cancel({ turnId: turn.turnId });
+
+      // Simulate an aborted stream append — decoder produces NO outputs
+      // but the headers should still be captured on the observer
+      decoder.outputs.length = 0;
+      simulateMessage(
+        channel,
+        ablyMsg('codec-msg', {
+          [HEADER_TURN_ID]: turn.turnId,
+          [HEADER_MSG_ID]: 'msg-1',
+          [HEADER_STATUS]: 'aborted',
+        }),
+      );
+
+      // Now the abort discrete event arrives and triggers accumulate+emit
+      decoder.outputs.push({ kind: 'event', event: { type: 'finish' } });
+      simulateMessage(
+        channel,
+        ablyMsg('codec-msg', { [HEADER_TURN_ID]: turn.turnId, [HEADER_MSG_ID]: 'msg-1' }),
+      );
+
+      // The tree node should have the updated x-ably-status: aborted
+      const node = transport.getTree().getNode('msg-1');
+      expect(node?.headers[HEADER_STATUS]).toBe('aborted');
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -1303,6 +1368,78 @@ describe('ClientTransport', () => {
       // After cancel, the turn should still be tracked until turn-end,
       // but cancel was published
       expect(channel.publish).toHaveBeenCalled();
+    });
+
+    it('preserves observer so late server events are still accumulated after cancel', async () => {
+      const mockAccum = createMockAccumulator();
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      vi.mocked(codec.createAccumulator).mockReturnValue(mockAccum);
+      Object.defineProperty(mockAccum, 'messages', {
+        get: () => [{ id: 'acc-msg', content: 'partial' }],
+        configurable: true,
+      });
+
+      const turn = await transport.send({ id: 'u1', content: 'hi' });
+      await mockFetch.waitForCalls(1);
+
+      // Stream some events before cancel
+      decoder.outputs.push({ kind: 'event', event: { type: 'text', text: 'partial' } });
+      simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: turn.turnId }));
+
+      // Cancel — closes the stream but observer should survive
+      await transport.cancel({ turnId: turn.turnId });
+
+      const messageHandler = vi.fn();
+      transport.on('message', messageHandler);
+
+      // Simulate late abort event from the server arriving after cancel
+      decoder.outputs.push({ kind: 'event', event: { type: 'finish' } });
+      simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: turn.turnId }));
+
+      // The event should have been accumulated (observer still alive)
+      expect(messageHandler).toHaveBeenCalled();
+    });
+
+    it('does not recreate observer accumulator after cancel with turnId filter', async () => {
+      const turn = await transport.send({ id: 'u1', content: 'hi' });
+      await mockFetch.waitForCalls(1);
+
+      // Stream an event — creates the observer accumulator
+      decoder.outputs.push({ kind: 'event', event: { type: 'text', text: 'partial' } });
+      simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: turn.turnId }));
+
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      const accCallsBefore = vi.mocked(codec.createAccumulator).mock.calls.length;
+
+      // Cancel — should NOT delete the observer
+      await transport.cancel({ turnId: turn.turnId });
+
+      // Late event arrives — should reuse the existing observer, not create a new one
+      decoder.outputs.push({ kind: 'event', event: { type: 'finish' } });
+      simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: turn.turnId }));
+
+      // No new accumulator should have been created
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      expect(vi.mocked(codec.createAccumulator).mock.calls.length).toBe(accCallsBefore);
+    });
+
+    it('does not recreate observer accumulator after cancel with own filter', async () => {
+      const turn = await transport.send({ id: 'u1', content: 'hi' });
+      await mockFetch.waitForCalls(1);
+
+      decoder.outputs.push({ kind: 'event', event: { type: 'text', text: 'partial' } });
+      simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: turn.turnId }));
+
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      const accCallsBefore = vi.mocked(codec.createAccumulator).mock.calls.length;
+
+      await transport.cancel({ own: true });
+
+      decoder.outputs.push({ kind: 'event', event: { type: 'finish' } });
+      simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: turn.turnId }));
+
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      expect(vi.mocked(codec.createAccumulator).mock.calls.length).toBe(accCallsBefore);
     });
   });
 
@@ -2183,8 +2320,8 @@ describe('ClientTransport', () => {
   // cancel({ all: true }) observer cleanup
   // -------------------------------------------------------------------------
 
-  describe('cancel all clears observer state', () => {
-    it('clears observer accumulators when cancel all is issued', async () => {
+  describe('cancel all preserves observer state for late events', () => {
+    it('keeps observer accumulators alive after cancel all so abort events are processed', async () => {
       const accumulators: ReturnType<typeof createMockAccumulator>[] = [];
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
       vi.mocked(codec.createAccumulator).mockImplementation(() => {
@@ -2211,11 +2348,63 @@ describe('ClientTransport', () => {
       simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: 'observer-turn' }));
       const countBefore = accumulators.length;
 
-      // Cancel all — must await so _closeMatchingTurnStreams runs
+      // Cancel all — observer must survive for late abort events from the server
       await transport.cancel({ all: true });
 
-      // After cancel all, new events for the same turn should create a fresh accumulator
-      decoder.outputs.push({ kind: 'event', event: { type: 'text', text: 'new-data' } });
+      // Subsequent events reuse the same accumulator (observer not cleared)
+      decoder.outputs.push({ kind: 'event', event: { type: 'text', text: 'abort-data' } });
+      simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: 'observer-turn' }));
+
+      expect(accumulators.length).toBe(countBefore);
+    });
+
+    it('cleans up observer on turn-end after cancel', async () => {
+      const accumulators: ReturnType<typeof createMockAccumulator>[] = [];
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      vi.mocked(codec.createAccumulator).mockImplementation(() => {
+        const acc = createMockAccumulator();
+        Object.defineProperty(acc, 'messages', {
+          get: () => [{ id: `acc-msg-${String(accumulators.length)}`, content: 'accumulated' }],
+          configurable: true,
+        });
+        accumulators.push(acc);
+        return acc;
+      });
+
+      // Create an observer turn
+      simulateMessage(
+        channel,
+        ablyMsg(EVENT_TURN_START, {
+          [HEADER_TURN_ID]: 'observer-turn',
+          [HEADER_TURN_CLIENT_ID]: 'other-client',
+        }),
+      );
+
+      decoder.outputs.push({ kind: 'event', event: { type: 'text', text: 'data' } });
+      simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: 'observer-turn' }));
+      const countBefore = accumulators.length;
+
+      await transport.cancel({ all: true });
+
+      // Turn-end cleans up the observer
+      simulateMessage(
+        channel,
+        ablyMsg(EVENT_TURN_END, {
+          [HEADER_TURN_ID]: 'observer-turn',
+          [HEADER_TURN_CLIENT_ID]: 'other-client',
+          [HEADER_TURN_REASON]: 'cancelled',
+        }),
+      );
+
+      // New events for a fresh turn on the same turn ID create a new accumulator
+      simulateMessage(
+        channel,
+        ablyMsg(EVENT_TURN_START, {
+          [HEADER_TURN_ID]: 'observer-turn',
+          [HEADER_TURN_CLIENT_ID]: 'other-client',
+        }),
+      );
+      decoder.outputs.push({ kind: 'event', event: { type: 'text', text: 'new' } });
       simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: 'observer-turn' }));
 
       expect(accumulators.length).toBeGreaterThan(countBefore);

@@ -46,20 +46,11 @@ export const useConversationTree = <TEvent, TMessage>(
     return unsub;
   }, [transport]);
 
-  const getSiblings = useCallback(
-    (msgId: string) => transport.getTree().getSiblings(msgId),
-    [transport],
-  );
+  const getSiblings = useCallback((msgId: string) => transport.getTree().getSiblings(msgId), [transport]);
 
-  const hasSiblings = useCallback(
-    (msgId: string) => transport.getTree().hasSiblings(msgId),
-    [transport],
-  );
+  const hasSiblings = useCallback((msgId: string) => transport.getTree().hasSiblings(msgId), [transport]);
 
-  const getSelectedIndex = useCallback(
-    (msgId: string) => transport.getTree().getSelectedIndex(msgId),
-    [transport],
-  );
+  const getSelectedIndex = useCallback((msgId: string) => transport.getTree().getSelectedIndex(msgId), [transport]);
 
   const selectSibling = useCallback(
     (msgId: string, index: number) => {

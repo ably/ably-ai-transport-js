@@ -12,8 +12,8 @@
   "scripts": {
     "lint": "eslint .",
     "lint:fix": "eslint --fix .; (npm run format > /dev/null)",
-    "format": "prettier --list-different --write src",
-    "format:check": "prettier --check src",
+    "format": "prettier --list-different --write src demo/vercel/react/*/src",
+    "format:check": "prettier --check src demo/vercel/react/*/src",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.config.integration.ts",

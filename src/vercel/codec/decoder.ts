@@ -14,7 +14,7 @@
 import type * as Ably from 'ably';
 import type * as AI from 'ai';
 
-import { HEADER_TURN_ID } from '../../constants.js';
+import { HEADER_ROLE, HEADER_TURN_ID } from '../../constants.js';
 import type { DecoderCore, DecoderCoreHooks, DecoderCoreOptions } from '../../core/codec/decoder.js';
 import { createDecoderCore, eventOutput } from '../../core/codec/decoder.js';
 import type { LifecycleTracker } from '../../core/codec/lifecycle-tracker.js';
@@ -435,10 +435,73 @@ const decodeNonStreamingToolInput = (
 // Discrete event dispatch
 // ---------------------------------------------------------------------------
 
+/**
+ * Reconstruct a UIMessage from a discrete message part published by writeMessage.
+ * The encoder splits each UIMessage into per-part Ably messages with a shared
+ * x-domain-messageId. This function rebuilds a single-part UIMessage from one
+ * such Ably message. The transport's tree upsert merges parts that share the
+ * same x-ably-msg-id, so multi-part messages accumulate correctly over
+ * successive decoder calls.
+ * @param input - The discrete message payload to decode.
+ * @returns A single-element array with the reconstructed UIMessage, or empty if unrecognized.
+ */
+const decodeDiscreteMessage = (input: MessagePayload): Out[] => {
+  const h = input.headers ?? {};
+  const r = headerReader(h);
+  const role = (h[HEADER_ROLE] ?? 'user') as AI.UIMessage['role'];
+  const messageId = r.str('messageId') ?? '';
+
+  let part: AI.UIMessage['parts'][number] | undefined;
+
+  switch (input.name) {
+    case 'text': {
+      part = { type: 'text', text: typeof input.data === 'string' ? input.data : '' };
+      break;
+    }
+    case 'file': {
+      part = {
+        type: 'file',
+        mediaType: r.strOr('mediaType', ''),
+        url: typeof input.data === 'string' ? input.data : '',
+      };
+      break;
+    }
+    default: {
+      if (isDataEventName(input.name)) {
+        // CAST: data-* part type matches the DataUIPart shape.
+        part = stripUndefined({ type: input.name, id: r.str('id'), data: input.data }) as AI.UIMessage['parts'][number];
+      }
+      break;
+    }
+  }
+
+  if (!part) return [];
+
+  const message: AI.UIMessage = { id: messageId, role, parts: [part] };
+  return [{ kind: 'message', message }];
+};
+
+/**
+ * Whether a message name represents a discrete message part (written by writeMessage)
+ * rather than a streaming lifecycle event. Discrete message parts carry x-ably-role
+ * and encode a single UIMessage part each.
+ * @param name - The Ably message name to check.
+ * @param headers - The Ably message headers to inspect for role presence.
+ * @returns True if this is a discrete message part, false if it's a lifecycle event.
+ */
+const isDiscreteMessagePart = (name: string, headers: Record<string, string>): boolean =>
+  (name === 'text' || name === 'file' || isDataEventName(name)) && HEADER_ROLE in headers;
+
 const decodeDiscretePayload = (input: MessagePayload, lifecycle: LifecycleTracker<AI.UIMessageChunk>): Out[] => {
   const h = input.headers ?? {};
   const r = headerReader(h);
   const turnId = h[HEADER_TURN_ID] ?? '';
+
+  // Discrete message parts from writeMessage (user messages, history entries).
+  // Distinguished from lifecycle events by the presence of x-ably-role.
+  if (isDiscreteMessagePart(input.name, h)) {
+    return decodeDiscreteMessage(input);
+  }
 
   if (input.name === 'tool-input') {
     return decodeNonStreamingToolInput(r, input.data, turnId, lifecycle);

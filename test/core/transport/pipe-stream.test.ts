@@ -14,6 +14,7 @@ interface TestMessage { id: string; content: string }
 interface MockEncoder extends StreamEncoder<TestEvent, TestMessage> {
   appendedEvents: TestEvent[];
   closed: boolean;
+  abortedReason: string | undefined;
 }
 
 const emptyPublishResult = { serials: [] } as unknown as Ably.PublishResult;
@@ -22,9 +23,14 @@ const createMockEncoder = (): MockEncoder => {
   const mock: MockEncoder = {
     appendedEvents: [],
     closed: false,
+    abortedReason: undefined,
     // eslint-disable-next-line @typescript-eslint/require-await -- mock
     appendEvent: vi.fn(async (event: TestEvent) => {
       mock.appendedEvents.push(event);
+    }),
+    // eslint-disable-next-line @typescript-eslint/require-await -- mock
+    abort: vi.fn(async (reason?: string) => {
+      mock.abortedReason = reason ?? '';
     }),
     // eslint-disable-next-line @typescript-eslint/require-await -- mock
     close: vi.fn(async () => {
@@ -152,6 +158,40 @@ describe('pipeStream', () => {
 
       expect(onAbort).toHaveBeenCalled();
       expect(encoder.appendedEvents).toContainEqual({ type: 'custom-abort' });
+    });
+
+    it('calls encoder.abort() with reason when cancelled', async () => {
+      const controller = new AbortController();
+      controller.abort();
+
+      const stream = new ReadableStream<TestEvent>({ start: () => { /* paused */ } });
+
+      await pipeStream(stream, encoder, controller.signal);
+
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      expect(encoder.abort).toHaveBeenCalledWith('cancelled');
+      expect(encoder.abortedReason).toBe('cancelled');
+    });
+
+    it('calls encoder.abort() after onAbort callback', async () => {
+      const controller = new AbortController();
+      controller.abort();
+
+      const callOrder: string[] = [];
+      // eslint-disable-next-line @typescript-eslint/require-await -- mock
+      const onAbort = vi.fn(async () => {
+        callOrder.push('onAbort');
+      });
+      // eslint-disable-next-line @typescript-eslint/unbound-method, @typescript-eslint/require-await -- vi mock
+      vi.mocked(encoder.abort).mockImplementation(async () => {
+        callOrder.push('encoder.abort');
+      });
+
+      const stream = new ReadableStream<TestEvent>({ start: () => { /* paused */ } });
+
+      await pipeStream(stream, encoder, controller.signal, onAbort);
+
+      expect(callOrder).toEqual(['onAbort', 'encoder.abort']);
     });
 
     it('returns cancelled when signal is already aborted at start', async () => {

@@ -232,11 +232,20 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       const headers = getHeaders(ablyMessage);
       const serial = ablyMessage.serial;
 
+      // Always update observer headers, even when the decoder produces no outputs.
+      // This ensures header transitions (e.g. x-ably-status: streaming → aborted)
+      // are captured for events that the decoder suppresses (AIT-CD8: aborted
+      // stream appends emit no events but still carry the updated status header).
+      const turnId = headers[HEADER_TURN_ID];
+      if (turnId) {
+        this._updateTurnObserverHeaders(turnId, headers, serial);
+      }
+
       for (const output of outputs) {
         if (output.kind === 'message') {
           this._handleMessageOutput(output.message, headers, serial, ablyMessage.action);
         } else {
-          this._handleEventOutput(output, headers, serial);
+          this._handleEventOutput(output, headers);
         }
       }
     } catch (error) {
@@ -283,20 +292,16 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
    * Handle a decoded streaming event: route to own-turn stream or accumulate for observer.
    * @param output - The decoded event output from the codec.
    * @param headers - Ably headers from the wire message.
-   * @param serial - Ably serial for tree ordering.
    */
-  private _handleEventOutput(
-    output: DecoderOutput<TEvent, TMessage>,
-    headers: Record<string, string>,
-    serial: string | undefined,
-  ): void {
+  private _handleEventOutput(output: DecoderOutput<TEvent, TMessage>, headers: Record<string, string>): void {
     if (output.kind !== 'event') return;
     const event = output.event;
     const turnId = headers[HEADER_TURN_ID];
     if (!turnId) return;
 
-    // Capture/update per-turn headers from the first event and subsequent non-empty headers
-    this._updateTurnObserverHeaders(turnId, headers, serial);
+    // Observer headers are already updated in _handleMessage (before outputs
+    // are iterated) so that header transitions are captured even when the
+    // decoder produces no outputs (e.g. aborted stream appends per AIT-CD8).
 
     // Active own turn — route to the ReadableStream
     if (this._router.route(turnId, event)) {
@@ -420,26 +425,25 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   }
 
   private _closeMatchingTurnStreams(filter: CancelFilter): void {
+    // Only close the router streams here — do NOT clear _turnObservers.
+    // The observer must remain alive so that late server events (e.g. abort,
+    // x-ably-status: aborted) arriving before turn-end are still accumulated
+    // into the message store. The turn-end handler cleans up observers.
     if (filter.all) {
       for (const turnId of this._ownTurnIds) {
         this._router.closeStream(turnId);
       }
-      // 'all' also clears observer state for non-own turns
-      this._turnObservers.clear();
     } else if (filter.own) {
       for (const tid of this._ownTurnIds) {
         this._router.closeStream(tid);
-        this._turnObservers.delete(tid);
       }
     } else if (filter.clientId) {
       for (const [tid, cid] of this._turnClientIds) {
         if (cid === filter.clientId) {
           this._router.closeStream(tid);
-          this._turnObservers.delete(tid);
         }
       }
     } else if (filter.turnId) {
-      this._turnObservers.delete(filter.turnId);
       this._router.closeStream(filter.turnId);
     }
   }
@@ -568,6 +572,11 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     const msgIds = new Set<string>();
     const postMessages: { message: TMessage; headers: Record<string, string> }[] = [];
 
+    // Capture history BEFORE optimistic inserts. The optimistic messages are
+    // sent in the `messages` field — including them in `history` too would
+    // cause the server to see them twice.
+    const preInsertHistory = this._getInputMessages();
+
     // Spec: AIT-CT3d
     // Auto-compute parent from the current thread if not explicitly provided
     let autoParent: string | undefined;
@@ -621,7 +630,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
 
     const postBody: Record<string, unknown> = {
       ...resolvedBody,
-      history: this._getInputMessages(),
+      history: preInsertHistory,
       ...sendOptions?.body,
       turnId,
       clientId: this._clientId,

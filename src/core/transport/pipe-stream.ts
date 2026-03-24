@@ -62,6 +62,7 @@ export const pipeStream = async <TEvent, TMessage>(
         if (onAbort) {
           await onAbort(async (event: TEvent) => encoder.appendEvent(event));
         }
+        await encoder.abort('cancelled');
         break;
       }
 

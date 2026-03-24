@@ -148,6 +148,13 @@ export interface DiscreteEncoder<TEvent, TMessage> {
 export interface StreamEncoder<TEvent, TMessage> extends DiscreteEncoder<TEvent, TMessage> {
   /** Encode and append a streaming domain event to an in-progress stream (delta semantics). */
   appendEvent(event: TEvent, options?: WriteOptions): Promise<void>;
+  /**
+   * Abort all in-progress streams and publish a codec-specific abort signal.
+   * Called by the transport when a turn is cancelled. Idempotent — calling
+   * abort after all streams are already aborted is a no-op.
+   * @param reason - Optional reason string for the abort (e.g. 'cancelled').
+   */
+  abort(reason?: string): Promise<void>;
   /** Flush all pending appends and close the encoder. */
   close(): Promise<void>;
 }

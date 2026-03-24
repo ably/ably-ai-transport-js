@@ -2,7 +2,15 @@ import type * as Ably from 'ably';
 import type * as AI from 'ai';
 import { describe, expect, it } from 'vitest';
 
-import { DOMAIN_HEADER_PREFIX as D, HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID, HEADER_TURN_ID } from '../../../src/constants.js';
+import {
+  DOMAIN_HEADER_PREFIX as D,
+  HEADER_MSG_ID,
+  HEADER_ROLE,
+  HEADER_STATUS,
+  HEADER_STREAM,
+  HEADER_STREAM_ID,
+  HEADER_TURN_ID,
+} from '../../../src/constants.js';
 import { createDecoder } from '../../../src/vercel/codec/decoder.js';
 
 // ---------------------------------------------------------------------------
@@ -22,7 +30,7 @@ const withHeaders = (
     extras: { headers },
   }) as Ably.InboundMessage;
 
-interface Output { kind: string; event?: AI.UIMessageChunk }
+interface Output { kind: string; event?: AI.UIMessageChunk; message?: AI.UIMessage }
 
 const eventsOf = (outputs: Output[]): AI.UIMessageChunk[] =>
   outputs
@@ -31,6 +39,11 @@ const eventsOf = (outputs: Output[]): AI.UIMessageChunk[] =>
 
 const eventTypesOf = (outputs: Output[]): string[] =>
   eventsOf(outputs).map((e) => e.type);
+
+const messagesOf = (outputs: Output[]): AI.UIMessage[] =>
+  outputs
+    .filter((o): o is Output & { message: AI.UIMessage } => o.kind === 'message' && o.message !== undefined)
+    .map((o) => o.message);
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -698,6 +711,93 @@ describe('Vercel decoder', () => {
       expect(deltaEvent).toEqual(
         expect.objectContaining({ type: 'text-delta', delta: 'hello world' }),
       );
+    });
+  });
+
+  // -- discrete message decoding (writeMessage echoes) ----------------------
+
+  describe('discrete message decoding', () => {
+    it('decodes a text message with x-ably-role into a UIMessage', () => {
+      const decoder = createDecoder();
+      const msg = withHeaders(
+        { name: 'text', data: 'Hello world' },
+        { [HEADER_STREAM]: 'false', [HEADER_ROLE]: 'user', [HEADER_MSG_ID]: 'msg-1', [`${D}messageId`]: 'ui-1' },
+      );
+
+      const outputs = decoder.decode(msg);
+      const messages = messagesOf(outputs);
+
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toEqual(
+        expect.objectContaining({
+          id: 'ui-1',
+          role: 'user',
+          parts: [{ type: 'text', text: 'Hello world' }],
+        }),
+      );
+    });
+
+    it('decodes a file message with x-ably-role into a UIMessage', () => {
+      const decoder = createDecoder();
+      const msg = withHeaders(
+        { name: 'file', data: 'https://example.com/img.png' },
+        { [HEADER_STREAM]: 'false', [HEADER_ROLE]: 'user', [HEADER_MSG_ID]: 'msg-2', [`${D}messageId`]: 'ui-2', [`${D}mediaType`]: 'image/png' },
+      );
+
+      const outputs = decoder.decode(msg);
+      const messages = messagesOf(outputs);
+
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toEqual(
+        expect.objectContaining({
+          id: 'ui-2',
+          role: 'user',
+          parts: [{ type: 'file', mediaType: 'image/png', url: 'https://example.com/img.png' }],
+        }),
+      );
+    });
+
+    it('does not decode text as a discrete message when x-ably-role is absent', () => {
+      const decoder = createDecoder();
+      // Without x-ably-role, this is a lifecycle event context (e.g. streamed text)
+      // and should not produce a message output
+      const msg = withHeaders(
+        { name: 'text', data: 'delta' },
+        { [HEADER_STREAM]: 'false', [HEADER_TURN_ID]: 'turn-1', [HEADER_MSG_ID]: 'msg-3' },
+      );
+
+      const outputs = decoder.decode(msg);
+      const messages = messagesOf(outputs);
+
+      expect(messages).toHaveLength(0);
+    });
+
+    it('preserves role from headers', () => {
+      const decoder = createDecoder();
+      const msg = withHeaders(
+        { name: 'text', data: 'System message' },
+        { [HEADER_STREAM]: 'false', [HEADER_ROLE]: 'system', [HEADER_MSG_ID]: 'msg-4', [`${D}messageId`]: 'ui-4' },
+      );
+
+      const outputs = decoder.decode(msg);
+      const messages = messagesOf(outputs);
+
+      expect(messages).toHaveLength(1);
+      expect(messages[0]?.role).toBe('system');
+    });
+
+    it('tags message outputs with messageId from x-ably-msg-id', () => {
+      const decoder = createDecoder();
+      const msg = withHeaders(
+        { name: 'text', data: 'hi' },
+        { [HEADER_STREAM]: 'false', [HEADER_ROLE]: 'user', [HEADER_MSG_ID]: 'msg-5', [`${D}messageId`]: 'ui-5' },
+      );
+
+      const outputs = decoder.decode(msg);
+      // Message outputs don't have messageId (only event outputs do),
+      // so this verifies the output is kind: 'message', not kind: 'event'
+      expect(outputs).toHaveLength(1);
+      expect(outputs[0]?.kind).toBe('message');
     });
   });
 });

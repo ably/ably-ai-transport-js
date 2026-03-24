@@ -33,6 +33,7 @@ import * as Ably from 'ably';
 import type * as AI from 'ai';
 import { isDataUIPart } from 'ai';
 
+import { HEADER_STATUS } from '../../constants.js';
 import type { EncoderCore, EncoderCoreOptions } from '../../core/codec/encoder.js';
 import { createEncoderCore } from '../../core/codec/encoder.js';
 import type { ChannelWriter, MessagePayload, StreamEncoder, WriteOptions } from '../../core/codec/types.js';
@@ -45,6 +46,7 @@ import { headerWriter } from '../../utils.js';
 
 class DefaultUIMessageEncoder implements StreamEncoder<AI.UIMessageChunk, AI.UIMessage> {
   private readonly _core: EncoderCore;
+  private _aborted = false;
 
   constructor(writer: ChannelWriter, options: EncoderCoreOptions = {}) {
     this._core = createEncoderCore(writer, options);
@@ -174,8 +176,12 @@ class DefaultUIMessageEncoder implements StreamEncoder<AI.UIMessageChunk, AI.UIM
       }
 
       case 'abort': {
+        this._aborted = true;
         await this._core.abortAllStreams(perWrite);
-        await this._core.publishDiscrete({ name: 'abort', data: chunk.reason ?? '' }, perWrite);
+        await this._core.publishDiscrete(
+          { name: 'abort', data: chunk.reason ?? '', headers: { [HEADER_STATUS]: 'aborted' } },
+          perWrite,
+        );
         break;
       }
 
@@ -318,6 +324,17 @@ class DefaultUIMessageEncoder implements StreamEncoder<AI.UIMessageChunk, AI.UIM
   async writeMessages(messages: AI.UIMessage[], perWrite?: WriteOptions): Promise<Ably.PublishResult> {
     const payloads = messages.flatMap((msg) => encodeMessagePayloads(msg));
     return this._core.publishDiscreteBatch(payloads, perWrite);
+  }
+
+  async abort(reason?: string): Promise<void> {
+    if (this._aborted) return;
+    this._aborted = true;
+    await this._core.abortAllStreams();
+    await this._core.publishDiscrete({
+      name: 'abort',
+      data: reason ?? '',
+      headers: { [HEADER_STATUS]: 'aborted' },
+    });
   }
 
   async close(): Promise<void> {

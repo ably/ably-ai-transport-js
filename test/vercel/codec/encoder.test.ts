@@ -290,12 +290,54 @@ describe('Vercel encoder', () => {
       const abortMsg = lastPublish(writer);
       expect(abortMsg.name).toBe('abort');
       expect(abortMsg.data).toBe('cancelled');
+      expect(headersOf(abortMsg)[HEADER_STATUS]).toBe('aborted');
 
       // The stream should have been aborted
       const abortAppend = writer.appendCalls.find(
         (m) => headersOf(m)[HEADER_STATUS] === 'aborted',
       );
       expect(abortAppend).toBeDefined();
+    });
+
+    it('abort() aborts all streams and publishes abort event', async () => {
+      const encoder = createEncoder(writer);
+      await encoder.appendEvent({ type: 'text-start', id: 'txt-1' });
+      await encoder.abort('cancelled');
+
+      const abortMsg = lastPublish(writer);
+      expect(abortMsg.name).toBe('abort');
+      expect(abortMsg.data).toBe('cancelled');
+      expect(headersOf(abortMsg)[HEADER_STATUS]).toBe('aborted');
+
+      const abortAppend = writer.appendCalls.find(
+        (m) => headersOf(m)[HEADER_STATUS] === 'aborted',
+      );
+      expect(abortAppend).toBeDefined();
+    });
+
+    it('abort() is idempotent — second call is a no-op', async () => {
+      const encoder = createEncoder(writer);
+      await encoder.appendEvent({ type: 'text-start', id: 'txt-1' });
+
+      await encoder.abort('cancelled');
+      const publishCountAfterFirst = writer.publishCalls.length;
+      const appendCountAfterFirst = writer.appendCalls.length;
+
+      await encoder.abort('cancelled');
+      expect(writer.publishCalls.length).toBe(publishCountAfterFirst);
+      expect(writer.appendCalls.length).toBe(appendCountAfterFirst);
+    });
+
+    it('abort() with no open streams publishes only the abort discrete event with status header', async () => {
+      const encoder = createEncoder(writer);
+      await encoder.abort('user-stop');
+
+      expect(writer.publishCalls).toHaveLength(1);
+      const msg = firstPublish(writer);
+      expect(msg.name).toBe('abort');
+      expect(msg.data).toBe('user-stop');
+      expect(headersOf(msg)[HEADER_STATUS]).toBe('aborted');
+      expect(writer.appendCalls).toHaveLength(0);
     });
 
     it('encodes start-step as a discrete message', async () => {

@@ -38,13 +38,7 @@ function main(): void {
   const missingCodes: number[] = [];
   const foundCodes: Array<{ code: number; message: string }> = [];
 
-  // Check each error code. Custom SDK codes in the 104000-104999 range are
-  // reserved for this SDK and not expected to be in ably-common.
   for (const code of errorCodes) {
-    if (code >= 104000 && code <= 104999) {
-      foundCodes.push({ code, message: '(custom AI Transport SDK code)' });
-      continue;
-    }
     const codeStr = code.toString();
     if (errorsJson[codeStr]) {
       foundCodes.push({ code, message: errorsJson[codeStr] });

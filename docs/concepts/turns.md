@@ -134,4 +134,4 @@ const result = streamText({ model, messages, abortSignal: turn.abortSignal });
 
 The `onCancel` hook lets you authorize cancellation — useful for preventing one user from cancelling another user's turn. The `onAbort` hook runs after the signal fires, giving you a chance to write final data before the stream closes.
 
-For the internal mechanics, see [TurnManager](../internals/stream-router.md#turnmanager) and [pipeStream](../internals/stream-router.md#pipestream) for how abort signals flow through the system, and [Wire protocol](../internals/wire-protocol.md#turn-lifecycle-over-the-wire) for the message sequence on the channel.
+For the internal mechanics, see [TurnManager](../internals/transport-components.md#turnmanager) and [pipeStream](../internals/transport-components.md#pipestream) for how abort signals flow through the system, and [Wire protocol](../internals/wire-protocol.md#turn-lifecycle-over-the-wire) for the message sequence on the channel.

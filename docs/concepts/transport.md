@@ -98,7 +98,7 @@ The transport is parameterized by a `Codec<TEvent, TMessage>` — an interface t
 
 The generic transport knows nothing about specific frameworks. For the Vercel AI SDK, `UIMessageCodec` maps between `UIMessageChunk` events and `UIMessage` messages. The Vercel entry point (`@ably/ably-ai-transport-js/vercel`) pre-binds this codec so you don't need to pass it explicitly.
 
-For a deep dive into how the codec, encoder, and decoder work internally, see [Codec interface](../internals/codec-interface.md), [Encoder](../internals/encoder.md), and [Decoder](../internals/decoder.md). For the wire format, see [Wire protocol](../internals/wire-protocol.md).
+For the internal implementation of each transport, see [Client transport](../internals/client-transport.md) and [Server transport](../internals/server-transport.md). For the sub-components they compose, see [Transport components](../internals/transport-components.md). For the codec, encoder, and decoder internals, see [Codec interface](../internals/codec-interface.md), [Encoder](../internals/encoder.md), and [Decoder](../internals/decoder.md). For the wire format, see [Wire protocol](../internals/wire-protocol.md).
 
 ## Entry point decision
 

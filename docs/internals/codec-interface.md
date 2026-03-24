@@ -19,7 +19,7 @@ interface Codec<TEvent, TMessage> {
 | `createEncoder`     | Creates a [streaming encoder](encoder.md) that maps domain events to Ably publish operations                                                                      |
 | `createDecoder`     | Creates a [decoder](decoder.md) that converts inbound Ably messages to domain events/messages                                                                     |
 | `createAccumulator` | Creates an accumulator that builds complete messages from streaming events                                                                                        |
-| `isTerminal`        | Returns true if an event signals stream completion (finish, error, abort). Used by the [stream router](stream-router.md#terminal-detection) to auto-close streams |
+| `isTerminal`        | Returns true if an event signals stream completion (finish, error, abort). Used by the [stream router](transport-components.md#terminal-detection) to auto-close streams |
 | `getMessageKey`     | Returns a stable [codec key](glossary.md#codec-key) for a domain message (used by the [conversation tree](conversation-tree.md) for upsert)                       |
 
 ## How the transport uses the codec
@@ -40,7 +40,7 @@ The client transport uses:
 
 - `createDecoder()` — decodes inbound Ably messages into domain events and messages
 - `createAccumulator()` — builds complete messages from events (for [observer turns](glossary.md#own-turn-vs-observer-turn) — other clients' streams)
-- `isTerminal()` — tells the [stream router](stream-router.md#terminal-detection) when to close a per-turn ReadableStream
+- `isTerminal()` — tells the [stream router](transport-components.md#terminal-detection) when to close a per-turn ReadableStream
 - `getMessageKey()` — provides the [conversation tree's](conversation-tree.md#data-structures) secondary index key
 
 ## Encoder architecture
@@ -136,7 +136,7 @@ interface LifecycleTracker<TEvent> {
 
 Configured with an ordered list of phases (e.g. `["start", "start-step"]`). When `ensurePhases()` is called, it checks which phases have been emitted for the scope and synthesizes missing ones using codec-provided build functions.
 
-For the Vercel codec, this means: if a client joins a stream after `text-start` was published, the tracker synthesizes a `start` chunk so the Vercel UI message lifecycle is complete.
+For the Vercel codec, this means: if a client joins a stream after `text-start` was published, the tracker synthesizes a `start` chunk so the Vercel UI message lifecycle is complete. See [Lifecycle tracker](lifecycle-tracker.md) for the full internals.
 
 ## Vercel UIMessageCodec
 
@@ -167,7 +167,7 @@ The Vercel codec uses [`x-domain-*` headers](wire-protocol.md#domain-headers-x-d
 - `x-domain-error` — error message
 - `x-domain-data` — JSON-serialized data payload
 
-These headers are read/written using `headerReader()` and `headerWriter()` utilities that automatically prefix keys with `x-domain-`.
+These headers are read/written using `headerReader()` and `headerWriter()` utilities that automatically prefix keys with `x-domain-`. See [Headers](headers.md) for the full reader/writer API.
 
 ## Writing a new codec
 
@@ -180,4 +180,4 @@ To support a new AI framework, implement the `Codec<TEvent, TMessage>` interface
 5. **Implement isTerminal** — identify events that close a stream
 6. **Implement getMessageKey** — return a stable identity for each message
 
-See [Encoder](encoder.md) for the encoder core that domain encoders delegate to. See [Decoder](decoder.md) for the decoder core and its hook interface. See [Wire protocol](wire-protocol.md) for the transport vs domain header discipline.
+See [Vercel codec](vercel-codec.md) for the concrete Vercel implementation details. See [Encoder](encoder.md) for the encoder core that domain encoders delegate to. See [Decoder](decoder.md) for the decoder core and its hook interface. See [Wire protocol](wire-protocol.md) for the transport vs domain header discipline.

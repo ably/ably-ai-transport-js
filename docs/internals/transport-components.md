@@ -128,4 +128,4 @@ buildTransportHeaders({
 // → { 'x-ably-role': 'assistant', 'x-ably-turn-id': 'turn-1', ... }
 ```
 
-See [Wire protocol](wire-protocol.md) for the full header and event specification. See [Encoder](encoder.md) for how the encoder writes through the channel. See [Decoder](decoder.md) for how decoded events are produced for routing.
+See [Client transport](client-transport.md) and [Server transport](server-transport.md) for how these sub-components are composed into the full transport implementations. See [Wire protocol](wire-protocol.md) for the full header and event specification. See [Encoder](encoder.md) for how the encoder writes through the channel. See [Decoder](decoder.md) for how decoded events are produced for routing. See [Headers](headers.md) for the domain header reader/writer utilities.

@@ -114,4 +114,4 @@ await transport.close({ cancel: { own: true } });
 await transport.close();
 ```
 
-See [Barge-in](barge-in.md) for cancel-then-send patterns. See [Error codes](../reference/error-codes.md) for cancel-related error codes. See [React hooks reference](../reference/react-hooks.md) for the `useActiveTurns` API. For the internal cancel routing and filter resolution, see [Cancel routing](../internals/stream-router.md#cancel-routing-server-transport).
+See [Barge-in](barge-in.md) for cancel-then-send patterns. See [Error codes](../reference/error-codes.md) for cancel-related error codes. See [React hooks reference](../reference/react-hooks.md) for the `useActiveTurns` API. For the internal cancel routing and filter resolution, see [Cancel routing](../internals/transport-components.md#cancel-routing-server-transport).

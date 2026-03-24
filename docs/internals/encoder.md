@@ -50,7 +50,7 @@ The closing append carries the closing `data` payload (which is also accumulated
 
 Sends an append with `x-ably-status: "aborted"` and empty data. Marks the tracker as aborted so recovery uses the correct status. Then flushes pending appends.
 
-`abortAllStreams()` aborts every active stream — used when a turn is [cancelled](stream-router.md#cancel-routing-server-transport).
+`abortAllStreams()` aborts every active stream — used when a turn is [cancelled](transport-components.md#cancel-routing-server-transport).
 
 ## Recovery mechanism
 

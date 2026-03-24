@@ -54,7 +54,7 @@ The [codec interface](codec-interface.md) is the boundary between these layers.
 
 When the client transport receives messages from the channel, it routes them differently depending on who started the turn:
 
-- **Own turn** — a turn this client initiated (via `send()`, `regenerate()`, `edit()`). Decoded events are routed to **both** the [stream router](stream-router.md#streamrouter) (which enqueues them on a `ReadableStream`) and a per-turn [accumulator](codec-interface.md#accumulator) (which builds complete messages for the [conversation tree](conversation-tree.md)). The stream exists primarily as an integration seam for framework adapters (e.g. Vercel's `useChat`); most application code consumes accumulated messages via `getMessages()`.
+- **Own turn** — a turn this client initiated (via `send()`, `regenerate()`, `edit()`). Decoded events are routed to **both** the [stream router](transport-components.md#streamrouter) (which enqueues them on a `ReadableStream`) and a per-turn [accumulator](codec-interface.md#accumulator) (which builds complete messages for the [conversation tree](conversation-tree.md)). The stream exists primarily as an integration seam for framework adapters (e.g. Vercel's `useChat`); most application code consumes accumulated messages via `getMessages()`.
 - **Observer turn** — a turn started by another client. Decoded events go to the accumulator only — there is no stream because no caller on this client initiated the turn.
 
 Both paths use the same accumulation logic. The only difference is that own turns additionally expose a `ReadableStream` for framework integration. See [Message lifecycle](message-lifecycle.md#own-turns-vs-observer-turns) for the full routing picture.
@@ -72,7 +72,7 @@ A turn contains one or more messages. A message belongs to exactly one turn. See
 
 ### Terminal event
 
-An event that signals the end of a stream. For the Vercel codec, terminal events are `finish`, `error`, and abort signals. The [stream router](stream-router.md#terminal-detection) uses the codec's `isTerminal()` predicate to automatically close the `ReadableStream` when a terminal event arrives. The [decoder](decoder.md#append-handling) checks `x-ably-status` for `"finished"` or `"aborted"` to detect terminal state on the wire.
+An event that signals the end of a stream. For the Vercel codec, terminal events are `finish`, `error`, and abort signals. The [stream router](transport-components.md#terminal-detection) uses the codec's `isTerminal()` predicate to automatically close the `ReadableStream` when a terminal event arrives. The [decoder](decoder.md#append-handling) checks `x-ably-status` for `"finished"` or `"aborted"` to detect terminal state on the wire.
 
 ### Fire-and-forget
 
@@ -108,7 +108,7 @@ When an optimistic message (null serial) receives a server-assigned serial via [
 
 ### TEvent
 
-The streaming fragment type that the generic layer is parameterized by. For the Vercel codec, this is `UIMessageChunk`. Events are the unit of real-time streaming — individually meaningless fragments (a text delta, a tool-input start signal, a finish event) that must be accumulated into a complete message. The [decoder](decoder.md) produces events; the [stream router](stream-router.md) delivers them to own-turn consumers; the [accumulator](codec-interface.md#accumulator) assembles them into `TMessage` instances.
+The streaming fragment type that the generic layer is parameterized by. For the Vercel codec, this is `UIMessageChunk`. Events are the unit of real-time streaming — individually meaningless fragments (a text delta, a tool-input start signal, a finish event) that must be accumulated into a complete message. The [decoder](decoder.md) produces events; the [stream router](transport-components.md) delivers them to own-turn consumers; the [accumulator](codec-interface.md#accumulator) assembles them into `TMessage` instances.
 
 ### TMessage
 

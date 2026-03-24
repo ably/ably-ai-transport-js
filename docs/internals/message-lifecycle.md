@@ -6,7 +6,7 @@ How a message travels from the Ably channel to the UI. This doc ties together th
 
 The entire generic layer is parameterized by two types: `TEvent` and `TMessage`.
 
-**`TEvent`** is a streaming fragment — an individually meaningless piece of a message. For the Vercel codec, this is `UIMessageChunk`: a text delta, a tool-input start signal, a finish event. Events are the unit of real-time streaming. The [stream router](stream-router.md) delivers them one-by-one to own-turn consumers; the [accumulator](codec-interface.md#accumulator) assembles them into complete messages.
+**`TEvent`** is a streaming fragment — an individually meaningless piece of a message. For the Vercel codec, this is `UIMessageChunk`: a text delta, a tool-input start signal, a finish event. Events are the unit of real-time streaming. The [stream router](transport-components.md) delivers them one-by-one to own-turn consumers; the [accumulator](codec-interface.md#accumulator) assembles them into complete messages.
 
 **`TMessage`** is a complete domain message — a fully-formed object with all its parts, metadata, and role. For the Vercel codec, this is `UIMessage`. Messages are the unit of state: what the [conversation tree](conversation-tree.md) stores, what `getMessages()` returns, what React hooks render.
 
@@ -47,7 +47,7 @@ flowchart TD
 
 When the client transport receives messages from the channel, it routes them based on who started the turn:
 
-- **Own turn** — a turn this client initiated (via `send()`, `regenerate()`, `edit()`). Decoded events go to **both** the [stream router](stream-router.md) and a per-turn [accumulator](codec-interface.md#accumulator). The stream router enqueues events on a `ReadableStream` that framework adapters can consume (see [why the stream exists](#why-own-turns-have-a-stream)). The accumulator simultaneously builds complete `TMessage` objects and upserts them into the tree on every event — so `getMessages()` always reflects the latest partial state, even while streaming.
+- **Own turn** — a turn this client initiated (via `send()`, `regenerate()`, `edit()`). Decoded events go to **both** the [stream router](transport-components.md) and a per-turn [accumulator](codec-interface.md#accumulator). The stream router enqueues events on a `ReadableStream` that framework adapters can consume (see [why the stream exists](#why-own-turns-have-a-stream)). The accumulator simultaneously builds complete `TMessage` objects and upserts them into the tree on every event — so `getMessages()` always reflects the latest partial state, even while streaming.
 - **Observer turn** — a turn started by another client. Decoded events go to the accumulator only. There is no stream because no caller initiated the turn on this client — there is nobody holding a stream handle.
 
 Both paths use the same `_accumulateAndEmit()` method. The only difference is that own turns additionally route through the stream router.

@@ -4,7 +4,10 @@
   "description": "Ably transport and codecs for building AI applications with Ably.",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./react": "./src/react/index.ts",
+    "./vercel": "./src/vercel/index.ts",
+    "./vercel/react": "./src/vercel/react/index.ts"
   },
   "scripts": {
     "lint": "eslint .",
@@ -47,6 +50,9 @@
     "react": "^18.0.0 || ^19.0.0"
   },
   "peerDependenciesMeta": {
+    "ai": {
+      "optional": true
+    },
     "react": {
       "optional": true
     }
@@ -55,8 +61,11 @@
     "@eslint/compat": "^1.2.7",
     "@eslint/eslintrc": "^3.3.0",
     "@eslint/js": "^9.12.0",
+    "@testing-library/react": "^16.3.2",
+    "@types/react": "^19.2.14",
     "@typescript-eslint/eslint-plugin": "^8.26.1",
     "@typescript-eslint/parser": "^8.26.1",
+    "ai": "^6.0.137",
     "eslint": "^9.31.0",
     "eslint-plugin-import": "^2.31.0",
     "eslint-plugin-jsdoc": "^60.7.0",
@@ -66,6 +75,7 @@
     "eslint-plugin-unicorn": "^61.0.2",
     "globals": "^16.0.0",
     "jiti": "^2.6.1",
+    "jsdom": "^29.0.1",
     "prettier": "^3.5.3",
     "tsx": "^4.21.0",
     "typescript": "^5.8.2",

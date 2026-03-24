@@ -117,31 +117,43 @@ If an append fails (network issue, rate limit), the [encoder](encoder.md#recover
 
 A complete turn produces this sequence on the channel:
 
-```
-Server                              Channel                              Clients
-  |                                    |                                    |
-  |-- publish turn-start ------------->|-- x-ably-turn-start ------------>|
-  |                                    |                                    |
-  |-- publish user messages ---------->|-- message.create (role:user) --->|
-  |                                    |                                    |
-  |-- publish stream start ----------->|-- message.create (streaming) --->|
-  |-- publish stream appends --------->|-- message.append (delta) ------->|
-  |-- publish stream appends --------->|-- message.append (delta) ------->|
-  |-- publish stream close ----------->|-- message.append (finished) ---->|
-  |                                    |                                    |
-  |-- publish turn-end --------------->|-- x-ably-turn-end (complete) --->|
+```mermaid
+sequenceDiagram
+    participant S as Server
+    participant Ch as Channel
+    participant C as Clients
+
+    S->>Ch: publish turn-start
+    Ch->>C: x-ably-turn-start
+
+    S->>Ch: publish user messages
+    Ch->>C: message.create (role: user)
+
+    S->>Ch: publish stream start
+    Ch->>C: message.create (streaming)
+    S->>Ch: publish stream appends
+    Ch->>C: message.append (delta)
+    S->>Ch: publish stream appends
+    Ch->>C: message.append (delta)
+    S->>Ch: publish stream close
+    Ch->>C: message.append (finished)
+
+    S->>Ch: publish turn-end
+    Ch->>C: x-ably-turn-end (complete)
 ```
 
 With cancellation:
 
-```
-Client A                           Channel                               Server
-  |                                    |                                    |
-  |-- publish x-ably-cancel ---------->|                                    |
-  |                                    |--> cancel listener matches turn    |
-  |                                    |                                    |
-  |                                    |<-- message.append (aborted) -------|
-  |                                    |<-- x-ably-turn-end (cancelled) ----|
+```mermaid
+sequenceDiagram
+    participant A as Client A
+    participant Ch as Channel
+    participant S as Server
+
+    A->>Ch: publish x-ably-cancel
+    Note over Ch,S: cancel listener matches turn
+    S->>Ch: message.append (aborted)
+    S->>Ch: x-ably-turn-end (cancelled)
 ```
 
 ## Message identity (`x-ably-msg-id`)

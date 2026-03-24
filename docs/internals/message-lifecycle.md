@@ -20,49 +20,27 @@ This is why both type parameters exist: events are the streaming unit (what flow
 
 ## Data flow overview
 
-```
-                          Ably channel
-                               │
-                          ┌────▼────┐
-                          │ Decoder │
-                          └────┬────┘
-                               │
-                     DecoderOutput[]
-                  (events + discrete messages)
-                               │
-              ┌────────────────┼────────────────┐
-              │                │                │
-         Own turn        Observer turn     Discrete message
-              │                │             (any turn)
-              │                │                │
-     ┌────────┴────────┐      │                │
-     │                 │      │                │
-     ▼                 ▼      ▼                │
-  StreamRouter    Accumulator (both paths)     │
-  (ReadableStream)  (TEvent → TMessage)        │
-     │                 │                       │
-     │           snapshot latest                │
-     │           message on each                │
-     │           event                          │
-     │                 │                        │
-     │                 ▼                        │
-     │          ┌────────────┐                  │
-     │          │    Tree    │◄─────────────────┘
-     │          │  .upsert() │
-     │          └─────┬──────┘
-     │                │
-     │           .flatten()
-     │                │
-     │         ┌──────▼───────┐
-     │         │ getMessages() │
-     │         └──────┬───────┘
-     │                │
-     │          React hooks
-     │      (useState + 'message' event)
-     ▼                │
-  framework           ▼
-  adapters        UI renders
-  (e.g. useChat)
+```mermaid
+flowchart TD
+    Channel[Ably channel] --> Decoder
+    Decoder --> Outputs["DecoderOutput[]<br/>(events + discrete messages)"]
+
+    Outputs --> Own[Own turn]
+    Outputs --> Observer[Observer turn]
+    Outputs --> Discrete["Discrete message<br/>(any turn)"]
+
+    Own --> StreamRouter["StreamRouter<br/>(ReadableStream)"]
+    Own --> Accumulator["Accumulator<br/>(TEvent → TMessage)"]
+    Observer --> Accumulator
+
+    Accumulator -- "snapshot latest message<br/>on each event" --> Tree["Tree .upsert()"]
+    Discrete --> Tree
+
+    Tree --> Flatten[.flatten]
+    Flatten --> GetMessages[getMessages]
+    GetMessages --> Hooks["React hooks<br/>(useState + 'message' event)"]
+    Hooks --> UI[UI renders]
+    StreamRouter --> Adapters["framework adapters<br/>(e.g. useChat)"]
 ```
 
 ## Own turns vs observer turns

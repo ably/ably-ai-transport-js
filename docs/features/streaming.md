@@ -8,19 +8,22 @@ Without a durable transport, streaming responses are ephemeral: if the connectio
 
 The server encoder creates an Ably message for each content stream (text, reasoning, tool input) and appends token deltas as they arrive. The client decoder accumulates these appends into complete messages.
 
-```
-Server Encoder                   Ably Channel                    Client Decoder
-  |                                  |                                |
-  |-- publish (create, status:streaming)->|                                |
-  |-- append "Hello" --------------->|                                |
-  |                                  |-- deliver append ------------->|
-  |                                  |                                |-- accumulate "Hello"
-  |-- append " world" -------------->|                                |
-  |                                  |-- deliver append ------------->|
-  |                                  |                                |-- accumulate "Hello world"
-  |-- append (status:finished) ----->|                                |
-  |                                  |-- deliver append ------------->|
-  |                                  |                                |-- stream complete
+```mermaid
+sequenceDiagram
+    participant SE as Server Encoder
+    participant AC as Ably Channel
+    participant CD as Client Decoder
+
+    SE->>AC: create (status: streaming)
+    SE->>AC: append "Hello"
+    AC->>CD: deliver append
+    Note right of CD: accumulate "Hello"
+    SE->>AC: append " world"
+    AC->>CD: deliver append
+    Note right of CD: accumulate "Hello world"
+    SE->>AC: append (status: finished)
+    AC->>CD: deliver append
+    Note right of CD: stream complete
 ```
 
 Each stream has a lifecycle tracked by the `x-ably-status` header:

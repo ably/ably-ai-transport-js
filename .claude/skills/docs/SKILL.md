@@ -209,18 +209,38 @@ a bullet list when comparing properties across items.
 | `{ turnId: "abc" }` | Cancel one specific turn | Cancel a specific generation |
 ```
 
-### ASCII diagrams
+### Diagrams
 
-Use ASCII diagrams for wire sequences, architecture layers, and data flows.
-Keep them minimal — show the essential interactions, not every field.
+Use **Mermaid diagrams** (` ```mermaid `) for sequence diagrams, flowcharts,
+and any multi-column or multi-participant interactions. Mermaid is rendered
+by GitHub and most doc tooling, so alignment is never an issue.
 
 ```markdown
-Client                          Channel                         Server
-  |                                                               |
-  |-- publish(x-ably-cancel) ---------->                          |
-  |-- close local stream                |                          |
-  |                                    |--> cancel listener       |
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant Ch as Channel
+    participant S as Server
+
+    C->>Ch: publish(x-ably-cancel)
+    Note left of C: close local stream(s)
+    Ch->>S: deliver to cancel listener
+```                                        (close the code fence)
 ```
+
+**When to use Mermaid vs plain text:**
+
+- **Mermaid `sequenceDiagram`** — wire sequences, request-response flows,
+  anything with multiple participants exchanging messages over time.
+- **Mermaid `flowchart`** — data flow diagrams, architecture layers,
+  routing logic with branching paths.
+- **Plain text** — simple hierarchical trees (2-3 levels, e.g. class
+  composition), pseudocode algorithms, data structure layouts. These are
+  small enough that alignment is trivial.
+
+**Do not use hand-drawn ASCII art for multi-column sequence diagrams.**
+Column alignment is error-prone and breaks silently when edited. Mermaid
+eliminates this class of bugs entirely.
 
 ### Code examples
 
@@ -367,6 +387,12 @@ After writing a doc page, verify:
 - [ ] No marketing language, no hedging, no meta-commentary
 - [ ] Tables used for structured comparisons
 - [ ] Headers work as a scannable table of contents
+
+**Diagrams:**
+
+- [ ] Multi-column sequence diagrams and flowcharts use Mermaid, not ASCII art
+- [ ] Mermaid diagrams render correctly (valid syntax, participants declared)
+- [ ] Plain-text diagrams (simple trees, pseudocode) have consistent alignment
 
 **Cross-references and definitions:**
 

@@ -4,16 +4,21 @@ AI Transport splits the real-time layer into two transports: a **server transpor
 
 ## How data flows
 
-```
-User                    Client Transport              Ably Channel              Server Transport              LLM
- |                           |                             |                          |                        |
- |-- type message ---------->|                             |                          |                        |
- |                           |-- HTTP POST (messages) -----|------------------------->|                        |
- |                           |                             |                          |-- prompt ------------->|
- |                           |                             |                          |<-- token stream -------|
- |                           |                             |<-- publish chunks --------|                        |
- |                           |<-- subscribe (decode) ------|                          |                        |
- |<-- render tokens ---------|                             |                          |                        |
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant CT as Client Transport
+    participant AC as Ably Channel
+    participant ST as Server Transport
+    participant LLM
+
+    U->>CT: type message
+    CT->>ST: HTTP POST (messages)
+    ST->>LLM: prompt
+    LLM-->>ST: token stream
+    ST->>AC: publish chunks
+    AC->>CT: subscribe (decode)
+    CT->>U: render tokens
 ```
 
 1. The user sends a message. The client transport fires an HTTP POST to your server endpoint with the message content, conversation history, and turn metadata.

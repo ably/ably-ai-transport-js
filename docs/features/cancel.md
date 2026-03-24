@@ -82,20 +82,22 @@ The `onAbort` hook runs after the signal fires. The `write` function lets you pu
 
 ## Wire sequence
 
-```
-Client                          Ably Channel                        Server
-  |                                  |                                  |
-  |-- publish(x-ably-cancel) ------->|                                  |
-  |   [headers: cancel-own=true]     |                                  |
-  |-- close local stream(s)         |                                  |
-  |                                  |--- deliver to cancel listener --->|
-  |                                  |                                  |-- match filter to turns
-  |                                  |                                  |-- onCancel() → true
-  |                                  |                                  |-- fire AbortSignal
-  |                                  |                                  |-- onAbort(write)
-  |                                  |<-- publish abort append ---------|
-  |                                  |<-- publish turn-end (cancelled) -|
-  |<-- deliver turn-end -------------|                                  |
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant Ch as Ably Channel
+    participant S as Server
+
+    C->>Ch: publish(x-ably-cancel)<br/>headers: cancel-own=true
+    Note left of C: close local stream(s)
+    Ch->>S: deliver to cancel listener
+    Note right of S: match filter to turns
+    Note right of S: onCancel() → true
+    Note right of S: fire AbortSignal
+    Note right of S: onAbort(write)
+    S->>Ch: publish abort append
+    S->>Ch: publish turn-end (cancelled)
+    Ch->>C: deliver turn-end
 ```
 
 The client closes its local streams immediately on cancel — it doesn't wait for the server to confirm. The server-side turn ends with `reason: 'cancelled'`, which all clients see via turn lifecycle events.

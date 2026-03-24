@@ -862,7 +862,7 @@ describe('ClientTransport', () => {
       ]);
     });
 
-    it('updates existing tree entry on own echo (msg-id match)', async () => {
+    it('reconciles optimistic entry when relayed own message arrives (msg-id match)', async () => {
       const turn = await transport.send({ id: 'u1', content: 'hello' });
       await mockFetch.waitForCalls(1);
 
@@ -884,7 +884,7 @@ describe('ClientTransport', () => {
       expect(matching).toHaveLength(1);
     });
 
-    it('inserts new message into tree for non-echo message.create', () => {
+    it('inserts new message into tree for non-own message.create', () => {
       decoder.outputs.push({ kind: 'message', message: { id: 'new-msg', content: 'from-other' } });
       simulateMessage(
         channel,
@@ -903,7 +903,7 @@ describe('ClientTransport', () => {
       expect(messages.some((m) => m.id === 'new-msg')).toBe(true);
     });
 
-    it('skips non-create messages that are not own echoes', () => {
+    it('skips non-create messages that are not relayed own messages', () => {
       decoder.outputs.push({ kind: 'message', message: { id: 'updated-msg', content: 'updated' } });
       simulateMessage(
         channel,
@@ -1176,7 +1176,7 @@ describe('ClientTransport', () => {
 
     it('assistant message is visible when two user messages are sent in a single turn', async () => {
       // Regression: when send() publishes multiple user messages, the
-      // observer serial was pinned to the first user-echo's serial. The
+      // observer serial was pinned to the first user relay's serial. The
       // accumulated assistant node inherited that early serial and sorted
       // *before* the second user message in the tree — its parent — making
       // it unreachable in flatten().
@@ -1214,8 +1214,8 @@ describe('ClientTransport', () => {
         }),
       );
 
-      // --- simulate server echoes for both user messages ---
-      // These are 'message' outputs (own echoes) that promote the serial.
+      // --- simulate server relays for both user messages ---
+      // These are 'message' outputs (relayed own messages) that promote the serial.
       decoder.outputs.push({ kind: 'message', message: { id: 'u1', content: 'Actually, about Paris' } });
       simulateMessage(channel, {
         name: 'text',

@@ -121,7 +121,7 @@ its first mention within a page. This applies to:
 - **Architecture terms:** transport layer vs domain layer, own turn vs
   observer turn, turn ID vs message ID
 - **Protocol jargon:** terminal event, fire-and-forget, prefix-match,
-  first-contact, echo detection, serial promotion, codec key
+  first-contact, optimistic reconciliation, serial promotion, codec key
 
 For internals pages, prefer linking to the glossary
 (`[serial](glossary.md#serial-ably)`) over repeating the definition. For
@@ -411,6 +411,6 @@ After writing a doc page, verify:
 - [ ] Architecture terms (own turn, observer turn, transport layer, domain
       layer) are defined or linked at first mention
 - [ ] Protocol jargon (terminal event, fire-and-forget, prefix-match,
-      first-contact, echo detection) is defined or linked at first mention
+      first-contact, optimistic reconciliation) is defined or linked at first mention
 - [ ] No concept is mentioned in passing without the reader being able to
       understand it from context, an inline definition, or a link

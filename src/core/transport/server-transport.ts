@@ -335,7 +335,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
 
           // Transport headers are the defaults; per-message headers from the
           // client override them. This lets the client's x-ably-msg-id pass
-          // through for echo detection with optimistic inserts.
+          // through for optimistic reconciliation with client inserts.
           const headers = mergeHeaders(
             buildTransportHeaders({
               role: 'user',

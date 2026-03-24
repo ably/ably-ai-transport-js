@@ -177,7 +177,7 @@ export interface Turn<TEvent, TMessage> {
   /**
    * Publish user messages to the channel, scoped to this turn.
    * Each message is published with its own headers (including `x-ably-msg-id`
-   * for echo detection with the client's optimistic inserts). Per-message
+   * for optimistic reconciliation with the client's inserts). Per-message
    * headers from `MessageWithHeaders` override transport-generated defaults.
    * @returns The msg-ids of all published messages, in order.
    */
@@ -350,7 +350,7 @@ export interface ConversationNode<TMessage> {
   /**
    * Ably serial for this message. Lexicographically comparable for total order.
    * Used to sort siblings deterministically regardless of delivery/history order.
-   * Absent for optimistic messages (set on server echo).
+   * Absent for optimistic messages (set when the server relay arrives).
    */
   serial: string | undefined;
 }

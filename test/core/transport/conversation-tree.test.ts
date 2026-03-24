@@ -137,7 +137,7 @@ describe('ConversationTree', () => {
     it('promotes null serial to server-assigned serial', () => {
       // Optimistic insert (no serial)
       tree.upsert('m1', { id: 'a', content: 'optimistic' }, headers());
-      // Server echo with serial
+      // Server relay with serial
       tree.upsert('m1', { id: 'a', content: 'confirmed' }, headers(), 'serial-001');
 
       const node = tree.getNode('m1');

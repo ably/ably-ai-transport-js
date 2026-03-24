@@ -29,7 +29,7 @@ export const HEADER_STREAM_ID = 'x-ably-stream-id';
 /** Header: turn correlation ID. Set on every message in a turn. */
 export const HEADER_TURN_ID = 'x-ably-turn-id';
 
-/** Header: message identity. Assigned per message (user or assistant). Used for echo detection on the client. */
+/** Header: message identity. Assigned per message (user or assistant). Used for optimistic reconciliation on the client. */
 export const HEADER_MSG_ID = 'x-ably-msg-id';
 
 /** Header: clientId of the user who initiated the turn. Set by the server on stream messages. */

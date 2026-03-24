@@ -16,7 +16,7 @@ Transport headers are set by the generic transport layer. They handle turn corre
 | `x-ably-status` | `"streaming"` / `"finished"` / `"aborted"` | Current lifecycle state of a streamed message |
 | `x-ably-stream-id` | string | Identity of the streamed message (correlates create → appends → close) |
 | `x-ably-turn-id` | string | [Turn](glossary.md#turn-id-vs-message-id) correlation ID. Every message in a turn carries this |
-| `x-ably-msg-id` | string | [Message identity](#message-identity-x-ably-msg-id). One per domain message (user or assistant). Used for [echo detection](#echo-detection) |
+| `x-ably-msg-id` | string | [Message identity](#message-identity-x-ably-msg-id). One per domain message (user or assistant). Used for [optimistic reconciliation](#optimistic-reconciliation) |
 | `x-ably-turn-client-id` | string | ClientId of the user who initiated the turn |
 | `x-ably-role` | `"user"` / `"assistant"` | Message role |
 | `x-ably-parent` | msg-id | Preceding message in the branch (linear parent) |
@@ -158,14 +158,14 @@ sequenceDiagram
 
 ## Message identity (`x-ably-msg-id`)
 
-Every domain message — user or assistant — gets a unique `x-ably-msg-id` (a `crypto.randomUUID()`). This is the primary identity for a message throughout the system: the [conversation tree](conversation-tree.md) is indexed by it, the [accumulator](codec-interface.md#accumulator) routes streaming events by it, and [echo detection](#echo-detection) matches on it.
+Every domain message — user or assistant — gets a unique `x-ably-msg-id` (a `crypto.randomUUID()`). This is the primary identity for a message throughout the system: the [conversation tree](conversation-tree.md) is indexed by it, the [accumulator](codec-interface.md#accumulator) routes streaming events by it, and [optimistic reconciliation](#optimistic-reconciliation) matches on it.
 
 ### Who generates it
 
 | Scenario | Generator | Location |
 |---|---|---|
 | User message (optimistic) | Client transport `send()` | One UUID per message in the batch |
-| User message (server echo) | Server transport `Turn.addMessages()` | One UUID per input; if the input already carries an `x-ably-msg-id` header (from the POST body), the existing value is kept |
+| User message (server relay) | Server transport `Turn.addMessages()` | One UUID per input; if the input already carries an `x-ably-msg-id` header (from the POST body), the existing value is kept |
 | Assistant response | Server transport `Turn.pipeStream()` / `Turn.streamResponse()` | One UUID for the entire streamed response |
 
 ### How it's stamped
@@ -183,12 +183,12 @@ The msg-id flows through the header pipeline:
 | [Decoder core](decoder.md#message-id-tagging) | Reads `x-ably-msg-id` from inbound message headers and tags every emitted `DecoderOutput` event with it |
 | [Accumulator](codec-interface.md#accumulator) | Uses `output.messageId` to route decoded events to the correct in-progress domain message (e.g. the `UIMessage` being built). The msg-id becomes the `UIMessage.id` for assistant messages |
 | [Conversation tree](conversation-tree.md#data-structures) | Uses msg-id as the primary key (`_nodeIndex`). Branching headers (`x-ably-parent`, `x-ably-fork-of`) reference other messages by their msg-id |
-| [Echo detection](#echo-detection) | Matches returning messages to optimistic inserts (see below) |
+| [Optimistic reconciliation](#optimistic-reconciliation) | Matches relayed messages to optimistic inserts (see below) |
 | `regenerate()` / `edit()` | Look up the target message in the tree by msg-id to compute `forkOf`, `parent`, and truncated history |
 
-### Echo detection
+### Optimistic reconciliation
 
-When a client calls `send()`, it inserts an optimistic message into the conversation tree (with no serial) and records the msg-id in an internal set. The server then publishes that message to the channel. When the client receives it back, it matches the echo by `x-ably-msg-id` and updates the optimistic entry with the server-assigned serial — [serial promotion](conversation-tree.md#upsert-the-sole-mutation) — rather than creating a duplicate.
+When a client calls `send()`, it inserts an optimistic message into the conversation tree (with no serial) and records the msg-id in an internal set. The server then relays that message onto the channel. When the client receives the relayed message, it matches by `x-ably-msg-id` and reconciles the optimistic entry with the server-assigned serial — [serial promotion](conversation-tree.md#upsert-the-sole-mutation) — rather than creating a duplicate.
 
 ## Branching headers
 

@@ -204,7 +204,7 @@ class DefaultConversationTree<TMessage> implements ConversationTree<TMessage> {
     }
 
     // Sort by Ably serial (lexicographic). Messages without a serial
-    // (optimistic inserts before server echo) sort after all serial-bearing
+    // (optimistic inserts before server relay) sort after all serial-bearing
     // siblings — they represent the user's most recent action.
     siblings.sort((a, b) => this._compareNodes(a, b));
     return siblings.map((s) => s.node);
@@ -361,7 +361,7 @@ class DefaultConversationTree<TMessage> implements ConversationTree<TMessage> {
         existing.node.headers = { ...headers };
       }
       // Spec: AIT-CT13d
-      // Promote serial: optimistic (null) → server-assigned on echo.
+      // Promote serial: optimistic (null) → server-assigned on relay.
       if (serial && !existing.node.serial) {
         this._logger.debug('ConversationTree.upsert(); promoting serial', { msgId, serial });
         existing.node.serial = serial;

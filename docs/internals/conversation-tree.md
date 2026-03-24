@@ -9,7 +9,7 @@ The tree is the single source of truth for conversation state. The transport's `
 Ably assigns a [serial](glossary.md#serial-ably) — a lexicographically sortable string identifier — to every message on acceptance. The tree uses serial as the primary ordering mechanism:
 
 - **Serial-bearing messages** sort lexicographically by serial
-- **Null-serial messages** (optimistic inserts before [server echo](wire-protocol.md#echo-detection)) sort after all serial-bearing messages, ordered among themselves by insertion sequence
+- **Null-serial messages** (optimistic inserts before [server relay](wire-protocol.md#optimistic-reconciliation)) sort after all serial-bearing messages, ordered among themselves by insertion sequence
 
 Note that serial order is not necessarily delivery order — messages published concurrently from different connections may interleave in any order relative to each other. Serial order provides a stable, deterministic total order for the tree, but it reflects Ably's acceptance order rather than any single client's observation order. Parent headers ([`x-ably-parent`](wire-protocol.md#branching-headers)) are only structurally meaningful at branch points — for linear sequences, serial order is sufficient.
 
@@ -47,7 +47,7 @@ Each `ConversationNode` stores:
 
 **Update (existing msgId):**
 1. Update the message content and headers in place
-2. If a serial is provided and the existing node has no serial (optimistic → echo), promote the serial: remove from sorted list, re-insert at correct position
+2. If a serial is provided and the existing node has no serial (optimistic → relay), promote the serial: remove from sorted list, re-insert at correct position
 
 Serial promotion handles the common case where a client inserts an optimistic message (null serial), then the server publishes it to the channel (with serial). The node moves from the end of the sorted list to its correct serial-order position.
 

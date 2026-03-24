@@ -100,7 +100,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   // Typed event emitter for all transport events
   private readonly _emitter: EventEmitter<ClientTransportEventsMap>;
 
-  // Echo detection
+  // Relay detection — tracks msg-ids of optimistic inserts for reconciliation
   private readonly _ownMsgIds = new Set<string>();
   private readonly _ownTurnIds = new Set<string>();
 
@@ -215,7 +215,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
           this._router.closeStream(turnId);
           this._turnObservers.delete(turnId);
           this._turnClientIds.delete(turnId);
-          // Clean up per-turn echo-detection state
+          // Clean up per-turn relay-detection state
           const msgIds = this._turnMsgIds.get(turnId);
           if (msgIds) {
             for (const mid of msgIds) this._ownMsgIds.delete(mid);
@@ -263,7 +263,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   }
 
   /**
-   * Handle a decoded domain message (user message create or own echo).
+   * Handle a decoded domain message (user message create or relayed own message).
    * @param message - The decoded domain message.
    * @param headers - Ably headers from the wire message.
    * @param serial - Ably serial for tree ordering.
@@ -278,7 +278,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     // Spec: AIT-CT15
     const msgId = headers[HEADER_MSG_ID];
     if (msgId && this._ownMsgIds.has(msgId)) {
-      // Own echo — update optimistic entry with server-assigned fields
+      // Relayed own message — reconcile optimistic entry with server-assigned fields
       this._upsertAndNotify(message, headers, serial);
       return;
     }
@@ -357,7 +357,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
         Object.assign(existing.headers, headers);
       }
       // Always advance the serial so the tree node sorts after all
-      // earlier messages in the turn (e.g. user-message echoes that
+      // earlier messages in the turn (e.g. user-message relays that
       // arrive before the assistant response).
       if (serial !== undefined) {
         existing.serial = serial;

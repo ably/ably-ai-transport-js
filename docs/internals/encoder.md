@@ -1,6 +1,6 @@
 # Encoder core
 
-The encoder core (`src/core/codec/encoder.ts`) translates domain events into Ably publish operations. It implements the [mutable message](glossary.md#mutable-message-ably) lifecycle — creating, appending to, closing, and aborting streamed messages — and handles recovery when appends fail.
+The encoder core (`src/core/codec/encoder.ts`) translates domain events into Ably publish operations. It implements the [message append](glossary.md#message-actions-ably) lifecycle — creating, appending to, closing, and aborting streamed messages — and handles recovery when appends fail.
 
 Domain codecs don't interact with Ably directly. They call encoder core methods (`startStream`, `appendStream`, `closeStream`) and the core handles serialization, header merging, and error recovery.
 
@@ -14,7 +14,7 @@ Domain codecs don't interact with Ably directly. They call encoder core methods 
 
 ### Streamed messages
 
-Streamed messages use Ably's [mutable message lifecycle](wire-protocol.md#streamed-messages). A single Ably message is created, then progressively appended to as data arrives:
+Streamed messages use Ably's [message append lifecycle](wire-protocol.md#streamed-messages). A single Ably message is created, then progressively appended to as data arrives:
 
 ```
 startStream(streamId, payload)   →  channel.publish()        x-ably-status: streaming
@@ -27,7 +27,7 @@ closeStream(streamId, payload)   →  channel.appendMessage()   x-ably-status: f
 
 ### startStream
 
-Creates a new mutable message on the channel. Captures the [serial](glossary.md#serial-ably) returned by `publish()` — this serial identifies the message for all subsequent appends.
+Creates a new message on the channel. Captures the [serial](glossary.md#serial-ably) returned by `publish()` — this serial identifies the message for all subsequent appends.
 
 Initializes a tracker that stores:
 - `serial` — the Ably-assigned message serial
@@ -76,7 +76,7 @@ Headers are merged in priority order (later wins):
 2. Per-write overrides — headers passed to individual write calls
 3. Codec headers — domain-specific headers from the payload
 
-If `WriteOptions.messageId` is set, the encoder stamps it as [`x-ably-msg-id`](wire-protocol.md#message-identity-x-ably-msg-id) during header merging. For streamed messages, this header is included in `persistentHeaders` — so every append and the closing append carry the same msg-id, giving the entire mutable message lifecycle a single identity.
+If `WriteOptions.messageId` is set, the encoder stamps it as [`x-ably-msg-id`](wire-protocol.md#message-identity-x-ably-msg-id) during header merging. For streamed messages, this header is included in `persistentHeaders` — so every append and the closing append carry the same msg-id, giving the entire message append lifecycle a single identity.
 
 After the headers are merged, the `onMessage` hook runs as a post-processing step — it receives the fully constructed `Ably.Message` object and can mutate it in place. The transport uses this hook to stamp [transport-level headers](wire-protocol.md#transport-headers-x-ably) (turn ID, role, parent, fork-of) onto every message without the codec needing to know about them.
 

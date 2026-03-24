@@ -4,7 +4,7 @@
  * Maps UIMessageChunk events and complete UIMessage objects to Ably channel
  * operations (publish, appendMessage, updateMessage).
  *
- * Delegates the mutable message lifecycle (publish, append, close, abort,
+ * Delegates the message append lifecycle (publish, append, close, abort,
  * flush/recover) to the encoder core. This file contains only the
  * Vercel-specific event-to-operation mapping.
  *
@@ -17,7 +17,7 @@
  * headers are passed to every operation that accepts them — the core handles
  * merging, persistence, and deduplication:
  *
- * - **`startStream`**: Opens a mutable message. Domain headers become
+ * - **`startStream`**: Opens a message stream. Domain headers become
  *   "persistent headers" — the core repeats them on every subsequent append.
  * - **`appendStream`**: Appends a text delta. Data only, no headers parameter.
  *   The core automatically carries persistent headers from start.
@@ -54,7 +54,7 @@ class DefaultUIMessageEncoder implements StreamEncoder<AI.UIMessageChunk, AI.UIM
 
   async appendEvent(chunk: AI.UIMessageChunk, perWrite?: WriteOptions): Promise<void> {
     switch (chunk.type) {
-      // -- Stream start: open a mutable message with persistent headers -----
+      // -- Stream start: open a message stream with persistent headers -------
 
       case 'text-start': {
         const h = headerWriter().str('id', chunk.id).json('providerMetadata', chunk.providerMetadata).build();

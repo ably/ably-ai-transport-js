@@ -112,7 +112,7 @@ await turn.end(reason);
 transport.close();
 ```
 
-`result.toUIMessageStream()` produces a `ReadableStream<UIMessageChunk>` — the codec knows how to encode these chunks as Ably messages (mutable message appends for text/reasoning, discrete messages for tool calls and lifecycle events).
+`result.toUIMessageStream()` produces a `ReadableStream<UIMessageChunk>` — the codec knows how to encode these chunks as Ably messages (message appends for text/reasoning, discrete messages for tool calls and lifecycle events).
 
 ## Codec details
 
@@ -120,9 +120,9 @@ transport.close();
 
 | UIMessageChunk type | Ably encoding |
 |---|---|
-| `text-delta` | Mutable message append (text accumulation) |
-| `reasoning-delta` | Mutable message append (reasoning accumulation) |
-| `tool-input-start/delta/available` | Mutable message append (tool input accumulation) |
+| `text-delta` | Message append (text accumulation) |
+| `reasoning-delta` | Message append (reasoning accumulation) |
+| `tool-input-start/delta/available` | Message append (tool input accumulation) |
 | `tool-output-available` | Discrete message |
 | `finish` | Discrete message (closes the stream) |
 | `error` | Discrete message (closes the stream with error) |

@@ -1,12 +1,12 @@
 # Token streaming
 
-AI Transport streams LLM tokens over Ably using mutable messages — each token is appended to a persistent message on the channel, so the response builds up incrementally and survives disconnection.
+AI Transport streams LLM tokens over Ably using message appends — each token is appended to a persistent message on the channel, so the response builds up incrementally and survives disconnection.
 
-Without a durable transport, streaming responses are ephemeral: if the connection drops, the partial response is lost. Ably's mutable messages persist the accumulated text, so a reconnecting or late-joining client sees the full response from channel history.
+Without a durable transport, streaming responses are ephemeral: if the connection drops, the partial response is lost. Ably's message appends persist the accumulated text, so a reconnecting or late-joining client sees the full response from channel history.
 
 ## How it works
 
-The server encoder creates a mutable Ably message for each content stream (text, reasoning, tool input) and appends token deltas as they arrive. The client decoder accumulates these appends into complete messages.
+The server encoder creates an Ably message for each content stream (text, reasoning, tool input) and appends token deltas as they arrive. The client decoder accumulates these appends into complete messages.
 
 ```
 Server Encoder                   Ably Channel                    Client Decoder
@@ -54,7 +54,7 @@ await turn.end(reason);
 transport.close();
 ```
 
-`streamResponse` reads events from the stream and routes them through the encoder. Text deltas become mutable message appends; lifecycle events (finish, error) become discrete messages that close the stream.
+`streamResponse` reads events from the stream and routes them through the encoder. Text deltas become message appends; lifecycle events (finish, error) become discrete messages that close the stream.
 
 ## Client
 
@@ -81,7 +81,7 @@ const unsubscribe = transport.on('message', () => {
 
 Appends are pipelined — the encoder fires each append without waiting for acknowledgement, so tokens flow with minimal latency. If an append fails (e.g. during a brief network interruption), the message on the channel is now missing a chunk. Continuing to append deltas would build on incomplete text. The encoder recovers by issuing an `updateMessage` that replaces the entire message content with the full accumulated text it has been tracking locally, then resumes appending from that corrected state.
 
-Late-joining clients receive the final mutable message from channel history, which contains the fully accumulated text regardless of whether individual appends were missed.
+Late-joining clients receive the final message from channel history, which contains the fully accumulated text regardless of whether individual appends were missed.
 
 ## What streams through
 
@@ -89,13 +89,13 @@ The transport streams whatever events the codec produces. For the Vercel AI SDK 
 
 | Chunk type | Ably encoding |
 |---|---|
-| `text-delta` | Mutable message append |
-| `reasoning-delta` | Mutable message append (separate stream) |
-| `tool-input-delta` | Mutable message append (per tool call) |
+| `text-delta` | Message append |
+| `reasoning-delta` | Message append (separate stream) |
+| `tool-input-delta` | Message append (per tool call) |
 | `tool-output-available` | Discrete message |
 | `finish` | Discrete message (terminal — closes the stream) |
 | `error` | Discrete message (terminal — closes the stream with error) |
 
-Multiple content streams can be active within a single turn (e.g., reasoning + text, or multiple tool calls). Each gets its own mutable message with its own stream ID.
+Multiple content streams can be active within a single turn (e.g., reasoning + text, or multiple tool calls). Each gets its own message with its own stream ID.
 
-See [React hooks reference](../reference/react-hooks.md) for the full `useMessages` and `useClientTransport` API. See [Cancel](cancel.md) for how streams are aborted. For the internal mechanics of mutable message encoding, decoding, and recovery, see the [Encoder](../internals/encoder.md), [Decoder](../internals/decoder.md), and [Wire protocol](../internals/wire-protocol.md) internals pages.
+See [React hooks reference](../reference/react-hooks.md) for the full `useMessages` and `useClientTransport` API. See [Cancel](cancel.md) for how streams are aborted. For the internal mechanics of message encoding, decoding, and recovery, see the [Encoder](../internals/encoder.md), [Decoder](../internals/decoder.md), and [Wire protocol](../internals/wire-protocol.md) internals pages.

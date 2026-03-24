@@ -2,7 +2,7 @@
  * Vercel UIMessageCodec integration tests.
  *
  * Validate encode → publish → subscribe → decode → accumulate roundtrips
- * over real Ably channels using mutable messages. These tests prove the
+ * over real Ably channels using message appends. These tests prove the
  * wire format and Ably message serialization work end-to-end without
  * transport machinery.
  *

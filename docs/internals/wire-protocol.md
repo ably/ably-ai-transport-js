@@ -12,7 +12,7 @@ Transport headers are set by the generic transport layer. They handle turn corre
 
 | Header | Values | Purpose |
 |---|---|---|
-| `x-ably-stream` | `"true"` / `"false"` | Whether this message uses the mutable message lifecycle |
+| `x-ably-stream` | `"true"` / `"false"` | Whether this message uses the message append lifecycle |
 | `x-ably-status` | `"streaming"` / `"finished"` / `"aborted"` | Current lifecycle state of a streamed message |
 | `x-ably-stream-id` | string | Identity of the streamed message (correlates create → appends → close) |
 | `x-ably-turn-id` | string | [Turn](glossary.md#turn-id-vs-message-id) correlation ID. Every message in a turn carries this |
@@ -81,7 +81,7 @@ Ably message:
 
 ### Streamed messages
 
-A streamed message uses Ably's [mutable message](glossary.md#mutable-message-ably) lifecycle — a single Ably message that evolves over time through create, append, and close [actions](glossary.md#message-actions-ably). It carries `x-ably-stream: "true"`.
+A streamed message uses Ably's [message actions](glossary.md#message-actions-ably) — a single Ably message that evolves over time through create, append, and close actions. It carries `x-ably-stream: "true"`.
 
 The lifecycle has three states:
 
@@ -162,7 +162,7 @@ The msg-id flows through the header pipeline:
 
 1. The transport calls `buildTransportHeaders({ msgId, ... })` which sets `headers['x-ably-msg-id'] = msgId`.
 2. For **discrete messages** (user messages, tool output, lifecycle events), these headers are passed to the encoder via `WriteOptions.messageId`. The [encoder core's](encoder.md#header-merging) `_buildHeaders()` stamps it into the Ably message's `extras.headers`.
-3. For **streamed messages** (assistant text, tool input), the msg-id is included in the persistent headers captured at `startStream()`. Every append — including the closing append — carries the same `x-ably-msg-id`, so the entire mutable message lifecycle shares one identity.
+3. For **streamed messages** (assistant text, tool input), the msg-id is included in the persistent headers captured at `startStream()`. Every append — including the closing append — carries the same `x-ably-msg-id`, so the entire message append lifecycle shares one identity.
 
 ### How it's consumed
 
@@ -193,4 +193,4 @@ In linear sequences (no branching), `x-ably-parent` establishes ordering. Serial
 
 Ably replaces the entire `extras` object on each append. The encoder must repeat all persistent headers (transport + domain) on every append, including the closing append. This is handled internally by the [encoder core](encoder.md), which captures headers from `startStream()` and replays them on every subsequent append and close.
 
-See [Encoder](encoder.md) and [Decoder](decoder.md) for how the mutable message lifecycle is implemented. See [Codec interface](codec-interface.md) for how domain headers are mapped by framework-specific codecs. See [Conversation tree](conversation-tree.md) for how branching headers are used to build the message tree.
+See [Encoder](encoder.md) and [Decoder](decoder.md) for how the message append lifecycle is implemented. See [Codec interface](codec-interface.md) for how domain headers are mapped by framework-specific codecs. See [Conversation tree](conversation-tree.md) for how branching headers are used to build the message tree.

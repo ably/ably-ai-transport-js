@@ -10,8 +10,8 @@ export const randomClientId = (): string => 'ably-ai-transport-client-' + random
 
 /**
  * Generate a unique channel name in the `mutable:` namespace.
- * The `mutable` namespace has `mutableMessages: true` configured in
- * ably-common/test-resources/test-app-setup.json.
+ * The `mutable` namespace has message appends enabled (`mutableMessages: true`)
+ * in ably-common/test-resources/test-app-setup.json.
  * @param prefix - Optional prefix for the channel name.
  * @returns A unique channel name.
  */

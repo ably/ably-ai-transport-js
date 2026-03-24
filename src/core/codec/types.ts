@@ -20,14 +20,14 @@ export interface ChannelWriter {
   /** Publish one or more discrete messages to the channel. */
   publish(message: Ably.Message | Ably.Message[], options?: Ably.PublishOptions): Promise<Ably.PublishResult>;
 
-  /** Append data to an existing mutable message identified by its serial. */
+  /** Append data to an existing message identified by its serial. */
   appendMessage(
     message: Ably.Message,
     operation?: Ably.MessageOperation,
     options?: Ably.PublishOptions,
   ): Promise<Ably.UpdateDeleteResult>;
 
-  /** Replace the data of an existing mutable message identified by its serial. */
+  /** Replace the data of an existing message identified by its serial. */
   updateMessage(
     message: Ably.Message,
     operation?: Ably.MessageOperation,
@@ -81,8 +81,8 @@ export interface MessagePayload {
 }
 
 /**
- * Payload for streamed (mutable) messages. Data must be a string because
- * the mutable message lifecycle uses text append/accumulate semantics —
+ * Payload for streamed messages. Data must be a string because
+ * the message append lifecycle uses text append/accumulate semantics —
  * deltas are concatenated for recovery and prefix-matching on the decoder.
  */
 export interface StreamPayload {
@@ -95,11 +95,11 @@ export interface StreamPayload {
 }
 
 // ---------------------------------------------------------------------------
-// StreamTrackerState — accumulated state of a mutable stream
+// StreamTrackerState — accumulated state of a streamed message
 // ---------------------------------------------------------------------------
 
 /**
- * Running state of a mutable (streamed) message tracked by the decoder core.
+ * Running state of a streamed message tracked by the decoder core.
  * Accumulates text across appends and tracks lifecycle (open/closed).
  */
 export interface StreamTrackerState {

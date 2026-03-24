@@ -1,7 +1,7 @@
 /**
  * Decoder core — action dispatch and serial tracking machinery.
  *
- * Handles the Ably mutable message patterns (create, append, update, delete)
+ * Handles the Ably message action patterns (create, append, update, delete)
  * and delegates to domain-specific hooks for event building and discrete
  * event decoding.
  *

@@ -185,7 +185,7 @@ describe('createEncoderCore', () => {
   // -- startStream ---------------------------------------------------------
 
   describe('startStream', () => {
-    it('publishes a mutable message with streaming status', async () => {
+    it('publishes a message with streaming status', async () => {
       const core = createEncoderCore(writer);
       await core.startStream('s1', streamPayload({ name: 'text', headers: { 'x-id': '123' } }));
 

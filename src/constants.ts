@@ -13,7 +13,7 @@
 // Stream headers (used by codec encoder/decoder core)
 // ---------------------------------------------------------------------------
 
-/** Header: whether this Ably message is a streamed (mutable) or discrete message. Always "true" or "false". */
+/** Header: whether this Ably message uses streaming (message appends) or is discrete. Always "true" or "false". */
 export const HEADER_STREAM = 'x-ably-stream';
 
 /** Header: lifecycle status of a streamed message. Only set when x-ably-stream is "true". */

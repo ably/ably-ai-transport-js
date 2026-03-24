@@ -10,13 +10,13 @@ Tool calls are codec events. For the Vercel AI SDK codec (`UIMessageCodec`):
 
 | Event type | What it represents | Ably encoding |
 |---|---|---|
-| `tool-input-start` | A tool is being called (tool name, call ID) | Mutable message create |
-| `tool-input-delta` | Streaming JSON input for the tool | Mutable message append |
-| `tool-input-available` | Tool input is complete | Mutable message close |
+| `tool-input-start` | A tool is being called (tool name, call ID) | Message create |
+| `tool-input-delta` | Streaming JSON input for the tool | Message append |
+| `tool-input-available` | Tool input is complete | Message close |
 | `tool-input-error` | Tool input failed | Discrete message |
 | `tool-output-available` | Tool returned a result | Discrete message |
 
-Tool input streams work like text streams — deltas are appended to a mutable message, and the decoder accumulates them into a complete tool invocation. Tool outputs are discrete messages published after the tool executes.
+Tool input streams work like text streams — deltas are appended to a message, and the decoder accumulates them into a complete tool invocation. Tool outputs are discrete messages published after the tool executes.
 
 ## Server
 
@@ -77,6 +77,6 @@ Tool invocation state progresses as chunks arrive:
 
 ## History
 
-Tool call messages are persisted on the channel like any other message. A client loading history sees the full tool call sequence — inputs, outputs, and any follow-up text. The mutable messages contain the complete accumulated tool input JSON, so late-joining clients don't need to replay individual deltas.
+Tool call messages are persisted on the channel like any other message. A client loading history sees the full tool call sequence — inputs, outputs, and any follow-up text. The messages contain the complete accumulated tool input JSON, so late-joining clients don't need to replay individual deltas.
 
-See [Token streaming](streaming.md) for how mutable message encoding works. See [History](history.md) for loading tool call history on page refresh. See [React hooks reference](../reference/react-hooks.md) for the `useMessages` API.
+See [Token streaming](streaming.md) for how message encoding works. See [History](history.md) for loading tool call history on page refresh. See [React hooks reference](../reference/react-hooks.md) for the `useMessages` API.

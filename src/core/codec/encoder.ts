@@ -1,12 +1,12 @@
 /**
- * Encoder core — mutable message lifecycle machinery.
+ * Encoder core — message append lifecycle machinery.
  *
  * Provides Ably primitives (publish, append, close, abort, flush) that
  * domain-specific encoders wire their event types to.
  *
  * Domain encoders call `createEncoderCore(writer, options)` and use the
  * returned core to map domain events to Ably operations without
- * reimplementing the mutable message lifecycle.
+ * reimplementing the message append lifecycle.
  */
 
 import * as Ably from 'ably';
@@ -51,13 +51,13 @@ interface PendingAppend {
 
 /** The core encoder primitives that domain codec encoders delegate to. */
 export interface EncoderCore {
-  /** Publish a single discrete (non-mutable) message described by a payload. */
+  /** Publish a single discrete (non-streaming) message described by a payload. */
   publishDiscrete(payload: MessagePayload, opts?: WriteOptions): Promise<Ably.PublishResult>;
 
   /** Publish multiple discrete messages atomically in a single channel publish. */
   publishDiscreteBatch(payloads: MessagePayload[], opts?: WriteOptions): Promise<Ably.PublishResult>;
 
-  /** Start a streamed (mutable) message with x-ably-status:streaming. */
+  /** Start a streamed message with x-ably-status:streaming. */
   startStream(streamId: string, payload: StreamPayload, opts?: WriteOptions): Promise<void>;
 
   /**

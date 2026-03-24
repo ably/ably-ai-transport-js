@@ -116,8 +116,8 @@ Every technical term that a reader might not know needs either an inline
 definition or a link to the [glossary](../../docs/internals/glossary.md) at
 its first mention within a page. This applies to:
 
-- **Ably-specific terms:** serial, mutable message, channel attach,
-  untilAttach, message actions, extras.headers
+- **Ably-specific terms:** serial, message actions, channel attach,
+  untilAttach, message appends, extras.headers
 - **Architecture terms:** transport layer vs domain layer, own turn vs
   observer turn, turn ID vs message ID
 - **Protocol jargon:** terminal event, fire-and-forget, prefix-match,
@@ -380,7 +380,7 @@ After writing a doc page, verify:
 **Concept audit (do this last):**
 
 - [ ] Read each paragraph as an outsider — flag any term that isn't obvious
-- [ ] Ably-specific terms (serial, mutable message, channel attach) are
+- [ ] Ably-specific terms (serial, message actions, channel attach) are
       defined or linked to the glossary at first mention
 - [ ] Architecture terms (own turn, observer turn, transport layer, domain
       layer) are defined or linked at first mention

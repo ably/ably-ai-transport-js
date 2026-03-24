@@ -29,7 +29,7 @@ interface Codec<TEvent, TMessage> {
 The server transport uses `createEncoder()` to get a `StreamEncoder`. For each turn:
 
 1. `writeMessage()` — publishes user messages as discrete Ably messages
-2. `appendEvent()` — streams LLM response events as mutable message appends
+2. `appendEvent()` — streams LLM response events as message appends
 3. `close()` / `abort()` — finalizes the stream
 
 The encoder translates domain events into [encoder core](encoder.md#stream-lifecycle) operations (`startStream`, `appendStream`, `closeStream`). The encoder core handles Ably primitives.

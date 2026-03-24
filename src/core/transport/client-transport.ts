@@ -737,6 +737,10 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
 
     return this.send(newMessages, {
       ...sendOptions,
+      body: {
+        history: this._getHistoryBefore(messageId),
+        ...sendOptions?.body,
+      },
       forkOf: messageId,
       parent: parentId,
     });

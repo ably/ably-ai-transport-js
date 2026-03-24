@@ -1508,6 +1508,33 @@ describe('ClientTransport', () => {
 
       await seeded.close();
     });
+
+    it('truncates history before the edited message', async () => {
+      // Regression: edit() sent the full tree as history, so the LLM saw
+      // messages that were children of the message being edited — which
+      // belong to the old branch and should not be in the edit's context.
+      const seeded = createSeededTransport(codec, mockFetch, [
+        { id: 'q1', content: 'Tell me a joke' },
+        { id: 'a1', content: 'Why did the chicken...' },
+        { id: 'u2', content: 'Actually a poem' },
+        { id: 'u3', content: 'About Paris' },
+      ]);
+
+      await seeded.edit('u2', { id: 'u2-edit', content: 'Actually a haiku' });
+      await mockFetch.waitForCalls(1);
+
+      const body = mockFetch.body(0);
+      const history = body.history as { message: TestMessage }[];
+
+      // History should contain only messages BEFORE u2
+      const historyIds = history.map((h) => h.message.id);
+      expect(historyIds).toContain('q1');
+      expect(historyIds).toContain('a1');
+      expect(historyIds).not.toContain('u2');
+      expect(historyIds).not.toContain('u3');
+
+      await seeded.close();
+    });
   });
 
   // -------------------------------------------------------------------------

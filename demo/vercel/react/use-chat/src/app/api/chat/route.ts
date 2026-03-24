@@ -39,8 +39,10 @@ export async function POST(req: Request) {
 
   // Publish user messages (if any). Fork metadata (parent/forkOf) is
   // configured at the turn level — addMessages picks it up automatically.
+  let lastUserMsgId: string | undefined;
   if (messages.length > 0) {
-    await turn.addMessages(messages, { clientId });
+    const { msgIds } = await turn.addMessages(messages, { clientId });
+    lastUserMsgId = msgIds.at(-1);
   }
 
   // Reconstruct full conversation for the LLM
@@ -56,9 +58,11 @@ export async function POST(req: Request) {
   });
 
   // Stream the response over Ably in the background using after().
-  // streamResponse picks up parent/forkOf from the turn configuration.
+  // Pass parent explicitly — the assistant response is a child of the last user message.
   after(async () => {
-    const { reason } = await turn.streamResponse(result.toUIMessageStream());
+    const { reason } = await turn.streamResponse(result.toUIMessageStream(), {
+      parent: lastUserMsgId,
+    });
     await turn.end(reason);
     transport.close();
   });

@@ -282,6 +282,20 @@ describe('ServerTransport', () => {
       expect(headers[HEADER_ROLE]).toBe('user');
       expect(headers[HEADER_TURN_ID]).toBe('turn-1');
     });
+
+    it('returns published msg-ids', async () => {
+      const turn = transport.newTurn({ turnId: 'turn-1' });
+      await turn.start();
+      const { msgIds } = await turn.addMessages([
+        { message: { id: 'm1', content: 'a' } },
+        { message: { id: 'm2', content: 'b' } },
+      ]);
+
+      expect(msgIds).toHaveLength(2);
+      expect(msgIds[0]).toBeTypeOf('string');
+      expect(msgIds[1]).toBeTypeOf('string');
+      expect(msgIds[0]).not.toBe(msgIds[1]);
+    });
   });
 
   describe('streamResponse', () => {
@@ -303,20 +317,18 @@ describe('ServerTransport', () => {
       expect(result.reason).toBe('complete');
     });
 
-    it('auto-links assistant parent to last user msg-id', async () => {
+    it('uses explicit parent from streamResponse options', async () => {
       const turn = transport.newTurn({ turnId: 'turn-1' });
       await turn.start();
-      await turn.addMessages([{ message: { id: 'm1', content: 'q' } }]);
+      const { msgIds } = await turn.addMessages([{ message: { id: 'm1', content: 'q' } }]);
 
-      // Capture the msg-id from addMessages
-      const addOpts = lastEncoderOpts(codec);
-      const userMsgId = addOpts?.extras?.headers?.[HEADER_MSG_ID];
-
-      await turn.streamResponse(streamOf({ type: 'text', text: 'answer' }));
+      await turn.streamResponse(streamOf({ type: 'text', text: 'answer' }), {
+        parent: msgIds.at(-1),
+      });
 
       const streamOpts = lastEncoderOpts(codec);
       const assistantParent = streamOpts?.extras?.headers?.[HEADER_PARENT];
-      expect(assistantParent).toBe(userMsgId);
+      expect(assistantParent).toBe(msgIds[0]);
     });
   });
 

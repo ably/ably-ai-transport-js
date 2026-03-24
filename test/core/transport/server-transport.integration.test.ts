@@ -473,7 +473,7 @@ describe('ServerTransport integration', () => {
    * Verifies that addMessages stamps user role and turn headers, and
    * that the assistant response auto-links its parent to the user message.
    */
-  it('addMessages publishes user messages and auto-links parent', async () => {
+  it('addMessages returns msg-ids and explicit parent links assistant', async () => {
     const channelName = uniqueChannelName('st-add-msgs');
     const serverClient = ablyRealtimeClient();
     const subClient = ablyRealtimeClient();
@@ -508,10 +508,12 @@ describe('ServerTransport integration', () => {
       role: 'user',
       parts: [{ type: 'text', text: 'What is the weather?' }],
     };
-    await turn.addMessages([{ message: userMessage }]);
+    const { msgIds } = await turn.addMessages([{ message: userMessage }]);
 
-    // Stream assistant response
-    await turn.streamResponse(textResponseStream('msg-reply-1', 'text-reply-1', 'Sunny!'));
+    // Stream assistant response — pass parent explicitly from addMessages result
+    await turn.streamResponse(textResponseStream('msg-reply-1', 'text-reply-1', 'Sunny!'), {
+      parent: msgIds.at(-1),
+    });
     await turn.end('complete');
 
     await gotFinish;

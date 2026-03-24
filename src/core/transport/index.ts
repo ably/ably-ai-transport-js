@@ -2,6 +2,7 @@
 export type {
   ActiveTurn,
   AddMessageOptions,
+  AddMessagesResult,
   CancelFilter,
   CancelRequest,
   ClientTransport,

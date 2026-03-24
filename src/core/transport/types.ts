@@ -90,6 +90,12 @@ export interface AddMessageOptions {
   forkOf?: string;
 }
 
+/** Result of publishing user messages via addMessages. */
+export interface AddMessagesResult {
+  /** The `x-ably-msg-id` of each published message, in order. */
+  msgIds: string[];
+}
+
 /** Options for streamResponse — per-operation overrides for the assistant message. */
 export interface StreamResponseOptions {
   /** The msg-id of the immediately preceding message in this branch. */
@@ -114,9 +120,8 @@ export interface NewTurnOptions<TEvent> {
 
   /**
    * The msg-id of the immediately preceding message in this branch.
-   * Stamped on user messages (via addMessages) and assistant messages
-   * (via streamResponse, where it defaults to the last user msg-id
-   * published in this turn if not set here).
+   * Used as the default parent for user messages (via addMessages) and
+   * assistant messages (via streamResponse) when not overridden per-operation.
    */
   parent?: string | null;
 
@@ -174,8 +179,9 @@ export interface Turn<TEvent, TMessage> {
    * Each message is published with its own headers (including `x-ably-msg-id`
    * for echo detection with the client's optimistic inserts). Per-message
    * headers from `MessageWithHeaders` override transport-generated defaults.
+   * @returns The msg-ids of all published messages, in order.
    */
-  addMessages(messages: MessageWithHeaders<TMessage>[], options?: AddMessageOptions): Promise<void>;
+  addMessages(messages: MessageWithHeaders<TMessage>[], options?: AddMessageOptions): Promise<AddMessagesResult>;
 
   /**
    * Pipe a ReadableStream through the encoder to the channel.

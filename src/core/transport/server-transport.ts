@@ -29,6 +29,7 @@ import type { TurnManager } from './turn-manager.js';
 import { createTurnManager } from './turn-manager.js';
 import type {
   AddMessageOptions,
+  AddMessagesResult,
   CancelFilter,
   CancelRequest,
   MessageWithHeaders,
@@ -263,9 +264,6 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
     };
     this._registeredTurns.set(turnId, registration);
 
-    /** Tracks the msg-id of the last published user message in this turn. */
-    let lastPublishedUserMsgId: string | undefined;
-
     // Capture instance members as locals so arrow functions close over them
     // without needing `this` (avoids unicorn/no-this-assignment).
     const logger = this._logger;
@@ -315,7 +313,10 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
       },
 
       // Spec: AIT-ST5
-      addMessages: async (inputs: MessageWithHeaders<TMessage>[], opts?: AddMessageOptions): Promise<void> => {
+      addMessages: async (
+        inputs: MessageWithHeaders<TMessage>[],
+        opts?: AddMessageOptions,
+      ): Promise<AddMessagesResult> => {
         logger?.trace('Turn.addMessages();', { turnId, count: inputs.length });
 
         if (!started) {
@@ -326,6 +327,8 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
           );
         }
         await attachPromise;
+
+        const msgIds: string[] = [];
 
         for (const input of inputs) {
           const msgId = crypto.randomUUID();
@@ -354,10 +357,11 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
           await encoder.writeMessages([input.message], opts?.clientId ? { clientId: opts.clientId } : undefined);
 
           // Capture the effective msg-id after input.headers may have overridden it.
-          lastPublishedUserMsgId = headers[HEADER_MSG_ID] ?? msgId;
+          msgIds.push(headers[HEADER_MSG_ID] ?? msgId);
         }
 
         logger?.debug('Turn.addMessages(); messages published', { turnId, count: inputs.length });
+        return { msgIds };
       },
 
       // Spec: AIT-ST6
@@ -379,13 +383,10 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
         const signal = turnManager.getSignal(turnId);
         const turnOwnerClientId = turnManager.getClientId(turnId);
 
-        // For the assistant message, parent resolution order:
-        // 1. Per-operation streamOpts.parent (explicit override)
-        // 2. Last user msg-id published in this turn (auto-linked)
-        // 3. Turn-level turnParent (from NewTurnOptions)
+        // Per-operation parent overrides the turn-level default.
         const assistantParent =
           streamOpts?.parent === undefined
-            ? (lastPublishedUserMsgId ?? turnParent ?? undefined)
+            ? (turnParent ?? undefined)
             : (streamOpts.parent ?? undefined);
 
         const defaultHeaders = buildTransportHeaders({

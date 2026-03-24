@@ -58,19 +58,17 @@ import { createClientTransport } from '@ably/ably-ai-transport-js/vercel';
 
 const transport = createClientTransport({ channel, clientId });
 
-// Send a message — returns immediately with a stream handle
+// Send a message — returns immediately with a turn handle
 const turn = await transport.send(userMessage);
 
-// Read the decoded event stream
-const reader = turn.stream.getReader();
-while (true) {
-  const { done, value } = await reader.read();
-  if (done) break;
-  // value is a decoded domain event (e.g. UIMessageChunk)
-}
+// Subscribe to accumulated messages — updates on every token
+transport.on('message', () => {
+  const messages = transport.getMessages();
+  // the last assistant message grows as tokens stream in
+});
 
-// Or use getMessages() for the accumulated message list
-const messages = transport.getMessages();
+// The turn also exposes a ReadableStream<TEvent> for framework adapters
+// (e.g. Vercel's useChat), but most apps use getMessages() instead
 ```
 
 In React, the hooks handle subscriptions and state management:

@@ -6,7 +6,11 @@ The client and server transports are composed from several focused sub-component
 
 `src/core/transport/stream-router.ts` — client-side only.
 
-The stream router maps decoded events to per-turn `ReadableStream` instances for [own turns](glossary.md#own-turn-vs-observer-turn) — turns this client initiated via `send()`, `regenerate()`, or `edit()`. When the client starts a turn, the router creates a new stream. As decoded events arrive from the channel subscription, the transport routes them through the router to the correct stream. Events from [observer turns](glossary.md#own-turn-vs-observer-turn) (other clients' turns) bypass the router entirely — they go to a per-turn [accumulator](codec-interface.md#accumulator) instead, which assembles the streaming fragments into complete domain messages for the [conversation tree](conversation-tree.md). See [Message lifecycle](message-lifecycle.md#own-turns-vs-observer-turns) for the full routing picture.
+The stream router maps decoded events to per-turn `ReadableStream` instances for [own turns](glossary.md#own-turn-vs-observer-turn) — turns this client initiated via `send()`, `regenerate()`, or `edit()`. When the client starts a turn, the router creates a new stream. As decoded events arrive from the channel subscription, the transport routes them through the router to the correct stream.
+
+The stream is **not the only destination** for own-turn events. After routing an event to the stream, the transport also feeds it to a per-turn [accumulator](codec-interface.md#accumulator) that builds complete domain messages for the [conversation tree](conversation-tree.md). This means `getMessages()` updates on every event regardless of who started the turn. The stream exists primarily as an integration seam for framework adapters (e.g. Vercel's `useChat` expects a `ReadableStream`); most application code consumes accumulated messages instead.
+
+Events from [observer turns](glossary.md#own-turn-vs-observer-turn) (other clients' turns) go to the accumulator only — the router has no stream for them because no caller on this client initiated the turn. See [Message lifecycle](message-lifecycle.md#own-turns-vs-observer-turns) for the full routing picture.
 
 ### Operations
 

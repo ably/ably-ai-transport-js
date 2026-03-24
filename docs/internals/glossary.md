@@ -54,10 +54,10 @@ The [codec interface](codec-interface.md) is the boundary between these layers.
 
 When the client transport receives messages from the channel, it routes them differently depending on who started the turn:
 
-- **Own turn** — a turn this client initiated (via `send()`, `regenerate()`, `edit()`). Decoded events are routed to the [stream router](stream-router.md#streamrouter), which enqueues them on a `ReadableStream` that the caller reads directly.
-- **Observer turn** — a turn started by another client. Decoded events are fed into an [accumulator](codec-interface.md#accumulator) that builds complete messages, which are then inserted into the [conversation tree](conversation-tree.md).
+- **Own turn** — a turn this client initiated (via `send()`, `regenerate()`, `edit()`). Decoded events are routed to **both** the [stream router](stream-router.md#streamrouter) (which enqueues them on a `ReadableStream`) and a per-turn [accumulator](codec-interface.md#accumulator) (which builds complete messages for the [conversation tree](conversation-tree.md)). The stream exists primarily as an integration seam for framework adapters (e.g. Vercel's `useChat`); most application code consumes accumulated messages via `getMessages()`.
+- **Observer turn** — a turn started by another client. Decoded events go to the accumulator only — there is no stream because no caller on this client initiated the turn.
 
-The distinction matters because own turns get a streaming API (real-time event-by-event access), while observer turns are accumulated into complete messages.
+Both paths use the same accumulation logic. The only difference is that own turns additionally expose a `ReadableStream` for framework integration. See [Message lifecycle](message-lifecycle.md#own-turns-vs-observer-turns) for the full routing picture.
 
 ### Turn ID vs message ID
 

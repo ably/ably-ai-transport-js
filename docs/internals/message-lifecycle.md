@@ -35,39 +35,44 @@ This is why both type parameters exist: events are the streaming unit (what flow
          Own turn        Observer turn     Discrete message
               │                │             (any turn)
               │                │                │
-      ┌───────▼───────┐  ┌────▼─────────────┐  │
-      │  StreamRouter  │  │   Accumulator    │  │
-      │ (ReadableStream) │  │ (TEvent→TMessage) │  │
-      └───────┬───────┘  └────┬─────────────┘  │
-              │          snapshot latest         │
-              │          message on each         │
-              │          event                   │
-              │                │                 │
-              │                ▼                 │
-              │         ┌────────────┐           │
-              │         │    Tree    │◄──────────┘
-              │         │  .upsert() │
-              │         └─────┬──────┘
-              │               │
-              │          .flatten()
-              │               │
-              │        ┌──────▼───────┐
-              │        │ getMessages() │
-              │        └──────┬───────┘
-              │               │
-              │         React hooks
-              │     (useState + 'message' event)
-              ▼               │
-        caller reads          ▼
-        the stream        UI renders
+     ┌────────┴────────┐      │                │
+     │                 │      │                │
+     ▼                 ▼      ▼                │
+  StreamRouter    Accumulator (both paths)     │
+  (ReadableStream)  (TEvent → TMessage)        │
+     │                 │                       │
+     │           snapshot latest                │
+     │           message on each                │
+     │           event                          │
+     │                 │                        │
+     │                 ▼                        │
+     │          ┌────────────┐                  │
+     │          │    Tree    │◄─────────────────┘
+     │          │  .upsert() │
+     │          └─────┬──────┘
+     │                │
+     │           .flatten()
+     │                │
+     │         ┌──────▼───────┐
+     │         │ getMessages() │
+     │         └──────┬───────┘
+     │                │
+     │          React hooks
+     │      (useState + 'message' event)
+     ▼                │
+  framework           ▼
+  adapters        UI renders
+  (e.g. useChat)
 ```
 
 ## Own turns vs observer turns
 
 When the client transport receives messages from the channel, it routes them based on who started the turn:
 
-- **Own turn** — a turn this client initiated (via `send()`, `regenerate()`, `edit()`). Decoded events go to the [stream router](stream-router.md), which enqueues them on a `ReadableStream` the caller reads directly. The caller gets real-time event-by-event access (`TEvent` stream).
-- **Observer turn** — a turn started by another client. Decoded events go to a per-turn [accumulator](codec-interface.md#accumulator) that builds complete `TMessage` objects. The transport snapshots the latest message and upserts it into the tree on every event.
+- **Own turn** — a turn this client initiated (via `send()`, `regenerate()`, `edit()`). Decoded events go to **both** the [stream router](stream-router.md) and a per-turn [accumulator](codec-interface.md#accumulator). The stream router enqueues events on a `ReadableStream` that framework adapters can consume (see [why the stream exists](#why-own-turns-have-a-stream)). The accumulator simultaneously builds complete `TMessage` objects and upserts them into the tree on every event — so `getMessages()` always reflects the latest partial state, even while streaming.
+- **Observer turn** — a turn started by another client. Decoded events go to the accumulator only. There is no stream because no caller initiated the turn on this client — there is nobody holding a stream handle.
+
+Both paths use the same `_accumulateAndEmit()` method. The only difference is that own turns additionally route through the stream router.
 
 Discrete message outputs (`kind: 'message'`) from the decoder bypass both paths and go directly to the conversation tree via `upsert()`.
 
@@ -83,9 +88,21 @@ For each observer turn, the transport creates a dedicated accumulator. As decode
 
 This happens on **every event** — the tree always has the latest partial state. The accumulator is a working buffer; the [conversation tree](conversation-tree.md) is the source of truth.
 
-### Own turns: stream + direct insert
+### Own turns: stream + accumulator → tree
 
-For own turns, events flow to the stream router (not the accumulator). The caller reads the `ReadableStream<TEvent>` directly. Discrete messages (e.g. user messages published by `send()`) are inserted into the tree directly.
+For own turns, events flow to **both** the stream router and the accumulator. The stream router enqueues each event on the turn's `ReadableStream<TEvent>`. Simultaneously, the same event is fed to the accumulator, which builds the in-progress `TMessage` and upserts it into the tree — identical to the observer path. This means `getMessages()` updates on every event regardless of who started the turn.
+
+Discrete messages (e.g. user messages published by `send()`) are inserted into the tree directly.
+
+### Why own turns have a stream
+
+The `ReadableStream<TEvent>` returned from `send()` exists primarily as an **integration seam for framework adapters**. Vercel's `useChat`, for example, expects a `ReadableStream` as its transport contract — the stream is how AI Transport plugs into the Vercel AI SDK's rendering pipeline.
+
+For most application code, the accumulated messages via `getMessages()` / `on('message')` are the right consumption path. The accumulator updates the tree on every event, so it provides the same granularity as the stream — you see each partial message as tokens arrive. The stream offers no timing advantage.
+
+Cases where direct stream consumption adds value are narrow: non-rendering side effects that need per-event granularity (e.g. playing a sound per token, logging individual event types), or custom accumulation logic that differs from the codec's accumulator.
+
+Observer turns have no stream because there is no caller holding a handle — nobody on this client called `send()` for that turn. If observer-side event streaming were needed, it would require a separate API surface (e.g. `transport.observeTurn(turnId)`).
 
 ### Discrete messages: direct insert
 

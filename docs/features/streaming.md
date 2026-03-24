@@ -58,10 +58,26 @@ transport.close();
 
 ## Client
 
-On the client, decoded events arrive via the `ActiveTurn`'s stream, or as accumulated messages via `getMessages()`:
+On the client, every streaming event is accumulated into the conversation tree as it arrives. The transport updates `getMessages()` on every event, so the last assistant message grows token by token:
 
 ```typescript
-// Option 1: consume the raw event stream
+const turn = await transport.send(userMessage);
+
+// Subscribe to accumulated messages — updates on every token
+const unsubscribe = transport.on('message', () => {
+  const messages = transport.getMessages();
+  // the last assistant message grows as tokens arrive
+});
+```
+
+This is the primary consumption path. In React, the `useMessages()` hook handles the subscription automatically.
+
+### The event stream
+
+`send()` also returns a `ReadableStream<TEvent>` on the `ActiveTurn`. This exists as an integration seam for framework adapters — Vercel's `useChat` expects a `ReadableStream` as its transport contract. Most application code should use `getMessages()` instead, since the accumulator provides the same per-token granularity.
+
+```typescript
+// Framework adapter usage — most apps won't consume this directly
 const turn = await transport.send(userMessage);
 const reader = turn.stream.getReader();
 while (true) {
@@ -69,13 +85,9 @@ while (true) {
   if (done) break;
   // value is a UIMessageChunk (text-delta, finish, etc.)
 }
-
-// Option 2: subscribe to accumulated messages
-const unsubscribe = transport.on('message', () => {
-  const messages = transport.getMessages();
-  // messages updates on every append — the last assistant message grows as tokens arrive
-});
 ```
+
+For turns started by other clients (observer turns), there is no stream — events are accumulated into messages and the tree updates via `on('message')`. See [Message lifecycle](../internals/message-lifecycle.md#own-turns-vs-observer-turns) for the full routing picture.
 
 ## Recovery
 

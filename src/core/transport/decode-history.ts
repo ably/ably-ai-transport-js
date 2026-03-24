@@ -84,7 +84,7 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
   const defaultAccumulator = state.codec.createAccumulator();
   let orderCounter = 0;
 
-  // Headers for discrete messages (writeMessage output), keyed by codec message key.
+  // Headers for discrete messages (writeMessages output), keyed by codec message key.
   const discreteHeaders = new Map<string, Record<string, string>>();
   // Serials for discrete messages, keyed by codec message key.
   const discreteSerials = new Map<string, string>();

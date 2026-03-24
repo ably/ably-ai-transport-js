@@ -46,14 +46,14 @@ export interface CancelRequest {
 }
 
 // ---------------------------------------------------------------------------
-// Input messages
+// Message with headers
 // ---------------------------------------------------------------------------
 
-/** A domain message with optional extra headers for publishing via addMessages. */
-export interface InputMessage<TMessage> {
-  /** The domain message to publish. */
+/** A domain message paired with its Ably transport headers. Used on the read path to snapshot conversation state (e.g. for HTTP POST bodies). */
+export interface MessageWithHeaders<TMessage> {
+  /** The domain message. */
   message: TMessage;
-  /** Additional headers to merge into the Ably message extras. */
+  /** Ably headers associated with this message (transport metadata, domain headers). */
   headers?: Record<string, string>;
 }
 
@@ -169,8 +169,13 @@ export interface Turn<TEvent, TMessage> {
   /** Publish turn-start event to the channel. Must be called before addMessages or streamResponse. */
   start(): Promise<void>;
 
-  /** Publish user messages to the channel, scoped to this turn. */
-  addMessages(messages: InputMessage<TMessage>[], options?: AddMessageOptions): Promise<void>;
+  /**
+   * Publish user messages to the channel, scoped to this turn.
+   * Each message is published with its own headers (including `x-ably-msg-id`
+   * for echo detection with the client's optimistic inserts). Per-message
+   * headers from `MessageWithHeaders` override transport-generated defaults.
+   */
+  addMessages(messages: MessageWithHeaders<TMessage>[], options?: AddMessageOptions): Promise<void>;
 
   /**
    * Pipe a ReadableStream through the encoder to the channel.
@@ -495,10 +500,10 @@ export interface ClientTransport<TEvent, TMessage> {
   getMessages(): TMessage[];
 
   /**
-   * Snapshot the current message list as InputMessage[] (message + headers pairs).
+   * Snapshot the current message list as message + headers pairs.
    * Convenience for building the `history` body field in HTTP POSTs.
    */
-  getInputMessages(): InputMessage<TMessage>[];
+  getMessagesWithHeaders(): MessageWithHeaders<TMessage>[];
 
   /**
    * Load a page of conversation history from the channel, decoded through

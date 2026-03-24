@@ -6,7 +6,7 @@
  *
  * The accumulator consumes DecoderOutput[] from the decoder and groups
  * streaming events into UIMessage objects using lifecycle boundaries
- * (start/finish). Complete messages (from writeMessage) are inserted
+ * (start/finish). Complete messages (from writeMessages) are inserted
  * directly.
  *
  * Multiple messages can be in-progress concurrently — each is identified

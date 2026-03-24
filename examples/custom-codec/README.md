@@ -116,15 +116,14 @@ const clientTransport = createClientTransport(channel, {
 
 ## How the encoder works
 
-The encoder implements `StreamEncoder<TEvent, TMessage>` (which extends `DiscreteEncoder`). It has six methods — only two are called by the transport internally:
+The encoder implements `StreamEncoder<TEvent, TMessage>` (which extends `DiscreteEncoder`). It has five methods — three are called by the transport:
 
 | Method | Called by | Purpose |
 |---|---|---|
 | `appendEvent(event)` | Server transport | The hot path — called for each chunk from the model's streaming response. Map events to streamed or discrete core operations. |
-| `writeMessage(message)` | Server transport | Publish a complete `TMessage` (user prompts, history entries). Decompose your message into `MessagePayload` objects. |
-| `writeEvent(event)` | Consumer code | Publish a single event as a standalone discrete message outside the streaming flow. Throw for streaming-only event types that don't make sense as standalone publishes. |
-| `writeMessages(messages)` | Server transport | Atomic batch publish of multiple messages as a single logical unit (shared `x-ably-msg-id`). |
+| `writeMessages(messages)` | Server transport | Publish one or more `TMessage`s atomically (user prompts, history entries). All messages share one `x-ably-msg-id` and form one node in the conversation tree. |
 | `abort(reason?)` | Transport | Close open streams as "aborted" and publish an abort signal. |
+| `writeEvent(event)` | Consumer code | Publish a standalone discrete event outside the streaming flow. Not called by the transport. Throw for streaming-only types. |
 | `close()` | Transport | Flush pending appends and run recovery. Always call this. |
 
 Inside `appendEvent`, you delegate to two encoder core primitives:
@@ -185,10 +184,10 @@ The accumulator receives decoded events and builds `AgentMessage` objects:
 
 2. **Define your `TMessage` type** — what structured object does your UI consume? This is what the accumulator builds incrementally.
 
-3. **Implement the encoder** — map each event type to encoder core operations in `appendEvent`. Implement `writeEvent` (standalone discrete publish — throw for streaming-only types), `writeMessage`/`writeMessages` (serialize complete messages into payloads), `abort`, and `close`.
+3. **Implement the encoder** — map each event type to encoder core operations in `appendEvent`. Implement `writeMessages` (serialize complete messages into payloads for atomic publish), `writeEvent` (standalone discrete publish — throw for streaming-only types), `abort`, and `close`.
 
 4. **Implement the decoder** — provide four hooks to `createDecoderCore`: `buildStartEvents`, `buildDeltaEvents`, `buildEndEvents` for streamed content, and `decodeDiscrete` for everything else.
 
-5. **Implement the accumulator** — consume `DecoderOutput` in `processOutputs` and build your `TMessage` incrementally. Handle both `kind: 'event'` (from streaming) and `kind: 'message'` (from `writeMessage`).
+5. **Implement the accumulator** — consume `DecoderOutput` in `processOutputs` and build your `TMessage` incrementally. Handle both `kind: 'event'` (from streaming) and `kind: 'message'` (from `writeMessages`).
 
 6. **Wire it together** — export a `Codec` object with factory methods plus `isTerminal` (when is a response done?) and `getMessageKey` (stable ID for dedup).

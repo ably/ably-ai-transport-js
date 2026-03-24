@@ -316,11 +316,6 @@ class DefaultUIMessageEncoder implements StreamEncoder<AI.UIMessageChunk, AI.UIM
     );
   }
 
-  async writeMessage(message: AI.UIMessage, perWrite?: WriteOptions): Promise<Ably.PublishResult> {
-    const payloads = encodeMessagePayloads(message);
-    return this._core.publishDiscreteBatch(payloads, perWrite);
-  }
-
   async writeMessages(messages: AI.UIMessage[], perWrite?: WriteOptions): Promise<Ably.PublishResult> {
     const payloads = messages.flatMap((msg) => encodeMessagePayloads(msg));
     return this._core.publishDiscreteBatch(payloads, perWrite);

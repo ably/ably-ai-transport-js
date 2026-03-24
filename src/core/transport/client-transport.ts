@@ -45,8 +45,8 @@ import type {
   ClientTransportOptions,
   CloseOptions,
   ConversationTree,
-  InputMessage,
   LoadHistoryOptions,
+  MessageWithHeaders,
   PaginatedMessages,
   SendOptions,
   TurnEndReason,
@@ -470,7 +470,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   // Input message helpers
   // ---------------------------------------------------------------------------
 
-  private _getInputMessages(): InputMessage<TMessage>[] {
+  private _getMessagesWithHeaders(): MessageWithHeaders<TMessage>[] {
     return this._tree.flatten().map((m) => ({
       message: m,
       headers: this.getMessageHeaders(m),
@@ -483,8 +483,8 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
    * @param messageId - The msg-id to truncate history before.
    * @returns Input messages preceding the target.
    */
-  private _getHistoryBefore(messageId: string): InputMessage<TMessage>[] {
-    const all = this._getInputMessages();
+  private _getHistoryBefore(messageId: string): MessageWithHeaders<TMessage>[] {
+    const all = this._getMessagesWithHeaders();
     const idx = all.findIndex((inp) => inp.headers?.[HEADER_MSG_ID] === messageId);
     return idx === -1 ? all : all.slice(0, idx);
   }
@@ -575,7 +575,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     // Capture history BEFORE optimistic inserts. The optimistic messages are
     // sent in the `messages` field — including them in `history` too would
     // cause the server to see them twice.
-    const preInsertHistory = this._getInputMessages();
+    const preInsertHistory = this._getMessagesWithHeaders();
 
     // Spec: AIT-CT3d
     // Auto-compute parent from the current thread if not explicitly provided
@@ -805,8 +805,8 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     return this._tree.flatten().filter((m) => !this._withheldKeys.has(this._codec.getMessageKey(m)));
   }
 
-  getInputMessages(): InputMessage<TMessage>[] {
-    return this._getInputMessages();
+  getMessagesWithHeaders(): MessageWithHeaders<TMessage>[] {
+    return this._getMessagesWithHeaders();
   }
 
   getAblyMessages(): Ably.InboundMessage[] {

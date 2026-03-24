@@ -31,7 +31,7 @@ import type {
   AddMessageOptions,
   CancelFilter,
   CancelRequest,
-  InputMessage,
+  MessageWithHeaders,
   NewTurnOptions,
   ServerTransport,
   ServerTransportOptions,
@@ -315,7 +315,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
       },
 
       // Spec: AIT-ST5
-      addMessages: async (inputs: InputMessage<TMessage>[], opts?: AddMessageOptions): Promise<void> => {
+      addMessages: async (inputs: MessageWithHeaders<TMessage>[], opts?: AddMessageOptions): Promise<void> => {
         logger?.trace('Turn.addMessages();', { turnId, count: inputs.length });
 
         if (!started) {
@@ -329,6 +329,10 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
 
         for (const input of inputs) {
           const msgId = crypto.randomUUID();
+
+          // Transport headers are the defaults; per-message headers from the
+          // client override them. This lets the client's x-ably-msg-id pass
+          // through for echo detection with optimistic inserts.
           const headers = mergeHeaders(
             buildTransportHeaders({
               role: 'user',
@@ -347,7 +351,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
             onMessage,
           });
 
-          await encoder.writeMessage(input.message, opts?.clientId ? { clientId: opts.clientId } : undefined);
+          await encoder.writeMessages([input.message], opts?.clientId ? { clientId: opts.clientId } : undefined);
 
           // Capture the effective msg-id after input.headers may have overridden it.
           lastPublishedUserMsgId = headers[HEADER_MSG_ID] ?? msgId;

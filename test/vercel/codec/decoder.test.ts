@@ -714,7 +714,7 @@ describe('Vercel decoder', () => {
     });
   });
 
-  // -- discrete message decoding (writeMessage echoes) ----------------------
+  // -- discrete message decoding (writeMessages echoes) ---------------------
 
   describe('discrete message decoding', () => {
     it('decodes a text message with x-ably-role into a UIMessage', () => {

@@ -97,7 +97,7 @@ const createMockTransport = (): MockTransport => {
     on: vi.fn(() => noop),
     getActiveTurnIds: vi.fn(() => new Map()),
     getMessages: vi.fn(() => []),
-    getInputMessages: vi.fn(() => []),
+    getMessagesWithHeaders: vi.fn(() => []),
     getAblyMessages: vi.fn(() => []),
     history: vi.fn(),
   } as unknown as ClientTransport<AI.UIMessageChunk, AI.UIMessage>;

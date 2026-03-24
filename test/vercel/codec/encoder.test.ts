@@ -520,9 +520,9 @@ describe('Vercel encoder', () => {
     });
   });
 
-  // -- writeMessage ---------------------------------------------------------
+  // -- writeMessages --------------------------------------------------------
 
-  describe('writeMessage', () => {
+  describe('writeMessages', () => {
     it('publishes UIMessage parts as discrete batch', async () => {
       const encoder = createEncoder(writer);
       const msg: AI.UIMessage = {
@@ -534,7 +534,7 @@ describe('Vercel encoder', () => {
         ],
       };
 
-      await encoder.writeMessage(msg);
+      await encoder.writeMessages([msg]);
 
       // Should be a single batch publish with 2 messages
       expect(writer.publishCalls).toHaveLength(1);
@@ -554,18 +554,14 @@ describe('Vercel encoder', () => {
       const encoder = createEncoder(writer);
       const msg: AI.UIMessage = { id: 'msg-1', role: 'user', parts: [] };
 
-      await encoder.writeMessage(msg);
+      await encoder.writeMessages([msg]);
 
       const batch = writer.publishCalls[0] as Ably.Message[];
       expect(batch).toHaveLength(1);
       expect(batch[0]?.name).toBe('text');
       expect(batch[0]?.data).toBe('');
     });
-  });
 
-  // -- writeMessages --------------------------------------------------------
-
-  describe('writeMessages', () => {
     it('publishes multiple messages as a single batch', async () => {
       const encoder = createEncoder(writer);
       const msgs: AI.UIMessage[] = [

@@ -73,8 +73,6 @@ const createMockEncoder = (): StreamEncoder<TestEvent, TestMessage> => ({
   // eslint-disable-next-line @typescript-eslint/no-empty-function -- mock
   close: vi.fn(async () => {}),
   // eslint-disable-next-line @typescript-eslint/require-await -- mock
-  writeMessage: vi.fn(async () => mockPublishResult),
-  // eslint-disable-next-line @typescript-eslint/require-await -- mock
   writeMessages: vi.fn(async () => mockPublishResult),
   // eslint-disable-next-line @typescript-eslint/require-await -- mock
   writeEvent: vi.fn(async () => mockPublishResult),
@@ -254,11 +252,7 @@ describe('ServerTransport', () => {
       expect(headers[HEADER_MSG_ID]).toBeDefined();
     });
 
-    it('calls writeMessage on the encoder for each input', async () => {
-      const mockEncoder = createMockEncoder();
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
-      vi.mocked(codec.createEncoder).mockReturnValue(mockEncoder);
-
+    it('creates one encoder per message for distinct headers', async () => {
       const turn = transport.newTurn({ turnId: 'turn-1' });
       await turn.start();
       await turn.addMessages([
@@ -266,20 +260,27 @@ describe('ServerTransport', () => {
         { message: { id: 'm2', content: 'b' } },
       ]);
 
-      // Each input creates its own encoder
+      // Each message gets its own encoder (distinct x-ably-msg-id)
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
       expect(vi.mocked(codec.createEncoder).mock.calls).toHaveLength(2);
     });
 
-    it('merges input headers with transport headers', async () => {
+    it('per-message headers override transport defaults', async () => {
       const turn = transport.newTurn({ turnId: 'turn-1' });
       await turn.start();
-      await turn.addMessages([{ message: { id: 'm1', content: 'hi' }, headers: { 'x-custom': 'val' } }]);
+      await turn.addMessages([{
+        message: { id: 'm1', content: 'hi' },
+        headers: { [HEADER_MSG_ID]: 'client-assigned-id', 'x-domain-foo': 'bar' },
+      }]);
 
       const opts = lastEncoderOpts(codec);
       const headers = opts?.extras?.headers ?? {};
-      expect(headers['x-custom']).toBe('val');
+      // Client headers override transport defaults
+      expect(headers[HEADER_MSG_ID]).toBe('client-assigned-id');
+      expect(headers['x-domain-foo']).toBe('bar');
+      // Transport headers still present for non-overridden keys
       expect(headers[HEADER_ROLE]).toBe('user');
+      expect(headers[HEADER_TURN_ID]).toBe('turn-1');
     });
   });
 

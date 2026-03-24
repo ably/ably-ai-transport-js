@@ -37,8 +37,6 @@ const createMockEncoder = (): MockEncoder => {
       mock.closed = true;
     }),
     // eslint-disable-next-line @typescript-eslint/require-await -- mock
-    writeMessage: vi.fn(async () => emptyPublishResult),
-    // eslint-disable-next-line @typescript-eslint/require-await -- mock
     writeMessages: vi.fn(async () => emptyPublishResult),
     // eslint-disable-next-line @typescript-eslint/require-await -- mock
     writeEvent: vi.fn(async () => emptyPublishResult),

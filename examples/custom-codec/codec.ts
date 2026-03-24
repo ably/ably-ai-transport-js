@@ -53,29 +53,26 @@ type Out = DecoderOutput<AgentEvent, AgentMessage>;
 //
 // The encoder implements StreamEncoder<TEvent, TMessage>, which extends
 // DiscreteEncoder<TEvent, TMessage>. The interface has six methods. Only
-// two are called by the transport internally:
+// three are called by the transport:
 //
-//   appendEvent(event) — the hot path: the server transport calls this for
-//                        each chunk from the model's streaming response.
-//                        This is where you map events to streamed or
-//                        discrete core operations.
-//   writeMessage(msg)  — the server transport calls this to publish user
-//                        messages (the prompt) to the channel. Decompose
-//                        your TMessage into one or more MessagePayloads.
-//
-// The remaining four are part of the interface contract but exist for
-// direct consumer use or edge cases — the transport does not call them:
-//
-//   writeEvent(event)       — publishes a single event as a discrete
-//                             message (no streaming). Available for
-//                             consumers who need to publish a one-off
-//                             event outside the streaming flow.
-//   writeMessages(messages) — batch variant of writeMessage. Publishes
-//                             multiple messages in a single atomic
-//                             channel publish.
+//   appendEvent(event)      — the hot path: the server transport calls
+//                             this for each chunk from the model's
+//                             streaming response. This is where you map
+//                             events to streamed or discrete operations.
+//   writeMessages(messages) — the server transport calls this to publish
+//                             user messages (the prompt) atomically. All
+//                             messages share one x-ably-msg-id and form
+//                             one node in the conversation tree. Decompose
+//                             each TMessage into MessagePayloads.
 //   abort(reason?)          — called when a turn is cancelled. Close all
 //                             open streams with "aborted" status and
 //                             publish an abort signal.
+//
+// The remaining two:
+//
+//   writeEvent(event)       — public API for consumers to publish a
+//                             standalone discrete event outside the
+//                             streaming flow. Not called by the transport.
 //   close()                 — called when encoding is done. Flushes
 //                             pending appends and runs recovery for any
 //                             that failed. Always call this.
@@ -220,30 +217,10 @@ class AgentEncoder implements StreamEncoder<AgentEvent, AgentMessage> {
   }
 
   // Called by the server transport to publish user messages (the prompt)
-  // to the channel. Decompose the TMessage into MessagePayloads — one per
-  // logical part. The transport also uses this for history hydration.
-  async writeMessage(message: AgentMessage, perWrite?: WriteOptions): Promise<Ably.PublishResult> {
-    const payloads: MessagePayload[] = [];
-
-    if (message.text) {
-      payloads.push({ name: 'text', data: message.text });
-    }
-
-    for (const tc of message.toolCalls) {
-      const h = headerWriter().str('toolCallId', tc.toolCallId).str('toolName', tc.toolName).build();
-      payloads.push({ name: 'tool-call', data: tc.args, headers: h });
-    }
-
-    if (payloads.length === 0) {
-      payloads.push({ name: 'text', data: '' });
-    }
-
-    // publishDiscreteBatch sends all payloads in a single channel publish.
-    return this._core.publishDiscreteBatch(payloads, perWrite);
-  }
-
-  // Batch variant of writeMessage — same logic but flattens all messages
-  // into a single atomic publish. Part of the DiscreteEncoder interface.
+  // to the channel atomically. All messages share the encoder's transport
+  // headers (including x-ably-msg-id) and form one node in the conversation
+  // tree. Decompose each TMessage into MessagePayloads — one per logical
+  // part — and publish them all in a single channel publish.
   async writeMessages(messages: AgentMessage[], perWrite?: WriteOptions): Promise<Ably.PublishResult> {
     const payloads = messages.flatMap((msg) => {
       const p: MessagePayload[] = [];
@@ -413,7 +390,7 @@ class AgentDecoder implements StreamDecoder<AgentEvent, AgentMessage> {
 //
 // 'event' outputs come from streaming — your accumulator assembles them.
 // 'message' outputs come from decodeDiscrete when the decoder recognizes
-// a complete message published by writeMessage (e.g. user messages,
+// a complete message published by writeMessages (e.g. user messages,
 // history entries). The accumulator inserts these directly without
 // assembly. Your decoder's decodeDiscrete hook decides when to return
 // { kind: 'message' } vs { kind: 'event' } — typically based on whether
@@ -458,7 +435,7 @@ class AgentAccumulator implements MessageAccumulator<AgentEvent, AgentMessage> {
 
   processOutputs(outputs: Out[]): void {
     for (const output of outputs) {
-      // Complete messages from writeMessage — insert directly.
+      // Complete messages from writeMessages — insert directly.
       if (output.kind === 'message') {
         this._messages.push(output.message);
         continue;

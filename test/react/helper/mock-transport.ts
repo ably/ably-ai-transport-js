@@ -16,7 +16,7 @@ export interface MockTransport {
   getActiveTurnIds: ReturnType<typeof vi.fn>;
   getTree: ReturnType<typeof vi.fn>;
   getMessageHeaders: ReturnType<typeof vi.fn>;
-  getInputMessages: ReturnType<typeof vi.fn>;
+  getMessagesWithHeaders: ReturnType<typeof vi.fn>;
   send: ReturnType<typeof vi.fn>;
   regenerate: ReturnType<typeof vi.fn>;
   edit: ReturnType<typeof vi.fn>;
@@ -72,7 +72,7 @@ export const createMockTransport = (initialMessages: string[] = []): MockTranspo
   const getActiveTurnIds = vi.fn(() => new Map<string, Set<string>>());
   const getTree = vi.fn(() => tree);
   const getMessageHeaders = vi.fn();
-  const getInputMessages = vi.fn(() => []);
+  const getMessagesWithHeaders = vi.fn(() => []);
 
   const mockTurn = {
     stream: new ReadableStream(),
@@ -113,7 +113,7 @@ export const createMockTransport = (initialMessages: string[] = []): MockTranspo
     getActiveTurnIds,
     getMessageHeaders,
     getMessages,
-    getInputMessages,
+    getMessagesWithHeaders,
     history,
     close,
   // CAST: mock object satisfies the subset of ClientTransport methods used by hooks
@@ -126,7 +126,7 @@ export const createMockTransport = (initialMessages: string[] = []): MockTranspo
     getActiveTurnIds,
     getTree,
     getMessageHeaders,
-    getInputMessages,
+    getMessagesWithHeaders,
     send,
     regenerate,
     edit,

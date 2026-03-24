@@ -84,7 +84,7 @@ Observer turns have no stream because there is no caller holding a handle — no
 
 ### Discrete messages: direct insert
 
-When the decoder produces a `{ kind: 'message' }` output (e.g. a user message decoded from a `writeMessage` publish), the transport upserts it into the tree immediately, regardless of turn ownership.
+When the decoder produces a `{ kind: 'message' }` output (e.g. a user message decoded from a `writeMessages` publish), the transport upserts it into the tree immediately, regardless of turn ownership.
 
 ## How messages reach the UI
 

@@ -124,16 +124,19 @@ export interface StreamTrackerState {
  * reuse across turns. Publishes complete messages and discrete events without
  * any streaming lifecycle (no trackers, no pending appends, no close).
  *
- * The server transport calls `writeMessage` to publish user messages to the
- * channel. `writeMessages` publishes multiple messages atomically as a single
- * logical unit (sharing one `x-ably-msg-id`). `writeEvent` is a public API
- * for consumers to publish standalone discrete events outside the streaming
- * flow — it is not called by the transport internally.
+ * The server transport calls `writeMessages` to publish user messages to the
+ * channel. All messages in a single call are published atomically and share
+ * a single `x-ably-msg-id`, forming one node in the conversation tree.
+ * `writeEvent` is a public API for consumers to publish standalone discrete
+ * events outside the streaming flow — it is not called by the transport internally.
  */
 export interface DiscreteEncoder<TEvent, TMessage> {
-  /** Encode and publish a single domain message (e.g. a user message). */
-  writeMessage(message: TMessage, options?: WriteOptions): Promise<Ably.PublishResult>;
-  /** Encode and publish multiple domain messages atomically in a single channel publish. */
+  /**
+   * Encode and publish one or more domain messages atomically in a single
+   * channel publish. All messages share the encoder's transport headers
+   * (including `x-ably-msg-id`), so they form one logical unit in the
+   * conversation tree.
+   */
   writeMessages(messages: TMessage[], options?: WriteOptions): Promise<Ably.PublishResult>;
   /**
    * Encode and publish a single domain event as a standalone discrete message.

@@ -436,7 +436,7 @@ const decodeNonStreamingToolInput = (
 // ---------------------------------------------------------------------------
 
 /**
- * Reconstruct a UIMessage from a discrete message part published by writeMessage.
+ * Reconstruct a UIMessage from a discrete message part published by writeMessages.
  * The encoder splits each UIMessage into per-part Ably messages with a shared
  * x-domain-messageId. This function rebuilds a single-part UIMessage from one
  * such Ably message. The transport's tree upsert merges parts that share the
@@ -482,7 +482,7 @@ const decodeDiscreteMessage = (input: MessagePayload): Out[] => {
 };
 
 /**
- * Whether a message name represents a discrete message part (written by writeMessage)
+ * Whether a message name represents a discrete message part (written by writeMessages)
  * rather than a streaming lifecycle event. Discrete message parts carry x-ably-role
  * and encode a single UIMessage part each.
  * @param name - The Ably message name to check.
@@ -497,7 +497,7 @@ const decodeDiscretePayload = (input: MessagePayload, lifecycle: LifecycleTracke
   const r = headerReader(h);
   const turnId = h[HEADER_TURN_ID] ?? '';
 
-  // Discrete message parts from writeMessage (user messages, history entries).
+  // Discrete message parts from writeMessages (user messages, history entries).
   // Distinguished from lifecycle events by the presence of x-ably-role.
   if (isDiscreteMessagePart(input.name, h)) {
     return decodeDiscreteMessage(input);

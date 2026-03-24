@@ -1830,10 +1830,10 @@ describe('ClientTransport', () => {
   });
 
   // -------------------------------------------------------------------------
-  // getInputMessages()
+  // getMessagesWithHeaders()
   // -------------------------------------------------------------------------
 
-  describe('getInputMessages', () => {
+  describe('getMessagesWithHeaders', () => {
     it('returns messages with headers', () => {
       const seeded = createClientTransport({
         channel: createMockChannel(),
@@ -1842,7 +1842,7 @@ describe('ClientTransport', () => {
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
 
-      const inputs = seeded.getInputMessages();
+      const inputs = seeded.getMessagesWithHeaders();
       expect(inputs).toHaveLength(1);
       expect(inputs[0]?.message.id).toBe('msg-1');
       expect(inputs[0]?.headers).toBeDefined();

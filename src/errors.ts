@@ -36,6 +36,16 @@ export enum ErrorCode {
    * A turn lifecycle event (turn-start or turn-end) failed to publish.
    */
   TurnLifecycleError = 104003,
+
+  /**
+   * An operation was attempted on a transport that has already been closed.
+   */
+  TransportClosed = 104004,
+
+  /**
+   * The HTTP POST to the server endpoint failed (network error or non-2xx response).
+   */
+  TransportSendFailed = 104005,
 }
 
 /**

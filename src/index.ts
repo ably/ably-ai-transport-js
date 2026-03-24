@@ -1,18 +1,28 @@
 // Core transport
 export type {
+  ActiveTurn,
   AddMessageOptions,
   CancelFilter,
   CancelRequest,
+  ClientTransport,
+  ClientTransportOptions,
+  CloseOptions,
+  ConversationNode,
+  ConversationTree,
   InputMessage,
+  LoadHistoryOptions,
   NewTurnOptions,
+  PaginatedMessages,
+  SendOptions,
   ServerTransport,
   ServerTransportOptions,
   StreamResponseOptions,
   StreamResult,
   Turn,
   TurnEndReason,
+  TurnLifecycleEvent,
 } from './core/transport/index.js';
-export { buildTransportHeaders, createServerTransport } from './core/transport/index.js';
+export { buildTransportHeaders, createClientTransport, createServerTransport } from './core/transport/index.js';
 
 // Core codec
 export type {
@@ -66,6 +76,9 @@ export {
 // Utilities
 export type { DomainHeaderReader, DomainHeaderWriter, Stripped } from './utils.js';
 export { getHeaders, headerReader, headerWriter, mergeHeaders, stripUndefined } from './utils.js';
+
+// Event emitter
+export { EventEmitter } from './event-emitter.js';
 
 // Errors
 export { ErrorCode, errorInfoIs } from './errors.js';

@@ -1,0 +1,71 @@
+'use client';
+
+import { useRef, useEffect } from 'react';
+import type { UIMessage } from 'ai';
+import type { ClientTransport } from '@ably/ably-ai-transport-js';
+import type { UIMessageChunk } from 'ai';
+import { MessageBubble } from './message-bubble';
+
+interface MessageListProps {
+  messages: UIMessage[];
+  transport: ClientTransport<UIMessageChunk, UIMessage>;
+  hasNext: boolean;
+  loading: boolean;
+  onNext: () => void;
+  onRegenerate: (messageId: string) => void;
+}
+
+export function MessageList({ messages, transport, hasNext, loading, onNext, onRegenerate }: MessageListProps) {
+  const endRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const prevLastIdRef = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    const lastId = messages.length > 0 ? messages[messages.length - 1].id : undefined;
+    if (lastId && lastId !== prevLastIdRef.current) {
+      prevLastIdRef.current = lastId;
+      endRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages]);
+
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el || !hasNext || loading) return;
+    if (el.scrollTop < 60) {
+      onNext();
+    }
+  };
+
+  return (
+    <div
+      ref={scrollRef}
+      onScroll={handleScroll}
+      className="flex-1 overflow-y-auto px-4 py-4 space-y-4"
+    >
+      {hasNext && (
+        <div className="text-center">
+          <button
+            onClick={onNext}
+            disabled={loading}
+            className="text-xs text-zinc-500 hover:text-zinc-300 disabled:opacity-40 transition-colors"
+          >
+            {loading ? 'Loading...' : 'Load older messages'}
+          </button>
+        </div>
+      )}
+      {loading && <div className="text-center text-xs text-zinc-600 animate-pulse">Loading history...</div>}
+      {messages.length === 0 && !loading && (
+        <p className="text-sm text-zinc-600 text-center mt-20">Send a message to start chatting.</p>
+      )}
+      {messages.map((msg) => (
+        <MessageBubble
+          key={msg.id}
+          message={msg}
+          headers={transport.getMessageHeaders(msg)}
+          onRegenerate={msg.role === 'assistant' ? () => onRegenerate(msg.id) : undefined}
+        />
+      ))}
+      <div ref={endRef} />
+    </div>
+  );
+}

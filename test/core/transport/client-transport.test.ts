@@ -1173,6 +1173,128 @@ describe('ClientTransport', () => {
       const node = transport.getTree().getNode('msg-1');
       expect(node?.headers[HEADER_STATUS]).toBe('aborted');
     });
+
+    it('assistant message is visible when two user messages are sent in a single turn', async () => {
+      // Regression: when send() publishes multiple user messages, the
+      // observer serial was pinned to the first user-echo's serial. The
+      // accumulated assistant node inherited that early serial and sorted
+      // *before* the second user message in the tree — its parent — making
+      // it unreachable in flatten().
+
+      const mockAccum = createMockAccumulator();
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      vi.mocked(codec.createAccumulator).mockReturnValue(mockAccum);
+
+      // Seed one prior assistant message so the user messages have a parent
+      const tree = transport.getTree();
+      tree.upsert('prev-asst', { id: 'prev-asst', content: 'London story' }, {
+        [HEADER_MSG_ID]: 'prev-asst',
+        [HEADER_ROLE]: 'assistant',
+      }, 'serial-0000');
+
+      // --- send two user messages in one turn ---
+      const turn = await transport.send([
+        { id: 'u1', content: 'Actually, about Paris' },
+        { id: 'u2', content: 'No Milan' },
+      ]);
+      await mockFetch.waitForCalls(1);
+
+      // Retrieve the client-generated msg IDs from the POST body
+      const body = mockFetch.body(0);
+      const postMessages = body.messages as { headers: Record<string, string> }[];
+      const msg1Id = postMessages[0]?.headers[HEADER_MSG_ID] ?? '';
+      const msg2Id = postMessages[1]?.headers[HEADER_MSG_ID] ?? '';
+
+      // --- simulate server turn-start ---
+      simulateMessage(
+        channel,
+        ablyMsg(EVENT_TURN_START, {
+          [HEADER_TURN_ID]: turn.turnId,
+          [HEADER_TURN_CLIENT_ID]: 'client-1',
+        }),
+      );
+
+      // --- simulate server echoes for both user messages ---
+      // These are 'message' outputs (own echoes) that promote the serial.
+      decoder.outputs.push({ kind: 'message', message: { id: 'u1', content: 'Actually, about Paris' } });
+      simulateMessage(channel, {
+        name: 'text',
+        data: 'Actually, about Paris',
+        action: 'message.create',
+        extras: { headers: {
+          [HEADER_TURN_ID]: turn.turnId,
+          [HEADER_MSG_ID]: msg1Id,
+          [HEADER_PARENT]: 'prev-asst',
+          [HEADER_ROLE]: 'user',
+        } },
+        serial: 'serial-0001',
+      } as unknown as Ably.InboundMessage);
+
+      decoder.outputs.push({ kind: 'message', message: { id: 'u2', content: 'No Milan' } });
+      simulateMessage(channel, {
+        name: 'text',
+        data: 'No Milan',
+        action: 'message.create',
+        extras: { headers: {
+          [HEADER_TURN_ID]: turn.turnId,
+          [HEADER_MSG_ID]: msg2Id,
+          [HEADER_PARENT]: 'prev-asst',
+          [HEADER_ROLE]: 'user',
+        } },
+        serial: 'serial-0002',
+      } as unknown as Ably.InboundMessage);
+
+      // --- simulate assistant response events ---
+      // The accumulator returns the assistant message when queried.
+      Object.defineProperty(mockAccum, 'messages', {
+        get: () => [{ id: 'asst-milan', content: 'The Violin Maker...' }],
+        configurable: true,
+      });
+
+      // 'start' event — discrete, no stream
+      decoder.outputs.push({ kind: 'event', event: { type: 'start' } });
+      simulateMessage(channel, {
+        name: 'start',
+        data: undefined,
+        action: 'message.create',
+        extras: { headers: {
+          [HEADER_TURN_ID]: turn.turnId,
+          [HEADER_MSG_ID]: 'asst-milan',
+          [HEADER_PARENT]: msg2Id,
+          [HEADER_ROLE]: 'assistant',
+        } },
+        serial: 'serial-0003',
+      } as unknown as Ably.InboundMessage);
+
+      // Streaming text event
+      decoder.outputs.push({ kind: 'event', event: { type: 'text', text: 'The Violin Maker...' } });
+      simulateMessage(channel, {
+        name: 'text',
+        data: 'The Violin Maker...',
+        action: 'message.create',
+        extras: { headers: {
+          [HEADER_TURN_ID]: turn.turnId,
+          [HEADER_MSG_ID]: 'asst-milan',
+          [HEADER_PARENT]: msg2Id,
+          [HEADER_ROLE]: 'assistant',
+        } },
+        serial: 'serial-0004',
+      } as unknown as Ably.InboundMessage);
+
+      // --- verify the assistant message is visible in getMessages ---
+      const messages = transport.getMessages();
+      const ids = messages.map((m) => m.id);
+      expect(ids).toContain('prev-asst');
+      expect(ids).toContain('u1');
+      expect(ids).toContain('u2');
+      expect(ids).toContain('asst-milan');
+      expect(messages).toHaveLength(4);
+
+      // Clean up the stream
+      decoder.outputs.push({ kind: 'event', event: { type: 'finish' } });
+      simulateMessage(channel, ablyMsg('finish', { [HEADER_TURN_ID]: turn.turnId, [HEADER_MSG_ID]: 'asst-milan' }));
+      await drain(turn.stream);
+    });
   });
 
   // -------------------------------------------------------------------------

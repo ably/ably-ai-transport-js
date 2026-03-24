@@ -341,7 +341,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   // ---------------------------------------------------------------------------
 
   /**
-   * Ensure a TurnObserverState exists for turnId, capturing initial headers/serial.
+   * Ensure a TurnObserverState exists for turnId, updating headers and serial as new events arrive.
    * @param turnId - The turn to track.
    * @param headers - Headers from the current event.
    * @param serial - Ably serial from the current event.
@@ -352,14 +352,22 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     serial: string | undefined,
   ): void {
     const existing = this._turnObservers.get(turnId);
-    if (!existing) {
+    if (existing) {
+      if (Object.keys(headers).length > 0) {
+        Object.assign(existing.headers, headers);
+      }
+      // Always advance the serial so the tree node sorts after all
+      // earlier messages in the turn (e.g. user-message echoes that
+      // arrive before the assistant response).
+      if (serial !== undefined) {
+        existing.serial = serial;
+      }
+    } else {
       this._turnObservers.set(turnId, {
         headers: { ...headers },
         serial,
         accumulator: this._codec.createAccumulator(),
       });
-    } else if (Object.keys(headers).length > 0) {
-      Object.assign(existing.headers, headers);
     }
   }
 

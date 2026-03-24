@@ -53,7 +53,7 @@ export function useMessageQueue(transport: ClientTransport<UIMessageChunk, UIMes
         setItems([]);
         itemsRef.current = [];
         const msgs = batch.map((item) => userMessage(item.text));
-        sendRef.current(msgs);
+        await sendRef.current(msgs);
       }
     } finally {
       drainingRef.current = false;

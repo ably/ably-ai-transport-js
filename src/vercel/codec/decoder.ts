@@ -596,10 +596,8 @@ class DefaultUIMessageDecoder implements StreamDecoder<AI.UIMessageChunk, AI.UIM
     );
   }
 
-  decode(message: Ably.Message): Out[] {
-    // CAST: The transport layer passes InboundMessage, which satisfies Message.
-    // The decoder core expects InboundMessage for action dispatch.
-    return this._core.decode(message as Ably.InboundMessage);
+  decode(message: Ably.InboundMessage): Out[] {
+    return this._core.decode(message);
   }
 }
 

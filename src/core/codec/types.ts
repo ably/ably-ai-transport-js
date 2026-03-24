@@ -179,7 +179,7 @@ export type DecoderOutput<TEvent, TMessage> =
 /** Decodes Ably messages into domain events and messages. */
 export interface StreamDecoder<TEvent, TMessage> {
   /** Decode a single Ably message into zero or more domain outputs. */
-  decode(message: Ably.Message): DecoderOutput<TEvent, TMessage>[];
+  decode(message: Ably.InboundMessage): DecoderOutput<TEvent, TMessage>[];
 }
 
 // ---------------------------------------------------------------------------

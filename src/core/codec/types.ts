@@ -124,15 +124,23 @@ export interface StreamTrackerState {
  * reuse across turns. Publishes complete messages and discrete events without
  * any streaming lifecycle (no trackers, no pending appends, no close).
  *
- * Used by the client transport, which only needs to publish user messages
- * (`writeMessage`) and discrete data events like cancel (`writeEvent`).
+ * The server transport calls `writeMessage` to publish user messages to the
+ * channel. `writeMessages` publishes multiple messages atomically as a single
+ * logical unit (sharing one `x-ably-msg-id`). `writeEvent` is a public API
+ * for consumers to publish standalone discrete events outside the streaming
+ * flow — it is not called by the transport internally.
  */
 export interface DiscreteEncoder<TEvent, TMessage> {
   /** Encode and publish a single domain message (e.g. a user message). */
   writeMessage(message: TMessage, options?: WriteOptions): Promise<Ably.PublishResult>;
   /** Encode and publish multiple domain messages atomically in a single channel publish. */
   writeMessages(messages: TMessage[], options?: WriteOptions): Promise<Ably.PublishResult>;
-  /** Encode and publish a discrete domain event (e.g. a cancel signal). */
+  /**
+   * Encode and publish a single domain event as a standalone discrete message.
+   * Available for consumers to publish events outside the streaming flow.
+   * Implementations should throw for event types that are only meaningful
+   * within a stream (e.g. text deltas).
+   */
   writeEvent(event: TEvent, options?: WriteOptions): Promise<Ably.PublishResult>;
 }
 

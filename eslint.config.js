@@ -136,6 +136,14 @@ export default [
     },
   },
   {
+    files: ['examples/**/*.ts'],
+
+    rules: {
+      // tsconfig target is es6 which does not support top-level await
+      'unicorn/prefer-top-level-await': 'off',
+    },
+  },
+  {
     files: ['**/*.{ts,tsx}'],
 
     rules: {

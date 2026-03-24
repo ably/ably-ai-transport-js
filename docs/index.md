@@ -6,18 +6,18 @@ The SDK is codec-parameterized: a generic transport core handles streaming, turn
 
 ## Entry points
 
-| Import path | What it provides |
-|---|---|
-| `@ably/ably-ai-transport-js` | Generic transport, codec interfaces, utilities. Framework-agnostic. |
-| `@ably/ably-ai-transport-js/react` | React hooks for the generic transport (`useClientTransport`, `useMessages`, `useSend`, etc.) |
-| `@ably/ably-ai-transport-js/vercel` | Vercel AI SDK integration — `UIMessageCodec` and pre-bound transport factories |
-| `@ably/ably-ai-transport-js/vercel/react` | Vercel-specific React hooks — `useChatTransport` for `useChat`, `useMessageSync` |
+| Import path                               | What it provides                                                                             |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `@ably/ably-ai-transport-js`              | Generic transport, codec interfaces, utilities. Framework-agnostic.                          |
+| `@ably/ably-ai-transport-js/react`        | React hooks for the generic transport (`useClientTransport`, `useMessages`, `useSend`, etc.) |
+| `@ably/ably-ai-transport-js/vercel`       | Vercel AI SDK integration — `UIMessageCodec` and pre-bound transport factories               |
+| `@ably/ably-ai-transport-js/vercel/react` | Vercel-specific React hooks — `useChatTransport` for `useChat`, `useMessageSync`             |
 
 Peer dependencies: `ably` (required), `ai` (for Vercel entry points), `react` (for React entry points).
 
 ## Where to start
 
-**Understand the architecture** — read [Client and server transport](concepts/transport.md) and [Turns](concepts/turns.md) to build a mental model of how data flows.
+**Understand the architecture** — read [Client and server transport](concepts/transport.md), [Turns](concepts/turns.md), and [Message lifecycle](internals/message-lifecycle.md) to build a mental model of how data flows.
 
 **Build something** — follow the [Get Started with useChat](get-started/vercel-use-chat.md) quickstart to have a working streaming chat app in minutes. Or use the [generic hooks quickstart](get-started/vercel-use-client-transport.md) for more control.
 

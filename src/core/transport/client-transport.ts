@@ -600,6 +600,9 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       }
     }
 
+    // Capture the first parent for the POST body before the loop advances it.
+    const postParent = sendOptions?.parent === undefined ? autoParent : sendOptions.parent;
+
     for (const message of msgs) {
       const msgId = crypto.randomUUID();
       this._ownMsgIds.add(msgId);
@@ -619,10 +622,17 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       // Optimistically insert each user message into the tree
       this._upsertAndNotify(message, optimisticHeaders);
 
-      postMessages.push({
-        message,
-        headers: { [HEADER_MSG_ID]: msgId, [HEADER_ROLE]: 'user' },
-      });
+      // Include per-message parent so the server chains messages correctly.
+      const postHeaders: Record<string, string> = { [HEADER_MSG_ID]: msgId, [HEADER_ROLE]: 'user' };
+      if (resolvedParent) postHeaders[HEADER_PARENT] = resolvedParent;
+      postMessages.push({ message, headers: postHeaders });
+
+      // Spec: AIT-CT3e
+      // Chain: each subsequent message in the batch parents off the previous
+      // one, forming a linear conversation thread rather than siblings.
+      if (sendOptions?.parent === undefined && !sendOptions?.forkOf) {
+        autoParent = msgId;
+      }
     }
 
     this._turnMsgIds.set(turnId, msgIds);
@@ -633,8 +643,6 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     // Resolve headers and body
     const resolvedHeaders = this._headersFn?.() ?? {};
     const resolvedBody = this._bodyFn?.() ?? {};
-
-    const postParent = sendOptions?.parent === undefined ? autoParent : sendOptions.parent;
 
     const postBody: Record<string, unknown> = {
       ...resolvedBody,

@@ -1230,6 +1230,7 @@ describe('ClientTransport', () => {
         serial: 'serial-0001',
       } as unknown as Ably.InboundMessage);
 
+      // msg2 is chained off msg1 (not a sibling under prev-asst)
       decoder.outputs.push({ kind: 'message', message: { id: 'u2', content: 'No Milan' } });
       simulateMessage(channel, {
         name: 'text',
@@ -1238,7 +1239,7 @@ describe('ClientTransport', () => {
         extras: { headers: {
           [HEADER_TURN_ID]: turn.turnId,
           [HEADER_MSG_ID]: msg2Id,
-          [HEADER_PARENT]: 'prev-asst',
+          [HEADER_PARENT]: msg1Id,
           [HEADER_ROLE]: 'user',
         } },
         serial: 'serial-0002',
@@ -1294,6 +1295,72 @@ describe('ClientTransport', () => {
       decoder.outputs.push({ kind: 'event', event: { type: 'finish' } });
       simulateMessage(channel, ablyMsg('finish', { [HEADER_TURN_ID]: turn.turnId, [HEADER_MSG_ID]: 'asst-milan' }));
       await drain(turn.stream);
+    });
+
+    it('multi-message send chains messages so editing the first hides the second', async () => {
+      // Regression: send([msg1, msg2]) gave both the same parent (siblings).
+      // Editing msg1 (forking) should hide msg2, but it stayed visible.
+      // Fix: chain messages so msg2 is a child of msg1.
+
+      // Seed a prior message
+      const tree = transport.getTree();
+      tree.upsert('prev', { id: 'prev', content: 'prev' }, {
+        [HEADER_MSG_ID]: 'prev',
+      }, 'serial-0000');
+
+      // --- send two messages ---
+      const turn = await transport.send([
+        { id: 'u1', content: 'first' },
+        { id: 'u2', content: 'second' },
+      ]);
+      await mockFetch.waitForCalls(1);
+
+      const body = mockFetch.body(0);
+      const postMsgs = body.messages as { headers: Record<string, string> }[];
+      const msg1Id = postMsgs[0]?.headers[HEADER_MSG_ID] ?? '';
+      const msg2Id = postMsgs[1]?.headers[HEADER_MSG_ID] ?? '';
+
+      // Verify chaining: msg1 parents off prev, msg2 parents off msg1
+      expect(postMsgs[0]?.headers[HEADER_PARENT]).toBe('prev');
+      expect(postMsgs[1]?.headers[HEADER_PARENT]).toBe(msg1Id);
+
+      // Verify optimistic tree structure
+      const msg2Node = tree.getNode(msg2Id);
+      expect(msg2Node?.parentId).toBe(msg1Id);
+
+      // Both messages should be visible
+      let ids = transport.getMessages().map((m) => m.id);
+      expect(ids).toContain('u1');
+      expect(ids).toContain('u2');
+
+      // --- simulate an edit of msg1 (fork) ---
+      // Close the stream first
+      decoder.outputs.push({ kind: 'event', event: { type: 'finish' } });
+      simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: turn.turnId }));
+      await drain(turn.stream);
+
+      // Simulate turn-end
+      simulateMessage(channel, ablyMsg(EVENT_TURN_END, {
+        [HEADER_TURN_ID]: turn.turnId,
+        [HEADER_TURN_CLIENT_ID]: 'client-1',
+        [HEADER_TURN_REASON]: 'complete',
+      }));
+
+      // Edit msg1 → creates a fork sibling
+      const editTurn = await transport.edit(msg1Id, [{ id: 'u1-edited', content: 'edited first' }]);
+      await mockFetch.waitForCalls(2);
+
+      // After editing, the tree should show the fork, not the original branch.
+      // msg2 was a child of msg1 (the old version) and should no longer be
+      // on the active path — the edit fork replaces msg1's branch.
+      ids = transport.getMessages().map((m) => m.id);
+      expect(ids).toContain('u1-edited');
+      expect(ids).not.toContain('u2');
+
+      // Close edit stream
+      decoder.outputs.push({ kind: 'event', event: { type: 'finish' } });
+      simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: editTurn.turnId }));
+      await drain(editTurn.stream);
     });
   });
 

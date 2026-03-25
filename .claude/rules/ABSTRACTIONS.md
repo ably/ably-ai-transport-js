@@ -65,7 +65,7 @@ Header/event/message-name constants and Ably message utilities used by both laye
 
 ## Composition, Not Inheritance
 
-The SDK uses composition, not inheritence. For example, a transport is assembled from composable sub-components:
+The SDK uses composition, not inheritance. For example, a transport is assembled from composable sub-components:
 
 ```
 ClientTransport

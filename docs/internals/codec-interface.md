@@ -140,7 +140,7 @@ For the Vercel codec, this means: if a client joins a stream after `text-start` 
 
 ## Vercel UIMessageCodec
 
-The Vercel codec (`src/vercel/codec/`) is the concrete implementation for the Vercel AI SDK. It maps between `UIMessageChunk` events and `UIMessage` messages.
+The Vercel codec (`src/vercel/codec/`) is the concrete implementation for the Vercel AI SDK UI. It maps between `UIMessageChunk` events and `UIMessage` messages.
 
 ### Event mapping
 

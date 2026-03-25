@@ -30,3 +30,4 @@ jobs:
       - run: npm run typecheck
       - run: npm run check:error-codes
       - run: npm test
+      - run: npm run test:integration

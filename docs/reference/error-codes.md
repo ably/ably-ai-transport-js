@@ -22,7 +22,7 @@ Codes 40000 and 40003 are standard Ably error codes. Codes 104000–104005 are s
 Use `errorInfoIs` to compare:
 
 ```typescript
-import { ErrorCode, errorInfoIs } from '@ably/ably-ai-transport-js';
+import { ErrorCode, errorInfoIs } from '@ably/ai-transport';
 
 transport.on('error', (error) => {
   if (errorInfoIs(error, ErrorCode.TransportSendFailed)) {

@@ -52,7 +52,7 @@ const activeTurns = transport.getActiveTurnIds();
 In React:
 
 ```typescript
-import { useActiveTurns } from '@ably/ably-ai-transport-js/react';
+import { useActiveTurns } from '@ably/ai-transport/react';
 
 const activeTurns = useActiveTurns(transport);
 

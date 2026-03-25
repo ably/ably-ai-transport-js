@@ -2,7 +2,7 @@
 
 import { useRef, useEffect } from 'react';
 import type { UIMessage } from 'ai';
-import type { ClientTransport } from '@ably/ably-ai-transport-js';
+import type { ClientTransport } from '@ably/ai-transport';
 import type { UIMessageChunk } from 'ai';
 import { MessageBubble } from './message-bubble';
 

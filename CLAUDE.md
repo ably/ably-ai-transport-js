@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-`@ably/ably-ai-transport-js` — Ably transport and codecs for building AI applications with Ably. Ships as a single npm package with four entry points: core, react, vercel, and vercel/react.
+`@ably/ai-transport` — Ably transport and codecs for building AI applications with Ably. Ships as a single npm package with four entry points: core, react, vercel, and vercel/react.
 
 ## Commands
 

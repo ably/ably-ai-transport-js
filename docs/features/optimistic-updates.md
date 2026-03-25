@@ -40,7 +40,7 @@ const messages = transport.getMessages();
 In React, `useMessages()` re-renders immediately after `send()` because the optimistic insert triggers a `message` event:
 
 ```typescript
-import { useMessages, useSend } from '@ably/ably-ai-transport-js/react';
+import { useMessages, useSend } from '@ably/ai-transport/react';
 
 const messages = useMessages(transport);
 const send = useSend(transport);

@@ -18,7 +18,7 @@ Two patterns:
 The most common pattern: cancel active turns before sending the new message.
 
 ```typescript
-import { useActiveTurns, useSend } from '@ably/ably-ai-transport-js/react';
+import { useActiveTurns, useSend } from '@ably/ai-transport/react';
 
 const activeTurns = useActiveTurns(transport);
 const send = useSend(transport);
@@ -52,7 +52,7 @@ Both turns produce independent event streams. The message list grows with respon
 Use `useActiveTurns` to know whether any turn is streaming:
 
 ```typescript
-import { useActiveTurns } from '@ably/ably-ai-transport-js/react';
+import { useActiveTurns } from '@ably/ai-transport/react';
 
 const activeTurns = useActiveTurns(transport);
 

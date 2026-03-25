@@ -2,9 +2,9 @@
 
 import { useChat } from '@ai-sdk/react';
 import { useChannel } from 'ably/react';
-import { useClientTransport, useActiveTurns, useHistory, useAblyMessages } from '@ably/ably-ai-transport-js/react';
-import { useChatTransport, useMessageSync } from '@ably/ably-ai-transport-js/vercel/react';
-import { UIMessageCodec } from '@ably/ably-ai-transport-js/vercel';
+import { useClientTransport, useActiveTurns, useHistory, useAblyMessages } from '@ably/ai-transport/react';
+import { useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
+import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import { useState } from 'react';
 import { MessageList } from './components/message-list';
 import { DebugPane } from './components/debug-pane';

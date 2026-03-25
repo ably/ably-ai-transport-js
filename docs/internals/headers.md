@@ -15,7 +15,7 @@ Domain headers (`src/utils.ts`) carry codec-specific metadata — field names li
 A fluent builder for constructing domain header records. Each setter method auto-prefixes the key with `x-domain-` and returns the builder for chaining.
 
 ```typescript
-import { headerWriter } from '@ably/ably-ai-transport-js';
+import { headerWriter } from '@ably/ai-transport';
 
 const headers = headerWriter()
   .str('toolCallId', chunk.toolCallId)
@@ -38,7 +38,7 @@ const headers = headerWriter()
 A typed accessor for reading domain headers. Mirrors `headerWriter` with the same method names for symmetry.
 
 ```typescript
-import { headerReader } from '@ably/ably-ai-transport-js';
+import { headerReader } from '@ably/ai-transport';
 
 const r = headerReader(headers);
 const toolCallId = r.str('toolCallId');        // string | undefined

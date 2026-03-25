@@ -81,7 +81,7 @@ const activeTurns = transport.getActiveTurnIds();
 In React, `useActiveTurns` provides this as reactive state:
 
 ```typescript
-import { useActiveTurns } from '@ably/ably-ai-transport-js/react';
+import { useActiveTurns } from '@ably/ai-transport/react';
 
 const activeTurns = useActiveTurns(transport);
 const isStreaming = activeTurns.size > 0;

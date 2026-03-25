@@ -11,7 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@ably/ably-ai-transport-js": "file:../../../../",
+    "@ably/ai-transport": "file:../../../../",
     "@ai-sdk/anthropic": "^3",
     "@ai-sdk/react": "^3.0.118",
     "ably": "^2",

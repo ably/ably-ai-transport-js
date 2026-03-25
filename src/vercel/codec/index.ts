@@ -3,7 +3,7 @@
  * to/from native Ably message primitives (publish, append, update, delete).
  *
  * ```ts
- * import { UIMessageCodec } from '@ably/ably-ai-transport-js/vercel';
+ * import { UIMessageCodec } from '@ably/ai-transport/vercel';
  *
  * const encoder = UIMessageCodec.createEncoder(writer, options);
  * const decoder = UIMessageCodec.createDecoder();

@@ -24,8 +24,8 @@ import {
   useActiveTurns,
   useHistory,
   useConversationTree,
-} from '@ably/ably-ai-transport-js/react';
-import { UIMessageCodec } from '@ably/ably-ai-transport-js/vercel';
+} from '@ably/ai-transport/react';
+import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import type { UIMessage } from 'ai';
 import { useState } from 'react';
 

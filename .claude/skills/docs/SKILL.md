@@ -368,7 +368,7 @@ After writing a doc page, verify:
 - [ ] Code examples are copy-pasteable and use real API surface
 - [ ] Code examples match current source code (read the implementation)
 - [ ] Code examples have all variables defined (no undefined references)
-- [ ] Import paths use real package entry points (`@ably/ably-ai-transport-js`, `/react`, `/vercel`, `/vercel/react`)
+- [ ] Import paths use real package entry points (`@ably/ai-transport`, `/react`, `/vercel`, `/vercel/react`)
 - [ ] Interface signatures match the source exactly — optional fields (`?`),
       parameter names, parameter order, return types
 - [ ] Wire protocol values match source (`streaming`/`finished`/`aborted`, not `open`/`closed`)

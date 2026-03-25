@@ -27,7 +27,7 @@ User: "What is Rust?"                     (msg-1, parent: null)
 Regeneration forks an assistant message — the server produces a new response for the same prompt:
 
 ```typescript
-import { useRegenerate } from '@ably/ably-ai-transport-js/react';
+import { useRegenerate } from '@ably/ai-transport/react';
 
 const regenerate = useRegenerate(transport);
 
@@ -43,7 +43,7 @@ The transport automatically computes `forkOf` (the assistant message being repla
 Editing forks a user message — the user provides replacement content, and the server produces a new response:
 
 ```typescript
-import { useEdit } from '@ably/ably-ai-transport-js/react';
+import { useEdit } from '@ably/ai-transport/react';
 
 const edit = useEdit(transport);
 
@@ -64,7 +64,7 @@ await edit(nodeId, [newMessage]);
 `useConversationTree` provides the tree state and navigation:
 
 ```typescript
-import { useConversationTree } from '@ably/ably-ai-transport-js/react';
+import { useConversationTree } from '@ably/ai-transport/react';
 
 const tree = useConversationTree(transport);
 

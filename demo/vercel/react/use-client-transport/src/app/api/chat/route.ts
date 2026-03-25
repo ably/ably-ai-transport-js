@@ -11,8 +11,8 @@ import { streamText, convertToModelMessages } from 'ai';
 import type { UIMessage } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
-import { createServerTransport } from '@ably/ably-ai-transport-js/vercel';
-import type { MessageWithHeaders } from '@ably/ably-ai-transport-js';
+import { createServerTransport } from '@ably/ai-transport/vercel';
+import type { MessageWithHeaders } from '@ably/ai-transport';
 
 /** Shape of the POST body sent by the client transport. */
 interface ChatRequestBody {

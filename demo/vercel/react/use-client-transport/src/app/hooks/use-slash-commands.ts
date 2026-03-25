@@ -13,7 +13,7 @@
  */
 
 import { useMemo, useCallback } from 'react';
-import type { ClientTransport, ActiveTurn, SendOptions } from '@ably/ably-ai-transport-js';
+import type { ClientTransport, ActiveTurn, SendOptions } from '@ably/ai-transport';
 import type { UIMessageChunk, UIMessage } from 'ai';
 import { userMessage } from '../helpers';
 

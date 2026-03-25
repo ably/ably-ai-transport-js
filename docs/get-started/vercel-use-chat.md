@@ -11,7 +11,7 @@ Build a streaming chat app using Vercel AI SDK's `useChat` hook and AI Transport
 ## Install dependencies
 
 ```bash
-npm install @ably/ably-ai-transport-js ably ai @ai-sdk/react @ai-sdk/anthropic react react-dom next
+npm install @ably/ai-transport ably ai @ai-sdk/react @ai-sdk/anthropic react react-dom next
 ```
 
 ## 1. Create the Ably token endpoint
@@ -93,8 +93,8 @@ import { streamText, convertToModelMessages } from 'ai';
 import type { UIMessage } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
-import { createServerTransport } from '@ably/ably-ai-transport-js/vercel';
-import type { MessageWithHeaders } from '@ably/ably-ai-transport-js';
+import { createServerTransport } from '@ably/ai-transport/vercel';
+import type { MessageWithHeaders } from '@ably/ai-transport';
 
 interface ChatRequestBody {
   turnId: string;
@@ -155,9 +155,9 @@ Wire up `useChat` with the AI Transport hooks:
 
 import { useChat } from '@ai-sdk/react';
 import { useChannel, ChannelProvider } from 'ably/react';
-import { useClientTransport, useActiveTurns, useHistory } from '@ably/ably-ai-transport-js/react';
-import { useChatTransport, useMessageSync } from '@ably/ably-ai-transport-js/vercel/react';
-import { UIMessageCodec } from '@ably/ably-ai-transport-js/vercel';
+import { useClientTransport, useActiveTurns, useHistory } from '@ably/ai-transport/react';
+import { useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
+import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import { useState } from 'react';
 
 function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) {

@@ -40,7 +40,7 @@ Pipe any `ReadableStream` of codec events through the turn's `streamResponse`:
 
 ```typescript
 import { streamText } from 'ai';
-import { createServerTransport } from '@ably/ably-ai-transport-js/vercel';
+import { createServerTransport } from '@ably/ai-transport/vercel';
 
 const transport = createServerTransport({ channel });
 const turn = transport.newTurn({ turnId, clientId });

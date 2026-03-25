@@ -48,7 +48,7 @@ The closing append carries the closing `data` payload (which is also accumulated
 
 ### abortStream / abortAllStreams
 
-Sends an append with `x-ably-status: "aborted"` and empty data. Marks the tracker as aborted so recovery uses the correct status. Then flushes pending appends.
+Sends an append with `x-ably-status: "aborted"` and empty data. Marks the tracker as aborted so recovery uses the correct status. Then flushes all pending appends — both the prior content appends (already in-flight but unacknowledged) and the abort appends just queued. There is no need to flush before the abort: content appends are already on their way to Ably, and the serial-based ordering guarantees the abort append follows them. The single flush at the end waits for acknowledgement of everything in one pass.
 
 `abortAllStreams()` aborts every active stream — used when a turn is [cancelled](transport-components.md#cancel-routing-server-transport).
 

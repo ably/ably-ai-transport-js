@@ -385,9 +385,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
 
         // Per-operation parent overrides the turn-level default.
         const assistantParent =
-          streamOpts?.parent === undefined
-            ? (turnParent ?? undefined)
-            : (streamOpts.parent ?? undefined);
+          streamOpts?.parent === undefined ? (turnParent ?? undefined) : (streamOpts.parent ?? undefined);
 
         const defaultHeaders = buildTransportHeaders({
           role: 'assistant',

@@ -1,27 +1,52 @@
 # Ably AI Transport SDK
 
-A durable transport layer between AI agents and users. Streams AI responses over [Ably](https://ably.com/) channels — responses resume after disconnections, conversations persist across page reloads and devices — with cancellation, branching conversations, and multi-user sync.
-
-`@ably/ai-transport` ships as a single package with four entry points: core primitives, React hooks, Vercel AI SDK integration, and Vercel + React hooks.
+A durable transport layer between AI agents and users. Streams AI responses over [Ably](https://ably.com/) channels - responses resume after disconnections, conversations persist across page reloads and devices, with support for cancellation, branching conversations, and multi-user sync.
 
 > **Status:** Pre-release (`0.x`). The API is evolving. Feedback and contributions are welcome.
 
----
+## The problem
 
-## Why
+Most AI frameworks stream tokens over HTTP response bodies or SSE. That works until it doesn't: connections drop through corporate proxies, responses vanish on page refresh, and sessions are stuck on a single device or tab. Once an agent starts a long-running task, the user has no way to interrupt it, check if it's still running, or continue the conversation from another device. If a human needs to take over from the agent, the session context is lost.
 
-The default AI SDK transport streams tokens over an HTTP response body. This works for simple single-tab chat, but breaks down when you need:
+Ably AI Transport replaces the HTTP stream with an Ably channel. The server publishes tokens to the channel as they arrive from the LLM; the response accumulates on the channel and persists, so partial responses survive disconnection. Any client can subscribe to the same channel from any device. Cancel signals, turn lifecycle events, and conversation history all flow through the channel rather than depending on a single HTTP connection.
 
-- **Resumable streaming** — If the user's connection drops mid-response, the HTTP stream is lost. With Ably, the client reconnects and picks up where it left off. No token loss, no restart.
-- **Multi-device and multi-tab sync** — Two browser tabs, a phone and a laptop, or multiple users on the same conversation. All devices subscribe to the same Ably channel and see the same stream in real time.
-- **Reliable cancellation** — Cancel signals travel over the Ably channel, not the HTTP connection. Cancellation works across devices and survives network interruptions.
-- **Concurrent turns** — Multiple request-response cycles can run in parallel on the same channel. Each turn has its own stream and abort signal. The transport multiplexes them automatically.
-- **Conversation history from the channel** — The Ably channel *is* the conversation history. Clients can hydrate their UI from channel history on load or reconnection — no separate database query needed.
-- **Serverless compatibility** — The AI response streams over Ably, not the HTTP response body. The HTTP request returns immediately, and Next.js `after()` keeps the function alive until streaming completes. No timeout risk.
-- **Branching conversations** — Regenerate or edit messages to create forks in the conversation tree. The SDK tracks parent/child relationships and exposes a navigable tree.
-- **Barge-in** — Users send new messages while the AI is still responding, with composable primitives for cancel-and-resend or queue-until-complete patterns.
+It is not an agent framework or orchestration layer - it works alongside tools like the Vercel AI SDK, Temporal, and AG-UI.
 
-The SDK is codec-agnostic. A `Codec` translates between your AI framework's types and the Ably wire format. A Vercel AI SDK codec ships built-in.
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant CT as Client Transport
+    participant AC as Ably Channel
+    participant ST as Server Transport
+    participant LLM
+
+    U->>CT: type message
+    CT->>ST: HTTP POST (messages)
+    ST->>LLM: prompt
+    LLM-->>ST: token stream
+    ST->>AC: publish chunks
+    AC->>CT: subscribe (decode)
+    CT->>U: render tokens
+```
+
+## What this gives you
+
+- **Resumable streaming** - If a connection drops mid-response, client reconnects and picks up where it left off. The response persists on the channel, so nothing is lost.
+- **Session continuity across surfaces** - The session belongs to the channel, not the connection. A user can change tab or device and pick up at the same point.
+- **Multi-client sync** - Multiple users, agents, or operators subscribe to the same channel. Human-AI handover is a channel operation, not a session migration.
+- **Cancellation** - Cancel signals travel over the Ably channel, not the HTTP connection, and the server turn's `abortSignal` fires automatically.
+- **Interruption** - Users send new messages while the AI is still responding, with composable primitives for cancel-and-resend or queue-until-complete.
+- **Concurrent turns** - Multiple request-response cycles run in parallel on the same channel. Each turn has its own stream and abort signal.
+- **History** - The Ably channel is the conversation record. Clients hydrate from channel history on load - no separate database query needed.
+- **Branching** - Regenerate or edit messages to fork the conversation. The SDK tracks parent/child relationships and exposes a navigable tree.
+- **Framework-agnostic** - A codec interface decouples transport from the AI framework. Ships with a Vercel AI SDK codec; bring your own for any other stack.
+
+### When you need this
+
+- AI products where connection reliability and session durability are non-negotiable
+- Multi-surface experiences where a user needs to see the session in multiple tabs or devices
+- Collaborative AI where multiple users or agents interact in the same conversation
+- Customer support products where AI conversations are handed to human agents
 
 ---
 
@@ -53,9 +78,9 @@ npm install @ably/ai-transport ably ai
 
 ## Usage with Vercel AI SDK
 
-Use the Vercel entry points with `useChat` for the shortest integration path.
+AI Transport is complementary to the Vercel AI SDK, not a replacement. The Vercel AI SDK handles model calls, message formatting, and React hooks. AI Transport replaces the transport layer underneath, so tokens stream over Ably instead of an HTTP response body. You keep `useChat`, `streamText`, and everything else you're used to.
 
-### Server — Next.js API route
+### Server - Next.js API route
 
 ```typescript
 import { after } from 'next/server';
@@ -112,7 +137,7 @@ export async function POST(req: Request) {
 }
 ```
 
-### Client — React with `useChat`
+### Client - React with `useChat`
 
 ```tsx
 'use client';
@@ -197,7 +222,7 @@ const ably = new Ably.Realtime({
 
 ---
 
-## Usage without Vercel AI SDK
+## Core usage with a custom codec
 
 The core entry point is framework-agnostic. Bring your own `Codec` to map between your AI framework's event/message types and the Ably wire format.
 
@@ -277,8 +302,8 @@ transport.close();
 
 Two mechanisms cover different failure modes:
 
-- **Network blips** — Ably's connection protocol automatically reconnects and delivers any messages published while the client was disconnected. No application code required.
-- **Resumable streams** — A client that joins or rejoins a channel mid-response (after a page refresh, on a new device, or as a second participant) receives the in-progress stream immediately on subscribing. Load previous conversation history from the channel via `history()`, or from your own database.
+- **Network blips** - Ably's connection protocol automatically reconnects and delivers any messages published while the client was disconnected. No application code required.
+- **Resumable streams** - A client that joins or rejoins a channel mid-response (after a page refresh, on a new device, or as a second participant) receives the in-progress stream immediately on subscribing. Load previous conversation history from the channel via `history()`, or from your own database.
 
 ### Cancellation
 
@@ -345,12 +370,25 @@ transport.on('error', (error) => {
 
 ---
 
+## Documentation
+
+Detailed documentation lives in the [`docs/`](./docs/) directory:
+
+- **[Concepts](./docs/concepts/)** - [Transport architecture](./docs/concepts/transport.md), [Turns](./docs/concepts/turns.md)
+- **[Get started](./docs/get-started/)** - [Vercel AI SDK with useChat](./docs/get-started/vercel-use-chat.md), [Vercel AI SDK with useClientTransport](./docs/get-started/vercel-use-client-transport.md)
+- **[Frameworks](./docs/frameworks/)** - [Vercel AI SDK](./docs/frameworks/vercel-ai-sdk.md)
+- **[Features](./docs/features/)** - [Streaming](./docs/features/streaming.md), [Cancellation](./docs/features/cancel.md), [Barge-in](./docs/features/barge-in.md), [Optimistic updates](./docs/features/optimistic-updates.md), [History](./docs/features/history.md), [Branching](./docs/features/branching.md), [Multi-client sync](./docs/features/multi-client.md), [Tool calls](./docs/features/tool-calls.md), [Concurrent turns](./docs/features/concurrent-turns.md)
+- **[Reference](./docs/reference/)** - [React hooks](./docs/reference/react-hooks.md), [Error codes](./docs/reference/error-codes.md)
+- **[Internals](./docs/internals/)** - Architecture details for contributors
+
+---
+
 ## Demo apps
 
 Working demo applications live in the [`demo/`](./demo/) directory:
 
-- **[`demo/vercel/react/use-chat/`](./demo/vercel/react/use-chat/)** — Vercel AI SDK with `useChat` integration
-- **[`demo/vercel/react/use-client-transport/`](./demo/vercel/react/use-client-transport/)** — Vercel AI SDK with direct `useClientTransport` hooks
+- **[`demo/vercel/react/use-chat/`](./demo/vercel/react/use-chat/)** - Vercel AI SDK with `useChat` integration
+- **[`demo/vercel/react/use-client-transport/`](./demo/vercel/react/use-client-transport/)** - Vercel AI SDK with direct `useClientTransport` hooks
 
 ---
 
@@ -384,4 +422,4 @@ src/
 
 ## Contributing
 
-[Open an issue](https://github.com/ably/ably-ai-transport-js/issues) to share feedback or request a feature.
+See [CONTRIBUTING.md](./CONTRIBUTING.md). [Open an issue](https://github.com/ably/ably-ai-transport-js/issues) to share feedback or request a feature.

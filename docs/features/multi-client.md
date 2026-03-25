@@ -42,7 +42,7 @@ This happens for every event — observer messages stream in real time, not just
 `useActiveTurns` tracks all active turns from all clients:
 
 ```typescript
-import { useActiveTurns } from '@ably/ably-ai-transport-js/react';
+import { useActiveTurns } from '@ably/ai-transport/react';
 
 const activeTurns = useActiveTurns(transport);
 
@@ -77,7 +77,7 @@ History contains all messages from all clients, with their full branch structure
 When using the useChat path, `useMessageSync` pushes observer messages into `useChat`'s state:
 
 ```typescript
-import { useMessageSync } from '@ably/ably-ai-transport-js/vercel/react';
+import { useMessageSync } from '@ably/ai-transport/vercel/react';
 
 const { messages, setMessages } = useChat({ id: chatId, transport: chatTransport });
 useMessageSync(transport, setMessages);

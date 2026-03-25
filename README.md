@@ -2,7 +2,7 @@
 
 A durable transport layer between AI agents and users. Streams AI responses over [Ably](https://ably.com/) channels — responses resume after disconnections, conversations persist across page reloads and devices — with cancellation, branching conversations, and multi-user sync.
 
-`@ably/ably-ai-transport-js` ships as a single package with four entry points: core primitives, React hooks, Vercel AI SDK integration, and Vercel + React hooks.
+`@ably/ai-transport` ships as a single package with four entry points: core primitives, React hooks, Vercel AI SDK integration, and Vercel + React hooks.
 
 > **Status:** Pre-release (`0.x`). The API is evolving. Feedback and contributions are welcome.
 
@@ -30,13 +30,13 @@ The SDK is codec-agnostic. A `Codec` translates between your AI framework's type
 ### Installation
 
 ```sh
-npm install @ably/ably-ai-transport-js ably
+npm install @ably/ai-transport ably
 ```
 
 For Vercel AI SDK projects, also install the `ai` package:
 
 ```sh
-npm install @ably/ably-ai-transport-js ably ai
+npm install @ably/ai-transport ably ai
 ```
 
 ### Supported platforms
@@ -63,8 +63,8 @@ import { streamText, convertToModelMessages } from 'ai';
 import type { UIMessage } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
-import { createServerTransport } from '@ably/ably-ai-transport-js/vercel';
-import type { MessageWithHeaders } from '@ably/ably-ai-transport-js';
+import { createServerTransport } from '@ably/ai-transport/vercel';
+import type { MessageWithHeaders } from '@ably/ai-transport';
 
 interface ChatRequestBody {
   turnId: string;
@@ -119,9 +119,9 @@ export async function POST(req: Request) {
 
 import { useChat } from '@ai-sdk/react';
 import { useChannel } from 'ably/react';
-import { useClientTransport, useActiveTurns, useHistory } from '@ably/ably-ai-transport-js/react';
-import { useChatTransport, useMessageSync } from '@ably/ably-ai-transport-js/vercel/react';
-import { UIMessageCodec } from '@ably/ably-ai-transport-js/vercel';
+import { useClientTransport, useActiveTurns, useHistory } from '@ably/ai-transport/react';
+import { useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
+import { UIMessageCodec } from '@ably/ai-transport/vercel';
 
 function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
   const { channel } = useChannel({ channelName: chatId });
@@ -204,7 +204,7 @@ The core entry point is framework-agnostic. Bring your own `Codec` to map betwee
 ### Client
 
 ```typescript
-import { createClientTransport } from '@ably/ably-ai-transport-js';
+import { createClientTransport } from '@ably/ai-transport';
 import { myCodec } from './my-codec';
 
 const transport = createClientTransport({
@@ -228,7 +228,7 @@ while (true) {
 ### Server
 
 ```typescript
-import { createServerTransport } from '@ably/ably-ai-transport-js';
+import { createServerTransport } from '@ably/ai-transport';
 import { myCodec } from './my-codec';
 
 const transport = createServerTransport({ channel, codec: myCodec });
@@ -248,10 +248,10 @@ transport.close();
 
 | Export path                               | Purpose                                     | Peer dependencies     |
 | ----------------------------------------- | ------------------------------------------- | --------------------- |
-| `@ably/ably-ai-transport-js`              | Core transport, codec interfaces, utilities | `ably`                |
-| `@ably/ably-ai-transport-js/react`        | React hooks for any codec                   | `ably`, `react`       |
-| `@ably/ably-ai-transport-js/vercel`       | Vercel AI SDK codec, transport factories    | `ably`, `ai`          |
-| `@ably/ably-ai-transport-js/vercel/react` | React hooks for Vercel's `useChat`          | `ably`, `ai`, `react` |
+| `@ably/ai-transport`              | Core transport, codec interfaces, utilities | `ably`                |
+| `@ably/ai-transport/react`        | React hooks for any codec                   | `ably`, `react`       |
+| `@ably/ai-transport/vercel`       | Vercel AI SDK codec, transport factories    | `ably`, `ai`          |
+| `@ably/ai-transport/vercel/react` | React hooks for Vercel's `useChat`          | `ably`, `ai`, `react` |
 
 ### React hooks
 

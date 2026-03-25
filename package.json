@@ -1,5 +1,5 @@
 {
-  "name": "@ably/ably-ai-transport-js",
+  "name": "@ably/ai-transport",
   "version": "0.0.1",
   "description": "Ably transport and codecs for building AI applications with Ably.",
   "type": "module",

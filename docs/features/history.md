@@ -27,7 +27,7 @@ The client transport subscribes to the Ably channel **before** attaching. When y
 `useHistory` provides a paginated handle with auto-load on mount:
 
 ```typescript
-import { useHistory } from '@ably/ably-ai-transport-js/react';
+import { useHistory } from '@ably/ai-transport/react';
 
 // Auto-loads first page on mount (passing options = enabled)
 const history = useHistory(transport, { limit: 30 });

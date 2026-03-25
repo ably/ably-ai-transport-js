@@ -5,7 +5,7 @@
  * explicitly when using the Vercel AI SDK integration.
  *
  * ```ts
- * import { createClientTransport } from '@ably/ably-ai-transport-js/vercel';
+ * import { createClientTransport } from '@ably/ai-transport/vercel';
  *
  * const transport = createClientTransport({ channel });
  * ```

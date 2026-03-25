@@ -534,7 +534,7 @@ class AgentAccumulator implements MessageAccumulator<AgentEvent, AgentMessage> {
  * `createServerTransport` to stream structured AI responses over Ably.
  *
  * ```ts
- * import { createServerTransport } from '@ably/ably-ai-transport-js';
+ * import { createServerTransport } from '@ably/ai-transport';
  * import { AgentCodec } from './codec.js';
  *
  * const transport = createServerTransport(channel, { codec: AgentCodec });

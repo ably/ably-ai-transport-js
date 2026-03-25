@@ -34,7 +34,7 @@ The server transport manages **turns** — discrete request-response cycles on a
 ```typescript
 import Ably from 'ably';
 import { streamText } from 'ai';
-import { createServerTransport } from '@ably/ably-ai-transport-js/vercel';
+import { createServerTransport } from '@ably/ai-transport/vercel';
 
 const channel = ably.channels.get(channelName);
 const transport = createServerTransport({ channel });
@@ -59,7 +59,7 @@ The server transport also handles cancel routing — when a client publishes a c
 The client transport manages conversation state: the message list, conversation tree (for branching), active turns, and history. It subscribes to the Ably channel before attaching, so no messages are lost.
 
 ```typescript
-import { createClientTransport } from '@ably/ably-ai-transport-js/vercel';
+import { createClientTransport } from '@ably/ai-transport/vercel';
 
 const transport = createClientTransport({ channel, clientId });
 
@@ -79,8 +79,8 @@ transport.on('message', () => {
 In React, the hooks handle subscriptions and state management:
 
 ```typescript
-import { useClientTransport, useMessages, useSend } from '@ably/ably-ai-transport-js/react';
-import { UIMessageCodec } from '@ably/ably-ai-transport-js/vercel';
+import { useClientTransport, useMessages, useSend } from '@ably/ai-transport/react';
+import { UIMessageCodec } from '@ably/ai-transport/vercel';
 
 const transport = useClientTransport({ channel, codec: UIMessageCodec, clientId });
 const messages = useMessages(transport);
@@ -96,7 +96,7 @@ The transport is parameterized by a `Codec<TEvent, TMessage>` — an interface t
 - **Accumulator**: builds complete domain messages from a stream of events
 - **Terminal detection**: identifies events that end a stream (finish, error, abort)
 
-The generic transport knows nothing about specific frameworks. For the Vercel AI SDK, `UIMessageCodec` maps between `UIMessageChunk` events and `UIMessage` messages. The Vercel entry point (`@ably/ably-ai-transport-js/vercel`) pre-binds this codec so you don't need to pass it explicitly.
+The generic transport knows nothing about specific frameworks. For the Vercel AI SDK, `UIMessageCodec` maps between `UIMessageChunk` events and `UIMessage` messages. The Vercel entry point (`@ably/ai-transport/vercel`) pre-binds this codec so you don't need to pass it explicitly.
 
 For the internal implementation of each transport, see [Client transport](../internals/client-transport.md) and [Server transport](../internals/server-transport.md). For the sub-components they compose, see [Transport components](../internals/transport-components.md). For the codec, encoder, and decoder internals, see [Codec interface](../internals/codec-interface.md), [Encoder](../internals/encoder.md), and [Decoder](../internals/decoder.md). For the wire format, see [Wire protocol](../internals/wire-protocol.md).
 
@@ -104,7 +104,7 @@ For the internal implementation of each transport, see [Client transport](../int
 
 | You want to... | Use this entry point |
 |---|---|
-| Build with Vercel AI SDK's `useChat` | `@ably/ably-ai-transport-js/vercel/react` — gives you `useChatTransport` + `useMessageSync` |
-| Build with Vercel AI SDK using lower-level hooks | `@ably/ably-ai-transport-js/react` + `@ably/ably-ai-transport-js/vercel` |
-| Build a server endpoint with Vercel AI SDK | `@ably/ably-ai-transport-js/vercel` — gives you `createServerTransport` pre-bound to `UIMessageCodec` |
-| Implement a custom codec for another framework | `@ably/ably-ai-transport-js` — the generic core with `Codec<TEvent, TMessage>` |
+| Build with Vercel AI SDK's `useChat` | `@ably/ai-transport/vercel/react` — gives you `useChatTransport` + `useMessageSync` |
+| Build with Vercel AI SDK using lower-level hooks | `@ably/ai-transport/react` + `@ably/ai-transport/vercel` |
+| Build a server endpoint with Vercel AI SDK | `@ably/ai-transport/vercel` — gives you `createServerTransport` pre-bound to `UIMessageCodec` |
+| Implement a custom codec for another framework | `@ably/ai-transport` — the generic core with `Codec<TEvent, TMessage>` |

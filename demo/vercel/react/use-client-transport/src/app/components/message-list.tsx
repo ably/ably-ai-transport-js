@@ -2,8 +2,8 @@
 
 import { useRef, useEffect } from 'react';
 import type { UIMessage, UIMessageChunk } from 'ai';
-import type { ClientTransport } from '@ably/ably-ai-transport-js';
-import type { ConversationTreeHandle } from '@ably/ably-ai-transport-js/react';
+import type { ClientTransport } from '@ably/ai-transport';
+import type { ConversationTreeHandle } from '@ably/ai-transport/react';
 import { MessageBubble } from './message-bubble';
 
 interface MessageListProps {

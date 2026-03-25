@@ -10,8 +10,8 @@ import {
   useHistory,
   useConversationTree,
   useAblyMessages,
-} from '@ably/ably-ai-transport-js/react';
-import { UIMessageCodec } from '@ably/ably-ai-transport-js/vercel';
+} from '@ably/ai-transport/react';
+import { UIMessageCodec } from '@ably/ai-transport/vercel';
 
 import { userMessage } from '../helpers';
 import { useMessageQueue } from '../hooks/use-message-queue';

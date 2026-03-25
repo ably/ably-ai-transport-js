@@ -101,7 +101,7 @@ Note: text deltas may be coalesced by Ably during delivery (e.g. three published
 The `AgentCodec` implements the same `Codec<TEvent, TMessage>` interface used by the transport layer. To use it with a real Ably channel:
 
 ```ts
-import { createServerTransport, createClientTransport } from '@ably/ably-ai-transport-js';
+import { createServerTransport, createClientTransport } from '@ably/ai-transport';
 import { AgentCodec } from './codec.js';
 
 // Server side

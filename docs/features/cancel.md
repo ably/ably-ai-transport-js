@@ -35,7 +35,7 @@ The default when no filter is given is `{ own: true }` — cancel all turns star
 In React, `useActiveTurns` tells you whether turns are active:
 
 ```typescript
-import { useActiveTurns } from '@ably/ably-ai-transport-js/react';
+import { useActiveTurns } from '@ably/ai-transport/react';
 
 const activeTurns = useActiveTurns(transport);
 const isStreaming = activeTurns.size > 0;

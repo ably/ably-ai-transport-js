@@ -41,10 +41,10 @@ The SDK ships four entry points from a single package:
 
 | Export path | Contains | Purpose | External deps |
 |---|---|---|---|
-| `@ably/ably-ai-transport-js` | Generic codec interfaces, `createClientTransport`, `createServerTransport`, shared utilities | Core primitives — codec-agnostic transport and encoding | `ably` (peer) |
-| `@ably/ably-ai-transport-js/react` | `useClientTransport`, `useMessages`, `useSend`, `useRegenerate`, `useEdit`, `useActiveTurns`, `useHistory`, `useConversationTree`, `useAblyMessages` | Generic React hooks for any codec | `ably`, `react` (peers) |
-| `@ably/ably-ai-transport-js/vercel` | `UIMessageCodec`, `createServerTransport`, `createClientTransport`, `createChatTransport`, Vercel-specific types | Drop-in Vercel AI SDK integration | `ably`, `ai` (peers) |
-| `@ably/ably-ai-transport-js/vercel/react` | `useChatTransport`, `useMessageSync` | React hooks for Vercel's `useChat` | `ably`, `ai`, `react` (peers) |
+| `@ably/ai-transport` | Generic codec interfaces, `createClientTransport`, `createServerTransport`, shared utilities | Core primitives — codec-agnostic transport and encoding | `ably` (peer) |
+| `@ably/ai-transport/react` | `useClientTransport`, `useMessages`, `useSend`, `useRegenerate`, `useEdit`, `useActiveTurns`, `useHistory`, `useConversationTree`, `useAblyMessages` | Generic React hooks for any codec | `ably`, `react` (peers) |
+| `@ably/ai-transport/vercel` | `UIMessageCodec`, `createServerTransport`, `createClientTransport`, `createChatTransport`, Vercel-specific types | Drop-in Vercel AI SDK integration | `ably`, `ai` (peers) |
+| `@ably/ai-transport/vercel/react` | `useChatTransport`, `useMessageSync` | React hooks for Vercel's `useChat` | `ably`, `ai`, `react` (peers) |
 
 
 ## Two-Layer Architecture

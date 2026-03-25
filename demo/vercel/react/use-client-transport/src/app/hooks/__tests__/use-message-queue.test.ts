@@ -1,6 +1,6 @@
 import { act, renderHook } from '@testing-library/react';
 import type { UIMessage, UIMessageChunk } from 'ai';
-import type { ClientTransport } from '@ably/ably-ai-transport-js';
+import type { ClientTransport } from '@ably/ai-transport';
 import { describe, expect, it, vi } from 'vitest';
 
 import { useMessageQueue } from '../use-message-queue';

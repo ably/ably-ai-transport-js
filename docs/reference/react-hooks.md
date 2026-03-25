@@ -4,7 +4,7 @@ API reference for all React hooks in the SDK. Generic hooks work with any codec;
 
 ## Generic hooks
 
-Import from `@ably/ably-ai-transport-js/react`.
+Import from `@ably/ai-transport/react`.
 
 ---
 
@@ -204,7 +204,7 @@ const messages = useAblyMessages<TEvent, TMessage>(transport: ClientTransport<TE
 
 ## Vercel hooks
 
-Import from `@ably/ably-ai-transport-js/vercel/react`.
+Import from `@ably/ai-transport/vercel/react`.
 
 ---
 

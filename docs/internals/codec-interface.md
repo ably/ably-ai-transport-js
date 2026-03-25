@@ -1,6 +1,6 @@
 # Codec interface
 
-The codec is the boundary between the [transport layer and domain layer](glossary.md#transport-layer-vs-domain-layer). It defines how domain events (e.g. Vercel's `UIMessageChunk`) map to and from Ably messages. The transport is parameterized by `Codec<TEvent, TMessage>` — swap the codec and the same transport works with a different AI framework.
+The codec is the boundary between the [transport layer and domain layer](glossary.md#transport-layer-vs-domain-layer). It defines how domain events (e.g. Vercel's `UIMessageChunk`) map to and from Ably messages. The transport is parameterized by `Codec<TEvent, TMessage>` - swap the codec and the same transport works with a different AI framework.
 
 ## The Codec interface
 
@@ -28,9 +28,9 @@ interface Codec<TEvent, TMessage> {
 
 The server transport uses `createEncoder()` to get a `StreamEncoder`. For each turn:
 
-1. `writeMessages()` — publishes user messages as discrete Ably messages
-2. `appendEvent()` — streams LLM response events as message appends
-3. `close()` / `abort()` — finalizes the stream
+1. `writeMessages()` - publishes user messages as discrete Ably messages
+2. `appendEvent()` - streams LLM response events as message appends
+3. `close()` / `abort()` - finalizes the stream
 
 The encoder translates domain events into [encoder core](encoder.md#stream-lifecycle) operations (`startStream`, `appendStream`, `closeStream`). The encoder core handles Ably primitives.
 
@@ -38,10 +38,10 @@ The encoder translates domain events into [encoder core](encoder.md#stream-lifec
 
 The client transport uses:
 
-- `createDecoder()` — decodes inbound Ably messages into domain events and messages
-- `createAccumulator()` — builds complete messages from events (for [observer turns](glossary.md#own-turn-vs-observer-turn) — other clients' streams)
-- `isTerminal()` — tells the [stream router](transport-components.md#terminal-detection) when to close a per-turn ReadableStream
-- `getMessageKey()` — provides the [conversation tree's](conversation-tree.md#data-structures) secondary index key
+- `createDecoder()` - decodes inbound Ably messages into domain events and messages
+- `createAccumulator()` - builds complete messages from events (for [observer turns](glossary.md#own-turn-vs-observer-turn) - other clients' streams)
+- `isTerminal()` - tells the [stream router](transport-components.md#terminal-detection) when to close a per-turn ReadableStream
+- `getMessageKey()` - provides the [conversation tree's](conversation-tree.md#data-structures) secondary index key
 
 ## Encoder architecture
 
@@ -83,7 +83,7 @@ The [decoder core](decoder.md) handles [action dispatch](decoder.md#action-dispa
 
 ## Accumulator
 
-The accumulator assembles complete domain messages (`TMessage`) from streaming decoder outputs (`TEvent`). It exists because the decoder produces individually meaningless fragments — a `text-delta` is not a message — and the assembly logic is codec-specific. The transport is generic and cannot know how to build a `UIMessage` from `UIMessageChunk` events, so the codec provides an accumulator that does.
+The accumulator assembles complete domain messages (`TMessage`) from streaming decoder outputs (`TEvent`). It exists because the decoder produces individually meaningless fragments - a `text-delta` is not a message - and the assembly logic is codec-specific. The transport is generic and cannot know how to build a `UIMessage` from `UIMessageChunk` events, so the codec provides an accumulator that does.
 
 See [Message lifecycle](message-lifecycle.md) for how the accumulator fits into the full data flow from wire to UI.
 
@@ -105,25 +105,25 @@ A single turn can produce multiple domain messages. For example, a Vercel turn p
 
 The transport creates accumulators in two situations, and reads different properties from each:
 
-**Live streaming (observer turns):** When another client's turn is streaming, the transport creates a per-turn accumulator and feeds decoded events into it. After each event, the transport reads **`messages`** to get the latest in-progress snapshot — including partially-built messages still receiving data — and upserts it into the [conversation tree](conversation-tree.md). The accumulator is a working buffer; the tree is the source of truth.
+**Live streaming (observer turns):** When another client's turn is streaming, the transport creates a per-turn accumulator and feeds decoded events into it. After each event, the transport reads **`messages`** to get the latest in-progress snapshot - including partially-built messages still receiving data - and upserts it into the [conversation tree](conversation-tree.md). The accumulator is a working buffer; the tree is the source of truth.
 
-**History decoding:** When loading [history](history.md), each turn gets its own accumulator. After replaying all wire messages through the decoder, the transport reads **`completedMessages`** — only messages whose streams have terminated (finish, abort, error). Partial messages at page boundaries are excluded until more history pages are fetched. Each turn needs a separate accumulator because events from interleaved concurrent turns would corrupt each other's message assembly.
+**History decoding:** When loading [history](history.md), each turn gets its own accumulator. After replaying all wire messages through the decoder, the transport reads **`completedMessages`** - only messages whose streams have terminated (finish, abort, error). Partial messages at page boundaries are excluded until more history pages are fetched. Each turn needs a separate accumulator because events from interleaved concurrent turns would corrupt each other's message assembly.
 
 ### Properties
 
 | Property            | Returns                                     | Used by                                                |
 | ------------------- | ------------------------------------------- | ------------------------------------------------------ |
-| `messages`          | All messages, including in-progress         | Live streaming — shows partial state while streaming   |
-| `completedMessages` | Only messages with no active streams        | History — only fully terminated messages should appear |
-| `hasActiveStream`   | Whether any message is still receiving data | Transport — detects when a turn is complete            |
+| `messages`          | All messages, including in-progress         | Live streaming - shows partial state while streaming   |
+| `completedMessages` | Only messages with no active streams        | History - only fully terminated messages should appear |
+| `hasActiveStream`   | Whether any message is still receiving data | Transport - detects when a turn is complete            |
 
 ### Identity and ownership
 
-The accumulator does not own message identity. The transport assigns [`x-ably-msg-id`](wire-protocol.md#message-identity-x-ably-msg-id) and headers; the accumulator routes events to the correct in-progress message using the `messageId` field on decoder event outputs. The accumulator builds the domain object — the transport handles identity, headers, and tree placement.
+The accumulator does not own message identity. The transport assigns [`x-ably-msg-id`](wire-protocol.md#message-identity-x-ably-msg-id) and headers; the accumulator routes events to the correct in-progress message using the `messageId` field on decoder event outputs. The accumulator builds the domain object - the transport handles identity, headers, and tree placement.
 
 ## Lifecycle tracker
 
-The lifecycle tracker (`src/core/codec/lifecycle-tracker.ts`) handles mid-stream joins. When a client connects mid-stream (or loads from [history](history.md)), the decoder may see delta events without the preceding start event — the [first-contact path](decoder.md#first-contact) handles the stream-level reconstruction, but the lifecycle tracker ensures all _codec-level_ phases are emitted in order.
+The lifecycle tracker (`src/core/codec/lifecycle-tracker.ts`) handles mid-stream joins. When a client connects mid-stream (or loads from [history](history.md)), the decoder may see delta events without the preceding start event - the [first-contact path](decoder.md#first-contact) handles the stream-level reconstruction, but the lifecycle tracker ensures all _codec-level_ phases are emitted in order.
 
 ```typescript
 interface LifecycleTracker<TEvent> {
@@ -160,12 +160,12 @@ The Vercel codec (`src/vercel/codec/`) is the concrete implementation for the Ve
 
 The Vercel codec uses [`x-domain-*` headers](wire-protocol.md#domain-headers-x-domain) to carry Vercel-specific metadata:
 
-- `x-domain-id` — chunk/message ID
-- `x-domain-toolCallId` — tool call identifier
-- `x-domain-providerMetadata` — JSON-serialized `ProviderMetadata`
-- `x-domain-finishReason` — why the LLM stopped
-- `x-domain-error` — error message
-- `x-domain-data` — JSON-serialized data payload
+- `x-domain-id` - chunk/message ID
+- `x-domain-toolCallId` - tool call identifier
+- `x-domain-providerMetadata` - JSON-serialized `ProviderMetadata`
+- `x-domain-finishReason` - why the LLM stopped
+- `x-domain-error` - error message
+- `x-domain-data` - JSON-serialized data payload
 
 These headers are read/written using `headerReader()` and `headerWriter()` utilities that automatically prefix keys with `x-domain-`. See [Headers](headers.md) for the full reader/writer API.
 
@@ -173,11 +173,11 @@ These headers are read/written using `headerReader()` and `headerWriter()` utili
 
 To support a new AI framework, implement the `Codec<TEvent, TMessage>` interface:
 
-1. **Define TEvent and TMessage** — the framework's streaming event and accumulated message types
-2. **Implement the encoder** — map domain events to encoder core operations (startStream, appendStream, closeStream, publishDiscrete)
-3. **Implement the decoder hooks** — build domain events from stream tracker state
-4. **Implement the accumulator** — build complete messages from decoder outputs
-5. **Implement isTerminal** — identify events that close a stream
-6. **Implement getMessageKey** — return a stable identity for each message
+1. **Define TEvent and TMessage** - the framework's streaming event and accumulated message types
+2. **Implement the encoder** - map domain events to encoder core operations (startStream, appendStream, closeStream, publishDiscrete)
+3. **Implement the decoder hooks** - build domain events from stream tracker state
+4. **Implement the accumulator** - build complete messages from decoder outputs
+5. **Implement isTerminal** - identify events that close a stream
+6. **Implement getMessageKey** - return a stable identity for each message
 
 See [Vercel codec](vercel-codec.md) for the concrete Vercel implementation details. See [Encoder](encoder.md) for the encoder core that domain encoders delegate to. See [Decoder](decoder.md) for the decoder core and its hook interface. See [Wire protocol](wire-protocol.md) for the transport vs domain header discipline.

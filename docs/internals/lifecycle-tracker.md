@@ -1,6 +1,6 @@
 # Lifecycle tracker
 
-The lifecycle tracker (`src/core/codec/lifecycle-tracker.ts`) ensures that required lifecycle events are emitted before content events, even when a client joins mid-stream. It synthesizes missing events so that consumers always see a well-formed event sequence — start before deltas, start-step before content.
+The lifecycle tracker (`src/core/codec/lifecycle-tracker.ts`) ensures that required lifecycle events are emitted before content events, even when a client joins mid-stream. It synthesizes missing events so that consumers always see a well-formed event sequence - start before deltas, start-step before content.
 
 ## The problem
 
@@ -10,7 +10,7 @@ Without the lifecycle tracker, a late-joining client would see text deltas witho
 
 ## How it works
 
-The tracker is configured with an ordered list of **phases** — lifecycle events that must precede content. Each phase has a key and a build function that produces synthetic events:
+The tracker is configured with an ordered list of **phases** - lifecycle events that must precede content. Each phase has a key and a build function that produces synthetic events:
 
 ```typescript
 const tracker = createLifecycleTracker<UIMessageChunk>([
@@ -25,7 +25,7 @@ const tracker = createLifecycleTracker<UIMessageChunk>([
 ]);
 ```
 
-Phases are scoped by an arbitrary string key — typically a [turn ID](glossary.md#turn-id-vs-message-id). Each scope tracks independently which phases have been emitted.
+Phases are scoped by an arbitrary string key - typically a [turn ID](glossary.md#turn-id-vs-message-id). Each scope tracks independently which phases have been emitted.
 
 ### ensurePhases
 
@@ -43,7 +43,7 @@ Called when the real event arrives from the wire, so the tracker doesn't re-synt
 
 ### resetPhase
 
-Resets a phase so it will be re-synthesized on the next `ensurePhases` call. Used for repeating phases — the Vercel codec resets `start-step` after each `finish-step`, because multi-step turns require a new `start-step` before each step's content.
+Resets a phase so it will be re-synthesized on the next `ensurePhases` call. Used for repeating phases - the Vercel codec resets `start-step` after each `finish-step`, because multi-step turns require a new `start-step` before each step's content.
 
 ### clearScope
 
@@ -62,16 +62,16 @@ Removes all tracking state for a scope. Called on turn completion (`finish`, `ab
 
 The Vercel decoder creates a lifecycle tracker with two phases: `start` and `start-step`. It composes the tracker into the decoder hooks:
 
-- **Before every streamed event** — `ensurePhases` is called with the turn ID and a context containing the `messageId` from headers. Any missing lifecycle events are prepended to the decoder output.
-- **On `start` event** — `markEmitted(turnId, 'start')`
-- **On `start-step` event** — `markEmitted(turnId, 'start-step')`
-- **On `finish-step` event** — `resetPhase(turnId, 'start-step')` (next step needs a new start-step)
-- **On `finish` or `abort`** — `clearScope(turnId)`
+- **Before every streamed event** - `ensurePhases` is called with the turn ID and a context containing the `messageId` from headers. Any missing lifecycle events are prepended to the decoder output.
+- **On `start` event** - `markEmitted(turnId, 'start')`
+- **On `start-step` event** - `markEmitted(turnId, 'start-step')`
+- **On `finish-step` event** - `resetPhase(turnId, 'start-step')` (next step needs a new start-step)
+- **On `finish` or `abort`** - `clearScope(turnId)`
 
-This means a mid-stream join produces the sequence: synthetic `start` → synthetic `start-step` → real `text-delta` (from decoder first-contact) — which the accumulator can process correctly.
+This means a mid-stream join produces the sequence: synthetic `start` → synthetic `start-step` → real `text-delta` (from decoder first-contact) - which the accumulator can process correctly.
 
 ## Design
 
-The tracker is generic — it knows nothing about Vercel's event types or the specific phases. Codecs configure it with their own phase list and call it from their decoder hooks. The `context` parameter passes through codec-specific data (like `messageId`) without the tracker needing to interpret it.
+The tracker is generic - it knows nothing about Vercel's event types or the specific phases. Codecs configure it with their own phase list and call it from their decoder hooks. The `context` parameter passes through codec-specific data (like `messageId`) without the tracker needing to interpret it.
 
 See [Decoder](decoder.md) for how the decoder core handles stream-level reconstruction (first-contact, prefix-match). See [Vercel codec](vercel-codec.md) for the full Vercel decoder integration. See [Codec interface: accumulator](codec-interface.md#accumulator) for how accumulated events build messages.

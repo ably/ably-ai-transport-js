@@ -8,7 +8,7 @@ Transport headers are built by [`buildTransportHeaders`](transport-components.md
 
 ## Domain header utilities
 
-Domain headers (`src/utils.ts`) carry codec-specific metadata — field names like `toolCallId`, `providerMetadata`, `finishReason`. The prefix `x-domain-` is applied automatically by the writer and stripped by the reader, so codec code works with unprefixed keys.
+Domain headers (`src/utils.ts`) carry codec-specific metadata - field names like `toolCallId`, `providerMetadata`, `finishReason`. The prefix `x-domain-` is applied automatically by the writer and stripped by the reader, so codec code works with unprefixed keys.
 
 ### headerWriter
 
@@ -31,7 +31,7 @@ const headers = headerWriter()
 | `str(key, value)` | `string \| undefined` | Stored directly. Skipped if undefined. |
 | `bool(key, value)` | `boolean \| undefined` | Stored as `"true"` / `"false"`. Skipped if undefined. |
 | `json(key, value)` | `unknown` | `JSON.stringify()`. Skipped if undefined or null. |
-| `build()` | — | Returns the accumulated `Record<string, string>`. |
+| `build()` | - | Returns the accumulated `Record<string, string>`. |
 
 ### headerReader
 
@@ -73,7 +73,7 @@ These are used internally by `headerWriter` / `headerReader` and by the transpor
 | `mergeHeaders(base, overrides)` | Shallow merge of two header records (overrides win). |
 | `domainHeaders(entries)` | Build a domain headers record from unprefixed key-value pairs. |
 | `getDomainHeader(headers, key)` | Read a single domain header by unprefixed key. |
-| `setIfPresent(headers, key, value)` | Set a header if the value is defined — strings directly, booleans/numbers stringified, objects JSON-serialized. |
+| `setIfPresent(headers, key, value)` | Set a header if the value is defined - strings directly, booleans/numbers stringified, objects JSON-serialized. |
 | `parseJson(value)` | Parse a JSON string, returning undefined on failure. |
 | `parseBool(value)` | Parse `"true"` / `"false"`, returning undefined if absent. |
 | `stripUndefined(obj)` | Remove undefined-valued keys from an object. Used to build chunk literals with optional fields. |
@@ -82,9 +82,9 @@ These are used internally by `headerWriter` / `headerReader` and by the transpor
 
 When the [encoder](encoder.md#header-merging) publishes a message, headers are merged in priority order (later wins):
 
-1. **Default extras** — encoder-level defaults from construction
-2. **Per-write overrides** — headers passed to individual write calls
-3. **Codec headers** — domain-specific headers from the payload
+1. **Default extras** - encoder-level defaults from construction
+2. **Per-write overrides** - headers passed to individual write calls
+3. **Codec headers** - domain-specific headers from the payload
 
 After merging, the `onMessage` hook runs as a post-processing step for transport-level stamping (turn ID, role, parent).
 

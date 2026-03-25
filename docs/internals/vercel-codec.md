@@ -4,7 +4,7 @@ The Vercel codec (`src/vercel/codec/`) implements the [Codec interface](codec-in
 
 ## Encoder
 
-`src/vercel/codec/encoder.ts` — maps `UIMessageChunk` events and `UIMessage` objects to Ably operations via the [encoder core](encoder.md).
+`src/vercel/codec/encoder.ts` - maps `UIMessageChunk` events and `UIMessage` objects to Ably operations via the [encoder core](encoder.md).
 
 The encoder handles two distinct write paths:
 
@@ -14,10 +14,10 @@ Each `UIMessageChunk` type maps to exactly one encoder core operation:
 
 | Chunk category | Examples | Core operation |
 |---|---|---|
-| Stream start | `text-start`, `reasoning-start`, `tool-input-start` | `startStream` — opens a message stream |
-| Stream delta | `text-delta`, `reasoning-delta`, `tool-input-delta` | `appendStream` — appends text to in-flight message |
-| Stream end | `text-end`, `reasoning-end`, `tool-input-available` | `closeStream` — closes the stream |
-| Lifecycle | `start`, `start-step`, `finish-step`, `finish`, `error`, `abort` | `publishDiscrete` — standalone message |
+| Stream start | `text-start`, `reasoning-start`, `tool-input-start` | `startStream` - opens a message stream |
+| Stream delta | `text-delta`, `reasoning-delta`, `tool-input-delta` | `appendStream` - appends text to in-flight message |
+| Stream end | `text-end`, `reasoning-end`, `tool-input-available` | `closeStream` - closes the stream |
+| Lifecycle | `start`, `start-step`, `finish-step`, `finish`, `error`, `abort` | `publishDiscrete` - standalone message |
 | Tool lifecycle | `tool-input-error`, `tool-output-available`, `tool-output-error`, `tool-approval-request`, `tool-output-denied` | `publishDiscrete` |
 | Content | `file`, `source-url`, `source-document`, `message-metadata` | `publishDiscrete` |
 | Custom data | `data-*` | `publishDiscrete` (with `ephemeral` flag for transient chunks) |
@@ -42,7 +42,7 @@ On `abort` chunks, the encoder aborts all in-progress streams (via `abortAllStre
 
 ## Decoder
 
-`src/vercel/codec/decoder.ts` — maps inbound Ably messages to `DecoderOutput<UIMessageChunk, UIMessage>[]` via the [decoder core](decoder.md).
+`src/vercel/codec/decoder.ts` - maps inbound Ably messages to `DecoderOutput<UIMessageChunk, UIMessage>[]` via the [decoder core](decoder.md).
 
 The decoder provides four hooks to the core:
 
@@ -60,7 +60,7 @@ Start hooks also call `ensurePhases` on the [lifecycle tracker](lifecycle-tracke
 
 Handles non-streamed messages. Two categories:
 
-**Discrete message parts** (from `writeMessages`) are identified by the presence of `x-ably-role` in headers. These are reconstructed into single-part `UIMessage` objects — the [conversation tree](conversation-tree.md) merges parts sharing the same `x-ably-msg-id`.
+**Discrete message parts** (from `writeMessages`) are identified by the presence of `x-ably-role` in headers. These are reconstructed into single-part `UIMessage` objects - the [conversation tree](conversation-tree.md) merges parts sharing the same `x-ably-msg-id`.
 
 **Lifecycle events** are dispatched by Ably message name:
 
@@ -83,17 +83,17 @@ When `tool-input-available` arrives but no stream tracker exists for the `toolCa
 
 ## Accumulator
 
-`src/vercel/codec/accumulator.ts` — builds and maintains a `UIMessage[]` list from decoder outputs.
+`src/vercel/codec/accumulator.ts` - builds and maintains a `UIMessage[]` list from decoder outputs.
 
-The accumulator consumes `DecoderOutput[]` and groups streaming events into `UIMessage` objects using lifecycle boundaries (`start` / `finish`). Multiple messages can be in-progress concurrently — each identified by the `messageId` field on decoder output (read from `x-ably-msg-id`).
+The accumulator consumes `DecoderOutput[]` and groups streaming events into `UIMessage` objects using lifecycle boundaries (`start` / `finish`). Multiple messages can be in-progress concurrently - each identified by the `messageId` field on decoder output (read from `x-ably-msg-id`).
 
 ### Message state management
 
 Each active message tracks:
 
-- **textStreams** / **reasoningStreams** — `DeltaStreamTracker` instances that map stream IDs to part indices
-- **toolTrackers** — per-toolCallId trackers with accumulated input text and part index
-- **streamStatus** — per-stream status (`streaming` / `finished` / `aborted`)
+- **textStreams** / **reasoningStreams** - `DeltaStreamTracker` instances that map stream IDs to part indices
+- **toolTrackers** - per-toolCallId trackers with accumulated input text and part index
+- **streamStatus** - per-stream status (`streaming` / `finished` / `aborted`)
 
 ### Event processing
 

@@ -1,6 +1,6 @@
 # Token streaming
 
-AI Transport streams LLM tokens over Ably using message appends — each token is appended to a persistent message on the channel, so the response builds up incrementally and survives disconnection.
+AI Transport streams LLM tokens over Ably using message appends - each token is appended to a persistent message on the channel, so the response builds up incrementally and survives disconnection.
 
 Without a durable transport, streaming responses are ephemeral: if the connection drops, the partial response is lost. Ably's message appends persist the accumulated text, so a reconnecting or late-joining client sees the full response from channel history.
 
@@ -66,7 +66,7 @@ On the client, every streaming event is accumulated into the conversation tree a
 ```typescript
 const turn = await transport.send(userMessage);
 
-// Subscribe to accumulated messages — updates on every token
+// Subscribe to accumulated messages - updates on every token
 const unsubscribe = transport.on('message', () => {
   const messages = transport.getMessages();
   // the last assistant message grows as tokens arrive
@@ -77,10 +77,10 @@ This is the primary consumption path. In React, the `useMessages()` hook handles
 
 ### The event stream
 
-`send()` also returns a `ReadableStream<TEvent>` on the `ActiveTurn`. This exists as an integration seam for framework adapters — Vercel's `useChat` expects a `ReadableStream` as its transport contract. Most application code should use `getMessages()` instead, since the accumulator provides the same per-token granularity.
+`send()` also returns a `ReadableStream<TEvent>` on the `ActiveTurn`. This exists as an integration seam for framework adapters - Vercel's `useChat` expects a `ReadableStream` as its transport contract. Most application code should use `getMessages()` instead, since the accumulator provides the same per-token granularity.
 
 ```typescript
-// Framework adapter usage — most apps won't consume this directly
+// Framework adapter usage - most apps won't consume this directly
 const turn = await transport.send(userMessage);
 const reader = turn.stream.getReader();
 while (true) {
@@ -90,13 +90,13 @@ while (true) {
 }
 ```
 
-For turns started by other clients (observer turns), there is no stream — events are accumulated into messages and the tree updates via `on('message')`. See [Message lifecycle](../internals/message-lifecycle.md#own-turns-vs-observer-turns) for the full routing picture.
+For turns started by other clients (observer turns), there is no stream p events are accumulated into messages and the tree updates via `on('message')`. See [Message lifecycle](../internals/message-lifecycle.md#own-turns-vs-observer-turns) for the full routing picture.
 
 ## Recovery
 
-Appends are pipelined — the encoder fires each append without waiting for acknowledgement, so tokens flow with minimal latency. If an append fails (e.g. during a brief network interruption), the message on the channel is now missing a chunk. Continuing to append deltas would build on incomplete text. The encoder recovers by issuing an `updateMessage` that replaces the entire message content with the full accumulated text it has been tracking locally, then resumes appending from that corrected state.
+Appends are pipelined - the encoder fires each append without waiting for acknowledgement, so tokens flow with minimal latency. If an append fails (e.g. during a brief network interruption), the message on the channel is now missing a chunk. Continuing to append deltas would build on incomplete text. The encoder recovers by issuing an `updateMessage` that replaces the entire message content with the full accumulated text it has been tracking locally, then resumes appending from that corrected state.
 
-Late-joining clients receive the final message from channel history, which contains the fully accumulated text regardless of whether individual appends were missed.
+Late-joining clients receive the final message from channel history, which contains the fully accumulated text irrespective of whether or not individual appends were missed.
 
 ## What streams through
 
@@ -108,8 +108,8 @@ The transport streams whatever events the codec produces. For the Vercel AI SDK 
 | `reasoning-delta` | Message append (separate stream) |
 | `tool-input-delta` | Message append (per tool call) |
 | `tool-output-available` | Discrete message |
-| `finish` | Discrete message (terminal — closes the stream) |
-| `error` | Discrete message (terminal — closes the stream with error) |
+| `finish` | Discrete message (terminal - closes the stream) |
+| `error` | Discrete message (terminal - closes the stream with error) |
 
 Multiple content streams can be active within a single turn (e.g., reasoning + text, or multiple tool calls). Each gets its own message with its own stream ID.
 

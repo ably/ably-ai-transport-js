@@ -8,7 +8,7 @@ AI Transport uses `Ably.ErrorInfo` as its error type. Each error has a numeric `
 |---|---|---|---|---|
 | 40000 | `BadRequest` | 400 | The request was invalid | Check the request parameters |
 | 40003 | `InvalidArgument` | 400 | An argument passed to a public method was invalid | Fix the argument value |
-| 104000 | `EncoderRecoveryFailed` | 500 | Encoder recovery failed after flush — `updateMessage` could not recover a failed append pipeline | Non-fatal; the message may be incomplete on the channel. Check network connectivity |
+| 104000 | `EncoderRecoveryFailed` | 500 | Encoder recovery failed after flush - `updateMessage` could not recover a failed append pipeline | Non-fatal; the message may be incomplete on the channel. Check network connectivity |
 | 104001 | `TransportSubscriptionError` | 500 | A channel subscription callback threw unexpectedly | Non-fatal; the transport is still operational. Check error handler logic |
 | 104002 | `CancelListenerError` | 500 | Cancel listener or `onCancel` hook threw while processing a cancel message | Non-fatal; check the `onCancel` hook implementation |
 | 104003 | `TurnLifecycleError` | 500 | A turn lifecycle event (turn-start or turn-end) failed to publish | Non-fatal; the turn may not be visible to other clients. Check channel permissions |

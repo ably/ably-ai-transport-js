@@ -2,7 +2,7 @@
 
 Build a streaming chat app using AI Transport's generic React hooks instead of Vercel's `useChat`. This path gives you direct access to the transport's conversation tree, individual send/regenerate/edit operations, and full control over message state.
 
-The server code is identical to the [useChat quickstart](vercel-use-chat.md) — only the client differs.
+The server code is identical to the [useChat quickstart](vercel-use-chat.md) - only the client differs.
 
 ## Prerequisites
 
@@ -40,8 +40,8 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
   const { channel } = useChannel({ channelName: chatId });
   const [input, setInput] = useState('');
 
-  // Create the transport — codec is passed explicitly since we're using generic hooks.
-  // body merges extra fields into every HTTP POST — the server uses `id` to
+  // Create the transport - codec is passed explicitly since we're using generic hooks.
+  // body merges extra fields into every HTTP POST - the server uses `id` to
   // identify which Ably channel to publish the response to.
   const transport = useClientTransport({
     channel,
@@ -140,19 +140,19 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
 | | useChat path | Generic hooks path |
 |---|---|---|
 | **Message state** | Managed by `useChat` | Managed by `useConversationTree` |
-| **Send** | `sendMessage({ text })` | `send([uiMessage])` — you construct the `UIMessage` |
+| **Send** | `sendMessage({ text })` | `send([uiMessage])` - you construct the `UIMessage` |
 | **Regenerate** | `regenerate({ messageId })` | `regenerate(messageId)` |
 | **Edit** | Not built into `useChat` | `edit(messageId, [newMessage])` |
 | **Branch navigation** | Not available | `tree.getSiblings()`, `tree.selectSibling()` |
 | **Stop** | `stop()` from `useChat` | `transport.cancel({ own: true })` |
-| **Observer sync** | Requires `useMessageSync` | Built-in — `tree.messages` includes all clients |
+| **Observer sync** | Requires `useMessageSync` | Built-in - `tree.messages` includes all clients |
 | **Hooks needed** | `useChatTransport` + `useMessageSync` | Individual hooks per operation |
 
 Use the **useChat path** when you want the simplest integration and Vercel's `useChat` handles your needs. Use the **generic hooks path** when you need conversation branching UI, custom message construction, or tighter control over transport operations.
 
 ## Next steps
 
-- [Conversation branching](../features/branching.md) — the generic hooks path gives you full fork navigation
-- [Cancel](../features/cancel.md) — granular cancel with filter scopes
-- [Barge-in](../features/barge-in.md) — send messages while the AI is streaming
-- [React hooks reference](../reference/react-hooks.md) — complete API for all hooks
+- [Conversation branching](../features/branching.md) - the generic hooks path gives you full fork navigation
+- [Cancel](../features/cancel.md) - granular cancel with filter scopes
+- [Interruption](../features/interruption.md) - send messages while the AI is streaming
+- [React hooks reference](../reference/react-hooks.md) - complete API for all hooks

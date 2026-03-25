@@ -1,8 +1,8 @@
 # Concurrent turns
 
-Multiple turns can be active simultaneously on the same Ably channel. Each turn has its own stream, its own cancel handle, and its own lifecycle — they don't interfere with each other.
+Multiple turns can be active simultaneously on the same Ably channel. Each turn has its own stream, its own cancel handle, and its own lifecycle - they don't interfere with one other.
 
-Without concurrent turn support, a transport must serialize interactions: one request finishes before the next starts. AI Transport allows parallel turns, enabling multi-agent patterns, barge-in without cancelling, and multi-user conversations where multiple people interact at once.
+Without concurrent turn support, a transport must serialize interactions: one request finishes before the next starts. AI Transport allows parallel turns, enabling multi-agent patterns, interruption without cancelling, and multi-user conversations where multiple people interact at once.
 
 ## How it works
 
@@ -94,7 +94,7 @@ See [Cancel](cancel.md) for the full cancel protocol.
 
 Concurrent turns happen in these scenarios:
 
-- **Barge-in without cancel** — user sends a new message without stopping the current response (see [Barge-in](barge-in.md))
-- **Multi-user** — two users on the same channel both send messages (see [Multi-client sync](multi-client.md))
-- **Multi-agent** — a server creates multiple turns for different agents responding to the same prompt
-- **Parallel tool execution** — a server creates separate turns for parallel tool call results
+- **Interruption without cancel** - user sends a new message without stopping the current response (see [Interruption](interruption.md))
+- **Multi-user** - two users on the same channel both send messages (see [Multi-client sync](multi-client.md))
+- **Multi-agent** - a server creates multiple turns for different agents responding to the same prompt
+- **Parallel tool execution** - a server creates separate turns for parallel tool call results

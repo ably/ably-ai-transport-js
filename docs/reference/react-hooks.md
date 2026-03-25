@@ -29,9 +29,9 @@ const transport = useClientTransport<TEvent, TMessage>(options: ClientTransportO
 | `options.messages` | `TMessage[]?` | Initial messages to seed the conversation tree |
 | `options.logger` | `Logger?` | Logger instance |
 
-**Returns:** `ClientTransport<TEvent, TMessage>` — the memoized transport (same instance on every render).
+**Returns:** `ClientTransport<TEvent, TMessage>` - the memoized transport (same instance on every render).
 
-The transport subscribes to the Ably channel immediately on creation. It does not auto-close on unmount — channel lifecycle is managed by Ably's `ChannelProvider`.
+The transport subscribes to the Ably channel immediately on creation. It does not auto-close on unmount - channel lifecycle is managed by Ably's `ChannelProvider`.
 
 ---
 
@@ -47,7 +47,7 @@ const messages = useMessages<TEvent, TMessage>(transport: ClientTransport<TEvent
 |---|---|---|
 | `transport` | `ClientTransport<TEvent, TMessage>` | The transport to observe |
 
-**Returns:** `TMessage[]` — the current decoded message list. Updates on every message change (including streaming deltas).
+**Returns:** `TMessage[]` - the current decoded message list. Updates on every message change (including streaming deltas).
 
 ---
 
@@ -68,9 +68,9 @@ const turn = await send(messages, options?);
 **Returns:** `(messages: TMessage[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>`
 
 The returned function sends one or more messages in a new turn. Returns an `ActiveTurn` with:
-- `turn.stream` — `ReadableStream<TEvent>` of decoded events
-- `turn.turnId` — the turn's unique ID
-- `turn.cancel()` — cancel this specific turn
+- `turn.stream` - `ReadableStream<TEvent>` of decoded events
+- `turn.turnId` - the turn's unique ID
+- `turn.cancel()` - cancel this specific turn
 
 ---
 
@@ -126,7 +126,7 @@ const activeTurns = useActiveTurns<TEvent, TMessage>(transport: ClientTransport<
 |---|---|---|
 | `transport` | `ClientTransport \| null \| undefined` | The transport to observe. Pass null/undefined if not yet available |
 
-**Returns:** `Map<string, Set<string>>` — keys are clientIds, values are sets of active turnIds. Empty map if transport is null.
+**Returns:** `Map<string, Set<string>>` - keys are clientIds, values are sets of active turnIds. Empty map if transport is null.
 
 Updates on every turn start/end event. Includes turns from all clients on the channel.
 
@@ -198,7 +198,7 @@ const messages = useAblyMessages<TEvent, TMessage>(transport: ClientTransport<TE
 |---|---|---|
 | `transport` | `ClientTransport<TEvent, TMessage>` | The transport to observe |
 
-**Returns:** `Ably.InboundMessage[]` — raw Ably messages in chronological order. Includes live and history-loaded messages.
+**Returns:** `Ably.InboundMessage[]` - raw Ably messages in chronological order. Includes live and history-loaded messages.
 
 ---
 
@@ -224,11 +224,11 @@ const chatTransport = useChatTransport(
 | `transportOrOptions` | `ClientTransport \| VercelClientTransportOptions` | An existing transport, or options to create one |
 | `chatOptions` | `ChatTransportOptions?` | Optional hooks for customizing request construction |
 
-**Returns:** `ChatTransport` — compatible with `useChat`'s `transport` option.
+**Returns:** `ChatTransport` - compatible with `useChat`'s `transport` option.
 
 Two usage patterns:
-1. **Wrap an existing transport** — pass a `ClientTransport` created by `useClientTransport`
-2. **Create internally** — pass `VercelClientTransportOptions` and the hook creates the transport with `UIMessageCodec`
+1. **Wrap an existing transport** - pass a `ClientTransport` created by `useClientTransport`
+2. **Create internally** - pass `VercelClientTransportOptions` and the hook creates the transport with `UIMessageCodec`
 
 `ChatTransportOptions.prepareSendMessagesRequest` lets you customize the HTTP POST body and headers:
 

@@ -4,13 +4,13 @@ The client and server transports are composed from several focused sub-component
 
 ## StreamRouter
 
-`src/core/transport/stream-router.ts` — client-side only.
+`src/core/transport/stream-router.ts` - client-side only.
 
-The stream router maps decoded events to per-turn `ReadableStream` instances for [own turns](glossary.md#own-turn-vs-observer-turn) — turns this client initiated via `send()`, `regenerate()`, or `edit()`. When the client starts a turn, the router creates a new stream. As decoded events arrive from the channel subscription, the transport routes them through the router to the correct stream.
+The stream router maps decoded events to per-turn `ReadableStream` instances for [own turns](glossary.md#own-turn-vs-observer-turn) - turns this client initiated via `send()`, `regenerate()`, or `edit()`. When the client starts a turn, the router creates a new stream. As decoded events arrive from the channel subscription, the transport routes them through the router to the correct stream.
 
 The stream is **not the only destination** for own-turn events. After routing an event to the stream, the transport also feeds it to a per-turn [accumulator](codec-interface.md#accumulator) that builds complete domain messages for the [conversation tree](conversation-tree.md). This means `getMessages()` updates on every event regardless of who started the turn. The stream exists primarily as an integration seam for framework adapters (e.g. Vercel's `useChat` expects a `ReadableStream`); most application code consumes accumulated messages instead.
 
-Events from [observer turns](glossary.md#own-turn-vs-observer-turn) (other clients' turns) go to the accumulator only — the router has no stream for them because no caller on this client initiated the turn. See [Message lifecycle](message-lifecycle.md#own-turns-vs-observer-turns) for the full routing picture.
+Events from [observer turns](glossary.md#own-turn-vs-observer-turn) (other clients' turns) go to the accumulator only - the router has no stream for them because no caller on this client initiated the turn. See [Message lifecycle](message-lifecycle.md#own-turns-vs-observer-turns) for the full routing picture.
 
 ### Operations
 
@@ -27,11 +27,11 @@ The router accepts an [`isTerminal`](codec-interface.md#the-codec-interface) pre
 
 ### Controller capture
 
-`ReadableStream`'s `start()` callback runs synchronously per the WHATWG spec. The router exploits this to capture the controller in the same tick as stream creation — no async gap where events could be lost.
+`ReadableStream`'s `start()` callback runs synchronously per the WHATWG spec. The router exploits this to capture the controller in the same tick as stream creation - no async gap where events could be lost.
 
 ## TurnManager
 
-`src/core/transport/turn-manager.ts` — server-side only.
+`src/core/transport/turn-manager.ts` - server-side only.
 
 The turn manager tracks active turns and publishes [turn lifecycle events](wire-protocol.md#lifecycle-events) (`x-ably-turn-start`, `x-ably-turn-end`) on the Ably channel.
 
@@ -55,7 +55,7 @@ The turn manager publishes `x-ably-turn-end` **before** deleting local state. If
 
 ## pipeStream
 
-`src/core/transport/pipe-stream.ts` — server-side only.
+`src/core/transport/pipe-stream.ts` - server-side only.
 
 A pure function that reads events from a `ReadableStream`, writes them through a [streaming encoder](codec-interface.md#encoder-architecture), and handles abort/error. No dependencies on turn state or transport internals.
 
@@ -72,11 +72,11 @@ while true:
 
 ### Abort handling
 
-The abort signal is converted to a promise and raced against `reader.read()`. The `.then(() => 'aborted')` pattern creates a tagged discriminant for `Promise.race` — this is one of the documented exceptions to the async/await rule (see `.claude/rules/PROMISES.md`).
+The abort signal is converted to a promise and raced against `reader.read()`. The `.then(() => 'aborted')` pattern creates a tagged discriminant for `Promise.race` - this is one of the documented exceptions to the async/await rule (see `.claude/rules/PROMISES.md`).
 
 When cancelled:
 
-1. The `onAbort` callback fires (if provided) — the server can write final events before the stream closes (e.g. `[generation cancelled]`)
+1. The `onAbort` callback fires (if provided) - the server can write final events before the stream closes (e.g. `[generation cancelled]`)
 2. `encoder.abort('cancelled')` aborts all in-progress streams
 3. The reader lock is released
 
@@ -97,10 +97,10 @@ The server transport subscribes to [`x-ably-cancel`](wire-protocol.md#lifecycle-
 1. Parses the cancel filter from [cancel headers](wire-protocol.md#transport-headers-x-ably) (`x-ably-cancel-turn-id`, `x-ably-cancel-own`, `x-ably-cancel-client-id`, `x-ably-cancel-all`)
 2. Resolves which active turns match the filter
 3. For each matched turn:
-   - Calls the turn's `onCancel` hook (if provided) — the hook can return `false` to reject the cancel
+   - Calls the turn's `onCancel` hook (if provided) - the hook can return `false` to reject the cancel
    - If allowed, fires `controller.abort()` on the turn's AbortController
 
-Throwing handlers don't prevent other turns from being cancelled — each turn's cancel is isolated in its own try/catch.
+Throwing handlers don't prevent other turns from being cancelled - each turn's cancel is isolated in its own try/catch.
 
 ### Cancel filter resolution
 
@@ -113,7 +113,7 @@ Throwing handlers don't prevent other turns from being cancelled — each turn's
 
 ## buildTransportHeaders
 
-`src/core/transport/headers.ts` — used by both client and server.
+`src/core/transport/headers.ts` - used by both client and server.
 
 A single function that builds the standard [`x-ably-*` header set](wire-protocol.md#transport-headers-x-ably) for a message. Takes role, turnId, msgId, and optional [branching headers](wire-protocol.md#branching-headers) (parent, forkOf). Used by the server transport's `addMessages()` and `streamResponse()`, and by the client transport for optimistic message stamping.
 

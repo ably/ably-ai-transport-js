@@ -14,7 +14,7 @@ npm run lint:fix          # ESLint + Prettier auto-fix
 npm run format:check      # Prettier check
 npm run typecheck         # tsc --noEmit
 npm test                  # Unit tests (vitest, mocks only)
-npm run test:integration  # Integration tests (needs ABLY_API_KEY)
+npm run test:integration  # Integration tests
 npm run check:error-codes # Validate ErrorCode enum against ably-common
 npm run precommit         # format:check + lint + typecheck
 ```

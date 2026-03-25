@@ -2,10 +2,10 @@
 
 ## Two tiers
 
-| Tier | Command | Runs against | Speed | What it proves |
-|---|---|---|---|---|
-| **Unit** | `npm test` | Mocks only | Fast, CI on every push | Every code path works correctly in isolation |
-| **Integration** | `npm run test:integration` | Real Ably channels | ~30s, CI on merge/nightly | Happy path works end-to-end over real Ably |
+| Tier | Command | Runs against | What it proves |
+|---|---|---|---|
+| **Unit** | `npm test` | Mocks only | Every code path works correctly in isolation |
+| **Integration** | `npm run test:integration` | Real Ably channels | Happy path works end-to-end over real Ably |
 
 Config: `vitest.config.ts` (unit, excludes `*.integration.test.ts`) and `vitest.config.integration.ts` (integration only).
 
@@ -43,9 +43,20 @@ Integration tests can be written at two levels:
 - **Codec level**: Test encode/decode roundtrips over a real Ably channel without standing up a full transport. A codec-level test publishes encoded messages to a channel and verifies the decoder reconstructs the expected output. This validates the wire format and Ably message serialization without transport machinery.
 - **Transport level**: Test the full send → stream → receive lifecycle through `ClientTransport` and `ServerTransport`. This validates the complete system including turn management, stream routing, and history hydration.
 
+### Environment
+
+By default, integration tests run against the **Ably sandbox**. The globalSetup (`test/helper/test-setup.ts`) provisions a temporary app via the sandbox REST API — no API key or secrets are needed.
+
+To run against a different environment, set `VITE_ABLY_ENV`:
+
+| `VITE_ABLY_ENV` | Behaviour | API key required? |
+|---|---|---|
+| *(unset)* / `sandbox` | Provisions a sandbox app automatically | No |
+| `local` | Connects to `local-rest.ably.io:8081` (no TLS) | Yes — set `VITE_ABLY_API_KEY` |
+| `production` | Connects to production Ably | Yes — set `VITE_ABLY_API_KEY` |
+
 ### Conventions
 
-- `describe.skipIf(!ABLY_API_KEY)` — tests skip gracefully without credentials
 - Unique channel names per test via `uniqueChannelName()` to avoid crosstalk
 - Clean up clients in `afterEach` via `closeAllClients()`
 - 30s test timeout; individual tests should complete in 2-5s
@@ -74,15 +85,3 @@ Happy-path scenarios that validate the wire protocol and real Ably behavior:
 - Error handler isolation (unit tests)
 - Invalid input validation (unit tests)
 - React hook lifecycle (unit tests with jsdom)
-
-## CI
-
-```bash
-# Every push
-npm test               # unit tests
-npm run typecheck
-npm run lint
-
-# Merge to main / nightly
-npm run test:integration   # needs ABLY_API_KEY secret
-```

@@ -8,21 +8,18 @@ A durable transport layer between AI agents and users. Streams AI responses over
 
 ---
 
-## What it does
+## Why
 
-Without a durable session layer, AI streaming is fragile. Connections drop mid-response, refreshing the page loses the conversation, switching devices means starting over, and cancellation requires custom plumbing on every project.
+The default AI SDK transport streams tokens over an HTTP response body. This works for simple single-tab chat, but breaks down when you need:
 
-This SDK handles the transport between your AI backend and your frontend:
-
-- **Token streaming** — AI responses stream in real time over Ably channels
-- **Connection recovery** — Ably automatically reconnects after network blips and delivers any messages the client missed
-- **Resumable streams** — Clients that join or rejoin mid-response receive the in-progress stream immediately on subscribing to the channel
-- **Cancellation** — Client publishes a cancel signal, server aborts the generation
-- **Barge-in** — Users send new messages while the AI is still responding
-- **Branching conversations** — Regenerate or edit messages, creating forks in the conversation tree
-- **Multi-device sync** — Multiple clients on the same channel see the same conversation in real time
-- **History** — Conversations persist on the channel; new clients or returning sessions hydrate from history
-- **Turn management** — Concurrent turns, per-turn streams, turn lifecycle events
+- **Resumable streaming** — If the user's connection drops mid-response, the HTTP stream is lost. With Ably, the client reconnects and picks up where it left off. No token loss, no restart.
+- **Multi-device and multi-tab sync** — Two browser tabs, a phone and a laptop, or multiple users on the same conversation. All devices subscribe to the same Ably channel and see the same stream in real time.
+- **Reliable cancellation** — Cancel signals travel over the Ably channel, not the HTTP connection. Cancellation works across devices and survives network interruptions.
+- **Concurrent turns** — Multiple request-response cycles can run in parallel on the same channel. Each turn has its own stream and abort signal. The transport multiplexes them automatically.
+- **Conversation history from the channel** — The Ably channel *is* the conversation history. Clients can hydrate their UI from channel history on load or reconnection — no separate database query needed.
+- **Serverless compatibility** — The AI response streams over Ably, not the HTTP response body. The HTTP request returns immediately, and Next.js `after()` keeps the function alive until streaming completes. No timeout risk.
+- **Branching conversations** — Regenerate or edit messages to create forks in the conversation tree. The SDK tracks parent/child relationships and exposes a navigable tree.
+- **Barge-in** — Users send new messages while the AI is still responding, with composable primitives for cancel-and-resend or queue-until-complete patterns.
 
 The SDK is codec-agnostic. A `Codec` translates between your AI framework's types and the Ably wire format. A Vercel AI SDK codec ships built-in.
 

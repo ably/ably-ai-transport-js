@@ -1,6 +1,6 @@
 # Get Started: Vercel AI SDK with useChat
 
-Build a streaming chat app using Vercel AI SDK's `useChat` hook and AI Transport. This is the simplest integration path — `useChat` manages message state, and AI Transport handles real-time delivery over Ably.
+Build a streaming chat app using Vercel AI SDK's `useChat` hook and AI Transport. This is the simplest integration path - `useChat` manages message state, and AI Transport handles real-time delivery over Ably.
 
 ## Prerequisites
 
@@ -131,7 +131,7 @@ export async function POST(req: Request) {
     abortSignal: turn.abortSignal,
   });
 
-  // Stream in the background — don't block the HTTP response.
+  // Stream in the background - don't block the HTTP response.
   // The client receives tokens from the Ably channel subscription, not the HTTP response.
   after(async () => {
     const { reason } = await turn.streamResponse(result.toUIMessageStream());
@@ -164,7 +164,7 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
   const { channel } = useChannel({ channelName: chatId });
   const [input, setInput] = useState('');
 
-  // 1. Create the core transport — subscribes to the Ably channel and decodes
+  // 1. Create the core transport - subscribes to the Ably channel and decodes
   //    incoming messages through UIMessageCodec
   const transport = useClientTransport({ channel, codec: UIMessageCodec, clientId });
 
@@ -241,11 +241,11 @@ export ANTHROPIC_API_KEY="your-anthropic-api-key"
 npm run dev
 ```
 
-Open `http://localhost:3000`. Type a message — you'll see tokens stream in real time over Ably.
+Open `http://localhost:3000`. Type a message - you'll see tokens stream in real time over Ably.
 
 ## What's happening
 
-1. `useClientTransport` creates a transport that subscribes to the Ably channel before it attaches — no messages are lost.
+1. `useClientTransport` creates a transport that subscribes to the Ably channel before it attaches - no messages are lost.
 2. `useChatTransport` wraps the transport into Vercel's `ChatTransport` interface, which `useChat` expects.
 3. When you send a message, `useChat` calls the chat transport's `sendMessages`, which fires an HTTP POST to `/api/chat` and opens a stream on the Ably channel.
 4. The server creates a turn, publishes user messages, streams the LLM response through the encoder to the channel, and publishes a turn-end event.
@@ -256,7 +256,7 @@ For the conceptual details, see [Client and server transport](../concepts/transp
 
 ## Next steps
 
-- [Cancel](../features/cancel.md) — add a stop button that cancels in-progress generation
-- [History](../features/history.md) — load conversation history on page refresh
-- [Conversation branching](../features/branching.md) — add regenerate and edit
-- [Multi-client sync](../features/multi-client.md) — open two browser windows to the same chat
+- [Cancel](../features/cancel.md) - add a stop button that cancels in-progress generation
+- [History](../features/history.md) - load conversation history on page refresh
+- [Conversation branching](../features/branching.md) - add regenerate and edit
+- [Multi-client sync](../features/multi-client.md) - open two browser windows to the same chat

@@ -8,7 +8,7 @@ The protocol has two header namespaces and two message types: [transport headers
 
 ### Transport headers (`x-ably-*`)
 
-Transport headers are set by the generic transport layer. They handle turn correlation, stream lifecycle, cancellation, and branching. The codec layer never reads or writes these — the transport layer owns them.
+Transport headers are set by the generic transport layer. They handle turn correlation, stream lifecycle, cancellation, and branching. The codec layer never reads or writes these - the transport layer owns them.
 
 | Header | Values | Purpose |
 |---|---|---|
@@ -29,7 +29,7 @@ Transport headers are set by the generic transport layer. They handle turn corre
 
 ### Domain headers (`x-domain-*`)
 
-Domain headers are set by the codec layer. They carry framework-specific metadata — field IDs, tool call IDs, provider metadata. The transport layer passes them through without interpreting them.
+Domain headers are set by the codec layer. They carry framework-specific metadata - field IDs, tool call IDs, provider metadata. The transport layer passes them through without interpreting them.
 
 For the Vercel `UIMessageCodec`, domain headers include:
 
@@ -53,12 +53,12 @@ Lifecycle events are published by the transport layer to coordinate turn state. 
 | `x-ably-turn-start` | Server → Channel | `x-ably-turn-id`, `x-ably-turn-client-id` | Signal that a turn has started |
 | `x-ably-turn-end` | Server → Channel | `x-ably-turn-id`, `x-ably-turn-client-id`, `x-ably-turn-reason` | Signal that a turn has ended |
 | `x-ably-cancel` | Client → Channel | Cancel filter headers | Request cancellation of one or more turns |
-| `x-ably-abort` | Server → Channel | — | Transport-level abort signal (stream cancelled) |
-| `x-ably-error` | Server → Channel | — | Transport-level error signal |
+| `x-ably-abort` | Server → Channel | - | Transport-level abort signal (stream cancelled) |
+| `x-ably-error` | Server → Channel | - | Transport-level error signal |
 
 ## Content messages
 
-Content messages carry domain data — user messages, assistant text, tool calls. They are published through Ably's message primitives and decoded by the codec layer.
+Content messages carry domain data - user messages, assistant text, tool calls. They are published through Ably's message primitives and decoded by the codec layer.
 
 ### Discrete messages
 
@@ -81,7 +81,7 @@ Ably message:
 
 ### Streamed messages
 
-A streamed message uses Ably's [message actions](glossary.md#message-actions-ably) — a single Ably message that evolves over time through create, append, and close actions. It carries `x-ably-stream: "true"`.
+A streamed message uses Ably's [message actions](glossary.md#message-actions-ably) - a single Ably message that evolves over time through create, append, and close actions. It carries `x-ably-stream: "true"`.
 
 The lifecycle has three states:
 
@@ -111,7 +111,7 @@ The `data` field on the create is the initial content (often empty string). Each
 
 ### Recovery via message.update
 
-If an append fails (network issue, rate limit), the [encoder](encoder.md#recovery-mechanism) falls back to `message.update` with the full accumulated content. The [decoder](decoder.md#first-contact) handles this through first-contact detection — when it sees an update for an unknown serial, it treats it as if the stream just started (synthesizing start + delta + optional end events).
+If an append fails (network issue, rate limit), the [encoder](encoder.md#recovery-mechanism) falls back to `message.update` with the full accumulated content. The [decoder](decoder.md#first-contact) handles this through first-contact detection - when it sees an update for an unknown serial, it treats it as if the stream just started (synthesizing start + delta + optional end events).
 
 ## Turn lifecycle over the wire
 
@@ -158,7 +158,7 @@ sequenceDiagram
 
 ## Message identity (`x-ably-msg-id`)
 
-Every domain message — user or assistant — gets a unique `x-ably-msg-id` (a `crypto.randomUUID()`). This is the primary identity for a message throughout the system: the [conversation tree](conversation-tree.md) is indexed by it, the [accumulator](codec-interface.md#accumulator) routes streaming events by it, and [optimistic reconciliation](#optimistic-reconciliation) matches on it.
+Every domain message - user or assistant - gets a unique `x-ably-msg-id` (a `crypto.randomUUID()`). This is the primary identity for a message throughout the system: the [conversation tree](conversation-tree.md) is indexed by it, the [accumulator](codec-interface.md#accumulator) routes streaming events by it, and [optimistic reconciliation](#optimistic-reconciliation) matches on it.
 
 ### Who generates it
 
@@ -174,7 +174,7 @@ The msg-id flows through the header pipeline:
 
 1. The transport calls `buildTransportHeaders({ msgId, ... })` which sets `headers['x-ably-msg-id'] = msgId`.
 2. For **discrete messages** (user messages, tool output, lifecycle events), these headers are passed to the encoder via `WriteOptions.messageId`. The [encoder core's](encoder.md#header-merging) `_buildHeaders()` stamps it into the Ably message's `extras.headers`.
-3. For **streamed messages** (assistant text, tool input), the msg-id is included in the persistent headers captured at `startStream()`. Every append — including the closing append — carries the same `x-ably-msg-id`, so the entire message append lifecycle shares one identity.
+3. For **streamed messages** (assistant text, tool input), the msg-id is included in the persistent headers captured at `startStream()`. Every append - including the closing append - carries the same `x-ably-msg-id`, so the entire message append lifecycle shares one identity.
 
 ### How it's consumed
 
@@ -188,16 +188,16 @@ The msg-id flows through the header pipeline:
 
 ### Optimistic reconciliation
 
-When a client calls `send()`, it inserts an optimistic message into the conversation tree (with no serial) and records the msg-id in an internal set. The server then relays that message onto the channel. When the client receives the relayed message, it matches by `x-ably-msg-id` and reconciles the optimistic entry with the server-assigned serial — [serial promotion](conversation-tree.md#upsert-the-sole-mutation) — rather than creating a duplicate.
+When a client calls `send()`, it inserts an optimistic message into the conversation tree (with no serial) and records the msg-id in an internal set. The server then relays that message onto the channel. When the client receives the relayed message, it matches by `x-ably-msg-id` and reconciles the optimistic entry with the server-assigned serial - [serial promotion](conversation-tree.md#upsert-the-sole-mutation) - rather than creating a duplicate.
 
 ## Branching headers
 
 Branching uses two headers:
 
-- `x-ably-parent` — points to the preceding message in the conversation. Establishes linear order at branch points.
-- `x-ably-fork-of` — points to the message being replaced. Creates a sibling group in the conversation tree.
+- `x-ably-parent` - points to the preceding message in the conversation. Establishes linear order at branch points.
+- `x-ably-fork-of` - points to the message being replaced. Creates a sibling group in the conversation tree.
 
-When a user calls `regenerate(msgId)`, the new assistant message carries `x-ably-fork-of: msgId`. When a user calls `edit(msgId, newMessages)`, the new user message carries `x-ably-fork-of: msgId`. The [conversation tree](conversation-tree.md#sibling-groups-and-fork-chains) uses these to build sibling groups — alternative responses at the same point in the conversation.
+When a user calls `regenerate(msgId)`, the new assistant message carries `x-ably-fork-of: msgId`. When a user calls `edit(msgId, newMessages)`, the new user message carries `x-ably-fork-of: msgId`. The [conversation tree](conversation-tree.md#sibling-groups-and-fork-chains) uses these to build sibling groups - alternative responses at the same point in the conversation.
 
 In linear sequences (no branching), `x-ably-parent` establishes ordering. Serial-based ordering handles the common case; parent headers are only structurally meaningful at branch points.
 

@@ -1,17 +1,17 @@
-# Barge-in
+# Interruption
 
-Barge-in is when a user sends a new message while the AI is still streaming a response. The new message starts a new concurrent turn — the previous response can continue streaming or be cancelled first.
+Interruption is when a user sends a new message while the AI is still streaming a response. The new message starts a new concurrent turn - the previous response can continue streaming or be cancelled first.
 
-Without barge-in support, users must wait for the AI to finish before sending another message. With AI Transport, calling `send()` during an active turn creates a new independent turn immediately.
+Without interruption support, users must wait for the AI to finish before sending another message. With AI Transport, calling `send()` during an active turn creates a new independent turn immediately.
 
 ## How it works
 
-Each `send()` call creates a new turn with its own stream and lifecycle. There's no queue or lock — if the AI is mid-response, the new turn runs alongside it.
+Each `send()` call creates a new turn with its own stream and lifecycle. There's no queue or lock - if the AI is mid-response, the new turn runs alongside it.
 
 Two patterns:
 
-1. **Cancel and send** — stop the current response, then send. The user gets a clean break.
-2. **Send alongside** — let the current response continue while starting a new one. Both turns stream concurrently.
+1. **Cancel and send** - stop the current response, then send. The user gets a clean break.
+2. **Send alongside** - let the current response continue while starting a new one. Both turns stream concurrently.
 
 ## Cancel first, then send
 
@@ -41,7 +41,7 @@ The cancel publishes a signal to the channel (see [Cancel](cancel.md)), the serv
 If you want both responses to continue, just call `send()` without cancelling:
 
 ```typescript
-// New turn starts immediately — old turn keeps streaming
+// New turn starts immediately - old turn keeps streaming
 const turn = await send([newMessage]);
 ```
 
@@ -68,7 +68,7 @@ Use this to toggle between "Send" and "Stop" buttons, or to queue messages for l
 
 ## UI pattern: queue while streaming
 
-The use-client-transport demo shows a queue pattern — messages typed during streaming are queued and sent after the current turn ends:
+The use-client-transport demo shows a queue pattern - messages typed during streaming are queued and sent after the current turn ends:
 
 ```typescript
 // Simplified queue pattern

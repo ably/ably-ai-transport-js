@@ -1,14 +1,14 @@
 # Vercel AI SDK
 
-The Vercel AI SDK provides model abstraction, streaming primitives, and React hooks (`useChat`) for building AI applications. AI Transport adds a durable real-time layer underneath — streaming over Ably channels instead of direct HTTP, with persistence, multi-client sync, and cancellation built in.
+The Vercel AI SDK provides model abstraction, streaming primitives, and React hooks (`useChat`) for building AI applications. AI Transport adds a durable real-time layer underneath - streaming over Ably channels instead of direct HTTP, with persistence, multi-client sync, and cancellation built in.
 
 ## What AI Transport adds
 
 | Capability | Vercel AI SDK alone | With AI Transport |
 |---|---|---|
-| Token streaming | HTTP streaming (SSE) — one client, one connection | Ably channel — any number of clients, persistent |
-| Cancel | AbortController on the HTTP stream | Channel-level cancel signal — server receives it, other clients see it |
-| History | None (page refresh = gone) | Channel history — new clients hydrate the full conversation |
+| Token streaming | HTTP streaming (SSE) - one client, one connection | Ably channel - any number of clients, persistent |
+| Cancel | AbortController on the HTTP stream | Channel-level cancel signal - server receives it, other clients see it |
+| History | None (page refresh = gone) | Channel history - new clients hydrate the full conversation |
 | Branching | None | Conversation tree with regenerate, edit, and sibling navigation |
 | Multi-client | Not supported | Any client on the channel sees messages in real time |
 | Reconnection | Stream breaks on disconnect | Ably handles reconnection; `untilAttach` ensures gapless history |
@@ -17,7 +17,7 @@ The Vercel AI SDK provides model abstraction, streaming primitives, and React ho
 
 ### useChat path (simpler)
 
-Wrap the transport in a `ChatTransport` adapter and pass it to Vercel's `useChat`. Message state is managed by `useChat` — the transport delivers messages over Ably instead of HTTP.
+Wrap the transport in a `ChatTransport` adapter and pass it to Vercel's `useChat`. Message state is managed by `useChat` - the transport delivers messages over Ably instead of HTTP.
 
 ```typescript
 import { useClientTransport } from '@ably/ai-transport/react';
@@ -37,7 +37,7 @@ const { messages, setMessages, sendMessage, stop } = useChat({
 useMessageSync(transport, setMessages);
 ```
 
-`useChatTransport` wraps the core transport into the `ChatTransport` interface that `useChat` expects. `useMessageSync` pushes the transport's authoritative message list into `useChat`'s state — this is how messages from other clients appear.
+`useChatTransport` wraps the core transport into the `ChatTransport` interface that `useChat` expects. `useMessageSync` pushes the transport's authoritative message list into `useChat`'s state - this is how messages from other clients appear.
 
 ### Generic hooks path (more control)
 
@@ -79,11 +79,11 @@ This path gives you conversation branching UI (sibling navigation), per-operatio
 
 | Import | What you get |
 |---|---|
-| `@ably/ai-transport/vercel` | `UIMessageCodec`, `createServerTransport`, `createClientTransport`, `createChatTransport` — all pre-bound to Vercel types |
-| `@ably/ai-transport/vercel/react` | `useChatTransport`, `useMessageSync` — hooks for the useChat path |
-| `@ably/ai-transport/react` | Generic hooks — work with any codec including `UIMessageCodec` |
+| `@ably/ai-transport/vercel` | `UIMessageCodec`, `createServerTransport`, `createClientTransport`, `createChatTransport` - all pre-bound to Vercel types |
+| `@ably/ai-transport/vercel/react` | `useChatTransport`, `useMessageSync` - hooks for the useChat path |
+| `@ably/ai-transport/react` | Generic hooks - work with any codec including `UIMessageCodec` |
 
-The Vercel entry points are convenience wrappers. `createServerTransport` from `/vercel` is the same as the core `createServerTransport` with `UIMessageCodec` pre-bound — you don't pass a `codec` option.
+The Vercel entry points are convenience wrappers. `createServerTransport` from `/vercel` is the same as the core `createServerTransport` with `UIMessageCodec` pre-bound - you don't pass a `codec` option.
 
 ## Server side
 
@@ -112,7 +112,7 @@ await turn.end(reason);
 transport.close();
 ```
 
-`result.toUIMessageStream()` produces a `ReadableStream<UIMessageChunk>` — the codec knows how to encode these chunks as Ably messages (message appends for text/reasoning, discrete messages for tool calls and lifecycle events).
+`result.toUIMessageStream()` produces a `ReadableStream<UIMessageChunk>` - the codec knows how to encode these chunks as Ably messages (message appends for text/reasoning, discrete messages for tool calls and lifecycle events).
 
 ## Codec details
 

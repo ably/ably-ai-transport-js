@@ -1,6 +1,6 @@
 # Conversation branching
 
-AI Transport stores conversation history as a tree, not a linear array. When a user regenerates an assistant response or edits a user message, the transport creates a fork — the original message and its replacement are siblings in the tree, and the user can navigate between them.
+AI Transport stores conversation history as a tree, not a linear array. When a user regenerates an assistant response or edits a user message, the transport creates a fork - the original message and its replacement are siblings in the tree, and the user can navigate between them.
 
 Without tree-based history, regeneration and editing destroy the original response. With branching, every version is preserved and navigable.
 
@@ -8,11 +8,11 @@ Without tree-based history, regeneration and editing destroy the original respon
 
 Every message in the tree has:
 
-- **`msgId`** — unique identifier (stamped as `x-ably-msg-id`)
-- **`parentId`** — the preceding message in the thread (`x-ably-parent`)
-- **`forkOf`** — the message this one replaces (`x-ably-fork-of`), if it's a fork
+- **`msgId`** - unique identifier (stamped as `x-ably-msg-id`)
+- **`parentId`** - the preceding message in the thread (`x-ably-parent`)
+- **`forkOf`** - the message this one replaces (`x-ably-fork-of`), if it's a fork
 
-When you regenerate or edit, the transport sets `forkOf` to the original message's ID. Messages that share the same `parentId` and fork the same original are **siblings** — alternatives at the same point in the conversation.
+When you regenerate or edit, the transport sets `forkOf` to the original message's ID. Messages that share the same `parentId` and fork the same original are **siblings** - alternatives at the same point in the conversation.
 
 ```
 User: "What is Rust?"                     (msg-1, parent: null)
@@ -24,14 +24,14 @@ User: "What is Rust?"                     (msg-1, parent: null)
 
 ## Regenerate
 
-Regeneration forks an assistant message — the server produces a new response for the same prompt:
+Regeneration forks an assistant message - the server produces a new response for the same prompt:
 
 ```typescript
 import { useRegenerate } from '@ably/ai-transport/react';
 
 const regenerate = useRegenerate(transport);
 
-// Fork the assistant message — starts a new turn with no new user messages.
+// Fork the assistant message - starts a new turn with no new user messages.
 // nodeId is the x-ably-msg-id (see treeMsgId helper in the quickstart).
 await regenerate(nodeId);
 ```
@@ -40,7 +40,7 @@ The transport automatically computes `forkOf` (the assistant message being repla
 
 ## Edit
 
-Editing forks a user message — the user provides replacement content, and the server produces a new response:
+Editing forks a user message - the user provides replacement content, and the server produces a new response:
 
 ```typescript
 import { useEdit } from '@ably/ai-transport/react';
@@ -68,13 +68,13 @@ import { useConversationTree } from '@ably/ai-transport/react';
 
 const tree = useConversationTree(transport);
 
-// tree.messages — linear message list for the current branch
-// tree.hasSiblings(nodeId) — does this message have alternatives?
-// tree.getSiblings(nodeId) — all alternatives at this fork point
-// tree.getSelectedIndex(nodeId) — which sibling is currently selected
-// tree.selectSibling(nodeId, index) — switch to a different sibling
+// tree.messages - linear message list for the current branch
+// tree.hasSiblings(nodeId) - does this message have alternatives?
+// tree.getSiblings(nodeId) - all alternatives at this fork point
+// tree.getSelectedIndex(nodeId) - which sibling is currently selected
+// tree.selectSibling(nodeId, index) - switch to a different sibling
 //
-// nodeId is the x-ably-msg-id for each message — resolve it from headers:
+// nodeId is the x-ably-msg-id for each message - resolve it from headers:
 //   const headers = transport.getMessageHeaders(msg);
 //   const nodeId = headers?.['x-ably-msg-id'] ?? msg.id;
 ```
@@ -127,6 +127,6 @@ The transport stamps `x-ably-parent` and `x-ably-fork-of` headers on the publish
 
 ## Tree from history
 
-When a new client loads history (see [History](history.md)), the tree is reconstructed from the stored headers. All branches and their sibling relationships are preserved — the new client can navigate the same forks as a client that was present for the original conversation.
+When a new client loads history (see [History](history.md)), the tree is reconstructed from the stored headers. All branches and their sibling relationships are preserved - the new client can navigate the same forks as a client that was present for the original conversation.
 
 For the internal data structures and algorithms behind the tree, see [Conversation tree](../internals/conversation-tree.md). For the wire-level headers that drive branching, see [Wire protocol: branching headers](../internals/wire-protocol.md#branching-headers).

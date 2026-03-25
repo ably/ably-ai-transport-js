@@ -26,7 +26,7 @@ const { reason } = await turn.streamResponse(llmStream);
 await turn.end(reason);
 ```
 
-`newTurn()` is synchronous — it creates the turn and registers it for cancel routing, but doesn't touch the channel. This means a cancel signal that arrives before `start()` still fires the turn's abort signal.
+`newTurn()` is synchronous - it creates the turn and registers it for cancel routing, but doesn't touch the channel. This means a cancel signal that arrives before `start()` still fires the turn's abort signal.
 
 `streamResponse()` returns a `StreamResult` with a `reason` field:
 
@@ -45,12 +45,12 @@ The client transport creates turns implicitly when you call `send()`, `regenerat
 ```typescript
 const turn = await transport.send(userMessage);
 
-// turn.turnId — the unique turn identifier
-// turn.stream — a ReadableStream of decoded events
-// turn.cancel() — cancel this specific turn
+// turn.turnId - the unique turn identifier
+// turn.stream - a ReadableStream of decoded events
+// turn.cancel() - cancel this specific turn
 ```
 
-The returned `ActiveTurn` gives you a decoded event stream and a cancel handle. The HTTP POST to your server is fire-and-forget — the stream is available immediately from the channel subscription, not from the HTTP response.
+The returned `ActiveTurn` gives you a decoded event stream and a cancel handle. The HTTP POST to your server is fire-and-forget - the stream is available immediately from the channel subscription, not from the HTTP response.
 
 ## Turn lifecycle events
 
@@ -106,7 +106,7 @@ await Promise.all([
 ]);
 ```
 
-On the client, each `send()` call returns its own `ActiveTurn`. Cancellation is scoped — you can cancel one turn without affecting others. See [Concurrent turns](../features/concurrent-turns.md) for patterns.
+On the client, each `send()` call returns its own `ActiveTurn`. Cancellation is scoped - you can cancel one turn without affecting others. See [Concurrent turns](../features/concurrent-turns.md) for patterns.
 
 ## The abort signal
 
@@ -132,6 +132,6 @@ const turn = transport.newTurn({
 const result = streamText({ model, messages, abortSignal: turn.abortSignal });
 ```
 
-The `onCancel` hook lets you authorize cancellation — useful for preventing one user from cancelling another user's turn. The `onAbort` hook runs after the signal fires, giving you a chance to write final data before the stream closes.
+The `onCancel` hook lets you authorize cancellation - useful for preventing one user from cancelling another user's turn. The `onAbort` hook runs after the signal fires, giving you a chance to write final data before the stream closes.
 
 For the internal mechanics, see [TurnManager](../internals/transport-components.md#turnmanager) and [pipeStream](../internals/transport-components.md#pipestream) for how abort signals flow through the system, and [Wire protocol](../internals/wire-protocol.md#turn-lifecycle-over-the-wire) for the message sequence on the channel.

@@ -1,6 +1,6 @@
 # Cancel
 
-Cancellation in AI Transport is a channel-level operation — the client publishes a cancel signal on the Ably channel, the server receives it and aborts the matching turns.
+Cancellation in AI Transport is a channel-level operation - the client publishes a cancel signal on the Ably channel, the server receives it and aborts the matching turns.
 
 Without a cancel protocol, stopping a generation requires either dropping the HTTP connection (which the server may not notice) or building custom signaling. AI Transport handles the full cancel chain: client signal, server abort, stream cleanup, and lifecycle notification to all clients.
 
@@ -23,7 +23,7 @@ await transport.cancel({ turnId: 'abc-123' });
 await transport.cancel({ all: true });
 ```
 
-The default when no filter is given is `{ own: true }` — cancel all turns started by this client.
+The default when no filter is given is `{ own: true }` - cancel all turns started by this client.
 
 | Filter | Effect | Use case |
 |---|---|---|
@@ -55,9 +55,9 @@ const turn = transport.newTurn({
   turnId,
   clientId,
   onCancel: async (request) => {
-    // request.filter — the parsed cancel scope
-    // request.matchedTurnIds — which turns would be cancelled
-    // request.turnOwners — Map<turnId, clientId>
+    // request.filter - the parsed cancel scope
+    // request.matchedTurnIds - which turns would be cancelled
+    // request.turnOwners - Map<turnId, clientId>
     // Return false to reject the cancel (turn continues)
     return true;
   },
@@ -76,7 +76,7 @@ const result = streamText({
 });
 ```
 
-The `onCancel` hook authorizes the cancel — return `false` to reject it. Use this to prevent one user from cancelling another user's turn. If `onCancel` is not provided, all cancels are accepted.
+The `onCancel` hook authorizes the cancel - return `false` to reject it. Use this to prevent one user from cancelling another user's turn. If `onCancel` is not provided, all cancels are accepted.
 
 The `onAbort` hook runs after the signal fires. The `write` function lets you publish final events (e.g., a partial result summary) before the encoder closes.
 
@@ -100,7 +100,7 @@ sequenceDiagram
     Ch->>C: deliver turn-end
 ```
 
-The client closes its local streams immediately on cancel — it doesn't wait for the server to confirm. The server-side turn ends with `reason: 'cancelled'`, which all clients see via turn lifecycle events.
+The client closes its local streams immediately on cancel - it doesn't wait for the server to confirm. The server-side turn ends with `reason: 'cancelled'`, which all clients see via turn lifecycle events.
 
 ## Cancel on close
 
@@ -114,4 +114,4 @@ await transport.close({ cancel: { own: true } });
 await transport.close();
 ```
 
-See [Barge-in](barge-in.md) for cancel-then-send patterns. See [Error codes](../reference/error-codes.md) for cancel-related error codes. See [React hooks reference](../reference/react-hooks.md) for the `useActiveTurns` API. For the internal cancel routing and filter resolution, see [Cancel routing](../internals/transport-components.md#cancel-routing-server-transport).
+See [Interruption](interruption.md) for cancel-then-send patterns. See [Error codes](../reference/error-codes.md) for cancel-related error codes. See [React hooks reference](../reference/react-hooks.md) for the `useActiveTurns` API. For the internal cancel routing and filter resolution, see [Cancel routing](../internals/transport-components.md#cancel-routing-server-transport).

@@ -1,6 +1,6 @@
 # Client and server transport
 
-AI Transport splits the real-time layer into two transports: a **server transport** that publishes AI responses to an Ably channel, and a **client transport** that subscribes to that channel and manages conversation state. The server never streams directly to the client over HTTP — Ably is the delivery mechanism.
+AI Transport splits the real-time layer into two transports: a **server transport** that publishes AI responses to an Ably channel, and a **client transport** that subscribes to that channel and manages conversation state. The server never streams directly to the client over HTTP - Ably is the delivery mechanism.
 
 ## How data flows
 
@@ -25,11 +25,11 @@ sequenceDiagram
 2. Your server endpoint creates a turn on the server transport, calls the LLM, and pipes the response stream through the encoder to the Ably channel.
 3. The client transport receives messages from the channel subscription, decodes them through the codec, and updates the conversation state.
 
-The HTTP POST is fire-and-forget from the client's perspective — the response stream is available immediately via the Ably channel subscription, not from the HTTP response body.
+The HTTP POST is fire-and-forget from the client's perspective - the response stream is available immediately via the Ably channel subscription, not from the HTTP response body.
 
 ## Server transport
 
-The server transport manages **turns** — discrete request-response cycles on a shared channel. Each turn has an explicit lifecycle:
+The server transport manages **turns** - discrete request-response cycles on a shared channel. Each turn has an explicit lifecycle:
 
 ```typescript
 import Ably from 'ably';
@@ -52,7 +52,7 @@ await turn.end(reason);
 transport.close();
 ```
 
-The server transport also handles cancel routing — when a client publishes a cancel signal, the transport matches it to the right turn and fires the turn's abort signal.
+The server transport also handles cancel routing - when a client publishes a cancel signal, the transport matches it to the right turn and fires the turn's abort signal.
 
 ## Client transport
 
@@ -63,10 +63,10 @@ import { createClientTransport } from '@ably/ai-transport/vercel';
 
 const transport = createClientTransport({ channel, clientId });
 
-// Send a message — returns immediately with a turn handle
+// Send a message - returns immediately with a turn handle
 const turn = await transport.send(userMessage);
 
-// Subscribe to accumulated messages — updates on every token
+// Subscribe to accumulated messages - updates on every token
 transport.on('message', () => {
   const messages = transport.getMessages();
   // the last assistant message grows as tokens stream in
@@ -89,7 +89,7 @@ const send = useSend(transport);
 
 ## The codec
 
-The transport is parameterized by a `Codec<TEvent, TMessage>` — an interface that translates between domain types and Ably messages. The codec provides:
+The transport is parameterized by a `Codec<TEvent, TMessage>` - an interface that translates between domain types and Ably messages. The codec provides:
 
 - **Encoder**: converts domain events into Ably publish/append/update operations
 - **Decoder**: converts Ably messages back into domain events
@@ -104,7 +104,7 @@ For the internal implementation of each transport, see [Client transport](../int
 
 | You want to... | Use this entry point |
 |---|---|
-| Build with Vercel AI SDK's `useChat` | `@ably/ai-transport/vercel/react` — gives you `useChatTransport` + `useMessageSync` |
+| Build with Vercel AI SDK's `useChat` | `@ably/ai-transport/vercel/react` - gives you `useChatTransport` + `useMessageSync` |
 | Build with Vercel AI SDK using lower-level hooks | `@ably/ai-transport/react` + `@ably/ai-transport/vercel` |
-| Build a server endpoint with Vercel AI SDK | `@ably/ai-transport/vercel` — gives you `createServerTransport` pre-bound to `UIMessageCodec` |
-| Implement a custom codec for another framework | `@ably/ai-transport` — the generic core with `Codec<TEvent, TMessage>` |
+| Build a server endpoint with Vercel AI SDK | `@ably/ai-transport/vercel` - gives you `createServerTransport` pre-bound to `UIMessageCodec` |
+| Implement a custom codec for another framework | `@ably/ai-transport` - the generic core with `Codec<TEvent, TMessage>` |

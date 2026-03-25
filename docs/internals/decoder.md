@@ -2,7 +2,7 @@
 
 The decoder core (`src/core/codec/decoder.ts`) converts inbound Ably messages into domain events. It handles all four Ably [message actions](wire-protocol.md#streamed-messages) (create, append, update, delete), tracks stream state via serials, and delegates to [codec-provided hooks](codec-interface.md#decoder-architecture) for domain-specific event building.
 
-Domain codecs provide hooks that know how to build events from stream state. The decoder core handles the Ably-specific machinery — action dispatch, serial tracking, prefix-match accumulation — so codecs don't need to.
+Domain codecs provide hooks that know how to build events from stream state. The decoder core handles the Ably-specific machinery - action dispatch, serial tracking, prefix-match accumulation - so codecs don't need to.
 
 ## Action dispatch
 
@@ -42,7 +42,7 @@ The decoder core delegates event building to four hooks provided by the domain c
 | `buildEndEvents(tracker, closingHeaders)` | Stream finishes (status: `finished`) | Events for stream end (e.g. `text-end`, `finish` chunks) |
 | `decodeDiscrete(payload)` | Discrete message received | Events or complete messages |
 
-The hooks receive the tracker state and return arrays of `DecoderOutput<TEvent, TMessage>` — either `{ kind: 'event', event }` or `{ kind: 'message', message }`.
+The hooks receive the tracker state and return arrays of `DecoderOutput<TEvent, TMessage>` - either `{ kind: 'event', event }` or `{ kind: 'message', message }`.
 
 ## Append handling
 
@@ -53,7 +53,7 @@ When a `message.append` arrives:
 3. Extract the string delta from `message.data`
 4. Accumulate: `tracker.accumulated += delta`
 5. Call `buildDeltaEvents()` to emit domain events
-6. Check `x-ably-status`: if `"finished"`, call `buildEndEvents()` and mark closed — the event is [terminal](glossary.md#terminal-event). If `"aborted"`, mark closed (no end events for aborts)
+6. Check `x-ably-status`: if `"finished"`, call `buildEndEvents()` and mark closed - the event is [terminal](glossary.md#terminal-event). If `"aborted"`, mark closed (no end events for aborts)
 
 ## Update handling: first-contact vs prefix-match
 
@@ -61,7 +61,7 @@ The `message.update` action handles two scenarios:
 
 ### First-contact
 
-The decoder has no tracker for this serial — the stream started before the subscription (history, reconnect). The decoder:
+The decoder has no tracker for this serial - the stream started before the subscription (history, reconnect). The decoder:
 
 1. Creates a new tracker with the full `data` as accumulated text
 2. Emits start events via `buildStartEvents()`
@@ -91,11 +91,11 @@ On `message.delete`:
 
 1. Fire `onStreamDelete` callback with the serial and tracker (if one exists)
 2. Mark the tracker as closed and clear accumulated text
-3. Emit no events — deletion is handled by the transport layer (e.g. removing the message from the [conversation tree](conversation-tree.md#delete))
+3. Emit no events - deletion is handled by the transport layer (e.g. removing the message from the [conversation tree](conversation-tree.md#delete))
 
 ## Message ID tagging
 
-After decoding, the decoder tags every event output with the [`x-ably-msg-id`](wire-protocol.md#message-identity-x-ably-msg-id) from the message headers. This ID is used by the [accumulator](codec-interface.md#accumulator) to route events to the correct in-progress domain message — for example, correlating a `text-delta` event to the `UIMessage` it belongs to.
+After decoding, the decoder tags every event output with the [`x-ably-msg-id`](wire-protocol.md#message-identity-x-ably-msg-id) from the message headers. This ID is used by the [accumulator](codec-interface.md#accumulator) to route events to the correct in-progress domain message - for example, correlating a `text-delta` event to the `UIMessage` it belongs to.
 
 ## Decoder output types
 
@@ -107,8 +107,8 @@ type DecoderOutput<TEvent, TMessage> =
   | { kind: 'message'; message: TMessage };
 ```
 
-- `kind: 'event'` — a streaming event that should be routed to a stream (own turn) or accumulated (observer turn)
-- `kind: 'message'` — a complete domain message (e.g. a user message from `decodeDiscrete()`)
+- `kind: 'event'` - a streaming event that should be routed to a stream (own turn) or accumulated (observer turn)
+- `kind: 'message'` - a complete domain message (e.g. a user message from `decodeDiscrete()`)
 
 The transport layer processes these differently: events go to the [stream router](transport-components.md) or accumulator, messages go directly to the [conversation tree](conversation-tree.md).
 

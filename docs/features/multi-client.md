@@ -1,6 +1,6 @@
 # Multi-client sync
 
-Multiple clients connected to the same Ably channel see the same conversation in real time. When one client sends a message and the server streams a response, every other client on the channel receives the same messages — no extra configuration needed.
+Multiple clients connected to the same Ably channel see the same conversation in real time. When one client sends a message and the server streams a response, every other client on the channel receives the same messages - no extra configuration needed.
 
 Without multi-client support, sharing a conversation across browser tabs, devices, or users requires building synchronization infrastructure. With AI Transport, it's built into the channel subscription.
 
@@ -8,8 +8,8 @@ Without multi-client support, sharing a conversation across browser tabs, device
 
 All clients subscribe to the same Ably channel. The transport distinguishes between:
 
-- **Own turns** — turns this client initiated via `send()`, `regenerate()`, or `edit()`. Events route to the `ActiveTurn`'s stream.
-- **Observer turns** — turns from other clients. Events are decoded, accumulated via the codec's `MessageAccumulator`, and inserted into the conversation tree.
+- **Own turns** - turns this client initiated via `send()`, `regenerate()`, or `edit()`. Events route to the `ActiveTurn`'s stream.
+- **Observer turns** - turns from other clients. Events are decoded, accumulated via the codec's `MessageAccumulator`, and inserted into the conversation tree.
 
 No special API is needed. Connect two clients to the same channel name, and messages sync automatically:
 
@@ -35,7 +35,7 @@ When another client's turn streams a response:
 4. Accumulated messages are upserted into the conversation tree
 5. A `'message'` notification fires, updating React state
 
-This happens for every event — observer messages stream in real time, not just at turn completion.
+This happens for every event - observer messages stream in real time, not just at turn completion.
 
 ## Seeing who's active
 
@@ -91,4 +91,4 @@ Without `useMessageSync`, `useChat` would only show messages from its own sends.
 
 Each client is identified by a `clientId` passed to the transport. The transport stamps this on outgoing messages and turn lifecycle events. Clients can use the `clientId` from message headers or turn events to show who sent what.
 
-Client identity is established through Ably's token authentication — the `clientId` in the JWT token must match. See the [Get Started](../get-started/vercel-use-chat.md) guide for the auth setup.
+Client identity is established through Ably's token authentication - the `clientId` in the JWT token must match. See the [Get Started](../get-started/vercel-use-chat.md) guide for the auth setup.

@@ -21,7 +21,7 @@ Peer dependencies: `ably` (required), `ai` (for Vercel entry points), `react` (f
 
 **Build something** — follow the [Get Started with useChat](get-started/vercel-use-chat.md) quickstart to have a working streaming chat app in minutes. Or use the [generic hooks quickstart](get-started/vercel-use-client-transport.md) for more control.
 
-**Add a feature** — the [Features](features/) section covers streaming, cancellation, barge-in, history, conversation branching, multi-client sync, and tool calls.
+**Add a feature** — the [Features](features/) section covers streaming, cancellation, barge-in, optimistic updates, history, conversation branching, multi-client sync, and tool calls.
 
 **Look up an API** — the [Reference](reference/) section has complete signatures for all React hooks and error codes.
 

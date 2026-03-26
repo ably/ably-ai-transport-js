@@ -243,7 +243,4 @@ export interface Codec<TEvent, TMessage> {
 
   /** Whether an event signals stream completion (finish, error, abort). */
   isTerminal(event: TEvent): boolean;
-
-  /** Return a stable key for a message (used by MessageStore for upsert/delete). */
-  getMessageKey(message: TMessage): string;
 }

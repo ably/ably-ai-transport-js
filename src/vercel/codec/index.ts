@@ -30,8 +30,6 @@ export const UIMessageCodec: Codec<AI.UIMessageChunk, AI.UIMessage> = {
   createDecoder,
   createAccumulator,
 
-  getMessageKey: (message: AI.UIMessage): string => message.id,
-
   isTerminal: (event: AI.UIMessageChunk): boolean =>
     event.type === 'finish' || event.type === 'error' || event.type === 'abort',
 };

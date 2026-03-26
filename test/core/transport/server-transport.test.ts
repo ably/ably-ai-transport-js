@@ -83,7 +83,6 @@ const createMockCodec = (): Codec<TestEvent, TestMessage> => ({
   createDecoder: vi.fn() as Codec<TestEvent, TestMessage>['createDecoder'],
   createAccumulator: vi.fn() as Codec<TestEvent, TestMessage>['createAccumulator'],
   isTerminal: vi.fn(() => false),
-  getMessageKey: vi.fn((m: TestMessage) => m.id),
 });
 
 const headersOf = (msg: Ably.Message): Record<string, string> =>

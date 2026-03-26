@@ -589,7 +589,7 @@ describe('ClientTransport integration', () => {
   });
 
   /**
-   * Scenario: Message headers are accessible via getMessageHeaders.
+   * Scenario: Message headers are accessible via getMessagesWithHeaders.
    *
    * After the client sends and the server streams, the client can
    * retrieve transport headers (role, turn-id, msg-id) for messages.
@@ -633,25 +633,23 @@ describe('ClientTransport integration', () => {
     await drain(clientTurn.stream);
     await waitForMessages(clientTransport, 2);
 
-    const messages = clientTransport.getMessages();
-    const userMsg = messages.find((m) => m.role === 'user');
-    const asstMsg = messages.find((m) => m.role === 'assistant');
+    const mwh = clientTransport.getMessagesWithHeaders();
+    const userEntry = mwh.find((e) => e.message.role === 'user');
+    const asstEntry = mwh.find((e) => e.message.role === 'assistant');
 
-    expect(userMsg).toBeDefined();
-    expect(asstMsg).toBeDefined();
+    expect(userEntry).toBeDefined();
+    expect(asstEntry).toBeDefined();
 
-    if (userMsg) {
-      const userHeaders = clientTransport.getMessageHeaders(userMsg);
-      expect(userHeaders).toBeDefined();
-      expect(userHeaders?.[HEADER_ROLE]).toBe('user');
-      expect(userHeaders?.[HEADER_TURN_ID]).toBe(clientTurn.turnId);
-      expect(userHeaders?.[HEADER_MSG_ID]).toBeDefined();
+    if (userEntry) {
+      expect(userEntry.headers).toBeDefined();
+      expect(userEntry.headers?.[HEADER_ROLE]).toBe('user');
+      expect(userEntry.headers?.[HEADER_TURN_ID]).toBe(clientTurn.turnId);
+      expect(userEntry.headers?.[HEADER_MSG_ID]).toBeDefined();
     }
 
-    if (asstMsg) {
-      const asstHeaders = clientTransport.getMessageHeaders(asstMsg);
-      expect(asstHeaders).toBeDefined();
-      expect(asstHeaders?.[HEADER_TURN_ID]).toBe(clientTurn.turnId);
+    if (asstEntry) {
+      expect(asstEntry.headers).toBeDefined();
+      expect(asstEntry.headers?.[HEADER_TURN_ID]).toBe(clientTurn.turnId);
     }
   });
 });

@@ -1,0 +1,28 @@
+name: Check for autosquash commits
+
+on:
+  pull_request:
+
+jobs:
+  check-autosquash:
+    name: Block autosquash commits
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for autosquash commits
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+
+          bad_commits=$(git log --oneline "$base".."$head" | grep -iE '^\S+ (fixup|squash|amend)!' || true)
+
+          if [ -n "$bad_commits" ]; then
+            echo "::error::PR contains autosquash commits that need to be rebased before merging:"
+            echo "$bad_commits"
+            exit 1
+          fi
+
+          echo "No autosquash commits found."

@@ -1,6 +1,6 @@
 # History hydration
 
-`decodeHistory` (`src/core/transport/decode-history.ts`) loads conversation history from an Ably channel's history API and returns decoded domain messages. It handles the mismatch between Ably's newest-first history pagination and the decoder's requirement for chronological input.
+`decodeHistory()` (`src/core/transport/decode-history.ts`) loads conversation history from an Ably channel's history API and returns decoded domain messages. It handles the mismatch between Ably's newest-first history pagination and the decoder's requirement for chronological input.
 
 ## The problem
 
@@ -10,7 +10,7 @@ Additionally, the `limit` parameter should control the number of complete **doma
 
 ## Strategy: collect and re-decode
 
-Rather than trying to decode pages incrementally, `decodeHistory` collects all raw Ably messages and re-decodes the full set from scratch after each page fetch:
+Rather than trying to decode pages incrementally, `decodeHistory()` collects all raw Ably messages and re-decodes the full set from scratch after each page fetch:
 
 1. Fetch a page of Ably history (newest-first)
 2. Append raw messages to the collection
@@ -67,7 +67,7 @@ interface PaginatedMessages<TMessage> {
 
 ## Channel attach and untilAttach
 
-`decodeHistory` [attaches the channel](glossary.md#channel-attach-ably) (idempotent) and uses [`untilAttach: true`](glossary.md#untilattach-ably) on the history call. This guarantees no gap between historical messages and the live subscription - the history ends exactly where the subscription starts.
+`decodeHistory()` [attaches the channel](glossary.md#channel-attach-ably) (idempotent) and uses [`untilAttach: true`](glossary.md#untilattach-ably) on the history call. This guarantees no gap between historical messages and the live subscription - the history ends exactly where the subscription starts.
 
 ## Shared state across pages
 

@@ -78,7 +78,7 @@ The client transport tracks all active turns across all clients:
 const activeTurns = transport.getActiveTurnIds();
 ```
 
-In React, `useActiveTurns` provides this as reactive state:
+In React, `useActiveTurns()` provides this as reactive state:
 
 ```typescript
 import { useActiveTurns } from '@ably/ai-transport/react';

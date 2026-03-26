@@ -104,7 +104,7 @@ For the internal implementation of each transport, see [Client transport](../int
 
 | You want to... | Use this entry point |
 |---|---|
-| Build with Vercel AI SDK's `useChat` | `@ably/ai-transport/vercel/react` - gives you `useChatTransport` + `useMessageSync` |
+| Build with Vercel AI SDK's `useChat()` | `@ably/ai-transport/vercel/react` - gives you `useChatTransport()` + `useMessageSync()` |
 | Build with Vercel AI SDK using lower-level hooks | `@ably/ai-transport/react` + `@ably/ai-transport/vercel` |
-| Build a server endpoint with Vercel AI SDK | `@ably/ai-transport/vercel` - gives you `createServerTransport` pre-bound to `UIMessageCodec` |
+| Build a server endpoint with Vercel AI SDK | `@ably/ai-transport/vercel` - gives you `createServerTransport()` pre-bound to `UIMessageCodec` |
 | Implement a custom codec for another framework | `@ably/ai-transport` - the generic core with `Codec<TEvent, TMessage>` |

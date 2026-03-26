@@ -16,17 +16,17 @@ interface Codec<TEvent, TMessage> {
 
 | Method              | Purpose                                                                                                                                                           |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `createEncoder`     | Creates a [streaming encoder](encoder.md) that maps domain events to Ably publish operations                                                                      |
-| `createDecoder`     | Creates a [decoder](decoder.md) that converts inbound Ably messages to domain events/messages                                                                     |
-| `createAccumulator` | Creates an accumulator that builds complete messages from streaming events                                                                                        |
-| `isTerminal`        | Returns true if an event signals stream completion (finish, error, abort). Used by the [stream router](transport-components.md#terminal-detection) to auto-close streams |
-| `getMessageKey`     | Returns a stable [codec key](glossary.md#codec-key) for a domain message (used by the [conversation tree](conversation-tree.md) for upsert)                       |
+| `createEncoder()`     | Creates a [streaming encoder](encoder.md) that maps domain events to Ably publish operations                                                                      |
+| `createDecoder()`     | Creates a [decoder](decoder.md) that converts inbound Ably messages to domain events/messages                                                                     |
+| `createAccumulator()` | Creates an accumulator that builds complete messages from streaming events                                                                                        |
+| `isTerminal()`        | Returns true if an event signals stream completion (finish, error, abort). Used by the [stream router](transport-components.md#terminal-detection) to auto-close streams |
+| `getMessageKey()`     | Returns a stable [codec key](glossary.md#codec-key) for a domain message (used by the [conversation tree](conversation-tree.md) for upsert)                       |
 
 ## How the transport uses the codec
 
 ### Server transport
 
-The server transport uses `createEncoder()` to get a `StreamEncoder`. For each turn:
+The server transport calls `createEncoder()` to get a `StreamEncoder`. For each turn:
 
 1. `writeMessages()` - publishes user messages as discrete Ably messages
 2. `appendEvent()` - streams LLM response events as message appends
@@ -40,7 +40,7 @@ The client transport uses:
 
 - `createDecoder()` - decodes inbound Ably messages into domain events and messages
 - `createAccumulator()` - builds complete messages from events (for [observer turns](glossary.md#own-turn-vs-observer-turn) - other clients' streams)
-- `isTerminal()` - tells the [stream router](transport-components.md#terminal-detection) when to close a per-turn ReadableStream
+- `isTerminal()` - tells the [stream router](transport-components.md#terminal-detection) when to close a per-turn `ReadableStream`
 - `getMessageKey()` - provides the [conversation tree's](conversation-tree.md#data-structures) secondary index key
 
 ## Encoder architecture

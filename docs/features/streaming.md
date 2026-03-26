@@ -36,7 +36,7 @@ Each stream has a lifecycle tracked by the `x-ably-status` header:
 
 ## Server
 
-Pipe any `ReadableStream` of codec events through the turn's `streamResponse`:
+Pipe any `ReadableStream` of codec events through the turn's `streamResponse()`:
 
 ```typescript
 import { streamText } from 'ai';
@@ -57,7 +57,7 @@ await turn.end(reason);
 transport.close();
 ```
 
-`streamResponse` reads events from the stream and routes them through the encoder. Text deltas become message appends; lifecycle events (finish, error) become discrete messages that close the stream.
+`streamResponse()` reads events from the stream and routes them through the encoder. Text deltas become message appends; lifecycle events (finish, error) become discrete messages that close the stream.
 
 ## Client
 
@@ -77,7 +77,7 @@ This is the primary consumption path. In React, the `useMessages()` hook handles
 
 ### The event stream
 
-`send()` also returns a `ReadableStream<TEvent>` on the `ActiveTurn`. This exists as an integration seam for framework adapters - Vercel's `useChat` expects a `ReadableStream` as its transport contract. Most application code should use `getMessages()` instead, since the accumulator provides the same per-token granularity.
+`send()` also returns a `ReadableStream<TEvent>` on the `ActiveTurn`. This exists as an integration seam for framework adapters - Vercel's `useChat()` expects a `ReadableStream` as its transport contract. Most application code should use `getMessages()` instead, since the accumulator provides the same per-token granularity.
 
 ```typescript
 // Framework adapter usage - most apps won't consume this directly
@@ -94,7 +94,7 @@ For turns started by other clients (observer turns), there is no stream p events
 
 ## Recovery
 
-Appends are pipelined - the encoder fires each append without waiting for acknowledgement, so tokens flow with minimal latency. If an append fails (e.g. during a brief network interruption), the message on the channel is now missing a chunk. Continuing to append deltas would build on incomplete text. The encoder recovers by issuing an `updateMessage` that replaces the entire message content with the full accumulated text it has been tracking locally, then resumes appending from that corrected state.
+Appends are pipelined - the encoder fires each append without waiting for acknowledgement, so tokens flow with minimal latency. If an append fails (e.g. during a brief network interruption), the message on the channel is now missing a chunk. Continuing to append deltas would build on incomplete text. The encoder recovers by issuing an `updateMessage()` that replaces the entire message content with the full accumulated text it has been tracking locally, then resumes appending from that corrected state.
 
 Late-joining clients receive the final message from channel history, which contains the fully accumulated text irrespective of whether or not individual appends were missed.
 
@@ -113,4 +113,4 @@ The transport streams whatever events the codec produces. For the Vercel AI SDK 
 
 Multiple content streams can be active within a single turn (e.g., reasoning + text, or multiple tool calls). Each gets its own message with its own stream ID.
 
-See [React hooks reference](../reference/react-hooks.md) for the full `useMessages` and `useClientTransport` API. See [Cancel](cancel.md) for how streams are aborted. For the internal mechanics of message encoding, decoding, and recovery, see the [Encoder](../internals/encoder.md), [Decoder](../internals/decoder.md), and [Wire protocol](../internals/wire-protocol.md) internals pages.
+See [React hooks reference](../reference/react-hooks.md) for the full `useMessages()` and `useClientTransport()` API. See [Cancel](cancel.md) for how streams are aborted. For the internal mechanics of message encoding, decoding, and recovery, see the [Encoder](../internals/encoder.md), [Decoder](../internals/decoder.md), and [Wire protocol](../internals/wire-protocol.md) internals pages.

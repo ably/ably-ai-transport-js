@@ -9,9 +9,9 @@ The SDK is codec-parameterized: a generic transport core handles streaming, turn
 | Import path                               | What it provides                                                                             |
 | ----------------------------------------- | -------------------------------------------------------------------------------------------- |
 | `@ably/ai-transport`              | Generic transport, codec interfaces, utilities. Framework-agnostic.                          |
-| `@ably/ai-transport/react`        | React hooks for the generic transport (`useClientTransport`, `useMessages`, `useSend`, etc.) |
+| `@ably/ai-transport/react`        | React hooks for the generic transport (`useClientTransport()`, `useMessages()`, `useSend()`, etc.) |
 | `@ably/ai-transport/vercel`       | Vercel AI SDK integration - `UIMessageCodec` and pre-bound transport factories               |
-| `@ably/ai-transport/vercel/react` | Vercel-specific React hooks - `useChatTransport` for `useChat`, `useMessageSync`             |
+| `@ably/ai-transport/vercel/react` | Vercel-specific React hooks - `useChatTransport()` for `useChat()`, `useMessageSync()`             |
 
 Peer dependencies: `ably` (required), `ai` (for Vercel entry points), `react` (for React entry points).
 

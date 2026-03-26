@@ -39,7 +39,7 @@ This happens for every event - observer messages stream in real time, not just a
 
 ## Seeing who's active
 
-`useActiveTurns` tracks all active turns from all clients:
+`useActiveTurns()` tracks all active turns from all clients:
 
 ```typescript
 import { useActiveTurns } from '@ably/ai-transport/react';
@@ -72,9 +72,9 @@ const history = useHistory(transport, { limit: 50 });
 
 History contains all messages from all clients, with their full branch structure. The late joiner sees the same conversation state as clients who were present from the start. See [History](history.md) for details.
 
-## Using with useChat
+## Using with useChat()
 
-When using the useChat path, `useMessageSync` pushes observer messages into `useChat`'s state:
+When using the `useChat()` path, `useMessageSync()` pushes observer messages into `useChat()`'s state:
 
 ```typescript
 import { useMessageSync } from '@ably/ai-transport/vercel/react';
@@ -85,7 +85,7 @@ useMessageSync(transport, setMessages);
 // messages now includes messages from all clients on the channel
 ```
 
-Without `useMessageSync`, `useChat` would only show messages from its own sends. The sync hook replaces `useChat`'s message state with the transport's authoritative list on every update.
+Without `useMessageSync()`, `useChat()` would only show messages from its own sends. The sync hook replaces `useChat()`'s message state with the transport's authoritative list on every update.
 
 ## Identity
 

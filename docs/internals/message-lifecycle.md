@@ -74,7 +74,7 @@ Discrete messages (e.g. user messages published by `send()`) are inserted into t
 
 ### Why own turns have a stream
 
-The `ReadableStream<TEvent>` returned from `send()` exists primarily as an **integration seam for framework adapters**. Vercel's `useChat`, for example, expects a `ReadableStream` as its transport contract - the stream is how AI Transport plugs into the Vercel AI SDK's rendering pipeline.
+The `ReadableStream<TEvent>` returned from `send()` exists primarily as an **integration seam for framework adapters**. Vercel's `useChat()`, for example, expects a `ReadableStream` as its transport contract - the stream is how AI Transport plugs into the Vercel AI SDK's rendering pipeline.
 
 For most application code, the accumulated messages via `getMessages()` / `on('message')` are the right consumption path. The accumulator updates the tree on every event, so it provides the same granularity as the stream - you see each partial message as tokens arrive. The stream offers no timing advantage.
 

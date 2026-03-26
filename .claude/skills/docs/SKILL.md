@@ -113,6 +113,28 @@ This page covers the cancellation feature of the AI Transport SDK.
   parenthetical asides, not `—`. This applies to prose, code comments,
   and table cells.
 
+### Inline code formatting
+
+Use backticks for anything that references code - variable names, function
+names, header names, enum values, type names, file paths. Do not use backticks
+for plain-English concept names.
+
+- **Concept names** are plain text: "message ID", "turn", "cancel signal"
+- **Variable/field names** are backticked: `msgId`, `turnId`, `serial`
+- **Header names** are backticked: `x-ably-msg-id`, `x-ably-turn-id`
+- **Functions** always include parentheses: `send()`, `cancel()`, not `send` or `cancel`
+- **Types and interfaces** are backticked: `ClientTransport`, `Codec<TEvent, TMessage>`
+- **Enum values** are backticked: `streaming`, `finished`, `aborted`
+
+```markdown
+<!-- Good -->
+The message ID is available as `msg.id`. Call `transport.send()` to publish,
+which sets the `x-ably-msg-id` header.
+
+<!-- Bad: concept name backticked, function missing parens -->
+The `message ID` is available as `msg.id`. Call `transport.send` to publish.
+```
+
 ### Define jargon on first use
 
 Every technical term that a reader might not know needs either an inline

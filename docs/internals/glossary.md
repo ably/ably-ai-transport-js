@@ -90,10 +90,6 @@ When the [decoder](decoder.md#first-contact) receives an update for a serial it 
 
 When a client calls `send()`, it inserts an optimistic message into the conversation tree (with no serial). The server then relays that message onto the channel, and all clients - including the sender - receive it. The sending client matches the relayed message by `x-ably-msg-id` and reconciles the optimistic entry with the server-assigned serial ([serial promotion](conversation-tree.md#upsert-the-sole-mutation)) rather than creating a duplicate.
 
-### Codec key
-
-A stable string identifier for a domain message, provided by the codec's `getMessageKey()` method. For the Vercel codec, this is the `UIMessage.id`. The [conversation tree](conversation-tree.md#data-structures) maintains a secondary index from codec key to `msgId`, allowing lookups by domain message ID when the transport-level `x-ably-msg-id` isn't known.
-
 ## Conversation tree concepts
 
 ### Group root
@@ -122,8 +118,8 @@ A codec-provided component that assembles [decoder outputs](decoder.md#decoder-o
 
 ### Message materialization
 
-The act of producing a flat `TMessage[]` from the [conversation tree](conversation-tree.md) via [`flatten()`](#flatten). Every call rebuilds from scratch - there is no cached list - because the result depends on branch selection state. All consumers go through `getMessages()`, which delegates to `flatten()`: React hooks, `send()` (for the HTTP POST body), `history()` (for pagination snapshots). See [Message lifecycle](message-lifecycle.md#why-no-cached-message-list).
+The act of producing a flat `TMessage[]` from the [conversation tree](conversation-tree.md) via [`flattenNodes()`](#flatten). Every call rebuilds from scratch - there is no cached list - because the result depends on branch selection state. All consumers go through `getMessages()`, which delegates to `flattenNodes()`: React hooks, `send()` (for the HTTP POST body), `history()` (for pagination snapshots). See [Message lifecycle](message-lifecycle.md#why-no-cached-message-list).
 
 ### Flatten
 
-`ConversationTree.flatten()` - the sole path from tree state to a message array. Walks the sorted node list, checks parent reachability and sibling selection, and returns the linear message sequence for the currently selected conversation path. See [Conversation tree: flatten](conversation-tree.md#flatten-producing-the-linear-path).
+`ConversationTree.flattenNodes()` - the sole path from tree state to a message array. Walks the sorted node list, checks parent reachability and sibling selection, and returns the linear message sequence for the currently selected conversation path. See [Conversation tree: flatten](conversation-tree.md#flatten-producing-the-linear-path).

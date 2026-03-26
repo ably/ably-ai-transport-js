@@ -88,9 +88,9 @@ When the decoder produces a `{ kind: 'message' }` output (e.g. a user message de
 
 ## How messages reach the UI
 
-The [conversation tree's](conversation-tree.md#flatten-producing-the-linear-path) `flatten()` method is the sole path from tree state to a message array. It walks the sorted node list, checks parent reachability and sibling selection, and returns the linear `TMessage[]` for the currently selected conversation path.
+The [conversation tree's](conversation-tree.md#flatten-producing-the-linear-path) `flattenNodes()` method is the sole path from tree state to a message array. It walks the sorted node list, checks parent reachability and sibling selection, and returns the linear `TMessage[]` for the currently selected conversation path.
 
-`ClientTransport.getMessages()` calls `flatten()` and filters out any messages withheld by the history pagination buffer. This is the public API that all downstream consumers call.
+`ClientTransport.getMessages()` calls `flattenNodes()` and filters out any messages withheld by the history pagination buffer. This is the public API that all downstream consumers call.
 
 React hooks follow an identical pattern:
 
@@ -119,11 +119,11 @@ Each turn needs its own accumulator because events from interleaved concurrent t
 
 ## Why no cached message list
 
-The tree is a DAG with branch selection state. The "current conversation" depends on which sibling is selected at each fork point. There is no single cached `TMessage[]` - every call to `flatten()` rebuilds from scratch.
+The tree is a DAG with branch selection state. The "current conversation" depends on which sibling is selected at each fork point. There is no single cached `TMessage[]` - every call to `flattenNodes()` rebuilds from scratch.
 
 This is a deliberate tradeoff: no cache invalidation complexity, at the cost of repeated traversals. Since message counts are conversation-sized (tens to low hundreds), this is cheap.
 
-All consumers go through `getMessages()` → `flatten()`:
+All consumers go through `getMessages()` → `flattenNodes()`:
 
 | Consumer                                  | When it calls `getMessages()`                     |
 | ----------------------------------------- | ------------------------------------------------- |
@@ -132,4 +132,4 @@ All consumers go through `getMessages()` → `flatten()`:
 | `send()` / `regenerate()`                 | To build the HTTP POST body's message history     |
 | `history()`                               | To snapshot the current tree state for pagination |
 
-See [Conversation tree](conversation-tree.md) for how `flatten()` works. See [Codec interface](codec-interface.md#accumulator) for the accumulator's role. See [History hydration](history.md) for the history decode pipeline.
+See [Conversation tree](conversation-tree.md) for how `flattenNodes()` works. See [Codec interface](codec-interface.md#accumulator) for the accumulator's role. See [History hydration](history.md) for the history decode pipeline.

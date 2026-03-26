@@ -20,7 +20,7 @@ User: "What is Rust?"                     (msg-1, parent: null)
   └── Assistant: "Rust is a systems..."    (msg-3, parent: msg-1, forkOf: msg-2)  ← regenerated
 ```
 
-`flatten()` returns the linear message list along the currently selected branch. The user navigates between siblings to switch branches.
+`flattenNodes()` returns the linear message list along the currently selected branch. The user navigates between siblings to switch branches.
 
 ## Regenerate
 
@@ -75,7 +75,8 @@ const tree = useConversationTree(transport);
 // tree.selectSibling(nodeId, index) - switch to a different sibling
 //
 // nodeId is the x-ably-msg-id for each message - resolve it from headers:
-//   const headers = transport.getMessageHeaders(msg);
+//   const allWithHeaders = transport.getMessagesWithHeaders();
+//   const headers = allWithHeaders.find((entry) => entry.message === msg)?.headers;
 //   const nodeId = headers?.['x-ably-msg-id'] ?? msg.id;
 ```
 

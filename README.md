@@ -2,8 +2,6 @@
 
 A durable transport layer between AI agents and users. Streams AI responses over [Ably](https://ably.com/) channels - responses resume after disconnections, conversations persist across page reloads and devices, with support for cancellation, branching conversations, and multi-user sync.
 
-`@ably/ai-transport` ships as a single package with four entry points: core primitives, React hooks, Vercel AI SDK integration, and Vercel + React hooks.
-
 > **Status:** Pre-release (`0.x`). The API is evolving. Feedback and contributions are welcome.
 
 ## The problem

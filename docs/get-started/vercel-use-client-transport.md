@@ -31,9 +31,7 @@ import { useState } from 'react';
 
 // Resolve the x-ably-msg-id for a message. Tree methods and regenerate/edit
 // use x-ably-msg-id as the key, not UIMessage.id.
-// Build a headers lookup once, then resolve per message.
-function treeMsgId(msg: UIMessage, headersByMessage: Map<UIMessage, Record<string, string> | undefined>): string {
-  const headers = headersByMessage.get(msg);
+function treeMsgId(headers: Record<string, string> | undefined, msg: UIMessage): string {
   return headers?.['x-ably-msg-id'] ?? msg.id;
 }
 
@@ -60,10 +58,7 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
 
   const isStreaming = activeTurns.size > 0;
 
-  // Build a lookup map from message to headers once per render.
-  const headersByMessage = new Map(
-    transport.getMessagesWithHeaders().map((entry) => [entry.message, entry.headers]),
-  );
+  const messagesWithHeaders = transport.getMessagesWithHeaders();
 
   const handleSend = () => {
     const text = input.trim();
@@ -88,9 +83,9 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
         </button>
       )}
 
-      {/* Message list from the conversation tree */}
-      {tree.messages.map((msg) => {
-        const nodeId = treeMsgId(msg, headersByMessage);
+      {/* Message list with headers for tree navigation */}
+      {messagesWithHeaders.map(({ message: msg, headers }) => {
+        const nodeId = treeMsgId(headers, msg);
         return (
           <div key={msg.id}>
             <strong>{msg.role}:</strong>

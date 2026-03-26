@@ -74,10 +74,11 @@ const tree = useConversationTree(transport);
 // tree.getSelectedIndex(nodeId) - which sibling is currently selected
 // tree.selectSibling(nodeId, index) - switch to a different sibling
 //
-// nodeId is the x-ably-msg-id for each message - resolve it from headers:
-//   const allWithHeaders = transport.getMessagesWithHeaders();
-//   const headers = allWithHeaders.find((entry) => entry.message === msg)?.headers;
-//   const nodeId = headers?.['x-ably-msg-id'] ?? msg.id;
+// nodeId is the x-ably-msg-id for each message - iterate getMessagesWithHeaders()
+// to get messages paired with their headers:
+//   transport.getMessagesWithHeaders().map(({ message: msg, headers }) => {
+//     const nodeId = headers?.['x-ably-msg-id'] ?? msg.id;
+//   });
 ```
 
 Build a sibling navigator (where `nodeId` is the resolved `x-ably-msg-id` for the message):

@@ -23,8 +23,8 @@ type LogContext = Record<string, any>;
 |---|---|
 | `Trace` | Routine operations — entry point of every key method. The most verbose level. |
 | `Debug` | Useful for debugging but superfluous in normal operation — successful completions, state transitions, decision points. |
-| `Info` | Operationally significant but expected — status changes, lifecycle events. |
-| `Warn` | Not an error yet, but could cause problems — discontinuities detected, unexpected but recoverable states. |
+| `Info` | Operationally significant but expected — transport open/close, lifecycle events. |
+| `Warn` | Not an error yet, but could cause problems — unexpected but recoverable states. |
 | `Error` | An operation has failed and cannot be automatically recovered. |
 | `Silent` | No logging. |
 
@@ -32,25 +32,25 @@ Levels are hierarchical. Setting the level to `Debug` suppresses `Trace` but sho
 
 ## Logger Initialization and Propagation
 
-Create the logger once at the top-level client, then propagate it down via constructor injection. Use `withContext` to add identifying metadata at each layer:
+Create the logger once at the top-level transport, then propagate it down via constructor injection. Use `withContext` to add identifying metadata at each layer:
 
 ```ts
-// Top level — ChatClient
-this._logger = makeLogger(options).withContext({
-  chatClientNonce: this._nonce,
+// Top level — ClientTransport
+this._logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
+  component: 'ClientTransport',
 });
 
 // Passed to child components
-this._rooms = new DefaultRooms(realtime, clientIdResolver, this._logger);
+this._turnManager = new DefaultTurnManager(channel, this._logger);
 
 // Child adds its own context
-this._logger = logger.withContext({ roomName: name, roomNonce: nonce });
+this._logger = logger?.withContext({ component: 'TurnManager' });
 
-// Grandchild adds feature context
-this._logger = logger.withContext({ feature: 'agentState' });
+// Server transport — optional logger
+this._logger = options.logger?.withContext({ component: 'ServerTransport' });
 ```
 
-Context accumulates — a log call from the agent state feature will include `chatClientNonce`, `roomName`, `roomNonce`, and `feature` automatically. Context provided in individual log calls overrides matching keys from the parent.
+Context accumulates — a log call from TurnManager will include the parent's context plus `component: 'TurnManager'` automatically. Context provided in individual log calls overrides matching keys from the parent.
 
 ## Custom Log Handler
 
@@ -72,26 +72,24 @@ Log messages follow the pattern `ClassName.methodName(); <description>`:
 
 ```ts
 // Method entry (trace)
-this._logger.trace('RoomLifecycleManager.attach();');
+this._logger.trace('ClientTransport.send();');
 
 // Successful completion (debug)
-this._logger.debug('RoomLifecycleManager.attach(); room attached successfully');
+this._logger.debug('DefaultTurnManager.startTurn(); turn started', { turnId });
 
 // With context object
-this._logger.debug('RoomLifecycleManager.attach(); attaching room', {
-  channelState: channel.state,
-});
+this._logger.debug('ConversationTree.upsert(); promoting serial', { msgId, serial });
 
 // Decision/branch (debug)
-this._logger.debug('RoomLifecycleManager.attach(); room already attached, no-op');
+this._logger.debug('ConversationTree.upsert(); inserting new node', { msgId, parentId, forkOf });
 
 // Warning
-this._logger.warn('RoomLifecycleManager._startMonitoringDiscontinuity(); discontinuity detected', {
-  reason: stateChange.reason,
+this._logger.warn('DefaultDecoderCore.decode(); unexpected message action', {
+  action, serial: message.serial,
 });
 
 // Error
-this._logger.error('DefaultSubscriptionManager.getBeforeSubscriptionStart(); listener has not been subscribed');
+this._logger.error('DefaultServerTransport(); subscribe failed');
 ```
 
 ## When to Log at Each Level
@@ -101,9 +99,10 @@ this._logger.error('DefaultSubscriptionManager.getBeforeSubscriptionStart(); lis
 Every key public or internal method gets a `trace` at entry. This is the baseline for understanding call flow:
 
 ```ts
-this._logger.trace('Presence.get()', { params });
-this._logger.trace('Rooms.get();', { roomName: name });
-this._logger.trace('MessageStream.appendText();', { serial: this.serial });
+this._logger.trace('ClientTransport.send();');
+this._logger.trace('ClientTransport.regenerate();', { messageId });
+this._logger.trace('DefaultEncoderCore.publishDiscrete();', { name: payload.name });
+this._logger.trace('DefaultDecoderCore.decode();', { action, serial: message.serial, name: message.name });
 ```
 
 ### Debug — outcomes and decisions
@@ -111,9 +110,10 @@ this._logger.trace('MessageStream.appendText();', { serial: this.serial });
 Log after an operation completes, when taking a branch, or when state changes:
 
 ```ts
-this._logger.debug('Rooms.get(); returning existing room', { roomName: name, nonce: room.nonce });
-this._logger.debug('Rooms.release(); room released', { roomName: name, nonce: existingRoom.nonce });
-this._logger.debug('Room.finalizer(); already finalized');
+this._logger.debug('DefaultTurnManager.startTurn(); turn started', { turnId });
+this._logger.debug('DefaultTurnManager.endTurn(); turn ended', { turnId, reason });
+this._logger.debug('StreamRouter.closeStream(); closing stream', { turnId });
+this._logger.debug('ConversationTree.select();', { msgId, index });
 ```
 
 ### Info — lifecycle events
@@ -121,7 +121,7 @@ this._logger.debug('Room.finalizer(); already finalized');
 Operationally significant but not unexpected:
 
 ```ts
-this._logger.info('room status changed', { ...change });
+this._logger.info('ClientTransport.close();');
 ```
 
 ### Warn — potential problems
@@ -129,24 +129,21 @@ this._logger.info('room status changed', { ...change });
 Not yet an error, but something that could cascade:
 
 ```ts
-this._logger.warn('RoomLifecycleManager._startMonitoringDiscontinuity(); discontinuity detected', {
-  reason: stateChange.reason,
+this._logger.warn('DefaultDecoderCore.decode(); unrecognized message name', {
+  name: message.name, serial: message.serial,
 });
 ```
 
 ### Error — failed operations
 
-Log immediately before throwing or rejecting:
+Log immediately before throwing or rejecting. Also use when a developer-provided callback throws:
 
 ```ts
-this._logger.error('unable to subscribe to presence; presence events are not enabled');
-throw new Ably.ErrorInfo(...);
+this._logger.error('DefaultServerTransport(); subscribe failed');
 ```
 
 ```ts
-this._logger.error('ChatApi._doRequest(); failed to make request', {
-  url, method, statusCode: response.statusCode,
-});
+this._logger?.error('DefaultDecoderCore._invokeOnStreamUpdate(); callback threw', { error });
 ```
 
 ## Context Objects
@@ -155,10 +152,10 @@ Pass structured data as the second argument, not interpolated into the message s
 
 ```ts
 // Good — structured context
-this._logger.debug('Rooms.release(); releasing room', { roomName: name, nonce: existingRoom.nonce });
+this._logger.debug('DefaultTurnManager.endTurn(); turn ended', { turnId, reason });
 
 // Bad — data in the message string
-this._logger.debug(`Rooms.release(); releasing room ${name} with nonce ${existingRoom.nonce}`);
+this._logger.debug(`DefaultTurnManager.endTurn(); turn ${turnId} ended with reason ${reason}`);
 ```
 
 Use context for IDs, counts, states, and parameters. Keep context objects shallow.

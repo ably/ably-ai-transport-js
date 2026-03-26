@@ -12,7 +12,7 @@ consistency with the project's principles and voice.
 ## Before writing
 
 1. **Read the source code** for whatever you're documenting. Never document
-   from memory or assumption — read the implementation, the types, and the
+   from memory or assumption - read the implementation, the types, and the
    tests. The code is the source of truth.
 
 2. **Read related existing docs** in `docs/` to understand what's already
@@ -34,7 +34,7 @@ in every page you write.
 
 ### Problem recognition is the entry point
 
-Open feature pages with brief problem framing — "without a durable session
+Open feature pages with brief problem framing - "without a durable session
 layer, this is hard because..." This is not marketing. It orients the
 developer and explains why the capability exists. Keep it to 1-2 sentences.
 
@@ -47,7 +47,7 @@ it working should never have to choose between equal-looking options.
 
 ### Atomic pages, duplication is fine
 
-Each page has one clear focus. Cancel, barge-in, steer, and double-text are
+Each page has one clear focus. Cancel, interruption, steer, and double-text are
 separate pages even though they share underlying technology. Duplication across
 pages is preferred over forcing developers to mentally unpack a page covering
 multiple concepts. When you duplicate, keep the duplicated content minimal and
@@ -56,7 +56,7 @@ focused on the current page's intent.
 ### Client and server are distinct concerns
 
 Feature pages should show code for both sides. Use clear section headers
-(not tabs — this is markdown). Server code and client code are separate
+(not tabs - this is markdown). Server code and client code are separate
 concerns and should be presented separately with their own context.
 
 ### Honest about status
@@ -68,13 +68,13 @@ unimplemented features clearly.
 ### It's a tool, not a task
 
 Frame everything as "you have this problem, and it disappears." The developer
-is not learning a new thing — they're solving a problem they already have.
+is not learning a new thing - they're solving a problem they already have.
 AI Transport is infrastructure you don't want to think about.
 
 ## Voice and style
 
 These patterns are derived from the documentation that received positive
-feedback. They are not guidelines — they are the voice of this project's docs.
+feedback. They are not guidelines - they are the voice of this project's docs.
 
 ### Opening sentence
 
@@ -83,12 +83,12 @@ direct, declarative statement. No preamble, no "In this guide, we'll..."
 
 ```markdown
 <!-- Good -->
-Cancellation in `@ably/ai` is a channel-level operation — the client publishes
+Cancellation in `@ably/ai` is a channel-level operation - the client publishes
 a cancel signal on the Ably channel, the server receives it and aborts the
 matching turns.
 
 <!-- Good -->
-Barge-in is when a user sends a new message while the AI is still streaming
+Interruption is when a user sends a new message while the AI is still streaming
 a response.
 
 <!-- Bad -->
@@ -109,6 +109,9 @@ This page covers the cancellation feature of the AI Transport SDK.
   "robust." The technical explanation IS the value proposition.
 - **No hedging.** Don't say "you may want to" or "consider using." Say
   "use X when Y."
+- **Use hyphens, not em-dashes.** Use ` - ` (space-hyphen-space) for
+  parenthetical asides, not `—`. This applies to prose, code comments,
+  and table cells.
 
 ### Define jargon on first use
 
@@ -126,7 +129,7 @@ its first mention within a page. This applies to:
 For internals pages, prefer linking to the glossary
 (`[serial](glossary.md#serial-ably)`) over repeating the definition. For
 feature and concept pages aimed at external developers, prefer a brief
-inline explanation on first use — don't force readers to click away.
+inline explanation on first use - don't force readers to click away.
 
 **After writing a page, audit it for unexplained terms.** Read each
 paragraph as if you don't know the codebase. Any term that would make you
@@ -136,59 +139,59 @@ pause and think "what does that mean?" needs a definition or a link.
 
 Feature pages follow this flow:
 
-1. **Opening definition** — one sentence that defines what this is
-2. **Problem framing** — 1-2 sentences: "without X, this is hard because..."
-3. **Mechanism** — how it works (brief, conceptual)
-4. **Server code** — complete but minimal, under a "Server" or "Server side" header
-5. **Client code** — complete but minimal, under a "Client" or "Client side" header
-6. **Variants/options** — alternative approaches, configuration options
-7. **Edge cases** — what happens in non-obvious situations
-8. **Wire sequence** (if applicable) — ASCII diagram showing the message flow
-9. **Cross-references** — inline links to related feature pages and the reference
+1. **Opening definition** - one sentence that defines what this is
+2. **Problem framing** - 1-2 sentences: "without X, this is hard because..."
+3. **Mechanism** - how it works (brief, conceptual)
+4. **Server code** - complete but minimal, under a "Server" or "Server side" header
+5. **Client code** - complete but minimal, under a "Client" or "Client side" header
+6. **Variants/options** - alternative approaches, configuration options
+7. **Edge cases** - what happens in non-obvious situations
+8. **Wire sequence** (if applicable) - ASCII diagram showing the message flow
+9. **Cross-references** - inline links to related feature pages and the reference
 
 Concept pages follow this flow:
 
-1. **Opening definition** — what this abstraction is and why it exists
-2. **Architecture** — how the pieces fit together (ASCII diagrams)
-3. **Data flow** — what happens when, step by step
-4. **Key details** — the things developers need to know to use it correctly
+1. **Opening definition** - what this abstraction is and why it exists
+2. **Architecture** - how the pieces fit together (ASCII diagrams)
+3. **Data flow** - what happens when, step by step
+4. **Key details** - the things developers need to know to use it correctly
 
 Quickstart pages follow this flow:
 
-1. **Opening sentence** — what you'll build and which integration path
-2. **Prerequisites** — what you need before starting
-3. **Numbered steps** — each step is a file to create, with complete code
-4. **"What's happening"** — brief explanation linking to concept pages
-5. **Next steps** — links to feature pages for adding capabilities
+1. **Opening sentence** - what you'll build and which integration path
+2. **Prerequisites** - what you need before starting
+3. **Numbered steps** - each step is a file to create, with complete code
+4. **"What's happening"** - brief explanation linking to concept pages
+5. **Next steps** - links to feature pages for adding capabilities
 
 Framework guide pages follow this flow:
 
-1. **Opening sentence** — what the framework provides and what AIT adds
-2. **Comparison table** — capabilities with and without AIT
-3. **Integration paths** — recommended approach first, alternatives below
-4. **When to use which** — decision table for choosing between paths
-5. **Server side** — server code is the same for all client paths
-6. **Codec details** — how the codec maps between framework types and Ably
+1. **Opening sentence** - what the framework provides and what AIT adds
+2. **Comparison table** - capabilities with and without AIT
+3. **Integration paths** - recommended approach first, alternatives below
+4. **When to use which** - decision table for choosing between paths
+5. **Server side** - server code is the same for all client paths
+6. **Codec details** - how the codec maps between framework types and Ably
 
 Reference pages follow this flow:
 
-1. **One section per API item** — hook, method, or error code
-2. **Signature** — the TypeScript call signature
-3. **Parameters table** — name, type, description for each parameter
-4. **Return type** — what comes back, with property/method tables for complex returns
-5. **Behavior notes** — brief description of what it does, when it updates
-6. **Code example** — minimal usage (only where the signature isn't self-evident)
+1. **One section per API item** - hook, method, or error code
+2. **Signature** - the TypeScript call signature
+3. **Parameters table** - name, type, description for each parameter
+4. **Return type** - what comes back, with property/method tables for complex returns
+5. **Behavior notes** - brief description of what it does, when it updates
+6. **Code example** - minimal usage (only where the signature isn't self-evident)
 
 Internals pages follow this flow:
 
-1. **Opening definition** — what this component is and what problem it solves
-2. **Key concepts** — the mental model (data structures, state machines,
+1. **Opening definition** - what this component is and what problem it solves
+2. **Key concepts** - the mental model (data structures, state machines,
    lifecycles) needed to understand the component
-3. **Operations/methods** — what you can do with it, typically as a table
-4. **Algorithms/flows** — step-by-step or pseudocode for non-trivial
+3. **Operations/methods** - what you can do with it, typically as a table
+4. **Algorithms/flows** - step-by-step or pseudocode for non-trivial
    processes (flatten, flush/recovery, prefix-match, etc.)
-5. **Edge cases and recovery** — what happens when things go wrong
-6. **Cross-references** — inline links to related internals pages, the
+5. **Edge cases and recovery** - what happens when things go wrong
+6. **Cross-references** - inline links to related internals pages, the
    glossary, and the corresponding feature/concept pages
 
 Internals pages differ from concept pages: concept pages explain what
@@ -198,7 +201,7 @@ pages can reference source file paths and internal class names.
 
 ### Tables
 
-Use tables for structured comparisons — filter options, event types, error
+Use tables for structured comparisons - filter options, event types, error
 codes, phase behaviors. Tables are scannable and dense. Prefer a table over
 a bullet list when comparing properties across items.
 
@@ -230,11 +233,11 @@ sequenceDiagram
 
 **When to use Mermaid vs plain text:**
 
-- **Mermaid `sequenceDiagram`** — wire sequences, request-response flows,
+- **Mermaid `sequenceDiagram`** - wire sequences, request-response flows,
   anything with multiple participants exchanging messages over time.
-- **Mermaid `flowchart`** — data flow diagrams, architecture layers,
+- **Mermaid `flowchart`** - data flow diagrams, architecture layers,
   routing logic with branching paths.
-- **Plain text** — simple hierarchical trees (2-3 levels, e.g. class
+- **Plain text** - simple hierarchical trees (2-3 levels, e.g. class
   composition), pseudocode algorithms, data structure layouts. These are
   small enough that alignment is trivial.
 
@@ -248,10 +251,10 @@ eliminates this class of bugs entirely.
   make sense on its own. Include imports when the import path matters.
 - **Show the recommended approach first.** The first code block on the page
   should be the thing most developers will actually write.
-- **Real types, real methods.** Use the actual API — `transport.send()`,
+- **Real types, real methods.** Use the actual API - `transport.send()`,
   `turn.cancel()`, not pseudocode.
 - **Comments explain the non-obvious.** Don't comment `// cancel the turn`
-  above `turn.cancel()`. Do comment `// fire-and-forget — POST doesn't block
+  above `turn.cancel()`. Do comment `// fire-and-forget - POST doesn't block
   the stream return`.
 - **TypeScript only** for now (the SDK is TypeScript).
 - **Both sides.** Feature pages show client and server code. Use section
@@ -265,7 +268,7 @@ link to at least the relevant reference page. Use inline links, not a
 
 **Link densely, not just at the end.** Every mention of a concept that is
 explained in detail on another page should be an inline link at first mention
-within the current section. Don't rely on a trailing "See also" paragraph —
+within the current section. Don't rely on a trailing "See also" paragraph -
 readers skim, and the link needs to be where the concept appears.
 
 ```markdown
@@ -294,7 +297,7 @@ end for readers who want to go deeper (e.g. "For the internal mechanics, see
 Use short, descriptive headers. Prefer "What happens when you cancel" over
 "Cancellation behavior." Use the developer's language, not internal jargon.
 
-Headers should work as a table of contents — a developer scanning the headers
+Headers should work as a table of contents - a developer scanning the headers
 should understand what the page covers without reading the body.
 
 ## What NOT to do
@@ -303,7 +306,7 @@ should understand what the page covers without reading the body.
   introduction.
 - **Don't summarize at the end.** The page is short enough to not need it.
 - **Don't explain what markdown formatting means.** No "the table below
-  shows..." — just put the table there.
+  shows..." - just put the table there.
 - **Don't add meta-commentary.** No "This is an advanced topic" or "This
   section assumes you've read X." If there's a prerequisite, link to it
   inline.
@@ -326,8 +329,8 @@ should understand what the page covers without reading the body.
   (e.g. header merge order), or confusing `close()` with `abort()`.
   Verify each claim against the actual implementation.
 - **Don't use concepts without explaining or linking them.** Every
-  technical term — Ably-specific, architecture-specific, or protocol
-  jargon — must be either defined inline or linked to the glossary at
+  technical term - Ably-specific, architecture-specific, or protocol
+  jargon - must be either defined inline or linked to the glossary at
   its first mention on the page.
 
 ## File placement
@@ -336,13 +339,13 @@ Follow the existing directory structure:
 
 ```
 docs/
-├── index.md          # Overview — orients the developer, routes to next step
+├── index.md          # Overview - orients the developer, routes to next step
 ├── concepts/         # Mental models: transport architecture, turns, codec
-├── get-started/      # Quickstarts — working app in minutes, per integration path
-├── frameworks/       # Framework guides — why AIT + framework X, integration paths
-├── features/         # Feature pages — one developer intent per page, atomic
-├── reference/        # API reference — signatures, params, return types
-└── internals/        # Under the hood — wire protocol, encoder, decoder, tree, etc.
+├── get-started/      # Quickstarts - working app in minutes, per integration path
+├── frameworks/       # Framework guides - why AIT + framework X, integration paths
+├── features/         # Feature pages - one developer intent per page, atomic
+├── reference/        # API reference - signatures, params, return types
+└── internals/        # Under the hood - wire protocol, encoder, decoder, tree, etc.
     └── glossary.md   # Definitions for Ably-specific and architecture terms
 ```
 
@@ -369,13 +372,13 @@ After writing a doc page, verify:
 - [ ] Code examples match current source code (read the implementation)
 - [ ] Code examples have all variables defined (no undefined references)
 - [ ] Import paths use real package entry points (`@ably/ai-transport`, `/react`, `/vercel`, `/vercel/react`)
-- [ ] Interface signatures match the source exactly — optional fields (`?`),
+- [ ] Interface signatures match the source exactly - optional fields (`?`),
       parameter names, parameter order, return types
 - [ ] Wire protocol values match source (`streaming`/`finished`/`aborted`, not `open`/`closed`)
 - [ ] Chunk/event type names match the actual codec implementation
 - [ ] No undocumented or invented API surface
 - [ ] Method behavior descriptions match the actual implementation (e.g.
-      which method is called in the error path — `close()` vs `abort()`)
+      which method is called in the error path - `close()` vs `abort()`)
 - [ ] Priority/ordering claims match the code (e.g. header merge order)
 
 **Structure and style:**
@@ -405,7 +408,7 @@ After writing a doc page, verify:
 
 **Concept audit (do this last):**
 
-- [ ] Read each paragraph as an outsider — flag any term that isn't obvious
+- [ ] Read each paragraph as an outsider - flag any term that isn't obvious
 - [ ] Ably-specific terms (serial, message actions, channel attach) are
       defined or linked to the glossary at first mention
 - [ ] Architecture terms (own turn, observer turn, transport layer, domain

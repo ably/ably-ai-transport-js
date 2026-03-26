@@ -10,6 +10,13 @@
     "./vercel/react": "./src/vercel/react/index.ts"
   },
   "scripts": {
+    "build": "npm run build:clean && npm run build:core && npm run build:react && npm run build:vercel && npm run build:vercel-react",
+    "build:clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build:core": "vite build --config ./src/vite.config.ts",
+    "build:react": "vite build --config ./src/react/vite.config.ts --emptyOutDir",
+    "build:vercel": "vite build --config ./src/vercel/vite.config.ts --emptyOutDir",
+    "build:vercel-react": "vite build --config ./src/vercel/react/vite.config.ts --emptyOutDir",
+    "prepare": "npm run build",
     "lint": "eslint .",
     "lint:fix": "eslint --fix .; (npm run format > /dev/null)",
     "format": "prettier --list-different --write src demo/vercel/react/*/src",
@@ -80,6 +87,8 @@
     "tsx": "^4.21.0",
     "typescript": "^5.8.2",
     "typescript-eslint": "^8.26.1",
+    "vite": "^8.0.0",
+    "vite-plugin-dts": "^4.5.4",
     "vitest": "^4.1.0"
   }
 }

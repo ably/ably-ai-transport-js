@@ -10,8 +10,6 @@ Most AI frameworks stream tokens over HTTP response bodies or SSE. That works un
 
 Ably AI Transport replaces the HTTP stream with an Ably channel. The server publishes tokens to the channel as they arrive from the LLM; the response accumulates on the channel and persists, so partial responses survive disconnection. Any client can subscribe to the same channel from any device. Cancel signals, turn lifecycle events, and conversation history all flow through the channel rather than depending on a single HTTP connection.
 
-It is not an agent framework or orchestration layer - it works alongside tools like the Vercel AI SDK, Temporal, and AG-UI.
-
 ```mermaid
 sequenceDiagram
     participant U as User
@@ -28,6 +26,8 @@ sequenceDiagram
     AC->>CT: subscribe (decode)
     CT->>U: render tokens
 ```
+
+Ably AI Transport SDK is not an agent framework or orchestration layer - it works alongside whatever agent framework/model provider you choose, through a pluggable codec architecture (Vercel AI SDK supported now, more frameworks and models coming soon). It can be used in a serverless architecture (e.g. Next.js), with a durable execution framework (e.g. Temporal, Vercel Workflow DevKit) or in a traditional client-server architecture.
 
 ## What this gives you
 

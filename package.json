@@ -3,11 +3,38 @@
   "version": "0.0.1",
   "description": "Ably transport and codecs for building AI applications with Ably.",
   "type": "module",
+  "main": "dist/ably-ai-transport.umd.cjs",
+  "module": "dist/ably-ai-transport.js",
+  "browser": "dist/ably-ai-transport.js",
+  "types": "dist/index.d.ts",
+  "react-native": "dist/ably-ai-transport.umd.cjs",
+  "sideEffects": false,
   "exports": {
-    ".": "./src/index.ts",
-    "./react": "./src/react/index.ts",
-    "./vercel": "./src/vercel/index.ts",
-    "./vercel/react": "./src/vercel/react/index.ts"
+    ".": {
+      "react-native": "./dist/ably-ai-transport.umd.cjs",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/ably-ai-transport.js",
+      "require": "./dist/ably-ai-transport.umd.cjs"
+    },
+    "./react": {
+      "react-native": "./dist/react/ably-ai-transport-react.umd.cjs",
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/ably-ai-transport-react.js",
+      "require": "./dist/react/ably-ai-transport-react.umd.cjs"
+    },
+    "./vercel": {
+      "react-native": "./dist/vercel/ably-ai-transport-vercel.umd.cjs",
+      "types": "./dist/vercel/index.d.ts",
+      "import": "./dist/vercel/ably-ai-transport-vercel.js",
+      "require": "./dist/vercel/ably-ai-transport-vercel.umd.cjs"
+    },
+    "./vercel/react": {
+      "react-native": "./dist/vercel/react/ably-ai-transport-vercel-react.umd.cjs",
+      "types": "./dist/vercel/react/index.d.ts",
+      "import": "./dist/vercel/react/ably-ai-transport-vercel-react.js",
+      "require": "./dist/vercel/react/ably-ai-transport-vercel-react.umd.cjs"
+    },
+    "./package.json": "./package.json"
   },
   "scripts": {
     "build": "npm run build:clean && npm run build:core && npm run build:react && npm run build:vercel && npm run build:vercel-react",
@@ -29,7 +56,9 @@
   },
   "files": [
     "dist/**",
-    "src/**"
+    "src/**",
+    "react/**",
+    "vercel/**"
   ],
   "repository": {
     "type": "git",

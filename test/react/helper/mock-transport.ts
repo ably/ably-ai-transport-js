@@ -15,7 +15,6 @@ export interface MockTransport {
   getAblyMessages: ReturnType<typeof vi.fn>;
   getActiveTurnIds: ReturnType<typeof vi.fn>;
   getTree: ReturnType<typeof vi.fn>;
-  getMessageHeaders: ReturnType<typeof vi.fn>;
   getMessagesWithHeaders: ReturnType<typeof vi.fn>;
   send: ReturnType<typeof vi.fn>;
   regenerate: ReturnType<typeof vi.fn>;
@@ -55,13 +54,19 @@ export const createMockTransport = (initialMessages: string[] = []): MockTranspo
   });
 
   const tree: ConversationTree<string> = {
-    flatten: vi.fn(() => initialMessages),
+    flattenNodes: vi.fn(() => initialMessages.map((m, i) => ({
+      message: m,
+      msgId: `msg-${String(i)}`,
+      parentId: undefined,
+      forkOf: undefined,
+      headers: {},
+      serial: undefined,
+    }))),
     getSiblings: vi.fn((msgId: string) => [msgId]),
     hasSiblings: vi.fn(() => false),
     getSelectedIndex: vi.fn(() => 0),
     select: vi.fn(),
     getNode: vi.fn(),
-    getNodeByKey: vi.fn(),
     getHeaders: vi.fn(),
     upsert: vi.fn(),
     delete: vi.fn(),
@@ -71,7 +76,6 @@ export const createMockTransport = (initialMessages: string[] = []): MockTranspo
   const getAblyMessages = vi.fn(() => []);
   const getActiveTurnIds = vi.fn(() => new Map<string, Set<string>>());
   const getTree = vi.fn(() => tree);
-  const getMessageHeaders = vi.fn();
   const getMessagesWithHeaders = vi.fn(() => []);
 
   const mockTurn = {
@@ -111,7 +115,6 @@ export const createMockTransport = (initialMessages: string[] = []): MockTranspo
     on,
     getAblyMessages,
     getActiveTurnIds,
-    getMessageHeaders,
     getMessages,
     getMessagesWithHeaders,
     history,
@@ -125,7 +128,6 @@ export const createMockTransport = (initialMessages: string[] = []): MockTranspo
     getAblyMessages,
     getActiveTurnIds,
     getTree,
-    getMessageHeaders,
     getMessagesWithHeaders,
     send,
     regenerate,

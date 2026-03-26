@@ -9,9 +9,9 @@
  *
  * `upsert()` is the sole mutation method. Messages can arrive in any order
  * (live subscription, history pages, seed data) and the tree produces the
- * correct `flatten()` output once all messages are present.
+ * correct `flattenNodes()` output once all messages are present.
  *
- * The tree owns conversation state. `flatten()` returns the linear message
+ * The tree owns conversation state. `flattenNodes()` returns the linear node
  * list for the currently selected branches — this is what the transport's
  * `getMessages()` delegates to.
  */
@@ -39,9 +39,6 @@ class DefaultConversationTree<TMessage> implements ConversationTree<TMessage> {
   /** All nodes indexed by msgId (x-ably-msg-id). */
   private readonly _nodeIndex = new Map<string, InternalNode<TMessage>>();
 
-  /** Secondary index: codec message key to msgId. Bridges UIMessage.id to x-ably-msg-id. */
-  private readonly _codecKeyIndex = new Map<string, string>();
-
   /**
    * All nodes sorted by serial (lexicographic). Null-serial messages
    * (optimistic inserts, seed data) sort after all serial-bearing messages,
@@ -61,14 +58,12 @@ class DefaultConversationTree<TMessage> implements ConversationTree<TMessage> {
    */
   private readonly _selections = new Map<string, number>();
 
-  private readonly _getKey: (message: TMessage) => string;
   private readonly _logger: Logger;
 
   /** Monotonically increasing counter for insertion sequence. */
   private _seqCounter = 0;
 
-  constructor(getKey: (message: TMessage) => string, logger: Logger) {
-    this._getKey = getKey;
+  constructor(logger: Logger) {
     this._logger = logger;
   }
 
@@ -259,8 +254,8 @@ class DefaultConversationTree<TMessage> implements ConversationTree<TMessage> {
   // Public query methods
   // -------------------------------------------------------------------------
 
-  flatten(): TMessage[] {
-    const result: TMessage[] = [];
+  flattenNodes(): ConversationNode<TMessage>[] {
+    const result: ConversationNode<TMessage>[] = [];
     const currentPath = new Set<string>();
     // Track which sibling groups we've already resolved to avoid
     // re-resolving for every member of the group.
@@ -294,7 +289,7 @@ class DefaultConversationTree<TMessage> implements ConversationTree<TMessage> {
       }
 
       currentPath.add(msgId);
-      result.push(node.message);
+      result.push(node);
     }
 
     return result;
@@ -330,12 +325,6 @@ class DefaultConversationTree<TMessage> implements ConversationTree<TMessage> {
     return this._nodeIndex.get(msgId)?.node;
   }
 
-  getNodeByKey(key: string): ConversationNode<TMessage> | undefined {
-    const msgId = this._codecKeyIndex.get(key);
-    if (!msgId) return undefined;
-    return this._nodeIndex.get(msgId)?.node;
-  }
-
   getHeaders(msgId: string): Record<string, string> | undefined {
     return this._nodeIndex.get(msgId)?.node.headers;
   }
@@ -347,9 +336,6 @@ class DefaultConversationTree<TMessage> implements ConversationTree<TMessage> {
   upsert(msgId: string, message: TMessage, headers: Record<string, string>, serial?: string): void {
     const parentId = headers[HEADER_PARENT] ?? undefined;
     const forkOf = headers[HEADER_FORK_OF] ?? undefined;
-
-    // Maintain codec key → msgId secondary index
-    this._codecKeyIndex.set(this._getKey(message), msgId);
 
     const existing = this._nodeIndex.get(msgId);
     if (existing) {
@@ -397,12 +383,6 @@ class DefaultConversationTree<TMessage> implements ConversationTree<TMessage> {
 
     const { node } = entry;
 
-    // Clean up secondary index
-    const codecKey = this._getKey(node.message);
-    if (this._codecKeyIndex.get(codecKey) === msgId) {
-      this._codecKeyIndex.delete(codecKey);
-    }
-
     // Remove from parent index
     this._removeFromParentIndex(node.parentId, msgId);
 
@@ -413,7 +393,7 @@ class DefaultConversationTree<TMessage> implements ConversationTree<TMessage> {
     this._nodeIndex.delete(msgId);
     this._selections.delete(msgId);
 
-    // Children are NOT deleted — they become unreachable in flatten()
+    // Children are NOT deleted — they become unreachable in flattenNodes()
     // because their parent is no longer on the active path.
   }
 }
@@ -424,11 +404,8 @@ class DefaultConversationTree<TMessage> implements ConversationTree<TMessage> {
 
 /**
  * Create a ConversationTree that materializes branching history from a flat oplog.
- * @param getKey - Codec function that returns a stable key for a domain message.
  * @param logger - Logger for diagnostic output.
  * @returns A new {@link ConversationTree} instance.
  */
-export const createConversationTree = <TMessage>(
-  getKey: (message: TMessage) => string,
-  logger: Logger,
-): ConversationTree<TMessage> => new DefaultConversationTree(getKey, logger);
+export const createConversationTree = <TMessage>(logger: Logger): ConversationTree<TMessage> =>
+  new DefaultConversationTree(logger);

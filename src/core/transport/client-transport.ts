@@ -44,6 +44,7 @@ import type {
   ClientTransport,
   ClientTransportOptions,
   CloseOptions,
+  ConversationNode,
   ConversationTree,
   LoadHistoryOptions,
   MessageWithHeaders,
@@ -116,8 +117,8 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   // Raw Ably message log
   private readonly _ablyMessages: Ably.InboundMessage[] = [];
 
-  // History pagination: withheld messages hidden from getMessages()
-  private readonly _withheldKeys = new Set<string>();
+  // History pagination: withheld msg-ids hidden from getMessages()
+  private readonly _withheldMsgIds = new Set<string>();
 
   // Sub-components
   private readonly _tree: ConversationTree<TMessage>;
@@ -156,16 +157,16 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     this._emitter = new EventEmitter<ClientTransportEventsMap>(this._logger);
 
     // Compose sub-components
-    this._tree = createConversationTree<TMessage>(this._codec.getMessageKey.bind(this._codec), this._logger);
+    this._tree = createConversationTree<TMessage>(this._logger);
     this._router = createStreamRouter<TEvent>(this._codec.isTerminal.bind(this._codec), this._logger);
     this._decoder = this._codec.createDecoder();
 
-    // Seed tree with initial messages
+    // Seed tree with initial messages — transport assigns its own msgId
     if (options.messages) {
       let prevMsgId: string | undefined;
       for (const msg of options.messages) {
-        const msgId = this._codec.getMessageKey(msg);
-        const seedHeaders: Record<string, string> = {};
+        const msgId = crypto.randomUUID();
+        const seedHeaders: Record<string, string> = { [HEADER_MSG_ID]: msgId };
         if (prevMsgId) seedHeaders[HEADER_PARENT] = prevMsgId;
         this._tree.upsert(msgId, msg, seedHeaders);
         prevMsgId = msgId;
@@ -330,8 +331,8 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
    * @param serial - Ably serial for tree ordering.
    */
   private _upsertAndNotify(message: TMessage, headers: Record<string, string>, serial?: string): void {
-    const key = this._codec.getMessageKey(message);
-    const msgId = headers[HEADER_MSG_ID] ?? key;
+    const msgId = headers[HEADER_MSG_ID];
+    if (!msgId) return;
     this._tree.upsert(msgId, message, headers, serial);
     this._emitter.emit('message');
   }
@@ -398,13 +399,11 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     }
 
     if (message) {
-      this._tree.upsert(
-        observer.headers[HEADER_MSG_ID] ?? this._codec.getMessageKey(message),
-        message,
-        { ...observer.headers },
-        observer.serial,
-      );
-      this._emitter.emit('message');
+      const msgId = observer.headers[HEADER_MSG_ID];
+      if (msgId) {
+        this._tree.upsert(msgId, message, { ...observer.headers }, observer.serial);
+        this._emitter.emit('message');
+      }
     }
   }
 
@@ -479,9 +478,9 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   // ---------------------------------------------------------------------------
 
   private _getMessagesWithHeaders(): MessageWithHeaders<TMessage>[] {
-    return this._tree.flatten().map((m) => ({
-      message: m,
-      headers: this.getMessageHeaders(m),
+    return this._tree.flattenNodes().map((n) => ({
+      message: n.message,
+      headers: n.headers,
     }));
   }
 
@@ -505,8 +504,8 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     for (const [i, message] of page.items.entries()) {
       const headers = page.itemHeaders?.[i] ?? {};
       const serial = page.itemSerials?.[i];
-      const key = this._codec.getMessageKey(message);
-      const msgId = headers[HEADER_MSG_ID] ?? key;
+      const msgId = headers[HEADER_MSG_ID];
+      if (!msgId) continue;
       this._tree.upsert(msgId, message, headers, serial);
     }
     this._emitter.emit('message');
@@ -521,15 +520,15 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   private async _loadUntilVisible(
     firstPage: PaginatedMessages<TMessage>,
     target: number,
-    beforeKeys: Set<string>,
-  ): Promise<{ newVisible: TMessage[]; lastPage: PaginatedMessages<TMessage> }> {
+    beforeMsgIds: Set<string>,
+  ): Promise<{ newVisible: ConversationNode<TMessage>[]; lastPage: PaginatedMessages<TMessage> }> {
     this._processHistoryPage(firstPage);
     let page = firstPage;
 
     const newVisibleCount = (): number => {
       let count = 0;
-      for (const m of this._tree.flatten()) {
-        if (!beforeKeys.has(this._codec.getMessageKey(m))) count++;
+      for (const n of this._tree.flattenNodes()) {
+        if (!beforeMsgIds.has(n.msgId)) count++;
       }
       return count;
     };
@@ -541,15 +540,15 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       page = nextPage;
     }
 
-    const newVisible = this._tree.flatten().filter((m) => !beforeKeys.has(this._codec.getMessageKey(m)));
+    const newVisible = this._tree.flattenNodes().filter((n) => !beforeMsgIds.has(n.msgId));
     return { newVisible, lastPage: page };
   }
 
-  private _releaseWithheld(messages: TMessage[]): void {
-    for (const m of messages) {
-      this._withheldKeys.delete(this._codec.getMessageKey(m));
+  private _releaseWithheld(nodes: ConversationNode<TMessage>[]): void {
+    for (const n of nodes) {
+      this._withheldMsgIds.delete(n.msgId);
     }
-    if (messages.length > 0) {
+    if (nodes.length > 0) {
       this._emitter.emit('message');
     }
   }
@@ -589,14 +588,10 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     // Auto-compute parent from the current thread if not explicitly provided
     let autoParent: string | undefined;
     if (sendOptions?.parent === undefined && !sendOptions?.forkOf) {
-      const flat = this._tree.flatten();
-      if (flat.length > 0) {
-        const lastMsg = flat.at(-1);
-        if (lastMsg) {
-          const lastKey = this._codec.getMessageKey(lastMsg);
-          const lastNode = this._tree.getNodeByKey(lastKey);
-          autoParent = lastNode?.msgId ?? lastKey;
-        }
+      const nodes = this._tree.flattenNodes();
+      const lastNode = nodes.at(-1);
+      if (lastNode) {
+        autoParent = lastNode.msgId;
       }
     }
 
@@ -814,15 +809,11 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     return result;
   }
 
-  getMessageHeaders(message: TMessage): Record<string, string> | undefined {
-    const key = this._codec.getMessageKey(message);
-    return this._tree.getNodeByKey(key)?.headers;
-  }
-
   // Spec: AIT-CT9
   getMessages(): TMessage[] {
-    if (this._withheldKeys.size === 0) return this._tree.flatten();
-    return this._tree.flatten().filter((m) => !this._withheldKeys.has(this._codec.getMessageKey(m)));
+    const nodes = this._tree.flattenNodes();
+    if (this._withheldMsgIds.size === 0) return nodes.map((n) => n.message);
+    return nodes.filter((n) => !this._withheldMsgIds.has(n.msgId)).map((n) => n.message);
   }
 
   getMessagesWithHeaders(): MessageWithHeaders<TMessage>[] {
@@ -842,30 +833,30 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     const limit = opts?.limit ?? 100;
 
     // Snapshot before loading — everything already in the tree stays visible
-    const beforeKeys = new Set(this._tree.flatten().map((m) => this._codec.getMessageKey(m)));
+    const beforeMsgIds = new Set(this._tree.flattenNodes().map((n) => n.msgId));
 
     let lastPage = await decodeHistory(this._channel, this._codec, opts, this._logger);
 
-    const initial = await this._loadUntilVisible(lastPage, limit, beforeKeys);
+    const initial = await this._loadUntilVisible(lastPage, limit, beforeMsgIds);
     lastPage = initial.lastPage;
 
-    // newVisible is chronological (oldest-first from flatten).
+    // newVisible is chronological (oldest-first from flattenNodes).
     // For "load older" pagination: release the NEWEST `limit` now,
     // withhold the older ones for subsequent next() calls.
     const newVisible = initial.newVisible;
 
     // Withhold ALL new visible messages first, then release the newest batch
-    for (const m of newVisible) {
-      this._withheldKeys.add(this._codec.getMessageKey(m));
+    for (const n of newVisible) {
+      this._withheldMsgIds.add(n.msgId);
     }
 
     const released = newVisible.slice(-limit);
-    // Mutable buffer of older messages, drained newest-first by successive next() calls
+    // Mutable buffer of older nodes, drained newest-first by successive next() calls
     const withheldBuffer = newVisible.slice(0, -limit);
     this._releaseWithheld(released);
 
-    const buildPage = (items: TMessage[]): PaginatedMessages<TMessage> => ({
-      items,
+    const buildPage = (nodes: ConversationNode<TMessage>[]): PaginatedMessages<TMessage> => ({
+      items: nodes.map((n) => n.message),
       hasNext: () => withheldBuffer.length > 0 || lastPage.hasNext(),
       next: async () => {
         // Drain withheld buffer first (older messages, released newest-first)
@@ -883,17 +874,17 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
         if (!nextInternal) return;
 
         // Everything currently in the tree is "already known"
-        const alreadyKnown = new Set(beforeKeys);
-        for (const m of this._tree.flatten()) {
-          alreadyKnown.add(this._codec.getMessageKey(m));
+        const alreadyKnown = new Set(beforeMsgIds);
+        for (const n of this._tree.flattenNodes()) {
+          alreadyKnown.add(n.msgId);
         }
 
         const loaded = await this._loadUntilVisible(nextInternal, limit, alreadyKnown);
         lastPage = loaded.lastPage;
 
         const moreVisible = loaded.newVisible;
-        for (const m of moreVisible) {
-          this._withheldKeys.add(this._codec.getMessageKey(m));
+        for (const n of moreVisible) {
+          this._withheldMsgIds.add(n.msgId);
         }
         // Remove and return the newest `limit` items; rest stays in buffer
         const moreBatch = moreVisible.splice(-limit, limit);
@@ -937,7 +928,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     this._ownMsgIds.clear();
     this._turnMsgIds.clear();
     this._turnClientIds.clear();
-    this._withheldKeys.clear();
+    this._withheldMsgIds.clear();
     this._ablyMessages.length = 0;
   }
 }

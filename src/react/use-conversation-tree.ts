@@ -55,7 +55,7 @@ export const useConversationTree = <TEvent, TMessage>(
   const selectSibling = useCallback(
     (msgId: string, index: number) => {
       transport.getTree().select(msgId, index);
-      // flatten() returns a new array after select(), triggering re-render.
+      // flattenNodes() returns a new array after select(), triggering re-render.
       setMessages(transport.getMessages());
     },
     [transport],

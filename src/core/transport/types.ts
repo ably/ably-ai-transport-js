@@ -358,16 +358,17 @@ export interface ConversationNode<TMessage> {
 /**
  * Materializes a branching conversation tree from a flat oplog.
  *
- * Owns the conversation state — `flatten()` returns the linear message list
+ * Owns the conversation state — `flattenNodes()` returns the linear message list
  * for the currently selected branches. The transport's `getMessages()` delegates
- * to `flatten()`.
+ * to `flattenNodes()`.
  */
 export interface ConversationTree<TMessage> {
   /**
    * Flatten the tree along the currently selected branches into
-   * a linear message list. This is what getMessages() returns.
+   * a linear list of conversation nodes. Each node carries the domain
+   * message, its transport-assigned msgId, and headers.
    */
-  flatten(): TMessage[];
+  flattenNodes(): ConversationNode<TMessage>[];
 
   /**
    * Get all messages that are siblings (alternatives) at a given
@@ -384,19 +385,13 @@ export interface ConversationTree<TMessage> {
 
   /**
    * Select a sibling at a fork point by index. Updates the active branch.
-   * Calling flatten() after this returns the new linear thread.
+   * Calling flattenNodes() after this returns the new linear thread.
    * Index is clamped to `[0, siblings.length - 1]`.
    */
   select(msgId: string, index: number): void;
 
   /** Get a node by msgId, or undefined if not found. */
   getNode(msgId: string): ConversationNode<TMessage> | undefined;
-
-  /**
-   * Get a node by codec message key (e.g. UIMessage.id), or undefined if
-   * not found. Uses a secondary index since the tree is keyed by x-ably-msg-id.
-   */
-  getNodeByKey(key: string): ConversationNode<TMessage> | undefined;
 
   /** Get the stored headers for a node by msgId, or undefined if not found. */
   getHeaders(msgId: string): Record<string, string> | undefined;
@@ -498,9 +493,6 @@ export interface ClientTransport<TEvent, TMessage> {
 
   /** Get all currently active turns, keyed by clientId. */
   getActiveTurnIds(): Map<string, Set<string>>;
-
-  /** Get Ably headers associated with a message via the conversation tree. */
-  getMessageHeaders(message: TMessage): Record<string, string> | undefined;
 
   /** Get the current message list (follows selected branches). Updated by message lifecycle events. */
   getMessages(): TMessage[];

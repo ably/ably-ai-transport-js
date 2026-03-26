@@ -23,7 +23,6 @@ vi.mock('../../../src/vercel/transport/index.js', () => ({
     on: vi.fn(() => vi.fn()),
     close: vi.fn(),
     getTree: vi.fn(),
-    getMessageHeaders: vi.fn(),
   })),
 }));
 

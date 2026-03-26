@@ -520,10 +520,9 @@ class AgentAccumulator implements MessageAccumulator<AgentEvent, AgentMessage> {
 //
 // The Codec object wires everything together. It provides factory methods
 // for the transport to create encoders, decoders, and accumulators, plus
-// two helpers:
+// a helper:
 //
 //   isTerminal(event) — tells the transport when a response stream ends
-//   getMessageKey(message) — returns a stable ID for message deduplication
 //
 
 /**
@@ -550,8 +549,4 @@ export const AgentCodec: Codec<AgentEvent, AgentMessage> = {
   //
   // Our codec: only 'finish' is terminal.
   isTerminal: (event: AgentEvent) => event.type === 'finish',
-
-  // Core behaviour: used by the transport's message store for upsert/dedup.
-  // Return a stable identifier — typically the message ID.
-  getMessageKey: (message: AgentMessage) => message.id,
 };

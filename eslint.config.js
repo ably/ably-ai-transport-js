@@ -40,6 +40,8 @@ export default [
       '**/coverage/',
       '.github',
       '.claude/worktrees/**',
+      'react/**',
+      'vercel/**',
     ],
   },
   ...fixupConfigRules(

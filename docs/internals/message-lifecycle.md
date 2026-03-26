@@ -88,7 +88,7 @@ When the decoder produces a `{ kind: 'message' }` output (e.g. a user message de
 
 ## How messages reach the UI
 
-The [conversation tree's](conversation-tree.md#flatten-producing-the-linear-path) `flattenNodes()` method is the sole path from tree state to a message array. It walks the sorted node list, checks parent reachability and sibling selection, and returns the linear `TMessage[]` for the currently selected conversation path.
+The [conversation tree's](conversation-tree.md#flatten-producing-the-linear-path) `flattenNodes()` method is the sole path from tree state to a message array. It walks the sorted node list, checks parent reachability and sibling selection, and returns `ConversationNode<TMessage>[]` for the currently selected conversation path. `ClientTransport.getMessages()` extracts the `.message` from each node to produce the public `TMessage[]`.
 
 `ClientTransport.getMessages()` calls `flattenNodes()` and filters out any messages withheld by the history pagination buffer. This is the public API that all downstream consumers call.
 

@@ -118,7 +118,7 @@ A codec-provided component that assembles [decoder outputs](decoder.md#decoder-o
 
 ### Message materialization
 
-The act of producing a flat `TMessage[]` from the [conversation tree](conversation-tree.md) via [`flattenNodes()`](#flatten). Every call rebuilds from scratch - there is no cached list - because the result depends on branch selection state. All consumers go through `getMessages()`, which delegates to `flattenNodes()`: React hooks, `send()` (for the HTTP POST body), `history()` (for pagination snapshots). See [Message lifecycle](message-lifecycle.md#why-no-cached-message-list).
+The act of producing a flat message list from the [conversation tree](conversation-tree.md) via [`flattenNodes()`](#flatten). `flattenNodes()` returns `ConversationNode<TMessage>[]` - the transport's `getMessages()` extracts `.message` from each node to produce the public `TMessage[]`. Every call rebuilds from scratch - there is no cached list - because the result depends on branch selection state. All consumers go through `getMessages()`, which delegates to `flattenNodes()`: React hooks, `send()` (for the HTTP POST body), `history()` (for pagination snapshots). See [Message lifecycle](message-lifecycle.md#why-no-cached-message-list).
 
 ### Flatten
 

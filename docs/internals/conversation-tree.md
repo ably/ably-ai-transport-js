@@ -1,8 +1,8 @@
 # Conversation tree
 
-The conversation tree (`src/core/transport/conversation-tree.ts`) materializes a branching conversation from a flat stream of Ably messages. It handles message ordering, sibling grouping for edit/regenerate forks, and branch selection - producing a linear message list via `flatten()` that represents the currently selected conversation path.
+The conversation tree (`src/core/transport/conversation-tree.ts`) materializes a branching conversation from a flat stream of Ably messages. It handles message ordering, sibling grouping for edit/regenerate forks, and branch selection - producing a linear message list via `flattenNodes()` that represents the currently selected conversation path.
 
-The tree is the single source of truth for conversation state. The transport's `getMessages()` delegates directly to `tree.flatten()`.
+The tree is the single source of truth for conversation state. The transport's `getMessages()` delegates directly to `tree.flattenNodes()`.
 
 ## Ordering: serial-first
 
@@ -17,7 +17,6 @@ Note that serial order is not necessarily delivery order - messages published co
 
 ```
 _nodeIndex:     Map<msgId, InternalNode>        Primary index
-_codecKeyIndex: Map<codecKey, msgId>            Secondary: codec message key → msgId
 _sortedList:    InternalNode[]                  All nodes, sorted by serial
 _parentIndex:   Map<parentId, Set<msgId>>       Children of each parent
 _selections:    Map<groupRootId, index>         Selected sibling at each fork
@@ -71,7 +70,7 @@ Each sibling group has a selected index (default: last, i.e. the most recent for
 
 ## Flatten: producing the linear path
 
-`flatten()` walks the sorted list and produces the linear message sequence for the currently selected branches:
+`flattenNodes()` walks the sorted list and produces the linear message sequence for the currently selected branches:
 
 ```
 for each node in sorted order:
@@ -86,23 +85,23 @@ Messages that fail either check are skipped - they're on unselected branches. Th
 
 ### Resolved group cache
 
-Sibling group resolution is cached per `flatten()` call using a `resolvedGroups` map. Once a sibling group is resolved to a selected msgId, all other members of that group are skipped without re-resolving.
+Sibling group resolution is cached per `flattenNodes()` call using a `resolvedGroups` map. Once a sibling group is resolved to a selected msgId, all other members of that group are skipped without re-resolving.
 
 ## Querying
 
 | Method | Returns |
 |---|---|
-| `flatten()` | Linear message list following selected branches |
+| `flattenNodes()` | Linear message list following selected branches |
 | `getSiblings(msgId)` | All messages in the sibling group containing `msgId` |
 | `hasSiblings(msgId)` | Whether the message has alternative versions |
 | `getSelectedIndex(msgId)` | Currently selected index in the sibling group |
 | `getNode(msgId)` | The `ConversationNode` by msg-id |
-| `getNodeByKey(key)` | The `ConversationNode` by [codec message key](codec-interface.md#the-codec-interface) |
+
 | `getHeaders(msgId)` | Headers for a specific message |
 
 ## Delete
 
-`delete(msgId)` removes a node from all indexes. Children are **not** cascade-deleted - they become unreachable in `flatten()` because their parent is no longer on the active path. This preserves the ability to restore deleted messages if needed (e.g. undo).
+`delete(msgId)` removes a node from all indexes. Children are **not** cascade-deleted - they become unreachable in `flattenNodes()` because their parent is no longer on the active path. This preserves the ability to restore deleted messages if needed (e.g. undo).
 
 ## Example: regeneration fork
 
@@ -115,9 +114,9 @@ Assistant: "Four"            msgId: m3, parent: m1, forkOf: m2
 Sibling group for m2: [m2, m3]
 Selection default: index 1 (m3, the latest)
 
-flatten() → ["What is 2+2?", "Four"]
+flattenNodes() → ["What is 2+2?", "Four"]
 select(m2, 0)
-flatten() → ["What is 2+2?", "4"]
+flattenNodes() → ["What is 2+2?", "4"]
 ```
 
 See [Wire protocol](wire-protocol.md) for the branching headers (`x-ably-parent`, `x-ably-fork-of`). See [History hydration](history.md) for how the tree is populated from channel history.

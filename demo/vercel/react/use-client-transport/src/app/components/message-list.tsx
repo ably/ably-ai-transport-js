@@ -1,14 +1,13 @@
 'use client';
 
 import { useRef, useEffect } from 'react';
-import type { UIMessage, UIMessageChunk } from 'ai';
-import type { ClientTransport } from '@ably/ai-transport';
+import type { UIMessage } from 'ai';
+import type { MessageWithHeaders } from '@ably/ai-transport';
 import type { ConversationTreeHandle } from '@ably/ai-transport/react';
 import { MessageBubble } from './message-bubble';
 
 interface MessageListProps {
-  messages: UIMessage[];
-  transport: ClientTransport<UIMessageChunk, UIMessage>;
+  messagesWithHeaders: MessageWithHeaders<UIMessage>[];
   tree: ConversationTreeHandle<UIMessage>;
   hasNext: boolean;
   loading: boolean;
@@ -17,19 +16,8 @@ interface MessageListProps {
   onEdit: (messageId: string, newText: string) => void;
 }
 
-/**
- * Resolve the tree node ID for a UIMessage. The tree is keyed by
- * x-ably-msg-id (from transport headers), which may differ from
- * the UIMessage's .id field.
- */
-function treeMsgId(msg: UIMessage, transport: ClientTransport<UIMessageChunk, UIMessage>): string {
-  const headers = transport.getMessageHeaders(msg);
-  return headers?.['x-ably-msg-id'] ?? msg.id;
-}
-
 export function MessageList({
-  messages,
-  transport,
+  messagesWithHeaders,
   tree,
   hasNext,
   loading,
@@ -43,12 +31,13 @@ export function MessageList({
 
   // Auto-scroll to bottom only when the last message changes
   useEffect(() => {
-    const lastId = messages.length > 0 ? messages[messages.length - 1].id : undefined;
+    const lastId =
+      messagesWithHeaders.length > 0 ? messagesWithHeaders[messagesWithHeaders.length - 1].message.id : undefined;
     if (lastId && lastId !== prevLastIdRef.current) {
       prevLastIdRef.current = lastId;
       endRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messages]);
+  }, [messagesWithHeaders]);
 
   const handleScroll = () => {
     const el = scrollRef.current;
@@ -76,22 +65,22 @@ export function MessageList({
         </div>
       )}
       {loading && <div className="text-center text-xs text-zinc-600 animate-pulse">Loading history...</div>}
-      {messages.length === 0 && !loading && (
+      {messagesWithHeaders.length === 0 && !loading && (
         <p className="text-sm text-zinc-600 text-center mt-20">Send a message to start chatting.</p>
       )}
-      {messages.map((msg) => {
-        const nodeId = treeMsgId(msg, transport);
+      {messagesWithHeaders.map(({ message, headers }) => {
+        const msgId = headers!['x-ably-msg-id'];
         return (
           <MessageBubble
-            key={msg.id}
-            message={msg}
-            headers={transport.getMessageHeaders(msg)}
-            hasSiblings={tree.hasSiblings(nodeId)}
-            siblings={tree.getSiblings(nodeId)}
-            selectedIndex={tree.getSelectedIndex(nodeId)}
-            onSelectSibling={(index) => tree.selectSibling(nodeId, index)}
-            onRegenerate={msg.role === 'assistant' ? () => onRegenerate(nodeId) : undefined}
-            onEdit={msg.role === 'user' ? (text) => onEdit(nodeId, text) : undefined}
+            key={message.id}
+            message={message}
+            headers={headers}
+            hasSiblings={tree.hasSiblings(msgId)}
+            siblings={tree.getSiblings(msgId)}
+            selectedIndex={tree.getSelectedIndex(msgId)}
+            onSelectSibling={(index) => tree.selectSibling(msgId, index)}
+            onRegenerate={message.role === 'assistant' ? () => onRegenerate(msgId) : undefined}
+            onEdit={message.role === 'user' ? (text) => onEdit(msgId, text) : undefined}
           />
         );
       })}

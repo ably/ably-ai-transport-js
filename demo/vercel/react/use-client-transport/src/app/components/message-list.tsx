@@ -2,11 +2,11 @@
 
 import { useRef, useEffect } from 'react';
 import type { UIMessage } from 'ai';
-import type { ConversationTreeHandle } from '@ably/ai-transport/react';
+import type { TreeHandle } from '@ably/ai-transport/react';
 import { MessageBubble } from './message-bubble';
 
 interface MessageListProps {
-  tree: ConversationTreeHandle<UIMessage>;
+  tree: TreeHandle<UIMessage>;
   hasNext: boolean;
   loading: boolean;
   onNext: () => void;

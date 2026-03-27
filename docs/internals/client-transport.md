@@ -8,7 +8,7 @@ The client never publishes domain messages directly to the channel. Instead, it 
 
 ```
 DefaultClientTransport
-├── ConversationTree       - branching message history (flattenNodes → getMessages)
+├── Tree       - branching message history (flattenNodes → getMessages)
 ├── StreamRouter           - maps turn events to per-turn ReadableStreams
 ├── StreamDecoder          - decodes inbound Ably messages to events/messages
 ├── EventEmitter           - typed event bus for message/turn/error/ably-message

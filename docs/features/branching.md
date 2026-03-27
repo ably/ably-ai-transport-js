@@ -61,12 +61,12 @@ await edit(nodeId, [newMessage]);
 
 ## Branch navigation
 
-`useConversationTree` provides the tree state and navigation:
+`useTree` provides the tree state and navigation:
 
 ```typescript
-import { useConversationTree } from '@ably/ai-transport/react';
+import { useTree } from '@ably/ai-transport/react';
 
-const tree = useConversationTree(transport);
+const tree = useTree(transport);
 
 // tree.messages - linear message list for the current branch
 // tree.hasSiblings(nodeId) - does this message have alternatives?
@@ -74,7 +74,7 @@ const tree = useConversationTree(transport);
 // tree.getSelectedIndex(nodeId) - which sibling is currently selected
 // tree.selectSibling(nodeId, index) - switch to a different sibling
 //
-// nodeId is the msgId on each ConversationNode — iterate getNodes():
+// nodeId is the msgId on each TreeNode — iterate getNodes():
 //   transport.getNodes().map((node) => {
 //     const nodeId = node.msgId;
 //   });

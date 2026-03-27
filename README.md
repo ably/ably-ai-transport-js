@@ -89,13 +89,13 @@ import type { UIMessage } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
 import { createServerTransport } from '@ably/ai-transport/vercel';
-import type { ConversationNode } from '@ably/ai-transport';
+import type { TreeNode } from '@ably/ai-transport';
 
 interface ChatRequestBody {
   turnId: string;
   clientId: string;
-  messages: ConversationNode<UIMessage>[];
-  history?: ConversationNode<UIMessage>[];
+  messages: TreeNode<UIMessage>[];
+  history?: TreeNode<UIMessage>[];
   id: string;
   forkOf?: string;
   parent?: string | null;
@@ -289,7 +289,7 @@ transport.close();
 | `useEdit`             | `/react`        | Edit a message and regenerate from that point       |
 | `useActiveTurns`      | `/react`        | Track active turns by client ID                     |
 | `useHistory`          | `/react`        | Paginate through conversation history               |
-| `useConversationTree` | `/react`        | Navigate branches in a forked conversation          |
+| `useTree` | `/react`        | Navigate branches in a forked conversation          |
 | `useAblyMessages`     | `/react`        | Access raw Ably messages                            |
 | `useChatTransport`    | `/vercel/react` | Wrap transport for Vercel's `useChat`               |
 | `useMessageSync`      | `/vercel/react` | Sync transport state with `useChat`'s `setMessages` |
@@ -409,7 +409,7 @@ npm run precommit     # format:check + lint + typecheck
 src/
 ├── core/               # Generic transport and codec (no framework deps)
 │   ├── codec/          # Codec interfaces and core encoder/decoder
-│   └── transport/      # ClientTransport, ServerTransport, ConversationTree
+│   └── transport/      # ClientTransport, ServerTransport, Tree
 ├── react/              # React hooks for any codec
 ├── vercel/             # Vercel AI SDK codec and transport adapters
 │   ├── codec/          # UIMessageCodec

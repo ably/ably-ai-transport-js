@@ -66,7 +66,7 @@ const history = useHistory(transport, { limit: 30 });
 
 History messages carry the same `x-ably-parent` and `x-ably-fork-of` headers as live messages. When loaded, they're inserted into the conversation tree with their full branch structure intact. A client loading history sees the same tree of branches and can navigate siblings just like a client that was present for the original conversation.
 
-Because the tree may contain multiple branches, `getMessages()` returns only the messages along the currently selected path - not every message ever published. To see alternative branches, use `useConversationTree` or the tree's `getSiblings()` / `select()` methods.
+Because the tree may contain multiple branches, `getMessages()` returns only the messages along the currently selected path - not every message ever published. To see alternative branches, use `useTree` or the tree's `getSiblings()` / `select()` methods.
 
 See [Conversation branching](branching.md) for the tree model.
 

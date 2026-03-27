@@ -6,7 +6,9 @@
 src/
 ├── core/               # Core SDK — no model/agent library/framework -specific dependencies
 │   ├── codec/          # Core codec definitions
-│   └── transport/      # Core transport definitions
+│   └── transport/      # Shared transport types and headers
+│       ├── client/     # Client transport, conversation tree, stream router, history
+│       └── server/     # Server transport, turn manager, pipe stream
 ├── react/              # React bindings
 │   ├── hooks/          # React hooks - one file per hook
 │   │   └── internal/   # Shared hook helpers (not exported)

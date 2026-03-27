@@ -11,7 +11,8 @@
 import { useEffect, useState } from 'react';
 
 import { EVENT_TURN_START } from '../constants.js';
-import type { ClientTransport, TurnLifecycleEvent } from '../core/transport/types.js';
+import type { ClientTransport } from '../core/transport/client/types.js';
+import type { TurnLifecycleEvent } from '../core/transport/types.js';
 
 /**
  * Returns a reactive Map of all active turns on the channel, keyed by clientId.

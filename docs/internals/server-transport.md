@@ -1,6 +1,6 @@
 # Server transport
 
-The server transport (`src/core/transport/server-transport.ts`) handles the server-side turn lifecycle over an Ably channel. It composes a [TurnManager](transport-components.md#turnmanager) for turn state and lifecycle event publishing, and delegates stream piping to [pipeStream](transport-components.md#pipestream).
+The server transport (`src/core/transport/server/server-transport.ts`) handles the server-side turn lifecycle over an Ably channel. It composes a [TurnManager](transport-components.md#turnmanager) for turn state and lifecycle event publishing, and delegates stream piping to [pipeStream](transport-components.md#pipestream).
 
 The transport exposes a single factory method - `newTurn()` - which returns a `Turn` object with explicit lifecycle methods: `start()`, `addMessages()`, `streamResponse()`, and `end()`.
 

@@ -1,6 +1,6 @@
 # History hydration
 
-`decodeHistory` (`src/core/transport/decode-history.ts`) loads conversation history from an Ably channel's history API and returns decoded domain messages. It handles the mismatch between Ably's newest-first history pagination and the decoder's requirement for chronological input.
+`decodeHistory` (`src/core/transport/client/decode-history.ts`) loads conversation history from an Ably channel's history API and returns decoded domain messages. It handles the mismatch between Ably's newest-first history pagination and the decoder's requirement for chronological input.
 
 ## The problem
 

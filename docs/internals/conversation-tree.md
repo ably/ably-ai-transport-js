@@ -1,6 +1,6 @@
 # Conversation tree
 
-The conversation tree (`src/core/transport/conversation-tree.ts`) materializes a branching conversation from a flat stream of Ably messages. It handles message ordering, sibling grouping for edit/regenerate forks, and branch selection - producing a linear message list via `flatten()` that represents the currently selected conversation path.
+The conversation tree (`src/core/transport/client/conversation-tree.ts`) materializes a branching conversation from a flat stream of Ably messages. It handles message ordering, sibling grouping for edit/regenerate forks, and branch selection - producing a linear message list via `flatten()` that represents the currently selected conversation path.
 
 The tree is the single source of truth for conversation state. The transport's `getMessages()` delegates directly to `tree.flatten()`.
 

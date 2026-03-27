@@ -18,7 +18,7 @@
 import * as Ably from 'ably';
 import type * as AI from 'ai';
 
-import type { ClientTransport, CloseOptions, SendOptions } from '../../core/transport/types.js';
+import type { ClientTransport, CloseOptions, SendOptions } from '../../core/transport/client/types.js';
 import { ErrorCode } from '../../errors.js';
 
 // ---------------------------------------------------------------------------

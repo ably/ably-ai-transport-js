@@ -12,11 +12,12 @@ import {
   HEADER_TURN_CLIENT_ID,
   HEADER_TURN_ID,
   HEADER_TURN_REASON,
-} from '../../../src/constants.js';
-import type { Codec, DecoderOutput, MessageAccumulator, StreamDecoder } from '../../../src/core/codec/types.js';
-import { createClientTransport } from '../../../src/core/transport/client-transport.js';
-import type { ClientTransport, TurnLifecycleEvent } from '../../../src/core/transport/types.js';
-import { ErrorCode } from '../../../src/errors.js';
+} from '../../../../src/constants.js';
+import type { Codec, DecoderOutput, MessageAccumulator, StreamDecoder } from '../../../../src/core/codec/types.js';
+import { createClientTransport } from '../../../../src/core/transport/client/client-transport.js';
+import type { ClientTransport } from '../../../../src/core/transport/client/types.js';
+import type { TurnLifecycleEvent } from '../../../../src/core/transport/types.js';
+import { ErrorCode } from '../../../../src/errors.js';
 
 // ---------------------------------------------------------------------------
 // Helpers

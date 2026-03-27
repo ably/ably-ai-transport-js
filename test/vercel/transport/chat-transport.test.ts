@@ -1,7 +1,7 @@
 import type * as AI from 'ai';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ClientTransport, ConversationNode, ConversationTree, SendOptions } from '../../../src/core/transport/types.js';
+import type { ClientTransport, ConversationNode, ConversationTree, SendOptions } from '../../../src/core/transport/client/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 import type { ChatTransportOptions } from '../../../src/vercel/transport/chat-transport.js';
 import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';

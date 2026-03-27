@@ -4,7 +4,7 @@ The client and server transports are composed from several focused sub-component
 
 ## StreamRouter
 
-`src/core/transport/stream-router.ts` - client-side only.
+`src/core/transport/client/stream-router.ts` - client-side only.
 
 The stream router maps decoded events to per-turn `ReadableStream` instances for [own turns](glossary.md#own-turn-vs-observer-turn) - turns this client initiated via `send()`, `regenerate()`, or `edit()`. When the client starts a turn, the router creates a new stream. As decoded events arrive from the channel subscription, the transport routes them through the router to the correct stream.
 
@@ -31,7 +31,7 @@ The router accepts an [`isTerminal`](codec-interface.md#the-codec-interface) pre
 
 ## TurnManager
 
-`src/core/transport/turn-manager.ts` - server-side only.
+`src/core/transport/server/turn-manager.ts` - server-side only.
 
 The turn manager tracks active turns and publishes [turn lifecycle events](wire-protocol.md#lifecycle-events) (`x-ably-turn-start`, `x-ably-turn-end`) on the Ably channel.
 
@@ -55,7 +55,7 @@ The turn manager publishes `x-ably-turn-end` **before** deleting local state. If
 
 ## pipeStream
 
-`src/core/transport/pipe-stream.ts` - server-side only.
+`src/core/transport/server/pipe-stream.ts` - server-side only.
 
 A pure function that reads events from a `ReadableStream`, writes them through a [streaming encoder](codec-interface.md#encoder-architecture), and handles abort/error. No dependencies on turn state or transport internals.
 
@@ -90,7 +90,7 @@ Returns `{ reason }` where reason is `'complete'`, `'cancelled'`, or `'error'`. 
 
 ## Cancel routing (server transport)
 
-Cancel routing lives in the server transport (`src/core/transport/server-transport.ts`), not in a separate component.
+Cancel routing lives in the server transport (`src/core/transport/server/server-transport.ts`), not in a separate component.
 
 The server transport subscribes to [`x-ably-cancel`](wire-protocol.md#lifecycle-events) events on channel construction. When a cancel message arrives, it:
 

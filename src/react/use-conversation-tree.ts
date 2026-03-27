@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-import type { ClientTransport } from '../core/transport/types.js';
+import type { ClientTransport } from '../core/transport/client/types.js';
 
 /** Handle for navigating the branching conversation tree. */
 export interface ConversationTreeHandle<TMessage> {

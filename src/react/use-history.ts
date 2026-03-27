@@ -30,7 +30,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import type { ClientTransport, LoadHistoryOptions, PaginatedMessages } from '../core/transport/types.js';
+import type { ClientTransport, LoadHistoryOptions, PaginatedMessages } from '../core/transport/client/types.js';
 
 /** Handle for paginated history loading. */
 export interface HistoryHandle {

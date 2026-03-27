@@ -4,7 +4,7 @@
 
 import { vi } from 'vitest';
 
-import type { ClientTransport, ConversationTree, TurnLifecycleEvent } from '../../../src/core/transport/types.js';
+import type { ClientTransport, Tree, TurnLifecycleEvent } from '../../../src/core/transport/types.js';
 
 type EventType = 'message' | 'ably-message' | 'turn' | 'error';
 type Handler = ((...args: never[]) => void) | (() => void);
@@ -26,7 +26,7 @@ export interface MockTransport {
   on: ReturnType<typeof vi.fn>;
   /** Fire an event to all registered handlers. */
   emit: (event: EventType, ...args: unknown[]) => void;
-  tree: ConversationTree<string>;
+  tree: Tree<string>;
 }
 
 export const createMockTransport = (initialMessages: string[] = []): MockTransport => {
@@ -53,7 +53,7 @@ export const createMockTransport = (initialMessages: string[] = []): MockTranspo
     };
   });
 
-  const tree: ConversationTree<string> = {
+  const tree: Tree<string> = {
     flattenNodes: vi.fn(() => initialMessages.map((m, i) => ({
       message: m,
       msgId: `msg-${String(i)}`,
@@ -70,6 +70,9 @@ export const createMockTransport = (initialMessages: string[] = []): MockTranspo
     getHeaders: vi.fn(),
     upsert: vi.fn(),
     delete: vi.fn(),
+    getActiveTurnIds: vi.fn(() => new Map<string, Set<string>>()),
+    // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
+    on: vi.fn(() => () => {}),
   };
 
   const getMessages = vi.fn(() => initialMessages);

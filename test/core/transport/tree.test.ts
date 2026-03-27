@@ -1,8 +1,8 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { HEADER_FORK_OF, HEADER_PARENT } from '../../../src/constants.js';
-import { createConversationTree } from '../../../src/core/transport/conversation-tree.js';
-import type { ConversationTree } from '../../../src/core/transport/types.js';
+import { createTree } from '../../../src/core/transport/tree.js';
+import type { Tree } from '../../../src/core/transport/types.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 
 // ---------------------------------------------------------------------------
@@ -34,11 +34,11 @@ const headers = (opts?: { parent?: string; forkOf?: string }): Record<string, st
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('ConversationTree', () => {
-  let tree: ConversationTree<TestMessage>;
+describe('Tree', () => {
+  let tree: Tree<TestMessage>;
 
   beforeEach(() => {
-    tree = createConversationTree(silentLogger);
+    tree = createTree(silentLogger);
   });
 
   // -------------------------------------------------------------------------
@@ -379,6 +379,68 @@ describe('ConversationTree', () => {
       const flat = tree.flattenNodes().map((n) => n.message);
       expect(flat[0]).toEqual({ id: 'a', content: 'first' });
       expect(flat[1]).toEqual({ id: 'b', content: 'second' });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Events
+  // -------------------------------------------------------------------------
+
+  describe('events', () => {
+    it('emits update on upsert (new insert)', () => {
+      const handler = vi.fn();
+      tree.on('update', handler);
+      tree.upsert('m1', { id: '1', content: 'hi' }, headers());
+      expect(handler).toHaveBeenCalledOnce();
+    });
+
+    it('emits update on upsert (existing message update)', () => {
+      tree.upsert('m1', { id: '1', content: 'hi' }, headers());
+      const handler = vi.fn();
+      tree.on('update', handler);
+      tree.upsert('m1', { id: '1', content: 'updated' }, headers());
+      expect(handler).toHaveBeenCalledOnce();
+    });
+
+    it('emits update on delete', () => {
+      tree.upsert('m1', { id: '1', content: 'hi' }, headers());
+      const handler = vi.fn();
+      tree.on('update', handler);
+      tree.delete('m1');
+      expect(handler).toHaveBeenCalledOnce();
+    });
+
+    it('emits update on select', () => {
+      tree.upsert('m1', { id: '1', content: 'original' }, headers());
+      tree.upsert('m2', { id: '2', content: 'fork' }, headers({ forkOf: 'm1' }), 'serial-2');
+
+      const handler = vi.fn();
+      tree.on('update', handler);
+      tree.select('m1', 0);
+      expect(handler).toHaveBeenCalledOnce();
+    });
+
+    it('unsubscribe stops delivery', () => {
+      const handler = vi.fn();
+      const unsub = tree.on('update', handler);
+      unsub();
+      tree.upsert('m1', { id: '1', content: 'hi' }, headers());
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('tracks and exposes active turns', () => {
+      const fullTree = createTree<TestMessage>(silentLogger);
+      fullTree.trackTurn('turn-1', 'client-a');
+      fullTree.trackTurn('turn-2', 'client-a');
+      fullTree.trackTurn('turn-3', 'client-b');
+
+      const active = fullTree.getActiveTurnIds();
+      expect(active.get('client-a')).toEqual(new Set(['turn-1', 'turn-2']));
+      expect(active.get('client-b')).toEqual(new Set(['turn-3']));
+
+      fullTree.untrackTurn('turn-1');
+      const after = fullTree.getActiveTurnIds();
+      expect(after.get('client-a')).toEqual(new Set(['turn-2']));
     });
   });
 });

@@ -54,7 +54,7 @@ The [codec interface](codec-interface.md) is the boundary between these layers.
 
 When the client transport receives messages from the channel, it routes them differently depending on who started the turn:
 
-- **Own turn** - a turn this client initiated (via `send()`, `regenerate()`, `edit()`). Decoded events are routed to **both** the [stream router](transport-components.md#streamrouter) (which enqueues them on a `ReadableStream`) and a per-turn [accumulator](codec-interface.md#accumulator) (which builds complete messages for the [conversation tree](conversation-tree.md)). The stream exists primarily as an integration seam for framework adapters (e.g. Vercel's `useChat`); most application code consumes accumulated messages via `getMessages()`.
+- **Own turn** - a turn this client initiated (via `send()`, `regenerate()`, `edit()`). Decoded events are routed to **both** the [stream router](transport-components.md#streamrouter) (which enqueues them on a `ReadableStream`) and a per-turn [accumulator](codec-interface.md#accumulator) (which builds complete messages for the [conversation tree](conversation-tree.md)). The stream exists primarily as an integration seam for framework adapters (e.g. Vercel's `useChat`); most application code consumes accumulated messages via the view.
 - **Observer turn** - a turn started by another client. Decoded events go to the accumulator only - there is no stream because no caller on this client initiated the turn.
 
 Both paths use the same accumulation logic. The only difference is that own turns additionally expose a `ReadableStream` for framework integration. See [Message lifecycle](message-lifecycle.md#own-turns-vs-observer-turns) for the full routing picture.
@@ -108,7 +108,7 @@ The streaming fragment type that the generic layer is parameterized by. For the 
 
 ### TMessage
 
-The complete domain message type that the generic layer is parameterized by. For the Vercel codec, this is `UIMessage`. Messages are the unit of state - what the [conversation tree](conversation-tree.md) stores, what `getMessages()` returns, what React hooks render. The [accumulator](codec-interface.md#accumulator) bridges `TEvent → TMessage`; the encoder bridges `TMessage → wire` (for discrete publishes like user messages). See [Message lifecycle](message-lifecycle.md#tevent-and-tmessage) for the full relationship.
+The complete domain message type that the generic layer is parameterized by. For the Vercel codec, this is `UIMessage`. Messages are the unit of state - what the [conversation tree](conversation-tree.md) stores, what the view's `flattenNodes()` returns, what React hooks render. The [accumulator](codec-interface.md#accumulator) bridges `TEvent → TMessage`; the encoder bridges `TMessage → wire` (for discrete publishes like user messages). See [Message lifecycle](message-lifecycle.md#tevent-and-tmessage) for the full relationship.
 
 ## Message state
 
@@ -118,7 +118,7 @@ A codec-provided component that assembles [decoder outputs](decoder.md#decoder-o
 
 ### Message materialization
 
-The act of producing a flat message list from the [conversation tree](conversation-tree.md) via [`flattenNodes()`](#flatten). `flattenNodes()` returns `TreeNode<TMessage>[]` - the transport's `getMessages()` extracts `.message` from each node to produce the public `TMessage[]`. Every call rebuilds from scratch - there is no cached list - because the result depends on branch selection state. All consumers go through `getMessages()`, which delegates to `flattenNodes()`: React hooks, `send()` (for the HTTP POST body), `history()` (for pagination snapshots). See [Message lifecycle](message-lifecycle.md#why-no-cached-message-list).
+The act of producing a flat message list from the [conversation tree](conversation-tree.md) via [`flattenNodes()`](#flatten). `flattenNodes()` returns `TreeNode<TMessage>[]`. Every call rebuilds from scratch - there is no cached list - because the result depends on branch selection state. All consumers go through the view's `flattenNodes()`: React hooks, `send()` (for the HTTP POST body), `view.loadOlder()` (for pagination snapshots). See [Message lifecycle](message-lifecycle.md#why-no-cached-message-list).
 
 ### Flatten
 

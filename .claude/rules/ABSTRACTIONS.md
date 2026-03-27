@@ -42,7 +42,7 @@ The SDK ships four entry points from a single package:
 | Export path | Contains | Purpose | External deps |
 |---|---|---|---|
 | `@ably/ai-transport` | Generic codec interfaces, `createClientTransport`, `createServerTransport`, shared utilities | Core primitives — codec-agnostic transport and encoding | `ably` (peer) |
-| `@ably/ai-transport/react` | `useClientTransport`, `useMessages`, `useSend`, `useRegenerate`, `useEdit`, `useActiveTurns`, `useHistory`, `useTree`, `useAblyMessages` | Generic React hooks for any codec | `ably`, `react` (peers) |
+| `@ably/ai-transport/react` | `useClientTransport`, `useView`, `useSend`, `useRegenerate`, `useEdit`, `useActiveTurns`, `useTree`, `useAblyMessages` | Generic React hooks for any codec | `ably`, `react` (peers) |
 | `@ably/ai-transport/vercel` | `UIMessageCodec`, `createServerTransport`, `createClientTransport`, `createChatTransport`, Vercel-specific types | Drop-in Vercel AI SDK integration | `ably`, `ai` (peers) |
 | `@ably/ai-transport/vercel/react` | `useChatTransport`, `useMessageSync` | React hooks for Vercel's `useChat` | `ably`, `ai`, `react` (peers) |
 

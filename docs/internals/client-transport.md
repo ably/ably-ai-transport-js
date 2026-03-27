@@ -8,10 +8,11 @@ The client never publishes domain messages directly to the channel. Instead, it 
 
 ```
 DefaultClientTransport
-├── Tree       - branching message history (flattenNodes → getMessages)
+├── Tree       - branching message history (flattenNodes)
+├── View       - wraps tree with history pagination and 'update' events
 ├── StreamRouter           - maps turn events to per-turn ReadableStreams
 ├── StreamDecoder          - decodes inbound Ably messages to events/messages
-├── EventEmitter           - typed event bus for message/turn/error/ably-message
+├── EventEmitter           - typed event bus for error events
 └── per-turn state maps    - observer headers, accumulators, relay detection
 ```
 
@@ -23,7 +24,7 @@ All sub-components are created in the constructor and share a single Ably channe
 
 1. **Generate identifiers** - a turn ID and per-message msg-ids (`crypto.randomUUID()`)
 2. **Auto-compute parent** - if no explicit `parent` or `forkOf` is provided, reads the last message in the [flattened tree](conversation-tree.md#flatten-producing-the-linear-path) to chain messages into a linear thread
-3. **Optimistic insert** - each user message is inserted into the conversation tree immediately with [transport headers](wire-protocol.md#transport-headers-x-ably) (role, turn ID, msg-id, parent). This makes the message visible to `getMessages()` before the server acknowledges it
+3. **Optimistic insert** - each user message is inserted into the conversation tree immediately with [transport headers](wire-protocol.md#transport-headers-x-ably) (role, turn ID, msg-id, parent). This makes the message visible to the view before the server acknowledges it
 4. **Create stream** - the [stream router](transport-components.md#streamrouter) creates a `ReadableStream` for the turn, capturing the controller synchronously
 5. **Fire-and-forget POST** - the HTTP POST is dispatched without `await` so the stream is returned immediately. POST errors are surfaced via the `error` event, not thrown
 6. **Return `ActiveTurn`** - the caller receives `{ stream, turnId, cancel() }` synchronously
@@ -70,7 +71,7 @@ For both own and observer turns, the transport maintains a `TurnObserverState` t
 - **serial** - advances on every event, so the tree node always sorts after earlier messages in the turn
 - **accumulator** - a codec-provided [MessageAccumulator](codec-interface.md#accumulator) that builds complete domain messages from streaming events
 
-On every event, the transport calls `accumulator.processOutputs()`, clones the latest message, and upserts it into the conversation tree. This is why `getMessages()` updates in real-time during streaming - even for observer turns where no `ReadableStream` exists.
+On every event, the transport calls `accumulator.processOutputs()`, clones the latest message, and upserts it into the conversation tree. This is why the view updates in real-time during streaming - even for observer turns where no `ReadableStream` exists.
 
 ## Regenerate and edit
 
@@ -90,9 +91,9 @@ Closing the stream router entry does **not** clear the observer state - late ser
 
 ## History
 
-`history()` loads older messages from the Ably channel using [`untilAttach`](glossary.md#untilattach-ably) for gapless continuity with the live subscription. Pages are decoded through the codec and upserted into the conversation tree.
+`view.loadOlder()` loads older messages from the Ably channel using [`untilAttach`](glossary.md#untilattach-ably) for gapless continuity with the live subscription. Pages are decoded through the codec and upserted into the conversation tree.
 
-The transport implements a **withholding** mechanism for pagination: newly loaded messages are initially hidden from `getMessages()`. The newest batch is released immediately, while older messages are buffered and released in subsequent `next()` calls. This prevents the UI from jumping to show hundreds of messages at once.
+The view implements a **withholding** mechanism for pagination: newly loaded messages are initially hidden from `flattenNodes()`. The newest batch is released immediately, while older messages are buffered and released in subsequent `loadOlder()` calls. This prevents the UI from jumping to show hundreds of messages at once.
 
 ## Close
 
@@ -109,9 +110,9 @@ After close, all methods that create turns throw `TransportClosed`. Event subscr
 
 | Event | Payload | When |
 |---|---|---|
-| `message` | (none) | Tree state changed - call `getMessages()` for current state |
-| `turn` | `TurnLifecycleEvent` | Turn started or ended (includes turnId, clientId, reason) |
+| `update` (on view) | (none) | View state changed - call `view.flattenNodes()` for current state |
+| `turn` (on tree or view) | `TurnLifecycleEvent` | Turn started or ended (includes turnId, clientId, reason) |
 | `error` | `Ably.ErrorInfo` | Non-fatal error (HTTP POST failure, subscription error) |
-| `ably-message` | (none) | Raw Ably message added - call `getAblyMessages()` for current state |
+| `ably-message` (on tree) | (none) | Raw Ably message added - subscribe via `tree.on('ably-message')` |
 
 See [Transport concept](../concepts/transport.md) for the public API perspective. See [Transport components](transport-components.md) for the sub-component internals. See [Message lifecycle](message-lifecycle.md) for the end-to-end message flow.

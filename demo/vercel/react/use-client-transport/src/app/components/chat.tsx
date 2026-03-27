@@ -51,7 +51,6 @@ export function Chat({ chatId, clientId, historyLimit }: ChatProps) {
       <div className="flex flex-1 flex-col">
         <Header clientId={clientId} />
         <MessageList
-          messagesWithHeaders={transport.getMessagesWithHeaders()}
           tree={tree}
           hasNext={history.hasNext}
           loading={history.loading}

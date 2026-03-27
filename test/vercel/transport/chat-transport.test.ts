@@ -52,7 +52,7 @@ interface MockTransport {
   cancel: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
   getTree: ReturnType<typeof vi.fn>;
-  getMessagesWithHeaders: ReturnType<typeof vi.fn>;
+  getNodes: ReturnType<typeof vi.fn>;
   mockTurn: MockTurn;
   tree: {
     flattenNodes: ReturnType<typeof vi.fn>;
@@ -81,7 +81,7 @@ const createMockTransport = (): MockTransport => {
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const close = vi.fn(() => Promise.resolve());
   const getTree = vi.fn(() => tree as unknown as ConversationTree<AI.UIMessage>);
-  const getMessagesWithHeaders = vi.fn(() => [] as { message: AI.UIMessage; headers?: Record<string, string> }[]);
+  const getNodes = vi.fn(() => [] as { message: AI.UIMessage; msgId: string; parentId: string | undefined; forkOf: string | undefined; headers: Record<string, string>; serial: string | undefined }[]);
 
   const transport = {
     send,
@@ -95,12 +95,12 @@ const createMockTransport = (): MockTransport => {
     on: vi.fn(() => noop),
     getActiveTurnIds: vi.fn(() => new Map()),
     getMessages: vi.fn(() => []),
-    getMessagesWithHeaders,
+    getNodes,
     getAblyMessages: vi.fn(() => []),
     history: vi.fn(),
   } as unknown as ClientTransport<AI.UIMessageChunk, AI.UIMessage>;
 
-  return { transport, send, cancel, close, getTree, getMessagesWithHeaders, mockTurn, tree };
+  return { transport, send, cancel, close, getTree, getNodes, mockTurn, tree };
 };
 
 // ---------------------------------------------------------------------------
@@ -110,17 +110,17 @@ const createMockTransport = (): MockTransport => {
 describe('createChatTransport', () => {
   describe('sendMessages — submit-message', () => {
     it('sends the last message and passes history in body', async () => {
-      const { transport, send, getMessagesWithHeaders, mockTurn } = createMockTransport();
+      const { transport, send, getNodes, mockTurn } = createMockTransport();
       const chat = createChatTransport(transport);
 
       const m1 = makeMessage('1');
       const m2 = makeMessage('2');
       const m3 = makeMessage('3');
 
-      getMessagesWithHeaders.mockReturnValue([
-        { message: m1, headers: {} },
-        { message: m2, headers: {} },
-        { message: m3, headers: {} },
+      getNodes.mockReturnValue([
+        { message: m1, msgId: 'n1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+        { message: m2, msgId: 'n2', parentId: 'n1', forkOf: undefined, headers: {}, serial: undefined },
+        { message: m3, msgId: 'n3', parentId: 'n2', forkOf: undefined, headers: {}, serial: undefined },
       ]);
 
       const streamPromise = chat.sendMessages({
@@ -352,16 +352,16 @@ describe('createChatTransport', () => {
   });
 
   describe('default body construction', () => {
-    it('includes history with headers from transport.getMessagesWithHeaders', async () => {
-      const { transport, send, getMessagesWithHeaders, mockTurn } = createMockTransport();
+    it('includes history nodes from transport.getNodes', async () => {
+      const { transport, send, getNodes, mockTurn } = createMockTransport();
 
       const m1 = makeMessage('1');
       const m2 = makeMessage('2');
       const m3 = makeMessage('3');
-      getMessagesWithHeaders.mockReturnValue([
-        { message: m1, headers: { 'x-ably-msg-id': 'h1' } },
-        { message: m2, headers: { 'x-ably-msg-id': 'h2' } },
-        { message: m3, headers: { 'x-ably-msg-id': 'h3' } },
+      getNodes.mockReturnValue([
+        { message: m1, msgId: 'h1', parentId: undefined, forkOf: undefined, headers: { 'x-ably-msg-id': 'h1' }, serial: undefined },
+        { message: m2, msgId: 'h2', parentId: 'h1', forkOf: undefined, headers: { 'x-ably-msg-id': 'h2' }, serial: undefined },
+        { message: m3, msgId: 'h3', parentId: 'h2', forkOf: undefined, headers: { 'x-ably-msg-id': 'h3' }, serial: undefined },
       ]);
 
       const chat = createChatTransport(transport);
@@ -381,14 +381,11 @@ describe('createChatTransport', () => {
       // CAST: body is always set by the adapter; narrowing to non-undefined.
       // eslint-disable-next-line @typescript-eslint/non-nullable-type-assertion-style -- prefer `as` over `!` per TYPES.md
       const body = opts.body as Record<string, unknown>;
-      const bodyHistory = body.history as {
-        message: AI.UIMessage;
-        headers?: Record<string, string>;
-      }[];
+      const bodyHistory = body.history as { message: AI.UIMessage; msgId: string; headers: Record<string, string> }[];
       // History should include m1 and m2 (everything except the last message being sent)
       expect(bodyHistory).toHaveLength(2);
-      expect(bodyHistory.at(0)?.headers).toEqual({ 'x-ably-msg-id': 'h1' });
-      expect(bodyHistory.at(1)?.headers).toEqual({ 'x-ably-msg-id': 'h2' });
+      expect(bodyHistory.at(0)?.msgId).toBe('h1');
+      expect(bodyHistory.at(1)?.msgId).toBe('h2');
     });
   });
 

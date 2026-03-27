@@ -78,10 +78,10 @@ this._logger.trace('ClientTransport.send();');
 this._logger.debug('DefaultTurnManager.startTurn(); turn started', { turnId });
 
 // With context object
-this._logger.debug('ConversationTree.upsert(); promoting serial', { msgId, serial });
+this._logger.debug('Tree.upsert(); promoting serial', { msgId, serial });
 
 // Decision/branch (debug)
-this._logger.debug('ConversationTree.upsert(); inserting new node', { msgId, parentId, forkOf });
+this._logger.debug('Tree.upsert(); inserting new node', { msgId, parentId, forkOf });
 
 // Warning
 this._logger.warn('DefaultDecoderCore.decode(); unexpected message action', {
@@ -113,7 +113,7 @@ Log after an operation completes, when taking a branch, or when state changes:
 this._logger.debug('DefaultTurnManager.startTurn(); turn started', { turnId });
 this._logger.debug('DefaultTurnManager.endTurn(); turn ended', { turnId, reason });
 this._logger.debug('StreamRouter.closeStream(); closing stream', { turnId });
-this._logger.debug('ConversationTree.select();', { msgId, index });
+this._logger.debug('Tree.select();', { msgId, index });
 ```
 
 ### Info — lifecycle events

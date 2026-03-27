@@ -8,7 +8,7 @@ import {
   useEdit,
   useActiveTurns,
   useHistory,
-  useConversationTree,
+  useTree,
   useAblyMessages,
 } from '@ably/ai-transport/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
@@ -37,7 +37,7 @@ export function Chat({ chatId, clientId, historyLimit }: ChatProps) {
     body: () => ({ id: chatId }),
   });
 
-  const tree = useConversationTree(transport);
+  const tree = useTree(transport);
   const send = useSend(transport);
   const regenerate = useRegenerate(transport);
   const edit = useEdit(transport);

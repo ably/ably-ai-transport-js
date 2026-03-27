@@ -125,7 +125,7 @@ export async function POST(req: Request) {
   const allMessages = [...(history ?? []).map((h) => h.message), ...messages.map((m) => m.message)];
 
   const result = streamText({
-    model: anthropic('claude-sonnet-4-20250514'),
+    model: anthropic('claude-sonnet-4-6'),
     system: 'You are a helpful assistant.',
     messages: await convertToModelMessages(allMessages),
     abortSignal: turn.abortSignal,

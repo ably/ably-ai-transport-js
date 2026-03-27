@@ -29,12 +29,6 @@ import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import type { UIMessage } from 'ai';
 import { useState } from 'react';
 
-// Resolve the x-ably-msg-id for a message. Tree methods and regenerate/edit
-// use x-ably-msg-id as the key, not UIMessage.id.
-function treeMsgId(headers: Record<string, string> | undefined, msg: UIMessage): string {
-  return headers?.['x-ably-msg-id'] ?? msg.id;
-}
-
 function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) {
   const { channel } = useChannel({ channelName: chatId });
   const [input, setInput] = useState('');
@@ -58,7 +52,7 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
 
   const isStreaming = activeTurns.size > 0;
 
-  const messagesWithHeaders = transport.getMessagesWithHeaders();
+  const nodes = transport.getNodes();
 
   const handleSend = () => {
     const text = input.trim();
@@ -83,32 +77,29 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
         </button>
       )}
 
-      {/* Message list with headers for tree navigation */}
-      {messagesWithHeaders.map(({ message: msg, headers }) => {
-        const nodeId = treeMsgId(headers, msg);
-        return (
-          <div key={msg.id}>
-            <strong>{msg.role}:</strong>
-            {msg.parts.map((part, i) => (
-              part.type === 'text' ? <span key={i}>{part.text}</span> : null
-            ))}
+      {/* Message list — each node has a typed msgId for tree navigation */}
+      {nodes.map((node) => (
+        <div key={node.message.id}>
+          <strong>{node.message.role}:</strong>
+          {node.message.parts.map((part, i) => (
+            part.type === 'text' ? <span key={i}>{part.text}</span> : null
+          ))}
 
-            {/* Branch navigation */}
-            {tree.hasSiblings(nodeId) && (
-              <span>
-                {tree.getSelectedIndex(nodeId) + 1} / {tree.getSiblings(nodeId).length}
-                <button onClick={() => tree.selectSibling(nodeId, tree.getSelectedIndex(nodeId) - 1)}>prev</button>
-                <button onClick={() => tree.selectSibling(nodeId, tree.getSelectedIndex(nodeId) + 1)}>next</button>
-              </span>
-            )}
+          {/* Branch navigation */}
+          {tree.hasSiblings(node.msgId) && (
+            <span>
+              {tree.getSelectedIndex(node.msgId) + 1} / {tree.getSiblings(node.msgId).length}
+              <button onClick={() => tree.selectSibling(node.msgId, tree.getSelectedIndex(node.msgId) - 1)}>prev</button>
+              <button onClick={() => tree.selectSibling(node.msgId, tree.getSelectedIndex(node.msgId) + 1)}>next</button>
+            </span>
+          )}
 
-            {/* Regenerate assistant messages */}
-            {msg.role === 'assistant' && (
-              <button onClick={() => regenerate(nodeId)}>Regenerate</button>
-            )}
-          </div>
-        );
-      })}
+          {/* Regenerate assistant messages */}
+          {node.message.role === 'assistant' && (
+            <button onClick={() => regenerate(node.msgId)}>Regenerate</button>
+          )}
+        </div>
+      ))}
 
       {/* Input */}
       <form onSubmit={(e) => { e.preventDefault(); handleSend(); }}>

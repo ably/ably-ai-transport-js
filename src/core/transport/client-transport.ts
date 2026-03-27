@@ -22,7 +22,6 @@ import {
   HEADER_CANCEL_TURN_ID,
   HEADER_MSG_ID,
   HEADER_PARENT,
-  HEADER_ROLE,
   HEADER_TURN_CLIENT_ID,
   HEADER_TURN_ID,
   HEADER_TURN_REASON,
@@ -47,7 +46,6 @@ import type {
   ConversationNode,
   ConversationTree,
   LoadHistoryOptions,
-  MessageWithHeaders,
   PaginatedMessages,
   SendOptions,
   TurnEndReason,
@@ -477,22 +475,15 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   // Input message helpers
   // ---------------------------------------------------------------------------
 
-  private _getMessagesWithHeaders(): MessageWithHeaders<TMessage>[] {
-    return this._tree.flattenNodes().map((n) => ({
-      message: n.message,
-      headers: n.headers,
-    }));
-  }
-
   /**
    * Compute truncated history: everything before the target message.
    * Used by regenerate so the LLM doesn't see the response being replaced.
    * @param messageId - The msg-id to truncate history before.
-   * @returns Input messages preceding the target.
+   * @returns Conversation nodes preceding the target.
    */
-  private _getHistoryBefore(messageId: string): MessageWithHeaders<TMessage>[] {
-    const all = this._getMessagesWithHeaders();
-    const idx = all.findIndex((inp) => inp.headers?.[HEADER_MSG_ID] === messageId);
+  private _getHistoryBefore(messageId: string): ConversationNode<TMessage>[] {
+    const all = this._tree.flattenNodes();
+    const idx = all.findIndex((n) => n.msgId === messageId);
     return idx === -1 ? all : all.slice(0, idx);
   }
 
@@ -577,19 +568,18 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     this._ownTurnIds.add(turnId);
 
     const msgIds = new Set<string>();
-    const postMessages: { message: TMessage; headers: Record<string, string> }[] = [];
+    const postMessages: ConversationNode<TMessage>[] = [];
 
     // Capture history BEFORE optimistic inserts. The optimistic messages are
     // sent in the `messages` field — including them in `history` too would
     // cause the server to see them twice.
-    const preInsertHistory = this._getMessagesWithHeaders();
+    const preInsertHistory = this._tree.flattenNodes();
 
     // Spec: AIT-CT3d
     // Auto-compute parent from the current thread if not explicitly provided
     let autoParent: string | undefined;
     if (sendOptions?.parent === undefined && !sendOptions?.forkOf) {
-      const nodes = this._tree.flattenNodes();
-      const lastNode = nodes.at(-1);
+      const lastNode = preInsertHistory.at(-1);
       if (lastNode) {
         autoParent = lastNode.msgId;
       }
@@ -617,10 +607,15 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       // Optimistically insert each user message into the tree
       this._upsertAndNotify(message, optimisticHeaders);
 
-      // Include per-message parent so the server chains messages correctly.
-      const postHeaders: Record<string, string> = { [HEADER_MSG_ID]: msgId, [HEADER_ROLE]: 'user' };
-      if (resolvedParent) postHeaders[HEADER_PARENT] = resolvedParent;
-      postMessages.push({ message, headers: postHeaders });
+      // Build ConversationNode for the POST body
+      postMessages.push({
+        message,
+        msgId,
+        parentId: resolvedParent,
+        forkOf: sendOptions?.forkOf,
+        headers: optimisticHeaders,
+        serial: undefined,
+      });
 
       // Spec: AIT-CT3e
       // Chain: each subsequent message in the batch parents off the previous
@@ -816,8 +811,8 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     return nodes.filter((n) => !this._withheldMsgIds.has(n.msgId)).map((n) => n.message);
   }
 
-  getMessagesWithHeaders(): MessageWithHeaders<TMessage>[] {
-    return this._getMessagesWithHeaders();
+  getNodes(): ConversationNode<TMessage>[] {
+    return this._tree.flattenNodes();
   }
 
   getAblyMessages(): Ably.InboundMessage[] {

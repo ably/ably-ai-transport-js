@@ -210,14 +210,14 @@ export const createChatTransport = (
       sendBody = prepared.body ?? {};
       sendHeaders = prepared.headers;
     } else {
-      // Build history with headers from the transport's paired data.
+      // Build history nodes from the transport's conversation tree.
       // The local `history` is a subset of messages (excludes the last message
-      // being sent). Match by reference to extract headers.
-      const allWithHeaders = transport.getMessagesWithHeaders();
+      // being sent). Match by reference to extract the full nodes.
+      const allNodes = transport.getNodes();
       const historySet = new Set(history);
-      const historyWithHeaders = allWithHeaders.filter((mwh) => historySet.has(mwh.message));
+      const historyNodes = allNodes.filter((n) => historySet.has(n.message));
       sendBody = {
-        history: historyWithHeaders,
+        history: historyNodes,
         id: opts.chatId,
         trigger,
         ...(messageId !== undefined && { messageId }),

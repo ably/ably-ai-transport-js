@@ -11,8 +11,8 @@ type Handler = () => void;
 
 interface MockTransport {
   transport: ClientTransport<unknown, AI.UIMessage>;
-  emit: (event: string) => void;
-  getMessages: ReturnType<typeof vi.fn>;
+  emitView: (event: string) => void;
+  viewFlattenNodes: ReturnType<typeof vi.fn>;
 }
 
 const makeMessage = (id: string, role: AI.UIMessage['role'] = 'user'): AI.UIMessage => ({
@@ -22,13 +22,13 @@ const makeMessage = (id: string, role: AI.UIMessage['role'] = 'user'): AI.UIMess
 });
 
 const createMockTransport = (): MockTransport => {
-  const handlers = new Map<string, Set<Handler>>();
+  const viewHandlers = new Map<string, Set<Handler>>();
 
-  const on = vi.fn((event: string, handler: Handler) => {
-    let set = handlers.get(event);
+  const viewOn = vi.fn((event: string, handler: Handler) => {
+    let set = viewHandlers.get(event);
     if (!set) {
       set = new Set();
-      handlers.set(event, set);
+      viewHandlers.set(event, set);
     }
     set.add(handler);
     return () => {
@@ -36,16 +36,33 @@ const createMockTransport = (): MockTransport => {
     };
   });
 
-  const getMessages = vi.fn((): AI.UIMessage[] => []);
+  const viewFlattenNodes = vi.fn(() => [] as { message: AI.UIMessage }[]);
+
+  const view = {
+    on: viewOn,
+    flattenNodes: viewFlattenNodes,
+    hasOlder: vi.fn(() => false),
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+    loadOlder: vi.fn(() => Promise.resolve()),
+    getActiveTurnIds: vi.fn(() => new Map()),
+  };
 
   const transport = {
-    on,
-    getMessages,
+    view,
+    // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
+    on: vi.fn(() => () => {}),
+    tree: {},
+    send: vi.fn(),
+    regenerate: vi.fn(),
+    edit: vi.fn(),
+    cancel: vi.fn(),
+    waitForTurn: vi.fn(),
+    close: vi.fn(),
   // CAST: mock object satisfies the subset of ClientTransport methods used by useMessageSync
   } as unknown as ClientTransport<unknown, AI.UIMessage>;
 
-  const emit = (event: string): void => {
-    const set = handlers.get(event);
+  const emitView = (event: string): void => {
+    const set = viewHandlers.get(event);
     if (set) {
       for (const handler of set) {
         handler();
@@ -53,20 +70,20 @@ const createMockTransport = (): MockTransport => {
     }
   };
 
-  return { transport, emit, getMessages };
+  return { transport, emitView, viewFlattenNodes };
 };
 
 describe('useMessageSync', () => {
-  it('calls setMessages when transport emits message event', () => {
+  it('calls setMessages when transport emits view update event', () => {
     const mock = createMockTransport();
     const msgs = [makeMessage('1')];
-    mock.getMessages.mockReturnValue(msgs);
+    mock.viewFlattenNodes.mockReturnValue(msgs.map((m) => ({ message: m, msgId: m.id, parentId: undefined, forkOf: undefined, headers: {}, serial: undefined })));
 
     const setMessages = vi.fn();
     renderHook(() => { useMessageSync(mock.transport, setMessages); });
 
     act(() => {
-      mock.emit('message');
+      mock.emitView('update');
     });
 
     expect(setMessages).toHaveBeenCalled();
@@ -90,7 +107,7 @@ describe('useMessageSync', () => {
 
     // Emitting after unmount should not call setMessages
     act(() => {
-      mock.emit('message');
+      mock.emitView('update');
     });
     expect(setMessages).not.toHaveBeenCalled();
   });

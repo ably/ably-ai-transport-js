@@ -18,7 +18,7 @@ import {
 } from '../../../src/constants.js';
 import type { Codec, StreamEncoder } from '../../../src/core/codec/types.js';
 import { createServerTransport } from '../../../src/core/transport/server-transport.js';
-import type { ConversationNode, ServerTransport } from '../../../src/core/transport/types.js';
+import type { ServerTransport,TreeNode } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 
 // ---------------------------------------------------------------------------
@@ -28,7 +28,7 @@ import { ErrorCode } from '../../../src/errors.js';
 interface TestEvent { type: string; text?: string }
 interface TestMessage { id: string; content: string }
 
-const makeNode = (message: TestMessage, overrides?: Partial<ConversationNode<TestMessage>>): ConversationNode<TestMessage> => ({
+const makeNode = (message: TestMessage, overrides?: Partial<TreeNode<TestMessage>>): TreeNode<TestMessage> => ({
   message,
   msgId: overrides?.msgId ?? crypto.randomUUID(),
   parentId: undefined,

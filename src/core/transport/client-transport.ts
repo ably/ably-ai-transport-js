@@ -1,7 +1,7 @@
 /**
  * Core client-side transport, parameterized by codec.
  *
- * Composes StreamRouter and ConversationTree to handle the full client-side
+ * Composes StreamRouter and Tree to handle the full client-side
  * lifecycle. Subscribes to the Ably channel on construction. The same
  * subscription, decoder, and channel are reused across turns.
  *
@@ -32,22 +32,23 @@ import type { Logger } from '../../logger.js';
 import { LogLevel, makeLogger } from '../../logger.js';
 import { getHeaders } from '../../utils.js';
 import type { DecoderOutput, MessageAccumulator, StreamDecoder } from '../codec/types.js';
-import { createConversationTree } from './conversation-tree.js';
 import { decodeHistory } from './decode-history.js';
 import { buildTransportHeaders } from './headers.js';
 import type { StreamRouter } from './stream-router.js';
 import { createStreamRouter } from './stream-router.js';
+import type { DefaultTree } from './tree.js';
+import { createTree } from './tree.js';
 import type {
   ActiveTurn,
   CancelFilter,
   ClientTransport,
   ClientTransportOptions,
   CloseOptions,
-  ConversationNode,
-  ConversationTree,
   LoadHistoryOptions,
   PaginatedMessages,
   SendOptions,
+  Tree,
+  TreeNode,
   TurnEndReason,
   TurnLifecycleEvent,
 } from './types.js';
@@ -119,7 +120,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   private readonly _withheldMsgIds = new Set<string>();
 
   // Sub-components
-  private readonly _tree: ConversationTree<TMessage>;
+  private readonly _tree: DefaultTree<TMessage>;
   private readonly _router: StreamRouter<TEvent>;
   private readonly _decoder: StreamDecoder<TEvent, TMessage>;
 
@@ -155,7 +156,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     this._emitter = new EventEmitter<ClientTransportEventsMap>(this._logger);
 
     // Compose sub-components
-    this._tree = createConversationTree<TMessage>(this._logger);
+    this._tree = createTree<TMessage>(this._logger);
     this._router = createStreamRouter<TEvent>(this._codec.isTerminal.bind(this._codec), this._logger);
     this._decoder = this._codec.createDecoder();
 
@@ -188,6 +189,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     if (this._closed) return;
 
     this._ablyMessages.push(ablyMessage);
+    this._tree.emitAblyMessage(ablyMessage);
     this._emitter.emit('ably-message');
 
     try {
@@ -199,7 +201,10 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
         const turnCid = headers[HEADER_TURN_CLIENT_ID] ?? '';
         if (turnId) {
           this._turnClientIds.set(turnId, turnCid);
-          this._emitter.emit('turn', { type: EVENT_TURN_START, turnId, clientId: turnCid });
+          this._tree.trackTurn(turnId, turnCid);
+          const turnEvent: TurnLifecycleEvent = { type: EVENT_TURN_START, turnId, clientId: turnCid };
+          this._tree.emitTurn(turnEvent);
+          this._emitter.emit('turn', turnEvent);
         }
         return;
       }
@@ -214,6 +219,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
           this._router.closeStream(turnId);
           this._turnObservers.delete(turnId);
           this._turnClientIds.delete(turnId);
+          this._tree.untrackTurn(turnId);
           // Clean up per-turn relay-detection state
           const msgIds = this._turnMsgIds.get(turnId);
           if (msgIds) {
@@ -221,7 +227,9 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
             this._turnMsgIds.delete(turnId);
           }
           this._ownTurnIds.delete(turnId);
-          this._emitter.emit('turn', { type: EVENT_TURN_END, turnId, clientId: turnCid, reason });
+          const turnEvent: TurnLifecycleEvent = { type: EVENT_TURN_END, turnId, clientId: turnCid, reason };
+          this._tree.emitTurn(turnEvent);
+          this._emitter.emit('turn', turnEvent);
         }
         return;
       }
@@ -481,7 +489,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
    * @param messageId - The msg-id to truncate history before.
    * @returns Conversation nodes preceding the target.
    */
-  private _getHistoryBefore(messageId: string): ConversationNode<TMessage>[] {
+  private _getHistoryBefore(messageId: string): TreeNode<TMessage>[] {
     const all = this._tree.flattenNodes();
     const idx = all.findIndex((n) => n.msgId === messageId);
     return idx === -1 ? all : all.slice(0, idx);
@@ -512,7 +520,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     firstPage: PaginatedMessages<TMessage>,
     target: number,
     beforeMsgIds: Set<string>,
-  ): Promise<{ newVisible: ConversationNode<TMessage>[]; lastPage: PaginatedMessages<TMessage> }> {
+  ): Promise<{ newVisible: TreeNode<TMessage>[]; lastPage: PaginatedMessages<TMessage> }> {
     this._processHistoryPage(firstPage);
     let page = firstPage;
 
@@ -535,7 +543,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     return { newVisible, lastPage: page };
   }
 
-  private _releaseWithheld(nodes: ConversationNode<TMessage>[]): void {
+  private _releaseWithheld(nodes: TreeNode<TMessage>[]): void {
     for (const n of nodes) {
       this._withheldMsgIds.delete(n.msgId);
     }
@@ -568,7 +576,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     this._ownTurnIds.add(turnId);
 
     const msgIds = new Set<string>();
-    const postMessages: ConversationNode<TMessage>[] = [];
+    const postMessages: TreeNode<TMessage>[] = [];
 
     // Capture history BEFORE optimistic inserts. The optimistic messages are
     // sent in the `messages` field — including them in `history` too would
@@ -607,7 +615,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       // Optimistically insert each user message into the tree
       this._upsertAndNotify(message, optimisticHeaders);
 
-      // Build ConversationNode for the POST body
+      // Build TreeNode for the POST body
       postMessages.push({
         message,
         msgId,
@@ -786,7 +794,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   }
 
   // Spec: AIT-CT10
-  getTree(): ConversationTree<TMessage> {
+  getTree(): Tree<TMessage> {
     return this._tree;
   }
 
@@ -811,7 +819,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     return nodes.filter((n) => !this._withheldMsgIds.has(n.msgId)).map((n) => n.message);
   }
 
-  getNodes(): ConversationNode<TMessage>[] {
+  getNodes(): TreeNode<TMessage>[] {
     return this._tree.flattenNodes();
   }
 
@@ -850,7 +858,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     const withheldBuffer = newVisible.slice(0, -limit);
     this._releaseWithheld(released);
 
-    const buildPage = (nodes: ConversationNode<TMessage>[]): PaginatedMessages<TMessage> => ({
+    const buildPage = (nodes: TreeNode<TMessage>[]): PaginatedMessages<TMessage> => ({
       items: nodes.map((n) => n.message),
       hasNext: () => withheldBuffer.length > 0 || lastPage.hasNext(),
       next: async () => {

@@ -1,7 +1,7 @@
 import type * as AI from 'ai';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ClientTransport, ConversationTree, SendOptions } from '../../../src/core/transport/types.js';
+import type { ClientTransport, SendOptions,Tree } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 import type { ChatTransportOptions } from '../../../src/vercel/transport/chat-transport.js';
 import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
@@ -63,7 +63,7 @@ const createMockTransport = (): MockTransport => {
   const mockTurn = createMockTurn();
   const tree = {
     flattenNodes: vi.fn(() => []),
-    // Stub remaining ConversationTree methods
+    // Stub remaining Tree methods
     getSiblings: vi.fn(() => []),
     hasSiblings: vi.fn(() => false),
     getSelectedIndex: vi.fn(() => 0),
@@ -80,7 +80,7 @@ const createMockTransport = (): MockTransport => {
   const cancel = vi.fn(() => Promise.resolve());
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const close = vi.fn(() => Promise.resolve());
-  const getTree = vi.fn(() => tree as unknown as ConversationTree<AI.UIMessage>);
+  const getTree = vi.fn(() => tree as unknown as Tree<AI.UIMessage>);
   const getNodes = vi.fn(() => [] as { message: AI.UIMessage; msgId: string; parentId: string | undefined; forkOf: string | undefined; headers: Record<string, string>; serial: string | undefined }[]);
 
   const transport = {

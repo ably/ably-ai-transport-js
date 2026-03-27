@@ -1,10 +1,10 @@
 # Chat transport
 
-The chat transport (`src/vercel/transport/chat-transport.ts`) is a thin adapter that wraps a core [ClientTransport](client-transport.md) to satisfy the `ChatTransport` interface that Vercel's `useChat` hook expects. The real logic lives in the core transport - this adapter maps Vercel's `sendMessages` / `reconnectToStream` contract to the core transport's `send()` and `cancel()`.
+The chat transport (`src/vercel/transport/chat-transport.ts`) is a thin adapter that wraps a core [ClientTransport](client-transport.md) to satisfy the `ChatTransport` interface that Vercel's `useChat()` hook expects. The real logic lives in the core transport - this adapter maps Vercel's `sendMessages()` / `reconnectToStream()` contract to the core transport's `send()` and `cancel()`.
 
 ## Why an adapter
 
-Vercel's `useChat` manages message state internally. When the user submits a message or requests regeneration, `useChat` calls `sendMessages` with the full message array and a `trigger` field. The adapter must:
+Vercel's `useChat()` manages message state internally. When the user submits a message or requests regeneration, `useChat()` calls `sendMessages()` with the full message array and a `trigger` field. The adapter must:
 
 1. Determine which messages are new vs history
 2. Compute fork metadata for regeneration
@@ -30,13 +30,13 @@ Without the hook, the adapter builds a default body with `history` (including pe
 
 ### Empty stream return
 
-The adapter returns an **empty stream** that closes when the turn ends - not the real event stream. This is intentional: `useChat` consumes the returned stream to accumulate the assistant message, but `useMessageSync` (the companion React hook) already pushes the transport's authoritative message state into `useChat` via `setMessages`. Returning the real event stream would cause `useChat` to accumulate a duplicate assistant message.
+The adapter returns an **empty stream** that closes when the turn ends - not the real event stream. This is intentional: `useChat()` consumes the returned stream to accumulate the assistant message, but `useMessageSync()` (the companion React hook) already pushes the transport's authoritative message state into `useChat()` via `setMessages()`. Returning the real event stream would cause `useChat()` to accumulate a duplicate assistant message.
 
 The empty stream is created via a `TransformStream` whose writable side closes when the turn's real stream finishes.
 
 ### Abort signal
 
-When `useChat` provides an `abortSignal` (e.g. the user clicks stop), the adapter wires it to `transport.cancel({ all: true })`. In multi-user scenarios, `cancel({ all: true })` is used rather than per-turnId cancel because any client should be able to stop any active stream.
+When `useChat()` provides an `abortSignal` (e.g. the user clicks stop), the adapter wires it to `transport.cancel({ all: true })`. In multi-user scenarios, `cancel({ all: true })` is used rather than per-turnId cancel because any client should be able to stop any active stream.
 
 ## reconnectToStream
 
@@ -56,7 +56,7 @@ The `SendMessagesRequestContext` provides:
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | `string?` | Chat session ID from `useChat` |
+| `id` | `string?` | Chat session ID from `useChat()` |
 | `trigger` | `'submit-message' \| 'regenerate-message'` | What triggered the request |
 | `messageId` | `string?` | Target message ID for regeneration |
 | `history` | `UIMessage[]` | Previous messages (context for the LLM) |

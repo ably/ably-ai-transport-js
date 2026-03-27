@@ -1,6 +1,6 @@
 # React hooks
 
-API reference for all React hooks in the SDK. Generic hooks work with any codec; Vercel hooks are specific to the `useChat` integration path.
+API reference for all React hooks in the SDK. Generic hooks work with any codec; Vercel hooks are specific to the `useChat()` integration path.
 
 ## Generic hooks
 
@@ -210,7 +210,7 @@ Import from `@ably/ai-transport/vercel/react`.
 
 ### useChatTransport
 
-Create and memoize a `ChatTransport` for Vercel's `useChat` hook.
+Create and memoize a `ChatTransport` for Vercel's `useChat()` hook.
 
 ```typescript
 const chatTransport = useChatTransport(
@@ -224,10 +224,10 @@ const chatTransport = useChatTransport(
 | `transportOrOptions` | `ClientTransport \| VercelClientTransportOptions` | An existing transport, or options to create one |
 | `chatOptions` | `ChatTransportOptions?` | Optional hooks for customizing request construction |
 
-**Returns:** `ChatTransport` - compatible with `useChat`'s `transport` option.
+**Returns:** `ChatTransport` - compatible with `useChat()`'s `transport` option.
 
 Two usage patterns:
-1. **Wrap an existing transport** - pass a `ClientTransport` created by `useClientTransport`
+1. **Wrap an existing transport** - pass a `ClientTransport` created by `useClientTransport()`
 2. **Create internally** - pass `VercelClientTransportOptions` and the hook creates the transport with `UIMessageCodec`
 
 `ChatTransportOptions.prepareSendMessagesRequest` lets you customize the HTTP POST body and headers:
@@ -245,7 +245,7 @@ const chatTransport = useChatTransport(transport, {
 
 ### useMessageSync
 
-Wire transport message updates into `useChat`'s `setMessages` updater.
+Wire transport message updates into `useChat()`'s `setMessages` updater.
 
 ```typescript
 useMessageSync(
@@ -257,10 +257,10 @@ useMessageSync(
 | Parameter | Type | Description |
 |---|---|---|
 | `transport` | `ClientTransport \| null \| undefined` | The transport to observe |
-| `setMessages` | `(updater: ...) => void` | The `setMessages` function from `useChat` |
+| `setMessages` | `(updater: ...) => void` | The `setMessages` function from `useChat()` |
 
 **Returns:** `void`
 
-Subscribes to the transport's `'message'` event and replaces `useChat`'s message state with the transport's authoritative list on every update. This is how messages from other clients (observer messages) appear in `useChat`.
+Subscribes to the transport's `'message'` event and replaces `useChat()`'s message state with the transport's authoritative list on every update. This is how messages from other clients (observer messages) appear in `useChat()`.
 
-Required when using the useChat path with multi-client sync. Without it, `useChat` only shows messages from its own sends.
+Required when using the `useChat()` path with multi-client sync. Without it, `useChat()` only shows messages from its own sends.

@@ -35,7 +35,7 @@ const headers = headerWriter()
 
 ### headerReader
 
-A typed accessor for reading domain headers. Mirrors `headerWriter` with the same method names for symmetry.
+A typed accessor for reading domain headers. Mirrors `headerWriter()` with the same method names for symmetry.
 
 ```typescript
 import { headerReader } from '@ably/ai-transport';
@@ -56,7 +56,7 @@ const metadata = r.json('providerMetadata');    // unknown (parsed JSON)
 
 ### Vercel-specific extension
 
-The Vercel codec (`src/vercel/codec/decoder.ts`) extends `headerReader` with a `providerMetadata()` method that casts the parsed JSON to `AI.ProviderMetadata`:
+The Vercel codec (`src/vercel/codec/decoder.ts`) extends `headerReader()` with a `providerMetadata()` method that casts the parsed JSON to `AI.ProviderMetadata`:
 
 ```typescript
 const r = headerReader(headers);
@@ -65,7 +65,7 @@ const pm = r.providerMetadata(); // AI.ProviderMetadata | undefined
 
 ## Low-level utilities
 
-These are used internally by `headerWriter` / `headerReader` and by the transport layer. Codec implementations should prefer the typed reader/writer over calling these directly.
+These are used internally by `headerWriter()` / `headerReader()` and by the transport layer. Codec implementations should prefer the typed reader/writer over calling these directly.
 
 | Function | Purpose |
 |---|---|

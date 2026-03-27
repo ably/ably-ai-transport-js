@@ -62,7 +62,7 @@ Pipes a `ReadableStream<TEvent>` through the codec encoder to the channel via [p
 
 Headers are built with `role: 'assistant'` and the turn's branching metadata (parent, forkOf). The abort signal from the TurnManager is passed to pipeStream, so cancel signals propagate through to stream termination.
 
-Returns `{ reason }` - `'complete'`, `'cancelled'`, or `'error'`. Does **not** call `end()` - the caller must do that after `streamResponse` returns.
+Returns `{ reason }` - `'complete'`, `'cancelled'`, or `'error'`. Does **not** call `end()` - the caller must do that after `streamResponse()` returns.
 
 ### end
 

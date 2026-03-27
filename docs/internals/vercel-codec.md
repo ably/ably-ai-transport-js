@@ -54,7 +54,7 @@ These hooks reconstruct `UIMessageChunk` events from stream tracker state. The d
 - **Delta** → `text-delta`, `reasoning-delta`, or `tool-input-delta`
 - **End** → `text-end`, `reasoning-end`, or `tool-input-available` (tool input parses accumulated JSON)
 
-Start hooks also call `ensurePhases` on the [lifecycle tracker](lifecycle-tracker.md) to synthesize missing `start` / `start-step` events for mid-stream joins.
+Start hooks also call `ensurePhases()` on the [lifecycle tracker](lifecycle-tracker.md) to synthesize missing `start` / `start-step` events for mid-stream joins.
 
 ### decodeDiscrete
 

@@ -80,7 +80,7 @@ The decoder has an existing tracker. It checks whether the incoming data starts 
 - Check for terminal status
 
 **Not a prefix match** (data doesn't start with accumulated):
-- The message was replaced entirely (e.g. [encoder recovery](encoder.md#recovery-mechanism) via `updateMessage`)
+- The message was replaced entirely (e.g. [encoder recovery](encoder.md#recovery-mechanism) via `updateMessage()`)
 - Replace `tracker.accumulated` and `tracker.headers`
 - Fire `onStreamUpdate` callback
 - Emit no events (the full content will be visible when the decoder consumer reads the tracker)

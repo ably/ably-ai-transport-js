@@ -36,7 +36,7 @@ const regenerate = useRegenerate(transport);
 await regenerate(nodeId);
 ```
 
-The transport automatically computes `forkOf` (the assistant message being replaced) and `parent` (the message before it). The server receives these in the POST body and passes them to `newTurn`.
+The transport automatically computes `forkOf` (the assistant message being replaced) and `parent` (the message before it). The server receives these in the POST body and passes them to `newTurn()`.
 
 ## Edit
 
@@ -61,7 +61,7 @@ await edit(nodeId, [newMessage]);
 
 ## Branch navigation
 
-`useConversationTree` provides the tree state and navigation:
+`useConversationTree()` provides the tree state and navigation:
 
 ```typescript
 import { useConversationTree } from '@ably/ai-transport/react';
@@ -105,7 +105,7 @@ Calling `selectSibling` updates the tree's active branch. `tree.messages` re-ren
 
 ## Server handling
 
-The server receives `forkOf` and `parent` in the POST body. Pass them through to `newTurn`:
+The server receives `forkOf` and `parent` in the POST body. Pass them through to `newTurn()`:
 
 ```typescript
 const { turnId, clientId, forkOf, parent, messages, history } = await req.json();

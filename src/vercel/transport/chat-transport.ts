@@ -212,10 +212,10 @@ export const createChatTransport = (
     } else {
       // Build history nodes from the transport's conversation tree.
       // The local `history` is a subset of messages (excludes the last message
-      // being sent). Match by reference to extract the full nodes.
+      // being sent). Match by message ID for robustness against cloned objects.
       const allNodes = transport.getNodes();
-      const historySet = new Set(history);
-      const historyNodes = allNodes.filter((n) => historySet.has(n.message));
+      const historyIds = new Set(history.map((m) => m.id));
+      const historyNodes = allNodes.filter((n) => historyIds.has(n.message.id));
       sendBody = {
         history: historyNodes,
         id: opts.chatId,

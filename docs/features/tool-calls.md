@@ -55,7 +55,7 @@ await turn.end(reason);
 On the client, tool calls appear as parts of the assistant message. No special handling is needed - they're decoded by the codec and included in the message's `parts` array:
 
 ```typescript
-// Using useMessages or useConversationTree
+// Using useMessages or useTree
 const messages = useMessages(transport);
 
 messages.forEach((msg) => {

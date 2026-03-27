@@ -23,7 +23,7 @@ import {
   useRegenerate,
   useActiveTurns,
   useHistory,
-  useConversationTree,
+  useTree,
 } from '@ably/ai-transport/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import type { UIMessage } from 'ai';
@@ -44,7 +44,7 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
   });
 
   // Each operation is a separate hook
-  const tree = useConversationTree(transport);
+  const tree = useTree(transport);
   const send = useSend(transport);
   const regenerate = useRegenerate(transport);
   const activeTurns = useActiveTurns(transport);
@@ -131,7 +131,7 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
 
 | | useChat path | Generic hooks path |
 |---|---|---|
-| **Message state** | Managed by `useChat` | Managed by `useConversationTree` |
+| **Message state** | Managed by `useChat` | Managed by `useTree` |
 | **Send** | `sendMessage({ text })` | `send([uiMessage])` - you construct the `UIMessage` |
 | **Regenerate** | `regenerate({ messageId })` | `regenerate(messageId)` |
 | **Edit** | Not built into `useChat` | `edit(messageId, [newMessage])` |

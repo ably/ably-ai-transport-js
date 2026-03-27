@@ -46,7 +46,7 @@ Use the generic React hooks directly. You manage message state through the trans
 ```typescript
 import {
   useClientTransport,
-  useConversationTree,
+  useTree,
   useSend,
   useRegenerate,
   useEdit,
@@ -56,7 +56,7 @@ import {
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 
 const transport = useClientTransport({ channel, codec: UIMessageCodec, clientId });
-const tree = useConversationTree(transport);
+const tree = useTree(transport);
 const send = useSend(transport);
 const regenerate = useRegenerate(transport);
 const edit = useEdit(transport);

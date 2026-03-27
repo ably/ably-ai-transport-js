@@ -88,7 +88,7 @@ When the decoder produces a `{ kind: 'message' }` output (e.g. a user message de
 
 ## How messages reach the UI
 
-The [conversation tree's](conversation-tree.md#flatten-producing-the-linear-path) `flattenNodes()` method is the sole path from tree state to a message array. It walks the sorted node list, checks parent reachability and sibling selection, and returns `ConversationNode<TMessage>[]` for the currently selected conversation path. `ClientTransport.getMessages()` extracts the `.message` from each node to produce the public `TMessage[]`.
+The [conversation tree's](conversation-tree.md#flatten-producing-the-linear-path) `flattenNodes()` method is the sole path from tree state to a message array. It walks the sorted node list, checks parent reachability and sibling selection, and returns `TreeNode<TMessage>[]` for the currently selected conversation path. `ClientTransport.getMessages()` extracts the `.message` from each node to produce the public `TMessage[]`.
 
 `ClientTransport.getMessages()` calls `flattenNodes()` and filters out any messages withheld by the history pagination buffer. This is the public API that all downstream consumers call.
 
@@ -103,7 +103,7 @@ useEffect(() => {
 }, [transport]);
 ```
 
-Every `'message'` event triggers a full `getMessages()` call, which rebuilds the array from the tree. The hooks that follow this pattern: `useMessages()`, `useConversationTree()`, `useMessageSync()`.
+Every `'message'` event triggers a full `getMessages()` call, which rebuilds the array from the tree. The hooks that follow this pattern: `useMessages()`, `useTree()`, `useMessageSync()`.
 
 ## History hydration path
 
@@ -127,7 +127,7 @@ All consumers go through `getMessages()` → `flattenNodes()`:
 
 | Consumer                                  | When it calls `getMessages()`                     |
 | ----------------------------------------- | ------------------------------------------------- |
-| `useMessages()` / `useConversationTree()` | On mount and every `'message'` event              |
+| `useMessages()` / `useTree()` | On mount and every `'message'` event              |
 | `useMessageSync()` (Vercel)               | On every `'message'` event                        |
 | `send()` / `regenerate()`                 | To build the HTTP POST body's message history     |
 | `history()`                               | To snapshot the current tree state for pagination |

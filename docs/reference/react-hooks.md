@@ -162,19 +162,19 @@ History messages are inserted into the conversation tree and trigger `'message'`
 
 ---
 
-### useConversationTree
+### useTree
 
 Subscribe to message updates and provide branch navigation.
 
 ```typescript
-const tree = useConversationTree<TEvent, TMessage>(transport: ClientTransport<TEvent, TMessage>);
+const tree = useTree<TEvent, TMessage>(transport: ClientTransport<TEvent, TMessage>);
 ```
 
 | Parameter | Type | Description |
 |---|---|---|
 | `transport` | `ClientTransport<TEvent, TMessage>` | The transport whose tree to navigate |
 
-**Returns:** `ConversationTreeHandle<TMessage>`
+**Returns:** `TreeHandle<TMessage>`
 
 | Property/Method | Type | Description |
 |---|---|---|

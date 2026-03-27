@@ -118,8 +118,8 @@ A codec-provided component that assembles [decoder outputs](decoder.md#decoder-o
 
 ### Message materialization
 
-The act of producing a flat message list from the [conversation tree](conversation-tree.md) via [`flattenNodes()`](#flatten). `flattenNodes()` returns `ConversationNode<TMessage>[]` - the transport's `getMessages()` extracts `.message` from each node to produce the public `TMessage[]`. Every call rebuilds from scratch - there is no cached list - because the result depends on branch selection state. All consumers go through `getMessages()`, which delegates to `flattenNodes()`: React hooks, `send()` (for the HTTP POST body), `history()` (for pagination snapshots). See [Message lifecycle](message-lifecycle.md#why-no-cached-message-list).
+The act of producing a flat message list from the [conversation tree](conversation-tree.md) via [`flattenNodes()`](#flatten). `flattenNodes()` returns `TreeNode<TMessage>[]` - the transport's `getMessages()` extracts `.message` from each node to produce the public `TMessage[]`. Every call rebuilds from scratch - there is no cached list - because the result depends on branch selection state. All consumers go through `getMessages()`, which delegates to `flattenNodes()`: React hooks, `send()` (for the HTTP POST body), `history()` (for pagination snapshots). See [Message lifecycle](message-lifecycle.md#why-no-cached-message-list).
 
 ### Flatten
 
-`ConversationTree.flattenNodes()` - the sole path from tree state to a message array. Walks the sorted node list, checks parent reachability and sibling selection, and returns the linear message sequence for the currently selected conversation path. See [Conversation tree: flatten](conversation-tree.md#flatten-producing-the-linear-path).
+`Tree.flattenNodes()` - the sole path from tree state to a message array. Walks the sorted node list, checks parent reachability and sibling selection, and returns the linear message sequence for the currently selected conversation path. See [Conversation tree: flatten](conversation-tree.md#flatten-producing-the-linear-path).

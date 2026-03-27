@@ -22,7 +22,7 @@ _parentIndex:   Map<parentId, Set<msgId>>       Children of each parent
 _selections:    Map<groupRootId, index>         Selected sibling at each fork
 ```
 
-Each `ConversationNode` stores:
+Each `TreeNode` stores:
 
 ```typescript
 {
@@ -40,7 +40,7 @@ Each `ConversationNode` stores:
 `upsert(msgId, message, headers, serial?)` is the only way to add or update messages:
 
 **Insert (new msgId):**
-1. Create a `ConversationNode` from the message, headers, and serial
+1. Create a `TreeNode` from the message, headers, and serial
 2. Add to the node index and parent index
 3. Insert into the sorted list at the correct position (binary search for serial-bearing, append for null-serial)
 
@@ -95,7 +95,7 @@ Sibling group resolution is cached per `flattenNodes()` call using a `resolvedGr
 | `getSiblings(msgId)` | All messages in the sibling group containing `msgId` |
 | `hasSiblings(msgId)` | Whether the message has alternative versions |
 | `getSelectedIndex(msgId)` | Currently selected index in the sibling group |
-| `getNode(msgId)` | The `ConversationNode` by msg-id |
+| `getNode(msgId)` | The `TreeNode` by msg-id |
 
 | `getHeaders(msgId)` | Headers for a specific message |
 

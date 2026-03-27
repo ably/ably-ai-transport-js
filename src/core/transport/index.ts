@@ -21,6 +21,7 @@ export type {
   Turn,
   TurnEndReason,
   TurnLifecycleEvent,
+  View,
 } from './types.js';
 
 // Server transport

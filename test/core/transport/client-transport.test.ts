@@ -675,22 +675,22 @@ describe('ClientTransport', () => {
     it('stamps forkOf on optimistic message headers', async () => {
       await transport.send({ id: 'u1', content: 'hi' }, { forkOf: 'original-msg' });
 
-      const mwh = transport.getMessagesWithHeaders();
-      expect(mwh[0]?.headers?.[HEADER_FORK_OF]).toBe('original-msg');
+      const nodes = transport.getNodes();
+      expect(nodes[0]?.headers[HEADER_FORK_OF]).toBe('original-msg');
     });
 
     it('stamps role on optimistic message headers', async () => {
       await transport.send({ id: 'u1', content: 'hi' });
 
-      const mwh = transport.getMessagesWithHeaders();
-      expect(mwh[0]?.headers?.[HEADER_ROLE]).toBe('user');
+      const nodes = transport.getNodes();
+      expect(nodes[0]?.headers[HEADER_ROLE]).toBe('user');
     });
 
     it('stamps turnId on optimistic message headers', async () => {
       const turn = await transport.send({ id: 'u1', content: 'hi' });
 
-      const mwh = transport.getMessagesWithHeaders();
-      expect(mwh[0]?.headers?.[HEADER_TURN_ID]).toBe(turn.turnId);
+      const nodes = transport.getNodes();
+      expect(nodes[0]?.headers[HEADER_TURN_ID]).toBe(turn.turnId);
     });
 
     it('generates unique turnId for each send', async () => {
@@ -2012,11 +2012,11 @@ describe('ClientTransport', () => {
   });
 
   // -------------------------------------------------------------------------
-  // getMessagesWithHeaders()
+  // getNodes()
   // -------------------------------------------------------------------------
 
-  describe('getMessagesWithHeaders', () => {
-    it('returns messages with headers', () => {
+  describe('getNodes', () => {
+    it('returns conversation nodes with headers and msgId', () => {
       const seeded = createClientTransport({
         channel: createMockChannel(),
         codec,
@@ -2024,10 +2024,11 @@ describe('ClientTransport', () => {
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
 
-      const inputs = seeded.getMessagesWithHeaders();
-      expect(inputs).toHaveLength(1);
-      expect(inputs[0]?.message.id).toBe('msg-1');
-      expect(inputs[0]?.headers).toBeDefined();
+      const nodes = seeded.getNodes();
+      expect(nodes).toHaveLength(1);
+      expect(nodes[0]?.message.id).toBe('msg-1');
+      expect(nodes[0]?.msgId).toBeDefined();
+      expect(nodes[0]?.headers).toBeDefined();
     });
   });
 

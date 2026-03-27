@@ -46,18 +46,6 @@ export interface CancelRequest {
 }
 
 // ---------------------------------------------------------------------------
-// Message with headers
-// ---------------------------------------------------------------------------
-
-/** A domain message paired with its Ably transport headers. Used on the read path to snapshot conversation state (e.g. for HTTP POST bodies). */
-export interface MessageWithHeaders<TMessage> {
-  /** The domain message. */
-  message: TMessage;
-  /** Ably headers associated with this message (transport metadata, domain headers). */
-  headers?: Record<string, string>;
-}
-
-// ---------------------------------------------------------------------------
 // Server transport options
 // ---------------------------------------------------------------------------
 
@@ -80,14 +68,10 @@ export interface ServerTransportOptions<TEvent, TMessage> {
 // Turn options
 // ---------------------------------------------------------------------------
 
-/** Options for addMessages — per-operation overrides for message identity and branching. */
+/** Options for addMessages — per-operation overrides for attribution. */
 export interface AddMessageOptions {
   /** The user's clientId for attribution. */
   clientId?: string;
-  /** The msg-id of the immediately preceding message in this branch. */
-  parent?: string | null;
-  /** The msg-id of the message this one replaces (creates a fork). */
-  forkOf?: string;
 }
 
 /** Result of publishing user messages via addMessages. */
@@ -176,12 +160,12 @@ export interface Turn<TEvent, TMessage> {
 
   /**
    * Publish user messages to the channel, scoped to this turn.
-   * Each message is published with its own headers (including `x-ably-msg-id`
-   * for optimistic reconciliation with the client's inserts). Per-message
-   * headers from `MessageWithHeaders` override transport-generated defaults.
+   * Each node's `msgId`, `parentId`, and `forkOf` are used for message identity
+   * and branching. The node's `headers` override transport-generated defaults
+   * (e.g. for optimistic reconciliation with the client's inserts).
    * @returns The msg-ids of all published messages, in order.
    */
-  addMessages(messages: MessageWithHeaders<TMessage>[], options?: AddMessageOptions): Promise<AddMessagesResult>;
+  addMessages(messages: ConversationNode<TMessage>[], options?: AddMessageOptions): Promise<AddMessagesResult>;
 
   /**
    * Pipe a ReadableStream through the encoder to the channel.
@@ -498,10 +482,12 @@ export interface ClientTransport<TEvent, TMessage> {
   getMessages(): TMessage[];
 
   /**
-   * Snapshot the current message list as message + headers pairs.
-   * Convenience for building the `history` body field in HTTP POSTs.
+   * Return the flattened conversation tree as full ConversationNode objects.
+   * Each node includes the domain message, msg-id, parent chain, and headers.
+   * Convenience for building the `history` body field in HTTP POSTs and
+   * for rendering messages with transport metadata.
    */
-  getMessagesWithHeaders(): MessageWithHeaders<TMessage>[];
+  getNodes(): ConversationNode<TMessage>[];
 
   /**
    * Load a page of conversation history from the channel, decoded through

@@ -2,30 +2,29 @@
 
 import { useRef, useEffect } from 'react';
 import type { UIMessage } from 'ai';
-import type { MessageWithHeaders } from '@ably/ai-transport';
+import type { ConversationNode } from '@ably/ai-transport';
 import { MessageBubble } from './message-bubble';
 
 interface MessageListProps {
-  messagesWithHeaders: MessageWithHeaders<UIMessage>[];
+  nodes: ConversationNode<UIMessage>[];
   hasNext: boolean;
   loading: boolean;
   onNext: () => void;
   onRegenerate: (messageId: string) => void;
 }
 
-export function MessageList({ messagesWithHeaders, hasNext, loading, onNext, onRegenerate }: MessageListProps) {
+export function MessageList({ nodes, hasNext, loading, onNext, onRegenerate }: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const prevLastIdRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
-    const lastId =
-      messagesWithHeaders.length > 0 ? messagesWithHeaders[messagesWithHeaders.length - 1].message.id : undefined;
+    const lastId = nodes.length > 0 ? nodes[nodes.length - 1].message.id : undefined;
     if (lastId && lastId !== prevLastIdRef.current) {
       prevLastIdRef.current = lastId;
       endRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messagesWithHeaders]);
+  }, [nodes]);
 
   const handleScroll = () => {
     const el = scrollRef.current;
@@ -53,10 +52,10 @@ export function MessageList({ messagesWithHeaders, hasNext, loading, onNext, onR
         </div>
       )}
       {loading && <div className="text-center text-xs text-zinc-600 animate-pulse">Loading history...</div>}
-      {messagesWithHeaders.length === 0 && !loading && (
+      {nodes.length === 0 && !loading && (
         <p className="text-sm text-zinc-600 text-center mt-20">Send a message to start chatting.</p>
       )}
-      {messagesWithHeaders.map(({ message, headers }) => (
+      {nodes.map(({ message, headers }) => (
         <MessageBubble
           key={message.id}
           message={message}

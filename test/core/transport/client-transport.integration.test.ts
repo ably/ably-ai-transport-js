@@ -497,6 +497,11 @@ describe('ClientTransport integration', () => {
     await turn.start();
     await turn.addMessages([{
       message: { id: 'user-hist-1', role: 'user', parts: [{ type: 'text', text: 'History question' }] },
+      msgId: crypto.randomUUID(),
+      parentId: undefined,
+      forkOf: undefined,
+      headers: {},
+      serial: undefined,
     }]);
     await turn.streamResponse(textResponseStream('asst-hist-1', 'text-hist-1', 'History answer'));
     await turn.end('complete');
@@ -589,12 +594,12 @@ describe('ClientTransport integration', () => {
   });
 
   /**
-   * Scenario: Message headers are accessible via getMessagesWithHeaders.
+   * Scenario: Conversation nodes are accessible via getNodes.
    *
    * After the client sends and the server streams, the client can
-   * retrieve transport headers (role, turn-id, msg-id) for messages.
+   * retrieve full conversation nodes with transport headers and typed fields.
    */
-  it('provides message headers from the conversation tree', async () => {
+  it('provides conversation nodes from the tree', async () => {
     const channelName = uniqueChannelName('ct-headers');
     const serverClient = ablyRealtimeClient();
     const clientClient = ablyRealtimeClient();
@@ -633,23 +638,23 @@ describe('ClientTransport integration', () => {
     await drain(clientTurn.stream);
     await waitForMessages(clientTransport, 2);
 
-    const mwh = clientTransport.getMessagesWithHeaders();
-    const userEntry = mwh.find((e) => e.message.role === 'user');
-    const asstEntry = mwh.find((e) => e.message.role === 'assistant');
+    const nodes = clientTransport.getNodes();
+    const userNode = nodes.find((n) => n.message.role === 'user');
+    const asstNode = nodes.find((n) => n.message.role === 'assistant');
 
-    expect(userEntry).toBeDefined();
-    expect(asstEntry).toBeDefined();
+    expect(userNode).toBeDefined();
+    expect(asstNode).toBeDefined();
 
-    if (userEntry) {
-      expect(userEntry.headers).toBeDefined();
-      expect(userEntry.headers?.[HEADER_ROLE]).toBe('user');
-      expect(userEntry.headers?.[HEADER_TURN_ID]).toBe(clientTurn.turnId);
-      expect(userEntry.headers?.[HEADER_MSG_ID]).toBeDefined();
+    if (userNode) {
+      expect(userNode.msgId).toBeDefined();
+      expect(userNode.headers[HEADER_ROLE]).toBe('user');
+      expect(userNode.headers[HEADER_TURN_ID]).toBe(clientTurn.turnId);
+      expect(userNode.headers[HEADER_MSG_ID]).toBeDefined();
     }
 
-    if (asstEntry) {
-      expect(asstEntry.headers).toBeDefined();
-      expect(asstEntry.headers?.[HEADER_TURN_ID]).toBe(clientTurn.turnId);
+    if (asstNode) {
+      expect(asstNode.msgId).toBeDefined();
+      expect(asstNode.headers[HEADER_TURN_ID]).toBe(clientTurn.turnId);
     }
   });
 });

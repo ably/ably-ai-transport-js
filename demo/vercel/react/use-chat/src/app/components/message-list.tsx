@@ -7,13 +7,13 @@ import { MessageBubble } from './message-bubble';
 
 interface MessageListProps {
   nodes: TreeNode<UIMessage>[];
-  hasNext: boolean;
+  hasOlder: boolean;
   loading: boolean;
-  onNext: () => void;
+  onLoadOlder: () => void;
   onRegenerate: (messageId: string) => void;
 }
 
-export function MessageList({ nodes, hasNext, loading, onNext, onRegenerate }: MessageListProps) {
+export function MessageList({ nodes, hasOlder, loading, onLoadOlder, onRegenerate }: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const prevLastIdRef = useRef<string | undefined>(undefined);
@@ -28,9 +28,9 @@ export function MessageList({ nodes, hasNext, loading, onNext, onRegenerate }: M
 
   const handleScroll = () => {
     const el = scrollRef.current;
-    if (!el || !hasNext || loading) return;
+    if (!el || !hasOlder || loading) return;
     if (el.scrollTop < 60) {
-      onNext();
+      onLoadOlder();
     }
   };
 
@@ -40,10 +40,10 @@ export function MessageList({ nodes, hasNext, loading, onNext, onRegenerate }: M
       onScroll={handleScroll}
       className="flex-1 overflow-y-auto px-4 py-4 space-y-4"
     >
-      {hasNext && (
+      {hasOlder && (
         <div className="text-center">
           <button
-            onClick={onNext}
+            onClick={onLoadOlder}
             disabled={loading}
             className="text-xs text-zinc-500 hover:text-zinc-300 disabled:opacity-40 transition-colors"
           >

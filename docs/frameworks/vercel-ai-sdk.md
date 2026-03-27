@@ -46,22 +46,22 @@ Use the generic React hooks directly. You manage message state through the trans
 ```typescript
 import {
   useClientTransport,
+  useView,
   useTree,
   useSend,
   useRegenerate,
   useEdit,
   useActiveTurns,
-  useHistory,
 } from '@ably/ai-transport/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 
 const transport = useClientTransport({ channel, codec: UIMessageCodec, clientId });
+const { nodes, hasOlder, loading, loadOlder } = useView(transport, { limit: 30 });
 const tree = useTree(transport);
 const send = useSend(transport);
 const regenerate = useRegenerate(transport);
 const edit = useEdit(transport);
 const activeTurns = useActiveTurns(transport);
-const history = useHistory(transport, { limit: 30 });
 ```
 
 This path gives you conversation branching UI (sibling navigation), per-operation hooks, and direct access to the tree state.
@@ -72,7 +72,7 @@ This path gives you conversation branching UI (sibling navigation), per-operatio
 |---|---|
 | You want the simplest integration | You need conversation branching UI |
 | `useChat`'s message state management is sufficient | You need custom message construction |
-| You don't need edit or branch navigation | You need `edit()` or `tree.selectSibling()` |
+| You don't need edit or branch navigation | You need `edit()` or `tree.select()` |
 | You're already using `useChat` and adding AI Transport | You're building a custom chat UI from scratch |
 
 ## Entry points

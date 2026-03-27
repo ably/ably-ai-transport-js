@@ -57,7 +57,7 @@ The returned `ActiveTurn` gives you a decoded event stream and a cancel handle. 
 All clients on the channel receive turn lifecycle events, regardless of who started the turn:
 
 ```typescript
-transport.on('turn', (event) => {
+transport.tree.on('turn', (event) => {
   if (event.type === 'x-ably-turn-start') {
     // A turn started: event.turnId, event.clientId
   }
@@ -75,7 +75,7 @@ The client transport tracks all active turns across all clients:
 
 ```typescript
 // Returns Map<clientId, Set<turnId>>
-const activeTurns = transport.getActiveTurnIds();
+const activeTurns = transport.tree.getActiveTurnIds();
 ```
 
 In React, `useActiveTurns` provides this as reactive state:

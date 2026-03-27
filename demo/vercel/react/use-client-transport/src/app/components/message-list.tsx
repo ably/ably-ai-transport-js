@@ -2,24 +2,24 @@
 
 import { useRef, useEffect } from 'react';
 import type { UIMessage } from 'ai';
+import type { TreeNode } from '@ably/ai-transport';
 import type { TreeHandle } from '@ably/ai-transport/react';
 import { MessageBubble } from './message-bubble';
 
 interface MessageListProps {
+  nodes: TreeNode<UIMessage>[];
   tree: TreeHandle<UIMessage>;
-  hasNext: boolean;
+  hasOlder: boolean;
   loading: boolean;
-  onNext: () => void;
+  onLoadOlder: () => void;
   onRegenerate: (messageId: string) => void;
   onEdit: (messageId: string, newText: string) => void;
 }
 
-export function MessageList({ tree, hasNext, loading, onNext, onRegenerate, onEdit }: MessageListProps) {
+export function MessageList({ nodes, tree, hasOlder, loading, onLoadOlder, onRegenerate, onEdit }: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const prevLastIdRef = useRef<string | undefined>(undefined);
-
-  const { nodes } = tree;
 
   // Auto-scroll to bottom only when the last message changes
   useEffect(() => {
@@ -32,9 +32,9 @@ export function MessageList({ tree, hasNext, loading, onNext, onRegenerate, onEd
 
   const handleScroll = () => {
     const el = scrollRef.current;
-    if (!el || !hasNext || loading) return;
+    if (!el || !hasOlder || loading) return;
     if (el.scrollTop < 60) {
-      onNext();
+      onLoadOlder();
     }
   };
 
@@ -44,10 +44,10 @@ export function MessageList({ tree, hasNext, loading, onNext, onRegenerate, onEd
       onScroll={handleScroll}
       className="flex-1 overflow-y-auto px-4 py-4 space-y-4"
     >
-      {hasNext && (
+      {hasOlder && (
         <div className="text-center">
           <button
-            onClick={onNext}
+            onClick={onLoadOlder}
             disabled={loading}
             className="text-xs text-zinc-500 hover:text-zinc-300 disabled:opacity-40 transition-colors"
           >
@@ -67,7 +67,7 @@ export function MessageList({ tree, hasNext, loading, onNext, onRegenerate, onEd
           hasSiblings={tree.hasSiblings(node.msgId)}
           siblings={tree.getSiblings(node.msgId)}
           selectedIndex={tree.getSelectedIndex(node.msgId)}
-          onSelectSibling={(index) => tree.selectSibling(node.msgId, index)}
+          onSelectSibling={(index) => tree.select(node.msgId, index)}
           onRegenerate={node.message.role === 'assistant' ? () => onRegenerate(node.msgId) : undefined}
           onEdit={node.message.role === 'user' ? (text) => onEdit(node.msgId, text) : undefined}
         />

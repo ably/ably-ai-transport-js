@@ -144,7 +144,7 @@ export async function POST(req: Request) {
 
 import { useChat } from '@ai-sdk/react';
 import { useChannel } from 'ably/react';
-import { useClientTransport, useActiveTurns, useHistory } from '@ably/ai-transport/react';
+import { useClientTransport, useActiveTurns, useView } from '@ably/ai-transport/react';
 import { useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 
@@ -162,7 +162,7 @@ function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
   useMessageSync(transport, setMessages);
 
   const activeTurns = useActiveTurns(transport);
-  const history = useHistory(transport, { limit: 30 });
+  const view = useView(transport, { limit: 30 });
 
   return (
     <div>
@@ -283,13 +283,12 @@ transport.close();
 | Hook                  | Entry point     | Description                                         |
 | --------------------- | --------------- | --------------------------------------------------- |
 | `useClientTransport`  | `/react`        | Create and memoize a client transport instance      |
-| `useMessages`         | `/react`        | Subscribe to decoded messages                       |
+| `useView`             | `/react`        | Subscribe to messages with history loading          |
 | `useSend`             | `/react`        | Stable send callback                                |
 | `useRegenerate`       | `/react`        | Regenerate a message (fork the conversation)        |
 | `useEdit`             | `/react`        | Edit a message and regenerate from that point       |
 | `useActiveTurns`      | `/react`        | Track active turns by client ID                     |
-| `useHistory`          | `/react`        | Paginate through conversation history               |
-| `useTree` | `/react`        | Navigate branches in a forked conversation          |
+| `useTree`             | `/react`        | Navigate branches in a forked conversation          |
 | `useAblyMessages`     | `/react`        | Access raw Ably messages                            |
 | `useChatTransport`    | `/vercel/react` | Wrap transport for Vercel's `useChat`               |
 | `useMessageSync`      | `/vercel/react` | Sync transport state with `useChat`'s `setMessages` |
@@ -303,7 +302,7 @@ transport.close();
 Two mechanisms cover different failure modes:
 
 - **Network blips** - Ably's connection protocol automatically reconnects and delivers any messages published while the client was disconnected. No application code required.
-- **Resumable streams** - A client that joins or rejoins a channel mid-response (after a page refresh, on a new device, or as a second participant) receives the in-progress stream immediately on subscribing. Load previous conversation history from the channel via `history()`, or from your own database.
+- **Resumable streams** - A client that joins or rejoins a channel mid-response (after a page refresh, on a new device, or as a second participant) receives the in-progress stream immediately on subscribing. Load previous conversation history from the channel via `view.loadOlder()`, or from your own database.
 
 ### Cancellation
 
@@ -334,7 +333,7 @@ const turn = await transport.regenerate(assistantMessageId);
 const turn = await transport.edit(userMessageId, [newMessage]);
 
 // Navigate branches
-const tree = transport.getTree();
+const tree = transport.tree;
 const siblings = tree.getSiblings(messageId);
 tree.select(messageId, 1); // Switch to second branch
 ```
@@ -344,22 +343,22 @@ tree.select(messageId, 1); // Switch to second branch
 Load previous conversation state when a client joins or returns to a session.
 
 ```typescript
-const page = await transport.history({ limit: 50 });
-console.log(page.items); // Decoded messages
+const view = transport.view;
+await view.loadOlder(50);
+// view.flattenNodes() returns the messages loaded so far
 
-if (page.hasNext()) {
-  const older = await page.next();
-}
+// Load more older messages
+await view.loadOlder(50);
 ```
 
 ### Events
 
 ```typescript
-transport.on('message', () => {
-  console.log(transport.getMessages());
+transport.view.on('update', () => {
+  console.log(transport.view.flattenNodes().map(n => n.message));
 });
 
-transport.on('turn', (event) => {
+transport.tree.on('turn', (event) => {
   console.log(event.turnId, event.type); // 'x-ably-turn-start' | 'x-ably-turn-end'
 });
 

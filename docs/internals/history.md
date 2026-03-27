@@ -34,10 +34,10 @@ After all wire messages have been decoded, the transport reads `completedMessage
 The `limit` option controls how many completed domain messages appear in each page of results:
 
 ```typescript
-const page = await transport.history({ limit: 10 });
-// page.items - up to 10 completed messages, chronological order
-// page.hasNext() - more history available
-// page.next() - fetch the next page
+await transport.view.loadOlder(10);
+// view.flattenNodes() returns up to 10 completed messages
+// view.hasOlder - more history available
+// view.loadOlder(10) - load more older messages
 ```
 
 ### Wire limit multiplier

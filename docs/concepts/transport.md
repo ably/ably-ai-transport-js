@@ -67,23 +67,23 @@ const transport = createClientTransport({ channel, clientId });
 const turn = await transport.send(userMessage);
 
 // Subscribe to accumulated messages - updates on every token
-transport.on('message', () => {
-  const messages = transport.getMessages();
+transport.view.on('update', () => {
+  const messages = transport.view.flattenNodes().map(n => n.message);
   // the last assistant message grows as tokens stream in
 });
 
 // The turn also exposes a ReadableStream<TEvent> for framework adapters
-// (e.g. Vercel's useChat), but most apps use getMessages() instead
+// (e.g. Vercel's useChat), but most apps use the view instead
 ```
 
 In React, the hooks handle subscriptions and state management:
 
 ```typescript
-import { useClientTransport, useMessages, useSend } from '@ably/ai-transport/react';
+import { useClientTransport, useView, useSend } from '@ably/ai-transport/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 
 const transport = useClientTransport({ channel, codec: UIMessageCodec, clientId });
-const messages = useMessages(transport);
+const { nodes } = useView(transport);
 const send = useSend(transport);
 ```
 

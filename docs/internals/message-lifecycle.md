@@ -8,7 +8,7 @@ The entire generic layer is parameterized by two types: `TEvent` and `TMessage`.
 
 **`TEvent`** is a streaming fragment - an individually meaningless piece of a message. For the Vercel codec, this is `UIMessageChunk`: a text delta, a tool-input start signal, a finish event. Events are the unit of real-time streaming. The [stream router](transport-components.md) delivers them one-by-one to own-turn consumers; the [accumulator](codec-interface.md#accumulator) assembles them into complete messages.
 
-**`TMessage`** is a complete domain message - a fully-formed object with all its parts, metadata, and role. For the Vercel codec, this is `UIMessage`. Messages are the unit of state: what the [conversation tree](conversation-tree.md) stores, what `getMessages()` returns, what React hooks render.
+**`TMessage`** is a complete domain message - a fully-formed object with all its parts, metadata, and role. For the Vercel codec, this is `UIMessage`. Messages are the unit of state: what the [conversation tree](conversation-tree.md) stores, what the view's `flattenNodes()` returns, what React hooks render.
 
 The codec defines how these types map to and from the wire:
 
@@ -36,9 +36,9 @@ flowchart TD
     Accumulator -- "snapshot latest message<br/>on each event" --> Tree["Tree .upsert()"]
     Discrete --> Tree
 
-    Tree --> Flatten[.flatten]
-    Flatten --> GetMessages[getMessages]
-    GetMessages --> Hooks["React hooks<br/>(useState + 'message' event)"]
+    Tree --> View[View]
+    View --> Flatten[.flattenNodes]
+    Flatten --> Hooks["React hooks<br/>(useState + 'update' event)"]
     Hooks --> UI[UI renders]
     StreamRouter --> Adapters["framework adapters<br/>(e.g. useChat)"]
 ```
@@ -47,7 +47,7 @@ flowchart TD
 
 When the client transport receives messages from the channel, it routes them based on who started the turn:
 
-- **Own turn** - a turn this client initiated (via `send()`, `regenerate()`, `edit()`). Decoded events go to **both** the [stream router](transport-components.md) and a per-turn [accumulator](codec-interface.md#accumulator). The stream router enqueues events on a `ReadableStream` that framework adapters can consume (see [why the stream exists](#why-own-turns-have-a-stream)). The accumulator simultaneously builds complete `TMessage` objects and upserts them into the tree on every event - so `getMessages()` always reflects the latest partial state, even while streaming.
+- **Own turn** - a turn this client initiated (via `send()`, `regenerate()`, `edit()`). Decoded events go to **both** the [stream router](transport-components.md) and a per-turn [accumulator](codec-interface.md#accumulator). The stream router enqueues events on a `ReadableStream` that framework adapters can consume (see [why the stream exists](#why-own-turns-have-a-stream)). The accumulator simultaneously builds complete `TMessage` objects and upserts them into the tree on every event - so the view always reflects the latest partial state, even while streaming.
 - **Observer turn** - a turn started by another client. Decoded events go to the accumulator only. There is no stream because no caller initiated the turn on this client - there is nobody holding a stream handle.
 
 Both paths use the same `_accumulateAndEmit()` method. The only difference is that own turns additionally route through the stream router.
@@ -68,7 +68,7 @@ This happens on **every event** - the tree always has the latest partial state. 
 
 ### Own turns: stream + accumulator → tree
 
-For own turns, events flow to **both** the stream router and the accumulator. The stream router enqueues each event on the turn's `ReadableStream<TEvent>`. Simultaneously, the same event is fed to the accumulator, which builds the in-progress `TMessage` and upserts it into the tree - identical to the observer path. This means `getMessages()` updates on every event regardless of who started the turn.
+For own turns, events flow to **both** the stream router and the accumulator. The stream router enqueues each event on the turn's `ReadableStream<TEvent>`. Simultaneously, the same event is fed to the accumulator, which builds the in-progress `TMessage` and upserts it into the tree - identical to the observer path. This means the view updates on every event regardless of who started the turn.
 
 Discrete messages (e.g. user messages published by `send()`) are inserted into the tree directly.
 
@@ -76,7 +76,7 @@ Discrete messages (e.g. user messages published by `send()`) are inserted into t
 
 The `ReadableStream<TEvent>` returned from `send()` exists primarily as an **integration seam for framework adapters**. Vercel's `useChat`, for example, expects a `ReadableStream` as its transport contract - the stream is how AI Transport plugs into the Vercel AI SDK's rendering pipeline.
 
-For most application code, the accumulated messages via `getMessages()` / `on('message')` are the right consumption path. The accumulator updates the tree on every event, so it provides the same granularity as the stream - you see each partial message as tokens arrive. The stream offers no timing advantage.
+For most application code, the accumulated messages via `view.flattenNodes()` / `view.on('update')` are the right consumption path. The accumulator updates the tree on every event, so it provides the same granularity as the stream - you see each partial message as tokens arrive. The stream offers no timing advantage.
 
 Cases where direct stream consumption adds value are narrow: non-rendering side effects that need per-event granularity (e.g. playing a sound per token, logging individual event types), or custom accumulation logic that differs from the codec's accumulator.
 
@@ -88,22 +88,22 @@ When the decoder produces a `{ kind: 'message' }` output (e.g. a user message de
 
 ## How messages reach the UI
 
-The [conversation tree's](conversation-tree.md#flatten-producing-the-linear-path) `flattenNodes()` method is the sole path from tree state to a message array. It walks the sorted node list, checks parent reachability and sibling selection, and returns `TreeNode<TMessage>[]` for the currently selected conversation path. `ClientTransport.getMessages()` extracts the `.message` from each node to produce the public `TMessage[]`.
+The [conversation tree's](conversation-tree.md#flatten-producing-the-linear-path) `flattenNodes()` method is the sole path from tree state to a message array. It walks the sorted node list, checks parent reachability and sibling selection, and returns `TreeNode<TMessage>[]` for the currently selected conversation path.
 
-`ClientTransport.getMessages()` calls `flattenNodes()` and filters out any messages withheld by the history pagination buffer. This is the public API that all downstream consumers call.
+The `View` wraps the tree and provides an `'update'` event plus `flattenNodes()` that accounts for history pagination (withholding older messages until released by `loadOlder()`). This is the public API that all downstream consumers use.
 
 React hooks follow an identical pattern:
 
 ```typescript
-const [messages, setMessages] = useState(() => transport.getMessages());
+const [nodes, setNodes] = useState(() => transport.view.flattenNodes());
 useEffect(() => {
-  const update = () => setMessages(transport.getMessages());
-  transport.on('message', update);
-  return () => transport.off('message', update);
+  const update = () => setNodes(transport.view.flattenNodes());
+  transport.view.on('update', update);
+  return () => transport.view.off('update', update);
 }, [transport]);
 ```
 
-Every `'message'` event triggers a full `getMessages()` call, which rebuilds the array from the tree. The hooks that follow this pattern: `useMessages()`, `useTree()`, `useMessageSync()`.
+Every `'update'` event triggers a full `flattenNodes()` call, which rebuilds the array from the tree. The hooks that follow this pattern: `useView()`, `useMessageSync()`.
 
 ## History hydration path
 
@@ -113,7 +113,7 @@ Every `'message'` event triggers a full `getMessages()` call, which rebuilds the
 2. They are reversed to chronological order and decoded through a fresh decoder
 3. Decoded outputs are grouped by [`x-ably-turn-id`](wire-protocol.md#transport-headers-x-ably) - each turn gets its own accumulator
 4. `completedMessages` (not `messages`) is read from each accumulator - only fully terminated messages appear in history results
-5. The resulting `PaginatedMessages` are returned to the transport, which upserts each message into the tree via `_processHistoryPage()`
+5. The resulting messages are returned to the view, which upserts each message into the tree
 
 Each turn needs its own accumulator because events from interleaved concurrent turns would corrupt each other's message assembly - a text-delta from turn A would be accumulated into turn B's message.
 
@@ -123,13 +123,13 @@ The tree is a DAG with branch selection state. The "current conversation" depend
 
 This is a deliberate tradeoff: no cache invalidation complexity, at the cost of repeated traversals. Since message counts are conversation-sized (tens to low hundreds), this is cheap.
 
-All consumers go through `getMessages()` → `flattenNodes()`:
+All consumers go through `view.flattenNodes()`:
 
-| Consumer                                  | When it calls `getMessages()`                     |
+| Consumer                                  | When it calls `flattenNodes()`                    |
 | ----------------------------------------- | ------------------------------------------------- |
-| `useMessages()` / `useTree()` | On mount and every `'message'` event              |
-| `useMessageSync()` (Vercel)               | On every `'message'` event                        |
+| `useView()`                               | On mount and every `'update'` event               |
+| `useMessageSync()` (Vercel)               | On every `'update'` event                         |
 | `send()` / `regenerate()`                 | To build the HTTP POST body's message history     |
-| `history()`                               | To snapshot the current tree state for pagination |
+| `view.loadOlder()`                        | To snapshot the current tree state for pagination |
 
 See [Conversation tree](conversation-tree.md) for how `flattenNodes()` works. See [Codec interface](codec-interface.md#accumulator) for the accumulator's role. See [History hydration](history.md) for the history decode pipeline.

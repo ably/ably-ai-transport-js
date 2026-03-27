@@ -55,10 +55,10 @@ await turn.end(reason);
 On the client, tool calls appear as parts of the assistant message. No special handling is needed - they're decoded by the codec and included in the message's `parts` array:
 
 ```typescript
-// Using useMessages or useTree
-const messages = useMessages(transport);
+// Using useView or useTree
+const { nodes } = useView(transport);
 
-messages.forEach((msg) => {
+nodes.map(n => n.message).forEach((msg) => {
   msg.parts.forEach((part) => {
     if (part.type === 'tool-invocation') {
       // part.toolInvocation.toolName - which tool was called
@@ -79,4 +79,4 @@ Tool invocation state progresses as chunks arrive:
 
 Tool call messages are persisted on the channel as with any other message. A client loading history sees the full tool call sequence - inputs, outputs, and any follow-up text. The messages contain the complete accumulated tool input JSON, so late-joining clients don't need to replay individual deltas.
 
-See [Token streaming](streaming.md) for how message encoding works. See [History](history.md) for loading tool call history on page refresh. See [React hooks reference](../reference/react-hooks.md) for the `useMessages` API.
+See [Token streaming](streaming.md) for how message encoding works. See [History](history.md) for loading tool call history on page refresh. See [React hooks reference](../reference/react-hooks.md) for the `useView` API.

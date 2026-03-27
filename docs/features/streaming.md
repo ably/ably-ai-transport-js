@@ -61,23 +61,23 @@ transport.close();
 
 ## Client
 
-On the client, every streaming event is accumulated into the conversation tree as it arrives. The transport updates `getMessages()` on every event, so the last assistant message grows token by token:
+On the client, every streaming event is accumulated into the conversation tree as it arrives. The view updates on every event, so the last assistant message grows token by token:
 
 ```typescript
 const turn = await transport.send(userMessage);
 
 // Subscribe to accumulated messages - updates on every token
-const unsubscribe = transport.on('message', () => {
-  const messages = transport.getMessages();
+const unsubscribe = transport.view.on('update', () => {
+  const messages = transport.view.flattenNodes().map(n => n.message);
   // the last assistant message grows as tokens arrive
 });
 ```
 
-This is the primary consumption path. In React, the `useMessages()` hook handles the subscription automatically.
+This is the primary consumption path. In React, the `useView()` hook handles the subscription automatically.
 
 ### The event stream
 
-`send()` also returns a `ReadableStream<TEvent>` on the `ActiveTurn`. This exists as an integration seam for framework adapters - Vercel's `useChat` expects a `ReadableStream` as its transport contract. Most application code should use `getMessages()` instead, since the accumulator provides the same per-token granularity.
+`send()` also returns a `ReadableStream<TEvent>` on the `ActiveTurn`. This exists as an integration seam for framework adapters - Vercel's `useChat` expects a `ReadableStream` as its transport contract. Most application code should use the view instead, since the accumulator provides the same per-token granularity.
 
 ```typescript
 // Framework adapter usage - most apps won't consume this directly
@@ -90,7 +90,7 @@ while (true) {
 }
 ```
 
-For turns started by other clients (observer turns), there is no stream p events are accumulated into messages and the tree updates via `on('message')`. See [Message lifecycle](../internals/message-lifecycle.md#own-turns-vs-observer-turns) for the full routing picture.
+For turns started by other clients (observer turns), there is no stream - events are accumulated into messages and the tree updates via `tree.on('ably-message')`. See [Message lifecycle](../internals/message-lifecycle.md#own-turns-vs-observer-turns) for the full routing picture.
 
 ## Recovery
 
@@ -113,4 +113,4 @@ The transport streams whatever events the codec produces. For the Vercel AI SDK 
 
 Multiple content streams can be active within a single turn (e.g., reasoning + text, or multiple tool calls). Each gets its own message with its own stream ID.
 
-See [React hooks reference](../reference/react-hooks.md) for the full `useMessages` and `useClientTransport` API. See [Cancel](cancel.md) for how streams are aborted. For the internal mechanics of message encoding, decoding, and recovery, see the [Encoder](../internals/encoder.md), [Decoder](../internals/decoder.md), and [Wire protocol](../internals/wire-protocol.md) internals pages.
+See [React hooks reference](../reference/react-hooks.md) for the full `useView` and `useClientTransport` API. See [Cancel](cancel.md) for how streams are aborted. For the internal mechanics of message encoding, decoding, and recovery, see the [Encoder](../internals/encoder.md), [Decoder](../internals/decoder.md), and [Wire protocol](../internals/wire-protocol.md) internals pages.

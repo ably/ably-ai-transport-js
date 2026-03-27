@@ -68,14 +68,14 @@ import { useTree } from '@ably/ai-transport/react';
 
 const tree = useTree(transport);
 
-// tree.messages - linear message list for the current branch
 // tree.hasSiblings(nodeId) - does this message have alternatives?
 // tree.getSiblings(nodeId) - all alternatives at this fork point
 // tree.getSelectedIndex(nodeId) - which sibling is currently selected
-// tree.selectSibling(nodeId, index) - switch to a different sibling
+// tree.select(nodeId, index) - switch to a different sibling
+// tree.getNode(nodeId) - look up a node by msgId
 //
-// nodeId is the msgId on each TreeNode — iterate getNodes():
-//   transport.getNodes().map((node) => {
+// nodeId is the msgId on each TreeNode — iterate tree.flattenNodes():
+//   transport.tree.flattenNodes().map((node) => {
 //     const nodeId = node.msgId;
 //   });
 ```
@@ -86,14 +86,14 @@ Build a sibling navigator (where `nodeId` is the resolved `x-ably-msg-id` for th
 {tree.hasSiblings(nodeId) && (
   <div>
     <button
-      onClick={() => tree.selectSibling(nodeId, tree.getSelectedIndex(nodeId) - 1)}
+      onClick={() => tree.select(nodeId, tree.getSelectedIndex(nodeId) - 1)}
       disabled={tree.getSelectedIndex(nodeId) === 0}
     >
       ←
     </button>
     <span>{tree.getSelectedIndex(nodeId) + 1} / {tree.getSiblings(nodeId).length}</span>
     <button
-      onClick={() => tree.selectSibling(nodeId, tree.getSelectedIndex(nodeId) + 1)}
+      onClick={() => tree.select(nodeId, tree.getSelectedIndex(nodeId) + 1)}
       disabled={tree.getSelectedIndex(nodeId) === tree.getSiblings(nodeId).length - 1}
     >
       →
@@ -102,7 +102,7 @@ Build a sibling navigator (where `nodeId` is the resolved `x-ably-msg-id` for th
 )}
 ```
 
-Calling `selectSibling` updates the tree's active branch. `tree.messages` re-renders with the selected path.
+Calling `select` updates the tree's active branch. The view re-renders with the selected path.
 
 ## Server handling
 

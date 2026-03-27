@@ -46,7 +46,7 @@ The client transport tracks all active turns across all clients on the channel:
 
 ```typescript
 // Returns Map<clientId, Set<turnId>>
-const activeTurns = transport.getActiveTurnIds();
+const activeTurns = transport.tree.getActiveTurnIds();
 ```
 
 In React:
@@ -67,7 +67,7 @@ const userIsStreaming = userTurns !== undefined && userTurns.size > 0;
 Turn lifecycle events are visible to all clients:
 
 ```typescript
-transport.on('turn', (event) => {
+transport.tree.on('turn', (event) => {
   if (event.type === 'x-ably-turn-start') {
     console.log(`${event.clientId} started turn ${event.turnId}`);
   }

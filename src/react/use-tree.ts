@@ -1,76 +1,55 @@
 /**
- * useTree — reactive branch navigation for a ClientTransport.
+ * useTree — stable branch navigation callbacks for a ClientTransport's tree.
  *
- * Subscribes to the transport's "message" notification and provides
- * branch navigation primitives (getSiblings, selectSibling, hasSiblings)
- * backed by the transport's Tree.
- *
- * Branch selection state is local to the hook instance — each component
- * (or tab) can navigate branches independently.
+ * Returns a {@link TreeHandle} with methods to inspect and navigate branches.
+ * These are thin `useCallback` wrappers around `transport.tree` — no local
+ * state or subscriptions. The visible node list comes from {@link useView}.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback } from 'react';
 
 import type { ClientTransport, TreeNode } from '../core/transport/types.js';
 
 /** Handle for navigating the branching conversation tree. */
 export interface TreeHandle<TMessage> {
-  /** Linear message list for the currently selected branch. */
-  messages: TMessage[];
-  /** Full conversation nodes for the currently selected branch, including msgId and headers. */
-  nodes: TreeNode<TMessage>[];
-  /** Get all sibling messages at a fork point. */
+  /** Get all sibling messages at a fork point, ordered chronologically by serial. */
   getSiblings: (msgId: string) => TMessage[];
-  /** Whether a message has siblings (should show navigation arrows). */
+  /** Whether a message has sibling alternatives (i.e., show navigation arrows). */
   hasSiblings: (msgId: string) => boolean;
-  /** Index of the currently selected sibling. */
+  /** Index of the currently selected sibling at a fork point. */
   getSelectedIndex: (msgId: string) => number;
-  /** Navigate to a sibling. Triggers re-render with updated messages. */
-  selectSibling: (msgId: string, index: number) => void;
+  /** Navigate to a sibling by index. Triggers a view update with the new branch. */
+  select: (msgId: string, index: number) => void;
+  /** Get a node by msgId, or undefined if not found. */
+  getNode: (msgId: string) => TreeNode<TMessage> | undefined;
 }
 
 /**
- * Subscribe to transport message updates and provide branch navigation primitives.
+ * Provide stable branch navigation callbacks backed by the transport's tree.
  * @param transport - The client transport whose conversation tree to navigate.
- * @returns A {@link TreeHandle} with the current messages and navigation methods.
+ * @returns A {@link TreeHandle} with navigation methods.
  */
 export const useTree = <TEvent, TMessage>(transport: ClientTransport<TEvent, TMessage>): TreeHandle<TMessage> => {
-  const [messages, setMessages] = useState<TMessage[]>(() => transport.getMessages());
-  const [nodes, setNodes] = useState<TreeNode<TMessage>[]>(() => transport.getNodes());
+  const getSiblings = useCallback((msgId: string) => transport.tree.getSiblings(msgId), [transport]);
 
-  useEffect(() => {
-    setMessages(transport.getMessages());
-    setNodes(transport.getNodes());
+  const hasSiblings = useCallback((msgId: string) => transport.tree.hasSiblings(msgId), [transport]);
 
-    const unsub = transport.on('message', () => {
-      setMessages(transport.getMessages());
-      setNodes(transport.getNodes());
-    });
-    return unsub;
-  }, [transport]);
+  const getSelectedIndex = useCallback((msgId: string) => transport.tree.getSelectedIndex(msgId), [transport]);
 
-  const getSiblings = useCallback((msgId: string) => transport.getTree().getSiblings(msgId), [transport]);
-
-  const hasSiblings = useCallback((msgId: string) => transport.getTree().hasSiblings(msgId), [transport]);
-
-  const getSelectedIndex = useCallback((msgId: string) => transport.getTree().getSelectedIndex(msgId), [transport]);
-
-  const selectSibling = useCallback(
+  const select = useCallback(
     (msgId: string, index: number) => {
-      transport.getTree().select(msgId, index);
-      // flattenNodes() returns a new array after select(), triggering re-render.
-      setMessages(transport.getMessages());
-      setNodes(transport.getNodes());
+      transport.tree.select(msgId, index);
     },
     [transport],
   );
 
+  const getNode = useCallback((msgId: string) => transport.tree.getNode(msgId), [transport]);
+
   return {
-    messages,
-    nodes,
     getSiblings,
     hasSiblings,
     getSelectedIndex,
-    selectSibling,
+    select,
+    getNode,
   };
 };

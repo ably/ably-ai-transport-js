@@ -44,8 +44,8 @@ describe('Vercel createClientTransport', () => {
     const channel = createMockChannel();
     const transport = createClientTransport({ channel });
 
-    // getMessages works without error — proves the codec is wired up
-    expect(transport.getMessages()).toEqual([]);
+    // view.flattenNodes works without error — proves the codec is wired up
+    expect(transport.view.flattenNodes()).toEqual([]);
 
     await transport.close();
   });

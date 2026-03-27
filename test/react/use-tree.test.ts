@@ -1,33 +1,12 @@
 // @vitest-environment jsdom
 
-import { act,renderHook } from '@testing-library/react';
+import { renderHook } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { useTree } from '../../src/react/use-tree.js';
 import { createMockTransport } from './helper/mock-transport.js';
 
 describe('useTree', () => {
-  it('returns initial messages from the transport', () => {
-    const mock = createMockTransport(['msg-1', 'msg-2']);
-    mock.getMessages.mockReturnValue(['msg-1', 'msg-2']);
-
-    const { result } = renderHook(() => useTree(mock.transport));
-
-    expect(result.current.messages).toEqual(['msg-1', 'msg-2']);
-  });
-
-  it('updates messages on message event', () => {
-    const mock = createMockTransport([]);
-    const { result } = renderHook(() => useTree(mock.transport));
-
-    mock.getMessages.mockReturnValue(['new-msg']);
-    act(() => {
-      mock.emit('message');
-    });
-
-    expect(result.current.messages).toEqual(['new-msg']);
-  });
-
   it('delegates getSiblings to tree', () => {
     const mock = createMockTransport([]);
     (mock.tree.getSiblings as ReturnType<typeof vi.fn>).mockReturnValue(['a', 'b']);
@@ -57,18 +36,14 @@ describe('useTree', () => {
     expect(result.current.getSelectedIndex('msg-1')).toBe(2);
   });
 
-  it('selectSibling calls tree.select and updates messages', () => {
+  it('delegates select to tree.select', () => {
     const mock = createMockTransport([]);
-    mock.getMessages.mockReturnValue(['after-select']);
 
     const { result } = renderHook(() => useTree(mock.transport));
 
-    act(() => {
-      result.current.selectSibling('msg-1', 1);
-    });
+    result.current.select('msg-1', 1);
 
     // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
     expect(mock.tree.select).toHaveBeenCalledWith('msg-1', 1);
-    expect(result.current.messages).toEqual(['after-select']);
   });
 });

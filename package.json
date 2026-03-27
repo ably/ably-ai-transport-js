@@ -11,26 +11,26 @@
   "sideEffects": false,
   "exports": {
     ".": {
-      "react-native": "./dist/ably-ai-transport.umd.cjs",
       "types": "./dist/index.d.ts",
+      "react-native": "./dist/ably-ai-transport.umd.cjs",
       "import": "./dist/ably-ai-transport.js",
       "require": "./dist/ably-ai-transport.umd.cjs"
     },
     "./react": {
-      "react-native": "./dist/react/ably-ai-transport-react.umd.cjs",
       "types": "./dist/react/index.d.ts",
+      "react-native": "./dist/react/ably-ai-transport-react.umd.cjs",
       "import": "./dist/react/ably-ai-transport-react.js",
       "require": "./dist/react/ably-ai-transport-react.umd.cjs"
     },
     "./vercel": {
-      "react-native": "./dist/vercel/ably-ai-transport-vercel.umd.cjs",
       "types": "./dist/vercel/index.d.ts",
+      "react-native": "./dist/vercel/ably-ai-transport-vercel.umd.cjs",
       "import": "./dist/vercel/ably-ai-transport-vercel.js",
       "require": "./dist/vercel/ably-ai-transport-vercel.umd.cjs"
     },
     "./vercel/react": {
-      "react-native": "./dist/vercel/react/ably-ai-transport-vercel-react.umd.cjs",
       "types": "./dist/vercel/react/index.d.ts",
+      "react-native": "./dist/vercel/react/ably-ai-transport-vercel-react.umd.cjs",
       "import": "./dist/vercel/react/ably-ai-transport-vercel-react.js",
       "require": "./dist/vercel/react/ably-ai-transport-vercel-react.umd.cjs"
     },

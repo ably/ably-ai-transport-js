@@ -11,12 +11,14 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-import type { ClientTransport } from '../core/transport/types.js';
+import type { ClientTransport, ConversationNode } from '../core/transport/types.js';
 
 /** Handle for navigating the branching conversation tree. */
 export interface ConversationTreeHandle<TMessage> {
   /** Linear message list for the currently selected branch. */
   messages: TMessage[];
+  /** Full conversation nodes for the currently selected branch, including msgId and headers. */
+  nodes: ConversationNode<TMessage>[];
   /** Get all sibling messages at a fork point. */
   getSiblings: (msgId: string) => TMessage[];
   /** Whether a message has siblings (should show navigation arrows). */
@@ -36,12 +38,15 @@ export const useConversationTree = <TEvent, TMessage>(
   transport: ClientTransport<TEvent, TMessage>,
 ): ConversationTreeHandle<TMessage> => {
   const [messages, setMessages] = useState<TMessage[]>(() => transport.getMessages());
+  const [nodes, setNodes] = useState<ConversationNode<TMessage>[]>(() => transport.getNodes());
 
   useEffect(() => {
     setMessages(transport.getMessages());
+    setNodes(transport.getNodes());
 
     const unsub = transport.on('message', () => {
       setMessages(transport.getMessages());
+      setNodes(transport.getNodes());
     });
     return unsub;
   }, [transport]);
@@ -55,14 +60,16 @@ export const useConversationTree = <TEvent, TMessage>(
   const selectSibling = useCallback(
     (msgId: string, index: number) => {
       transport.getTree().select(msgId, index);
-      // flatten() returns a new array after select(), triggering re-render.
+      // flattenNodes() returns a new array after select(), triggering re-render.
       setMessages(transport.getMessages());
+      setNodes(transport.getNodes());
     },
     [transport],
   );
 
   return {
     messages,
+    nodes,
     getSiblings,
     hasSiblings,
     getSelectedIndex,

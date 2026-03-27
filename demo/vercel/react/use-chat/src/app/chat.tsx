@@ -40,8 +40,7 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
       <div className="flex flex-1 flex-col">
         <Header clientId={clientId} />
         <MessageList
-          messages={messages}
-          transport={transport}
+          nodes={transport.getNodes()}
           hasNext={history.hasNext}
           loading={history.loading}
           onNext={() => history.next()}

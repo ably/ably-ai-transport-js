@@ -11,7 +11,6 @@ export type {
   ConversationNode,
   ConversationTree,
   LoadHistoryOptions,
-  MessageWithHeaders,
   NewTurnOptions,
   PaginatedMessages,
   SendOptions,

@@ -8,7 +8,7 @@ The client never publishes domain messages directly to the channel. Instead, it 
 
 ```
 DefaultClientTransport
-├── ConversationTree       - branching message history (flatten → getMessages)
+├── ConversationTree       - branching message history (flattenNodes → getMessages)
 ├── StreamRouter           - maps turn events to per-turn ReadableStreams
 ├── StreamDecoder          - decodes inbound Ably messages to events/messages
 ├── EventEmitter           - typed event bus for message/turn/error/ably-message
@@ -80,7 +80,7 @@ On every event, the transport calls `accumulator.processOutputs()`, clones the l
 - **`parent`** - the parent of the forked message in the tree
 - **`history`** - messages truncated before the fork point (the LLM doesn't see the response being replaced)
 
-The conversation tree handles the fork: the new message becomes a sibling of the original, and branch selection determines which path `flatten()` returns. See [Conversation tree](conversation-tree.md) for the branching mechanics.
+The conversation tree handles the fork: the new message becomes a sibling of the original, and branch selection determines which path `flattenNodes()` returns. See [Conversation tree](conversation-tree.md) for the branching mechanics.
 
 ## Cancel
 

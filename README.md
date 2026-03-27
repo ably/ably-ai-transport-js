@@ -89,13 +89,13 @@ import type { UIMessage } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
 import { createServerTransport } from '@ably/ai-transport/vercel';
-import type { MessageWithHeaders } from '@ably/ai-transport';
+import type { ConversationNode } from '@ably/ai-transport';
 
 interface ChatRequestBody {
   turnId: string;
   clientId: string;
-  messages: MessageWithHeaders<UIMessage>[];
-  history?: MessageWithHeaders<UIMessage>[];
+  messages: ConversationNode<UIMessage>[];
+  history?: ConversationNode<UIMessage>[];
   id: string;
   forkOf?: string;
   parent?: string | null;

@@ -1,14 +1,11 @@
 'use client';
 
 import { useRef, useEffect } from 'react';
-import type { UIMessage, UIMessageChunk } from 'ai';
-import type { ClientTransport } from '@ably/ai-transport';
+import type { UIMessage } from 'ai';
 import type { ConversationTreeHandle } from '@ably/ai-transport/react';
 import { MessageBubble } from './message-bubble';
 
 interface MessageListProps {
-  messages: UIMessage[];
-  transport: ClientTransport<UIMessageChunk, UIMessage>;
   tree: ConversationTreeHandle<UIMessage>;
   hasNext: boolean;
   loading: boolean;
@@ -17,38 +14,21 @@ interface MessageListProps {
   onEdit: (messageId: string, newText: string) => void;
 }
 
-/**
- * Resolve the tree node ID for a UIMessage. The tree is keyed by
- * x-ably-msg-id (from transport headers), which may differ from
- * the UIMessage's .id field.
- */
-function treeMsgId(msg: UIMessage, transport: ClientTransport<UIMessageChunk, UIMessage>): string {
-  const headers = transport.getMessageHeaders(msg);
-  return headers?.['x-ably-msg-id'] ?? msg.id;
-}
-
-export function MessageList({
-  messages,
-  transport,
-  tree,
-  hasNext,
-  loading,
-  onNext,
-  onRegenerate,
-  onEdit,
-}: MessageListProps) {
+export function MessageList({ tree, hasNext, loading, onNext, onRegenerate, onEdit }: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const prevLastIdRef = useRef<string | undefined>(undefined);
 
+  const { nodes } = tree;
+
   // Auto-scroll to bottom only when the last message changes
   useEffect(() => {
-    const lastId = messages.length > 0 ? messages[messages.length - 1].id : undefined;
+    const lastId = nodes.length > 0 ? nodes[nodes.length - 1].message.id : undefined;
     if (lastId && lastId !== prevLastIdRef.current) {
       prevLastIdRef.current = lastId;
       endRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messages]);
+  }, [nodes]);
 
   const handleScroll = () => {
     const el = scrollRef.current;
@@ -76,25 +56,22 @@ export function MessageList({
         </div>
       )}
       {loading && <div className="text-center text-xs text-zinc-600 animate-pulse">Loading history...</div>}
-      {messages.length === 0 && !loading && (
+      {nodes.length === 0 && !loading && (
         <p className="text-sm text-zinc-600 text-center mt-20">Send a message to start chatting.</p>
       )}
-      {messages.map((msg) => {
-        const nodeId = treeMsgId(msg, transport);
-        return (
-          <MessageBubble
-            key={msg.id}
-            message={msg}
-            headers={transport.getMessageHeaders(msg)}
-            hasSiblings={tree.hasSiblings(nodeId)}
-            siblings={tree.getSiblings(nodeId)}
-            selectedIndex={tree.getSelectedIndex(nodeId)}
-            onSelectSibling={(index) => tree.selectSibling(nodeId, index)}
-            onRegenerate={msg.role === 'assistant' ? () => onRegenerate(nodeId) : undefined}
-            onEdit={msg.role === 'user' ? (text) => onEdit(nodeId, text) : undefined}
-          />
-        );
-      })}
+      {nodes.map((node) => (
+        <MessageBubble
+          key={node.message.id}
+          message={node.message}
+          headers={node.headers}
+          hasSiblings={tree.hasSiblings(node.msgId)}
+          siblings={tree.getSiblings(node.msgId)}
+          selectedIndex={tree.getSelectedIndex(node.msgId)}
+          onSelectSibling={(index) => tree.selectSibling(node.msgId, index)}
+          onRegenerate={node.message.role === 'assistant' ? () => onRegenerate(node.msgId) : undefined}
+          onEdit={node.message.role === 'user' ? (text) => onEdit(node.msgId, text) : undefined}
+        />
+      ))}
       <div ref={endRef} />
     </div>
   );

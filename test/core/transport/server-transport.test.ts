@@ -18,7 +18,7 @@ import {
 } from '../../../src/constants.js';
 import type { Codec, StreamEncoder } from '../../../src/core/codec/types.js';
 import { createServerTransport } from '../../../src/core/transport/server-transport.js';
-import type { ServerTransport } from '../../../src/core/transport/types.js';
+import type { ConversationNode, ServerTransport } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 
 // ---------------------------------------------------------------------------
@@ -27,6 +27,16 @@ import { ErrorCode } from '../../../src/errors.js';
 
 interface TestEvent { type: string; text?: string }
 interface TestMessage { id: string; content: string }
+
+const makeNode = (message: TestMessage, overrides?: Partial<ConversationNode<TestMessage>>): ConversationNode<TestMessage> => ({
+  message,
+  msgId: overrides?.msgId ?? crypto.randomUUID(),
+  parentId: undefined,
+  forkOf: undefined,
+  headers: {},
+  serial: undefined,
+  ...overrides,
+});
 
 interface MockChannel {
   publish: ReturnType<typeof vi.fn>;
@@ -83,7 +93,6 @@ const createMockCodec = (): Codec<TestEvent, TestMessage> => ({
   createDecoder: vi.fn() as Codec<TestEvent, TestMessage>['createDecoder'],
   createAccumulator: vi.fn() as Codec<TestEvent, TestMessage>['createAccumulator'],
   isTerminal: vi.fn(() => false),
-  getMessageKey: vi.fn((m: TestMessage) => m.id),
 });
 
 const headersOf = (msg: Ably.Message): Record<string, string> =>
@@ -222,7 +231,7 @@ describe('ServerTransport', () => {
     it('addMessages throws if start() not called', async () => {
       const turn = transport.newTurn({ turnId: 'turn-1' });
       await expect(
-        turn.addMessages([{ message: { id: '1', content: 'hi' } }]),
+        turn.addMessages([makeNode({ id: '1', content: 'hi' })]),
       ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
 
@@ -241,7 +250,7 @@ describe('ServerTransport', () => {
     it('creates encoder with user role and turn headers', async () => {
       const turn = transport.newTurn({ turnId: 'turn-1', clientId: 'user-a' });
       await turn.start();
-      await turn.addMessages([{ message: { id: 'm1', content: 'hello' } }]);
+      await turn.addMessages([makeNode({ id: 'm1', content: 'hello' })]);
 
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
       expect(codec.createEncoder).toHaveBeenCalled();
@@ -256,8 +265,8 @@ describe('ServerTransport', () => {
       const turn = transport.newTurn({ turnId: 'turn-1' });
       await turn.start();
       await turn.addMessages([
-        { message: { id: 'm1', content: 'a' } },
-        { message: { id: 'm2', content: 'b' } },
+        makeNode({ id: 'm1', content: 'a' }),
+        makeNode({ id: 'm2', content: 'b' }),
       ]);
 
       // Each message gets its own encoder (distinct x-ably-msg-id)
@@ -268,10 +277,10 @@ describe('ServerTransport', () => {
     it('per-message headers override transport defaults', async () => {
       const turn = transport.newTurn({ turnId: 'turn-1' });
       await turn.start();
-      await turn.addMessages([{
-        message: { id: 'm1', content: 'hi' },
+      await turn.addMessages([makeNode({ id: 'm1', content: 'hi' }, {
+        msgId: 'client-assigned-id',
         headers: { [HEADER_MSG_ID]: 'client-assigned-id', 'x-domain-foo': 'bar' },
-      }]);
+      })]);
 
       const opts = lastEncoderOpts(codec);
       const headers = opts?.extras?.headers ?? {};
@@ -283,18 +292,29 @@ describe('ServerTransport', () => {
       expect(headers[HEADER_TURN_ID]).toBe('turn-1');
     });
 
+    it('uses node parentId and forkOf in transport headers', async () => {
+      const turn = transport.newTurn({ turnId: 'turn-1' });
+      await turn.start();
+      await turn.addMessages([makeNode({ id: 'm1', content: 'hi' }, {
+        parentId: 'parent-abc',
+        forkOf: 'fork-xyz',
+      })]);
+
+      const opts = lastEncoderOpts(codec);
+      const headers = opts?.extras?.headers ?? {};
+      expect(headers[HEADER_PARENT]).toBe('parent-abc');
+    });
+
     it('returns published msg-ids', async () => {
       const turn = transport.newTurn({ turnId: 'turn-1' });
       await turn.start();
-      const { msgIds } = await turn.addMessages([
-        { message: { id: 'm1', content: 'a' } },
-        { message: { id: 'm2', content: 'b' } },
-      ]);
+      const node1 = makeNode({ id: 'm1', content: 'a' });
+      const node2 = makeNode({ id: 'm2', content: 'b' });
+      const { msgIds } = await turn.addMessages([node1, node2]);
 
       expect(msgIds).toHaveLength(2);
-      expect(msgIds[0]).toBeTypeOf('string');
-      expect(msgIds[1]).toBeTypeOf('string');
-      expect(msgIds[0]).not.toBe(msgIds[1]);
+      expect(msgIds[0]).toBe(node1.msgId);
+      expect(msgIds[1]).toBe(node2.msgId);
     });
   });
 
@@ -320,7 +340,7 @@ describe('ServerTransport', () => {
     it('uses explicit parent from streamResponse options', async () => {
       const turn = transport.newTurn({ turnId: 'turn-1' });
       await turn.start();
-      const { msgIds } = await turn.addMessages([{ message: { id: 'm1', content: 'q' } }]);
+      const { msgIds } = await turn.addMessages([makeNode({ id: 'm1', content: 'q' })]);
 
       await turn.streamResponse(streamOf({ type: 'text', text: 'answer' }), {
         parent: msgIds.at(-1),

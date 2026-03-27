@@ -1,7 +1,7 @@
 import type * as AI from 'ai';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ClientTransport, ConversationNode, ConversationTree, SendOptions } from '../../../src/core/transport/types.js';
+import type { ClientTransport, ConversationTree, SendOptions } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 import type { ChatTransportOptions } from '../../../src/vercel/transport/chat-transport.js';
 import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
@@ -52,19 +52,18 @@ interface MockTransport {
   cancel: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
   getTree: ReturnType<typeof vi.fn>;
-  getMessageHeaders: ReturnType<typeof vi.fn>;
+  getNodes: ReturnType<typeof vi.fn>;
   mockTurn: MockTurn;
   tree: {
-    getNodeByKey: ReturnType<typeof vi.fn>;
+    flattenNodes: ReturnType<typeof vi.fn>;
   };
 }
 
 const createMockTransport = (): MockTransport => {
   const mockTurn = createMockTurn();
   const tree = {
-    getNodeByKey: vi.fn(),
+    flattenNodes: vi.fn(() => []),
     // Stub remaining ConversationTree methods
-    flatten: vi.fn(() => []),
     getSiblings: vi.fn(() => []),
     hasSiblings: vi.fn(() => false),
     getSelectedIndex: vi.fn(() => 0),
@@ -82,14 +81,13 @@ const createMockTransport = (): MockTransport => {
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const close = vi.fn(() => Promise.resolve());
   const getTree = vi.fn(() => tree as unknown as ConversationTree<AI.UIMessage>);
-  const getMessageHeaders = vi.fn();
+  const getNodes = vi.fn(() => [] as { message: AI.UIMessage; msgId: string; parentId: string | undefined; forkOf: string | undefined; headers: Record<string, string>; serial: string | undefined }[]);
 
   const transport = {
     send,
     cancel,
     close,
     getTree,
-    getMessageHeaders,
     // Stub remaining ClientTransport methods
     regenerate: vi.fn(),
     edit: vi.fn(),
@@ -97,12 +95,12 @@ const createMockTransport = (): MockTransport => {
     on: vi.fn(() => noop),
     getActiveTurnIds: vi.fn(() => new Map()),
     getMessages: vi.fn(() => []),
-    getMessagesWithHeaders: vi.fn(() => []),
+    getNodes,
     getAblyMessages: vi.fn(() => []),
     history: vi.fn(),
   } as unknown as ClientTransport<AI.UIMessageChunk, AI.UIMessage>;
 
-  return { transport, send, cancel, close, getTree, getMessageHeaders, mockTurn, tree };
+  return { transport, send, cancel, close, getTree, getNodes, mockTurn, tree };
 };
 
 // ---------------------------------------------------------------------------
@@ -112,12 +110,18 @@ const createMockTransport = (): MockTransport => {
 describe('createChatTransport', () => {
   describe('sendMessages — submit-message', () => {
     it('sends the last message and passes history in body', async () => {
-      const { transport, send, mockTurn } = createMockTransport();
+      const { transport, send, getNodes, mockTurn } = createMockTransport();
       const chat = createChatTransport(transport);
 
       const m1 = makeMessage('1');
       const m2 = makeMessage('2');
       const m3 = makeMessage('3');
+
+      getNodes.mockReturnValue([
+        { message: m1, msgId: 'n1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+        { message: m2, msgId: 'n2', parentId: 'n1', forkOf: undefined, headers: {}, serial: undefined },
+        { message: m3, msgId: 'n3', parentId: 'n2', forkOf: undefined, headers: {}, serial: undefined },
+      ]);
 
       const streamPromise = chat.sendMessages({
         trigger: 'submit-message',
@@ -198,11 +202,17 @@ describe('createChatTransport', () => {
     it('resolves fork metadata from the conversation tree', async () => {
       const { transport, send, tree, mockTurn } = createMockTransport();
 
-      const node: Partial<ConversationNode<AI.UIMessage>> = {
-        msgId: 'wire-msg-id',
-        parentId: 'wire-parent-id',
-      };
-      tree.getNodeByKey.mockReturnValue(node);
+      const msg = makeMessage('ui-message-id');
+      tree.flattenNodes.mockReturnValue([
+        {
+          message: msg,
+          msgId: 'wire-msg-id',
+          parentId: 'wire-parent-id',
+          forkOf: undefined,
+          headers: {},
+          serial: undefined,
+        },
+      ]);
 
       const chat = createChatTransport(transport);
 
@@ -210,14 +220,13 @@ describe('createChatTransport', () => {
         trigger: 'regenerate-message',
         chatId: 'chat-1',
         messageId: 'ui-message-id',
-        messages: [makeMessage('1')],
+        messages: [msg],
         abortSignal: undefined,
       });
 
       mockTurn.close();
       await streamPromise;
 
-      expect(tree.getNodeByKey).toHaveBeenCalledWith('ui-message-id');
       const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
       expect(opts.forkOf).toBe('wire-msg-id');
       expect(opts.parent).toBe('wire-parent-id');
@@ -225,8 +234,7 @@ describe('createChatTransport', () => {
 
     it('falls back to raw messageId when node not found in tree', async () => {
       const { transport, send, tree, mockTurn } = createMockTransport();
-      // eslint-disable-next-line unicorn/no-useless-undefined -- mockReturnValue requires an argument
-      tree.getNodeByKey.mockReturnValue(undefined);
+      tree.flattenNodes.mockReturnValue([]);
 
       const chat = createChatTransport(transport);
 
@@ -344,13 +352,17 @@ describe('createChatTransport', () => {
   });
 
   describe('default body construction', () => {
-    it('includes history with headers from transport.getMessageHeaders', async () => {
-      const { transport, send, getMessageHeaders, mockTurn } = createMockTransport();
+    it('includes history nodes from transport.getNodes', async () => {
+      const { transport, send, getNodes, mockTurn } = createMockTransport();
 
       const m1 = makeMessage('1');
       const m2 = makeMessage('2');
-      getMessageHeaders.mockReturnValueOnce({ 'x-ably-msg-id': 'h1' });
-      getMessageHeaders.mockReturnValueOnce({ 'x-ably-msg-id': 'h2' });
+      const m3 = makeMessage('3');
+      getNodes.mockReturnValue([
+        { message: m1, msgId: 'h1', parentId: undefined, forkOf: undefined, headers: { 'x-ably-msg-id': 'h1' }, serial: undefined },
+        { message: m2, msgId: 'h2', parentId: 'h1', forkOf: undefined, headers: { 'x-ably-msg-id': 'h2' }, serial: undefined },
+        { message: m3, msgId: 'h3', parentId: 'h2', forkOf: undefined, headers: { 'x-ably-msg-id': 'h3' }, serial: undefined },
+      ]);
 
       const chat = createChatTransport(transport);
 
@@ -358,28 +370,22 @@ describe('createChatTransport', () => {
         trigger: 'submit-message',
         chatId: 'chat-1',
         messageId: undefined,
-        messages: [m1, m2, makeMessage('3')],
+        messages: [m1, m2, m3],
         abortSignal: undefined,
       });
 
       mockTurn.close();
       await streamPromise;
 
-      // getMessageHeaders should be called for each history message
-      expect(getMessageHeaders).toHaveBeenCalledTimes(2);
-      expect(getMessageHeaders).toHaveBeenCalledWith(m1);
-      expect(getMessageHeaders).toHaveBeenCalledWith(m2);
-
       const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
       // CAST: body is always set by the adapter; narrowing to non-undefined.
       // eslint-disable-next-line @typescript-eslint/non-nullable-type-assertion-style -- prefer `as` over `!` per TYPES.md
       const body = opts.body as Record<string, unknown>;
-      const bodyHistory = body.history as {
-        message: AI.UIMessage;
-        headers: Record<string, string>;
-      }[];
-      expect(bodyHistory.at(0)?.headers).toEqual({ 'x-ably-msg-id': 'h1' });
-      expect(bodyHistory.at(1)?.headers).toEqual({ 'x-ably-msg-id': 'h2' });
+      const bodyHistory = body.history as { message: AI.UIMessage; msgId: string; headers: Record<string, string> }[];
+      // History should include m1 and m2 (everything except the last message being sent)
+      expect(bodyHistory).toHaveLength(2);
+      expect(bodyHistory.at(0)?.msgId).toBe('h1');
+      expect(bodyHistory.at(1)?.msgId).toBe('h2');
     });
   });
 

@@ -51,8 +51,6 @@ export function Chat({ chatId, clientId, historyLimit }: ChatProps) {
       <div className="flex flex-1 flex-col">
         <Header clientId={clientId} />
         <MessageList
-          messages={tree.messages}
-          transport={transport}
           tree={tree}
           hasNext={history.hasNext}
           loading={history.loading}

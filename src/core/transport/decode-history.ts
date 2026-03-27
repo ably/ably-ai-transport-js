@@ -42,8 +42,6 @@ interface HistoryState<TEvent, TMessage> {
   returnedRawCount: number;
   /** The last Ably page cursor for continued pagination. */
   lastAblyPage: Ably.PaginatedResult<Ably.InboundMessage> | undefined;
-  /** Key function for domain messages (codec.getMessageKey). */
-  getMessageKey: (message: TMessage) => string;
   logger: Logger;
 }
 
@@ -84,10 +82,11 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
   const defaultAccumulator = state.codec.createAccumulator();
   let orderCounter = 0;
 
-  // Headers for discrete messages (writeMessages output), keyed by codec message key.
+  // Headers and serials for non-turn discrete messages, keyed by x-ably-msg-id.
   const discreteHeaders = new Map<string, Record<string, string>>();
-  // Serials for discrete messages, keyed by codec message key.
   const discreteSerials = new Map<string, string>();
+  // Track which msgId produced each non-turn discrete message output (in order).
+  const discreteMsgIds: string[] = [];
 
   for (const msg of chronological) {
     const outputs: DecoderOutput<TEvent, TMessage>[] = decoder.decode(msg);
@@ -123,18 +122,18 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
       turn.accumulator.processOutputs(outputs);
     } else {
       defaultAccumulator.processOutputs(outputs);
-    }
 
-    // Capture headers and serial for discrete messages by codec key.
-    for (const output of outputs) {
-      if (output.kind === 'message') {
-        const key = state.getMessageKey(output.message);
-        const existingDiscrete = discreteHeaders.get(key);
-        if (!existingDiscrete) {
-          discreteHeaders.set(key, { ...headers });
-          if (serial) discreteSerials.set(key, serial);
-        } else if (Object.keys(headers).length > 0) {
-          Object.assign(existingDiscrete, headers);
+      // Capture headers and serial for non-turn discrete messages by x-ably-msg-id.
+      for (const output of outputs) {
+        if (output.kind === 'message' && msgId) {
+          discreteMsgIds.push(msgId);
+          const existingDiscrete = discreteHeaders.get(msgId);
+          if (!existingDiscrete) {
+            discreteHeaders.set(msgId, { ...headers });
+            if (serial) discreteSerials.set(msgId, serial);
+          } else if (Object.keys(headers).length > 0) {
+            Object.assign(existingDiscrete, headers);
+          }
         }
       }
     }
@@ -143,60 +142,37 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
   // Collect completed messages in chronological order (oldest first) by turn.
   const completed: DecodedItem<TMessage>[] = [];
 
-  for (const msg of defaultAccumulator.completedMessages) {
-    const key = state.getMessageKey(msg);
+  // Default accumulator messages: pair with their discrete headers by position.
+  for (const [i, msg] of defaultAccumulator.completedMessages.entries()) {
+    const mid = discreteMsgIds[i];
     completed.push({
       message: msg,
-      headers: discreteHeaders.get(key) ?? {},
-      serial: discreteSerials.get(key) ?? '',
+      headers: mid ? (discreteHeaders.get(mid) ?? {}) : {},
+      serial: mid ? (discreteSerials.get(mid) ?? '') : '',
     });
   }
 
   const sorted = [...turns.values()].toSorted((a, b) => a.firstSeen - b.firstSeen);
   for (const turn of sorted) {
     // Assign headers and serials to each completed message in this turn.
-    // Discrete messages were already captured by codec key. Accumulated
-    // messages need to be matched to the turn's per-msg-id headers.
-    const claimedMsgIds = new Set<string>();
+    // The turn's msgHeaders map is keyed by x-ably-msg-id and ordered by
+    // first-seen. Completed messages are matched positionally.
+    const headerEntries = [...turn.msgHeaders.entries()];
+    let headerIdx = 0;
 
-    // First pass: resolve discrete messages and mark their msg-ids as claimed
-    const turnKeyHeaders = new Map<string, Record<string, string>>();
-    const turnKeySerials = new Map<string, string>();
     for (const msg of turn.accumulator.completedMessages) {
-      const key = state.getMessageKey(msg);
-      const discrete = discreteHeaders.get(key);
-      if (discrete) {
-        turnKeyHeaders.set(key, discrete);
-        const dSerial = discreteSerials.get(key);
-        if (dSerial) turnKeySerials.set(key, dSerial);
-        const mid = discrete[HEADER_MSG_ID];
-        if (mid) claimedMsgIds.add(mid);
+      const entry = headerEntries[headerIdx];
+      if (entry) {
+        const [mid, hdrs] = entry;
+        completed.push({
+          message: msg,
+          headers: hdrs,
+          serial: turn.msgSerials.get(mid) ?? '',
+        });
+        headerIdx++;
+      } else {
+        completed.push({ message: msg, headers: {}, serial: '' });
       }
-    }
-
-    // Second pass: assign unclaimed msg-id entries to remaining messages
-    const unclaimedEntries = [...turn.msgHeaders.entries()].filter(([mid]) => !claimedMsgIds.has(mid));
-    let unclaimedIdx = 0;
-
-    for (const msg of turn.accumulator.completedMessages) {
-      const key = state.getMessageKey(msg);
-      const unclaimed = unclaimedEntries[unclaimedIdx];
-      if (!turnKeyHeaders.has(key) && unclaimed) {
-        const [mid, hdrs] = unclaimed;
-        turnKeyHeaders.set(key, hdrs);
-        const mSerial = turn.msgSerials.get(mid);
-        if (mSerial) turnKeySerials.set(key, mSerial);
-        unclaimedIdx++;
-      }
-    }
-
-    for (const msg of turn.accumulator.completedMessages) {
-      const key = state.getMessageKey(msg);
-      completed.push({
-        message: msg,
-        headers: turnKeyHeaders.get(key) ?? {},
-        serial: turnKeySerials.get(key) ?? '',
-      });
     }
   }
 
@@ -320,7 +296,6 @@ export const decodeHistory = async <TEvent, TMessage>(
     returnedCount: 0,
     returnedRawCount: 0,
     lastAblyPage: undefined,
-    getMessageKey: codec.getMessageKey.bind(codec),
     logger,
   };
 

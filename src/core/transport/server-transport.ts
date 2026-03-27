@@ -18,7 +18,6 @@ import {
   HEADER_CANCEL_CLIENT_ID,
   HEADER_CANCEL_OWN,
   HEADER_CANCEL_TURN_ID,
-  HEADER_MSG_ID,
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
@@ -32,7 +31,7 @@ import type {
   AddMessagesResult,
   CancelFilter,
   CancelRequest,
-  MessageWithHeaders,
+  ConversationNode,
   NewTurnOptions,
   ServerTransport,
   ServerTransportOptions,
@@ -314,10 +313,10 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
 
       // Spec: AIT-ST5
       addMessages: async (
-        inputs: MessageWithHeaders<TMessage>[],
+        nodes: ConversationNode<TMessage>[],
         opts?: AddMessageOptions,
       ): Promise<AddMessagesResult> => {
-        logger?.trace('Turn.addMessages();', { turnId, count: inputs.length });
+        logger?.trace('Turn.addMessages();', { turnId, count: nodes.length });
 
         if (!started) {
           throw new Ably.ErrorInfo(
@@ -330,23 +329,19 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
 
         const msgIds: string[] = [];
 
-        for (const input of inputs) {
-          const msgId = crypto.randomUUID();
-
-          // Transport headers are the defaults; per-message headers from the
-          // client override them. This lets the client's x-ably-msg-id pass
-          // through for optimistic reconciliation with client inserts.
+        for (const node of nodes) {
+          // Build transport headers from the node's typed fields, then merge
+          // any extra headers from the node (e.g. domain-specific headers).
           const headers = mergeHeaders(
             buildTransportHeaders({
               role: 'user',
               turnId,
-              msgId,
+              msgId: node.msgId,
               turnClientId: opts?.clientId,
-              // Per-operation options override turn-level defaults
-              parent: opts?.parent === undefined ? (turnParent ?? undefined) : (opts.parent ?? undefined),
-              forkOf: opts?.forkOf ?? turnForkOf,
+              parent: node.parentId ?? turnParent ?? undefined,
+              forkOf: node.forkOf ?? turnForkOf,
             }),
-            input.headers,
+            node.headers,
           );
 
           const encoder = codec.createEncoder(channel, {
@@ -354,13 +349,12 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
             onMessage,
           });
 
-          await encoder.writeMessages([input.message], opts?.clientId ? { clientId: opts.clientId } : undefined);
+          await encoder.writeMessages([node.message], opts?.clientId ? { clientId: opts.clientId } : undefined);
 
-          // Capture the effective msg-id after input.headers may have overridden it.
-          msgIds.push(headers[HEADER_MSG_ID] ?? msgId);
+          msgIds.push(node.msgId);
         }
 
-        logger?.debug('Turn.addMessages(); messages published', { turnId, count: inputs.length });
+        logger?.debug('Turn.addMessages(); messages published', { turnId, count: nodes.length });
         return { msgIds };
       },
 

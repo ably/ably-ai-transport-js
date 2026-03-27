@@ -180,9 +180,12 @@ export const createChatTransport = (
     if (trigger === 'regenerate-message' && messageId) {
       forkOf = messageId;
       // Look up the parent of the message being regenerated.
-      // messageId comes from useChat (UIMessage.id), so use getNodeByKey
-      // which resolves via the codec key secondary index.
-      const node = transport.getTree().getNodeByKey(messageId);
+      // messageId comes from useChat (UIMessage.id) — scan the flattened
+      // nodes to find the one whose domain message matches this ID.
+      const node = transport
+        .getTree()
+        .flattenNodes()
+        .find((n) => n.message.id === messageId);
       if (node) {
         // Use the tree node's msgId (x-ably-msg-id) as forkOf — this is
         // what the server stamps on the wire, not the UIMessage.id.
@@ -207,12 +210,14 @@ export const createChatTransport = (
       sendBody = prepared.body ?? {};
       sendHeaders = prepared.headers;
     } else {
-      const historyWithHeaders = history.map((m) => ({
-        message: m,
-        headers: transport.getMessageHeaders(m),
-      }));
+      // Build history nodes from the transport's conversation tree.
+      // The local `history` is a subset of messages (excludes the last message
+      // being sent). Match by message ID for robustness against cloned objects.
+      const allNodes = transport.getNodes();
+      const historyIds = new Set(history.map((m) => m.id));
+      const historyNodes = allNodes.filter((n) => historyIds.has(n.message.id));
       sendBody = {
-        history: historyWithHeaders,
+        history: historyNodes,
         id: opts.chatId,
         trigger,
         ...(messageId !== undefined && { messageId }),

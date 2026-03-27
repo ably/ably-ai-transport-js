@@ -16,8 +16,6 @@ interface TestMessage {
 
 const silentLogger = makeLogger({ logLevel: LogLevel.Silent });
 
-const getKey = (m: TestMessage): string => m.id;
-
 /**
  * Build headers for a tree node.
  * @param opts - Optional parent and forkOf IDs.
@@ -40,7 +38,7 @@ describe('ConversationTree', () => {
   let tree: ConversationTree<TestMessage>;
 
   beforeEach(() => {
-    tree = createConversationTree(getKey, silentLogger);
+    tree = createConversationTree(silentLogger);
   });
 
   // -------------------------------------------------------------------------
@@ -50,7 +48,7 @@ describe('ConversationTree', () => {
   describe('linear conversation', () => {
     it('flattens a single message', () => {
       tree.upsert('m1', { id: 'a', content: 'hi' }, headers(), 'serial-001');
-      expect(tree.flatten()).toEqual([{ id: 'a', content: 'hi' }]);
+      expect(tree.flattenNodes().map((n) => n.message)).toEqual([{ id: 'a', content: 'hi' }]);
     });
 
     it('flattens a linear chain in serial order', () => {
@@ -58,7 +56,7 @@ describe('ConversationTree', () => {
       tree.upsert('m2', { id: 'b', content: 'second' }, headers({ parent: 'm1' }), 'serial-002');
       tree.upsert('m3', { id: 'c', content: 'third' }, headers({ parent: 'm2' }), 'serial-003');
 
-      const flat = tree.flatten();
+      const flat = tree.flattenNodes().map((n) => n.message);
       expect(flat).toEqual([
         { id: 'a', content: 'first' },
         { id: 'b', content: 'second' },
@@ -76,17 +74,6 @@ describe('ConversationTree', () => {
 
     it('returns undefined for unknown node', () => {
       expect(tree.getNode('unknown')).toBeUndefined();
-    });
-
-    it('returns correct node via getNodeByKey', () => {
-      tree.upsert('m1', { id: 'a', content: 'hi' }, headers(), 'serial-001');
-      const node = tree.getNodeByKey('a');
-      expect(node).toBeDefined();
-      expect(node?.msgId).toBe('m1');
-    });
-
-    it('returns undefined for unknown key', () => {
-      expect(tree.getNodeByKey('unknown')).toBeUndefined();
     });
 
     it('returns stored headers', () => {
@@ -109,7 +96,7 @@ describe('ConversationTree', () => {
       tree.upsert('m1', { id: 'a', content: 'v1' }, headers(), 'serial-001');
       tree.upsert('m1', { id: 'a', content: 'v2' }, headers(), 'serial-001');
 
-      const flat = tree.flatten();
+      const flat = tree.flattenNodes().map((n) => n.message);
       expect(flat).toEqual([{ id: 'a', content: 'v2' }]);
     });
 
@@ -154,7 +141,7 @@ describe('ConversationTree', () => {
       // After promotion, m1 sorts before m2
       tree.upsert('m1', { id: 'a', content: 'first' }, headers(), 'serial-001');
 
-      const flat = tree.flatten();
+      const flat = tree.flattenNodes().map((n) => n.message);
       expect(flat[0]).toEqual({ id: 'a', content: 'first' });
       expect(flat[1]).toEqual({ id: 'b', content: 'second' });
     });
@@ -179,7 +166,7 @@ describe('ConversationTree', () => {
       tree.upsert('m1', { id: 'a', content: 'first' }, headers(), 'serial-001');
       tree.upsert('m2', { id: 'b', content: 'second' }, headers({ parent: 'm1' }), 'serial-002');
 
-      const flat = tree.flatten();
+      const flat = tree.flattenNodes().map((n) => n.message);
       expect(flat).toEqual([
         { id: 'a', content: 'first' },
         { id: 'b', content: 'second' },
@@ -191,7 +178,7 @@ describe('ConversationTree', () => {
       tree.upsert('m1', { id: 'a', content: 'serial' }, headers(), 'serial-001');
       tree.upsert('m2', { id: 'b', content: 'optimistic' }, headers({ parent: 'm1' }));
 
-      const flat = tree.flatten();
+      const flat = tree.flattenNodes().map((n) => n.message);
       expect(flat).toEqual([
         { id: 'a', content: 'serial' },
         { id: 'b', content: 'optimistic' },
@@ -203,7 +190,7 @@ describe('ConversationTree', () => {
       tree.upsert('m2', { id: 'b', content: 'second' }, headers({ parent: 'm1' }));
       tree.upsert('m3', { id: 'c', content: 'third' }, headers({ parent: 'm2' }));
 
-      const flat = tree.flatten();
+      const flat = tree.flattenNodes().map((n) => n.message);
       expect(flat).toEqual([
         { id: 'a', content: 'first' },
         { id: 'b', content: 'second' },
@@ -245,7 +232,7 @@ describe('ConversationTree', () => {
       expect(selectedIdx).toBe(1); // m4 is at index 1
 
       // Flatten should follow the latest branch (m4, not m2)
-      const flat = tree.flatten();
+      const flat = tree.flattenNodes().map((n) => n.message);
       expect(flat).toEqual([
         { id: 'a', content: 'user' },
         { id: 'd', content: 'assistant-v2' },
@@ -258,7 +245,7 @@ describe('ConversationTree', () => {
       // Select the first sibling (original m2)
       tree.select('m2', 0);
 
-      const flat = tree.flatten();
+      const flat = tree.flattenNodes().map((n) => n.message);
       expect(flat).toEqual([
         { id: 'a', content: 'user' },
         { id: 'b', content: 'assistant-v1' },
@@ -307,7 +294,7 @@ describe('ConversationTree', () => {
       tree.upsert('m5', { id: 'e', content: 'child-of-v2' }, headers({ parent: 'm4' }), 'serial-005');
 
       // Default selects latest (m4), so m5 should be included, m3 excluded
-      const flat = tree.flatten();
+      const flat = tree.flattenNodes().map((n) => n.message);
       expect(flat).toEqual([
         { id: 'a', content: 'user' },
         { id: 'd', content: 'v2' },
@@ -326,19 +313,13 @@ describe('ConversationTree', () => {
       tree.upsert('m2', { id: 'b', content: 'second' }, headers({ parent: 'm1' }), 'serial-002');
 
       tree.delete('m2');
-      expect(tree.flatten()).toEqual([{ id: 'a', content: 'first' }]);
+      expect(tree.flattenNodes().map((n) => n.message)).toEqual([{ id: 'a', content: 'first' }]);
     });
 
     it('removes the node from getNode', () => {
       tree.upsert('m1', { id: 'a', content: 'hi' }, headers(), 'serial-001');
       tree.delete('m1');
       expect(tree.getNode('m1')).toBeUndefined();
-    });
-
-    it('removes the node from getNodeByKey', () => {
-      tree.upsert('m1', { id: 'a', content: 'hi' }, headers(), 'serial-001');
-      tree.delete('m1');
-      expect(tree.getNodeByKey('a')).toBeUndefined();
     });
 
     it('children become unreachable after parent delete', () => {
@@ -348,7 +329,7 @@ describe('ConversationTree', () => {
 
       tree.delete('m1');
       // Children still exist in the tree but are unreachable via flatten
-      expect(tree.flatten()).toEqual([]);
+      expect(tree.flattenNodes().map((n) => n.message)).toEqual([]);
       // m2 and m3 still accessible by getNode
       expect(tree.getNode('m2')).toBeDefined();
       expect(tree.getNode('m3')).toBeDefined();
@@ -357,7 +338,7 @@ describe('ConversationTree', () => {
     it('is a no-op for unknown msgId', () => {
       tree.upsert('m1', { id: 'a', content: 'hi' }, headers(), 'serial-001');
       tree.delete('unknown');
-      expect(tree.flatten()).toEqual([{ id: 'a', content: 'hi' }]);
+      expect(tree.flattenNodes().map((n) => n.message)).toEqual([{ id: 'a', content: 'hi' }]);
     });
 
     it('removes the deleted node from sibling groups', () => {
@@ -379,7 +360,7 @@ describe('ConversationTree', () => {
 
   describe('edge cases', () => {
     it('empty tree returns empty flatten', () => {
-      expect(tree.flatten()).toEqual([]);
+      expect(tree.flattenNodes().map((n) => n.message)).toEqual([]);
     });
 
     it('getSelectedIndex returns 0 for a single message', () => {
@@ -395,7 +376,7 @@ describe('ConversationTree', () => {
       tree.upsert('m1', { id: 'a', content: 'first' }, headers(), 'serial-001');
       tree.upsert('m2', { id: 'b', content: 'second' }, headers({ parent: 'm1' }), 'serial-001');
 
-      const flat = tree.flatten();
+      const flat = tree.flattenNodes().map((n) => n.message);
       expect(flat[0]).toEqual({ id: 'a', content: 'first' });
       expect(flat[1]).toEqual({ id: 'b', content: 'second' });
     });

@@ -1,4 +1,4 @@
-import '../../helper/expectations.js';
+import '../../../helper/expectations.js';
 
 import type * as Ably from 'ably';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -15,11 +15,11 @@ import {
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_TURN_ID,
-} from '../../../src/constants.js';
-import type { Codec, StreamEncoder } from '../../../src/core/codec/types.js';
-import { createServerTransport } from '../../../src/core/transport/server-transport.js';
-import type { ServerTransport } from '../../../src/core/transport/types.js';
-import { ErrorCode } from '../../../src/errors.js';
+} from '../../../../src/constants.js';
+import type { Codec, StreamEncoder } from '../../../../src/core/codec/types.js';
+import { createServerTransport } from '../../../../src/core/transport/server/server-transport.js';
+import type { ServerTransport } from '../../../../src/core/transport/server/types.js';
+import { ErrorCode } from '../../../../src/errors.js';
 
 // ---------------------------------------------------------------------------
 // Helpers

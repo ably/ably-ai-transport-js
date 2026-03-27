@@ -4,7 +4,8 @@
 
 import { vi } from 'vitest';
 
-import type { ClientTransport, ConversationTree, TurnLifecycleEvent } from '../../../src/core/transport/types.js';
+import type { ClientTransport, ConversationTree } from '../../../src/core/transport/client/types.js';
+import type { TurnLifecycleEvent } from '../../../src/core/transport/types.js';
 
 type EventType = 'message' | 'ably-message' | 'turn' | 'error';
 type Handler = ((...args: never[]) => void) | (() => void);

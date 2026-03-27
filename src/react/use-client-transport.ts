@@ -16,8 +16,8 @@
 
 import { useRef } from 'react';
 
-import { createClientTransport } from '../core/transport/client-transport.js';
-import type { ClientTransport, ClientTransportOptions } from '../core/transport/types.js';
+import { createClientTransport } from '../core/transport/client/client-transport.js';
+import type { ClientTransport, ClientTransportOptions } from '../core/transport/client/types.js';
 
 /**
  * Create and memoize a {@link ClientTransport} across renders.

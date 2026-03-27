@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { HEADER_FORK_OF, HEADER_PARENT } from '../../../src/constants.js';
-import { createConversationTree } from '../../../src/core/transport/conversation-tree.js';
-import type { ConversationTree } from '../../../src/core/transport/types.js';
-import { LogLevel, makeLogger } from '../../../src/logger.js';
+import { HEADER_FORK_OF, HEADER_PARENT } from '../../../../src/constants.js';
+import { createConversationTree } from '../../../../src/core/transport/client/conversation-tree.js';
+import type { ConversationTree } from '../../../../src/core/transport/client/types.js';
+import { LogLevel, makeLogger } from '../../../../src/logger.js';
 
 // ---------------------------------------------------------------------------
 // Helpers

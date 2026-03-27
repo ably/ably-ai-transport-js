@@ -45,7 +45,7 @@ Every Ably message has an `extras` field that can carry metadata. The AI Transpo
 
 The SDK has two layers with a strict boundary:
 
-- **Transport layer** - generic machinery shared by all codecs. Handles turn lifecycle, stream routing, optimistic reconciliation, cancel signals, and conversation tree management. Uses `x-ably-*` headers. Lives in `src/core/transport/`.
+- **Transport layer** - generic machinery shared by all codecs. Handles turn lifecycle, stream routing, optimistic reconciliation, cancel signals, and conversation tree management. Uses `x-ably-*` headers. Lives in `src/core/transport/` (with client-side components in `src/core/transport/client/` and server-side components in `src/core/transport/server/`).
 - **Domain layer** - framework-specific encoding/decoding. Maps between domain events (e.g. Vercel's `UIMessageChunk`) and Ably messages. Uses `x-domain-*` headers. Lives in codec implementations (e.g. `src/vercel/codec/`).
 
 The [codec interface](codec-interface.md) is the boundary between these layers.

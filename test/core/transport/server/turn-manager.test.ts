@@ -7,9 +7,9 @@ import {
   HEADER_TURN_CLIENT_ID,
   HEADER_TURN_ID,
   HEADER_TURN_REASON,
-} from '../../../src/constants.js';
-import type { TurnManager } from '../../../src/core/transport/turn-manager.js';
-import { createTurnManager } from '../../../src/core/transport/turn-manager.js';
+} from '../../../../src/constants.js';
+import type { TurnManager } from '../../../../src/core/transport/server/turn-manager.js';
+import { createTurnManager } from '../../../../src/core/transport/server/turn-manager.js';
 
 // ---------------------------------------------------------------------------
 // Helpers

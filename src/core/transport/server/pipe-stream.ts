@@ -5,8 +5,8 @@
  * and handles abort/error. No dependencies on turn state or transport internals.
  */
 
-import type { Logger } from '../../logger.js';
-import type { StreamEncoder } from '../codec/types.js';
+import type { Logger } from '../../../logger.js';
+import type { StreamEncoder } from '../../codec/types.js';
 import type { StreamResult } from './types.js';
 
 /**

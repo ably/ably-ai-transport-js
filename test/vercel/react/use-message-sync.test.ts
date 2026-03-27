@@ -4,7 +4,7 @@ import { act, renderHook } from '@testing-library/react';
 import type * as AI from 'ai';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ClientTransport } from '../../../src/core/transport/types.js';
+import type { ClientTransport } from '../../../src/core/transport/client/types.js';
 import { useMessageSync } from '../../../src/vercel/react/use-message-sync.js';
 
 type Handler = () => void;

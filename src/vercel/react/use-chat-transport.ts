@@ -17,7 +17,7 @@
 import type * as AI from 'ai';
 import { useRef } from 'react';
 
-import type { ClientTransport } from '../../core/transport/types.js';
+import type { ClientTransport } from '../../core/transport/client/types.js';
 import type { ChatTransport, ChatTransportOptions } from '../transport/chat-transport.js';
 import { createChatTransport } from '../transport/chat-transport.js';
 import type { VercelClientTransportOptions } from '../transport/index.js';

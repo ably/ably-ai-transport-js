@@ -24,14 +24,16 @@ import {
   HEADER_MSG_ID,
   HEADER_ROLE,
   HEADER_TURN_ID,
-} from '../../../src/constants.js';
-import { createClientTransport } from '../../../src/core/transport/client-transport.js';
-import { createServerTransport } from '../../../src/core/transport/server-transport.js';
-import type { ClientTransport, ServerTransport, TurnLifecycleEvent } from '../../../src/core/transport/types.js';
-import { UIMessageCodec } from '../../../src/vercel/codec/index.js';
-import { uniqueChannelName } from '../../helper/identifier.js';
-import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
-import { textResponseStream } from '../../integration/helpers.js';
+} from '../../../../src/constants.js';
+import { createClientTransport } from '../../../../src/core/transport/client/client-transport.js';
+import type { ClientTransport } from '../../../../src/core/transport/client/types.js';
+import { createServerTransport } from '../../../../src/core/transport/server/server-transport.js';
+import type { ServerTransport } from '../../../../src/core/transport/server/types.js';
+import type { TurnLifecycleEvent } from '../../../../src/core/transport/types.js';
+import { UIMessageCodec } from '../../../../src/vercel/codec/index.js';
+import { uniqueChannelName } from '../../../helper/identifier.js';
+import { ablyRealtimeClient, closeAllClients } from '../../../helper/realtime-client.js';
+import { textResponseStream } from '../../../integration/helpers.js';
 
 // ---------------------------------------------------------------------------
 // Helpers

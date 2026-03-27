@@ -8,7 +8,7 @@
 
 import { useEffect, useState } from 'react';
 
-import type { ClientTransport } from '../core/transport/types.js';
+import type { ClientTransport } from '../core/transport/client/types.js';
 
 /**
  * Subscribe to transport message updates and return the current message list.

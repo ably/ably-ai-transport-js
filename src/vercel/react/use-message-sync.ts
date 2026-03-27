@@ -13,7 +13,7 @@
 import type * as AI from 'ai';
 import { useEffect } from 'react';
 
-import type { ClientTransport } from '../../core/transport/types.js';
+import type { ClientTransport } from '../../core/transport/client/types.js';
 
 /**
  * Wire transport message updates into useChat's `setMessages` updater.

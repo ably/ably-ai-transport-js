@@ -410,7 +410,9 @@ npm run precommit         # format:check + lint + typecheck
 src/
 ├── core/               # Generic transport and codec (no framework deps)
 │   ├── codec/          # Codec interfaces and core encoder/decoder
-│   └── transport/      # ClientTransport, ServerTransport, ConversationTree
+│   └── transport/      # Shared types and headers
+│       ├── client/     # ClientTransport, ConversationTree, StreamRouter, decodeHistory
+│       └── server/     # ServerTransport, TurnManager, pipeStream
 ├── react/              # React hooks for any codec
 ├── vercel/             # Vercel AI SDK codec and transport adapters
 │   ├── codec/          # UIMessageCodec

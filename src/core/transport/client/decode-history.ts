@@ -22,10 +22,10 @@
 
 import type * as Ably from 'ably';
 
-import { HEADER_MSG_ID, HEADER_TURN_ID } from '../../constants.js';
-import type { Logger } from '../../logger.js';
-import { getHeaders } from '../../utils.js';
-import type { Codec, DecoderOutput, MessageAccumulator } from '../codec/types.js';
+import { HEADER_MSG_ID, HEADER_TURN_ID } from '../../../constants.js';
+import type { Logger } from '../../../logger.js';
+import { getHeaders } from '../../../utils.js';
+import type { Codec, DecoderOutput, MessageAccumulator } from '../../codec/types.js';
 import type { LoadHistoryOptions, PaginatedMessages } from './types.js';
 
 // ---------------------------------------------------------------------------

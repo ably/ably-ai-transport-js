@@ -16,8 +16,8 @@
  * `getMessages()` delegates to.
  */
 
-import { HEADER_FORK_OF, HEADER_PARENT } from '../../constants.js';
-import type { Logger } from '../../logger.js';
+import { HEADER_FORK_OF, HEADER_PARENT } from '../../../constants.js';
+import type { Logger } from '../../../logger.js';
 import type { ConversationNode, ConversationTree } from './types.js';
 
 // ---------------------------------------------------------------------------

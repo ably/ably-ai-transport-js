@@ -1,9 +1,9 @@
 /**
  * useMessageSync: wires transport message lifecycle events into useChat's setMessages.
  *
- * Subscribes to the transport's 'message' event and replaces messages state
- * with the transport's authoritative message list. Events fire immediately
- * on every store update (including during active streaming), so this hook
+ * Subscribes to the transport view's 'update' event and replaces messages state
+ * with the view's authoritative message list. Events fire immediately
+ * on every view update (including during active streaming), so this hook
  * keeps React state in sync in real time.
  *
  * Returns the unsubscribe function in the useEffect cleanup so handlers
@@ -26,8 +26,8 @@ export const useMessageSync = (
 ): void => {
   useEffect(() => {
     if (!transport) return;
-    const unsubscribe = transport.on('message', () => {
-      setMessages(() => transport.getMessages());
+    const unsubscribe = transport.view.on('update', () => {
+      setMessages(() => transport.view.flattenNodes().map((n) => n.message));
     });
     return unsubscribe;
   }, [transport, setMessages]);

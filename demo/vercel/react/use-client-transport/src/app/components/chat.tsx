@@ -7,8 +7,8 @@ import {
   useRegenerate,
   useEdit,
   useActiveTurns,
-  useHistory,
-  useConversationTree,
+  useView,
+  useTree,
   useAblyMessages,
 } from '@ably/ai-transport/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
@@ -37,12 +37,12 @@ export function Chat({ chatId, clientId, historyLimit }: ChatProps) {
     body: () => ({ id: chatId }),
   });
 
-  const tree = useConversationTree(transport);
+  const tree = useTree(transport);
+  const { nodes, hasOlder, loading, loadOlder } = useView(transport, { limit: historyLimit ?? 30 });
   const send = useSend(transport);
   const regenerate = useRegenerate(transport);
   const edit = useEdit(transport);
   const activeTurns = useActiveTurns(transport);
-  const history = useHistory(transport, { limit: historyLimit ?? 30 });
   const ablyMessages = useAblyMessages(transport);
   const queue = useMessageQueue(transport, send);
 
@@ -51,12 +51,11 @@ export function Chat({ chatId, clientId, historyLimit }: ChatProps) {
       <div className="flex flex-1 flex-col">
         <Header clientId={clientId} />
         <MessageList
-          messages={tree.messages}
-          transport={transport}
+          nodes={nodes}
           tree={tree}
-          hasNext={history.hasNext}
-          loading={history.loading}
-          onNext={() => history.next()}
+          hasOlder={hasOlder}
+          loading={loading}
+          onLoadOlder={loadOlder}
           onRegenerate={(id) => regenerate(id)}
           onEdit={(id, text) => edit(id, [userMessage(text)])}
         />
@@ -70,7 +69,7 @@ export function Chat({ chatId, clientId, historyLimit }: ChatProps) {
         />
       </div>
       <DebugPane
-        messages={tree.messages}
+        messages={nodes.map((n) => n.message)}
         ablyMessages={ablyMessages}
         activeTurns={activeTurns}
       />

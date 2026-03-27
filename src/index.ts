@@ -8,20 +8,18 @@ export type {
   ClientTransport,
   ClientTransportOptions,
   CloseOptions,
-  ConversationNode,
-  ConversationTree,
-  LoadHistoryOptions,
-  MessageWithHeaders,
   NewTurnOptions,
-  PaginatedMessages,
   SendOptions,
   ServerTransport,
   ServerTransportOptions,
   StreamResponseOptions,
   StreamResult,
+  Tree,
+  TreeNode,
   Turn,
   TurnEndReason,
   TurnLifecycleEvent,
+  View,
 } from './core/transport/index.js';
 export { buildTransportHeaders, createClientTransport, createServerTransport } from './core/transport/index.js';
 

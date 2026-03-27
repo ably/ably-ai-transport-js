@@ -2,37 +2,35 @@
 
 import { useRef, useEffect } from 'react';
 import type { UIMessage } from 'ai';
-import type { ClientTransport } from '@ably/ai-transport';
-import type { UIMessageChunk } from 'ai';
+import type { TreeNode } from '@ably/ai-transport';
 import { MessageBubble } from './message-bubble';
 
 interface MessageListProps {
-  messages: UIMessage[];
-  transport: ClientTransport<UIMessageChunk, UIMessage>;
-  hasNext: boolean;
+  nodes: TreeNode<UIMessage>[];
+  hasOlder: boolean;
   loading: boolean;
-  onNext: () => void;
+  onLoadOlder: () => void;
   onRegenerate: (messageId: string) => void;
 }
 
-export function MessageList({ messages, transport, hasNext, loading, onNext, onRegenerate }: MessageListProps) {
+export function MessageList({ nodes, hasOlder, loading, onLoadOlder, onRegenerate }: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const prevLastIdRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
-    const lastId = messages.length > 0 ? messages[messages.length - 1].id : undefined;
+    const lastId = nodes.length > 0 ? nodes[nodes.length - 1].message.id : undefined;
     if (lastId && lastId !== prevLastIdRef.current) {
       prevLastIdRef.current = lastId;
       endRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messages]);
+  }, [nodes]);
 
   const handleScroll = () => {
     const el = scrollRef.current;
-    if (!el || !hasNext || loading) return;
+    if (!el || !hasOlder || loading) return;
     if (el.scrollTop < 60) {
-      onNext();
+      onLoadOlder();
     }
   };
 
@@ -42,10 +40,10 @@ export function MessageList({ messages, transport, hasNext, loading, onNext, onR
       onScroll={handleScroll}
       className="flex-1 overflow-y-auto px-4 py-4 space-y-4"
     >
-      {hasNext && (
+      {hasOlder && (
         <div className="text-center">
           <button
-            onClick={onNext}
+            onClick={onLoadOlder}
             disabled={loading}
             className="text-xs text-zinc-500 hover:text-zinc-300 disabled:opacity-40 transition-colors"
           >
@@ -54,15 +52,15 @@ export function MessageList({ messages, transport, hasNext, loading, onNext, onR
         </div>
       )}
       {loading && <div className="text-center text-xs text-zinc-600 animate-pulse">Loading history...</div>}
-      {messages.length === 0 && !loading && (
+      {nodes.length === 0 && !loading && (
         <p className="text-sm text-zinc-600 text-center mt-20">Send a message to start chatting.</p>
       )}
-      {messages.map((msg) => (
+      {nodes.map(({ message, headers }) => (
         <MessageBubble
-          key={msg.id}
-          message={msg}
-          headers={transport.getMessageHeaders(msg)}
-          onRegenerate={msg.role === 'assistant' ? () => onRegenerate(msg.id) : undefined}
+          key={message.id}
+          message={message}
+          headers={headers}
+          onRegenerate={message.role === 'assistant' ? () => onRegenerate(message.id) : undefined}
         />
       ))}
       <div ref={endRef} />

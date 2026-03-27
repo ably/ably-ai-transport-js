@@ -46,18 +46,6 @@ export interface CancelRequest {
 }
 
 // ---------------------------------------------------------------------------
-// Message with headers
-// ---------------------------------------------------------------------------
-
-/** A domain message paired with its Ably transport headers. Used on the read path to snapshot conversation state (e.g. for HTTP POST bodies). */
-export interface MessageWithHeaders<TMessage> {
-  /** The domain message. */
-  message: TMessage;
-  /** Ably headers associated with this message (transport metadata, domain headers). */
-  headers?: Record<string, string>;
-}
-
-// ---------------------------------------------------------------------------
 // Server transport options
 // ---------------------------------------------------------------------------
 
@@ -80,14 +68,10 @@ export interface ServerTransportOptions<TEvent, TMessage> {
 // Turn options
 // ---------------------------------------------------------------------------
 
-/** Options for addMessages — per-operation overrides for message identity and branching. */
+/** Options for addMessages — per-operation overrides for attribution. */
 export interface AddMessageOptions {
   /** The user's clientId for attribution. */
   clientId?: string;
-  /** The msg-id of the immediately preceding message in this branch. */
-  parent?: string | null;
-  /** The msg-id of the message this one replaces (creates a fork). */
-  forkOf?: string;
 }
 
 /** Result of publishing user messages via addMessages. */
@@ -176,12 +160,12 @@ export interface Turn<TEvent, TMessage> {
 
   /**
    * Publish user messages to the channel, scoped to this turn.
-   * Each message is published with its own headers (including `x-ably-msg-id`
-   * for optimistic reconciliation with the client's inserts). Per-message
-   * headers from `MessageWithHeaders` override transport-generated defaults.
+   * Each node's `msgId`, `parentId`, and `forkOf` are used for message identity
+   * and branching. The node's `headers` override transport-generated defaults
+   * (e.g. for optimistic reconciliation with the client's inserts).
    * @returns The msg-ids of all published messages, in order.
    */
-  addMessages(messages: MessageWithHeaders<TMessage>[], options?: AddMessageOptions): Promise<AddMessagesResult>;
+  addMessages(messages: TreeNode<TMessage>[], options?: AddMessageOptions): Promise<AddMessagesResult>;
 
   /**
    * Pipe a ReadableStream through the encoder to the channel.
@@ -336,7 +320,7 @@ export interface LoadHistoryOptions {
 // ---------------------------------------------------------------------------
 
 /** A node in the conversation tree, representing a single domain message. */
-export interface ConversationNode<TMessage> {
+export interface TreeNode<TMessage> {
   /** The domain message. */
   message: TMessage;
   /** The x-ably-msg-id of this node — primary key in the tree. */
@@ -358,16 +342,17 @@ export interface ConversationNode<TMessage> {
 /**
  * Materializes a branching conversation tree from a flat oplog.
  *
- * Owns the conversation state — `flatten()` returns the linear message list
- * for the currently selected branches. The transport's `getMessages()` delegates
- * to `flatten()`.
+ * Owns the complete conversation state — every node from live messages and
+ * history. `flattenNodes()` returns the linear message list for the currently
+ * selected branches. Events fire for any change across the full tree.
  */
-export interface ConversationTree<TMessage> {
+export interface Tree<TMessage> {
   /**
    * Flatten the tree along the currently selected branches into
-   * a linear message list. This is what getMessages() returns.
+   * a linear list of conversation nodes. Each node carries the domain
+   * message, its transport-assigned msgId, and headers.
    */
-  flatten(): TMessage[];
+  flattenNodes(): TreeNode<TMessage>[];
 
   /**
    * Get all messages that are siblings (alternatives) at a given
@@ -384,19 +369,13 @@ export interface ConversationTree<TMessage> {
 
   /**
    * Select a sibling at a fork point by index. Updates the active branch.
-   * Calling flatten() after this returns the new linear thread.
+   * Calling flattenNodes() after this returns the new linear thread.
    * Index is clamped to `[0, siblings.length - 1]`.
    */
   select(msgId: string, index: number): void;
 
   /** Get a node by msgId, or undefined if not found. */
-  getNode(msgId: string): ConversationNode<TMessage> | undefined;
-
-  /**
-   * Get a node by codec message key (e.g. UIMessage.id), or undefined if
-   * not found. Uses a secondary index since the tree is keyed by x-ably-msg-id.
-   */
-  getNodeByKey(key: string): ConversationNode<TMessage> | undefined;
+  getNode(msgId: string): TreeNode<TMessage> | undefined;
 
   /** Get the stored headers for a node by msgId, or undefined if not found. */
   getHeaders(msgId: string): Record<string, string> | undefined;
@@ -413,6 +392,60 @@ export interface ConversationTree<TMessage> {
 
   /** Remove a message from the tree. */
   delete(msgId: string): void;
+
+  // --- Events ---
+
+  /** Active turn IDs grouped by clientId (all turns, not just visible). */
+  getActiveTurnIds(): Map<string, Set<string>>;
+
+  /** Subscribe to tree structure changes (insert, update, delete, or branch selection). */
+  on(event: 'update', handler: () => void): () => void;
+
+  /** Subscribe to raw Ably messages arriving on the channel. */
+  on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
+
+  /** Subscribe to turn lifecycle events (start and end). */
+  on(event: 'turn', handler: (event: TurnLifecycleEvent) => void): () => void;
+}
+
+// ---------------------------------------------------------------------------
+// View — windowed projection over the tree
+// ---------------------------------------------------------------------------
+
+/**
+ * A paginated, branch-aware projection of the conversation tree.
+ *
+ * Returns only the visible portion of the selected branch. New live messages
+ * appear immediately; older messages are revealed progressively via
+ * `loadOlder()`. Events are scoped to the visible window — subscribers
+ * are only notified when the visible output changes.
+ */
+export interface View<TMessage> {
+  /** Visible nodes along the selected branch, filtered by the pagination window. */
+  flattenNodes(): TreeNode<TMessage>[];
+
+  /** Whether there are older messages that can be loaded or revealed. */
+  hasOlder(): boolean;
+
+  /**
+   * Reveal older messages. Loads from channel history if the tree doesn't
+   * have enough, then advances the window to show up to `limit` more messages.
+   * Emits 'update' when the visible list changes.
+   * @param limit - Maximum number of older messages to reveal. Defaults to 100.
+   */
+  loadOlder(limit?: number): Promise<void>;
+
+  /** Active turn IDs for turns with visible messages, grouped by clientId. */
+  getActiveTurnIds(): Map<string, Set<string>>;
+
+  /** The visible message list changed (new visible node, branch switch, window shift). */
+  on(event: 'update', handler: () => void): () => void;
+
+  /** A raw Ably message arrived that corresponds to a visible node. */
+  on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
+
+  /** A turn event occurred for a turn with visible messages in the window. */
+  on(event: 'turn', handler: (event: TurnLifecycleEvent) => void): () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -433,6 +466,12 @@ export interface TurnEntry<TEvent> {
 
 /** Client-side transport that manages conversation state over an Ably channel. */
 export interface ClientTransport<TEvent, TMessage> {
+  /** The complete conversation tree — all known nodes, events for any change. */
+  readonly tree: Tree<TMessage>;
+
+  /** The paginated, branch-aware view for rendering — events scoped to visible messages. */
+  readonly view: View<TMessage>;
+
   /**
    * Send one or more messages and start a new turn. Returns a handle to the
    * active turn with the decoded event stream and a cancel function.
@@ -458,12 +497,6 @@ export interface ClientTransport<TEvent, TMessage> {
    */
   edit(messageId: string, newMessages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveTurn<TEvent>>;
 
-  /**
-   * Access the conversation tree for branch navigation.
-   * The tree is updated in real-time by the transport's channel subscription.
-   */
-  getTree(): ConversationTree<TMessage>;
-
   /** Cancel turns matching the filter. Defaults to `{ own: true }` (all own turns). */
   cancel(filter?: CancelFilter): Promise<void>;
 
@@ -475,52 +508,10 @@ export interface ClientTransport<TEvent, TMessage> {
   waitForTurn(filter?: CancelFilter): Promise<void>;
 
   /**
-   * Subscribe to message store changes or raw Ably message additions.
-   * The handler is called with no arguments — call `getMessages()` or
-   * `getAblyMessages()` for the current state. Returns an unsubscribe function.
-   */
-  on(event: 'message' | 'ably-message', handler: () => void): () => void;
-
-  /** Subscribe to turn lifecycle events (start, end). Returns an unsubscribe function. */
-  on(event: 'turn', handler: (event: TurnLifecycleEvent) => void): () => void;
-
-  /**
    * Subscribe to non-fatal transport errors. These indicate something went
    * wrong but the transport is still operational. Returns an unsubscribe function.
    */
   on(event: 'error', handler: (error: Ably.ErrorInfo) => void): () => void;
-
-  /**
-   * Get the accumulated raw Ably messages, in chronological order.
-   * Includes both live messages and history-loaded messages.
-   */
-  getAblyMessages(): Ably.InboundMessage[];
-
-  /** Get all currently active turns, keyed by clientId. */
-  getActiveTurnIds(): Map<string, Set<string>>;
-
-  /** Get Ably headers associated with a message via the conversation tree. */
-  getMessageHeaders(message: TMessage): Record<string, string> | undefined;
-
-  /** Get the current message list (follows selected branches). Updated by message lifecycle events. */
-  getMessages(): TMessage[];
-
-  /**
-   * Snapshot the current message list as message + headers pairs.
-   * Convenience for building the `history` body field in HTTP POSTs.
-   */
-  getMessagesWithHeaders(): MessageWithHeaders<TMessage>[];
-
-  /**
-   * Load a page of conversation history from the channel, decoded through
-   * the transport's codec. Uses `untilAttach` for gapless continuity with
-   * the live subscription.
-   *
-   * History messages are inserted into the conversation tree and trigger
-   * a notification. Returns a PaginatedMessages handle — call `next()`
-   * for older pages.
-   */
-  history(options?: LoadHistoryOptions): Promise<PaginatedMessages<TMessage>>;
 
   /**
    * Tear down the transport: unsubscribe from the channel, close active

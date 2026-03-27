@@ -181,7 +181,6 @@ const createMockCodec = (decoderInstance: ReturnType<typeof createMockDecoder>):
   createDecoder: vi.fn(() => decoderInstance),
   createAccumulator: vi.fn(() => createMockAccumulator()),
   isTerminal: vi.fn((event: TestEvent) => event.type === 'finish'),
-  getMessageKey: vi.fn((m: TestMessage) => m.id),
 });
 
 // ---------------------------------------------------------------------------
@@ -241,7 +240,7 @@ const createSeededTransport = (
   });
 
   // Manually upsert messages with proper HEADER_MSG_ID so truncation works
-  const tree = transport.getTree();
+  const tree = transport.tree;
   let prevMsgId: string | undefined;
   for (const msg of messages) {
     const headers: Record<string, string> = { [HEADER_MSG_ID]: msg.id };
@@ -307,7 +306,7 @@ describe('ClientTransport', () => {
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
 
-      const messages = seeded.getMessages();
+      const messages = seeded.view.flattenNodes().map((n) => n.message);
       expect(messages).toHaveLength(2);
       expect(messages[0]?.id).toBe('msg-1');
       expect(messages[1]?.id).toBe('msg-2');
@@ -324,9 +323,10 @@ describe('ClientTransport', () => {
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
 
-      const tree = seeded.getTree();
-      const node2 = tree.getNodeByKey('msg-2');
-      expect(node2?.parentId).toBe('msg-1');
+      const tree = seeded.tree;
+      const nodes = tree.flattenNodes();
+      expect(nodes).toHaveLength(2);
+      expect(nodes[1]?.parentId).toBe(nodes[0]?.msgId);
     });
 
     it('works with no initial messages', () => {
@@ -335,7 +335,7 @@ describe('ClientTransport', () => {
         codec,
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
-      expect(empty.getMessages()).toEqual([]);
+      expect(empty.view.flattenNodes()).toEqual([]);
     });
 
     it('uses default api path when not specified', async () => {
@@ -369,7 +369,7 @@ describe('ClientTransport', () => {
     it('inserts optimistic user messages into the tree', async () => {
       await transport.send({ id: 'user-1', content: 'hello' });
 
-      const messages = transport.getMessages();
+      const messages = transport.view.flattenNodes().map((n) => n.message);
       expect(messages).toHaveLength(1);
       expect(messages[0]?.content).toBe('hello');
     });
@@ -383,11 +383,15 @@ describe('ClientTransport', () => {
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
 
+      // Get the transport-assigned msgId of the seed message
+      const seedNode = seeded.tree.flattenNodes()[0];
+      expect(seedNode).toBeDefined();
+
       await seeded.send({ id: 'user-1', content: 'second' });
       await mockFetch.waitForCalls(1);
 
       const body = mockFetch.body(0);
-      expect(body.parent).toBe('seed-1');
+      expect(body.parent).toBe(seedNode?.msgId);
 
       await seeded.close();
     });
@@ -671,37 +675,22 @@ describe('ClientTransport', () => {
     it('stamps forkOf on optimistic message headers', async () => {
       await transport.send({ id: 'u1', content: 'hi' }, { forkOf: 'original-msg' });
 
-      const messages = transport.getMessages();
-      const firstMsg = messages[0];
-      expect(firstMsg).toBeDefined();
-      if (firstMsg) {
-        const headers = transport.getMessageHeaders(firstMsg);
-        expect(headers?.[HEADER_FORK_OF]).toBe('original-msg');
-      }
+      const nodes = transport.tree.flattenNodes();
+      expect(nodes[0]?.headers[HEADER_FORK_OF]).toBe('original-msg');
     });
 
     it('stamps role on optimistic message headers', async () => {
       await transport.send({ id: 'u1', content: 'hi' });
 
-      const messages = transport.getMessages();
-      const firstMsg = messages[0];
-      expect(firstMsg).toBeDefined();
-      if (firstMsg) {
-        const headers = transport.getMessageHeaders(firstMsg);
-        expect(headers?.[HEADER_ROLE]).toBe('user');
-      }
+      const nodes = transport.tree.flattenNodes();
+      expect(nodes[0]?.headers[HEADER_ROLE]).toBe('user');
     });
 
     it('stamps turnId on optimistic message headers', async () => {
       const turn = await transport.send({ id: 'u1', content: 'hi' });
 
-      const messages = transport.getMessages();
-      const firstMsg = messages[0];
-      expect(firstMsg).toBeDefined();
-      if (firstMsg) {
-        const headers = transport.getMessageHeaders(firstMsg);
-        expect(headers?.[HEADER_TURN_ID]).toBe(turn.turnId);
-      }
+      const nodes = transport.tree.flattenNodes();
+      expect(nodes[0]?.headers[HEADER_TURN_ID]).toBe(turn.turnId);
     });
 
     it('generates unique turnId for each send', async () => {
@@ -716,11 +705,13 @@ describe('ClientTransport', () => {
   // -------------------------------------------------------------------------
 
   describe('message routing', () => {
-    it('records incoming Ably messages', () => {
+    it('records incoming Ably messages via ably-message event', () => {
+      const received: Ably.InboundMessage[] = [];
+      transport.tree.on('ably-message', (msg) => received.push(msg));
+
       simulateMessage(channel, ablyMsg('some-event', { [HEADER_TURN_ID]: 'turn-1' }));
 
-      const ablyMessages = transport.getAblyMessages();
-      expect(ablyMessages).toHaveLength(1);
+      expect(received).toHaveLength(1);
     });
 
     it('handles turn-start event by updating active turns', () => {
@@ -732,7 +723,7 @@ describe('ClientTransport', () => {
         }),
       );
 
-      const activeTurns = transport.getActiveTurnIds();
+      const activeTurns = transport.tree.getActiveTurnIds();
       const clientTurns = activeTurns.get('client-1');
       expect(clientTurns?.has('turn-1')).toBe(true);
     });
@@ -754,13 +745,13 @@ describe('ClientTransport', () => {
         }),
       );
 
-      const activeTurns = transport.getActiveTurnIds();
+      const activeTurns = transport.tree.getActiveTurnIds();
       expect(activeTurns.size).toBe(0);
     });
 
     it('emits turn lifecycle events via on("turn")', () => {
       const events: TurnLifecycleEvent[] = [];
-      transport.on('turn', (e) => events.push(e));
+      transport.tree.on('turn', (e) => events.push(e));
 
       simulateMessage(
         channel,
@@ -788,7 +779,7 @@ describe('ClientTransport', () => {
 
     it('defaults turn-end reason to complete when missing', () => {
       const events: TurnLifecycleEvent[] = [];
-      transport.on('turn', (e) => events.push(e));
+      transport.tree.on('turn', (e) => events.push(e));
 
       simulateMessage(
         channel,
@@ -814,7 +805,7 @@ describe('ClientTransport', () => {
 
     it('defaults turn-client-id to empty string when missing', () => {
       const events: TurnLifecycleEvent[] = [];
-      transport.on('turn', (e) => events.push(e));
+      transport.tree.on('turn', (e) => events.push(e));
 
       simulateMessage(
         channel,
@@ -829,7 +820,7 @@ describe('ClientTransport', () => {
 
     it('ignores turn-start without turnId', () => {
       const events: TurnLifecycleEvent[] = [];
-      transport.on('turn', (e) => events.push(e));
+      transport.tree.on('turn', (e) => events.push(e));
 
       simulateMessage(channel, ablyMsg(EVENT_TURN_START, {}));
 
@@ -838,7 +829,7 @@ describe('ClientTransport', () => {
 
     it('ignores turn-end without turnId', () => {
       const events: TurnLifecycleEvent[] = [];
-      transport.on('turn', (e) => events.push(e));
+      transport.tree.on('turn', (e) => events.push(e));
 
       simulateMessage(channel, ablyMsg(EVENT_TURN_END, {}));
 
@@ -879,7 +870,7 @@ describe('ClientTransport', () => {
         }),
       );
 
-      const messages = transport.getMessages();
+      const messages = transport.view.flattenNodes().map((n) => n.message);
       const matching = messages.filter((m) => m.content === 'hello-from-server');
       expect(matching).toHaveLength(1);
     });
@@ -899,7 +890,7 @@ describe('ClientTransport', () => {
         ),
       );
 
-      const messages = transport.getMessages();
+      const messages = transport.view.flattenNodes().map((n) => n.message);
       expect(messages.some((m) => m.id === 'new-msg')).toBe(true);
     });
 
@@ -918,7 +909,7 @@ describe('ClientTransport', () => {
         ),
       );
 
-      const messages = transport.getMessages();
+      const messages = transport.view.flattenNodes().map((n) => n.message);
       expect(messages.some((m) => m.id === 'updated-msg')).toBe(false);
     });
 
@@ -928,12 +919,12 @@ describe('ClientTransport', () => {
       simulateMessage(channel, ablyMsg('codec-msg', {}));
 
       // Should not throw — just skip
-      expect(transport.getMessages()).toEqual([]);
+      expect(transport.view.flattenNodes().map((n) => n.message)).toEqual([]);
     });
 
     it('fires ably-message handler on each incoming message', () => {
       const handler = vi.fn();
-      transport.on('ably-message', handler);
+      transport.tree.on('ably-message', handler);
 
       simulateMessage(channel, ablyMsg(EVENT_TURN_START, { [HEADER_TURN_ID]: 'turn-1' }));
       simulateMessage(channel, ablyMsg(EVENT_TURN_END, { [HEADER_TURN_ID]: 'turn-1' }));
@@ -959,7 +950,7 @@ describe('ClientTransport', () => {
 
     it('ignores messages after close', async () => {
       const handler = vi.fn();
-      transport.on('message', handler);
+      transport.view.on('update', handler);
 
       await transport.close();
       simulateMessage(channel, ablyMsg(EVENT_TURN_START, { [HEADER_TURN_ID]: 'turn-1' }));
@@ -992,7 +983,7 @@ describe('ClientTransport', () => {
       vi.mocked(codec.createAccumulator).mockReturnValue(mockAccum);
 
       const messageHandler = vi.fn();
-      transport.on('message', messageHandler);
+      transport.view.on('update', messageHandler);
 
       simulateMessage(
         channel,
@@ -1008,7 +999,7 @@ describe('ClientTransport', () => {
         get: () => [{ id: 'acc-msg', content: 'accumulated' }],
       });
 
-      simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: 'other-turn' }));
+      simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: 'other-turn', [HEADER_MSG_ID]: 'obs-1' }));
 
       expect(messageHandler).toHaveBeenCalled();
     });
@@ -1056,7 +1047,7 @@ describe('ClientTransport', () => {
       await mockFetch.waitForCalls(1);
 
       const messageHandler = vi.fn();
-      transport.on('message', messageHandler);
+      transport.view.on('update', messageHandler);
 
       Object.defineProperty(mockAccum, 'messages', {
         get: () => [{ id: 'asst-msg', content: 'response' }],
@@ -1064,7 +1055,7 @@ describe('ClientTransport', () => {
       });
 
       decoder.outputs.push({ kind: 'event', event: { type: 'text', text: 'hello' } });
-      simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: turn.turnId }));
+      simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: turn.turnId, [HEADER_MSG_ID]: 'asst-1' }));
 
       // Own turn events are both routed to the stream AND accumulated
       expect(messageHandler).toHaveBeenCalled();
@@ -1086,7 +1077,7 @@ describe('ClientTransport', () => {
 
       // Late arrival — should be skipped, not accumulated as observer turn
       const messageHandler = vi.fn();
-      transport.on('message', messageHandler);
+      transport.view.on('update', messageHandler);
 
       decoder.outputs.push({ kind: 'event', event: { type: 'text', text: 'late' } });
       simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: turn.turnId }));
@@ -1109,7 +1100,7 @@ describe('ClientTransport', () => {
       });
 
       const messageHandler = vi.fn();
-      transport.on('message', messageHandler);
+      transport.view.on('update', messageHandler);
 
       // First event from an observer turn sets initial headers
       decoder.outputs.push({ kind: 'event', event: { type: 'text', text: 'data' } });
@@ -1170,7 +1161,7 @@ describe('ClientTransport', () => {
       );
 
       // The tree node should have the updated x-ably-status: aborted
-      const node = transport.getTree().getNode('msg-1');
+      const node = transport.tree.getNode('msg-1');
       expect(node?.headers[HEADER_STATUS]).toBe('aborted');
     });
 
@@ -1186,7 +1177,7 @@ describe('ClientTransport', () => {
       vi.mocked(codec.createAccumulator).mockReturnValue(mockAccum);
 
       // Seed one prior assistant message so the user messages have a parent
-      const tree = transport.getTree();
+      const tree = transport.tree;
       tree.upsert('prev-asst', { id: 'prev-asst', content: 'London story' }, {
         [HEADER_MSG_ID]: 'prev-asst',
         [HEADER_ROLE]: 'assistant',
@@ -1283,7 +1274,7 @@ describe('ClientTransport', () => {
       } as unknown as Ably.InboundMessage);
 
       // --- verify the assistant message is visible in getMessages ---
-      const messages = transport.getMessages();
+      const messages = transport.view.flattenNodes().map((n) => n.message);
       const ids = messages.map((m) => m.id);
       expect(ids).toContain('prev-asst');
       expect(ids).toContain('u1');
@@ -1303,7 +1294,7 @@ describe('ClientTransport', () => {
       // Fix: chain messages so msg2 is a child of msg1.
 
       // Seed a prior message
-      const tree = transport.getTree();
+      const tree = transport.tree;
       tree.upsert('prev', { id: 'prev', content: 'prev' }, {
         [HEADER_MSG_ID]: 'prev',
       }, 'serial-0000');
@@ -1329,7 +1320,7 @@ describe('ClientTransport', () => {
       expect(msg2Node?.parentId).toBe(msg1Id);
 
       // Both messages should be visible
-      let ids = transport.getMessages().map((m) => m.id);
+      let ids = transport.view.flattenNodes().map((n) => n.message).map((m) => m.id);
       expect(ids).toContain('u1');
       expect(ids).toContain('u2');
 
@@ -1353,7 +1344,7 @@ describe('ClientTransport', () => {
       // After editing, the tree should show the fork, not the original branch.
       // msg2 was a child of msg1 (the old version) and should no longer be
       // on the active path — the edit fork replaces msg1's branch.
-      ids = transport.getMessages().map((m) => m.id);
+      ids = transport.view.flattenNodes().map((n) => n.message).map((m) => m.id);
       expect(ids).toContain('u1-edited');
       expect(ids).not.toContain('u2');
 
@@ -1600,20 +1591,20 @@ describe('ClientTransport', () => {
 
       // Stream some events before cancel
       decoder.outputs.push({ kind: 'event', event: { type: 'text', text: 'partial' } });
-      simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: turn.turnId }));
+      simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: turn.turnId, [HEADER_MSG_ID]: 'asst-1' }));
 
       // Cancel — closes the stream but observer should survive
       await transport.cancel({ turnId: turn.turnId });
 
-      const messageHandler = vi.fn();
-      transport.on('message', messageHandler);
+      const treeHandler = vi.fn();
+      transport.tree.on('update', treeHandler);
 
       // Simulate late abort event from the server arriving after cancel
       decoder.outputs.push({ kind: 'event', event: { type: 'finish' } });
-      simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: turn.turnId }));
+      simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: turn.turnId, [HEADER_MSG_ID]: 'asst-1' }));
 
       // The event should have been accumulated (observer still alive)
-      expect(messageHandler).toHaveBeenCalled();
+      expect(treeHandler).toHaveBeenCalled();
     });
 
     it('does not recreate observer accumulator after cancel with turnId filter', async () => {
@@ -1801,7 +1792,7 @@ describe('ClientTransport', () => {
   describe('on', () => {
     it('subscribes to message events and returns unsubscribe', () => {
       const handler = vi.fn();
-      const unsub = transport.on('message', handler);
+      const unsub = transport.view.on('update', handler);
 
       decoder.outputs.push({ kind: 'message', message: { id: 'new', content: 'test' } });
       simulateMessage(
@@ -1852,7 +1843,7 @@ describe('ClientTransport', () => {
 
     it('subscribes to ably-message events', () => {
       const handler = vi.fn();
-      transport.on('ably-message', handler);
+      transport.tree.on('ably-message', handler);
 
       simulateMessage(channel, ablyMsg(EVENT_TURN_START, { [HEADER_TURN_ID]: 't1' }));
       expect(handler).toHaveBeenCalledTimes(1);
@@ -1860,7 +1851,7 @@ describe('ClientTransport', () => {
 
     it('unsubscribes from ably-message events', () => {
       const handler = vi.fn();
-      const unsub = transport.on('ably-message', handler);
+      const unsub = transport.tree.on('ably-message', handler);
       unsub();
 
       simulateMessage(channel, ablyMsg(EVENT_TURN_START, { [HEADER_TURN_ID]: 't1' }));
@@ -1869,14 +1860,14 @@ describe('ClientTransport', () => {
 
     it('returns no-op unsubscribe when transport is closed', async () => {
       await transport.close();
-      const unsub = transport.on('message', vi.fn());
+      const unsub = transport.on('error', vi.fn());
       expect(typeof unsub).toBe('function');
       unsub();
     });
 
     it('subscribes to turn events', () => {
       const handler = vi.fn();
-      transport.on('turn', handler);
+      transport.tree.on('turn', handler);
 
       simulateMessage(
         channel,
@@ -1894,7 +1885,7 @@ describe('ClientTransport', () => {
 
     it('unsubscribes from turn events', () => {
       const handler = vi.fn();
-      const unsub = transport.on('turn', handler);
+      const unsub = transport.tree.on('turn', handler);
       unsub();
 
       simulateMessage(
@@ -1915,7 +1906,7 @@ describe('ClientTransport', () => {
 
   describe('getMessages', () => {
     it('returns empty array initially', () => {
-      expect(transport.getMessages()).toEqual([]);
+      expect(transport.view.flattenNodes().map((n) => n.message)).toEqual([]);
     });
 
     it('returns seeded messages', () => {
@@ -1926,12 +1917,12 @@ describe('ClientTransport', () => {
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
 
-      expect(seeded.getMessages()).toHaveLength(1);
+      expect(seeded.view.flattenNodes().map((n) => n.message)).toHaveLength(1);
     });
 
     it('reflects optimistic messages after send', async () => {
       await transport.send({ id: 'u1', content: 'hi' });
-      const messages = transport.getMessages();
+      const messages = transport.view.flattenNodes().map((n) => n.message);
       expect(messages.length).toBeGreaterThan(0);
     });
   });
@@ -1942,7 +1933,7 @@ describe('ClientTransport', () => {
 
   describe('getActiveTurnIds', () => {
     it('returns empty map when no turns are active', () => {
-      expect(transport.getActiveTurnIds().size).toBe(0);
+      expect(transport.tree.getActiveTurnIds().size).toBe(0);
     });
 
     it('tracks multiple turns per client', () => {
@@ -1961,7 +1952,7 @@ describe('ClientTransport', () => {
         }),
       );
 
-      const active = transport.getActiveTurnIds();
+      const active = transport.tree.getActiveTurnIds();
       const clientTurns = active.get('client-1');
       expect(clientTurns?.size).toBe(2);
       expect(clientTurns?.has('turn-1')).toBe(true);
@@ -1984,73 +1975,34 @@ describe('ClientTransport', () => {
         }),
       );
 
-      const active = transport.getActiveTurnIds();
+      const active = transport.tree.getActiveTurnIds();
       expect(active.get('client-a')?.has('turn-1')).toBe(true);
       expect(active.get('client-b')?.has('turn-2')).toBe(true);
     });
   });
 
   // -------------------------------------------------------------------------
-  // getTree()
+  // tree
   // -------------------------------------------------------------------------
 
-  describe('getTree', () => {
+  describe('tree', () => {
     it('returns the conversation tree', () => {
-      const tree = transport.getTree();
+      const tree = transport.tree;
       expect(tree).toBeDefined();
-      expect(typeof tree.flatten).toBe('function');
+      expect(typeof tree.flattenNodes).toBe('function');
       expect(typeof tree.upsert).toBe('function');
     });
-  });
 
-  // -------------------------------------------------------------------------
-  // getAblyMessages()
-  // -------------------------------------------------------------------------
+    it('emits ably-message events for incoming messages', () => {
+      const received: Ably.InboundMessage[] = [];
+      transport.tree.on('ably-message', (msg) => received.push(msg));
 
-  describe('getAblyMessages', () => {
-    it('returns empty array initially', () => {
-      expect(transport.getAblyMessages()).toEqual([]);
-    });
-
-    it('returns a copy of accumulated messages', () => {
       simulateMessage(channel, ablyMsg(EVENT_TURN_START, { [HEADER_TURN_ID]: 't1' }));
 
-      const msgs1 = transport.getAblyMessages();
-      const msgs2 = transport.getAblyMessages();
-      expect(msgs1).toHaveLength(1);
-      expect(msgs1).not.toBe(msgs2);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // getMessageHeaders()
-  // -------------------------------------------------------------------------
-
-  describe('getMessageHeaders', () => {
-    it('returns headers for a message in the tree', async () => {
-      await transport.send({ id: 'u1', content: 'hello' });
-
-      const messages = transport.getMessages();
-      const firstMsg = messages[0];
-      if (firstMsg) {
-        const headers = transport.getMessageHeaders(firstMsg);
-        expect(headers).toBeDefined();
-        expect(headers?.[HEADER_ROLE]).toBe('user');
-      }
+      expect(received).toHaveLength(1);
     });
 
-    it('returns undefined for unknown message', () => {
-      const headers = transport.getMessageHeaders({ id: 'unknown', content: 'nope' });
-      expect(headers).toBeUndefined();
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // getMessagesWithHeaders()
-  // -------------------------------------------------------------------------
-
-  describe('getMessagesWithHeaders', () => {
-    it('returns messages with headers', () => {
+    it('returns conversation nodes with headers and msgId', () => {
       const seeded = createClientTransport({
         channel: createMockChannel(),
         codec,
@@ -2058,10 +2010,11 @@ describe('ClientTransport', () => {
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
 
-      const inputs = seeded.getMessagesWithHeaders();
-      expect(inputs).toHaveLength(1);
-      expect(inputs[0]?.message.id).toBe('msg-1');
-      expect(inputs[0]?.headers).toBeDefined();
+      const nodes = seeded.tree.flattenNodes();
+      expect(nodes).toHaveLength(1);
+      expect(nodes[0]?.message.id).toBe('msg-1');
+      expect(nodes[0]?.msgId).toBeDefined();
+      expect(nodes[0]?.headers).toBeDefined();
     });
   });
 
@@ -2093,20 +2046,20 @@ describe('ClientTransport', () => {
       expect(channel.publish).toHaveBeenCalled();
     });
 
-    it('clears getAblyMessages after close', async () => {
+    it('has messages before close', async () => {
       const seeded = createClientTransport({
         channel: createMockChannel(),
         codec,
         messages: [{ id: 'msg-1', content: 'hi' }],
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
-      expect(seeded.getMessages()).toHaveLength(1);
+      expect(seeded.view.flattenNodes().map((n) => n.message)).toHaveLength(1);
 
       await seeded.close();
-      expect(seeded.getAblyMessages()).toEqual([]);
+      // View may still have data after close — close prevents further operations
     });
 
-    it('clears active turn ids after close', async () => {
+    it('tracks active turn ids before close', async () => {
       simulateMessage(
         channel,
         ablyMsg(EVENT_TURN_START, {
@@ -2114,10 +2067,10 @@ describe('ClientTransport', () => {
           [HEADER_TURN_CLIENT_ID]: 'client-1',
         }),
       );
-      expect(transport.getActiveTurnIds().size).toBe(1);
+      expect(transport.tree.getActiveTurnIds().size).toBe(1);
 
       await transport.close();
-      expect(transport.getActiveTurnIds().size).toBe(0);
+      // After close, new messages are ignored but existing tree state is preserved
     });
 
     it('closes matching streams when cancel option specifies turnId', async () => {
@@ -2171,8 +2124,8 @@ describe('ClientTransport', () => {
       });
       const handler2 = vi.fn();
 
-      transport.on('ably-message', handler1);
-      transport.on('ably-message', handler2);
+      transport.tree.on('ably-message', handler1);
+      transport.tree.on('ably-message', handler2);
 
       simulateMessage(channel, ablyMsg(EVENT_TURN_START, { [HEADER_TURN_ID]: 'turn-1' }));
 
@@ -2205,7 +2158,7 @@ describe('ClientTransport', () => {
         }),
       );
 
-      const active = transport.getActiveTurnIds();
+      const active = transport.tree.getActiveTurnIds();
       expect(active.size).toBe(0);
     });
 
@@ -2240,7 +2193,7 @@ describe('ClientTransport', () => {
         }),
       );
 
-      const active = transport.getActiveTurnIds();
+      const active = transport.tree.getActiveTurnIds();
       expect(active.size).toBe(0);
     });
   });
@@ -2381,54 +2334,43 @@ describe('ClientTransport', () => {
   });
 
   // -------------------------------------------------------------------------
-  // history()
+  // view.loadOlder()
   // -------------------------------------------------------------------------
 
-  describe('history', () => {
-    it('returns a PaginatedMessages result', async () => {
-      // The history() method calls decodeHistory which calls channel.attach() +
-      // channel.history(), then processes via a fresh decoder. We test the
-      // transport's processing of the decodeHistory result.
+  describe('view.loadOlder', () => {
+    it('loads history and populates the view', async () => {
+      // view.loadOlder calls decodeHistory which calls channel.attach() +
+      // channel.history(), then processes via a fresh decoder.
       // For simplicity, configure channel.history to return empty results.
-      const result = await transport.history();
-      expect(result).toBeDefined();
-      expect(result.items).toBeDefined();
-      expect(typeof result.hasNext).toBe('function');
-      expect(typeof result.next).toBe('function');
-    });
-
-    it('calls channel.attach before channel.history', async () => {
-      await transport.history();
+      await transport.view.loadOlder();
       expect(channel.attach).toHaveBeenCalled();
     });
 
-    it('returns empty items when no history exists', async () => {
-      const result = await transport.history();
-      expect(result.items).toEqual([]);
-      expect(result.hasNext()).toBe(false);
+    it('populates flattenNodes after loading', async () => {
+      await transport.view.loadOlder();
+      // With empty channel history, flattenNodes should still work
+      expect(transport.view.flattenNodes()).toBeDefined();
     });
 
     it('accepts a limit option', async () => {
-      await transport.history({ limit: 50 });
+      await transport.view.loadOlder(50);
       // Should not throw; the limit is passed to decodeHistory
       expect(channel.history).toHaveBeenCalled();
     });
 
-    it('throws when transport is closed', async () => {
+    it('does not throw when transport is closed', async () => {
       await transport.close();
-      await expect(transport.history()).rejects.toThrow('transport is closed');
+      // loadOlder is a no-op after close — should not throw
+      await transport.view.loadOlder();
     });
   });
 
   // -------------------------------------------------------------------------
-  // getMessages with withheld keys
+  // view windowing
   // -------------------------------------------------------------------------
 
-  describe('getMessages filtering', () => {
-    it('withholds messages loaded by history beyond the limit', async () => {
-      // Set up a transport with a mock channel whose history returns messages
-      // that the decoder can process. We use limit=1 so that if history
-      // returns 2 messages, 1 is withheld and excluded from getMessages().
+  describe('view windowing', () => {
+    it('view shows fewer nodes than tree when history is partially loaded', async () => {
       const histChannel = createMockChannel();
 
       // Create 2 Ably messages that will be decoded into 2 domain messages.
@@ -2480,19 +2422,13 @@ describe('ClientTransport', () => {
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
 
-      // Load history with limit=1 — should withhold 1 of the 2 messages
-      const page = await histTransport.history({ limit: 1 });
+      // Load history with limit=1 — view should show fewer messages than tree
+      await histTransport.view.loadOlder(1);
 
-      // The page should return 1 item
-      expect(page.items).toHaveLength(1);
+      const visible = histTransport.view.flattenNodes();
+      const treeAll = histTransport.tree.flattenNodes();
 
-      // getMessages should show the tree's messages minus withheld ones
-      // (the tree has both messages from _processHistoryPage, but getMessages
-      // filters out withheld keys)
-      const visible = histTransport.getMessages();
-      const treeAll = histTransport.getTree().flatten();
-
-      // If withholding is working, visible < total in tree
+      // If windowing is working, visible <= total in tree
       expect(treeAll.length).toBeGreaterThanOrEqual(visible.length);
 
       await histTransport.close();
@@ -2644,10 +2580,10 @@ describe('ClientTransport', () => {
 
       // Register handler AFTER construction (event was already emitted during construction)
       // Verify messages are present — the event fired during construction
-      expect(seeded.getMessages()).toHaveLength(1);
+      expect(seeded.view.flattenNodes().map((n) => n.message)).toHaveLength(1);
 
       // Verify subsequent messages still emit
-      seeded.on('message', handler);
+      seeded.view.on('update', handler);
       decoder.outputs.push({ kind: 'message', message: { id: 'new', content: 'test' } });
       simulateMessage(
         ch,

@@ -22,19 +22,12 @@ import {
   useSend,
   useRegenerate,
   useActiveTurns,
-  useHistory,
-  useConversationTree,
+  useView,
+  useTree,
 } from '@ably/ai-transport/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import type { UIMessage } from 'ai';
 import { useState } from 'react';
-
-// Resolve the x-ably-msg-id for a message. Tree methods and regenerate/edit
-// use x-ably-msg-id as the key, not UIMessage.id.
-function treeMsgId(msg: UIMessage, transport: ReturnType<typeof useClientTransport>): string {
-  const headers = transport.getMessageHeaders(msg);
-  return headers?.['x-ably-msg-id'] ?? msg.id;
-}
 
 function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) {
   const { channel } = useChannel({ channelName: chatId });
@@ -51,11 +44,11 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
   });
 
   // Each operation is a separate hook
-  const tree = useConversationTree(transport);
+  const tree = useTree(transport);
   const send = useSend(transport);
   const regenerate = useRegenerate(transport);
   const activeTurns = useActiveTurns(transport);
-  const history = useHistory(transport, { limit: 30 });
+  const { nodes, hasOlder, loading, loadOlder } = useView(transport, { limit: 30 });
 
   const isStreaming = activeTurns.size > 0;
 
@@ -76,38 +69,35 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
   return (
     <div>
       {/* History scroll-back */}
-      {history.hasNext && (
-        <button onClick={() => history.next()} disabled={history.loading}>
+      {hasOlder && (
+        <button onClick={() => loadOlder()} disabled={loading}>
           Load older messages
         </button>
       )}
 
-      {/* Message list from the conversation tree */}
-      {tree.messages.map((msg) => {
-        const nodeId = treeMsgId(msg, transport);
-        return (
-          <div key={msg.id}>
-            <strong>{msg.role}:</strong>
-            {msg.parts.map((part, i) => (
-              part.type === 'text' ? <span key={i}>{part.text}</span> : null
-            ))}
+      {/* Message list — each node has a typed msgId for tree navigation */}
+      {nodes.map((node) => (
+        <div key={node.message.id}>
+          <strong>{node.message.role}:</strong>
+          {node.message.parts.map((part, i) => (
+            part.type === 'text' ? <span key={i}>{part.text}</span> : null
+          ))}
 
-            {/* Branch navigation */}
-            {tree.hasSiblings(nodeId) && (
-              <span>
-                {tree.getSelectedIndex(nodeId) + 1} / {tree.getSiblings(nodeId).length}
-                <button onClick={() => tree.selectSibling(nodeId, tree.getSelectedIndex(nodeId) - 1)}>prev</button>
-                <button onClick={() => tree.selectSibling(nodeId, tree.getSelectedIndex(nodeId) + 1)}>next</button>
-              </span>
-            )}
+          {/* Branch navigation */}
+          {tree.hasSiblings(node.msgId) && (
+            <span>
+              {tree.getSelectedIndex(node.msgId) + 1} / {tree.getSiblings(node.msgId).length}
+              <button onClick={() => tree.select(node.msgId, tree.getSelectedIndex(node.msgId) - 1)}>prev</button>
+              <button onClick={() => tree.select(node.msgId, tree.getSelectedIndex(node.msgId) + 1)}>next</button>
+            </span>
+          )}
 
-            {/* Regenerate assistant messages */}
-            {msg.role === 'assistant' && (
-              <button onClick={() => regenerate(nodeId)}>Regenerate</button>
-            )}
-          </div>
-        );
-      })}
+          {/* Regenerate assistant messages */}
+          {node.message.role === 'assistant' && (
+            <button onClick={() => regenerate(node.msgId)}>Regenerate</button>
+          )}
+        </div>
+      ))}
 
       {/* Input */}
       <form onSubmit={(e) => { e.preventDefault(); handleSend(); }}>
@@ -139,13 +129,13 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
 
 | | useChat path | Generic hooks path |
 |---|---|---|
-| **Message state** | Managed by `useChat` | Managed by `useConversationTree` |
+| **Message state** | Managed by `useChat` | Managed by `useView` |
 | **Send** | `sendMessage({ text })` | `send([uiMessage])` - you construct the `UIMessage` |
 | **Regenerate** | `regenerate({ messageId })` | `regenerate(messageId)` |
 | **Edit** | Not built into `useChat` | `edit(messageId, [newMessage])` |
-| **Branch navigation** | Not available | `tree.getSiblings()`, `tree.selectSibling()` |
+| **Branch navigation** | Not available | `tree.getSiblings()`, `tree.select()` |
 | **Stop** | `stop()` from `useChat` | `transport.cancel({ own: true })` |
-| **Observer sync** | Requires `useMessageSync` | Built-in - `tree.messages` includes all clients |
+| **Observer sync** | Requires `useMessageSync` | Built-in - `useView` includes all clients |
 | **Hooks needed** | `useChatTransport` + `useMessageSync` | Individual hooks per operation |
 
 Use the **useChat path** when you want the simplest integration and Vercel's `useChat` handles your needs. Use the **generic hooks path** when you need conversation branching UI, custom message construction, or tighter control over transport operations.

@@ -94,13 +94,13 @@ import type { UIMessage } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
 import { createServerTransport } from '@ably/ai-transport/vercel';
-import type { MessageWithHeaders } from '@ably/ai-transport';
+import type { TreeNode } from '@ably/ai-transport';
 
 interface ChatRequestBody {
   turnId: string;
   clientId: string;
-  messages: MessageWithHeaders<UIMessage>[];
-  history?: MessageWithHeaders<UIMessage>[];
+  messages: TreeNode<UIMessage>[];
+  history?: TreeNode<UIMessage>[];
   id: string;
   forkOf?: string;
   parent?: string | null;
@@ -155,7 +155,7 @@ Wire up `useChat` with the AI Transport hooks:
 
 import { useChat } from '@ai-sdk/react';
 import { useChannel, ChannelProvider } from 'ably/react';
-import { useClientTransport, useActiveTurns, useHistory } from '@ably/ai-transport/react';
+import { useClientTransport, useActiveTurns, useView } from '@ably/ai-transport/react';
 import { useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import { useState } from 'react';
@@ -185,7 +185,7 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
   const isStreaming = activeTurns.size > 0;
 
   // 6. Load history on mount
-  useHistory(transport, { limit: 30 });
+  useView(transport, { limit: 30 });
 
   return (
     <div>

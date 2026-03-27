@@ -10,7 +10,7 @@ interface Codec<TEvent, TMessage> {
   createDecoder(): StreamDecoder<TEvent, TMessage>;
   createAccumulator(): MessageAccumulator<TEvent, TMessage>;
   isTerminal(event: TEvent): boolean;
-  getMessageKey(message: TMessage): string;
+
 }
 ```
 
@@ -20,7 +20,7 @@ interface Codec<TEvent, TMessage> {
 | `createDecoder`     | Creates a [decoder](decoder.md) that converts inbound Ably messages to domain events/messages                                                                     |
 | `createAccumulator` | Creates an accumulator that builds complete messages from streaming events                                                                                        |
 | `isTerminal`        | Returns true if an event signals stream completion (finish, error, abort). Used by the [stream router](transport-components.md#terminal-detection) to auto-close streams |
-| `getMessageKey`     | Returns a stable [codec key](glossary.md#codec-key) for a domain message (used by the [conversation tree](conversation-tree.md) for upsert)                       |
+
 
 ## How the transport uses the codec
 
@@ -41,7 +41,7 @@ The client transport uses:
 - `createDecoder()` - decodes inbound Ably messages into domain events and messages
 - `createAccumulator()` - builds complete messages from events (for [observer turns](glossary.md#own-turn-vs-observer-turn) - other clients' streams)
 - `isTerminal()` - tells the [stream router](transport-components.md#terminal-detection) when to close a per-turn ReadableStream
-- `getMessageKey()` - provides the [conversation tree's](conversation-tree.md#data-structures) secondary index key
+
 
 ## Encoder architecture
 
@@ -178,6 +178,5 @@ To support a new AI framework, implement the `Codec<TEvent, TMessage>` interface
 3. **Implement the decoder hooks** - build domain events from stream tracker state
 4. **Implement the accumulator** - build complete messages from decoder outputs
 5. **Implement isTerminal** - identify events that close a stream
-6. **Implement getMessageKey** - return a stable identity for each message
 
 See [Vercel codec](vercel-codec.md) for the concrete Vercel implementation details. See [Encoder](encoder.md) for the encoder core that domain encoders delegate to. See [Decoder](decoder.md) for the decoder core and its hook interface. See [Wire protocol](wire-protocol.md) for the transport vs domain header discipline.

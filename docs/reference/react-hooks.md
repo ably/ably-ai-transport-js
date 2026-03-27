@@ -35,19 +35,33 @@ The transport subscribes to the Ably channel immediately on creation. It does no
 
 ---
 
-### useMessages
+### useView
 
-Subscribe to transport message updates and return the current message list.
+Subscribe to the transport's view and return nodes with integrated history loading.
 
 ```typescript
-const messages = useMessages<TEvent, TMessage>(transport: ClientTransport<TEvent, TMessage>);
+const { nodes, hasOlder, loading, loadOlder } = useView<TEvent, TMessage>(
+  transport: ClientTransport<TEvent, TMessage> | null | undefined,
+  options?: { limit?: number } | null,
+);
 ```
 
 | Parameter | Type | Description |
 |---|---|---|
-| `transport` | `ClientTransport<TEvent, TMessage>` | The transport to observe |
+| `transport` | `ClientTransport \| null \| undefined` | The transport to observe |
+| `options` | `{ limit?: number } \| null?` | When provided, auto-loads first page on mount. Omit or pass null for manual load |
+| `options.limit` | `number?` | Max messages per page. Default: 100 |
 
-**Returns:** `TMessage[]` - the current decoded message list. Updates on every message change (including streaming deltas).
+**Returns:** `ViewHandle<TMessage>`
+
+| Property/Method | Type | Description |
+|---|---|---|
+| `nodes` | `TreeNode<TMessage>[]` | Flattened nodes for the current branch. Updates on every message change (including streaming deltas) |
+| `hasOlder` | `boolean` | Are there older pages? False until history has been loaded |
+| `loading` | `boolean` | Is a page being fetched? |
+| `loadOlder(limit?)` | `(limit?: number) => Promise<void>` | Load more older messages |
+
+History messages are inserted into the conversation tree and trigger view updates.
 
 ---
 
@@ -132,57 +146,27 @@ Updates on every turn start/end event. Includes turns from all clients on the ch
 
 ---
 
-### useHistory
-
-Return a paginated history handle.
-
-```typescript
-const history = useHistory<TEvent, TMessage>(
-  transport: ClientTransport<TEvent, TMessage> | null | undefined,
-  options?: LoadHistoryOptions | null,
-);
-```
-
-| Parameter | Type | Description |
-|---|---|---|
-| `transport` | `ClientTransport \| null \| undefined` | The transport to load history from |
-| `options` | `LoadHistoryOptions \| null?` | When provided, auto-loads first page on mount. Omit or pass null for manual load |
-| `options.limit` | `number?` | Max messages per page. Default: 100 |
-
-**Returns:** `HistoryHandle`
-
-| Property/Method | Type | Description |
-|---|---|---|
-| `hasNext` | `boolean` | Are there older pages? False until `load()` has been called |
-| `loading` | `boolean` | Is a page being fetched? |
-| `load(options?)` | `(options?: LoadHistoryOptions) => Promise<void>` | Load the first page (or re-load) |
-| `next()` | `() => Promise<void>` | Fetch the next older page. No-op if loading or no more pages |
-
-History messages are inserted into the conversation tree and trigger `'message'` notifications.
-
----
-
-### useConversationTree
+### useTree
 
 Subscribe to message updates and provide branch navigation.
 
 ```typescript
-const tree = useConversationTree<TEvent, TMessage>(transport: ClientTransport<TEvent, TMessage>);
+const tree = useTree<TEvent, TMessage>(transport: ClientTransport<TEvent, TMessage>);
 ```
 
 | Parameter | Type | Description |
 |---|---|---|
 | `transport` | `ClientTransport<TEvent, TMessage>` | The transport whose tree to navigate |
 
-**Returns:** `ConversationTreeHandle<TMessage>`
+**Returns:** `TreeHandle<TMessage>`
 
 | Property/Method | Type | Description |
 |---|---|---|
-| `messages` | `TMessage[]` | Linear message list for the current branch |
 | `getSiblings(msgId)` | `(msgId: string) => TMessage[]` | All alternatives at a fork point |
 | `hasSiblings(msgId)` | `(msgId: string) => boolean` | Whether to show navigation arrows |
 | `getSelectedIndex(msgId)` | `(msgId: string) => number` | Index of the currently selected sibling |
-| `selectSibling(msgId, index)` | `(msgId: string, index: number) => void` | Switch to a sibling. Triggers re-render |
+| `select(msgId, index)` | `(msgId: string, index: number) => void` | Switch to a sibling. Triggers re-render |
+| `getNode(msgId)` | `(msgId: string) => TreeNode<TMessage> \| undefined` | Look up a node by msgId |
 
 ---
 
@@ -261,6 +245,6 @@ useMessageSync(
 
 **Returns:** `void`
 
-Subscribes to the transport's `'message'` event and replaces `useChat`'s message state with the transport's authoritative list on every update. This is how messages from other clients (observer messages) appear in `useChat`.
+Subscribes to the transport's view `'update'` event and replaces `useChat`'s message state with the transport's authoritative list on every update. This is how messages from other clients (observer messages) appear in `useChat`.
 
 Required when using the useChat path with multi-client sync. Without it, `useChat` only shows messages from its own sends.

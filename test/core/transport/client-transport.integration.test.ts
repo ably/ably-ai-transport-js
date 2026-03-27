@@ -15,6 +15,7 @@
  * - Handles sequential and concurrent turns
  */
 
+import type * as Ably from 'ably';
 import type * as AI from 'ai';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -54,30 +55,30 @@ const drain = async <T>(stream: ReadableStream<T>): Promise<T[]> => {
 };
 
 /**
- * Wait for the client transport's message list to reach the expected length.
- * Polls via the 'message' event rather than setTimeout.
+ * Wait for the client transport's visible message list to reach the expected length.
+ * Polls via the view's 'update' event rather than setTimeout.
  * @param ct - The client transport.
  * @param expected - Target message count.
  * @param timeout - Max wait in ms (default 10000).
  * @returns A promise that resolves when the target count is reached.
  */
- 
+
 const waitForMessages = async (
   ct: ClientTransport<AI.UIMessageChunk, AI.UIMessage>,
   expected: number,
   timeout = 10_000,
 ): Promise<void> =>
   new Promise<void>((resolve, reject) => {
-    if (ct.getMessages().length >= expected) {
+    if (ct.view.flattenNodes().length >= expected) {
       resolve();
       return;
     }
     const timer = setTimeout(() => {
       unsub();
-      reject(new Error(`timed out waiting for ${String(expected)} messages (got ${String(ct.getMessages().length)})`));
+      reject(new Error(`timed out waiting for ${String(expected)} messages (got ${String(ct.view.flattenNodes().length)})`));
     }, timeout);
-    const unsub = ct.on('message', () => {
-      if (ct.getMessages().length >= expected) {
+    const unsub = ct.view.on('update', () => {
+      if (ct.view.flattenNodes().length >= expected) {
         clearTimeout(timer);
         unsub();
         resolve();
@@ -105,7 +106,7 @@ const waitForTurnEvent = async (
       unsub();
       reject(new Error(`timed out waiting for ${type} on turn ${turnId}`));
     }, timeout);
-    const unsub = ct.on('turn', (event) => {
+    const unsub = ct.tree.on('turn', (event) => {
       if (event.turnId === turnId && event.type === type) {
         clearTimeout(timer);
         unsub();
@@ -175,7 +176,7 @@ describe('ClientTransport integration', () => {
     });
 
     // Optimistic user message should be in the tree
-    expect(clientTransport.getMessages()).toHaveLength(1);
+    expect(clientTransport.view.flattenNodes().map((n) => n.message)).toHaveLength(1);
 
     // Server handles the turn using the client's turnId
     const serverTurn = serverTransport.newTurn({
@@ -197,7 +198,7 @@ describe('ClientTransport integration', () => {
     // Wait briefly for the accumulator to process all events
     await waitForMessages(clientTransport, 2);
 
-    const messages = clientTransport.getMessages();
+    const messages = clientTransport.view.flattenNodes().map((n) => n.message);
     expect(messages.length).toBeGreaterThanOrEqual(2);
 
     // Verify user message (optimistic)
@@ -295,7 +296,7 @@ describe('ClientTransport integration', () => {
     });
 
     const turnEvents: TurnLifecycleEvent[] = [];
-    clientTransport.on('turn', (e) => turnEvents.push(e));
+    clientTransport.tree.on('turn', (e) => turnEvents.push(e));
 
     // Client sends — ensures channel is attached
     const clientTurn = await clientTransport.send({
@@ -318,7 +319,7 @@ describe('ClientTransport integration', () => {
     // Wait for the client to see turn-start
     await startPromise;
 
-    const activeBefore = clientTransport.getActiveTurnIds();
+    const activeBefore = clientTransport.tree.getActiveTurnIds();
     expect(activeBefore.size).toBeGreaterThan(0);
 
     const stream = textResponseStream('msg-lc-1', 'text-lc-1', 'test');
@@ -458,7 +459,7 @@ describe('ClientTransport integration', () => {
     await drain(clientTurn2.stream);
     await waitForMessages(clientTransport, 4);
 
-    const messages = clientTransport.getMessages();
+    const messages = clientTransport.view.flattenNodes().map((n) => n.message);
     expect(messages.length).toBeGreaterThanOrEqual(4);
 
     // Both assistant messages are present
@@ -497,6 +498,11 @@ describe('ClientTransport integration', () => {
     await turn.start();
     await turn.addMessages([{
       message: { id: 'user-hist-1', role: 'user', parts: [{ type: 'text', text: 'History question' }] },
+      msgId: crypto.randomUUID(),
+      parentId: undefined,
+      forkOf: undefined,
+      headers: {},
+      serial: undefined,
     }]);
     await turn.streamResponse(textResponseStream('asst-hist-1', 'text-hist-1', 'History answer'));
     await turn.end('complete');
@@ -515,13 +521,10 @@ describe('ClientTransport integration', () => {
       fetch: noopFetch as typeof globalThis.fetch,
     });
 
-    const page = await clientTransport.history({ limit: 10 });
+    await clientTransport.view.loadOlder(10);
 
-    // History should contain the completed messages
-    expect(page.items.length).toBeGreaterThanOrEqual(1);
-
-    // The messages should also appear in getMessages() after history load
-    const messages = clientTransport.getMessages();
+    // After loading history, the messages should appear in the view
+    const messages = clientTransport.view.flattenNodes().map((n) => n.message);
     expect(messages.length).toBeGreaterThanOrEqual(1);
 
     // Verify the assistant message has the correct text
@@ -533,12 +536,12 @@ describe('ClientTransport integration', () => {
   });
 
   /**
-   * Scenario: Raw Ably messages are accumulated.
+   * Scenario: Raw Ably messages are received via tree.on('ably-message').
    *
-   * The client transport records all raw Ably messages received, accessible
-   * via getAblyMessages().
+   * The client transport fires ably-message events for all raw Ably messages
+   * received on the channel.
    */
-  it('accumulates raw Ably messages', async () => {
+  it('fires ably-message events for raw Ably messages', async () => {
     const channelName = uniqueChannelName('ct-raw');
     const serverClient = ablyRealtimeClient();
     const clientClient = ablyRealtimeClient();
@@ -557,6 +560,10 @@ describe('ClientTransport integration', () => {
       clientId: clientClient.auth.clientId,
       fetch: noopFetch as typeof globalThis.fetch,
     });
+
+    // Collect raw Ably messages via the tree event
+    const rawMessages: Ably.InboundMessage[] = [];
+    clientTransport.tree.on('ably-message', (msg) => rawMessages.push(msg));
 
     // Client sends to ensure attachment
     const clientTurn = await clientTransport.send({
@@ -579,7 +586,6 @@ describe('ClientTransport integration', () => {
     // Wait for turn-end to arrive
     await endPromise;
 
-    const rawMessages = clientTransport.getAblyMessages();
     expect(rawMessages.length).toBeGreaterThan(0);
 
     // Should include turn-start, encoded messages, and turn-end
@@ -589,12 +595,12 @@ describe('ClientTransport integration', () => {
   });
 
   /**
-   * Scenario: Message headers are accessible via getMessageHeaders.
+   * Scenario: Conversation nodes are accessible via tree.flattenNodes().
    *
    * After the client sends and the server streams, the client can
-   * retrieve transport headers (role, turn-id, msg-id) for messages.
+   * retrieve full conversation nodes with transport headers and typed fields.
    */
-  it('provides message headers from the conversation tree', async () => {
+  it('provides conversation nodes from the tree', async () => {
     const channelName = uniqueChannelName('ct-headers');
     const serverClient = ablyRealtimeClient();
     const clientClient = ablyRealtimeClient();
@@ -633,25 +639,23 @@ describe('ClientTransport integration', () => {
     await drain(clientTurn.stream);
     await waitForMessages(clientTransport, 2);
 
-    const messages = clientTransport.getMessages();
-    const userMsg = messages.find((m) => m.role === 'user');
-    const asstMsg = messages.find((m) => m.role === 'assistant');
+    const nodes = clientTransport.tree.flattenNodes();
+    const userNode = nodes.find((n) => n.message.role === 'user');
+    const asstNode = nodes.find((n) => n.message.role === 'assistant');
 
-    expect(userMsg).toBeDefined();
-    expect(asstMsg).toBeDefined();
+    expect(userNode).toBeDefined();
+    expect(asstNode).toBeDefined();
 
-    if (userMsg) {
-      const userHeaders = clientTransport.getMessageHeaders(userMsg);
-      expect(userHeaders).toBeDefined();
-      expect(userHeaders?.[HEADER_ROLE]).toBe('user');
-      expect(userHeaders?.[HEADER_TURN_ID]).toBe(clientTurn.turnId);
-      expect(userHeaders?.[HEADER_MSG_ID]).toBeDefined();
+    if (userNode) {
+      expect(userNode.msgId).toBeDefined();
+      expect(userNode.headers[HEADER_ROLE]).toBe('user');
+      expect(userNode.headers[HEADER_TURN_ID]).toBe(clientTurn.turnId);
+      expect(userNode.headers[HEADER_MSG_ID]).toBeDefined();
     }
 
-    if (asstMsg) {
-      const asstHeaders = clientTransport.getMessageHeaders(asstMsg);
-      expect(asstHeaders).toBeDefined();
-      expect(asstHeaders?.[HEADER_TURN_ID]).toBe(clientTurn.turnId);
+    if (asstNode) {
+      expect(asstNode.msgId).toBeDefined();
+      expect(asstNode.headers[HEADER_TURN_ID]).toBe(clientTurn.turnId);
     }
   });
 });

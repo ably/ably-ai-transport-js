@@ -6,7 +6,7 @@ Without optimistic insertion, the user would see a gap between pressing "send" a
 
 ## How it works
 
-The client generates a unique message ID (`x-ably-msg-id`) for each user message and inserts it into the conversation tree with no [serial](../internals/glossary.md#serial-ably) (Ably's server-assigned ordering identifier). The message is visible via `getMessages()` immediately. The HTTP POST to the server is [fire-and-forget](../internals/glossary.md#fire-and-forget) - `send()` returns without waiting for the server to respond.
+The client generates a unique message ID (`x-ably-msg-id`) for each user message and inserts it into the conversation tree with no [serial](../internals/glossary.md#serial-ably) (Ably's server-assigned ordering identifier). The message is visible via `transport.view.flattenNodes()` immediately. The HTTP POST to the server is [fire-and-forget](../internals/glossary.md#fire-and-forget) - `send()` returns without waiting for the server to respond.
 
 The server receives the user message and relays it onto the Ably channel, preserving the original `x-ably-msg-id`. All clients on the channel - including the sender - receive this relay. The sending client recognises its own message by matching the `x-ably-msg-id` against the set of IDs it optimistically inserted. Instead of creating a duplicate, it updates the existing entry with the server-assigned serial, which moves the message from the end of the list to its correct position in serial order. This process is called [optimistic reconciliation](../internals/glossary.md#optimistic-reconciliation).
 
@@ -17,7 +17,7 @@ sequenceDiagram
     participant S as Server
 
     Note over C: generate msg-id, insert into tree (no serial)
-    C->>C: getMessages() includes the optimistic message
+    C->>C: view.flattenNodes() includes the optimistic message
     C->>S: HTTP POST (fire-and-forget)
     S->>Ch: publish user message (same msg-id, server-assigned serial)
     Ch->>C: deliver relay
@@ -32,17 +32,17 @@ Optimistic updates are automatic - there is no opt-in or configuration. Every ca
 ```typescript
 const turn = await transport.send(userMessage);
 
-// The user message is already in getMessages() - no waiting for the server
-const messages = transport.getMessages();
+// The user message is already in the view - no waiting for the server
+const messages = transport.view.flattenNodes().map(n => n.message);
 // messages includes userMessage at the end of the conversation
 ```
 
-In React, `useMessages()` re-renders immediately after `send()` because the optimistic insert triggers a `message` event:
+In React, `useView()` re-renders immediately after `send()` because the optimistic insert triggers an `update` event on the view:
 
 ```typescript
-import { useMessages, useSend } from '@ably/ai-transport/react';
+import { useView, useSend } from '@ably/ai-transport/react';
 
-const messages = useMessages(transport);
+const { nodes } = useView(transport);
 const send = useSend(transport);
 
 // After send(), messages updates instantly with the new user message
@@ -57,7 +57,7 @@ When the relay arrives from the channel, two things change on the optimistic ent
 
 2. **Message content update** - the server may have modified the message (e.g. the codec could normalise fields). The tree entry is updated with the relayed content.
 
-Both changes happen inside a single `upsert()` call on the conversation tree. A `message` event fires, and `getMessages()` reflects the updated state.
+Both changes happen inside a single `upsert()` call on the conversation tree. An `update` event fires on the view, and `flattenNodes()` reflects the updated state.
 
 ## Server side
 

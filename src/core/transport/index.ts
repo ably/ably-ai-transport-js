@@ -8,20 +8,18 @@ export type {
   ClientTransport,
   ClientTransportOptions,
   CloseOptions,
-  ConversationNode,
-  ConversationTree,
-  LoadHistoryOptions,
-  MessageWithHeaders,
   NewTurnOptions,
-  PaginatedMessages,
   SendOptions,
   ServerTransport,
   ServerTransportOptions,
   StreamResponseOptions,
   StreamResult,
+  Tree,
+  TreeNode,
   Turn,
   TurnEndReason,
   TurnLifecycleEvent,
+  View,
 } from './types.js';
 
 // Server transport

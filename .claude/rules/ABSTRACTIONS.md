@@ -42,7 +42,7 @@ The SDK ships four entry points from a single package:
 | Export path | Contains | Purpose | External deps |
 |---|---|---|---|
 | `@ably/ai-transport` | Generic codec interfaces, `createClientTransport`, `createServerTransport`, shared utilities | Core primitives — codec-agnostic transport and encoding | `ably` (peer) |
-| `@ably/ai-transport/react` | `useClientTransport`, `useMessages`, `useSend`, `useRegenerate`, `useEdit`, `useActiveTurns`, `useHistory`, `useConversationTree`, `useAblyMessages` | Generic React hooks for any codec | `ably`, `react` (peers) |
+| `@ably/ai-transport/react` | `useClientTransport`, `useView`, `useSend`, `useRegenerate`, `useEdit`, `useActiveTurns`, `useTree`, `useAblyMessages` | Generic React hooks for any codec | `ably`, `react` (peers) |
 | `@ably/ai-transport/vercel` | `UIMessageCodec`, `createServerTransport`, `createClientTransport`, `createChatTransport`, Vercel-specific types | Drop-in Vercel AI SDK integration | `ably`, `ai` (peers) |
 | `@ably/ai-transport/vercel/react` | `useChatTransport`, `useMessageSync` | React hooks for Vercel's `useChat` | `ably`, `ai`, `react` (peers) |
 
@@ -53,7 +53,7 @@ The codebase is split into a **generic layer** and a **Vercel layer**:
 
 ### Generic layer (`src/core/`, `src/react/`)
 
-Defines the `Codec<TEvent, TMessage>` interface and provides `ClientTransport`, `ServerTransport`, `ConversationTree`, and `decodeHistory` — all parameterized by codec. Framework-agnostic; knows nothing about Vercel's `UIMessageChunk` or `UIMessage`. Uses only `x-ably-*` headers — must never reference codec-specific domain headers.
+Defines the `Codec<TEvent, TMessage>` interface and provides `ClientTransport`, `ServerTransport`, `Tree`, and `decodeHistory` — all parameterized by codec. Framework-agnostic; knows nothing about Vercel's `UIMessageChunk` or `UIMessage`. Uses only `x-ably-*` headers — must never reference codec-specific domain headers.
 
 ### Vercel layer (`src/vercel/`)
 
@@ -70,7 +70,7 @@ The SDK uses composition, not inheritance. For example, a transport is assembled
 ```
 ClientTransport
 ├── Codec (encoder + decoder + accumulator)
-├── ConversationTree — branching message history
+├── Tree — branching message history
 ├── MessageStore — flat message state, delegates to tree
 ├── MessageDispatcher — routes decoded events to store/streams
 ├── StreamRouter — maps turn-scoped events to ReadableStream controllers
@@ -104,10 +104,10 @@ Use TypeScript `private readonly` fields with underscore prefix. Store all const
 
 ```ts
 class DefaultMessageStore<TMessage> implements MessageStore<TMessage> {
-  private readonly _tree: ConversationTree<TMessage>;
+  private readonly _tree: Tree<TMessage>;
   private readonly _logger: Logger;
 
-  constructor(tree: ConversationTree<TMessage>, logger: Logger) {
+  constructor(tree: Tree<TMessage>, logger: Logger) {
     this._tree = tree;
     this._logger = logger.withContext({ component: 'MessageStore' });
   }

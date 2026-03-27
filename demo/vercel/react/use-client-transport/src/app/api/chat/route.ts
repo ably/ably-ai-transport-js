@@ -12,14 +12,14 @@ import type { UIMessage } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
 import { createServerTransport } from '@ably/ai-transport/vercel';
-import type { MessageWithHeaders } from '@ably/ai-transport';
+import type { TreeNode } from '@ably/ai-transport';
 
 /** Shape of the POST body sent by the client transport. */
 interface ChatRequestBody {
   turnId: string;
   clientId: string;
-  messages: MessageWithHeaders<UIMessage>[];
-  history?: MessageWithHeaders<UIMessage>[];
+  messages: TreeNode<UIMessage>[];
+  history?: TreeNode<UIMessage>[];
   id: string;
   forkOf?: string;
   parent?: string | null;

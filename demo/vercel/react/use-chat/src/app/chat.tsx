@@ -2,7 +2,7 @@
 
 import { useChat } from '@ai-sdk/react';
 import { useChannel } from 'ably/react';
-import { useClientTransport, useActiveTurns, useHistory, useAblyMessages } from '@ably/ai-transport/react';
+import { useClientTransport, useActiveTurns, useView, useAblyMessages } from '@ably/ai-transport/react';
 import { useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import { useState } from 'react';
@@ -20,7 +20,7 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
   const transport = useClientTransport({ channel, codec: UIMessageCodec, clientId });
   const chatTransport = useChatTransport(transport);
 
-  const { messages, setMessages, sendMessage, stop, status, regenerate } = useChat({
+  const { setMessages, sendMessage, stop, status, regenerate } = useChat({
     id: chatId,
     transport: chatTransport,
   });
@@ -31,7 +31,7 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
   const hasAnyTurns = activeTurns.size > 0;
 
   // Auto-loads first page on mount (options provided = enabled)
-  const history = useHistory(transport, { limit: historyLimit ?? 30 });
+  const { nodes, hasOlder, loading, loadOlder } = useView(transport, { limit: historyLimit ?? 30 });
 
   const ablyMessages = useAblyMessages(transport);
 
@@ -40,11 +40,10 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
       <div className="flex flex-1 flex-col">
         <Header clientId={clientId} />
         <MessageList
-          messages={messages}
-          transport={transport}
-          hasNext={history.hasNext}
-          loading={history.loading}
-          onNext={() => history.next()}
+          nodes={nodes}
+          hasOlder={hasOlder}
+          loading={loading}
+          onLoadOlder={loadOlder}
           onRegenerate={(messageId) => regenerate({ messageId })}
         />
         <InputBar
@@ -54,7 +53,7 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
         />
       </div>
       <DebugPane
-        messages={messages}
+        messages={nodes.map((n) => n.message)}
         ablyMessages={ablyMessages}
         activeTurns={activeTurns}
         status={status}

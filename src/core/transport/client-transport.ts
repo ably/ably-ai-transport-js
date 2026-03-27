@@ -1,7 +1,7 @@
 /**
  * Core client-side transport, parameterized by codec.
  *
- * Composes StreamRouter and ConversationTree to handle the full client-side
+ * Composes StreamRouter and Tree to handle the full client-side
  * lifecycle. Subscribes to the Ably channel on construction. The same
  * subscription, decoder, and channel are reused across turns.
  *
@@ -22,7 +22,6 @@ import {
   HEADER_CANCEL_TURN_ID,
   HEADER_MSG_ID,
   HEADER_PARENT,
-  HEADER_ROLE,
   HEADER_TURN_CLIENT_ID,
   HEADER_TURN_ID,
   HEADER_TURN_REASON,
@@ -33,25 +32,26 @@ import type { Logger } from '../../logger.js';
 import { LogLevel, makeLogger } from '../../logger.js';
 import { getHeaders } from '../../utils.js';
 import type { DecoderOutput, MessageAccumulator, StreamDecoder } from '../codec/types.js';
-import { createConversationTree } from './conversation-tree.js';
-import { decodeHistory } from './decode-history.js';
 import { buildTransportHeaders } from './headers.js';
 import type { StreamRouter } from './stream-router.js';
 import { createStreamRouter } from './stream-router.js';
+import type { DefaultTree } from './tree.js';
+import { createTree } from './tree.js';
 import type {
   ActiveTurn,
   CancelFilter,
   ClientTransport,
   ClientTransportOptions,
   CloseOptions,
-  ConversationTree,
-  LoadHistoryOptions,
-  MessageWithHeaders,
-  PaginatedMessages,
   SendOptions,
+  Tree,
+  TreeNode,
   TurnEndReason,
   TurnLifecycleEvent,
+  View,
 } from './types.js';
+import type { DefaultView } from './view.js';
+import { createView } from './view.js';
 
 /**
  * Returned from `on()` when the transport is already closed — the subscription
@@ -65,10 +65,7 @@ const noopUnsubscribe = (): void => {};
 // ---------------------------------------------------------------------------
 
 interface ClientTransportEventsMap {
-  message: undefined;
-  turn: TurnLifecycleEvent;
   error: Ably.ErrorInfo;
-  'ably-message': undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,15 +94,13 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   private readonly _fetchFn: typeof globalThis.fetch;
   private readonly _logger: Logger;
 
-  // Typed event emitter for all transport events
+  // Typed event emitter — only 'error' remains on the transport
   private readonly _emitter: EventEmitter<ClientTransportEventsMap>;
 
   // Relay detection — tracks msg-ids of optimistic inserts for reconciliation
   private readonly _ownMsgIds = new Set<string>();
   private readonly _ownTurnIds = new Set<string>();
 
-  // Track clientId per turn for getActiveTurnIds()
-  private readonly _turnClientIds = new Map<string, string>();
   // Track msgIds per turn for cleanup on turn-end
   private readonly _turnMsgIds = new Map<string, Set<string>>();
 
@@ -113,16 +108,15 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   // A single .delete(turnId) cleans up all three.
   private readonly _turnObservers = new Map<string, TurnObserverState<TEvent, TMessage>>();
 
-  // Raw Ably message log
-  private readonly _ablyMessages: Ably.InboundMessage[] = [];
-
-  // History pagination: withheld messages hidden from getMessages()
-  private readonly _withheldKeys = new Set<string>();
-
   // Sub-components
-  private readonly _tree: ConversationTree<TMessage>;
+  private readonly _tree: DefaultTree<TMessage>;
+  private readonly _view: DefaultView<TEvent, TMessage>;
   private readonly _router: StreamRouter<TEvent>;
   private readonly _decoder: StreamDecoder<TEvent, TMessage>;
+
+  // Public accessors
+  readonly tree: Tree<TMessage>;
+  readonly view: View<TMessage>;
 
   // Channel subscription — subscribe() returns a Promise that resolves when the channel attaches
   private readonly _attachPromise: Promise<unknown>;
@@ -156,21 +150,30 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     this._emitter = new EventEmitter<ClientTransportEventsMap>(this._logger);
 
     // Compose sub-components
-    this._tree = createConversationTree<TMessage>(this._codec.getMessageKey.bind(this._codec), this._logger);
+    this._tree = createTree<TMessage>(this._logger);
+    this._view = createView<TEvent, TMessage>({
+      tree: this._tree,
+      channel: this._channel,
+      codec: this._codec,
+      logger: this._logger,
+    });
     this._router = createStreamRouter<TEvent>(this._codec.isTerminal.bind(this._codec), this._logger);
     this._decoder = this._codec.createDecoder();
 
-    // Seed tree with initial messages
+    // Public accessors (typed as narrow interfaces)
+    this.tree = this._tree;
+    this.view = this._view;
+
+    // Seed tree with initial messages — transport assigns its own msgId
     if (options.messages) {
       let prevMsgId: string | undefined;
       for (const msg of options.messages) {
-        const msgId = this._codec.getMessageKey(msg);
-        const seedHeaders: Record<string, string> = {};
+        const msgId = crypto.randomUUID();
+        const seedHeaders: Record<string, string> = { [HEADER_MSG_ID]: msgId };
         if (prevMsgId) seedHeaders[HEADER_PARENT] = prevMsgId;
         this._tree.upsert(msgId, msg, seedHeaders);
         prevMsgId = msgId;
       }
-      this._emitter.emit('message');
     }
 
     // Spec: AIT-CT2
@@ -188,8 +191,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   private _handleMessage(ablyMessage: Ably.InboundMessage): void {
     if (this._closed) return;
 
-    this._ablyMessages.push(ablyMessage);
-    this._emitter.emit('ably-message');
+    this._tree.emitAblyMessage(ablyMessage);
 
     try {
       // Spec: AIT-CT16a
@@ -199,8 +201,8 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
         const turnId = headers[HEADER_TURN_ID];
         const turnCid = headers[HEADER_TURN_CLIENT_ID] ?? '';
         if (turnId) {
-          this._turnClientIds.set(turnId, turnCid);
-          this._emitter.emit('turn', { type: EVENT_TURN_START, turnId, clientId: turnCid });
+          this._tree.trackTurn(turnId, turnCid);
+          this._tree.emitTurn({ type: EVENT_TURN_START, turnId, clientId: turnCid });
         }
         return;
       }
@@ -214,7 +216,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
         if (turnId) {
           this._router.closeStream(turnId);
           this._turnObservers.delete(turnId);
-          this._turnClientIds.delete(turnId);
+          this._tree.untrackTurn(turnId);
           // Clean up per-turn relay-detection state
           const msgIds = this._turnMsgIds.get(turnId);
           if (msgIds) {
@@ -222,7 +224,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
             this._turnMsgIds.delete(turnId);
           }
           this._ownTurnIds.delete(turnId);
-          this._emitter.emit('turn', { type: EVENT_TURN_END, turnId, clientId: turnCid, reason });
+          this._tree.emitTurn({ type: EVENT_TURN_END, turnId, clientId: turnCid, reason });
         }
         return;
       }
@@ -330,10 +332,9 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
    * @param serial - Ably serial for tree ordering.
    */
   private _upsertAndNotify(message: TMessage, headers: Record<string, string>, serial?: string): void {
-    const key = this._codec.getMessageKey(message);
-    const msgId = headers[HEADER_MSG_ID] ?? key;
+    const msgId = headers[HEADER_MSG_ID];
+    if (!msgId) return;
     this._tree.upsert(msgId, message, headers, serial);
-    this._emitter.emit('message');
   }
 
   // ---------------------------------------------------------------------------
@@ -398,13 +399,10 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     }
 
     if (message) {
-      this._tree.upsert(
-        observer.headers[HEADER_MSG_ID] ?? this._codec.getMessageKey(message),
-        message,
-        { ...observer.headers },
-        observer.serial,
-      );
-      this._emitter.emit('message');
+      const msgId = observer.headers[HEADER_MSG_ID];
+      if (msgId) {
+        this._tree.upsert(msgId, message, { ...observer.headers }, observer.serial);
+      }
     }
   }
 
@@ -437,39 +435,37 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     // The observer must remain alive so that late server events (e.g. abort,
     // x-ably-status: aborted) arriving before turn-end are still accumulated
     // into the message store. The turn-end handler cleans up observers.
-    if (filter.all) {
-      for (const turnId of this._ownTurnIds) {
-        this._router.closeStream(turnId);
-      }
-    } else if (filter.own) {
-      for (const tid of this._ownTurnIds) {
-        this._router.closeStream(tid);
-      }
-    } else if (filter.clientId) {
-      for (const [tid, cid] of this._turnClientIds) {
-        if (cid === filter.clientId) {
-          this._router.closeStream(tid);
-        }
-      }
-    } else if (filter.turnId) {
-      this._router.closeStream(filter.turnId);
+    for (const turnId of this._getMatchingTurnIds(filter)) {
+      this._router.closeStream(turnId);
     }
   }
 
   private _getMatchingTurnIds(filter: CancelFilter): Set<string> {
     const matched = new Set<string>();
+    const activeTurns = this._tree.getActiveTurnIds();
+
     if (filter.all) {
-      for (const turnId of this._turnClientIds.keys()) matched.add(turnId);
+      for (const turnIds of activeTurns.values()) {
+        for (const turnId of turnIds) matched.add(turnId);
+      }
     } else if (filter.own) {
-      for (const [turnId, cid] of this._turnClientIds) {
-        if (cid === this._clientId) matched.add(turnId);
+      const ownTurns = activeTurns.get(this._clientId ?? '');
+      if (ownTurns) {
+        for (const turnId of ownTurns) matched.add(turnId);
       }
     } else if (filter.clientId) {
-      for (const [turnId, cid] of this._turnClientIds) {
-        if (cid === filter.clientId) matched.add(turnId);
+      const clientTurns = activeTurns.get(filter.clientId);
+      if (clientTurns) {
+        for (const turnId of clientTurns) matched.add(turnId);
       }
-    } else if (filter.turnId && this._turnClientIds.has(filter.turnId)) {
-      matched.add(filter.turnId);
+    } else if (filter.turnId) {
+      // Check if the turnId exists in any client's turns
+      for (const turnIds of activeTurns.values()) {
+        if (turnIds.has(filter.turnId)) {
+          matched.add(filter.turnId);
+          break;
+        }
+      }
     }
     return matched;
   }
@@ -478,80 +474,16 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   // Input message helpers
   // ---------------------------------------------------------------------------
 
-  private _getMessagesWithHeaders(): MessageWithHeaders<TMessage>[] {
-    return this._tree.flatten().map((m) => ({
-      message: m,
-      headers: this.getMessageHeaders(m),
-    }));
-  }
-
   /**
    * Compute truncated history: everything before the target message.
    * Used by regenerate so the LLM doesn't see the response being replaced.
    * @param messageId - The msg-id to truncate history before.
-   * @returns Input messages preceding the target.
+   * @returns Conversation nodes preceding the target.
    */
-  private _getHistoryBefore(messageId: string): MessageWithHeaders<TMessage>[] {
-    const all = this._getMessagesWithHeaders();
-    const idx = all.findIndex((inp) => inp.headers?.[HEADER_MSG_ID] === messageId);
+  private _getHistoryBefore(messageId: string): TreeNode<TMessage>[] {
+    const all = this._tree.flattenNodes();
+    const idx = all.findIndex((n) => n.msgId === messageId);
     return idx === -1 ? all : all.slice(0, idx);
-  }
-
-  // ---------------------------------------------------------------------------
-  // History pagination helpers
-  // ---------------------------------------------------------------------------
-
-  private _processHistoryPage(page: PaginatedMessages<TMessage>): void {
-    for (const [i, message] of page.items.entries()) {
-      const headers = page.itemHeaders?.[i] ?? {};
-      const serial = page.itemSerials?.[i];
-      const key = this._codec.getMessageKey(message);
-      const msgId = headers[HEADER_MSG_ID] ?? key;
-      this._tree.upsert(msgId, message, headers, serial);
-    }
-    this._emitter.emit('message');
-
-    // Prepend raw Ably messages (older messages go at the beginning)
-    if (page.rawMessages && page.rawMessages.length > 0) {
-      this._ablyMessages.unshift(...page.rawMessages);
-      this._emitter.emit('ably-message');
-    }
-  }
-
-  private async _loadUntilVisible(
-    firstPage: PaginatedMessages<TMessage>,
-    target: number,
-    beforeKeys: Set<string>,
-  ): Promise<{ newVisible: TMessage[]; lastPage: PaginatedMessages<TMessage> }> {
-    this._processHistoryPage(firstPage);
-    let page = firstPage;
-
-    const newVisibleCount = (): number => {
-      let count = 0;
-      for (const m of this._tree.flatten()) {
-        if (!beforeKeys.has(this._codec.getMessageKey(m))) count++;
-      }
-      return count;
-    };
-
-    while (newVisibleCount() < target && page.hasNext()) {
-      const nextPage = await page.next();
-      if (!nextPage) break;
-      this._processHistoryPage(nextPage);
-      page = nextPage;
-    }
-
-    const newVisible = this._tree.flatten().filter((m) => !beforeKeys.has(this._codec.getMessageKey(m)));
-    return { newVisible, lastPage: page };
-  }
-
-  private _releaseWithheld(messages: TMessage[]): void {
-    for (const m of messages) {
-      this._withheldKeys.delete(this._codec.getMessageKey(m));
-    }
-    if (messages.length > 0) {
-      this._emitter.emit('message');
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -576,27 +508,23 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     const msgs = Array.isArray(input) ? input : [input];
     const turnId = crypto.randomUUID();
     this._ownTurnIds.add(turnId);
+    this._tree.trackTurn(turnId, this._clientId ?? '');
 
     const msgIds = new Set<string>();
-    const postMessages: { message: TMessage; headers: Record<string, string> }[] = [];
+    const postMessages: TreeNode<TMessage>[] = [];
 
     // Capture history BEFORE optimistic inserts. The optimistic messages are
     // sent in the `messages` field — including them in `history` too would
     // cause the server to see them twice.
-    const preInsertHistory = this._getMessagesWithHeaders();
+    const preInsertHistory = this._tree.flattenNodes();
 
     // Spec: AIT-CT3d
     // Auto-compute parent from the current thread if not explicitly provided
     let autoParent: string | undefined;
     if (sendOptions?.parent === undefined && !sendOptions?.forkOf) {
-      const flat = this._tree.flatten();
-      if (flat.length > 0) {
-        const lastMsg = flat.at(-1);
-        if (lastMsg) {
-          const lastKey = this._codec.getMessageKey(lastMsg);
-          const lastNode = this._tree.getNodeByKey(lastKey);
-          autoParent = lastNode?.msgId ?? lastKey;
-        }
+      const lastNode = preInsertHistory.at(-1);
+      if (lastNode) {
+        autoParent = lastNode.msgId;
       }
     }
 
@@ -622,10 +550,15 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       // Optimistically insert each user message into the tree
       this._upsertAndNotify(message, optimisticHeaders);
 
-      // Include per-message parent so the server chains messages correctly.
-      const postHeaders: Record<string, string> = { [HEADER_MSG_ID]: msgId, [HEADER_ROLE]: 'user' };
-      if (resolvedParent) postHeaders[HEADER_PARENT] = resolvedParent;
-      postMessages.push({ message, headers: postHeaders });
+      // Build TreeNode for the POST body
+      postMessages.push({
+        message,
+        msgId,
+        parentId: resolvedParent,
+        forkOf: sendOptions?.forkOf,
+        headers: optimisticHeaders,
+        serial: undefined,
+      });
 
       // Spec: AIT-CT3e
       // Chain: each subsequent message in the batch parents off the previous
@@ -765,147 +698,26 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     this._logger.debug('ClientTransport.waitForTurn();', { turnIds: [...remaining] });
 
     return new Promise<void>((resolve) => {
-      const handler = (event: TurnLifecycleEvent): void => {
+      const unsub = this._tree.on('turn', (event: TurnLifecycleEvent) => {
         if (event.type !== EVENT_TURN_END) return;
         remaining.delete(event.turnId);
         if (remaining.size === 0) {
-          this._emitter.off('turn', handler);
+          unsub();
           resolve();
         }
-      };
-      this._emitter.on('turn', handler);
+      });
     });
   }
 
-  // Spec: AIT-CT8, AIT-CT8a, AIT-CT8b, AIT-CT8c, AIT-CT8d
-  on(event: 'message' | 'ably-message', handler: () => void): () => void;
-  on(event: 'turn', handler: (event: TurnLifecycleEvent) => void): () => void;
-  on(event: 'error', handler: (error: Ably.ErrorInfo) => void): () => void;
-  on(
-    eventName: 'message' | 'turn' | 'error' | 'ably-message',
-    handler: (() => void) | ((event: TurnLifecycleEvent) => void) | ((error: Ably.ErrorInfo) => void),
-  ): () => void {
+  // Spec: AIT-CT8c, AIT-CT8d
+  on(event: 'error', handler: (error: Ably.ErrorInfo) => void): () => void {
     if (this._closed) return noopUnsubscribe;
-    // CAST: the overload signatures enforce correct handler types per event name.
-    // The implementation must cast to satisfy the EventEmitter's generic callback type.
+    // CAST: the overload signature enforces the correct handler type.
     const cb = handler as (arg: ClientTransportEventsMap[keyof ClientTransportEventsMap]) => void;
-    this._emitter.on(eventName, cb);
+    this._emitter.on(event, cb);
     return () => {
-      this._emitter.off(eventName, cb);
+      this._emitter.off(event, cb);
     };
-  }
-
-  // Spec: AIT-CT10
-  getTree(): ConversationTree<TMessage> {
-    return this._tree;
-  }
-
-  // Spec: AIT-CT17
-  getActiveTurnIds(): Map<string, Set<string>> {
-    const result = new Map<string, Set<string>>();
-    for (const [turnId, cid] of this._turnClientIds) {
-      let set = result.get(cid);
-      if (!set) {
-        set = new Set();
-        result.set(cid, set);
-      }
-      set.add(turnId);
-    }
-    return result;
-  }
-
-  getMessageHeaders(message: TMessage): Record<string, string> | undefined {
-    const key = this._codec.getMessageKey(message);
-    return this._tree.getNodeByKey(key)?.headers;
-  }
-
-  // Spec: AIT-CT9
-  getMessages(): TMessage[] {
-    if (this._withheldKeys.size === 0) return this._tree.flatten();
-    return this._tree.flatten().filter((m) => !this._withheldKeys.has(this._codec.getMessageKey(m)));
-  }
-
-  getMessagesWithHeaders(): MessageWithHeaders<TMessage>[] {
-    return this._getMessagesWithHeaders();
-  }
-
-  getAblyMessages(): Ably.InboundMessage[] {
-    return [...this._ablyMessages];
-  }
-
-  // Spec: AIT-CT11, AIT-CT11a, AIT-CT11b, AIT-CT11c
-  async history(opts?: LoadHistoryOptions): Promise<PaginatedMessages<TMessage>> {
-    if (this._closed) {
-      throw new Ably.ErrorInfo('unable to load history; transport is closed', ErrorCode.TransportClosed, 400);
-    }
-    this._logger.trace('ClientTransport.history();', { limit: opts?.limit });
-    const limit = opts?.limit ?? 100;
-
-    // Snapshot before loading — everything already in the tree stays visible
-    const beforeKeys = new Set(this._tree.flatten().map((m) => this._codec.getMessageKey(m)));
-
-    let lastPage = await decodeHistory(this._channel, this._codec, opts, this._logger);
-
-    const initial = await this._loadUntilVisible(lastPage, limit, beforeKeys);
-    lastPage = initial.lastPage;
-
-    // newVisible is chronological (oldest-first from flatten).
-    // For "load older" pagination: release the NEWEST `limit` now,
-    // withhold the older ones for subsequent next() calls.
-    const newVisible = initial.newVisible;
-
-    // Withhold ALL new visible messages first, then release the newest batch
-    for (const m of newVisible) {
-      this._withheldKeys.add(this._codec.getMessageKey(m));
-    }
-
-    const released = newVisible.slice(-limit);
-    // Mutable buffer of older messages, drained newest-first by successive next() calls
-    const withheldBuffer = newVisible.slice(0, -limit);
-    this._releaseWithheld(released);
-
-    const buildPage = (items: TMessage[]): PaginatedMessages<TMessage> => ({
-      items,
-      hasNext: () => withheldBuffer.length > 0 || lastPage.hasNext(),
-      next: async () => {
-        // Drain withheld buffer first (older messages, released newest-first)
-        if (withheldBuffer.length > 0) {
-          // Remove and return the newest `limit` items from the buffer
-          const batch = withheldBuffer.splice(-limit, limit);
-          this._releaseWithheld(batch);
-          return buildPage(batch);
-        }
-
-        // Buffer exhausted — load more pages from decodeHistory
-        if (!lastPage.hasNext()) return;
-
-        const nextInternal = await lastPage.next();
-        if (!nextInternal) return;
-
-        // Everything currently in the tree is "already known"
-        const alreadyKnown = new Set(beforeKeys);
-        for (const m of this._tree.flatten()) {
-          alreadyKnown.add(this._codec.getMessageKey(m));
-        }
-
-        const loaded = await this._loadUntilVisible(nextInternal, limit, alreadyKnown);
-        lastPage = loaded.lastPage;
-
-        const moreVisible = loaded.newVisible;
-        for (const m of moreVisible) {
-          this._withheldKeys.add(this._codec.getMessageKey(m));
-        }
-        // Remove and return the newest `limit` items; rest stays in buffer
-        const moreBatch = moreVisible.splice(-limit, limit);
-        withheldBuffer.push(...moreVisible);
-        this._releaseWithheld(moreBatch);
-
-        if (moreBatch.length === 0) return;
-        return buildPage(moreBatch);
-      },
-    });
-
-    return buildPage(released);
   }
 
   // Spec: AIT-CT12, AIT-CT12a, AIT-CT12b
@@ -933,12 +745,10 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
 
     this._turnObservers.clear();
     this._emitter.off();
+    this._view.close();
     this._ownTurnIds.clear();
     this._ownMsgIds.clear();
     this._turnMsgIds.clear();
-    this._turnClientIds.clear();
-    this._withheldKeys.clear();
-    this._ablyMessages.length = 0;
   }
 }
 

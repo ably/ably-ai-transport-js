@@ -33,7 +33,7 @@ When another client's turn streams a response:
 2. The decoder produces domain events from the raw Ably messages
 3. A per-turn accumulator builds domain messages from the events
 4. Accumulated messages are upserted into the conversation tree
-5. A `'message'` notification fires, updating React state
+5. An `'update'` notification fires on the view, updating React state
 
 This happens for every event - observer messages stream in real time, not just at turn completion.
 
@@ -56,7 +56,7 @@ for (const [clientId, turnIds] of activeTurns) {
 Turn lifecycle events include the `clientId`:
 
 ```typescript
-transport.on('turn', (event) => {
+transport.tree.on('turn', (event) => {
   // event.clientId tells you who started or ended the turn
   // event.type is 'x-ably-turn-start' or 'x-ably-turn-end'
 });
@@ -67,7 +67,7 @@ transport.on('turn', (event) => {
 A client that joins mid-conversation loads history from the channel:
 
 ```typescript
-const history = useHistory(transport, { limit: 50 });
+const { nodes, hasOlder, loadOlder } = useView(transport, { limit: 50 });
 ```
 
 History contains all messages from all clients, with their full branch structure. The late joiner sees the same conversation state as clients who were present from the start. See [History](history.md) for details.

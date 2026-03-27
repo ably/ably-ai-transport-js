@@ -20,7 +20,7 @@ User: "What is Rust?"                     (msg-1, parent: null)
   └── Assistant: "Rust is a systems..."    (msg-3, parent: msg-1, forkOf: msg-2)  ← regenerated
 ```
 
-`flatten()` returns the linear message list along the currently selected branch. The user navigates between siblings to switch branches.
+`flattenNodes()` returns the linear message list along the currently selected branch. The user navigates between siblings to switch branches.
 
 ## Regenerate
 
@@ -61,22 +61,23 @@ await edit(nodeId, [newMessage]);
 
 ## Branch navigation
 
-`useConversationTree` provides the tree state and navigation:
+`useTree` provides the tree state and navigation:
 
 ```typescript
-import { useConversationTree } from '@ably/ai-transport/react';
+import { useTree } from '@ably/ai-transport/react';
 
-const tree = useConversationTree(transport);
+const tree = useTree(transport);
 
-// tree.messages - linear message list for the current branch
 // tree.hasSiblings(nodeId) - does this message have alternatives?
 // tree.getSiblings(nodeId) - all alternatives at this fork point
 // tree.getSelectedIndex(nodeId) - which sibling is currently selected
-// tree.selectSibling(nodeId, index) - switch to a different sibling
+// tree.select(nodeId, index) - switch to a different sibling
+// tree.getNode(nodeId) - look up a node by msgId
 //
-// nodeId is the x-ably-msg-id for each message - resolve it from headers:
-//   const headers = transport.getMessageHeaders(msg);
-//   const nodeId = headers?.['x-ably-msg-id'] ?? msg.id;
+// nodeId is the msgId on each TreeNode — iterate tree.flattenNodes():
+//   transport.tree.flattenNodes().map((node) => {
+//     const nodeId = node.msgId;
+//   });
 ```
 
 Build a sibling navigator (where `nodeId` is the resolved `x-ably-msg-id` for the message):
@@ -85,14 +86,14 @@ Build a sibling navigator (where `nodeId` is the resolved `x-ably-msg-id` for th
 {tree.hasSiblings(nodeId) && (
   <div>
     <button
-      onClick={() => tree.selectSibling(nodeId, tree.getSelectedIndex(nodeId) - 1)}
+      onClick={() => tree.select(nodeId, tree.getSelectedIndex(nodeId) - 1)}
       disabled={tree.getSelectedIndex(nodeId) === 0}
     >
       ←
     </button>
     <span>{tree.getSelectedIndex(nodeId) + 1} / {tree.getSiblings(nodeId).length}</span>
     <button
-      onClick={() => tree.selectSibling(nodeId, tree.getSelectedIndex(nodeId) + 1)}
+      onClick={() => tree.select(nodeId, tree.getSelectedIndex(nodeId) + 1)}
       disabled={tree.getSelectedIndex(nodeId) === tree.getSiblings(nodeId).length - 1}
     >
       →
@@ -101,7 +102,7 @@ Build a sibling navigator (where `nodeId` is the resolved `x-ably-msg-id` for th
 )}
 ```
 
-Calling `selectSibling` updates the tree's active branch. `tree.messages` re-renders with the selected path.
+Calling `select` updates the tree's active branch. The view re-renders with the selected path.
 
 ## Server handling
 

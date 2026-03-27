@@ -466,6 +466,12 @@ export interface TurnEntry<TEvent> {
 
 /** Client-side transport that manages conversation state over an Ably channel. */
 export interface ClientTransport<TEvent, TMessage> {
+  /** The complete conversation tree — all known nodes, events for any change. */
+  readonly tree: Tree<TMessage>;
+
+  /** The paginated, branch-aware view for rendering — events scoped to visible messages. */
+  readonly view: View<TMessage>;
+
   /**
    * Send one or more messages and start a new turn. Returns a handle to the
    * active turn with the decoded event stream and a cancel function.
@@ -491,12 +497,6 @@ export interface ClientTransport<TEvent, TMessage> {
    */
   edit(messageId: string, newMessages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveTurn<TEvent>>;
 
-  /**
-   * Access the conversation tree for branch navigation.
-   * The tree is updated in real-time by the transport's channel subscription.
-   */
-  getTree(): Tree<TMessage>;
-
   /** Cancel turns matching the filter. Defaults to `{ own: true }` (all own turns). */
   cancel(filter?: CancelFilter): Promise<void>;
 
@@ -508,51 +508,10 @@ export interface ClientTransport<TEvent, TMessage> {
   waitForTurn(filter?: CancelFilter): Promise<void>;
 
   /**
-   * Subscribe to message store changes or raw Ably message additions.
-   * The handler is called with no arguments — call `getMessages()` or
-   * `getAblyMessages()` for the current state. Returns an unsubscribe function.
-   */
-  on(event: 'message' | 'ably-message', handler: () => void): () => void;
-
-  /** Subscribe to turn lifecycle events (start, end). Returns an unsubscribe function. */
-  on(event: 'turn', handler: (event: TurnLifecycleEvent) => void): () => void;
-
-  /**
    * Subscribe to non-fatal transport errors. These indicate something went
    * wrong but the transport is still operational. Returns an unsubscribe function.
    */
   on(event: 'error', handler: (error: Ably.ErrorInfo) => void): () => void;
-
-  /**
-   * Get the accumulated raw Ably messages, in chronological order.
-   * Includes both live messages and history-loaded messages.
-   */
-  getAblyMessages(): Ably.InboundMessage[];
-
-  /** Get all currently active turns, keyed by clientId. */
-  getActiveTurnIds(): Map<string, Set<string>>;
-
-  /** Get the current message list (follows selected branches). Updated by message lifecycle events. */
-  getMessages(): TMessage[];
-
-  /**
-   * Return the flattened conversation tree as full TreeNode objects.
-   * Each node includes the domain message, msg-id, parent chain, and headers.
-   * Convenience for building the `history` body field in HTTP POSTs and
-   * for rendering messages with transport metadata.
-   */
-  getNodes(): TreeNode<TMessage>[];
-
-  /**
-   * Load a page of conversation history from the channel, decoded through
-   * the transport's codec. Uses `untilAttach` for gapless continuity with
-   * the live subscription.
-   *
-   * History messages are inserted into the conversation tree and trigger
-   * a notification. Returns a PaginatedMessages handle — call `next()`
-   * for older pages.
-   */
-  history(options?: LoadHistoryOptions): Promise<PaginatedMessages<TMessage>>;
 
   /**
    * Tear down the transport: unsubscribe from the channel, close active

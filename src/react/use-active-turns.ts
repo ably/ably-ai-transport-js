@@ -2,7 +2,7 @@
  * useActiveTurns: reactive view of active turns on the channel,
  * keyed by clientId.
  *
- * Subscribes to transport turn lifecycle events and maintains a
+ * Subscribes to transport view turn lifecycle events and maintains a
  * Map<clientId, Set<turnId>> that updates on every turn start/end.
  *
  * Generic — works with any codec, not tied to Vercel types.
@@ -28,9 +28,9 @@ export const useActiveTurns = <TEvent, TMessage>(
     if (!transport) return;
 
     // Initialize from current state
-    setTurns(transport.getActiveTurnIds());
+    setTurns(transport.view.getActiveTurnIds());
 
-    const unsubscribe = transport.on('turn', (event: TurnLifecycleEvent) => {
+    const unsubscribe = transport.view.on('turn', (event: TurnLifecycleEvent) => {
       setTurns((prev) => {
         const next = new Map(prev);
 

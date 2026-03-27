@@ -120,7 +120,7 @@ export async function POST(req: Request) {
   const newMsgs = messages.map((m) => m.message);
 
   const result = streamText({
-    model: anthropic('claude-sonnet-4-20250514'),
+    model: anthropic('claude-sonnet-4-6'),
     system: 'You are a helpful assistant.',
     messages: await convertToModelMessages([...historyMsgs, ...newMsgs]),
     abortSignal: turn.abortSignal,
@@ -316,7 +316,7 @@ await transport.cancel({ turnId: 'turn-abc' });
 
 // Server: the turn's abortSignal fires automatically
 const result = streamText({
-  model: anthropic('claude-sonnet-4-20250514'),
+  model: anthropic('claude-sonnet-4-6'),
   messages,
   abortSignal: turn.abortSignal, // Aborted when client cancels
 });

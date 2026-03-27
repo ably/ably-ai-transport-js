@@ -409,6 +409,46 @@ export interface Tree<TMessage> {
 }
 
 // ---------------------------------------------------------------------------
+// View — windowed projection over the tree
+// ---------------------------------------------------------------------------
+
+/**
+ * A paginated, branch-aware projection of the conversation tree.
+ *
+ * Returns only the visible portion of the selected branch. New live messages
+ * appear immediately; older messages are revealed progressively via
+ * `loadOlder()`. Events are scoped to the visible window — subscribers
+ * are only notified when the visible output changes.
+ */
+export interface View<TMessage> {
+  /** Visible nodes along the selected branch, filtered by the pagination window. */
+  flattenNodes(): TreeNode<TMessage>[];
+
+  /** Whether there are older messages that can be loaded or revealed. */
+  hasOlder(): boolean;
+
+  /**
+   * Reveal older messages. Loads from channel history if the tree doesn't
+   * have enough, then advances the window to show up to `limit` more messages.
+   * Emits 'update' when the visible list changes.
+   * @param limit - Maximum number of older messages to reveal. Defaults to 100.
+   */
+  loadOlder(limit?: number): Promise<void>;
+
+  /** Active turn IDs for turns with visible messages, grouped by clientId. */
+  getActiveTurnIds(): Map<string, Set<string>>;
+
+  /** The visible message list changed (new visible node, branch switch, window shift). */
+  on(event: 'update', handler: () => void): () => void;
+
+  /** A raw Ably message arrived that corresponds to a visible node. */
+  on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
+
+  /** A turn event occurred for a turn with visible messages in the window. */
+  on(event: 'turn', handler: (event: TurnLifecycleEvent) => void): () => void;
+}
+
+// ---------------------------------------------------------------------------
 // Internal sub-component types
 // ---------------------------------------------------------------------------
 

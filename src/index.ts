@@ -21,6 +21,7 @@ export type {
   Turn,
   TurnEndReason,
   TurnLifecycleEvent,
+  View,
 } from './core/transport/index.js';
 export { buildTransportHeaders, createClientTransport, createServerTransport } from './core/transport/index.js';
 

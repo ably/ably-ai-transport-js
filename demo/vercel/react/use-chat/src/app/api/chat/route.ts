@@ -52,7 +52,7 @@ export async function POST(req: Request) {
   const allMessages = [...historyMsgs, ...newMsgs];
 
   const result = streamText({
-    model: anthropic('claude-sonnet-4-20250514'),
+    model: anthropic('claude-sonnet-4-6'),
     system: `You are a helpful assistant. When the user asks about weather, use the getWeather tool. If they don't specify a location, call getLocation first to get their coordinates, then call getWeather with a description of that location.`,
     messages: await convertToModelMessages(allMessages),
     tools,

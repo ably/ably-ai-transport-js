@@ -165,7 +165,7 @@ export interface Turn<TEvent, TMessage> {
    * (e.g. for optimistic reconciliation with the client's inserts).
    * @returns The msg-ids of all published messages, in order.
    */
-  addMessages(messages: ConversationNode<TMessage>[], options?: AddMessageOptions): Promise<AddMessagesResult>;
+  addMessages(messages: TreeNode<TMessage>[], options?: AddMessageOptions): Promise<AddMessagesResult>;
 
   /**
    * Pipe a ReadableStream through the encoder to the channel.
@@ -320,7 +320,7 @@ export interface LoadHistoryOptions {
 // ---------------------------------------------------------------------------
 
 /** A node in the conversation tree, representing a single domain message. */
-export interface ConversationNode<TMessage> {
+export interface TreeNode<TMessage> {
   /** The domain message. */
   message: TMessage;
   /** The x-ably-msg-id of this node — primary key in the tree. */
@@ -342,17 +342,17 @@ export interface ConversationNode<TMessage> {
 /**
  * Materializes a branching conversation tree from a flat oplog.
  *
- * Owns the conversation state — `flattenNodes()` returns the linear message list
- * for the currently selected branches. The transport's `getMessages()` delegates
- * to `flattenNodes()`.
+ * Owns the complete conversation state — every node from live messages and
+ * history. `flattenNodes()` returns the linear message list for the currently
+ * selected branches. Events fire for any change across the full tree.
  */
-export interface ConversationTree<TMessage> {
+export interface Tree<TMessage> {
   /**
    * Flatten the tree along the currently selected branches into
    * a linear list of conversation nodes. Each node carries the domain
    * message, its transport-assigned msgId, and headers.
    */
-  flattenNodes(): ConversationNode<TMessage>[];
+  flattenNodes(): TreeNode<TMessage>[];
 
   /**
    * Get all messages that are siblings (alternatives) at a given
@@ -375,7 +375,7 @@ export interface ConversationTree<TMessage> {
   select(msgId: string, index: number): void;
 
   /** Get a node by msgId, or undefined if not found. */
-  getNode(msgId: string): ConversationNode<TMessage> | undefined;
+  getNode(msgId: string): TreeNode<TMessage> | undefined;
 
   /** Get the stored headers for a node by msgId, or undefined if not found. */
   getHeaders(msgId: string): Record<string, string> | undefined;
@@ -392,6 +392,20 @@ export interface ConversationTree<TMessage> {
 
   /** Remove a message from the tree. */
   delete(msgId: string): void;
+
+  // --- Events ---
+
+  /** Active turn IDs grouped by clientId (all turns, not just visible). */
+  getActiveTurnIds(): Map<string, Set<string>>;
+
+  /** Subscribe to tree structure changes (insert, update, delete, or branch selection). */
+  on(event: 'update', handler: () => void): () => void;
+
+  /** Subscribe to raw Ably messages arriving on the channel. */
+  on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
+
+  /** Subscribe to turn lifecycle events (start and end). */
+  on(event: 'turn', handler: (event: TurnLifecycleEvent) => void): () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -441,7 +455,7 @@ export interface ClientTransport<TEvent, TMessage> {
    * Access the conversation tree for branch navigation.
    * The tree is updated in real-time by the transport's channel subscription.
    */
-  getTree(): ConversationTree<TMessage>;
+  getTree(): Tree<TMessage>;
 
   /** Cancel turns matching the filter. Defaults to `{ own: true }` (all own turns). */
   cancel(filter?: CancelFilter): Promise<void>;
@@ -482,12 +496,12 @@ export interface ClientTransport<TEvent, TMessage> {
   getMessages(): TMessage[];
 
   /**
-   * Return the flattened conversation tree as full ConversationNode objects.
+   * Return the flattened conversation tree as full TreeNode objects.
    * Each node includes the domain message, msg-id, parent chain, and headers.
    * Convenience for building the `history` body field in HTTP POSTs and
    * for rendering messages with transport metadata.
    */
-  getNodes(): ConversationNode<TMessage>[];
+  getNodes(): TreeNode<TMessage>[];
 
   /**
    * Load a page of conversation history from the channel, decoded through

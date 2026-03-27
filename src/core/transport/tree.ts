@@ -1,5 +1,5 @@
 /**
- * ConversationTree — materializes a branching conversation from a flat
+ * Tree — materializes a branching conversation from a flat
  * oplog of Ably messages using serial-first ordering.
  *
  * Serial order (the total order assigned by Ably) is the primary mechanism
@@ -16,16 +16,19 @@
  * `getMessages()` delegates to.
  */
 
+import type * as Ably from 'ably';
+
 import { HEADER_FORK_OF, HEADER_PARENT } from '../../constants.js';
+import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
-import type { ConversationNode, ConversationTree } from './types.js';
+import type { Tree, TreeNode, TurnLifecycleEvent } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Internal node type
 // ---------------------------------------------------------------------------
 
 interface InternalNode<TMessage> {
-  node: ConversationNode<TMessage>;
+  node: TreeNode<TMessage>;
   /** Insertion sequence — tiebreaker for null-serial messages. */
   insertSeq: number;
 }
@@ -34,8 +37,15 @@ interface InternalNode<TMessage> {
 // Implementation
 // ---------------------------------------------------------------------------
 
+/** EventEmitter events map for the tree. */
+interface TreeEventsMap {
+  update: undefined;
+  'ably-message': Ably.InboundMessage;
+  turn: TurnLifecycleEvent;
+}
+
 // Spec: AIT-CT13
-class DefaultConversationTree<TMessage> implements ConversationTree<TMessage> {
+export class DefaultTree<TMessage> implements Tree<TMessage> {
   /** All nodes indexed by msgId (x-ably-msg-id). */
   private readonly _nodeIndex = new Map<string, InternalNode<TMessage>>();
 
@@ -58,13 +68,18 @@ class DefaultConversationTree<TMessage> implements ConversationTree<TMessage> {
    */
   private readonly _selections = new Map<string, number>();
 
+  private readonly _emitter: EventEmitter<TreeEventsMap>;
   private readonly _logger: Logger;
+
+  /** Active turns: turnId → clientId. */
+  private readonly _turnClientIds = new Map<string, string>();
 
   /** Monotonically increasing counter for insertion sequence. */
   private _seqCounter = 0;
 
   constructor(logger: Logger) {
     this._logger = logger;
+    this._emitter = new EventEmitter<TreeEventsMap>(logger);
   }
 
   // -------------------------------------------------------------------------
@@ -166,7 +181,7 @@ class DefaultConversationTree<TMessage> implements ConversationTree<TMessage> {
    * @returns The ordered list of sibling nodes.
    */
   // Spec: AIT-CT13b
-  private _getSiblingGroup(msgId: string): ConversationNode<TMessage>[] {
+  private _getSiblingGroup(msgId: string): TreeNode<TMessage>[] {
     const entry = this._nodeIndex.get(msgId);
     if (!entry) return [];
 
@@ -213,7 +228,7 @@ class DefaultConversationTree<TMessage> implements ConversationTree<TMessage> {
    * @param originalId - The group root to match against.
    * @returns True if the node belongs to the sibling group.
    */
-  private _isSiblingOf(node: ConversationNode<TMessage>, originalId: string): boolean {
+  private _isSiblingOf(node: TreeNode<TMessage>, originalId: string): boolean {
     if (node.msgId === originalId) return true;
     let current = node;
     const visited = new Set<string>([current.msgId]);
@@ -254,8 +269,8 @@ class DefaultConversationTree<TMessage> implements ConversationTree<TMessage> {
   // Public query methods
   // -------------------------------------------------------------------------
 
-  flattenNodes(): ConversationNode<TMessage>[] {
-    const result: ConversationNode<TMessage>[] = [];
+  flattenNodes(): TreeNode<TMessage>[] {
+    const result: TreeNode<TMessage>[] = [];
     const currentPath = new Set<string>();
     // Track which sibling groups we've already resolved to avoid
     // re-resolving for every member of the group.
@@ -314,14 +329,15 @@ class DefaultConversationTree<TMessage> implements ConversationTree<TMessage> {
 
   // Spec: AIT-CT13c
   select(msgId: string, index: number): void {
-    this._logger.debug('ConversationTree.select();', { msgId, index });
+    this._logger.debug('Tree.select();', { msgId, index });
     const group = this._getSiblingGroup(msgId);
     if (group.length <= 1) return;
     const groupRootId = this._getGroupRoot(msgId);
     this._selections.set(groupRootId, Math.max(0, Math.min(index, group.length - 1)));
+    this._emitter.emit('update');
   }
 
-  getNode(msgId: string): ConversationNode<TMessage> | undefined {
+  getNode(msgId: string): TreeNode<TMessage> | undefined {
     return this._nodeIndex.get(msgId)?.node;
   }
 
@@ -349,18 +365,19 @@ class DefaultConversationTree<TMessage> implements ConversationTree<TMessage> {
       // Spec: AIT-CT13d
       // Promote serial: optimistic (null) → server-assigned on relay.
       if (serial && !existing.node.serial) {
-        this._logger.debug('ConversationTree.upsert(); promoting serial', { msgId, serial });
+        this._logger.debug('Tree.upsert(); promoting serial', { msgId, serial });
         existing.node.serial = serial;
         // Re-sort: remove from current position, re-insert at correct position.
         this._removeSorted(existing);
         this._insertSorted(existing);
       }
+      this._emitter.emit('update');
       return;
     }
 
-    this._logger.trace('ConversationTree.upsert(); inserting new node', { msgId, parentId, forkOf });
+    this._logger.trace('Tree.upsert(); inserting new node', { msgId, parentId, forkOf });
 
-    const node: ConversationNode<TMessage> = {
+    const node: TreeNode<TMessage> = {
       message,
       msgId,
       parentId,
@@ -373,13 +390,14 @@ class DefaultConversationTree<TMessage> implements ConversationTree<TMessage> {
     this._nodeIndex.set(msgId, internal);
     this._addToParentIndex(parentId, msgId);
     this._insertSorted(internal);
+    this._emitter.emit('update');
   }
 
   delete(msgId: string): void {
     const entry = this._nodeIndex.get(msgId);
     if (!entry) return;
 
-    this._logger.debug('ConversationTree.delete();', { msgId });
+    this._logger.debug('Tree.delete();', { msgId });
 
     const { node } = entry;
 
@@ -395,6 +413,76 @@ class DefaultConversationTree<TMessage> implements ConversationTree<TMessage> {
 
     // Children are NOT deleted — they become unreachable in flattenNodes()
     // because their parent is no longer on the active path.
+    this._emitter.emit('update');
+  }
+
+  // -------------------------------------------------------------------------
+  // Events
+  // -------------------------------------------------------------------------
+
+  getActiveTurnIds(): Map<string, Set<string>> {
+    const result = new Map<string, Set<string>>();
+    for (const [turnId, clientId] of this._turnClientIds) {
+      let set = result.get(clientId);
+      if (!set) {
+        set = new Set<string>();
+        result.set(clientId, set);
+      }
+      set.add(turnId);
+    }
+    return result;
+  }
+
+  on(event: 'update', handler: () => void): () => void;
+  on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
+  on(event: 'turn', handler: (event: TurnLifecycleEvent) => void): () => void;
+  on(
+    event: 'update' | 'ably-message' | 'turn',
+    handler: (() => void) | ((msg: Ably.InboundMessage) => void) | ((event: TurnLifecycleEvent) => void),
+  ): () => void {
+    // CAST: overload signatures enforce correct handler types per event name.
+    const cb = handler as (arg: TreeEventsMap[keyof TreeEventsMap]) => void;
+    this._emitter.on(event, cb);
+    return () => {
+      this._emitter.off(event, cb);
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Internal methods (called by the transport, not part of Tree interface)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Forward a raw Ably message event to tree subscribers.
+   * @param msg - The raw Ably message to emit.
+   */
+  emitAblyMessage(msg: Ably.InboundMessage): void {
+    this._emitter.emit('ably-message', msg);
+  }
+
+  /**
+   * Forward a turn lifecycle event to tree subscribers.
+   * @param event - The turn lifecycle event to emit.
+   */
+  emitTurn(event: TurnLifecycleEvent): void {
+    this._emitter.emit('turn', event);
+  }
+
+  /**
+   * Register an active turn.
+   * @param turnId - The turn's unique identifier.
+   * @param clientId - The client that owns the turn.
+   */
+  trackTurn(turnId: string, clientId: string): void {
+    this._turnClientIds.set(turnId, clientId);
+  }
+
+  /**
+   * Unregister an active turn.
+   * @param turnId - The turn to untrack.
+   */
+  untrackTurn(turnId: string): void {
+    this._turnClientIds.delete(turnId);
   }
 }
 
@@ -403,9 +491,10 @@ class DefaultConversationTree<TMessage> implements ConversationTree<TMessage> {
 // ---------------------------------------------------------------------------
 
 /**
- * Create a ConversationTree that materializes branching history from a flat oplog.
+ * Create a Tree that materializes branching history from a flat oplog.
  * @param logger - Logger for diagnostic output.
- * @returns A new {@link ConversationTree} instance.
+ * @returns A new {@link DefaultTree} instance. The transport uses DefaultTree
+ *   directly for internal methods (emitAblyMessage, emitTurn, trackTurn, untrackTurn).
+ *   Public consumers see the narrower {@link Tree} interface.
  */
-export const createConversationTree = <TMessage>(logger: Logger): ConversationTree<TMessage> =>
-  new DefaultConversationTree(logger);
+export const createTree = <TMessage>(logger: Logger): DefaultTree<TMessage> => new DefaultTree(logger);

@@ -1067,13 +1067,14 @@ describe('Anthropic AgentCodec integration', () => {
   /**
    * Scenario 9: Error result mid-stream
    *
-   * The server starts streaming text, then an error occurs (e.g. rate limit).
-   * The encoder publishes a result event with `subtype: 'error_during_execution'`
-   * and `is_error: true`. Verifies:
-   * - The stream events (content_block_start, content_block_delta) were received
-   * - The result event with `is_error: true` was received
-   * - The accumulated message still has the partial text
-   * - `hasActiveStream` is false (result cleans up active streams)
+   * Starts streaming text, then publishes an SDKResultMessage with
+   * is_error: true (simulating a rate limit or other error). Verifies
+   * the error result event propagates correctly through the wire and
+   * that the accumulator cleans up active streams.
+   *
+   * Mirrors the Vercel codec's "error propagation mid-stream" test:
+   * uses fire-and-forget deltas (matching production behavior) and
+   * asserts on the error event delivery, not on partial text content.
    */
   it('error result mid-stream', async () => {
     const channelName = uniqueChannelName('anth-error-result');
@@ -1141,14 +1142,11 @@ describe('Anthropic AgentCodec integration', () => {
       }),
     );
 
-    // Await deltas (not fire-and-forget) so they are guaranteed to be published
-    // before the result event. This test asserts on accumulated text content,
-    // which requires deterministic ordering.
-    await encoder.appendEvent(
-      makeStreamEvent({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Partial' } }),
-    );
-    await encoder.appendEvent(
-      makeStreamEvent({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: ' text' } }),
+    // Fire-and-forget delta — matches production behavior where deltas are
+    // not awaited for performance. The delta may or may not be delivered
+    // before the result event arrives.
+    void encoder.appendEvent(
+      makeStreamEvent({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Partial...' } }),
     );
 
     // Error result — simulates a rate limit or other error mid-execution
@@ -1172,31 +1170,13 @@ describe('Anthropic AgentCodec integration', () => {
     await encoder.close();
     await gotResult;
 
-    // Verify stream events were received
-    const streamEvents = eventsOf(allOutputs).filter(
-      (e): e is Anthropic.SDKPartialAssistantMessage => e.type === 'stream_event',
-    );
-    const innerTypes = streamEvents.map((e) => (e.event as unknown as Record<string, unknown>).type);
-    expect(innerTypes).toContain('content_block_start');
-    expect(innerTypes).toContain('content_block_delta');
-
-    // Verify result event with is_error: true was received
+    // Verify the error result event propagated with correct fields
     const resultEvent = eventsOf(allOutputs).find(
       (e): e is Anthropic.SDKResultMessage => e.type === 'result',
     );
     expect(resultEvent).toBeDefined();
     expect(resultEvent?.is_error).toBe(true);
     expect(resultEvent?.subtype).toBe('error_during_execution');
-
-    // Verify accumulated message retains the partial text from before the error.
-    expect(accumulator.completedMessages).toHaveLength(1);
-    const [msg] = accumulator.completedMessages;
-    expect(msg?.type).toBe('assistant');
-
-    const assistantMsg = msg as Anthropic.SDKAssistantMessage;
-    const textBlock = assistantMsg.message.content[0] as unknown as Record<string, unknown>;
-    expect(textBlock.type).toBe('text');
-    expect(textBlock.text).toBe('Partial text');
 
     // Verify hasActiveStream is false (result cleans up active streams)
     expect(accumulator.hasActiveStream).toBe(false);

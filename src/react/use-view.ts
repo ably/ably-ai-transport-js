@@ -6,7 +6,7 @@
  * auto-loads the first page on mount (SWR-style).
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { ClientTransport, TreeNode } from '../core/transport/types.js';
 
@@ -18,6 +18,8 @@ export interface ViewOptions {
 
 /** Handle for the paginated, branch-aware conversation view. */
 export interface ViewHandle<TMessage> {
+  /** The visible domain messages along the selected branch. */
+  messages: TMessage[];
   /** Visible conversation nodes along the selected branch. */
   nodes: TreeNode<TMessage>[];
   /** Whether there are older messages that can be revealed via `loadOlder`. */
@@ -80,5 +82,7 @@ export const useView = <TEvent, TMessage>(
     void loadOlder();
   }, [autoLoad, transport, loadOlder]);
 
-  return { nodes, hasOlder, loading, loadOlder };
+  const messages = useMemo(() => nodes.map((n) => n.message), [nodes]);
+
+  return { messages, nodes, hasOlder, loading, loadOlder };
 };

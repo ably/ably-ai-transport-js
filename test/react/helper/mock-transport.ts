@@ -101,6 +101,7 @@ export const createMockTransport = (initialMessages: string[] = []): MockTranspo
   };
 
   const view: View<string> = {
+    getMessages: vi.fn(() => initialMessages),
     flattenNodes: vi.fn(() => initialNodes),
     hasOlder: vi.fn(() => false),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly

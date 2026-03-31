@@ -87,6 +87,28 @@ describe('DefaultView', () => {
   });
 
   // -------------------------------------------------------------------------
+  // getMessages (convenience)
+  // -------------------------------------------------------------------------
+
+  describe('getMessages', () => {
+    it('returns domain messages matching flattenNodes', () => {
+      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'));
+      tree.upsert('m2', { id: '2', content: 'hello' }, makeHeaders('m2'));
+
+      const messages = view.getMessages();
+      expect(messages).toEqual([
+        { id: '1', content: 'hi' },
+        { id: '2', content: 'hello' },
+      ]);
+      expect(messages).toEqual(view.flattenNodes().map((n) => n.message));
+    });
+
+    it('returns empty array when tree is empty', () => {
+      expect(view.getMessages()).toEqual([]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // flattenNodes (windowed projection)
   // -------------------------------------------------------------------------
 

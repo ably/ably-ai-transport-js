@@ -24,8 +24,9 @@ The original issue description (authored by Claude, take with a pinch of salt):
 
 The investigation considers three use cases:
 
-1. **Headless** — no AI SDK usage on the frontend; backend uses
-   `ServerTransport` with `UIMessageCodec`.
+1. **No React hooks** — frontend uses `ClientTransport` directly (wired into
+   the user's own UI or a non-UI consumer); backend uses `ServerTransport`
+   with `UIMessageCodec`.
 2. **Our React hooks** — React frontend with `useClientTransport`, `useSend`,
    etc.; backend uses `ServerTransport` with `UIMessageCodec`.
 3. **Vercel `useChat`** — React frontend with Vercel's `useChat` hook, using
@@ -109,7 +110,7 @@ These map to the library's entry points as follows:
 
 | Use case | Client entry points | Server entry point |
 | --- | --- | --- |
-| 1. Headless | `@ably/ai-transport` (core only) | `@ably/ai-transport/vercel` |
+| 1. No React hooks | `@ably/ai-transport` + `@ably/ai-transport/vercel` | `@ably/ai-transport/vercel` |
 | 2. Our React hooks | `@ably/ai-transport/react` + `@ably/ai-transport/vercel` | `@ably/ai-transport/vercel` |
 | 3. Vercel `useChat` | `@ably/ai-transport/vercel/react` + `@ably/ai-transport/vercel` | `@ably/ai-transport/vercel` |
 

@@ -644,7 +644,7 @@ output should be persisted to Ably history.
 server-side, where the server streams `tool-output-available` to Ably as part
 of `streamText()`'s automatic multi-step execution.
 
-### Gap 3: Ably Message Size Limits for Large Payloads (Medium-High Priority)
+### Gap 3: Ably Message Size Limits for Large Payloads (High Priority)
 
 **What:** Several types of data flow through the transport as **discrete Ably
 messages carrying their full payload in a single message**. Ably's maximum
@@ -838,17 +838,19 @@ test.
    Ably history (architectural gap), and the re-submission flow is untested.
    Needs a design decision for how client-side tool output should be persisted
    before testing can begin.
-2. **Multi-step tool use integration test (Gap 1)** — The codec probably handles
+2. **Ably message size limits (Gap 3)** — Affects anyone who uploads an image
+   (the primary documented approach in the AI SDK), any model that generates
+   images, and potentially any tool or data part with a non-trivial payload.
+   Characterise the failure mode and decide on a strategy: document the
+   limitation, provide guidance on hosted URLs / external storage, or implement
+   chunking.
+3. **Multi-step tool use integration test (Gap 1)** — The codec probably handles
    this correctly (each chunk type is unit-tested), but the interaction between
    step boundaries, tool state transitions, and the accumulator's step-reset
    logic has not been validated end-to-end.
 
 ### P2 — Medium value, fills important gaps
 
-3. **Ably message size limits (Gap 3)** — Characterise the failure mode when
-   payloads exceed the Ably message size limit (files, tool results, data
-   parts). Decide on a strategy: document the limitation, provide guidance on
-   hosted URLs / external storage, or implement chunking.
 4. **Edit flow through ChatTransport (Gap 5)** — Test
    `sendMessage({ messageId })` produces correct fork metadata and the server
    handles it correctly.

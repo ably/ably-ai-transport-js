@@ -3,11 +3,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { HEADER_MSG_ID, HEADER_TURN_ID } from '../../../src/constants.js';
 import type { Codec } from '../../../src/core/codec/types.js';
+// Vitest hoists vi.mock above imports, so this static import gets the mock.
+import { decodeHistory } from '../../../src/core/transport/decode-history.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
-import type { TurnLifecycleEvent } from '../../../src/core/transport/types.js';
+import type { PaginatedMessages, TurnLifecycleEvent } from '../../../src/core/transport/types.js';
 import { DefaultView } from '../../../src/core/transport/view.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
+vi.mock('../../../src/core/transport/decode-history.js', () => ({
+  decodeHistory: vi.fn(),
+}));
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -46,6 +51,22 @@ const makeHeaders = (msgId: string, turnId?: string): Record<string, string> => 
   return h;
 };
 
+const makePage = (
+  items: TestMessage[],
+  headers: Record<string, string>[],
+  serials: string[],
+  hasNextPage = false,
+  nextPageFn?: () => Promise<PaginatedMessages<TestMessage> | undefined>,
+): PaginatedMessages<TestMessage> => ({
+  items,
+  itemHeaders: headers,
+  itemSerials: serials,
+  rawMessages: [],
+  hasNext: () => hasNextPage,
+  // eslint-disable-next-line @typescript-eslint/promise-function-async, unicorn/no-useless-undefined -- mock needs explicit undefined for PaginatedMessages return type
+  next: nextPageFn ?? (() => Promise.resolve(undefined)),
+});
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -55,6 +76,7 @@ describe('DefaultView', () => {
   let view: DefaultView<TestEvent, TestMessage>;
 
   beforeEach(() => {
+    vi.mocked(decodeHistory).mockReset();
     tree = createTree<TestMessage>(silentLogger);
     view = new DefaultView({
       tree,
@@ -244,6 +266,111 @@ describe('DefaultView', () => {
   describe('hasOlder', () => {
     it('returns false initially', () => {
       expect(view.hasOlder()).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // loadOlder
+  // -------------------------------------------------------------------------
+
+  describe('loadOlder', () => {
+    it('loads first page and reveals messages', async () => {
+      const page = makePage(
+        [{ id: '1', content: 'old1' }, { id: '2', content: 'old2' }, { id: '3', content: 'old3' }],
+        [makeHeaders('h1'), makeHeaders('h2'), makeHeaders('h3')],
+        ['serial-1', 'serial-2', 'serial-3'],
+      );
+      vi.mocked(decodeHistory).mockResolvedValue(page);
+
+      await view.loadOlder(10);
+
+      const nodes = view.flattenNodes();
+      expect(nodes).toHaveLength(3);
+      expect(nodes[0]?.msgId).toBe('h1');
+      expect(view.hasOlder()).toBe(false);
+    });
+
+    it('withholds excess messages and reveals on subsequent calls', async () => {
+      const page = makePage(
+        [
+          { id: '1', content: 'a' }, { id: '2', content: 'b' }, { id: '3', content: 'c' },
+          { id: '4', content: 'd' }, { id: '5', content: 'e' },
+        ],
+        [makeHeaders('h1'), makeHeaders('h2'), makeHeaders('h3'), makeHeaders('h4'), makeHeaders('h5')],
+        ['serial-1', 'serial-2', 'serial-3', 'serial-4', 'serial-5'],
+      );
+      vi.mocked(decodeHistory).mockResolvedValue(page);
+
+      // Load with limit 2 — reveals newest 2, withholds 3
+      await view.loadOlder(2);
+
+      expect(view.flattenNodes()).toHaveLength(2);
+      expect(view.hasOlder()).toBe(true);
+
+      // Second call reveals from withheld buffer
+      await view.loadOlder(2);
+
+      expect(view.flattenNodes()).toHaveLength(4);
+      expect(view.hasOlder()).toBe(true);
+      // decodeHistory should only be called once (buffer drain, no new fetch)
+      expect(vi.mocked(decodeHistory)).toHaveBeenCalledOnce();
+    });
+
+    it('loads more history when withheld buffer is exhausted', async () => {
+      const page2 = makePage(
+        [{ id: '10', content: 'oldest' }, { id: '11', content: 'older' }],
+        [makeHeaders('h10'), makeHeaders('h11')],
+        ['serial-10', 'serial-11'],
+      );
+
+      const page1 = makePage(
+        [{ id: '1', content: 'a' }, { id: '2', content: 'b' }, { id: '3', content: 'c' }],
+        [makeHeaders('h1'), makeHeaders('h2'), makeHeaders('h3')],
+        ['serial-1', 'serial-2', 'serial-3'],
+        true,
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise directly
+        () => Promise.resolve(page2),
+      );
+      vi.mocked(decodeHistory).mockResolvedValue(page1);
+
+      // First load with limit 2 — page1 has 3 items, reveals 2, withholds 1
+      await view.loadOlder(2);
+      expect(view.flattenNodes()).toHaveLength(2);
+      expect(view.hasOlder()).toBe(true);
+
+      // Second load — drains withheld buffer (1 item)
+      await view.loadOlder(2);
+      expect(view.flattenNodes()).toHaveLength(3);
+
+      // Third load — buffer empty, fetches next page from page1.next()
+      await view.loadOlder(10);
+      expect(view.flattenNodes()).toHaveLength(5);
+    });
+
+    it('suppresses ably-message events for withheld nodes', async () => {
+      const page = makePage(
+        [{ id: '1', content: 'a' }, { id: '2', content: 'b' }, { id: '3', content: 'c' }],
+        [makeHeaders('h1'), makeHeaders('h2'), makeHeaders('h3')],
+        ['serial-1', 'serial-2', 'serial-3'],
+      );
+      vi.mocked(decodeHistory).mockResolvedValue(page);
+
+      // Reveal only 1, withhold 2
+      await view.loadOlder(1);
+
+      const handler = vi.fn();
+      view.on('ably-message', handler);
+
+      // Emit for a withheld node — should be suppressed
+      const withheldMsg = { extras: { headers: { [HEADER_MSG_ID]: 'h1' } } } as unknown as Ably.InboundMessage;
+      tree.emitAblyMessage(withheldMsg);
+      expect(handler).not.toHaveBeenCalled();
+
+      // Emit for a visible node — should be forwarded
+      const visibleMsg = { extras: { headers: { [HEADER_MSG_ID]: 'h3' } } } as unknown as Ably.InboundMessage;
+      tree.emitAblyMessage(visibleMsg);
+      expect(handler).toHaveBeenCalledOnce();
+      expect(handler).toHaveBeenCalledWith(visibleMsg);
     });
   });
 

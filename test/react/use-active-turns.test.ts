@@ -13,10 +13,10 @@ describe('useActiveTurns', () => {
     expect(result.current.size).toBe(0);
   });
 
-  it('initializes from view state', () => {
+  it('initializes from tree state', () => {
     const mock = createMockTransport();
     const initialTurns = new Map([['client-1', new Set(['turn-1'])]]);
-    (mock.view.getActiveTurnIds as ReturnType<typeof vi.fn>).mockReturnValue(initialTurns);
+    (mock.tree.getActiveTurnIds as ReturnType<typeof vi.fn>).mockReturnValue(initialTurns);
 
     const { result } = renderHook(() => useActiveTurns(mock.transport));
     expect(result.current.get('client-1')?.has('turn-1')).toBe(true);
@@ -35,7 +35,7 @@ describe('useActiveTurns', () => {
 
   it('removes a turn on turn-end event', () => {
     const mock = createMockTransport();
-    (mock.view.getActiveTurnIds as ReturnType<typeof vi.fn>).mockReturnValue(new Map([['client-1', new Set(['turn-1'])]]));
+    (mock.tree.getActiveTurnIds as ReturnType<typeof vi.fn>).mockReturnValue(new Map([['client-1', new Set(['turn-1'])]]));
 
     const { result } = renderHook(() => useActiveTurns(mock.transport));
 
@@ -48,7 +48,7 @@ describe('useActiveTurns', () => {
 
   it('removes clientId entry when last turn ends', () => {
     const mock = createMockTransport();
-    (mock.view.getActiveTurnIds as ReturnType<typeof vi.fn>).mockReturnValue(
+    (mock.tree.getActiveTurnIds as ReturnType<typeof vi.fn>).mockReturnValue(
       new Map([['client-1', new Set(['turn-1', 'turn-2'])]]),
     );
 
@@ -70,7 +70,7 @@ describe('useActiveTurns', () => {
 
   it('does not mutate previous state Set on turn-end', () => {
     const mock = createMockTransport();
-    (mock.view.getActiveTurnIds as ReturnType<typeof vi.fn>).mockReturnValue(
+    (mock.tree.getActiveTurnIds as ReturnType<typeof vi.fn>).mockReturnValue(
       new Map([['client-1', new Set(['turn-1', 'turn-2'])]]),
     );
 

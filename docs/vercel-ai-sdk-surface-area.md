@@ -154,6 +154,9 @@ The AI SDK surface area was assessed using the following sources:
   files in `src/vercel/`, all test files in `test/vercel/`, both demo apps in
   `demo/vercel/react/`, and the project rules in `.claude/rules/AISDK.md`.
 
+> [!note]
+> Claude's entrypoint to the above sources was the `vercel/ai` skill, as recommended by https://ai-sdk.dev/docs/getting-started/coding-agents.
+
 ---
 
 ## Testing Taxonomy

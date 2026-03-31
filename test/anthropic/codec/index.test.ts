@@ -86,6 +86,7 @@ describe('AgentCodec', () => {
         // CAST: Empty shell for test — only uuid field matters for this test.
         message: {} as unknown as Anthropic.SDKAssistantMessage['message'],
       };
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call -- agent SDK .d.ts has broken internal refs; type may not resolve in CI
       expect(AgentCodec.getMessageKey(msg)).toBe('assistant-uuid-1');
     });
 
@@ -98,6 +99,7 @@ describe('AgentCodec', () => {
         parent_tool_use_id: null,
         message: { role: 'user', content: 'hello' },
       };
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call -- agent SDK .d.ts has broken internal refs; type may not resolve in CI
       expect(AgentCodec.getMessageKey(msg)).toBe('user-uuid-1');
     });
 
@@ -109,6 +111,7 @@ describe('AgentCodec', () => {
         parent_tool_use_id: null,
         message: { role: 'user', content: 'hello' },
       };
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call -- agent SDK .d.ts has broken internal refs; type may not resolve in CI
       expect(AgentCodec.getMessageKey(msg)).toBe('session-fallback');
     });
   });

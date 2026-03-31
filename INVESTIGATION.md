@@ -1265,6 +1265,45 @@ Based on the Vercel reference and accounting for differences:
 | 2 | ~~Potential issue~~ | `pipe-stream.ts` error path | Initially raised in 2.4: pipeStream called `encoder.close()` on abort instead of aborting. **Fixed in commit 2.9** (`b0f1814`): added `StreamEncoder.abort()` to the interface, pipeStream now calls `encoder.abort('cancelled')` on the cancel path. The error path still calls `encoder.close()` (best-effort), which is reasonable -- errors are signaled via a discrete `error` event before the stream throws. | Resolved by 2.9 |
 | 3 | Codec authoring tension | Lifecycle tracker + complex SDK types | The lifecycle tracker synthesizes events for mid-stream joins. For Vercel, synthetic events are simple (`{ type: 'start', messageId }` — flat objects). For Anthropic, synthetic events require constructing nested `BetaMessage` objects with many required fields (`id`, `role`, `type`, `model`, `content`, `stop_reason`, `stop_sequence`, `usage`, `container`, `context_management`). This is fragile — if the Anthropic SDK adds a required field, the synthetic construction breaks. **Suggestion**: The lifecycle tracker could accept a simpler "phase event" type that the accumulator knows how to handle, rather than requiring full TEvent construction. Or the accumulator could be designed to lazily create messages on first content block without requiring a preceding start event. | Design friction — noted during implementation |
 | 4 | Codec authoring tension | `getMessageKey` with union TMessage | For Vercel, `getMessageKey` is trivial (`message.id`). For Anthropic's `SDKAssistantMessage | SDKUserMessage` union, `uuid` is optional on `SDKUserMessage`, requiring a fallback. This confirms the PR #11 decision to remove `getMessageKey` — it couples the codec interface to domain message identity assumptions that don't hold for all frameworks. | Confirms PR #11 motivation |
+| 5 | CI / type resolution | Agent SDK broken `.d.ts` | See detailed writeup below. | Per-line eslint-disable on affected lines |
+
+### Issue 5: Anthropic Agent SDK broken type declarations in CI
+
+**What we saw**: ESLint in CI (GitHub Actions, Node 20/22/24) reported `Unsafe call of a type that could not be resolved` on lines calling `AgentCodec.getMessageKey(msg)` in `test/anthropic/codec/index.test.ts`. The same lint passed locally (macOS, Node 24).
+
+**The import chain that breaks**:
+```
+test/index.test.ts: AgentCodec.getMessageKey(msg)
+  → Codec<AgentCodecEvent, AgentMessage>.getMessageKey(message: AgentMessage)
+    → AgentMessage = SDKAssistantMessage | SDKUserMessage
+      → SDKAssistantMessage has field `message: BetaMessage`
+        → BetaMessage imported from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
+      → SDKUserMessage has field `message: MessageParam`
+        → MessageParam imported from '@anthropic-ai/sdk/resources'
+```
+
+If `BetaMessage` or `MessageParam` can't be resolved, `SDKAssistantMessage`/`SDKUserMessage` become error types, cascading to `AgentMessage` → `Codec<AgentCodecEvent, error>` → `getMessageKey` becomes unresolvable → `no-unsafe-call`.
+
+**Root cause**: The `@anthropic-ai/claude-agent-sdk` package ships a `sdk.d.ts` with two problems:
+
+1. **Missing transitive dependency types**: It imports from `@modelcontextprotocol/sdk/types.js` (5 imports) but doesn't declare it as a dependency. Without `@modelcontextprotocol/sdk` installed, these imports fail.
+
+2. **Broken internal references**: Line 1993 of `sdk.d.ts` defines a `SDKControlRequestInner` union type that references 12+ type names that are **never defined** in the `.d.ts` (e.g. `SDKControlChannelEnableRequest`, `SDKControlEndSessionRequest`, `SDKControlClaudeAuthenticateRequest`). These are references to types that were likely renamed or removed but not cleaned up in the published declarations. No dependency can fix this — the types simply don't exist.
+
+With `skipLibCheck: true`, TypeScript ignores both problems. But ESLint's `@typescript-eslint` rules create their own TypeScript program instance for type checking, and depending on the environment (Node version, npm resolution strategy), the broken `.d.ts` may cause some or all exported types to resolve as `error`.
+
+**What we did**:
+- Added `@anthropic-ai/sdk` as a peer + dev dependency (fixes `BetaMessage`/`MessageParam` resolution).
+- Added `@modelcontextprotocol/sdk` as a dev dependency (fixes `CallToolResult`/`McpServer` etc. resolution).
+- This reduced broken refs from "all types unresolvable" to 15 internal `SDKControl*Request` types on one line — types we never use.
+- Added per-line `// eslint-disable-next-line @typescript-eslint/no-unsafe-call` comments on the 3 lines CI flagged.
+
+**Why it passes locally but fails in CI**: The exact behavior depends on how TypeScript's type checker handles a `.d.ts` with errors. Locally (macOS, Node 24, npm 11.6), the 15 broken internal refs don't cascade to affect the types we use. In CI (Ubuntu, Node 20/22/24, npm via `npm ci`), the broken refs may cause the entire module's exports to be treated as unresolvable. This is a difference in TypeScript's error recovery behavior across environments.
+
+**Future options**:
+1. **Wait for Anthropic to fix their `.d.ts`**: The broken internal references are a bug in their published package. When they ship corrected declarations, the eslint-disable comments can be removed.
+2. **Patch the `.d.ts` at install time**: Use `postinstall` script or `patch-package` to remove the broken `SDKControlRequestInner` union from `sdk.d.ts`. This would let all types resolve cleanly everywhere.
+3. **ESLint config override for test/anthropic/**: Disable `no-unsafe-*` rules for all Anthropic test files. More robust but less precise than per-line comments. Was considered and rejected in favor of per-line comments to keep the fix minimal and explicit.
 
 ---
 

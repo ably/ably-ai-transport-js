@@ -35,33 +35,75 @@ The investigation considers three use cases:
 ### Other AI SDK Capabilities Considered
 
 The AI SDK v6 includes several capabilities beyond `streamText` + `useChat`.
-These were assessed for whether they need a durable transport story:
+The AI SDK UI layer (`ai` and `@ai-sdk/react` packages) provides exactly three
+React hooks: `useChat`, `useCompletion`, and `useObject` (experimental). Only
+`useChat` uses the `ChatTransport` abstraction. The other two hooks, and all
+non-UI capabilities, were assessed for whether they need a durable transport
+story:
 
-| Capability | Streaming? | Uses ChatTransport? | Long-running? | Durable transport value |
+| Capability | React hook? | Uses ChatTransport? | Streaming? | Durable transport value |
 | --- | --- | --- | --- | --- |
-| `streamText` + `useChat` | Yes | Yes | Yes | **Critical** — this is our core use case |
-| `streamObject` + `useObject` | Yes (partial objects) | No — different transport | Yes | **High** — but uses a different transport interface; not ChatTransport |
-| `useCompletion` | Yes (text deltas) | No — simpler HTTP streaming | Yes | Medium — simpler state model, no conversation history |
+| `streamText` + `useChat` | `useChat` (from `ai`) | **Yes** | Yes | **Critical** — our core use case |
+| `streamObject` + `useObject` | `useObject` (experimental, from `@ai-sdk/react`) | No — direct HTTP POST | Yes (partial objects) | High — but different transport interface |
+| `streamText` + `useCompletion` | `useCompletion` (from `ai`) | No — direct HTTP POST | Yes (text deltas) | Medium — simpler state model, no conversation history |
 | `generateText` | No | No | No | Very low — single request/response |
-| `generateImage` | No | No | Yes (10–60s) | Low — long-running but no streaming; better served by async job queue |
-| `generateVideo` (experimental) | No | No | Yes (30–120s+) | Low — same as image |
-| `transcribe` (experimental) | No | No | Depends on audio length | Low |
-| `generateSpeech` (experimental) | No | No | No (1–10s) | Very low |
+| `generateImage` | No | No | No | Low — long-running but no streaming |
+| `generateVideo` (experimental) | No | No | No | Low — same as image |
+| `transcribe` (experimental) | No | No | No | Low |
+| `generateSpeech` (experimental) | No | No | No | Very low |
 | `embed` / `embedMany` | No | No | No | Very low |
 
-**Conclusion:** The three use cases listed above are the right ones for this
-audit. `streamText` + `useChat`/`ChatTransport` is the only AI SDK feature that
-uses the `ChatTransport` interface we implement. The non-streaming capabilities
-(`generateText`, `generateImage`, `embed`, etc.) are single request/response
-operations that don't benefit from durable streaming.
+**Why don't `useCompletion` and `useObject` have a `transport` option?**
 
-`streamObject` + `useObject` is the most plausible future integration point — it
-streams partial objects over a different transport interface and would benefit
-from Ably's resumability. However, it uses a separate hook (`useObject`), a
-separate transport contract, and a different chunk format, so it is out of scope
-for this audit. Similarly, `useCompletion` streams text but uses a simpler
-transport without message history. Both could be future work items if there is
-customer demand.
+`useChat` gained its `ChatTransport` abstraction relatively recently (AI SDK v5+)
+to support custom transport layers like ours. The other two hooks are simpler and
+less used:
+
+- `useCompletion` is a thin wrapper around a single HTTP POST. It accumulates
+  text deltas into a string — no message history, no tool calls, no
+  conversation state. The entire hook is ~80 lines that call
+  `callCompletionApi()`, which does `fetch(api, ...)` and reads the response
+  body. There is no transport abstraction — the `fetch` call and response
+  parsing are inlined.
+- `useObject` (experimental, from `@ai-sdk/react`) is similarly a direct HTTP
+  consumer. It POSTs to an `api` URL and parses the streaming JSON response
+  into a typed partial object. No transport abstraction.
+
+Both hooks accept a `fetch` option, which is a custom `fetch` function. In
+theory, you could inject a `fetch` that ignores the URL and returns a `Response`
+whose body is an Ably-backed `ReadableStream`. This would give you durable
+streaming without changes to the AI SDK. However:
+
+- It's a hack — the hooks still construct a `Request` with headers, body, and
+  abort signal that get thrown away.
+- For `useCompletion`, the response must be a stream of either plain text or
+  newline-delimited JSON `UIMessageChunk` objects (depending on
+  `streamProtocol`). Only `text-delta` and `error` chunk types are processed;
+  everything else is ignored.
+- For `useObject`, the response must be chunked JSON text that the hook parses
+  incrementally against a Zod schema.
+- Neither hook has conversation state, history, or branching — the features that
+  make Ably's durable transport most valuable.
+
+**Do `useCompletion` and `useObject` represent gaps in our coverage?**
+
+Not really. `useCompletion`'s use case (single-shot text streaming) is a subset
+of what `useChat` can do — a user can achieve the same thing with `useChat` and
+our transport. `useObject`'s use case (streaming a structured object with
+progressive partial rendering) is similarly covered: `streamText()` supports
+`output: Output.object()` for structured output, and the resulting
+`UIMessageChunk`s flow through our transport and into `useChat` as normal
+message parts. The only thing lost vs. `useObject` is the incremental typed
+partial object DX — with `useChat`, the structured data arrives as text or data
+parts rather than as a progressively-filling typed object.
+
+**Conclusion:** The three use cases listed above are the right ones for this
+audit. `useChat` is the only React hook with a pluggable transport abstraction,
+and its capabilities subsume the core use cases of `useCompletion` and
+`useObject`. If there is customer demand for the specific `useObject` DX (typed
+partial objects) over Ably, the right path would be to propose a `transport`
+option upstream for that hook. For now, `useChat` with structured output covers
+the need.
 
 These map to the library's entry points as follows:
 

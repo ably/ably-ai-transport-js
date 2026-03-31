@@ -487,12 +487,20 @@ These are moved to the identified gaps section below.
 
 ### Gap 0: Empty Stream Breaks useChat Internals (Critical — Use Case 3)
 
+> [!note]
+> The findings in this gap are based on reading the AI SDK source code
+> (`AbstractChat` in `ai/src/ui/chat.ts`), not on running `useChat` with our
+> transport and observing the behaviour. The demo app works for basic text chat
+> (messages display and stream correctly), but nobody has verified whether
+> `status` transitions, callbacks, or tool execution actually work. These
+> findings need to be confirmed or disproved with Level 5 tests.
+
 **What:** Our `ChatTransport.sendMessages()` returns an intentionally empty
 `ReadableStream<UIMessageChunk>` — it closes when the turn ends but emits no
 chunks. This was designed to avoid double-accumulation: the real message state
 comes from `useMessageSync` calling `setMessages()`. However, `useChat`'s
 `AbstractChat` class drives its callbacks and state transitions from the chunks
-it reads from the returned stream. An empty stream causes:
+it reads from the returned stream. An empty stream should cause:
 
 1. **`onToolCall` never fires** — this callback is invoked only when
    `processUIMessageStream` receives a `tool-input-available` chunk. With no
@@ -887,6 +895,13 @@ test.
 ---
 
 ## Recommended Priority
+
+> [!important]
+> The P0 and P1 items below are based on source code analysis, not observed
+> behaviour. The first step should be to build Level 5 tests (real `useChat`
+> with our `ChatTransport`) to confirm or disprove the Gap 0 findings. If the
+> empty stream turns out not to cause the problems predicted, the priority of
+> downstream items (especially Gap 2) changes significantly.
 
 ### P0 — `useChat` state and callbacks are broken
 

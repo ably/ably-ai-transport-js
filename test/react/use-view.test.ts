@@ -15,18 +15,20 @@ describe('useView', () => {
     expect(result.current.loading).toBe(false);
   });
 
-  it('returns initial nodes from view on mount', () => {
+  it('returns initial nodes and messages from view on mount', () => {
     const mock = createMockTransport(['hello', 'world']);
     const { result } = renderHook(() => useView(mock.transport));
     expect(result.current.nodes).toHaveLength(2);
     expect(result.current.nodes[0]?.message).toBe('hello');
     expect(result.current.nodes[1]?.message).toBe('world');
+    expect(result.current.messages).toEqual(['hello', 'world']);
   });
 
-  it('updates nodes when view emits update', () => {
+  it('updates nodes and messages when view emits update', () => {
     const mock = createMockTransport(['hello']);
     const { result } = renderHook(() => useView(mock.transport));
     expect(result.current.nodes).toHaveLength(1);
+    expect(result.current.messages).toEqual(['hello']);
 
     // Mutate mock to return a new node list
     const updatedNodes = [
@@ -41,6 +43,7 @@ describe('useView', () => {
     });
 
     expect(result.current.nodes).toHaveLength(2);
+    expect(result.current.messages).toEqual(['hello', 'world']);
     expect(result.current.hasOlder).toBe(true);
   });
 

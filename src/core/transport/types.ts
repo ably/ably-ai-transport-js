@@ -421,6 +421,9 @@ export interface Tree<TMessage> {
  * are only notified when the visible output changes.
  */
 export interface View<TMessage> {
+  /** The visible domain messages along the selected branch. Shorthand for `flattenNodes().map(n => n.message)`. */
+  getMessages(): TMessage[];
+
   /** Visible nodes along the selected branch, filtered by the pagination window. */
   flattenNodes(): TreeNode<TMessage>[];
 

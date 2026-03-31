@@ -106,6 +106,10 @@ export class DefaultView<TEvent, TMessage> implements View<TMessage> {
   // Public query methods
   // -------------------------------------------------------------------------
 
+  getMessages(): TMessage[] {
+    return this.flattenNodes().map((n) => n.message);
+  }
+
   flattenNodes(): TreeNode<TMessage>[] {
     if (this._withheldMsgIds.size === 0) return this._tree.flattenNodes();
     return this._tree.flattenNodes().filter((n) => !this._withheldMsgIds.has(n.msgId));

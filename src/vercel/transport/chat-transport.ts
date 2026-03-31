@@ -60,6 +60,7 @@ export interface ChatTransportOptions {
    * @param context - The conversation context for the current request.
    * @returns The body and headers to use for the HTTP POST.
    */
+  // owen: this hook gets history as a `UIMessage[]` but so doesn't recieve the conversation tree (ie the `ConversationNode[]`). in fact, using this hook actually changes the POST body that gets sent???
   prepareSendMessagesRequest?: (context: SendMessagesRequestContext) => {
     body?: Record<string, unknown>;
     headers?: Record<string, string>;
@@ -114,6 +115,7 @@ export interface ChatTransport {
    * Reconnect to an existing streaming response. Returns null if no active
    * stream exists for the specified chat session.
    */
+  // owen: this always returns null, so we should update the return type to just `Promise<void>`?
   reconnectToStream: (
     options: {
       /** Unique identifier for the chat session to reconnect to. */
@@ -218,6 +220,7 @@ export const createChatTransport = (
       const historyNodes = allNodes.filter((n) => historyIds.has(n.message.id));
       sendBody = {
         history: historyNodes,
+        // owen: potentially confusing that the response might have a messageId, turnId, and an "id". consider calling this chatId?
         id: opts.chatId,
         trigger,
         ...(messageId !== undefined && { messageId }),
@@ -249,6 +252,14 @@ export const createChatTransport = (
     // cause useChat to accumulate a duplicate assistant message. Instead, we
     // return a stream that produces no chunks and closes when the turn's stream
     // finishes, so useChat knows when streaming is done without duplicating state.
+    // owen: ^this seems a bit dangerous to me...
+    //
+    // vercel ai sdk's useChat uses the message stream to drive some important behaviour, e.g:
+    // - Status transitions (`'submitted'` → `'streaming'` → `'ready'`)
+    // - Callbacks (`onToolCall`, `onData`, `onFinish`)
+    // - Automatic resubmission (`sendAutomaticallyWhen`)
+    //
+    // will returning an empty stream break some of this behaviour?
     const { readable, writable } = new TransformStream<AI.UIMessageChunk>();
     const writer = writable.getWriter();
     // Fire-and-forget: we only care about the close/abort signal, not the piped data.

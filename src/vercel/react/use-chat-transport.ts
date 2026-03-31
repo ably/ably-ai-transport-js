@@ -45,6 +45,7 @@ export const useChatTransport = (
   transportOrOptions: ClientTransport<AI.UIMessageChunk, AI.UIMessage> | VercelClientTransportOptions,
   chatOptions?: ChatTransportOptions,
 ): ChatTransport => {
+  // owen: if the user changes either `transportOrOptions` or `chatOptions`, should we create a new transport? For now we ignore changes and create only once. at a minimum we should document this clearly.
   const chatTransportRef = useRef<ChatTransport | null>(null);
 
   if (chatTransportRef.current === null) {

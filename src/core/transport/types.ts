@@ -174,6 +174,17 @@ export interface Turn<TEvent, TMessage> {
    */
   streamResponse(stream: ReadableStream<TEvent>, options?: StreamResponseOptions): Promise<StreamResult>;
 
+  /**
+   * Publish a discrete event targeting a specific message by its msg-id.
+   *
+   * Used to update a message from a previous turn — for example, publishing a
+   * tool-output-available event that resolves an approval-requested tool part
+   * in an earlier assistant message. The event is encoded through the codec and
+   * published to the channel with the given `msgId` in its transport headers,
+   * so the client's decoder tags it with the correct message identity.
+   */
+  publishEvent(event: TEvent, options: { msgId: string }): Promise<void>;
+
   /** Publish turn-end event to the channel and clean up. */
   end(reason: TurnEndReason): Promise<void>;
 }

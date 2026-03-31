@@ -397,6 +397,35 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
         return result;
       },
 
+      publishEvent: async (event: TEvent, opts: { msgId: string }): Promise<void> => {
+        logger?.trace('Turn.publishEvent();', { turnId, targetMsgId: opts.msgId });
+
+        if (!started) {
+          throw new Ably.ErrorInfo(
+            `unable to publish event; start() must be called before publishEvent() (turn ${turnId})`,
+            ErrorCode.InvalidArgument,
+            400,
+          );
+        }
+        await attachPromise;
+
+        const headers = buildTransportHeaders({
+          role: 'assistant',
+          turnId,
+          msgId: opts.msgId,
+          turnClientId: turnManager.getClientId(turnId),
+        });
+
+        const encoder = codec.createEncoder(channel, {
+          extras: { headers },
+          onMessage,
+        });
+
+        await encoder.appendEvent(event);
+
+        logger?.debug('Turn.publishEvent(); event published', { turnId, targetMsgId: opts.msgId });
+      },
+
       // Spec: AIT-ST7
       end: async (reason: TurnEndReason): Promise<void> => {
         logger?.trace('Turn.end();', { turnId, reason });

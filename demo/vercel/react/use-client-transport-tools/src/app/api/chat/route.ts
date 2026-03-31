@@ -1,24 +1,14 @@
 /**
  * Chat API route — Wikipedia research assistant with tool calling.
  *
- * - searchWikipedia: auto-executes (no approval needed)
- * - getArticle: requires human approval (needsApproval: true)
- *
- * When a tool needs approval, the turn ends with an approval request.
- * The client sends a new turn with `toolApprovals` in the body to
- * continue — the server executes the approved tool, injects the result,
- * and calls streamText again.
- *
- * Known issue: after the approval turn, the client's conversation tree
- * still contains the stale `approval-requested` tool part (the server-side
- * patch is ephemeral). On subsequent turns, `convertToModelMessages` throws
- * `AI_MissingToolResultsError` because it sees a tool call without a result.
- * See: https://github.com/ably/ably-ai-transport-js/issues/XXX
+ * Uses the Vercel AI SDK's tool-approval-response pattern: on the approval
+ * turn, the tool part is patched to `approval-responded` and streamText
+ * executes the tool automatically.
  */
 
 import { after } from 'next/server';
 import { streamText, convertToModelMessages, jsonSchema } from 'ai';
-import type { UIMessage } from 'ai';
+import type { UIMessage, UIMessageChunk } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
 import { createServerTransport } from '@ably/ai-transport/vercel';
@@ -28,7 +18,6 @@ import type { MessageWithHeaders } from '@ably/ai-transport';
 // Types
 // ---------------------------------------------------------------------------
 
-/** Shape of the POST body sent by the client transport. */
 interface ChatRequestBody {
   turnId: string;
   clientId: string;
@@ -63,10 +52,6 @@ Be concise but thorough. If the question doesn't need research, answer directly 
 // Wikipedia tools
 // ---------------------------------------------------------------------------
 
-function log(message: string, context?: Record<string, unknown>) {
-  console.log(message, context ? JSON.stringify(context) : '');
-}
-
 const tools = {
   searchWikipedia: {
     description:
@@ -79,18 +64,15 @@ const tools = {
       required: ['query'],
     }),
     execute: async ({ query }: { query: string }) => {
-      log('[server] tool: searchWikipedia', { query });
       const url = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&srlimit=5&origin=*`;
       const res = await fetch(url);
       const data = (await res.json()) as {
         query?: { search?: Array<{ title: string; snippet: string }> };
       };
-      const results = (data.query?.search ?? []).map((item) => ({
+      return (data.query?.search ?? []).map((item) => ({
         title: item.title,
         snippet: item.snippet.replace(/<[^>]*>/g, ''),
       }));
-      log('[server] tool: searchWikipedia returned', { resultCount: results.length });
-      return results;
     },
   },
   getArticle: {
@@ -105,7 +87,6 @@ const tools = {
       required: ['title'],
     }),
     execute: async ({ title }: { title: string }) => {
-      log('[server] tool: getArticle', { title });
       const url = `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(title)}&prop=extracts&exintro=true&explaintext=true&format=json&origin=*&exchars=2000`;
       const res = await fetch(url);
       const data = (await res.json()) as {
@@ -113,32 +94,46 @@ const tools = {
       };
       const pages = data.query?.pages ?? {};
       const page = Object.values(pages)[0];
-      const result = {
+      return {
         title: page?.title ?? title,
         extract: page?.extract ?? 'Article not found.',
       };
-      log('[server] tool: getArticle returned', { title: result.title, extractLength: result.extract.length });
-      return result;
     },
   },
 };
 
 // ---------------------------------------------------------------------------
-// Helper: resolve approved tools by patching history in place
+// Server-side state
+// ---------------------------------------------------------------------------
+
+const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY! });
+
+/**
+ * Maps toolCallId → x-ably-msg-id for tool-approval-request events.
+ * Populated by the onMessage callback during streamResponse so that the
+ * approval turn can re-publish tool results targeting the original message.
+ * Module-level — persists across requests in next dev.
+ */
+const toolCallMsgIdMap = new Map<string, string>();
+
+// ---------------------------------------------------------------------------
+// Helper: patch tool approvals to approval-responded (no execution)
 // ---------------------------------------------------------------------------
 
 /**
- * Finds the `approval-requested` tool parts in the message history and
- * replaces them with `output-available` (if approved and executed) or
- * `output-denied` (if denied). This keeps tool call/result pairs together
- * in the same assistant message so `convertToModelMessages` can resolve them.
+ * Patches `approval-requested` tool parts in history to `approval-responded`.
+ * The SDK's `streamText` will execute the tool when it sees the
+ * `tool-approval-response` generated by `convertToModelMessages`.
+ *
+ * Returns the map of toolCallIds → targetMsgIds for cross-turn publishing.
  */
-async function resolveToolApprovals(
+function patchToolApprovals(
   allMessages: UIMessage[],
   approvals: ToolApproval[],
-): Promise<void> {
+): Map<string, string> {
+  const pendingPublish = new Map<string, string>();
+
   for (const approval of approvals) {
-    // Find the message + part index that has this tool call
     for (const msg of allMessages) {
       const partIndex = msg.parts.findIndex(
         (p) =>
@@ -148,6 +143,10 @@ async function resolveToolApprovals(
       );
       if (partIndex === -1) continue;
 
+      // CAST: findIndex above checked type === 'dynamic-tool'
+      const existing = msg.parts[partIndex] as { approval?: { id: string } };
+      const approvalId = existing.approval?.id ?? crypto.randomUUID();
+
       if (!approval.approved) {
         msg.parts[partIndex] = {
           type: 'dynamic-tool',
@@ -155,48 +154,27 @@ async function resolveToolApprovals(
           toolName: approval.toolName,
           state: 'output-denied',
           input: approval.input,
-          approval: { id: crypto.randomUUID(), approved: false as const },
+          approval: { id: approvalId, approved: false as const },
         };
-        break;
-      }
-
-      // Execute the tool
-      const toolDef = tools[approval.toolName as keyof typeof tools];
-      if (!toolDef) break;
-
-      try {
-        // CAST: input is validated by the tool's jsonSchema on the original call;
-        // the union of tool execute signatures can't be narrowed by string key lookup.
-        const output = await toolDef.execute(approval.input as never);
+      } else {
         msg.parts[partIndex] = {
           type: 'dynamic-tool',
           toolCallId: approval.toolCallId,
           toolName: approval.toolName,
-          state: 'output-available',
+          state: 'approval-responded',
           input: approval.input,
-          output,
-        };
-      } catch (err) {
-        const errorText = err instanceof Error ? err.message : String(err);
-        msg.parts[partIndex] = {
-          type: 'dynamic-tool',
-          toolCallId: approval.toolCallId,
-          toolName: approval.toolName,
-          state: 'output-error',
-          input: approval.input,
-          errorText,
+          approval: { id: approvalId, approved: true },
         };
       }
+
+      const targetMsgId = toolCallMsgIdMap.get(approval.toolCallId);
+      if (targetMsgId) pendingPublish.set(approval.toolCallId, targetMsgId);
       break;
     }
   }
+
+  return pendingPublish;
 }
-
-// ---------------------------------------------------------------------------
-// Server-side Ably client
-// ---------------------------------------------------------------------------
-
-const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY! });
 
 // ---------------------------------------------------------------------------
 // Route handler
@@ -208,43 +186,106 @@ export async function POST(req: Request) {
   const channel = ably.channels.get(id);
 
   const transport = createServerTransport({ channel });
-  const turn = transport.newTurn({ turnId, clientId, parent, forkOf });
+
+  // Track tool-approval-request events and capture tool outputs from stream.
+  let pendingPublish = new Map<string, string>();
+  const capturedOutputs = new Map<string, unknown>();
+
+  const onMessage = (msg: Ably.Message) => {
+    // CAST: extras.headers is Record<string, string> from the encoder
+    const headers = (msg.extras as { headers?: Record<string, string> })?.headers;
+
+    if (msg.name === 'tool-approval-request') {
+      const toolCallId = headers?.['x-domain-toolCallId'];
+      const msgId = headers?.['x-ably-msg-id'];
+      if (toolCallId && msgId) {
+        toolCallMsgIdMap.set(toolCallId, msgId);
+      }
+    }
+
+    if (msg.name === 'tool-output-available') {
+      const toolCallId = headers?.['x-domain-toolCallId'];
+      if (toolCallId && pendingPublish.has(toolCallId)) {
+        // CAST: data shape matches the encoder's publishDiscrete payload
+        const data = msg.data as { output: unknown } | undefined;
+        if (data?.output !== undefined) {
+          capturedOutputs.set(toolCallId, data.output);
+        }
+      }
+    }
+  };
+
+  const turn = transport.newTurn({ turnId, clientId, parent, forkOf, onMessage });
 
   await turn.start();
 
-  // Publish user messages (if any).
   let lastUserMsgId: string | undefined;
   if (messages.length > 0) {
     const { msgIds } = await turn.addMessages(messages, { clientId });
     lastUserMsgId = msgIds.at(-1);
   }
 
-  // Reconstruct full conversation for the LLM
   const historyMsgs = (history ?? []).map((h) => h.message);
   const newMsgs = (messages ?? []).map((m) => m.message);
   const allMessages = [...historyMsgs, ...newMsgs];
 
-  // If this is an approval response, patch the history in place so the
-  // tool call and its result stay in the same assistant message. This
-  // is required for convertToModelMessages to pair them correctly.
+  // Patch approvals to approval-responded (SDK will execute the tool)
   if (toolApprovals && toolApprovals.length > 0) {
-    log('[server] processing tool approvals', { count: toolApprovals.length });
-    await resolveToolApprovals(allMessages, toolApprovals);
+    pendingPublish = patchToolApprovals(allMessages, toolApprovals);
   }
+
+  let modelMessages = await convertToModelMessages(allMessages);
+
+  // On the approval turn, remove the trailing user message ("Approved: read X").
+  // streamText's multi-step loop only processes pending tool calls when the
+  // conversation ends with a tool/assistant message — a trailing user message
+  // makes it send everything to the model as-is, bypassing tool execution.
+  if (toolApprovals && toolApprovals.length > 0) {
+    const lastMsg = modelMessages.at(-1);
+    if (lastMsg?.role === 'user') {
+      modelMessages = modelMessages.slice(0, -1);
+    }
+  }
+
+  // On the approval turn, disable needsApproval for tools that were just
+  // approved. This prevents an infinite approval loop where the LLM calls
+  // the same tool again in multi-step mode.
+  const approvedToolNames = new Set((toolApprovals ?? []).filter((a) => a.approved).map((a) => a.toolName));
+  const effectiveTools = approvedToolNames.size > 0
+    ? Object.fromEntries(
+        Object.entries(tools).map(([name, def]) => [
+          name,
+          approvedToolNames.has(name) ? { ...def, needsApproval: false } : def,
+        ]),
+      )
+    : tools;
 
   const result = streamText({
     model: anthropic('claude-sonnet-4-20250514'),
     system: SYSTEM_PROMPT,
-    tools,
-    messages: await convertToModelMessages(allMessages),
+    tools: effectiveTools,
+    messages: modelMessages,
     abortSignal: turn.abortSignal,
   });
 
-  // Stream the response over Ably in the background using after().
+  // Stream in background, then publish cross-turn tool outputs.
   after(async () => {
     const { reason } = await turn.streamResponse(result.toUIMessageStream(), {
       parent: lastUserMsgId,
     });
+
+    // Re-publish captured tool outputs targeting original messages so the
+    // client's conversation tree has clean state for history and multi-tab.
+    for (const [toolCallId, targetMsgId] of pendingPublish) {
+      const output = capturedOutputs.get(toolCallId);
+      if (output !== undefined) {
+        await turn.publishEvent(
+          { type: 'tool-output-available', toolCallId, output, dynamic: true } as UIMessageChunk,
+          { msgId: targetMsgId },
+        );
+      }
+    }
+
     await turn.end(reason);
     transport.close();
   });

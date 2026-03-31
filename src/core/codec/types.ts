@@ -243,4 +243,17 @@ export interface Codec<TEvent, TMessage> {
 
   /** Whether an event signals stream completion (finish, error, abort). */
   isTerminal(event: TEvent): boolean;
+  
+  /**
+   * Apply a decoded event to an existing message, returning the updated message.
+   *
+   * Used for cross-turn message updates — when an event published in one turn
+   * targets a message from a previous turn (identified by a shared `x-ably-msg-id`).
+   * For example, a `tool-output-available` event resolving an `approval-requested`
+   * tool part in an earlier assistant message.
+   *
+   * Returns undefined if the event is not applicable to the given message.
+   * Optional — codecs that don't support cross-turn updates may omit this.
+   */
+  applyEvent?(message: TMessage, event: TEvent): TMessage | undefined;
 }

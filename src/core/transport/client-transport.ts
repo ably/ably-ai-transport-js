@@ -304,6 +304,37 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     // are iterated) so that header transitions are captured even when the
     // decoder produces no outputs (e.g. aborted stream appends per AIT-CD8).
 
+    // Cross-turn message update: the event's msg-id targets a message from a
+    // different turn (e.g. tool-output-available resolving an approval-requested
+    // tool part in a previous assistant message). Must be checked BEFORE the
+    // router — the event arrives with the current turn's turn-id, but its
+    // msg-id belongs to a message already in the tree from a previous turn.
+    //
+    // We identify cross-turn events by checking the tree node's turn-id, NOT
+    // the observer's headers — the observer headers are updated before output
+    // iteration and may be contaminated with the cross-turn message's msg-id.
+    const eventMsgId = output.messageId;
+    if (eventMsgId && this._codec.applyEvent) {
+      const node = this._tree.getNode(eventMsgId);
+      const nodeTurnId = node?.headers[HEADER_TURN_ID];
+      if (node && nodeTurnId && nodeTurnId !== turnId) {
+        // CAST: structuredClone can fail on non-cloneable values; the Vercel
+        // codec's applyEvent returns a shallow copy, so the fallback is safe.
+        let cloned: TMessage;
+        try {
+          cloned = structuredClone(node.message);
+        } catch {
+          cloned = node.message;
+        }
+        const updated = this._codec.applyEvent(cloned, event);
+        if (updated) {
+          this._tree.upsert(eventMsgId, updated, node.headers, node.serial);
+          this._emitter.emit('message');
+          return;
+        }
+      }
+    }
+
     // Active own turn — route to the ReadableStream
     if (this._router.route(turnId, event)) {
       this._accumulateAndEmit(turnId, output);

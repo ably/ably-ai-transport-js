@@ -15,6 +15,7 @@ import type * as AI from 'ai';
 
 import type { Codec } from '../../core/codec/types.js';
 import { createAccumulator } from './accumulator.js';
+import { applyEvent } from './apply-event.js';
 import { createDecoder } from './decoder.js';
 import { createEncoder } from './encoder.js';
 
@@ -32,4 +33,6 @@ export const UIMessageCodec: Codec<AI.UIMessageChunk, AI.UIMessage> = {
 
   isTerminal: (event: AI.UIMessageChunk): boolean =>
     event.type === 'finish' || event.type === 'error' || event.type === 'abort',
+
+  applyEvent,
 };

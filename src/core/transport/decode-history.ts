@@ -88,6 +88,14 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
   // Track which msgId produced each non-turn discrete message output (in order).
   const discreteMsgIds: string[] = [];
 
+  // Cross-turn events: events whose x-ably-msg-id doesn't belong to their
+  // turn's own messages (e.g. tool-output-available targeting a prior turn).
+  // Tracked for a second pass via codec.applyEvent after accumulation.
+  const crossTurnEvents: { event: TEvent; msgId: string }[] = [];
+
+  // Track which msg-ids each turn owns (first message to claim a msg-id wins).
+  const msgIdOwner = new Map<string, string>(); // msgId → turnId
+
   for (const msg of chronological) {
     const outputs: DecoderOutput<TEvent, TMessage>[] = decoder.decode(msg);
     const headers = getHeaders(msg);
@@ -106,11 +114,30 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
         };
         turns.set(turnId, turn);
       }
+      // Track ownership: first turn to use a msg-id owns it
+      if (msgId && !msgIdOwner.has(msgId)) {
+        msgIdOwner.set(msgId, turnId);
+      }
+
+      // Detect cross-turn events: msg-id owned by a different turn.
+      // Must be checked BEFORE capturing headers — cross-turn messages
+      // would pollute this turn's msgHeaders and corrupt header assignment.
+      const isCrossTurn = msgId && msgIdOwner.get(msgId) !== turnId;
+
+      if (isCrossTurn && state.codec.applyEvent) {
+        for (const output of outputs) {
+          if (output.kind === 'event') {
+            crossTurnEvents.push({ event: output.event, msgId });
+          }
+        }
+      }
+
       // Capture headers per msg-id within this turn. Update on later
       // messages too (e.g. closing append overrides status from
-      // "streaming" to "finished"/"aborted"). Only merge when the
-      // incoming message has non-empty headers.
-      if (msgId) {
+      // "streaming" to "finished"/"aborted"). Skip cross-turn messages
+      // — their headers belong to a different turn's message and would
+      // corrupt this turn's header assignment.
+      if (msgId && !isCrossTurn) {
         const existing = turn.msgHeaders.get(msgId);
         if (!existing) {
           turn.msgHeaders.set(msgId, { ...headers });
@@ -119,6 +146,7 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
           Object.assign(existing, headers);
         }
       }
+
       turn.accumulator.processOutputs(outputs);
     } else {
       defaultAccumulator.processOutputs(outputs);
@@ -172,6 +200,30 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
         headerIdx++;
       } else {
         completed.push({ message: msg, headers: {}, serial: '' });
+      }
+    }
+  }
+
+  // Apply cross-turn events to the completed messages. These are events
+  // (e.g. tool-output-available) published in one turn that target a message
+  // from a previous turn. The accumulator for the publishing turn can't
+  // process them (wrong message scope), so we apply them after accumulation.
+  if (crossTurnEvents.length > 0 && state.codec.applyEvent) {
+    // Build a lookup: msgId → completed item index
+    const msgIdToIdx = new Map<string, number>();
+    for (const [i, item] of completed.entries()) {
+      const mid = item.headers[HEADER_MSG_ID];
+      if (mid) msgIdToIdx.set(mid, i);
+    }
+
+    for (const { event, msgId } of crossTurnEvents) {
+      const idx = msgIdToIdx.get(msgId);
+      if (idx === undefined) continue;
+      const item = completed.at(idx);
+      if (!item) continue;
+      const updated = state.codec.applyEvent(item.message, event);
+      if (updated) {
+        item.message = updated;
       }
     }
   }

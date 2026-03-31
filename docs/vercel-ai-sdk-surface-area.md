@@ -32,6 +32,37 @@ The investigation considers three use cases:
    `ChatTransport` adapter + `useMessageSync`; backend uses `ServerTransport`
    with `UIMessageCodec`.
 
+### Other AI SDK Capabilities Considered
+
+The AI SDK v6 includes several capabilities beyond `streamText` + `useChat`.
+These were assessed for whether they need a durable transport story:
+
+| Capability | Streaming? | Uses ChatTransport? | Long-running? | Durable transport value |
+| --- | --- | --- | --- | --- |
+| `streamText` + `useChat` | Yes | Yes | Yes | **Critical** — this is our core use case |
+| `streamObject` + `useObject` | Yes (partial objects) | No — different transport | Yes | **High** — but uses a different transport interface; not ChatTransport |
+| `useCompletion` | Yes (text deltas) | No — simpler HTTP streaming | Yes | Medium — simpler state model, no conversation history |
+| `generateText` | No | No | No | Very low — single request/response |
+| `generateImage` | No | No | Yes (10–60s) | Low — long-running but no streaming; better served by async job queue |
+| `generateVideo` (experimental) | No | No | Yes (30–120s+) | Low — same as image |
+| `transcribe` (experimental) | No | No | Depends on audio length | Low |
+| `generateSpeech` (experimental) | No | No | No (1–10s) | Very low |
+| `embed` / `embedMany` | No | No | No | Very low |
+
+**Conclusion:** The three use cases listed above are the right ones for this
+audit. `streamText` + `useChat`/`ChatTransport` is the only AI SDK feature that
+uses the `ChatTransport` interface we implement. The non-streaming capabilities
+(`generateText`, `generateImage`, `embed`, etc.) are single request/response
+operations that don't benefit from durable streaming.
+
+`streamObject` + `useObject` is the most plausible future integration point — it
+streams partial objects over a different transport interface and would benefit
+from Ably's resumability. However, it uses a separate hook (`useObject`), a
+separate transport contract, and a different chunk format, so it is out of scope
+for this audit. Similarly, `useCompletion` streams text but uses a simpler
+transport without message history. Both could be future work items if there is
+customer demand.
+
 These map to the library's entry points as follows:
 
 | Use case | Client entry points | Server entry point |
@@ -266,16 +297,100 @@ require testing or coverage from us:
 - **Provider-specific features** (OpenAI, Anthropic model options, etc.) —
   abstracted away by the AI SDK before reaching `toUIMessageStream()`.
 - **`useCompletion`, `useObject`** — different hooks, not `useChat`.
-- **useChat callbacks** (`onFinish`, `onToolCall`, `onError`, `onData`) — fire
-  from chunks that useChat accumulates internally. They don't interact with the
-  transport.
-- **useChat local state** (`setMessages`, `clearError`, `status`) — managed by
-  useChat from the stream returned by the transport. No transport involvement
-  beyond returning the stream.
+### useChat Callbacks and State with the Empty Stream (Potential Issue)
+
+Our `ChatTransport.sendMessages()` returns an **intentionally empty stream**
+that closes when the turn ends but contains no `UIMessageChunk`s. The real
+message state is pushed via `useMessageSync`, which subscribes to the core
+transport's `message` events and calls `setMessages()`.
+
+This design has consequences for useChat's internal processing. The `AbstractChat`
+class in the AI SDK (at `ai/src/ui/chat.ts`) processes the returned stream via
+`processUIMessageStream`, which drives callbacks and state transitions from the
+chunks it receives. With an empty stream:
+
+**Callbacks:**
+
+| Callback | Fires? | Why |
+| --- | --- | --- |
+| `onFinish` | **Yes** — but with degraded data | Fires unconditionally in the `finally` block. However, the `message` field contains an assistant message with **empty `parts`** (since no chunks were processed), and `finishReason` is **`undefined`** (only set by a `finish` chunk). |
+| `onToolCall` | **No** | Only fires when `processUIMessageStream` receives a `tool-input-available` chunk. Empty stream means this never happens. **This is a real gap for client-side tool execution in use case 3.** |
+| `onData` | **No** | Only fires when `processUIMessageStream` receives a `data-*` chunk. |
+| `onError` | **No** (unless stream throws) | Only fires if the stream itself throws an error, not from `error` chunks. |
+
+**State:**
+
+| State | Behaviour with empty stream | Expected behaviour |
+| --- | --- | --- |
+| `status` | Transitions `submitted` → `ready`, **never enters `streaming`** | Should transition `submitted` → `streaming` → `ready`. UI code checking `status === 'streaming'` to show typing indicators or stop buttons will not work. |
+| `messages` | Not updated by the stream (the `write()` function is never called since no chunks arrive). `useMessageSync` calls `setMessages()` externally, which works because `write()` never overwrites it. | Works correctly in practice — `useMessageSync` provides authoritative state. But `onFinish` receives a message with empty parts, not the real accumulated message. |
+
+**Assessment:** The empty stream design works for the basic send/receive flow
+because `useMessageSync` provides authoritative message state. However, it
+creates real problems for:
+
+1. **Client-side tool execution** — `onToolCall` never fires, so tools cannot be
+   executed on the client in use case 3. This is a functional gap, not just a
+   testing gap.
+2. **Status transitions** — `streaming` status is never reached, which affects
+   UI patterns that depend on it (typing indicators, stop buttons). The
+   `useChat` demo may work around this, but it's not obvious how.
+3. **`onFinish` data quality** — the callback receives a hollow message, not the
+   real one. Code that uses `onFinish` to persist messages or trigger
+   side-effects will get wrong data.
+4. **`onData` for transient data parts** — transient data parts (which are not
+   persisted in messages) can only be observed via `onData`. Since it never
+   fires, transient data parts are invisible in use case 3.
+
+These are moved to the identified gaps section below.
 
 ---
 
 ## Identified Gaps
+
+### Gap 0: Empty Stream Breaks useChat Internals (Critical — Use Case 3)
+
+**What:** Our `ChatTransport.sendMessages()` returns an intentionally empty
+`ReadableStream<UIMessageChunk>` — it closes when the turn ends but emits no
+chunks. This was designed to avoid double-accumulation: the real message state
+comes from `useMessageSync` calling `setMessages()`. However, `useChat`'s
+`AbstractChat` class drives its callbacks and state transitions from the chunks
+it reads from the returned stream. An empty stream causes:
+
+1. **`onToolCall` never fires** — this callback is invoked only when
+   `processUIMessageStream` receives a `tool-input-available` chunk. With no
+   chunks, client-side tool execution is impossible in use case 3.
+2. **`status` never reaches `'streaming'`** — the `write()` function (which
+   transitions status from `submitted` to `streaming`) is only called when a
+   chunk is processed. Status transitions are `submitted` → `ready`, skipping
+   `streaming` entirely. UI code that checks `status === 'streaming'` for typing
+   indicators or stop buttons will not work.
+3. **`onFinish` receives degraded data** — it fires (in a `finally` block), but
+   the `message` field contains an assistant message with empty `parts` and
+   `finishReason` is `undefined`. Code using `onFinish` to persist messages or
+   trigger side-effects gets wrong data.
+4. **`onData` never fires** — transient data parts (not persisted in messages)
+   can only be observed via `onData`. They are invisible in use case 3.
+
+**Current state:** The empty stream is a deliberate design choice (see
+`chat-transport.ts`). The basic send/receive flow works because `useMessageSync`
+provides authoritative message state externally. But the above four issues are
+**functional gaps**, not just testing gaps.
+
+**Risk:** Critical for use case 3. Items 1 and 2 are likely to affect real
+users. Items 3 and 4 affect users who rely on those specific useChat features.
+
+**Possible fix directions:**
+- **Replay chunks through the returned stream** — instead of returning an empty
+  stream, the `ChatTransport` could subscribe to the core transport's decoded
+  events and re-emit them as `UIMessageChunk`s on the returned stream. This
+  would restore all useChat internal processing (callbacks, status transitions)
+  while `useMessageSync` continues to provide authoritative message state.
+- **Accept the limitation and document it** — if the cost of replaying chunks is
+  too high, document that use case 3 does not support `onToolCall`, `onData`, or
+  accurate `status` transitions, and recommend use case 2 for those features.
+
+**Applies to:** Use case 3 only. Use cases 1 and 2 are not affected.
 
 ### Gap 1: Multi-Step Tool Use (High Priority)
 
@@ -305,15 +420,16 @@ calls `addToolOutput`, which updates the messages and (if
 `sendAutomaticallyWhen` is configured) triggers a new `sendMessages` call to
 continue the conversation.
 
-**Current state:** The `ChatTransport` receives a `sendMessages` call with the
-updated messages (including tool results). This _should_ work since it is
-another `submit-message` call. But this flow is **completely untested**.
+**Current state:** This is **blocked by Gap 0** — since `onToolCall` never fires
+with the empty stream, the client-side tool execution flow cannot work at all.
+Even if Gap 0 were fixed, the subsequent `addToolOutput` → `sendMessages`
+re-submission flow is **completely untested**. The `ChatTransport` would receive
+a `sendMessages` call with the updated messages (including tool results). This
+_should_ work since it is another `submit-message` call, but there are
+subtleties: the messages array now contains assistant messages with tool call
+parts, and the `ChatTransport` takes the last message as `newMessages`.
 
-**Risk:** Medium. The mechanism is plausible, but there are subtleties: the
-messages array now contains assistant messages with tool call parts and
-user-role tool-result messages. The `ChatTransport` takes the last message as
-`newMessages` — if that is the tool-result message, that is correct. But if
-`useChat` structures this differently, it could break.
+**Risk:** High — blocked by Gap 0, and untested even in isolation.
 
 **Applies to:** Use case 3 only. Use cases 1 and 2 handle tool results
 server-side.
@@ -423,28 +539,40 @@ test.
 
 ## Recommended Priority
 
+### P0 — Fix or explicitly accept a known functional limitation
+
+0. **Empty stream in ChatTransport (Gap 0)** — Decide whether to fix the empty
+   stream (by replaying decoded chunks through the returned stream) or accept
+   the limitation and document it. This blocks client-side tool execution, breaks
+   `status` transitions, and degrades `onFinish`/`onData`. If we fix it, Gaps 2
+   and 4 (transient data parts) are unblocked. If we accept it, we should
+   document that use case 3 does not support `onToolCall`, `onData`, or accurate
+   `status` transitions, and recommend use case 2 for those features.
+
 ### P1 — Highest value, moderate effort
 
-1. **Multi-step tool use integration test** — Prove that a `streamText()` call
-   with tools and a multi-step stop condition encodes, transmits, decodes, and
-   accumulates correctly through the full transport. This is the biggest
-   unknown.
-2. **Client-side tool result flow through ChatTransport** — Test (or demo)
-   showing `onToolCall` → `addToolOutput` → auto-resubmit working through our
-   transport end-to-end.
+1. **Multi-step tool use integration test (Gap 1)** — Prove that a
+   `streamText()` call with tools and a multi-step stop condition encodes,
+   transmits, decodes, and accumulates correctly through the full transport.
+   This is the biggest unknown in the codec/transport layer.
+2. **Client-side tool result flow through ChatTransport (Gap 2)** — Once Gap 0
+   is resolved, test (or demo) showing `onToolCall` → `addToolOutput` →
+   auto-resubmit working through our transport end-to-end.
 
 ### P2 — Medium value, fills important gaps
 
-3. **Edit flow through ChatTransport** — Test `sendMessage({ messageId })`
-   produces correct fork metadata and the server handles it correctly.
-4. **File attachment roundtrip** — Integration test for server→client file
-   chunks; test for client→server file parts through `ChatTransport`.
-5. **Data parts integration test** — Prove `data-*` parts with real payloads
-   survive the Ably encode/decode roundtrip.
+3. **Edit flow through ChatTransport (Gap 5)** — Test
+   `sendMessage({ messageId })` produces correct fork metadata and the server
+   handles it correctly.
+4. **File attachment roundtrip (Gap 3)** — Integration test for server→client
+   file chunks; test for client→server file parts through `ChatTransport`.
+5. **Data parts integration test (Gap 4)** — Prove `data-*` parts with real
+   payloads survive the Ably encode/decode roundtrip.
 
 ### P3 — Lower value, defensive
 
-6. **`reconnectToStream` behaviour validation** — Verify that `useChat` handles
-   the `null` return gracefully and that observer mode actually fills the gap.
-7. **Tool approval flow integration test** — Full round-trip through transport.
-8. **Source parts integration test** — Round-trip through transport.
+6. **`reconnectToStream` behaviour validation (Gap 6)** — Verify that `useChat`
+   handles the `null` return gracefully and that observer mode fills the gap.
+7. **Tool approval flow integration test (Gap 7)** — Full round-trip through
+   transport.
+8. **Source parts integration test (Gap 8)** — Round-trip through transport.

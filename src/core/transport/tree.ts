@@ -286,6 +286,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   // -------------------------------------------------------------------------
 
   flattenNodes(): TreeNode<TMessage>[] {
+    this._logger.trace('DefaultTree.flattenNodes();');
     const result: TreeNode<TMessage>[] = [];
     const currentPath = new Set<string>();
     // Track which sibling groups we've already resolved to avoid
@@ -327,6 +328,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   }
 
   getSiblings(msgId: string): TMessage[] {
+    this._logger.trace('DefaultTree.getSiblings();', { msgId });
     return this._getSiblingGroup(msgId).map((n) => n.message);
   }
 
@@ -345,6 +347,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
 
   // Spec: AIT-CT13c
   select(msgId: string, index: number): void {
+    this._logger.trace('DefaultTree.select();', { msgId, index });
     this._logger.debug('Tree.select();', { msgId, index });
     const group = this._getSiblingGroup(msgId);
     if (group.length <= 1) return;
@@ -354,10 +357,12 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   }
 
   getNode(msgId: string): TreeNode<TMessage> | undefined {
+    this._logger.trace('DefaultTree.getNode();', { msgId });
     return this._nodeIndex.get(msgId)?.node;
   }
 
   getHeaders(msgId: string): Record<string, string> | undefined {
+    this._logger.trace('DefaultTree.getHeaders();', { msgId });
     return this._nodeIndex.get(msgId)?.node.headers;
   }
 
@@ -437,6 +442,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   // -------------------------------------------------------------------------
 
   getActiveTurnIds(): Map<string, Set<string>> {
+    this._logger.trace('DefaultTree.getActiveTurnIds();');
     const result = new Map<string, Set<string>>();
     for (const [turnId, clientId] of this._turnClientIds) {
       let set = result.get(clientId);
@@ -473,6 +479,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
    * @param msg - The raw Ably message to emit.
    */
   emitAblyMessage(msg: Ably.InboundMessage): void {
+    this._logger.trace('DefaultTree.emitAblyMessage();');
     this._emitter.emit('ably-message', msg);
   }
 
@@ -481,6 +488,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
    * @param event - The turn lifecycle event to emit.
    */
   emitTurn(event: TurnLifecycleEvent): void {
+    this._logger.trace('DefaultTree.emitTurn();', { turnId: event.turnId });
     this._emitter.emit('turn', event);
   }
 
@@ -490,6 +498,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
    * @param clientId - The client that owns the turn.
    */
   trackTurn(turnId: string, clientId: string): void {
+    this._logger.trace('DefaultTree.trackTurn();', { turnId, clientId });
     this._turnClientIds.set(turnId, clientId);
   }
 
@@ -498,6 +507,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
    * @param turnId - The turn to untrack.
    */
   untrackTurn(turnId: string): void {
+    this._logger.trace('DefaultTree.untrackTurn();', { turnId });
     this._turnClientIds.delete(turnId);
   }
 }

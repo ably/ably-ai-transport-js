@@ -22,6 +22,9 @@ export type {
   View,
 } from './types.js';
 
+// Internal tree interface (consumed by View implementations)
+export type { TreeInternal } from './tree.js';
+
 // Server transport
 export { createServerTransport } from './server-transport.js';
 

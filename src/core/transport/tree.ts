@@ -34,6 +34,22 @@ interface InternalNode<TMessage> {
 }
 
 // ---------------------------------------------------------------------------
+// Internal interface — extended surface consumed by View
+// ---------------------------------------------------------------------------
+
+/** Internal tree surface used by View — not part of the public Tree API. */
+export interface TreeInternal<TMessage> extends Tree<TMessage> {
+  /** Forward a raw Ably message event to tree subscribers. */
+  emitAblyMessage(msg: Ably.InboundMessage): void;
+  /** Forward a turn lifecycle event to tree subscribers. */
+  emitTurn(event: TurnLifecycleEvent): void;
+  /** Register an active turn. */
+  trackTurn(turnId: string, clientId: string): void;
+  /** Unregister an active turn. */
+  untrackTurn(turnId: string): void;
+}
+
+// ---------------------------------------------------------------------------
 // Implementation
 // ---------------------------------------------------------------------------
 
@@ -45,7 +61,7 @@ interface TreeEventsMap {
 }
 
 // Spec: AIT-CT13
-export class DefaultTree<TMessage> implements Tree<TMessage> {
+export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   /** All nodes indexed by msgId (x-ably-msg-id). */
   private readonly _nodeIndex = new Map<string, InternalNode<TMessage>>();
 

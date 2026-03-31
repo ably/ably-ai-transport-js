@@ -203,6 +203,11 @@ result through our `ServerTransport`. This would catch mismatches between what
 the AI SDK actually produces and what our encoder expects — particularly
 important when upgrading `ai` package versions, since chunk shapes can change.
 
+The AI SDK provides a `MockLanguageModelV1` for testing (see
+[AI SDK testing docs](https://ai-sdk.dev/docs/ai-sdk-core/testing)). This
+could be used to produce deterministic `streamText` output without needing a
+real LLM provider.
+
 **Level 5: useChat integration tests (real `useChat` + our `ChatTransport`)**
 
 No test currently exercises the real `useChat` hook with our `ChatTransport`.
@@ -638,7 +643,10 @@ re-submission path is untested (2c).
 
 **Testing needed:** Level 5 (useChat integration) — must exercise the full
 flow. But before testing, a design decision is needed for how client-side tool
-output should be persisted to Ably history.
+output should be persisted to Ably history. The AI SDK's
+[chatbot tool usage docs](https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-tool-usage)
+show client-side tool execution patterns (e.g. a `getLocation` tool) that would
+be useful references for building demos and tests.
 
 **Applies to:** Use case 3 only. Use cases 1 and 2 handle tool results
 server-side, where the server streams `tool-output-available` to Ably as part

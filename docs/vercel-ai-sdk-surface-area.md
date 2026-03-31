@@ -1,5 +1,8 @@
 # Vercel AI SDK v6 Surface Area Coverage
 
+> [!warning]
+> This document is largely raw Claude output, only refined through some back-and-forth with me. I have not yet looked into its findings. Further investigation of its points is to come.
+
 ## Task
 
 This document records the findings of an audit of the Vercel AI SDK v6 surface

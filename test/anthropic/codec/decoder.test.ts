@@ -109,6 +109,7 @@ describe('Anthropic decoder', () => {
         expect.objectContaining({
           type: 'content_block_start',
           index: 0,
+
           // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- expect.objectContaining returns any
           content_block: expect.objectContaining({ type: 'text', text: '' }),
         }),
@@ -145,6 +146,7 @@ describe('Anthropic decoder', () => {
         expect.objectContaining({
           type: 'content_block_delta',
           index: 0,
+
           // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- expect.objectContaining returns any
           delta: expect.objectContaining({ type: 'text_delta', text: 'hello' }),
         }),
@@ -206,6 +208,7 @@ describe('Anthropic decoder', () => {
         expect.objectContaining({
           type: 'content_block_start',
           index: 1,
+
           // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- expect.objectContaining returns any
           content_block: expect.objectContaining({
             type: 'tool_use',
@@ -247,6 +250,7 @@ describe('Anthropic decoder', () => {
         expect.objectContaining({
           type: 'content_block_delta',
           index: 1,
+
           // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- expect.objectContaining returns any
           delta: expect.objectContaining({ type: 'input_json_delta', partial_json: '{"q":"test"}' }),
         }),
@@ -305,6 +309,7 @@ describe('Anthropic decoder', () => {
         expect.objectContaining({
           type: 'content_block_start',
           index: 0,
+
           // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- expect.objectContaining returns any
           content_block: expect.objectContaining({ type: 'thinking', thinking: '', signature: '' }),
         }),
@@ -339,6 +344,7 @@ describe('Anthropic decoder', () => {
         expect.objectContaining({
           type: 'content_block_delta',
           index: 0,
+
           // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- expect.objectContaining returns any
           delta: expect.objectContaining({ type: 'thinking_delta', thinking: 'hmm let me think' }),
         }),
@@ -999,6 +1005,7 @@ describe('Anthropic decoder', () => {
       const blockStart = streamEventsOf(outputs).find((e) => e.type === 'content_block_start');
       expect(blockStart).toEqual(
         expect.objectContaining({
+
           // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- expect.objectContaining returns any
           content_block: expect.objectContaining({
             type: 'tool_use',
@@ -1129,6 +1136,7 @@ describe('Anthropic decoder', () => {
       expect(delta).toEqual(
         expect.objectContaining({
           type: 'content_block_delta',
+
           // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- expect.objectContaining returns any
           delta: expect.objectContaining({ type: 'text_delta', text: 'hello world' }),
         }),
@@ -1200,6 +1208,7 @@ describe('Anthropic decoder', () => {
       const blockStart = streamEventsOf(outputs).find((e) => e.type === 'content_block_start');
       expect(blockStart).toEqual(
         expect.objectContaining({
+
           // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- expect.objectContaining returns any
           content_block: expect.objectContaining({ type: 'text' }),
         }),
@@ -1235,6 +1244,7 @@ describe('Anthropic decoder', () => {
       const delta = streamEventsOf(outputs).find((e) => e.type === 'content_block_delta');
       expect(delta).toEqual(
         expect.objectContaining({
+
           // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- expect.objectContaining returns any
           delta: expect.objectContaining({ type: 'text_delta', text: 'fallback text' }),
         }),

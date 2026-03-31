@@ -18,7 +18,7 @@ import type { Logger } from '../../logger.js';
 import { getHeaders } from '../../utils.js';
 import type { Codec } from '../codec/types.js';
 import { decodeHistory } from './decode-history.js';
-import type { DefaultTree } from './tree.js';
+import type { TreeInternal } from './tree.js';
 import type { PaginatedMessages, TreeNode, TurnLifecycleEvent, View } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ interface ViewEventsMap {
 /** Options for creating a View. */
 export interface ViewOptions<TEvent, TMessage> {
   /** The tree to project. */
-  tree: DefaultTree<TMessage>;
+  tree: TreeInternal<TMessage>;
   /** The Ably channel to load history from. */
   channel: Ably.RealtimeChannel;
   /** The codec for decoding history messages. */
@@ -52,7 +52,7 @@ export interface ViewOptions<TEvent, TMessage> {
 // ---------------------------------------------------------------------------
 
 export class DefaultView<TEvent, TMessage> implements View<TMessage> {
-  private readonly _tree: DefaultTree<TMessage>;
+  private readonly _tree: TreeInternal<TMessage>;
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: Codec<TEvent, TMessage>;
   private readonly _logger: Logger;

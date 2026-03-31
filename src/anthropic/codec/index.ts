@@ -27,10 +27,5 @@ export const AgentCodec: Codec<AgentCodecEvent, AgentMessage> = {
   createEncoder,
   createDecoder,
   createAccumulator,
-
-  // SDKAssistantMessage has uuid (required). SDKUserMessage has uuid (optional).
-  // Fall back to session_id for user messages without uuid.
-  getMessageKey: (message: AgentMessage): string => message.uuid ?? message.session_id,
-
   isTerminal: (event: AgentCodecEvent): boolean => event.type === 'result',
 };

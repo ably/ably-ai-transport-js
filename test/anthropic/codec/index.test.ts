@@ -2,11 +2,8 @@
  * Anthropic AgentCodec entry point tests.
  *
  * Verifies the codec object is wired correctly: factory methods return
- * the right types, isTerminal identifies result messages, and getMessageKey
- * returns stable identifiers for both message types.
+ * the right types and isTerminal identifies result messages.
  */
-
-import type { UUID } from 'node:crypto';
 
 import type * as Anthropic from '@anthropic-ai/claude-agent-sdk';
 import { describe, expect, it } from 'vitest';
@@ -75,44 +72,4 @@ describe('AgentCodec', () => {
     });
   });
 
-  describe('getMessageKey', () => {
-    it('returns uuid for assistant messages', () => {
-      const msg: Anthropic.SDKAssistantMessage = {
-        type: 'assistant',
-        uuid: 'assistant-uuid-1' as UUID,
-        session_id: 'session-1',
-        // eslint-disable-next-line unicorn/no-null -- SDK type requires null
-        parent_tool_use_id: null,
-        // CAST: Empty shell for test — only uuid field matters for this test.
-        message: {} as unknown as Anthropic.SDKAssistantMessage['message'],
-      };
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call -- agent SDK .d.ts has broken internal refs; type may not resolve in CI
-      expect(AgentCodec.getMessageKey(msg)).toBe('assistant-uuid-1');
-    });
-
-    it('returns uuid for user messages with uuid', () => {
-      const msg: Anthropic.SDKUserMessage = {
-        type: 'user',
-        uuid: 'user-uuid-1' as UUID,
-        session_id: 'session-1',
-        // eslint-disable-next-line unicorn/no-null -- SDK type requires null
-        parent_tool_use_id: null,
-        message: { role: 'user', content: 'hello' },
-      };
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call -- agent SDK .d.ts has broken internal refs; type may not resolve in CI
-      expect(AgentCodec.getMessageKey(msg)).toBe('user-uuid-1');
-    });
-
-    it('falls back to session_id for user messages without uuid', () => {
-      const msg: Anthropic.SDKUserMessage = {
-        type: 'user',
-        session_id: 'session-fallback',
-        // eslint-disable-next-line unicorn/no-null -- SDK type requires null
-        parent_tool_use_id: null,
-        message: { role: 'user', content: 'hello' },
-      };
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call -- agent SDK .d.ts has broken internal refs; type may not resolve in CI
-      expect(AgentCodec.getMessageKey(msg)).toBe('session-fallback');
-    });
-  });
 });

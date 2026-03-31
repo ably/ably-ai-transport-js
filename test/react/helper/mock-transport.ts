@@ -107,6 +107,7 @@ export const createMockTransport = (initialMessages: string[] = []): MockTranspo
     loadOlder: vi.fn(() => Promise.resolve()),
     getActiveTurnIds: vi.fn(() => new Map<string, Set<string>>()),
     on: makeTreeOn(viewHandlers),
+    close: vi.fn(),
   };
 
   const mockTurn = {

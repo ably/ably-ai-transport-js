@@ -446,6 +446,9 @@ export interface View<TMessage> {
 
   /** A turn event occurred for a turn with visible messages in the window. */
   on(event: 'turn', handler: (event: TurnLifecycleEvent) => void): () => void;
+
+  /** Tear down the view — unsubscribe from tree events and clear internal state. */
+  close(): void;
 }
 
 // ---------------------------------------------------------------------------

@@ -926,8 +926,9 @@ test.
    Even after P0 is fixed, three issues remain: tool output has no path to Ably
    history (architectural gap — the transport has no concept of a client updating
    an assistant message), the re-submission flow is untested, and multi-user
-   introduces unresolved questions about which client executes. Needs design
-   decisions before testing can begin.
+   introduces unresolved questions about which client executes a tool call when
+   multiple clients are subscribed to the same channel. Needs design decisions
+   on durability and multi-user semantics before testing can begin.
 2. **Ably message size limits
    ([Gap 3](#gap-3-ably-message-size-limits-for-large-payloads-high-priority))**
    — Affects anyone who uploads an image (the primary documented approach in the

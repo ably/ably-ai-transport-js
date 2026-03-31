@@ -223,7 +223,7 @@ actually works end-to-end.
 | --- | --- |
 | Gap 0 (empty stream / useChat internals) | **Level 5** — must exercise real `useChat` to verify callbacks and status |
 | Gap 1 (multi-step tool use) | **Level 3 or 4** — transport integration with multi-step chunk sequences; Level 4 would also validate that `streamText` with tools produces the expected chunks |
-| Gap 2 (client-side tool results) | **Level 5** — must exercise `onToolCall` + `addToolOutput` through real `useChat` |
+| Gap 2 (client-side tool execution) | **Level 5** — must exercise `onToolCall` + `addToolOutput` through real `useChat`; also needs a design decision for persisting tool output to Ably history |
 | Gap 3 (Ably message size limits) | **Level 2** — codec integration with payloads near the size limit to characterise the failure mode |
 | Gap 4 (data parts integration) | **Level 2** — codec roundtrip with realistic payloads |
 | Gap 5 (edit flow) | **Level 3** — transport integration with `messageId` |
@@ -554,31 +554,95 @@ produces the expected chunk sequence.
 **Applies to:** All three use cases (server encodes multi-step; client
 decodes/accumulates).
 
-### Gap 2: Client-Side Tool Results via useChat (High Priority — Use Case 3)
+### Gap 2: Client-Side Tool Execution (High Priority — Use Case 3)
 
 **What:** `useChat` supports client-side tool execution via `onToolCall` +
-`addToolOutput`. When a tool call arrives, the client executes it locally and
-calls `addToolOutput`, which updates the messages and (if
-`sendAutomaticallyWhen` is configured) triggers a new `sendMessages` call to
-continue the conversation.
+`addToolOutput`.
 
-**Current state:** This is **blocked by Gap 0** — since `onToolCall` never fires
-with the empty stream, the client-side tool execution flow cannot work at all.
-Even if Gap 0 were fixed, the subsequent `addToolOutput` → `sendMessages`
-re-submission flow is **completely untested**. The `ChatTransport` would receive
-a `sendMessages` call with the updated messages (including tool results). This
-_should_ work since it is another `submit-message` call, but there are
-subtleties: the messages array now contains assistant messages with tool call
-parts, and the `ChatTransport` takes the last message as `newMessages`.
+**Normal flow (vanilla `useChat` with default HTTP transport):**
 
-**Risk:** High — blocked by Gap 0, and untested even in isolation.
+1. Client sends messages to server via HTTP POST.
+2. Server calls `streamText()` with tools; the LLM decides to call a tool.
+3. Server streams the response back over SSE — `tool-input-available` chunks
+   arrive at the client.
+4. `useChat` processes the stream chunks, fires `onToolCall`.
+5. Client executes the tool locally, calls `addToolOutput({ toolCallId,
+   output })`, which mutates the assistant message's tool part in-memory.
+6. `sendAutomaticallyWhen` triggers re-submission — `useChat` sends the full
+   messages array (including the modified assistant message with tool output)
+   via HTTP POST.
+7. Server feeds the conversation to `streamText()` for the next step, streams
+   the response back over SSE.
 
-**Testing needed:** Level 5 (useChat integration) — must exercise `onToolCall`
-firing, `addToolOutput` updating messages, and `sendAutomaticallyWhen` triggering
-a re-submission through our `ChatTransport`.
+This works because conversation state lives entirely in client memory and is
+sent in full to the server on each request. There is no persistent history to
+keep in sync — the client's in-memory messages array is the source of truth.
+
+**Flow with our transport:**
+
+1. Client sends messages to server via HTTP POST (same as above).
+2. Server calls `streamText()`, LLM decides to call a tool.
+3. Server streams `tool-input-available` chunks to Ably — the tool **call** is
+   now in channel history.
+4. Server finishes the turn (`finishReason: 'tool-calls'`).
+5. `useChat` receives the stream returned by our `ChatTransport` — but this
+   stream is **empty** (Gap 0), so `onToolCall` never fires. The flow stops
+   here.
+
+Even if Gap 0 were fixed (so that `onToolCall` fires), the subsequent steps
+diverge from the normal flow:
+
+6. Client calls `addToolOutput`, mutating the assistant message in-memory.
+7. `sendAutomaticallyWhen` triggers re-submission via our `ChatTransport`.
+8. `ChatTransport` sends HTTP POST to server with the full messages array.
+9. Server feeds it to `streamText()`, streams the next response over Ably.
+
+The tool **output** (result) from step 6 only ever exists in the client's
+in-memory state and the HTTP POST body. Nobody publishes it to the Ably
+channel. In the normal flow this is fine — there is no persistent history. But
+in our flow, Ably channel history is the source of truth for durability. A page
+refresh would hydrate from history and find the tool call stuck in
+`input-available` state with no output.
+
+There are three distinct problems here:
+
+**Problem 2a: `onToolCall` never fires (blocked by Gap 0).** The empty stream
+means `useChat` never processes `tool-input-available` chunks, so the callback
+never fires. Client-side tool execution cannot begin at all.
+
+**Problem 2b: Tool output is not published to Ably history.** Even if Gap 0
+were fixed, the tool **output** (result) only ever exists in the client's
+in-memory state and the HTTP POST body. Nobody publishes it to the Ably channel.
+The transport architecture is unidirectional: clients send user messages, the
+server streams assistant messages. There is no mechanism for the client to
+update an assistant message, and `addMessages` / `writeMessages` only encode
+`text`, `file`, and `data-*` parts — tool parts are silently dropped.
+
+This means a page refresh would hydrate from Ably history and show the tool
+call stuck in `input-available` state with no output. Subsequent turns would
+not have the tool result in context. This is a fundamental architectural gap:
+the durability model assumes all conversation state flows through Ably, but
+client-side tool output has no path to get there.
+
+**Problem 2c: Re-submission flow is untested.** Even setting aside 2a and 2b,
+the `addToolOutput` → `sendMessages` re-submission through our `ChatTransport`
+is completely untested. After `addToolOutput`, `useChat` re-submits with
+`trigger: 'submit-message'` where the last message in the array is the modified
+**assistant** message. Our `ChatTransport` would treat this as the "new"
+message to send — but `addMessages` is designed for user messages, not assistant
+messages with tool parts.
+
+**Risk:** Critical for use case 3. Three compounding issues: the trigger
+mechanism is broken (2a), the durability model is broken (2b), and the
+re-submission path is untested (2c).
+
+**Testing needed:** Level 5 (useChat integration) — must exercise the full
+flow. But before testing, a design decision is needed for how client-side tool
+output should be persisted to Ably history.
 
 **Applies to:** Use case 3 only. Use cases 1 and 2 handle tool results
-server-side.
+server-side, where the server streams `tool-output-available` to Ably as part
+of `streamText()`'s automatic multi-step execution.
 
 ### Gap 3: Ably Message Size Limits for Large Payloads (Medium-High Priority)
 
@@ -629,6 +693,13 @@ were originally streamed).
   discrete Ably message with `data: part.url` containing the full data URL.
   (Users _can_ alternatively provide `FileUIPart` objects with `https://` URLs,
   which would be tiny, but this is the secondary approach in the docs.)
+
+**Potential future addition: client-side tool output.** Currently, client-side
+tool output has no path to Ably at all (see Gap 2b). If that is resolved by
+publishing tool output to the channel, those payloads would also be subject to
+the size limit. Tool output is arbitrary JSON (`output: unknown`), so a tool
+returning a large result (e.g. a fetched document, a data URL) would hit the
+same constraint.
 
 **Current state:** The codec handles encoding/decoding of all these types
 correctly in unit tests. But no test exercises payloads near the Ably size
@@ -760,15 +831,17 @@ test.
    document that use case 3 does not support `onToolCall`, `onData`, or accurate
    `status` transitions, and recommend use case 2 for those features.
 
-### P1 — Highest value, moderate effort
+### P1 — Highest priority
 
-1. **Multi-step tool use integration test (Gap 1)** — Prove that a
-   `streamText()` call with tools and a multi-step stop condition encodes,
-   transmits, decodes, and accumulates correctly through the full transport.
-   This is the biggest unknown in the codec/transport layer.
-2. **Client-side tool result flow through ChatTransport (Gap 2)** — Once Gap 0
-   is resolved, test (or demo) showing `onToolCall` → `addToolOutput` →
-   auto-resubmit working through our transport end-to-end.
+1. **Client-side tool execution (Gap 2)** — Known functional breakages:
+   `onToolCall` doesn't fire (blocked by Gap 0), tool output has no path to
+   Ably history (architectural gap), and the re-submission flow is untested.
+   Needs a design decision for how client-side tool output should be persisted
+   before testing can begin.
+2. **Multi-step tool use integration test (Gap 1)** — The codec probably handles
+   this correctly (each chunk type is unit-tested), but the interaction between
+   step boundaries, tool state transitions, and the accumulator's step-reset
+   logic has not been validated end-to-end.
 
 ### P2 — Medium value, fills important gaps
 

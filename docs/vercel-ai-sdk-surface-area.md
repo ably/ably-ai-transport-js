@@ -844,13 +844,12 @@ test.
    Characterise the failure mode and decide on a strategy: document the
    limitation, provide guidance on hosted URLs / external storage, or implement
    chunking.
+### P2 — Medium value, fills important gaps
+
 3. **Multi-step tool use integration test (Gap 1)** — The codec probably handles
    this correctly (each chunk type is unit-tested), but the interaction between
    step boundaries, tool state transitions, and the accumulator's step-reset
    logic has not been validated end-to-end.
-
-### P2 — Medium value, fills important gaps
-
 4. **Edit flow through ChatTransport (Gap 5)** — Test
    `sendMessage({ messageId })` produces correct fork metadata and the server
    handles it correctly.

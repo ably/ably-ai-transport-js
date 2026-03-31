@@ -156,6 +156,83 @@ The AI SDK surface area was assessed using the following sources:
 
 ---
 
+## Testing Taxonomy
+
+The codebase currently has two test tiers: **unit tests** (mocks only, `npm
+test`) and **integration tests** (real Ably channels, `npm run
+test:integration`). However, the term "integration test" is ambiguous — the
+existing integration tests vary in what they integrate, and some important
+integration levels don't exist at all.
+
+### Existing Test Levels
+
+**Level 1: Unit tests (mocks only)**
+
+All source modules have unit tests using mocked dependencies. Codec tests
+encode/decode hand-crafted `UIMessageChunk` objects. Transport tests use mock
+channels and mock writers. React hook tests use `renderHook` with mock
+transports. The `ChatTransport` adapter is tested as a plain function against a
+mocked core transport — not as a React hook.
+
+**Level 2: Codec integration tests (real Ably, no transport)**
+
+`test/vercel/codec/codec.integration.test.ts` — one client publishes via the
+encoder, a separate client subscribes and decodes. Proves the wire format
+survives Ably serialisation. No transport machinery involved.
+
+**Level 3: Transport integration tests (real Ably, both transports)**
+
+`test/core/transport/client-transport.integration.test.ts` — uses both
+`ClientTransport` and `ServerTransport` on a real Ably channel. Proves the full
+send → stream → receive lifecycle. The server side creates turns and streams
+responses; the client side sends messages and reads the response stream.
+
+`test/core/transport/server-transport.integration.test.ts` — uses
+`ServerTransport` on one side and a bare subscriber client on the other (no
+`ClientTransport`). The subscriber manually decodes Ably messages. Proves the
+server publishes correctly.
+
+### Missing Test Levels
+
+**Level 4: AI SDK integration tests (real `streamText` + `toUIMessageStream`)**
+
+No test currently uses the real AI SDK to produce chunks. All existing tests
+hand-craft `UIMessageChunk` objects. A Level 4 test would use `streamText()`
+with a fake language model provider, call `.toUIMessageStream()`, and pipe the
+result through our `ServerTransport`. This would catch mismatches between what
+the AI SDK actually produces and what our encoder expects — particularly
+important when upgrading `ai` package versions, since chunk shapes can change.
+
+**Level 5: useChat integration tests (real `useChat` + our `ChatTransport`)**
+
+No test currently exercises the real `useChat` hook with our `ChatTransport`.
+The only place this combination runs is the demo app, which is manually tested.
+A Level 5 test would use `renderHook` (or similar) to create a real `useChat`
+instance with our `ChatTransport`, send messages, and verify that callbacks
+fire, status transitions correctly, and messages arrive. This is the level
+needed to validate or disprove the findings in Gap 0 (empty stream issues).
+
+This is harder to set up than Levels 2–4 because it requires a React test
+environment, a real (or realistically mocked) Ably channel, and a server-side
+transport producing chunks. But it's the only way to prove that use case 3
+actually works end-to-end.
+
+### Which Gaps Need Which Test Level
+
+| Gap | Minimum test level needed |
+| --- | --- |
+| Gap 0 (empty stream / useChat internals) | **Level 5** — must exercise real `useChat` to verify callbacks and status |
+| Gap 1 (multi-step tool use) | **Level 3 or 4** — transport integration with multi-step chunk sequences; Level 4 would also validate that `streamText` with tools produces the expected chunks |
+| Gap 2 (client-side tool results) | **Level 5** — must exercise `onToolCall` + `addToolOutput` through real `useChat` |
+| Gap 3 (file attachments) | **Level 2 or 3** — codec roundtrip for server→client; Level 3 for client→server via transport |
+| Gap 4 (data parts) | **Level 2 or 3** — codec roundtrip with real payloads |
+| Gap 5 (edit flow) | **Level 3** — transport integration with `messageId` |
+| Gap 6 (reconnect / resume) | **Level 5** — must verify `useChat` behaviour when `reconnectToStream` returns `null` |
+| Gap 7 (tool approval) | **Level 3** — transport integration for the round-trip |
+| Gap 8 (source parts) | **Level 2** — codec roundtrip |
+
+---
+
 ## Server-Side Surface Area: UIMessageChunk Types
 
 These are the chunk types that `toUIMessageStream()` can emit. Every one of
@@ -164,66 +241,72 @@ decoded by the client, and accumulated into `UIMessage` objects.
 
 ### Message Lifecycle
 
-| Chunk type | Codec handles? | Unit tested? | Integration tested? |
-| --- | --- | --- | --- |
-| `start` | Yes | Yes | Yes |
-| `finish` | Yes | Yes | Yes |
-| `abort` | Yes | Yes | Yes |
-| `error` | Yes | Yes | Yes |
-| `message-metadata` | Yes | Yes | No |
-| `start-step` | Yes | Yes | No |
-| `finish-step` | Yes | Yes | No |
+| Chunk type | Codec handles? | Unit tested? | Codec integration (L2)? | Transport integration (L3)? |
+| --- | --- | --- | --- | --- |
+| `start` | Yes | Yes | Yes | Yes |
+| `finish` | Yes | Yes | Yes | Yes |
+| `abort` | Yes | Yes | Yes | Yes |
+| `error` | Yes | Yes | Yes | Yes |
+| `message-metadata` | Yes | Yes | No | No |
+| `start-step` | Yes | Yes | No | No |
+| `finish-step` | Yes | Yes | No | No |
 
 ### Text Streaming
 
-| Chunk type | Codec handles? | Unit tested? | Integration tested? |
-| --- | --- | --- | --- |
-| `text-start` | Yes | Yes | Yes |
-| `text-delta` | Yes | Yes | Yes |
-| `text-end` | Yes | Yes | Yes |
+| Chunk type | Codec handles? | Unit tested? | Codec integration (L2)? | Transport integration (L3)? |
+| --- | --- | --- | --- | --- |
+| `text-start` | Yes | Yes | Yes | Yes |
+| `text-delta` | Yes | Yes | Yes | Yes |
+| `text-end` | Yes | Yes | Yes | Yes |
 
 ### Reasoning
 
-| Chunk type | Codec handles? | Unit tested? | Integration tested? |
-| --- | --- | --- | --- |
-| `reasoning-start` | Yes | Yes | Yes |
-| `reasoning-delta` | Yes | Yes | Yes |
-| `reasoning-end` | Yes | Yes | Yes |
+| Chunk type | Codec handles? | Unit tested? | Codec integration (L2)? | Transport integration (L3)? |
+| --- | --- | --- | --- | --- |
+| `reasoning-start` | Yes | Yes | Yes | No |
+| `reasoning-delta` | Yes | Yes | Yes | No |
+| `reasoning-end` | Yes | Yes | Yes | No |
 
 ### Tool Input (Streaming)
 
-| Chunk type | Codec handles? | Unit tested? | Integration tested? |
-| --- | --- | --- | --- |
-| `tool-input-start` | Yes | Yes | Yes |
-| `tool-input-delta` | Yes | Yes | Yes |
-| `tool-input-available` | Yes | Yes | Yes |
-| `tool-input-error` | Yes | Yes | No |
+| Chunk type | Codec handles? | Unit tested? | Codec integration (L2)? | Transport integration (L3)? |
+| --- | --- | --- | --- | --- |
+| `tool-input-start` | Yes | Yes | Yes | No |
+| `tool-input-delta` | Yes | Yes | Yes | No |
+| `tool-input-available` | Yes | Yes | Yes | No |
+| `tool-input-error` | Yes | Yes | No | No |
 
 ### Tool Output
 
-| Chunk type | Codec handles? | Unit tested? | Integration tested? |
-| --- | --- | --- | --- |
-| `tool-output-available` | Yes | Yes | Yes |
-| `tool-output-error` | Yes | Yes | No |
-| `tool-approval-request` | Yes | Yes | No |
-| `tool-output-denied` | Yes | Yes | No |
+| Chunk type | Codec handles? | Unit tested? | Codec integration (L2)? | Transport integration (L3)? |
+| --- | --- | --- | --- | --- |
+| `tool-output-available` | Yes | Yes | Yes | No |
+| `tool-output-error` | Yes | Yes | No | No |
+| `tool-approval-request` | Yes | Yes | No | No |
+| `tool-output-denied` | Yes | Yes | No | No |
 
 ### Content Parts
 
-| Chunk type | Codec handles? | Unit tested? | Integration tested? |
-| --- | --- | --- | --- |
-| `file` | Yes | Yes | No |
-| `source-url` | Yes | Yes | No |
-| `source-document` | Yes | Yes | No |
-| `data-*` (custom) | Yes | Yes | No |
+| Chunk type | Codec handles? | Unit tested? | Codec integration (L2)? | Transport integration (L3)? |
+| --- | --- | --- | --- | --- |
+| `file` | Yes | Yes | No | No |
+| `source-url` | Yes | Yes | No | No |
+| `source-document` | Yes | Yes | No | No |
+| `data-*` (custom) | Yes | Yes | No | No |
 
 ### Summary
 
 The codec has **complete coverage of all UIMessageChunk types**. Every chunk type
 that `toUIMessageStream()` can emit is handled by the encoder, decoder, and
-accumulator. All types have unit tests. Integration test coverage exists for the
-core streaming paths (text, reasoning, tool input/output, lifecycle) but not for
-content parts, data parts, or error-path tool chunks.
+accumulator. All types have unit tests. Codec integration tests (Level 2) exist
+for text, reasoning, tool input/output, lifecycle, and error propagation.
+Transport integration tests (Level 3) exist only for text streaming and
+lifecycle events. No tests at any level use the real AI SDK (Level 4) or
+exercise `useChat` (Level 5).
+
+Note: the transport integration tests (Level 3) are at the core transport layer,
+not the Vercel layer. They use the generic `ClientTransport` / `ServerTransport`
+with the `UIMessageCodec`, so they do exercise the Vercel codec indirectly.
 
 ---
 
@@ -426,6 +509,13 @@ provides authoritative message state externally. But the above four issues are
 **Risk:** Critical for use case 3. Items 1 and 2 are likely to affect real
 users. Items 3 and 4 affect users who rely on those specific useChat features.
 
+**Testing needed:** Level 5 (useChat integration). This is the only way to
+confirm or disprove these findings — a Level 5 test would create a real `useChat`
+instance with our `ChatTransport`, send a message, and verify that `status`
+transitions through `streaming`, that `onToolCall` fires for tool calls, and
+that `onFinish` receives the real message. The existing demo app exercises this
+path manually but has no automated assertions.
+
 **Possible fix directions:**
 - **Replay chunks through the returned stream** — instead of returning an empty
   stream, the `ChatTransport` could subscribe to the core transport's decoded
@@ -455,6 +545,12 @@ but the interaction between step boundaries, tool state machine transitions
 across steps, and the accumulator's step-reset logic has not been validated
 end-to-end.
 
+**Testing needed:** Level 3 (transport integration) at minimum — a test that
+streams a multi-step tool sequence through `ClientTransport` and
+`ServerTransport` on a real Ably channel. Level 4 (AI SDK integration) would
+additionally validate that `streamText()` with real tools and a fake provider
+produces the expected chunk sequence.
+
 **Applies to:** All three use cases (server encodes multi-step; client
 decodes/accumulates).
 
@@ -477,6 +573,10 @@ parts, and the `ChatTransport` takes the last message as `newMessages`.
 
 **Risk:** High — blocked by Gap 0, and untested even in isolation.
 
+**Testing needed:** Level 5 (useChat integration) — must exercise `onToolCall`
+firing, `addToolOutput` updating messages, and `sendAutomaticallyWhen` triggering
+a re-submission through our `ChatTransport`.
+
 **Applies to:** Use case 3 only. Use cases 1 and 2 handle tool results
 server-side.
 
@@ -497,6 +597,10 @@ the full message in the POST body, so files should flow through. But this is
 path depends on how large file data URLs interact with Ably message size limits
 and the HTTP POST body. Large images as data URLs could exceed limits.
 
+**Testing needed:** Level 2 (codec integration) for server→client file chunks.
+Level 3 (transport integration) for client→server file parts through the
+transport POST body.
+
 **Applies to:** All three use cases for server→client. Use case 3 for
 client→server via useChat.
 
@@ -513,6 +617,8 @@ parts flowing through the transport.
 **Risk:** Low-medium. The codec coverage is thorough in unit tests. The main
 risk is that data parts with complex serialised payloads might hit edge cases in
 Ably message encoding.
+
+**Testing needed:** Level 2 (codec integration) — roundtrip with real payloads.
 
 **Applies to:** All three use cases.
 
@@ -532,6 +638,9 @@ message is being replaced).
 is incomplete for edits. The server-side handling of edit-with-messageId is not
 demonstrated or tested.
 
+**Testing needed:** Level 3 (transport integration) — test `sendMessages` with
+`messageId` and verify fork metadata and server handling.
+
 **Applies to:** Use case 3 only. Use case 2 has `useEdit` which is a separate
 mechanism with explicit fork metadata.
 
@@ -548,6 +657,9 @@ choice, but the fallback behaviour is **untested**.
 (Ably handles this natively). But the `useChat` side may behave unexpectedly
 when `reconnectToStream` returns `null` — e.g. it might set status to `'ready'`
 when the stream is actually still in progress.
+
+**Testing needed:** Level 5 (useChat integration) — must verify `useChat`
+behaviour when `reconnectToStream` returns `null` and observer mode kicks in.
 
 **Applies to:** Use case 3 only. Use cases 1 and 2 handle reconnection via the
 core transport directly.
@@ -566,6 +678,9 @@ approves/denies → server continues) is **untested** through the transport.
 is that the approval response, sent back as a new `sendMessages` call via
 `useChat`, might not carry the right message structure.
 
+**Testing needed:** Level 3 (transport integration) for the codec round-trip.
+Level 5 (useChat integration) to verify the full approval flow through `useChat`.
+
 **Applies to:** Use case 3 for the useChat flow. Use cases 1 and 2 would handle
 this application-specifically.
 
@@ -578,6 +693,8 @@ responses.
 test.
 
 **Risk:** Low. Simple discrete messages with straightforward encoding.
+
+**Testing needed:** Level 2 (codec integration) — roundtrip through real Ably.
 
 **Applies to:** All three use cases.
 

@@ -224,8 +224,8 @@ actually works end-to-end.
 | Gap 0 (empty stream / useChat internals) | **Level 5** — must exercise real `useChat` to verify callbacks and status |
 | Gap 1 (multi-step tool use) | **Level 3 or 4** — transport integration with multi-step chunk sequences; Level 4 would also validate that `streamText` with tools produces the expected chunks |
 | Gap 2 (client-side tool results) | **Level 5** — must exercise `onToolCall` + `addToolOutput` through real `useChat` |
-| Gap 3 (file attachments) | **Level 2 or 3** — codec roundtrip for server→client; Level 3 for client→server via transport |
-| Gap 4 (data parts) | **Level 2 or 3** — codec roundtrip with real payloads |
+| Gap 3 (Ably message size limits) | **Level 2** — codec integration with payloads near the size limit to characterise the failure mode |
+| Gap 4 (data parts integration) | **Level 2** — codec roundtrip with realistic payloads |
 | Gap 5 (edit flow) | **Level 3** — transport integration with `messageId` |
 | Gap 6 (reconnect / resume) | **Level 5** — must verify `useChat` behaviour when `reconnectToStream` returns `null` |
 | Gap 7 (tool approval) | **Level 3** — transport integration for the round-trip |
@@ -580,34 +580,80 @@ a re-submission through our `ChatTransport`.
 **Applies to:** Use case 3 only. Use cases 1 and 2 handle tool results
 server-side.
 
-### Gap 3: File Attachments (Medium Priority)
+### Gap 3: Ably Message Size Limits for Large Payloads (Medium-High Priority)
 
-**What:** `useChat.sendMessage({ text, files })` adds file parts to the user
-message. `toUIMessageStream()` can emit `file` chunks from the server (e.g.
-generated images).
+**What:** Several types of data flow through the transport as **discrete Ably
+messages carrying their full payload in a single message**. Ably's maximum
+message size can be as low as 64KiB depending on the account's package (see
+[Ably limits](https://ably.com/docs/platform/pricing/limits)), and no higher
+than 256KiB. None of these payload types are streamed incrementally or broken
+across multiple messages — the entire content travels in one Ably message.
 
-**Current state:** Server→client file chunks are handled by the codec (encoder,
-decoder, accumulator all support `file` type with unit tests). Client→server
-file uploads happen at the `useChat` level — files are added as `FileUIPart` to
-the user message, then passed to `sendMessages`. The `ChatTransport` includes
-the full message in the POST body, so files should flow through. But this is
-**untested end-to-end**.
+This is a problem we introduce. In vanilla `useChat` (without our transport),
+all of these payloads travel over a single HTTP SSE stream with no per-message
+size limit. By routing them through Ably, we impose Ably's message size
+constraints.
 
-**Risk:** Medium. The server→client codec path is unit-tested. The client→server
-path depends on how large file data URLs interact with Ably message size limits
-and the HTTP POST body. Large images as data URLs could exceed limits.
+**Affected payload types, server→client (UIMessageChunk encoded as Ably
+messages):**
 
-**Testing needed:** Level 2 (codec integration) for server→client file chunks.
-Level 3 (transport integration) for client→server file parts through the
-transport POST body.
+- **`file` chunks** — Model-generated files (e.g. inline image generation from
+  models like Gemini 2.5 Flash). The AI SDK converts model output to a base64
+  data URL (`data:image/png;base64,...`) — there is no option for a hosted URL.
+  A raw 48KB image becomes ~64KB in base64, hitting the minimum Ably limit.
+- **`tool-output-available` chunks** — Server-side tool results. The `output`
+  field is arbitrary JSON, serialised into the Ably message data. A tool
+  returning a large JSON response (e.g. a database query result, an API
+  response) could exceed the limit.
+- **`data-*` chunks** — Custom data parts for generative UI. The Vercel docs
+  describe use cases including "collaborative artifacts" and "code, documents,
+  or designs in real-time", which could carry substantial payloads. Each chunk
+  carries its full `data` payload in a single Ably message. The
+  reconciliation-by-ID feature (updating an existing part) sends the full
+  replacement payload each time, not a delta.
 
-**Applies to:** All three use cases for server→client. Use case 3 for
-client→server via useChat.
+**Affected payload types, server-side publishing of user messages via
+`addMessages` (UIMessage parts encoded as Ably messages):**
 
-### Gap 4: Data Parts / Generative UI (Medium Priority)
+`addMessages` only publishes the **new user messages for the current turn** (not
+previous turns' messages, which are already in channel history from when they
+were originally streamed).
+
+- **`file` parts** in user messages — When users attach files via
+  `useChat.sendMessage({ files })`, the AI SDK's primary documented approach
+  uses `<input type="file">` with `FileList`, which auto-converts files to
+  base64 data URLs. This is what someone following the Vercel docs would be
+  using. The `ChatTransport` sends these via HTTP POST to the server (not our
+  problem — same as vanilla `useChat`), but the server then publishes them to
+  the Ably channel via `turn.addMessages()`, where each `file` part becomes a
+  discrete Ably message with `data: part.url` containing the full data URL.
+  (Users _can_ alternatively provide `FileUIPart` objects with `https://` URLs,
+  which would be tiny, but this is the secondary approach in the docs.)
+
+**Current state:** The codec handles encoding/decoding of all these types
+correctly in unit tests. But no test exercises payloads near the Ably size
+limit, and there is no handling (or documented guidance) for payloads that
+exceed it.
+
+**Risk:** Medium-high. This will silently fail or error on the Ably publish for
+any payload exceeding the account's message size limit. Files are most likely to
+hit this (images from `FileList` or model-generated images are routinely larger
+than 48KB), but tool results and data parts are also at risk depending on the
+application.
+
+**Testing needed:** Level 2 (codec integration) with payloads near the size
+limit, to confirm the failure mode and document it. We should also consider
+whether we need a strategy for large payloads (e.g. external storage with URL
+references, or splitting across multiple Ably messages).
+
+**Applies to:** All three use cases.
+
+### Gap 4: Data Parts / Generative UI — Integration Coverage (Medium Priority)
 
 **What:** Custom `data-*` parts allow streaming structured data (charts,
-widgets, etc.) alongside text. Can be persistent or transient.
+widgets, artifacts, etc.) alongside text. Can be persistent or transient.
+Persistent parts appear in `message.parts`; transient parts are only observable
+via the `onData` callback in `useChat` (which is affected by Gap 0).
 
 **Current state:** The codec fully supports `data-*` encoding, decoding, and
 accumulation (including transient skipping and ID-based reconciliation). Unit
@@ -615,12 +661,14 @@ tests exist. But there is **no integration test** and **no demo** showing data
 parts flowing through the transport.
 
 **Risk:** Low-medium. The codec coverage is thorough in unit tests. The main
-risk is that data parts with complex serialised payloads might hit edge cases in
-Ably message encoding.
+remaining risk is Ably serialisation edge cases with complex payloads (see also
+Gap 3 for the size limit concern).
 
-**Testing needed:** Level 2 (codec integration) — roundtrip with real payloads.
+**Testing needed:** Level 2 (codec integration) — roundtrip with realistic
+payloads.
 
-**Applies to:** All three use cases.
+**Applies to:** All three use cases for persistent data parts. Use case 3 for
+transient data parts (blocked by Gap 0 — `onData` does not fire).
 
 ### Gap 5: Edit Flow Through ChatTransport (Medium Priority — Use Case 3)
 
@@ -724,11 +772,13 @@ test.
 
 ### P2 — Medium value, fills important gaps
 
-3. **Edit flow through ChatTransport (Gap 5)** — Test
+3. **Ably message size limits (Gap 3)** — Characterise the failure mode when
+   payloads exceed the Ably message size limit (files, tool results, data
+   parts). Decide on a strategy: document the limitation, provide guidance on
+   hosted URLs / external storage, or implement chunking.
+4. **Edit flow through ChatTransport (Gap 5)** — Test
    `sendMessage({ messageId })` produces correct fork metadata and the server
    handles it correctly.
-4. **File attachment roundtrip (Gap 3)** — Integration test for server→client
-   file chunks; test for client→server file parts through `ChatTransport`.
 5. **Data parts integration test (Gap 4)** — Prove `data-*` parts with real
    payloads survive the Ably encode/decode roundtrip.
 

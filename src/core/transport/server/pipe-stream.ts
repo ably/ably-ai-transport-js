@@ -20,6 +20,8 @@ import type { StreamResult } from './types.js';
  * @param onAbort - Optional callback invoked when the stream is cancelled, before the stream ends.
  * @param logger - Optional logger for diagnostic output.
  * @returns The reason the pipe ended.
+ *
+ * LAWRENCE: Worth mentioning this never throws an error?
  */
 export const pipeStream = async <TEvent, TMessage>(
   stream: ReadableStream<TEvent>,
@@ -80,6 +82,7 @@ export const pipeStream = async <TEvent, TMessage>(
     const errorText = error instanceof Error ? error.message : String(error);
     logger?.error('pipeStream(); stream error', { error: errorText });
     try {
+      // LAWRENCE: So this doesn't propagate back to the client? i.e. they don't find out about the error — not even that there was one? Ah — seems like it's the streamResponse caller (i.e. the user server route code) to call turn.end() with this reason (but the user won't find out _what_ error happened)
       await encoder.close();
     } catch {
       // Best-effort: encoder close in the error path may also fail

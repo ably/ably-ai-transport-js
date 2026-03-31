@@ -197,6 +197,7 @@ describe('ClientTransport integration', () => {
 
     // After the stream completes, the assistant message should be accumulated
     // Wait briefly for the accumulator to process all events
+    // LAWRENCE: This sounds a bit dodgy
     await waitForMessages(clientTransport, 2);
 
     const messages = clientTransport.getMessages();
@@ -239,6 +240,7 @@ describe('ClientTransport integration', () => {
       channel: clientChannel,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
+      // LAWRENCE: Can't this cast be in a single place? also we have rules on casting and this isn't following them
       fetch: noopFetch as typeof globalThis.fetch,
     });
 
@@ -321,6 +323,7 @@ describe('ClientTransport integration', () => {
     await startPromise;
 
     const activeBefore = clientTransport.getActiveTurnIds();
+    // LAWRENCE: Should there be a corresponding zero asserted by the client once the turn ends again?
     expect(activeBefore.size).toBeGreaterThan(0);
 
     const stream = textResponseStream('msg-lc-1', 'text-lc-1', 'test');
@@ -585,6 +588,7 @@ describe('ClientTransport integration', () => {
     expect(rawMessages.length).toBeGreaterThan(0);
 
     // Should include turn-start, encoded messages, and turn-end
+    // LAWRENCE: (Well, we're only asserting turn_start and turn_end)
     const names = rawMessages.map((m) => m.name);
     expect(names).toContain(EVENT_TURN_START);
     expect(names).toContain(EVENT_TURN_END);

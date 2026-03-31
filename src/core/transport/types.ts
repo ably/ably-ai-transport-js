@@ -12,6 +12,7 @@
 /** Why a turn ended. */
 export type TurnEndReason = 'complete' | 'cancelled' | 'error';
 
+// LAWRENCE: Could this be a discriminated union?
 /** Filter for cancel operations. At most one field should be set. */
 export interface CancelFilter {
   /** Cancel a specific turn by ID. */

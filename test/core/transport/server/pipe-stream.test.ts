@@ -134,6 +134,7 @@ describe('pipeStream', () => {
       const promise = pipeStream(stream, encoder, controller.signal);
 
       // Wait for the first event to be processed
+      // LAWRENCE: The use of setTimeout in the tests is sometimes a bit unclear what it's doing — also didn't we have a standard somewhere saying not to use it?
       await new Promise((r) => setTimeout(r, 10));
       controller.abort();
 

@@ -114,6 +114,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   private readonly _ablyMessages: Ably.InboundMessage[] = [];
 
   // History pagination: withheld messages hidden from getMessages()
+  // LAWRENCE: what are its elements?
   private readonly _withheldKeys = new Set<string>();
 
   // Sub-components
@@ -192,6 +193,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       // Spec: AIT-CT16a
       // --- Turn lifecycle events from the server ---
       if (ablyMessage.name === EVENT_TURN_START) {
+          // LAWRENCE: I think that perhaps it would be good to map things to strongly typed events with turnId etc properties instead of essentially passing dictionaries around everywhere. we could also do the default value mapping there (e.g. empty string for missing client ID, 'complete' as default reason etc, and it would also make it clear which headers we expect to be present on each event type, which would aid with understanding)
         const headers = getHeaders(ablyMessage);
         const turnId = headers[HEADER_TURN_ID];
         const turnCid = headers[HEADER_TURN_CLIENT_ID] ?? '';

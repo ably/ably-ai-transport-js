@@ -58,11 +58,14 @@ interface RegisteredTurn {
 
 // Spec: AIT-ST1
 class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent, TMessage> {
+    // LAWRENCE: This all comes from the options
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: ServerTransportOptions<TEvent, TMessage>['codec'];
   private readonly _logger: Logger | undefined;
   private readonly _onError: ((error: Ably.ErrorInfo) => void) | undefined;
+  // LAWRENCE: These two properties are the two meaningful stores of mutable state
   private readonly _turnManager: TurnManager;
+  // LAWRENCE: Added when createTurn called, removed on Turn.end() apparently — there is also _activeTurns in the turn manager. Kind of feels like this overlaps with the turn manager's storage
   private readonly _registeredTurns = new Map<string, RegisteredTurn>();
   private readonly _channelListener: (msg: Ably.InboundMessage) => void;
   private readonly _attachPromise: Promise<void>;
@@ -125,6 +128,13 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
   // Cancel message routing
   // -------------------------------------------------------------------------
 
+  // LAWRENCE: I'd make this a helper outside of this file
+  /**
+   * LAWRENCE: Resolve a cancel filter to the set of turn IDs it matches.
+   *
+   * Filters are evaluated in priority order: all > own > clientId > turnId.
+   * Only the first matching filter field is used — the rest are ignored.
+   */
   private _resolveFilter(filter: CancelFilter, senderClientId?: string): string[] {
     const turnIds = [...this._registeredTurns.keys()];
 
@@ -145,6 +155,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
   private async _handleCancelMessage(msg: Ably.InboundMessage): Promise<void> {
     const headers = getHeaders(msg);
 
+    // LAWRENCE: This could be a helper
     const filter: CancelFilter = {};
     if (headers[HEADER_CANCEL_TURN_ID]) {
       filter.turnId = headers[HEADER_CANCEL_TURN_ID];
@@ -291,6 +302,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
           );
         }
         if (started) return;
+        // LAWRENCE: We usually use named states in our SDKs for this sort of thing. Seems like it should be INITIALIZED -> STARTED -> ENDED
         started = true;
 
         try {
@@ -303,6 +315,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
             error instanceof Ably.ErrorInfo ? error : undefined,
           );
           logger?.error('Turn.start(); failed to publish turn-start', { turnId });
+          // LAWRENCE: Says "non-fatal errors" but this is fatal
           turnOnError?.(errInfo);
           throw errInfo;
         }
@@ -329,6 +342,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
         const msgIds: string[] = [];
 
         for (const input of inputs) {
+            // LAWRENCE: Here we're potentially generating an ID just to ditch it (for the user-provided ID case? — also when would we ever _not_ have the user-provided ID?)
           const msgId = crypto.randomUUID();
 
           // Transport headers are the defaults; per-message headers from the
@@ -358,6 +372,8 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
           msgIds.push(headers[HEADER_MSG_ID] ?? msgId);
         }
 
+        // LAWRENCE: Why does this not call turnOnError?
+
         logger?.debug('Turn.addMessages(); messages published', { turnId, count: inputs.length });
         return { msgIds };
       },
@@ -378,11 +394,13 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
         }
         await attachPromise;
 
+        // LAWRENCE: So I guess our registration's `controller` controls this signal?
         const signal = turnManager.getSignal(turnId);
         const turnOwnerClientId = turnManager.getClientId(turnId);
 
         // Per-operation parent overrides the turn-level default.
         const assistantParent =
+            // LAWRENCE: What's this? Is it needed? Doesn't this come at the start of the turn? Fuzzy understanding here
           streamOpts?.parent === undefined ? (turnParent ?? undefined) : (streamOpts.parent ?? undefined);
 
         const defaultHeaders = buildTransportHeaders({

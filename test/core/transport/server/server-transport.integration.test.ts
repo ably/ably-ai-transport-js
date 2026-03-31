@@ -237,6 +237,7 @@ describe('ServerTransport integration', () => {
 
     const streamPromise = turn.streamResponse(stream);
 
+    // LAWRENCE: Timing-based, hmm
     // Give the stream time to start publishing
     await new Promise((r) => setTimeout(r, 500));
 
@@ -255,6 +256,7 @@ describe('ServerTransport integration', () => {
     await turn.end('cancelled');
   });
 
+  // LAWRENCE: This is the scenario I was previously wondering whether it actually happens in real life at least in Vercel
   /**
    * Scenario: Multi-turn sequential.
    *
@@ -284,6 +286,7 @@ describe('ServerTransport integration', () => {
 
     await subChannel.subscribe((msg) => {
       const outputs = decoder.decode(msg);
+      // LAWRENCE: I thought that an accumulator was always for a single turn but here we're using it for two? Have I missed something? Maybe I was wrong there
       accumulator.processOutputs(outputs);
       if (eventsOf(outputs).some((e) => e.type === 'finish')) {
         finishCount++;
@@ -410,6 +413,7 @@ describe('ServerTransport integration', () => {
         controller.enqueue({ type: 'start-step' });
         controller.enqueue({ type: 'text-start', id: 'text-err-1' });
         controller.enqueue({ type: 'text-delta', id: 'text-err-1', delta: 'Partial...' });
+        // LAWRENCE: Does this match how Vercel SDK actually handles errors?
         controller.error(new Error('model rate limit exceeded'));
       },
     });
@@ -510,6 +514,7 @@ describe('ServerTransport integration', () => {
     };
     const { msgIds } = await turn.addMessages([{ message: userMessage }]);
 
+    // LAWRENCE: I remain confused here — whose responsibility is it to pass this parent in general in order to link the assistant message to the user message? It's not tracked by the turn or transport is it?
     // Stream assistant response — pass parent explicitly from addMessages result
     await turn.streamResponse(textResponseStream('msg-reply-1', 'text-reply-1', 'Sunny!'), {
       parent: msgIds.at(-1),

@@ -105,6 +105,7 @@ describe('TurnManager', () => {
       await manager.endTurn('turn-1', 'complete');
 
       expect(manager.getSignal('turn-1')).toBeUndefined();
+      // LAWRENCE: Probably we should have an "adds" on startTurn
       expect(manager.getActiveTurnIds()).toHaveLength(0);
     });
 

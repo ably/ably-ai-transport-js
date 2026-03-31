@@ -23,6 +23,7 @@ export interface ClientTransportOptions<TEvent, TMessage> {
   /** The client's identity. Sent to the server in the POST body. */
   clientId?: string;
 
+  // LAWRENCE: I'm not sure this makes sense as a default, seems like _maybe_ for the ChatTransport but not generically
   /** Server endpoint URL for the HTTP POST. Defaults to `"/api/chat"`. */
   api?: string;
 
@@ -101,6 +102,7 @@ export interface CloseOptions {
 export interface PaginatedMessages<TMessage> {
   /** Decoded messages in chronological order (oldest first). */
   items: TMessage[];
+  // LAWRENCE: we should just have a single array — can always make this generic on its item. also apparently these headers and serials are only used by the transport; if so then they shouldn't be public
   /** Headers for each item, parallel to `items`. Used by the transport to populate the tree. */
   itemHeaders?: Record<string, string>[];
   /** Ably serial for each item, parallel to `items`. Used by the transport for tree ordering. */
@@ -190,7 +192,7 @@ export interface ConversationTree<TMessage> {
   getHeaders(msgId: string): Record<string, string> | undefined;
 
   // --- Mutation (used by the transport, not the UI) ---
-
+  
   /**
    * Insert or update a message in the tree. Reads parent/forkOf from the
    * provided headers. If the message already exists (by msgId), updates
@@ -207,6 +209,7 @@ export interface ConversationTree<TMessage> {
 // Internal sub-component types
 // ---------------------------------------------------------------------------
 
+// LAWRENCE: Can't this just be in the stream router file?
 /** Entry in the StreamRouter's turn map. Not part of the public API. */
 export interface TurnEntry<TEvent> {
   /** The ReadableStream controller for this turn. */

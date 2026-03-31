@@ -63,6 +63,7 @@ class DefaultTurnManager implements TurnManager {
     this._logger = logger?.withContext({ component: 'TurnManager' });
   }
 
+  // LAWRENCE: I think that this contract of returning a controller and possibly creating one itself is unnecessary — the controller here isn't used anyway; nobody calls TurnManager#abort
   async startTurn(turnId: string, clientId?: string, externalController?: AbortController): Promise<AbortSignal> {
     this._logger?.trace('DefaultTurnManager.startTurn();', { turnId, clientId });
 
@@ -124,6 +125,7 @@ class DefaultTurnManager implements TurnManager {
     return [...this._activeTurns.keys()];
   }
 
+  // LAWRENCE: This has overlap with what DefaultServerTransport.close() does itself
   close(): void {
     this._logger?.trace('DefaultTurnManager.close();', { activeTurns: this._activeTurns.size });
     for (const state of this._activeTurns.values()) {

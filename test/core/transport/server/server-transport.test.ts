@@ -310,6 +310,9 @@ describe('ServerTransport', () => {
       expect(headers[HEADER_TURN_ID]).toBe('turn-1');
     });
 
+    // LAWRENCE: TODO what about tests that it actually passes the messages to the codec?
+
+    // LAWRENCE: What about the 'cancelled' | 'error' cases?
     it('returns complete reason for normal stream', async () => {
       const turn = transport.newTurn({ turnId: 'turn-1' });
       await turn.start();
@@ -317,6 +320,7 @@ describe('ServerTransport', () => {
       expect(result.reason).toBe('complete');
     });
 
+    // LAWRENCE: What
     it('uses explicit parent from streamResponse options', async () => {
       const turn = transport.newTurn({ turnId: 'turn-1' });
       await turn.start();

@@ -1092,6 +1092,7 @@ describe('ClientTransport', () => {
       decoder.outputs.push({ kind: 'event', event: { type: 'text', text: 'late' } });
       simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: turn.turnId }));
 
+      // LAWRENCE: Having a reference to a numbered line of code will definitely get out of sync over time
       // The message handler is called once from the observer path — but since
       // the own turn has completed and its observer accumulator was cleaned up,
       // the code path at line 283 should skip the event
@@ -1122,6 +1123,7 @@ describe('ClientTransport', () => {
         }),
       );
 
+      // LAWRENCE: Not sure what this is meant to be asserting, doesn't seem to have much to do with test name
       expect(messageHandler).toHaveBeenCalled();
     });
 
@@ -1543,6 +1545,7 @@ describe('ClientTransport', () => {
   // -------------------------------------------------------------------------
 
   describe('cancel', () => {
+    // LAWRENCE: are there not any assertions that it wishes to make about the message that was published?
     it('publishes cancel message to the channel', async () => {
       await transport.cancel({ turnId: 'turn-1' });
       expect(channel.publish).toHaveBeenCalled();
@@ -1696,6 +1699,7 @@ describe('ClientTransport', () => {
       await transport.waitForTurn({ turnId: 'turn-1' });
     });
 
+    // LAWRENCE: I mean, this isn't really testing what it defaults to, it might just be resolving when all current turns end, given this setup
     it('defaults to { own: true } and resolves when all own turns end', async () => {
       simulateMessage(
         channel,
@@ -2251,6 +2255,7 @@ describe('ClientTransport', () => {
   // -------------------------------------------------------------------------
 
   describe('cancel with filter variants', () => {
+      // LAWRENCE: This isn't really testing that this filter doesn't exclude observer turns
     it('closes streams for all own turns when filter is { own: true }', async () => {
       const turn1 = await transport.send({ id: 'u1', content: 'a' });
       const turn2 = await transport.send({ id: 'u2', content: 'b' });

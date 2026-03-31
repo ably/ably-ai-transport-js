@@ -1141,11 +1141,13 @@ describe('Anthropic AgentCodec integration', () => {
       }),
     );
 
-    // Fire-and-forget deltas: the encoder buffers and publishes asynchronously
-    void encoder.appendEvent(
+    // Await deltas (not fire-and-forget) so they are guaranteed to be published
+    // before the result event. This test asserts on accumulated text content,
+    // which requires deterministic ordering.
+    await encoder.appendEvent(
       makeStreamEvent({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Partial' } }),
     );
-    void encoder.appendEvent(
+    await encoder.appendEvent(
       makeStreamEvent({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: ' text' } }),
     );
 
@@ -1186,9 +1188,7 @@ describe('Anthropic AgentCodec integration', () => {
     expect(resultEvent?.is_error).toBe(true);
     expect(resultEvent?.subtype).toBe('error_during_execution');
 
-    // Verify accumulated message still has the partial text.
-    // Deltas are fire-and-forget so the accumulated text contains at least the
-    // first delta; the full content depends on publish ordering vs. the result.
+    // Verify accumulated message retains the partial text from before the error.
     expect(accumulator.completedMessages).toHaveLength(1);
     const [msg] = accumulator.completedMessages;
     expect(msg?.type).toBe('assistant');
@@ -1196,9 +1196,7 @@ describe('Anthropic AgentCodec integration', () => {
     const assistantMsg = msg as Anthropic.SDKAssistantMessage;
     const textBlock = assistantMsg.message.content[0] as unknown as Record<string, unknown>;
     expect(textBlock.type).toBe('text');
-    expect(typeof textBlock.text).toBe('string');
-    expect((textBlock.text as string).length).toBeGreaterThan(0);
-    expect('Partial text').toContain(textBlock.text as string);
+    expect(textBlock.text).toBe('Partial text');
 
     // Verify hasActiveStream is false (result cleans up active streams)
     expect(accumulator.hasActiveStream).toBe(false);

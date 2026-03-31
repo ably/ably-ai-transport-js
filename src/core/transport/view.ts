@@ -119,35 +119,40 @@ export class DefaultView<TEvent, TMessage> implements View<TMessage> {
     if (this._closed) return;
     this._logger.trace('DefaultView.loadOlder();', { limit });
 
-    // Drain withheld buffer first (older messages, released newest-first)
-    if (this._withheldBuffer.length > 0) {
-      const batch = this._withheldBuffer.splice(-limit, limit);
-      this._releaseWithheld(batch);
-      return;
+    try {
+      // Drain withheld buffer first (older messages, released newest-first)
+      if (this._withheldBuffer.length > 0) {
+        const batch = this._withheldBuffer.splice(-limit, limit);
+        this._releaseWithheld(batch);
+        return;
+      }
+
+      // Buffer exhausted — load from channel history
+      if (!this._hasMoreHistory && !this._lastHistoryPage) {
+        // First load
+        await this._loadFirstPage(limit);
+        return;
+      }
+
+      if (!this._hasMoreHistory) return;
+
+      // Continue from last page
+      if (!this._lastHistoryPage?.hasNext()) {
+        this._hasMoreHistory = false;
+        return;
+      }
+
+      const nextPage = await this._lastHistoryPage.next();
+      if (!nextPage) {
+        this._hasMoreHistory = false;
+        return;
+      }
+
+      await this._loadAndReveal(nextPage, limit);
+    } catch (error) {
+      this._logger.error('DefaultView.loadOlder(); failed', { error });
+      throw error;
     }
-
-    // Buffer exhausted — load from channel history
-    if (!this._hasMoreHistory && !this._lastHistoryPage) {
-      // First load
-      await this._loadFirstPage(limit);
-      return;
-    }
-
-    if (!this._hasMoreHistory) return;
-
-    // Continue from last page
-    if (!this._lastHistoryPage?.hasNext()) {
-      this._hasMoreHistory = false;
-      return;
-    }
-
-    const nextPage = await this._lastHistoryPage.next();
-    if (!nextPage) {
-      this._hasMoreHistory = false;
-      return;
-    }
-
-    await this._loadAndReveal(nextPage, limit);
   }
 
   getActiveTurnIds(): Map<string, Set<string>> {
@@ -199,6 +204,7 @@ export class DefaultView<TEvent, TMessage> implements View<TMessage> {
    * Tear down the view — unsubscribe from tree events.
    */
   close(): void {
+    this._logger.info('DefaultView.close();');
     this._closed = true;
     for (const unsub of this._unsubs) unsub();
     this._unsubs.length = 0;

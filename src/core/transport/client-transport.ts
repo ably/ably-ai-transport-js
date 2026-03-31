@@ -50,7 +50,6 @@ import type {
   TurnLifecycleEvent,
   View,
 } from './types.js';
-import type { DefaultView } from './view.js';
 import { createView } from './view.js';
 
 /**
@@ -110,7 +109,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
 
   // Sub-components
   private readonly _tree: DefaultTree<TMessage>;
-  private readonly _view: DefaultView<TEvent, TMessage>;
+  private readonly _view: View<TMessage>;
   private readonly _router: StreamRouter<TEvent>;
   private readonly _decoder: StreamDecoder<TEvent, TMessage>;
 

@@ -80,6 +80,7 @@ const createMockTransport = (): MockTransport => {
     getActiveTurnIds: vi.fn(() => new Map()),
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
     on: vi.fn(() => () => {}),
+    close: vi.fn(),
   };
 
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly

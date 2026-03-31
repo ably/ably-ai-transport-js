@@ -651,13 +651,31 @@ is completely untested. After `addToolOutput`, `useChat` re-submits with
 message to send — but `addMessages` is designed for user messages, not assistant
 messages with tool parts.
 
-**Risk:** Critical for use case 3. Three compounding issues: the trigger
-mechanism is broken (2a), the durability model is broken (2b), and the
-re-submission path is untested (2c).
+**Problem 2d: Multi-user tool execution.** Vanilla `useChat` doesn't need to
+worry about this — there's one client, one server, one conversation. But with
+our transport, the server streams `tool-input-available` to the Ably channel,
+and **every subscribed client** receives it. If multiple clients (or even
+multiple tabs for the same user) have `onToolCall` configured, they would all
+try to execute the tool and all call `addToolOutput`, each triggering a
+`sendMessages` re-submission. The server would receive multiple requests to
+continue the conversation from the same point.
+
+This needs a design decision. The design space includes:
+- Only the client that initiated the turn executes tools (match by `clientId`)
+- The server designates which client should execute (new protocol message)
+- Client-side tool execution is not supported in multi-user — tools must be
+  server-side when using our transport
+- A locking/claim mechanism where one client claims the tool call
+
+**Risk:** Critical for use case 3. Four compounding issues: the trigger
+mechanism is broken (2a), the durability model is broken (2b), the
+re-submission path is untested (2c), and multi-user introduces unresolved
+questions about which client executes (2d).
 
 **Testing needed:** Level 5 (useChat integration) — must exercise the full
-flow. But before testing, a design decision is needed for how client-side tool
-output should be persisted to Ably history. The AI SDK's
+flow. But before testing, design decisions are needed for how client-side tool
+output should be persisted to Ably history and how multi-user tool execution
+should work. The AI SDK's
 [chatbot tool usage docs](https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-tool-usage)
 show client-side tool execution patterns (e.g. a `getLocation` tool) that would
 be useful references for building demos and tests.

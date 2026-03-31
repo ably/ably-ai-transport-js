@@ -39,13 +39,14 @@ export const useActiveTurns = <TEvent, TMessage>(
           set.add(event.turnId);
           next.set(event.clientId, set);
         } else {
-          const set = next.get(event.clientId);
-          if (set) {
-            set.delete(event.turnId);
-            if (set.size === 0) {
+          const prev = next.get(event.clientId);
+          if (prev) {
+            const updated = new Set(prev);
+            updated.delete(event.turnId);
+            if (updated.size === 0) {
               next.delete(event.clientId);
             } else {
-              next.set(event.clientId, new Set(set));
+              next.set(event.clientId, updated);
             }
           }
         }

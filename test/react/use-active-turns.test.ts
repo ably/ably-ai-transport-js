@@ -67,4 +67,27 @@ describe('useActiveTurns', () => {
 
     expect(result.current.has('client-1')).toBe(false);
   });
+
+  it('does not mutate previous state Set on turn-end', () => {
+    const mock = createMockTransport();
+    (mock.view.getActiveTurnIds as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Map([['client-1', new Set(['turn-1', 'turn-2'])]]),
+    );
+
+    const { result } = renderHook(() => useActiveTurns(mock.transport));
+
+    // Capture reference to the Set before mutation
+    const setBefore = result.current.get('client-1');
+    expect(setBefore).toBeDefined();
+    expect(setBefore?.size).toBe(2);
+
+    act(() => {
+      mock.emitTree('turn', makeTurnEvent('x-ably-turn-end', 'turn-1', 'client-1'));
+    });
+
+    // The old Set reference must still contain both original items
+    expect(setBefore?.has('turn-1')).toBe(true);
+    expect(setBefore?.has('turn-2')).toBe(true);
+    expect(setBefore?.size).toBe(2);
+  });
 });

@@ -431,7 +431,10 @@ const decodeDiscretePayload = (input: MessagePayload, lifecycle: LifecycleTracke
   const turnId = h[HEADER_TURN_ID] ?? '';
 
   // Discrete message parts from writeMessages: identified by x-ably-role header.
-  if (HEADER_ROLE in h) {
+  // Only applies to user-message and assistant-message names — other discrete
+  // events (message-start, message-delta, result, etc.) also carry x-ably-role
+  // but must be dispatched by name, not role.
+  if (HEADER_ROLE in h && (input.name === 'user-message' || input.name === 'assistant-message')) {
     const role = h[HEADER_ROLE];
     if (role === 'user') {
       return decodeUserMessage(input);

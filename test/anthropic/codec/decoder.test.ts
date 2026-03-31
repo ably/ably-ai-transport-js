@@ -660,6 +660,38 @@ describe('Anthropic decoder', () => {
       expect(events).toHaveLength(1);
       expect(events[0]).toBe(resultData);
     });
+
+    it('dispatches by name even when x-ably-role header is present', () => {
+      // Regression: the transport stamps x-ably-role: assistant on all messages
+      // in a turn, including result events. The decoder must dispatch result
+      // events by name ('result'), not by role (which would misroute them as
+      // assistant-message kind:'message' outputs).
+      const decoder = createDecoder();
+      const resultData = {
+        type: 'result' as const,
+        subtype: 'success' as const,
+        is_error: false,
+      } as unknown as Anthropic.SDKResultMessage;
+
+      const outputs = decoder.decode(
+        withHeaders(
+          { action: 'message.create', name: 'result', data: resultData },
+          {
+            [HEADER_STREAM]: 'false',
+            [HEADER_TURN_ID]: 'turn-1',
+            [HEADER_ROLE]: 'assistant',
+          },
+        ),
+      );
+
+      // Must produce kind:'event' (terminal signal), NOT kind:'message'
+      const events = eventsOf(outputs);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toBe(resultData);
+
+      const messages = messagesOf(outputs);
+      expect(messages).toHaveLength(0);
+    });
   });
 
   // -- discrete: tool-progress ----------------------------------------------

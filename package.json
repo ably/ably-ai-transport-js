@@ -34,6 +34,11 @@
       "import": "./dist/vercel/react/ably-ai-transport-vercel-react.js",
       "require": "./dist/vercel/react/ably-ai-transport-vercel-react.umd.cjs"
     },
+    "./anthropic": {
+      "types": "./src/anthropic/index.ts",
+      "import": "./src/anthropic/index.ts",
+      "require": "./src/anthropic/index.ts"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {

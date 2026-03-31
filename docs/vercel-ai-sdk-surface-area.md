@@ -507,9 +507,13 @@ it reads from the returned stream. An empty stream causes:
    can only be observed via `onData`. They are invisible in use case 3.
 
 **Current state:** The empty stream is a deliberate design choice (see
-`chat-transport.ts`). The basic send/receive flow works because `useMessageSync`
-provides authoritative message state externally. But the above four issues are
-**functional gaps**, not just testing gaps.
+`chat-transport.ts`). **Messages display and stream correctly** — `useMessageSync`
+subscribes to the core transport's `message` events and pushes authoritative
+state into `useChat`'s `setMessages`, so the user sees the right content in
+real time. The problem is that `useChat` itself doesn't know streaming is
+happening — its internal `processUIMessageStream` never runs because there are
+no chunks on the stream we return. So the content works, but `useChat`'s state
+and callbacks don't reflect reality.
 
 **Risk:** Critical for use case 3. Items 1 and 2 are likely to affect real
 users. Items 3 and 4 affect users who rely on those specific useChat features.
@@ -521,12 +525,22 @@ transitions through `streaming`, that `onToolCall` fires for tool calls, and
 that `onFinish` receives the real message. The existing demo app exercises this
 path manually but has no automated assertions.
 
+**Relationship to Gap 6 (reconnect/resume):** Gap 6 is the same root cause.
+`reconnectToStream()` returns `null`, so when `useChat` tries to resume after
+a page reload, it early-returns without entering `streaming` status, without
+processing chunks, and without firing callbacks. The consequences are identical
+to the empty stream: `status` doesn't reflect reality, `onToolCall` won't fire
+for tool calls arriving after reconnection, `onFinish` won't fire, etc. The fix
+is the same in both cases — return a real stream of `UIMessageChunk`s replayed
+from the Ably channel.
+
 **Possible fix directions:**
 - **Replay chunks through the returned stream** — instead of returning an empty
-  stream, the `ChatTransport` could subscribe to the core transport's decoded
-  events and re-emit them as `UIMessageChunk`s on the returned stream. This
-  would restore all useChat internal processing (callbacks, status transitions)
-  while `useMessageSync` continues to provide authoritative message state.
+  stream from `sendMessages` (and `null` from `reconnectToStream`), the
+  `ChatTransport` could subscribe to the core transport's decoded events and
+  re-emit them as `UIMessageChunk`s. This would restore all `useChat` internal
+  processing (callbacks, status transitions) for both the send and reconnect
+  paths. `useMessageSync` would continue to provide authoritative message state.
 - **Accept the limitation and document it** — if the cost of replaying chunks is
   too high, document that use case 3 does not support `onToolCall`, `onData`, or
   accurate `status` transitions, and recommend use case 2 for those features.
@@ -776,17 +790,41 @@ mechanism with explicit fork metadata.
 **What:** `useChat` has `resumeStream()` for reconnecting after network errors,
 and `resume: true` for auto-resuming on mount.
 
-**Current state:** `reconnectToStream()` returns `null`. The design relies on
-Ably's observer mode for mid-stream reconnection. This is a reasonable design
-choice, but the fallback behaviour is **untested**.
+**Background — how resume works in vanilla `useChat`:** The AI SDK's
+[resume streams docs](https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-resume-streams)
+describe a complex setup requiring Redis, the `resumable-stream` package, a
+persistence layer, and two API endpoints (POST to create streams, GET to resume
+them). All of this exists because HTTP SSE streams don't survive page reloads —
+the client needs to reconnect and pick up where it left off.
 
-**Risk:** Low-medium. Observer mode should work for mid-stream reconnection
-(Ably handles this natively). But the `useChat` side may behave unexpectedly
-when `reconnectToStream` returns `null` — e.g. it might set status to `'ready'`
-when the stream is actually still in progress.
+**This is a problem Ably solves natively.** When a client disconnects and
+reconnects, Ably delivers messages from the point of disconnection
+automatically. Our transport handles this via observer mode (subscribe before
+channel attach). So the Vercel resume mechanism is something **we replace
+entirely** — it's one of our core value propositions. Users don't need Redis,
+`resumable-stream`, or extra API endpoints.
+
+**Current state:** `reconnectToStream()` returns `null`, which is intentional —
+the client doesn't need to "resume" because it never lost the stream. But this
+behaviour is **untested** against real `useChat`.
+
+**Relationship to Gap 0:** This is the same root cause as Gap 0. Returning
+`null` from `reconnectToStream` has the same consequences as returning an empty
+stream from `sendMessages`: messages still appear correctly (via
+`useMessageSync`), but `useChat`'s internal `processUIMessageStream` never runs,
+so `status` doesn't reflect reality, and callbacks (`onToolCall`, `onFinish`,
+`onData`) don't fire. The fix is the same — return a real stream of
+`UIMessageChunk`s. If Gap 0 is fixed by replaying chunks through the returned
+stream, `reconnectToStream` could use the same mechanism (subscribe to the Ably
+channel and re-emit decoded chunks).
+
+**Risk:** Same as Gap 0 — critical for use case 3. A user who refreshes mid-
+stream will see messages appearing (via `useMessageSync`), but `useChat` won't
+know it's streaming — `status` won't be `'streaming'`, `onToolCall` won't fire,
+etc.
 
 **Testing needed:** Level 5 (useChat integration) — must verify `useChat`
-behaviour when `reconnectToStream` returns `null` and observer mode kicks in.
+behaviour on page reload during an active stream.
 
 **Applies to:** Use case 3 only. Use cases 1 and 2 handle reconnection via the
 core transport directly.
@@ -829,29 +867,32 @@ test.
 
 ## Recommended Priority
 
-### P0 — Fix or explicitly accept a known functional limitation
+### P0 — `useChat` state and callbacks are broken
 
-0. **Empty stream in ChatTransport (Gap 0)** — Decide whether to fix the empty
-   stream (by replaying decoded chunks through the returned stream) or accept
-   the limitation and document it. This blocks client-side tool execution, breaks
-   `status` transitions, and degrades `onFinish`/`onData`. If we fix it, Gaps 2
-   and 4 (transient data parts) are unblocked. If we accept it, we should
-   document that use case 3 does not support `onToolCall`, `onData`, or accurate
-   `status` transitions, and recommend use case 2 for those features.
+0. **ChatTransport does not return a real stream (Gaps 0 + 6)** — `sendMessages`
+   returns an empty stream; `reconnectToStream` returns `null`. Messages display
+   and stream correctly (via `useMessageSync`), but `useChat`'s internal
+   `processUIMessageStream` never runs because there are no chunks on the
+   returned stream. This means `status` never reaches `streaming`, and callbacks
+   (`onToolCall`, `onFinish`, `onData`) never fire. This blocks client-side tool
+   execution (Gap 2). The fix is the same for both paths: replay decoded chunks
+   from the Ably channel as `UIMessageChunk`s on the returned stream. This is a
+   prerequisite for most other use case 3 work.
 
-### P1 — Highest priority
+### P1 — Highest priority after P0
 
-1. **Client-side tool execution (Gap 2)** — Known functional breakages:
-   `onToolCall` doesn't fire (blocked by Gap 0), tool output has no path to
-   Ably history (architectural gap), and the re-submission flow is untested.
-   Needs a design decision for how client-side tool output should be persisted
-   before testing can begin.
+1. **Client-side tool execution (Gap 2)** — Even after P0 is fixed, two issues
+   remain: tool output has no path to Ably history (architectural gap — the
+   transport has no concept of a client updating an assistant message), and the
+   re-submission flow is untested. Needs a design decision for how client-side
+   tool output should be persisted before testing can begin.
 2. **Ably message size limits (Gap 3)** — Affects anyone who uploads an image
    (the primary documented approach in the AI SDK), any model that generates
    images, and potentially any tool or data part with a non-trivial payload.
    Characterise the failure mode and decide on a strategy: document the
    limitation, provide guidance on hosted URLs / external storage, or implement
    chunking.
+
 ### P2 — Medium value, fills important gaps
 
 3. **Multi-step tool use integration test (Gap 1)** — The codec probably handles
@@ -866,8 +907,6 @@ test.
 
 ### P3 — Lower value, defensive
 
-6. **`reconnectToStream` behaviour validation (Gap 6)** — Verify that `useChat`
-   handles the `null` return gracefully and that observer mode fills the gap.
-7. **Tool approval flow integration test (Gap 7)** — Full round-trip through
+6. **Tool approval flow integration test (Gap 7)** — Full round-trip through
    transport.
-8. **Source parts integration test (Gap 8)** — Round-trip through transport.
+7. **Source parts integration test (Gap 8)** — Round-trip through transport.

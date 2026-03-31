@@ -890,44 +890,57 @@ test.
 
 ### P0 — `useChat` state and callbacks are broken
 
-0. **ChatTransport does not return a real stream (Gaps 0 + 6)** — `sendMessages`
-   returns an empty stream; `reconnectToStream` returns `null`. Messages display
-   and stream correctly (via `useMessageSync`), but `useChat`'s internal
-   `processUIMessageStream` never runs because there are no chunks on the
-   returned stream. This means `status` never reaches `streaming`, and callbacks
-   (`onToolCall`, `onFinish`, `onData`) never fire. This blocks client-side tool
-   execution (Gap 2). The fix is the same for both paths: replay decoded chunks
-   from the Ably channel as `UIMessageChunk`s on the returned stream. This is a
-   prerequisite for most other use case 3 work.
+0. **ChatTransport does not return a real stream
+   ([Gap 0](#gap-0-empty-stream-breaks-usechat-internals-critical--use-case-3) +
+   [Gap 6](#gap-6-error-recovery--stream-resume-medium-priority--use-case-3))**
+   — `sendMessages` returns an empty stream; `reconnectToStream` returns `null`.
+   Messages display and stream correctly (via `useMessageSync`), but `useChat`'s
+   internal `processUIMessageStream` never runs because there are no chunks on
+   the returned stream. This means `status` never reaches `streaming`, and
+   callbacks (`onToolCall`, `onFinish`, `onData`) never fire. This blocks
+   client-side tool execution
+   ([Gap 2](#gap-2-client-side-tool-execution-high-priority--use-case-3)). The
+   fix is the same for both paths: replay decoded chunks from the Ably channel
+   as `UIMessageChunk`s on the returned stream. This is a prerequisite for most
+   other use case 3 work.
 
 ### P1 — Highest priority after P0
 
-1. **Client-side tool execution (Gap 2)** — Even after P0 is fixed, two issues
-   remain: tool output has no path to Ably history (architectural gap — the
-   transport has no concept of a client updating an assistant message), and the
-   re-submission flow is untested. Needs a design decision for how client-side
-   tool output should be persisted before testing can begin.
-2. **Ably message size limits (Gap 3)** — Affects anyone who uploads an image
-   (the primary documented approach in the AI SDK), any model that generates
-   images, and potentially any tool or data part with a non-trivial payload.
-   Characterise the failure mode and decide on a strategy: document the
-   limitation, provide guidance on hosted URLs / external storage, or implement
-   chunking.
+1. **Client-side tool execution
+   ([Gap 2](#gap-2-client-side-tool-execution-high-priority--use-case-3))** —
+   Even after P0 is fixed, three issues remain: tool output has no path to Ably
+   history (architectural gap — the transport has no concept of a client updating
+   an assistant message), the re-submission flow is untested, and multi-user
+   introduces unresolved questions about which client executes. Needs design
+   decisions before testing can begin.
+2. **Ably message size limits
+   ([Gap 3](#gap-3-ably-message-size-limits-for-large-payloads-high-priority))**
+   — Affects anyone who uploads an image (the primary documented approach in the
+   AI SDK), any model that generates images, and potentially any tool or data
+   part with a non-trivial payload. Characterise the failure mode and decide on
+   a strategy: document the limitation, provide guidance on hosted URLs /
+   external storage, or implement chunking.
 
 ### P2 — Medium value, fills important gaps
 
-3. **Multi-step tool use integration test (Gap 1)** — The codec probably handles
-   this correctly (each chunk type is unit-tested), but the interaction between
-   step boundaries, tool state transitions, and the accumulator's step-reset
-   logic has not been validated end-to-end.
-4. **Edit flow through ChatTransport (Gap 5)** — Test
-   `sendMessage({ messageId })` produces correct fork metadata and the server
-   handles it correctly.
-5. **Data parts integration test (Gap 4)** — Prove `data-*` parts with real
-   payloads survive the Ably encode/decode roundtrip.
+3. **Multi-step tool use integration test
+   ([Gap 1](#gap-1-multi-step-tool-use-high-priority))** — The codec probably
+   handles this correctly (each chunk type is unit-tested), but the interaction
+   between step boundaries, tool state transitions, and the accumulator's
+   step-reset logic has not been validated end-to-end.
+4. **Edit flow through ChatTransport
+   ([Gap 5](#gap-5-edit-flow-through-chattransport-medium-priority--use-case-3))**
+   — Test `sendMessage({ messageId })` produces correct fork metadata and the
+   server handles it correctly.
+5. **Data parts integration test
+   ([Gap 4](#gap-4-data-parts--generative-ui--integration-coverage-medium-priority))**
+   — Prove `data-*` parts with real payloads survive the Ably encode/decode
+   roundtrip.
 
 ### P3 — Lower value, defensive
 
-6. **Tool approval flow integration test (Gap 7)** — Full round-trip through
+6. **Tool approval flow integration test
+   ([Gap 7](#gap-7-tool-approval-flow-low-priority))** — Full round-trip through
    transport.
-7. **Source parts integration test (Gap 8)** — Round-trip through transport.
+7. **Source parts integration test
+   ([Gap 8](#gap-8-source-parts-low-priority))** — Round-trip through transport.

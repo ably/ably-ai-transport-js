@@ -21,6 +21,8 @@ export interface StreamRouter<TEvent> {
   createStream(turnId: string): ReadableStream<TEvent>;
   /** Close the stream for a turnId. Returns true if a stream was closed. */
   closeStream(turnId: string): boolean;
+  /** Error all active streams with the given error, then remove them. */
+  errorAllStreams(error: unknown): void;
   /** Enqueue an event to the correct stream. Returns true if routed successfully. */
   route(turnId: string, event: TEvent): boolean;
   /** Whether a specific turnId has an active stream. */
@@ -77,6 +79,18 @@ class DefaultStreamRouter<TEvent> implements StreamRouter<TEvent> {
     }
     this._turns.delete(turnId);
     return true;
+  }
+
+  errorAllStreams(error: unknown): void {
+    for (const [turnId, turn] of this._turns) {
+      this._logger.debug('StreamRouter.errorAllStreams(); erroring stream', { turnId });
+      try {
+        turn.controller.error(error);
+      } catch {
+        /* already closed or errored */
+      }
+    }
+    this._turns.clear();
   }
 
   // Spec: AIT-CT14a

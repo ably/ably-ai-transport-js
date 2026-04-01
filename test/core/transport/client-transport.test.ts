@@ -142,6 +142,14 @@ const simulateMessage = (ch: MockChannel, msg: Ably.InboundMessage): void => {
 };
 
 /**
+ * Simulate the initial channel attach completing.
+ * @param ch - The mock channel to emit the state change on.
+ */
+const simulateInitialAttach = (ch: MockChannel): void => {
+  ch.emitStateChange({ current: 'attached', previous: 'initialized', resumed: false });
+};
+
+/**
  * Build a minimal Ably InboundMessage with extras.headers.
  * @param name - Message name.
  * @param headers - Message headers.
@@ -2644,8 +2652,14 @@ describe('ClientTransport', () => {
   // -------------------------------------------------------------------------
 
   describe('channel state changes', () => {
-    it('errors active streams when the channel enters the FAILED state', async () => {
-      // Start a turn and get the stream
+    it.each([
+      { label: 'FAILED', current: 'failed' as const, previous: 'attached' as const },
+      { label: 'SUSPENDED', current: 'suspended' as const, previous: 'attached' as const },
+      { label: 'DETACHED', current: 'detached' as const, previous: 'attached' as const },
+      { label: 'UPDATE with discontinuity (resumed: false)', current: 'attached' as const, previous: 'attached' as const },
+    ])('errors active streams when the channel enters the $label state', async ({ current, previous }) => {
+      simulateInitialAttach(channel);
+
       const turn = await transport.send({ id: 'u1', content: 'hello' });
       await mockFetch.waitForCalls(1);
 
@@ -2653,19 +2667,63 @@ describe('ClientTransport', () => {
       decoder.outputs.push({ kind: 'event', event: { type: 'text', text: 'hi' } });
       simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: turn.turnId }));
 
-      // Now simulate the channel entering FAILED
-      channel.emitStateChange({
-        current: 'failed',
-        previous: 'attached',
-        resumed: false,
-        reason: new Ably.ErrorInfo('connection lost', 80_000, 500),
-      });
+      channel.emitStateChange({ current, previous, resumed: false });
 
-      // The stream should error — reader.read() should reject
       const reader = turn.stream.getReader();
       await expect(reader.read()).rejects.toSatisfy((error: unknown) => {
         expect(error).toBeInstanceOf(Ably.ErrorInfo);
         return true;
+      });
+    });
+
+    it('does not error streams on resume (re-attach with resumed: true)', async () => {
+      simulateInitialAttach(channel);
+
+      const turn = await transport.send({ id: 'u1', content: 'hello' });
+      await mockFetch.waitForCalls(1);
+
+      decoder.outputs.push({ kind: 'event', event: { type: 'text', text: 'hi' } });
+      simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: turn.turnId }));
+
+      // Re-attach with resumed: true — continuity preserved
+      channel.emitStateChange({
+        current: 'attached',
+        previous: 'attached',
+        resumed: true,
+      });
+
+      // Stream should still be readable
+      const reader = turn.stream.getReader();
+      const { done, value } = await reader.read();
+      expect(done).toBe(false);
+      expect(value).toEqual({ type: 'text', text: 'hi' });
+    });
+
+    it('does not error streams on initial attach', async () => {
+      const turn = await transport.send({ id: 'u1', content: 'hello' });
+      await mockFetch.waitForCalls(1);
+
+      decoder.outputs.push({ kind: 'event', event: { type: 'text', text: 'hi' } });
+      simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: turn.turnId }));
+
+      // Initial attach has resumed: false but should not error streams
+      simulateInitialAttach(channel);
+
+      // Stream should still be readable
+      const reader = turn.stream.getReader();
+      const { done, value } = await reader.read();
+      expect(done).toBe(false);
+      expect(value).toEqual({ type: 'text', text: 'hi' });
+    });
+
+    it('does nothing when there are no active streams', () => {
+      simulateInitialAttach(channel);
+
+      // Should not throw
+      channel.emitStateChange({
+        current: 'failed',
+        previous: 'attached',
+        resumed: false,
       });
     });
   });

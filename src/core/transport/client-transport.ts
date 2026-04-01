@@ -128,6 +128,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   private readonly _onMessage: (msg: Ably.InboundMessage) => void;
 
   private _closed = false;
+  private _hasAttachedOnce = false;
 
   constructor(options: ClientTransportOptions<TEvent, TMessage>) {
     this._channel = options.channel;
@@ -178,6 +179,53 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       this._handleMessage(ablyMessage);
     };
     this._attachPromise = this._channel.subscribe(this._onMessage);
+
+    // Monitor channel state for conditions that break message continuity.
+    // FAILED, SUSPENDED, and DETACHED all mean messages are no longer flowing.
+    // An ATTACHED transition with resumed: false means continuity was lost
+    // (messages were missed during a disconnection). In all cases, active
+    // streams are errored — equivalent to an SSE connection breaking.
+    //
+    // The _hasAttachedOnce flag distinguishes the initial attach (which also
+    // has resumed: false) from a genuine discontinuity after re-attach. This
+    // pattern is borrowed from ably-chat-js's RoomLifecycleManager.
+    this._channel.on((stateChange: Ably.ChannelStateChange) => {
+      if (this._closed) return;
+
+      if (stateChange.current === 'attached' && !this._hasAttachedOnce) {
+        this._hasAttachedOnce = true;
+        return;
+      }
+
+      const shouldError =
+        stateChange.current === 'failed' ||
+        stateChange.current === 'suspended' ||
+        stateChange.current === 'detached' ||
+        (stateChange.current === 'attached' && !stateChange.resumed);
+
+      if (!shouldError) return;
+
+      const reason = stateChange.reason
+        ? new Ably.ErrorInfo(
+            `unable to continue streaming; channel entered ${stateChange.current} state; ${stateChange.reason.message}`,
+            stateChange.reason.code,
+            stateChange.reason.statusCode,
+            stateChange.reason,
+          )
+        : new Ably.ErrorInfo(
+            `unable to continue streaming; channel entered ${stateChange.current} state`,
+            ErrorCode.TransportSubscriptionError,
+            500,
+          );
+
+      this._logger.error('ClientTransport._onChannelStateChange(); channel continuity lost', {
+        current: stateChange.current,
+        previous: stateChange.previous,
+        resumed: stateChange.resumed,
+      });
+
+      this._router.errorAllStreams(reason);
+    });
   }
 
   // ---------------------------------------------------------------------------

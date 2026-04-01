@@ -13,6 +13,7 @@ interface MockChannel {
   unsubscribe: ReturnType<typeof vi.fn>;
   attach: ReturnType<typeof vi.fn>;
   history: ReturnType<typeof vi.fn>;
+  on: ReturnType<typeof vi.fn>;
 }
 
 const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
@@ -30,8 +31,9 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
       const emptyPage = { items: [], hasNext: () => false, next: () => Promise.resolve(emptyPage) };
       return Promise.resolve(emptyPage);
     }),
+    on: vi.fn(),
   };
-  // CAST: Tests only use publish/subscribe/unsubscribe/attach/history — other members are unused.
+  // CAST: Tests only use publish/subscribe/unsubscribe/attach/history/on — other members are unused.
   return mock as unknown as MockChannel & Ably.RealtimeChannel;
 };
 

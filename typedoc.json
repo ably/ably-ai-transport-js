@@ -1,0 +1,37 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": [
+    "./src/index.ts",
+    "./src/react/index.ts",
+    "./src/vercel/index.ts",
+    "./src/vercel/react/index.ts"
+  ],
+  "out": "typedoc/generated",
+  "treatWarningsAsErrors": false,
+  "includeVersion": true,
+  "excludeInternal": true,
+  "validation": true,
+  "visibilityFilters": {
+    "external": true
+  },
+  "externalSymbolLinkMappings": {
+    "ably": {
+      "*": "https://sdk.ably.com/builds/ably/ably-js/main/typedoc/"
+    }
+  },
+  "requiredToBeDocumented": [
+    "Accessor",
+    "Class",
+    "Constructor",
+    "Enum",
+    "EnumMember",
+    "Function",
+    "Interface",
+    "Method",
+    "Parameter",
+    "Property",
+    "TypeAlias",
+    "Variable",
+    "Namespace"
+  ]
+}

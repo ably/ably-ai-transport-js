@@ -1,6 +1,7 @@
 node_modules/
 dist/
 coverage/
+typedoc/
 *.tsbuildinfo
 .env
 .env.local

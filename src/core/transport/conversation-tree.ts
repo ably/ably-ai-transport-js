@@ -289,6 +289,7 @@ class DefaultConversationTree<TMessage> implements ConversationTree<TMessage> {
       }
 
       currentPath.add(msgId);
+      // Andrew: returns the live internal node object - consumer mutations (e.g. node.headers['x'] = 'y') silently corrupt tree state; consider readonly types or shallow-frozen copies
       result.push(node);
     }
 

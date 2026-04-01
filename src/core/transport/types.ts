@@ -329,6 +329,7 @@ export interface ConversationNode<TMessage> {
   parentId: string | undefined;
   /** The msg-id this node forks from (x-ably-fork-of), or undefined if first version. */
   forkOf: string | undefined;
+  // Andrew: exposes all x-ably-* transport protocol headers to consumers; since flattenNodes/getNodes return full nodes on the default read path, every internal header key becomes implicit public contract at 1.0 - consider filtering to domain headers only
   /** Full Ably headers for this message. */
   headers: Record<string, string>;
   /**
@@ -380,6 +381,7 @@ export interface ConversationTree<TMessage> {
   /** Get the stored headers for a node by msgId, or undefined if not found. */
   getHeaders(msgId: string): Record<string, string> | undefined;
 
+  // Andrew: these are accessible to consumers via getTree() - should split into a read-only public interface and a mutable internal one before 1.0; removing methods later is breaking
   // --- Mutation (used by the transport, not the UI) ---
 
   /**

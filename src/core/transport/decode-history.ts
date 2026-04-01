@@ -250,6 +250,7 @@ const buildResult = <TEvent, TMessage>(
     itemSerials: chronSlice.map((d) => d.serial),
     rawMessages: rawSlice,
     hasNext: () => moreCompleted || moreAblyPages,
+    // Andrew: concurrent next() calls race on shared mutable state (returnedCount) - useHistory guards with loadingRef but non-React consumers get no protection
     next: async () => {
       if (moreCompleted) {
         return buildResult(state, limit);
@@ -289,6 +290,7 @@ export const decodeHistory = async <TEvent, TMessage>(
   options: LoadHistoryOptions | undefined,
   logger: Logger,
 ): Promise<PaginatedMessages<TMessage>> => {
+  // Andrew: no validation - limit ≤ 0 produces undefined behavior (wireLimit=0 or negative); should reject at the public boundary
   const limit = options?.limit ?? 100;
   const state: HistoryState<TEvent, TMessage> = {
     codec,

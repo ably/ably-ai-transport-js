@@ -44,6 +44,9 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     strategy:
       fail-fast: false
       matrix:
@@ -58,7 +61,22 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
-      - run: npm test
+      # Only collect coverage on the base Node version to avoid redundant work
+      - name: test with coverage
+        if: ${{ matrix.node-version == env.BASE_NODE_VERSION }}
+        run: npm test -- --coverage
+      - name: test
+        if: ${{ matrix.node-version != env.BASE_NODE_VERSION }}
+        run: npm test
+      # Post coverage summary as a PR comment. Restricted to PRs from the main
+      # repo (not forks) because the action needs write permissions that fork
+      # PRs don't have. Runs even if tests fail so we still get the report.
+      - uses: davelosert/vitest-coverage-report-action@v2
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == 'ably/ably-ai-transport-js' &&
+          matrix.node-version == env.BASE_NODE_VERSION &&
+          (failure() || success())
 
   test-integration:
     runs-on: ubuntu-latest

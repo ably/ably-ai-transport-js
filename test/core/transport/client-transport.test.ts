@@ -1,4 +1,4 @@
-import type * as Ably from 'ably';
+import * as Ably from 'ably';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -86,7 +86,10 @@ interface MockChannel {
   unsubscribe: ReturnType<typeof vi.fn>;
   attach: ReturnType<typeof vi.fn>;
   history: ReturnType<typeof vi.fn>;
+  on: ReturnType<typeof vi.fn>;
   listener: ((msg: Ably.InboundMessage) => void) | undefined;
+  /** Simulate a channel state change event firing. */
+  emitStateChange: (stateChange: Ably.ChannelStateChange) => void;
 }
 
 interface MockHistoryPage {
@@ -96,6 +99,8 @@ interface MockHistoryPage {
 }
 
 const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
+  const stateListeners: ((stateChange: Ably.ChannelStateChange) => void)[] = [];
+
   const mock: MockChannel = {
     listener: undefined,
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
@@ -114,8 +119,16 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
       const emptyPage: MockHistoryPage = { items: [], hasNext: () => false, next: () => Promise.resolve(emptyPage) };
       return Promise.resolve(emptyPage);
     }),
+    on: vi.fn((...args: unknown[]) => {
+      // Support both channel.on(callback) and channel.on(event, callback)
+      const callback = (args.length === 1 ? args[0] : args[1]) as (stateChange: Ably.ChannelStateChange) => void;
+      stateListeners.push(callback);
+    }),
+    emitStateChange: (stateChange: Ably.ChannelStateChange) => {
+      for (const listener of stateListeners) listener(stateChange);
+    },
   };
-  // CAST: Tests only use publish/subscribe/unsubscribe/attach/history — other members are unused.
+  // CAST: Tests only use publish/subscribe/unsubscribe/attach/history/on — other members are unused.
   return mock as unknown as MockChannel & Ably.RealtimeChannel;
 };
 
@@ -2623,6 +2636,37 @@ describe('ClientTransport', () => {
       expect(handler).toHaveBeenCalled();
 
       void seeded.close();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Channel state changes
+  // -------------------------------------------------------------------------
+
+  describe('channel state changes', () => {
+    it('errors active streams when the channel enters the FAILED state', async () => {
+      // Start a turn and get the stream
+      const turn = await transport.send({ id: 'u1', content: 'hello' });
+      await mockFetch.waitForCalls(1);
+
+      // Stream a chunk so we know it was working
+      decoder.outputs.push({ kind: 'event', event: { type: 'text', text: 'hi' } });
+      simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: turn.turnId }));
+
+      // Now simulate the channel entering FAILED
+      channel.emitStateChange({
+        current: 'failed',
+        previous: 'attached',
+        resumed: false,
+        reason: new Ably.ErrorInfo('connection lost', 80_000, 500),
+      });
+
+      // The stream should error — reader.read() should reject
+      const reader = turn.stream.getReader();
+      await expect(reader.read()).rejects.toSatisfy((error: unknown) => {
+        expect(error).toBeInstanceOf(Ably.ErrorInfo);
+        return true;
+      });
     });
   });
 });

@@ -1,0 +1,33 @@
+name: Publish to CDN
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # These permissions are necessary to run the configure-aws-credentials action
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-to-assume: arn:aws:iam::${{ secrets.ABLY_AWS_ACCOUNT_ID_SDK }}:role/prod-ably-sdk-cdn
+          role-session-name: ${{ github.run_id }}-${{ github.run_number }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: ably/cdn-deploy-action@v1
+        with:
+          source-dir: dist
+          file-regex: '^ably-ai-transport\.umd\.cjs$'
+          tag: ${{ github.ref_name }}

@@ -2716,6 +2716,92 @@ describe('ClientTransport', () => {
       expect(value).toEqual({ type: 'text', text: 'hi' });
     });
 
+    it('cleans up per-turn state on continuity loss', async () => {
+      simulateInitialAttach(channel);
+
+      const turn = await transport.send({ id: 'u1', content: 'hello' });
+      await mockFetch.waitForCalls(1);
+
+      // Simulate server acknowledging the turn
+      simulateMessage(channel, ablyMsg(EVENT_TURN_START, {
+        [HEADER_TURN_ID]: turn.turnId,
+        [HEADER_TURN_CLIENT_ID]: 'client-1',
+      }));
+
+      // Turn should be tracked as active
+      expect(transport.getActiveTurnIds().size).toBe(1);
+
+      channel.emitStateChange({
+        current: 'failed',
+        previous: 'attached',
+        resumed: false,
+      });
+
+      // All per-turn state should be cleared
+      expect(transport.getActiveTurnIds().size).toBe(0);
+    });
+
+    it('emits turn-end events for each active turn on continuity loss', async () => {
+      simulateInitialAttach(channel);
+
+      const turn = await transport.send({ id: 'u1', content: 'hello' });
+      await mockFetch.waitForCalls(1);
+
+      // Simulate server acknowledging the turn
+      simulateMessage(channel, ablyMsg(EVENT_TURN_START, {
+        [HEADER_TURN_ID]: turn.turnId,
+        [HEADER_TURN_CLIENT_ID]: 'client-1',
+      }));
+
+      const turnEvents: TurnLifecycleEvent[] = [];
+      transport.on('turn', (event) => {
+        turnEvents.push(event);
+      });
+
+      channel.emitStateChange({
+        current: 'failed',
+        previous: 'attached',
+        resumed: false,
+      });
+
+      expect(turnEvents).toHaveLength(1);
+      expect(turnEvents[0]).toEqual({
+        type: EVENT_TURN_END,
+        turnId: turn.turnId,
+        clientId: 'client-1',
+        reason: 'error',
+      });
+    });
+
+    it('emits turn-end events for observer turns on continuity loss', () => {
+      simulateInitialAttach(channel);
+
+      // Simulate an observer turn (different clientId, not initiated by us)
+      simulateMessage(channel, ablyMsg(EVENT_TURN_START, {
+        [HEADER_TURN_ID]: 'observer-turn-1',
+        [HEADER_TURN_CLIENT_ID]: 'other-client',
+      }));
+
+      const turnEvents: TurnLifecycleEvent[] = [];
+      transport.on('turn', (event) => {
+        turnEvents.push(event);
+      });
+
+      channel.emitStateChange({
+        current: 'failed',
+        previous: 'attached',
+        resumed: false,
+      });
+
+      expect(turnEvents).toHaveLength(1);
+      expect(turnEvents[0]).toEqual({
+        type: EVENT_TURN_END,
+        turnId: 'observer-turn-1',
+        clientId: 'other-client',
+        reason: 'error',
+      });
+    });
+
     it('does nothing when there are no active streams', () => {
       simulateInitialAttach(channel);
 

@@ -225,6 +225,23 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       });
 
       this._router.errorAllStreams(reason);
+
+      // Emit synthetic turn-end events for each active turn so that consumers
+      // listening on('turn') (e.g. useActiveTurns) stay in sync with internal
+      // state. Without this, getActiveTurnIds() would return empty but the
+      // consumer's view would still show the turns as active.
+      for (const [turnId, clientId] of this._turnClientIds) {
+        this._emitter.emit('turn', { type: EVENT_TURN_END, turnId, clientId, reason: 'error' });
+      }
+
+      // Clean up all per-turn state. The turn-end messages that would normally
+      // do this cleanup may have been lost in the discontinuity, so we treat
+      // all active turns as over.
+      this._turnObservers.clear();
+      this._ownTurnIds.clear();
+      this._ownMsgIds.clear();
+      this._turnMsgIds.clear();
+      this._turnClientIds.clear();
     });
   }
 

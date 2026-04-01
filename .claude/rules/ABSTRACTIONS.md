@@ -42,7 +42,7 @@ The SDK ships four entry points from a single package:
 | Export path | Contains | Purpose | External deps |
 |---|---|---|---|
 | `@ably/ai-transport` | Generic codec interfaces, `createClientTransport`, `createServerTransport`, shared utilities | Core primitives — codec-agnostic transport and encoding | `ably` (peer) |
-| `@ably/ai-transport/react` | `useClientTransport`, `useView`, `useSend`, `useRegenerate`, `useEdit`, `useActiveTurns`, `useTree`, `useAblyMessages` | Generic React hooks for any codec | `ably`, `react` (peers) |
+| `@ably/ai-transport/react` | `useClientTransport`, `useView`, `useTree`, `useSend`, `useRegenerate`, `useEdit`, `useActiveTurns`, `useAblyMessages` | Generic React hooks for any codec | `ably`, `react` (peers) |
 | `@ably/ai-transport/vercel` | `UIMessageCodec`, `createServerTransport`, `createClientTransport`, `createChatTransport`, Vercel-specific types | Drop-in Vercel AI SDK integration | `ably`, `ai` (peers) |
 | `@ably/ai-transport/vercel/react` | `useChatTransport`, `useMessageSync` | React hooks for Vercel's `useChat` | `ably`, `ai`, `react` (peers) |
 
@@ -63,6 +63,18 @@ Implements `UIMessageCodec` and provides convenience factories plus React hooks.
 
 Header/event/message-name constants and Ably message utilities used by both layers.
 
+## Tree / View / Transport split
+
+The client-side architecture separates three concerns:
+
+| Component | Owns | Events |
+|---|---|---|
+| **Tree** | Complete conversation state — every node from live messages and history. Turn tracking (active turn → clientId). | `update` (any structural change), `ably-message` (every raw message), `turn` (start/end) — unfiltered, fires for all changes |
+| **View** | Pagination window — which history-loaded nodes are visible vs withheld. | Same event names, but **scoped to the visible window** — only fires when the visible output changes |
+| **Transport** | Write path (send/regenerate/edit/cancel), channel subscription, stream routing, decode loop. | `error` only — all data events moved to Tree/View |
+
+The Tree is the source of truth. The View subscribes to Tree events and re-emits them filtered to what's visible. The Transport wires the channel to the Tree and exposes both as `transport.tree` and `transport.view`.
+
 ## Composition, Not Inheritance
 
 The SDK uses composition, not inheritance. For example, a transport is assembled from composable sub-components:
@@ -70,13 +82,10 @@ The SDK uses composition, not inheritance. For example, a transport is assembled
 ```
 ClientTransport
 ├── Codec (encoder + decoder + accumulator)
-├── Tree — branching message history
-├── MessageStore — flat message state, delegates to tree
-├── MessageDispatcher — routes decoded events to store/streams
+├── Tree — branching history, turn tracking, unfiltered events
+├── View — paginated projection over the tree, scoped events
 ├── StreamRouter — maps turn-scoped events to ReadableStream controllers
-├── TurnManager — tracks active turns by clientId
-├── CancelPublisher — publishes cancel signals to the channel
-└── ObserverAccumulator — accumulates messages from observer events
+└── (channel subscription + decode loop)
 
 ServerTransport
 ├── Codec (encoder)
@@ -94,8 +103,8 @@ All dependencies are passed through constructors. There are no singletons or ser
 
 Use ES6 classes with the **Interface + Default Implementation** pattern:
 
-- Define a public **interface** for the contract (e.g. `ClientTransport`, `MessageStore`).
-- Implement it with a **`Default*` class** (e.g. `DefaultClientTransport`, `DefaultMessageStore`).
+- Define a public **interface** for the contract (e.g. `ClientTransport`, `Tree`, `View`).
+- Implement it with a **`Default*` class** (e.g. `DefaultClientTransport`, `DefaultTree`, `DefaultView`).
 - Export the interface as public API; the class is internal.
 
 ### Private state
@@ -103,13 +112,13 @@ Use ES6 classes with the **Interface + Default Implementation** pattern:
 Use TypeScript `private readonly` fields with underscore prefix. Store all constructor-injected dependencies as private fields:
 
 ```ts
-class DefaultMessageStore<TMessage> implements MessageStore<TMessage> {
-  private readonly _tree: Tree<TMessage>;
+class DefaultView<TEvent, TMessage> implements View<TMessage> {
+  private readonly _tree: TreeInternal<TMessage>;
   private readonly _logger: Logger;
 
-  constructor(tree: Tree<TMessage>, logger: Logger) {
-    this._tree = tree;
-    this._logger = logger.withContext({ component: 'MessageStore' });
+  constructor(options: ViewOptions<TEvent, TMessage>) {
+    this._tree = options.tree;
+    this._logger = options.logger.withContext({ component: 'View' });
   }
 }
 ```

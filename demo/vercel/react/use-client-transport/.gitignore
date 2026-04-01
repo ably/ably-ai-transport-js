@@ -1,6 +1,5 @@
 .next/
 node_modules/
-package-lock.json
 .env.local
 next-env.d.ts
 tsconfig.tsbuildinfo

@@ -77,3 +77,35 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:integration
+
+  demo-app:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        demo:
+          - demo/vercel/react/use-chat
+          - demo/vercel/react/use-client-transport
+    name: demo ${{ matrix.demo }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.BASE_NODE_VERSION }}
+          cache: npm
+      - name: npm ci (lib)
+        run: npm ci
+      - name: npm run build (lib)
+        run: npm run build
+      - name: npm ci (demo)
+        run: npm ci
+        working-directory: ${{ matrix.demo }}
+      - name: npm run build (demo)
+        run: npm run build
+        working-directory: ${{ matrix.demo }}
+      # Dummy keys for Next.js build - module-level SDK client initialization
+      # runs during bundling even though the routes are never called at build time
+        env:
+          ABLY_API_KEY: dummy:key

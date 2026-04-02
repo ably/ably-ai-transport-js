@@ -271,7 +271,7 @@ export type TurnLifecycleEvent =
 
 /** A handle to an active client-side turn, returned by `send()`, `regenerate()`, and `edit()`. */
 export interface ActiveTurn<TEvent> {
-  /** The decoded event stream for this turn. */
+  /** The decoded event stream for this turn. May error if the delivery guarantee is broken (e.g. POST failure, channel continuity loss). */
   stream: ReadableStream<TEvent>;
   /** The turn's unique identifier. */
   turnId: string;
@@ -483,7 +483,8 @@ export interface ClientTransport<TEvent, TMessage> {
    * active turn with the decoded event stream and a cancel function.
    *
    * The HTTP POST is fire-and-forget — the returned stream is available
-   * immediately. If the POST fails, the error is surfaced via `on("error")`.
+   * immediately. If the POST fails, the error is surfaced via `on("error")`
+   * and the stream is errored.
    */
   send(messages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveTurn<TEvent>>;
 

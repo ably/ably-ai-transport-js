@@ -26,7 +26,7 @@ All sub-components are created in the constructor and share a single Ably channe
 2. **Auto-compute parent** - if no explicit `parent` or `forkOf` is provided, reads the last message in the [flattened tree](conversation-tree.md#flatten-producing-the-linear-path) to chain messages into a linear thread
 3. **Optimistic insert** - each user message is inserted into the conversation tree immediately with [transport headers](wire-protocol.md#transport-headers-x-ably) (role, turn ID, msg-id, parent). This makes the message visible to the view before the server acknowledges it
 4. **Create stream** - the [stream router](transport-components.md#streamrouter) creates a `ReadableStream` for the turn, capturing the controller synchronously
-5. **Fire-and-forget POST** - the HTTP POST is dispatched without `await` so the stream is returned immediately. POST errors are surfaced via the `error` event, not thrown
+5. **Fire-and-forget POST** - the HTTP POST is dispatched without `await` so the stream is returned immediately. POST errors are surfaced via the `error` event and the stream is errored (the consumer's reader rejects)
 6. **Return `ActiveTurn`** - the caller receives `{ stream, turnId, cancel() }` synchronously
 
 The POST body includes `history` (all messages before the optimistic inserts), `messages` (the new messages with headers), `turnId`, and `clientId`.
@@ -95,6 +95,16 @@ Closing the stream router entry does **not** clear the observer state - late ser
 
 The view implements a **withholding** mechanism for pagination: newly loaded messages are initially hidden from `flattenNodes()`. The newest batch is released immediately, while older messages are buffered and released in subsequent `loadOlder()` calls. This prevents the UI from jumping to show hundreds of messages at once.
 
+## Stream delivery guarantee
+
+With the Vercel AI SDK's default SSE transport, a broken connection surfaces immediately — `useChat` transitions to `status: 'error'` and the application can respond. The Ably transport should provide at least the same guarantee: after `send()`, either all events for the turn are received in order through to turn-end, or the stream errors so the consumer knows delivery was interrupted.
+
+Cases where the guarantee would be violated and the stream is errored:
+
+- **HTTP POST failure** - the server never received the request, so no events will arrive. The stream is errored with `TransportSendFailed`.
+- **Channel continuity loss** - the channel entered a state where message delivery can no longer be assured (FAILED, SUSPENDED, DETACHED, or re-attached with `resumed: false`). Events may have been lost. *(Not yet implemented.)*
+- **Unhealthy channel at send time** - `send()` is called when the channel is already in a non-attached state. *(Not yet implemented.)*
+
 ## Close
 
 `close()` tears down all transport state:
@@ -112,7 +122,7 @@ After close, all methods that create turns throw `TransportClosed`. Event subscr
 |---|---|---|
 | `update` (on view) | (none) | View state changed - call `view.flattenNodes()` for current state |
 | `turn` (on tree or view) | `TurnLifecycleEvent` | Turn started or ended (includes turnId, clientId, reason) |
-| `error` | `Ably.ErrorInfo` | Non-fatal error (HTTP POST failure, subscription error) |
+| `error` | `Ably.ErrorInfo` | Non-fatal error (HTTP POST failure, subscription error). POST failures also error the turn's stream |
 | `ably-message` (on tree) | (none) | Raw Ably message added - subscribe via `tree.on('ably-message')` |
 
 See [Transport concept](../concepts/transport.md) for the public API perspective. See [Transport components](transport-components.md) for the sub-component internals. See [Message lifecycle](message-lifecycle.md) for the end-to-end message flow.

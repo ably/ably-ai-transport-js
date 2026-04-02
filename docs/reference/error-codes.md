@@ -41,7 +41,7 @@ Errors reach you through different channels depending on context:
 | Context | Delivery mechanism |
 |---|---|
 | Invalid argument to a public method | Thrown synchronously |
-| HTTP POST failure (send/regenerate/edit) | Emitted via `transport.on('error')` |
+| HTTP POST failure (send/regenerate/edit) | Emitted via `transport.on('error')` and the turn's stream is errored |
 | Channel subscription error | Emitted via `transport.on('error')` |
 | Server-side turn error | `onError` callback on `NewTurnOptions` |
 | Transport-level error (not scoped to a turn) | `onError` callback on `ServerTransportOptions` |

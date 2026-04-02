@@ -19,7 +19,7 @@ import type { TurnEntry } from './types.js';
 export interface StreamRouter<TEvent> {
   /** Register a new stream for a turnId. Returns the ReadableStream the consumer reads from. */
   createStream(turnId: string): ReadableStream<TEvent>;
-  /** Close the stream for a turnId. Returns true if a stream was closed. */
+  /** Close the stream for a turnId. Returns true if a stream existed. */
   closeStream(turnId: string): boolean;
   /** Enqueue an event to the correct stream. Returns true if routed successfully. */
   route(turnId: string, event: TEvent): boolean;

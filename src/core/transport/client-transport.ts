@@ -129,6 +129,8 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   private readonly _onMessage: (msg: Ably.InboundMessage) => void;
 
   private _closed = false;
+  private _hasAttachedOnce: boolean;
+  private readonly _onChannelStateChange: Ably.channelEventCallback;
 
   constructor(options: ClientTransportOptions<TEvent, TMessage>) {
     this._channel = options.channel;
@@ -156,6 +158,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     });
 
     this._emitter = new EventEmitter<ClientTransportEventsMap>(this._logger);
+    this._hasAttachedOnce = this._channel.state === 'attached';
 
     // Compose sub-components
     this._tree = createTree<TMessage>(this._logger);
@@ -194,6 +197,15 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       this._handleMessage(ablyMessage);
     };
     this._attachPromise = this._channel.subscribe(this._onMessage);
+
+    // Listen for channel state changes that break message continuity.
+    // _hasAttachedOnce is seeded from the channel's current state so that
+    // pre-attached channels are handled correctly. It distinguishes the
+    // initial attach (expected) from a genuine discontinuity.
+    this._onChannelStateChange = (stateChange: Ably.ChannelStateChange) => {
+      this._handleChannelStateChange(stateChange);
+    };
+    this._channel.on(this._onChannelStateChange);
   }
 
   // ---------------------------------------------------------------------------
@@ -382,6 +394,52 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     if (updatedMsg) {
       this._tree.upsert(targetMsgId, updatedMsg, existingNode.headers, existingNode.serial);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Channel state change handler
+  // ---------------------------------------------------------------------------
+
+  private _handleChannelStateChange(stateChange: Ably.ChannelStateChange): void {
+    if (this._closed) return;
+
+    const { current, resumed } = stateChange;
+
+    // Track the initial attach so we don't treat it as a discontinuity
+    if (current === 'attached' && !this._hasAttachedOnce) {
+      this._hasAttachedOnce = true;
+      return;
+    }
+
+    // Continuity-breaking states:
+    // - FAILED, SUSPENDED, DETACHED: no more messages expected (or gap)
+    // - ATTACHED with resumed: false (UPDATE): messages were lost
+    const continuityLost =
+      current === 'failed' || current === 'suspended' || current === 'detached' || (current === 'attached' && !resumed);
+
+    if (!continuityLost) return;
+
+    this._logger.error('ClientTransport._handleChannelStateChange(); channel continuity lost', {
+      current,
+      resumed,
+      previous: stateChange.previous,
+    });
+
+    const err = new Ably.ErrorInfo(
+      `unable to deliver events; channel continuity lost (${current}${current === 'attached' ? ', resumed: false' : ''})`,
+      ErrorCode.ChannelContinuityLost,
+      500,
+      stateChange.reason,
+    );
+
+    // As with cancellation (_closeMatchingTurnStreams), do not clear
+    // _ownTurnIds or _turnObservers here — late events must still accumulate
+    // into the tree. The turn-end handler cleans up observers.
+    for (const turnId of this._ownTurnIds) {
+      this._router.errorStream(turnId, err);
+    }
+
+    this._emitter.emit('error', err);
   }
 
   // ---------------------------------------------------------------------------
@@ -813,6 +871,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     }
 
     this._channel.unsubscribe(this._onMessage);
+    this._channel.off(this._onChannelStateChange);
 
     // Close any remaining active streams
     for (const turnId of this._ownTurnIds) {

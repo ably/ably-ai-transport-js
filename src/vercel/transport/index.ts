@@ -17,14 +17,10 @@ export { createChatTransport } from './chat-transport.js';
 
 import type * as AI from 'ai';
 
-import { createClientTransport as createCoreClientTransport } from '../../core/transport/client-transport.js';
-import { createServerTransport as createCoreServerTransport } from '../../core/transport/server-transport.js';
-import type {
-  ClientTransport,
-  ClientTransportOptions,
-  ServerTransport,
-  ServerTransportOptions,
-} from '../../core/transport/types.js';
+import { createClientTransport as createCoreClientTransport } from '../../core/transport/client/client-transport.js';
+import type { ClientTransport, ClientTransportOptions } from '../../core/transport/client/types.js';
+import { createServerTransport as createCoreServerTransport } from '../../core/transport/server/server-transport.js';
+import type { ServerTransport, ServerTransportOptions } from '../../core/transport/server/types.js';
 import { UIMessageCodec } from '../codec/index.js';
 
 /** Options for creating a Vercel client transport. Same as core options but without the codec field. */

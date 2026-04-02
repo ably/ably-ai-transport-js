@@ -24,15 +24,15 @@ import {
   HEADER_ROLE,
   HEADER_TURN_ID,
   HEADER_TURN_REASON,
-} from '../../../src/constants.js';
-import type { DecoderOutput } from '../../../src/core/codec/types.js';
-import { createServerTransport } from '../../../src/core/transport/server-transport.js';
-import type { ServerTransport } from '../../../src/core/transport/types.js';
-import { getHeaders } from '../../../src/utils.js';
-import { UIMessageCodec } from '../../../src/vercel/codec/index.js';
-import { uniqueChannelName } from '../../helper/identifier.js';
-import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
-import { eventsOf, eventTypesOf, textResponseStream } from '../../integration/helpers.js';
+} from '../../../../src/constants.js';
+import type { DecoderOutput } from '../../../../src/core/codec/types.js';
+import { createServerTransport } from '../../../../src/core/transport/server/server-transport.js';
+import type { ServerTransport } from '../../../../src/core/transport/server/types.js';
+import { getHeaders } from '../../../../src/utils.js';
+import { UIMessageCodec } from '../../../../src/vercel/codec/index.js';
+import { uniqueChannelName } from '../../../helper/identifier.js';
+import { ablyRealtimeClient, closeAllClients } from '../../../helper/realtime-client.js';
+import { eventsOf, eventTypesOf, textResponseStream } from '../../../integration/helpers.js';
 
 // ---------------------------------------------------------------------------
 // Helpers

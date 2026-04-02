@@ -1,35 +1,38 @@
 // Shared types
+export type { CancelFilter, TreeNode, TurnEndReason, TurnLifecycleEvent } from './types.js';
+
+// Client types
 export type {
   ActiveTurn,
-  AddMessageOptions,
-  AddMessagesResult,
-  CancelFilter,
-  CancelRequest,
   ClientTransport,
   ClientTransportOptions,
   CloseOptions,
-  NewTurnOptions,
   SendOptions,
+  Tree,
+  View,
+} from './client/types.js';
+
+// Server types
+export type {
+  AddMessageOptions,
+  AddMessagesResult,
+  CancelRequest,
+  NewTurnOptions,
   ServerTransport,
   ServerTransportOptions,
   StreamResponseOptions,
   StreamResult,
-  Tree,
-  TreeNode,
   Turn,
-  TurnEndReason,
-  TurnLifecycleEvent,
-  View,
-} from './types.js';
+} from './server/types.js';
 
 // Internal tree interface (consumed by View implementations)
-export type { TreeInternal } from './tree.js';
-
-// Server transport
-export { createServerTransport } from './server-transport.js';
+export type { TreeInternal } from './client/tree.js';
 
 // Client transport
-export { createClientTransport } from './client-transport.js';
+export { createClientTransport } from './client/client-transport.js';
+
+// Server transport
+export { createServerTransport } from './server/server-transport.js';
 
 // Header builder
 export { buildTransportHeaders } from './headers.js';

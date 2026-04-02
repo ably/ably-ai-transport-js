@@ -7,7 +7,7 @@
 
 import { useCallback } from 'react';
 
-import type { ActiveTurn, ClientTransport, SendOptions } from '../core/transport/types.js';
+import type { ActiveTurn, ClientTransport, SendOptions } from '../core/transport/client/types.js';
 
 /**
  * Return a stable `edit` callback bound to the given transport.

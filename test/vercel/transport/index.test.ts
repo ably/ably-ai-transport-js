@@ -11,17 +11,23 @@ interface MockChannel {
   publish: ReturnType<typeof vi.fn>;
   subscribe: ReturnType<typeof vi.fn>;
   unsubscribe: ReturnType<typeof vi.fn>;
+  on: ReturnType<typeof vi.fn>;
+  off: ReturnType<typeof vi.fn>;
   attach: ReturnType<typeof vi.fn>;
   history: ReturnType<typeof vi.fn>;
+  state: Ably.ChannelState;
 }
 
 const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
   const mock: MockChannel = {
+    state: 'initialized',
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     publish: vi.fn(() => Promise.resolve()),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     subscribe: vi.fn(() => Promise.resolve()),
     unsubscribe: vi.fn(),
+    on: vi.fn(),
+    off: vi.fn(),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     attach: vi.fn(() => Promise.resolve()),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
@@ -31,7 +37,7 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
       return Promise.resolve(emptyPage);
     }),
   };
-  // CAST: Tests only use publish/subscribe/unsubscribe/attach/history — other members are unused.
+  // CAST: Tests only use publish/subscribe/unsubscribe/on/off/attach/history — other members are unused.
   return mock as unknown as MockChannel & Ably.RealtimeChannel;
 };
 

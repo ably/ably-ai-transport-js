@@ -1,4 +1,4 @@
-import type * as Ably from 'ably';
+import * as Ably from 'ably';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -85,9 +85,13 @@ interface MockChannel {
   publish: ReturnType<typeof vi.fn>;
   subscribe: ReturnType<typeof vi.fn>;
   unsubscribe: ReturnType<typeof vi.fn>;
+  on: ReturnType<typeof vi.fn>;
+  off: ReturnType<typeof vi.fn>;
   attach: ReturnType<typeof vi.fn>;
   history: ReturnType<typeof vi.fn>;
+  state: Ably.ChannelState;
   listener: ((msg: Ably.InboundMessage) => void) | undefined;
+  stateListeners: Set<Ably.channelEventCallback>;
 }
 
 interface MockHistoryPage {
@@ -97,8 +101,11 @@ interface MockHistoryPage {
 }
 
 const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
+  const stateListeners = new Set<Ably.channelEventCallback>();
   const mock: MockChannel = {
     listener: undefined,
+    stateListeners,
+    state: 'initialized',
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     publish: vi.fn(() => Promise.resolve()),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
@@ -107,6 +114,12 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
       return Promise.resolve();
     }),
     unsubscribe: vi.fn(),
+    on: vi.fn((callback: Ably.channelEventCallback) => {
+      stateListeners.add(callback);
+    }),
+    off: vi.fn((callback: Ably.channelEventCallback) => {
+      stateListeners.delete(callback);
+    }),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     attach: vi.fn(() => Promise.resolve()),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
@@ -116,7 +129,7 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
       return Promise.resolve(emptyPage);
     }),
   };
-  // CAST: Tests only use publish/subscribe/unsubscribe/attach/history — other members are unused.
+  // CAST: Tests only use publish/subscribe/unsubscribe/on/off/attach/history — other members are unused.
   return mock as unknown as MockChannel & Ably.RealtimeChannel;
 };
 
@@ -127,6 +140,30 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
  */
 const simulateMessage = (ch: MockChannel, msg: Ably.InboundMessage): void => {
   if (ch.listener) ch.listener(msg);
+};
+
+/**
+ * Simulate a channel state change event.
+ * @param ch - The mock channel with state listeners.
+ * @param stateChange - The state change to emit.
+ */
+const simulateStateChange = (ch: MockChannel, stateChange: Ably.ChannelStateChange): void => {
+  for (const listener of ch.stateListeners) {
+    listener(stateChange);
+  }
+};
+
+/**
+ * Simulate the initial attach so the transport doesn't treat
+ * subsequent state changes as the first attach.
+ * @param ch - The mock channel to simulate initial attach on.
+ */
+const simulateInitialAttach = (ch: MockChannel): void => {
+  simulateStateChange(ch, {
+    current: 'attached',
+    previous: 'attaching',
+    resumed: false,
+  } as Ably.ChannelStateChange);
 };
 
 /**
@@ -2198,6 +2235,253 @@ describe('ClientTransport', () => {
       vi.mocked(channel.publish).mockRejectedValueOnce(new Error('publish failed'));
       // Should not throw
       await transport.close({ cancel: { all: true } });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Channel continuity loss
+  // -------------------------------------------------------------------------
+
+  describe('channel continuity loss', () => {
+    it('detects discontinuity on pre-attached channel without needing initial attach event', async () => {
+      const preAttachedChannel = createMockChannel();
+      preAttachedChannel.state = 'attached';
+
+      const preAttachedTransport = createClientTransport({
+        channel: preAttachedChannel,
+        codec,
+        fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
+      });
+
+      const turn = await preAttachedTransport.view.send({ id: 'u1', content: 'hi' });
+      await mockFetch.waitForCalls(1);
+
+      // UPDATE with resumed: false — should be treated as a real discontinuity
+      // even though no initial attach event was observed
+      simulateStateChange(preAttachedChannel, {
+        current: 'attached',
+        previous: 'attached',
+        resumed: false,
+      } as Ably.ChannelStateChange);
+
+      const reader = turn.stream.getReader();
+      await expect(reader.read()).rejects.toBeErrorInfoWithCode(ErrorCode.ChannelContinuityLost);
+
+      await preAttachedTransport.close();
+    });
+
+    it('does not treat the initial attach as continuity loss', async () => {
+      const errors: Ably.ErrorInfo[] = [];
+      transport.on('error', (e) => errors.push(e));
+
+      simulateStateChange(channel, {
+        current: 'attached',
+        previous: 'attaching',
+        resumed: false,
+      } as Ably.ChannelStateChange);
+
+      expect(errors).toHaveLength(0);
+
+      await transport.close();
+    });
+
+    // Documents current behaviour — see AIT-692 for revisiting this.
+    it('emits error event if channel fails before first attach', async () => {
+      const uninitChannel = createMockChannel();
+      uninitChannel.state = 'initialized';
+
+      const uninitTransport = createClientTransport({
+        channel: uninitChannel,
+        codec,
+        fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
+      });
+
+      const errors: Ably.ErrorInfo[] = [];
+      uninitTransport.on('error', (e) => errors.push(e));
+
+      simulateStateChange(uninitChannel, {
+        current: 'attaching',
+        previous: 'initialized',
+        resumed: false,
+      } as Ably.ChannelStateChange);
+
+      simulateStateChange(uninitChannel, {
+        current: 'failed',
+        previous: 'attaching',
+        resumed: false,
+      } as Ably.ChannelStateChange);
+
+      // The transport was never receiving messages, so there was no continuity
+      // to lose — but we still emit the error. No streams are affected because
+      // _ownTurnIds is empty (send() hasn't been called).
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.ChannelContinuityLost);
+
+      await uninitTransport.close();
+    });
+
+    for (const state of ['failed', 'suspended', 'detached'] as const) {
+      it(`errors active streams when channel enters ${state}`, async () => {
+        simulateInitialAttach(channel);
+
+        const turn = await transport.view.send({ id: 'u1', content: 'hi' });
+        await mockFetch.waitForCalls(1);
+
+        simulateStateChange(channel, {
+          current: state,
+          previous: 'attached',
+          resumed: false,
+        } as Ably.ChannelStateChange);
+
+        const reader = turn.stream.getReader();
+        await expect(reader.read()).rejects.toBeErrorInfoWithCode(ErrorCode.ChannelContinuityLost);
+
+        await transport.close();
+      });
+    }
+
+    // RTL12: already ATTACHED, receives ATTACHED ProtocolMessage with resumed: false
+    // → channel emits UPDATE (not a state change), previous === current === 'attached'
+    it('errors active streams on UPDATE with resumed: false', async () => {
+      simulateInitialAttach(channel);
+
+      const turn = await transport.view.send({ id: 'u1', content: 'hi' });
+      await mockFetch.waitForCalls(1);
+
+      simulateStateChange(channel, {
+        current: 'attached',
+        previous: 'attached',
+        resumed: false,
+      } as Ably.ChannelStateChange);
+
+      const reader = turn.stream.getReader();
+      await expect(reader.read()).rejects.toBeErrorInfoWithCode(ErrorCode.ChannelContinuityLost);
+
+      await transport.close();
+    });
+
+    it('errors active streams when re-attaching with resumed: false', async () => {
+      simulateInitialAttach(channel);
+
+      const turn = await transport.view.send({ id: 'u1', content: 'hi' });
+      await mockFetch.waitForCalls(1);
+
+      // Simulate the channel losing connection and re-attaching without resume.
+      // ATTACHING is not a continuity-breaking state, so only the subsequent
+      // ATTACHED/resumed:false should error the stream.
+      simulateStateChange(channel, {
+        current: 'attaching',
+        previous: 'attached',
+        resumed: false,
+      } as Ably.ChannelStateChange);
+
+      simulateStateChange(channel, {
+        current: 'attached',
+        previous: 'attaching',
+        resumed: false,
+      } as Ably.ChannelStateChange);
+
+      const reader = turn.stream.getReader();
+      await expect(reader.read()).rejects.toBeErrorInfoWithCode(ErrorCode.ChannelContinuityLost);
+
+      await transport.close();
+    });
+
+    it('does not error streams on UPDATE with resumed: true', async () => {
+      simulateInitialAttach(channel);
+
+      const errors: Ably.ErrorInfo[] = [];
+      transport.on('error', (e) => errors.push(e));
+
+      const turn = await transport.view.send({ id: 'u1', content: 'hi' });
+      await mockFetch.waitForCalls(1);
+
+      simulateStateChange(channel, {
+        current: 'attached',
+        previous: 'attached',
+        resumed: true,
+      } as Ably.ChannelStateChange);
+
+      expect(errors).toHaveLength(0);
+
+      // Stream is still open — close cleanly
+      await transport.close();
+      const items = await drain(turn.stream);
+      expect(items).toEqual([]);
+    });
+
+    it('emits an error event with state name in message', async () => {
+      simulateInitialAttach(channel);
+
+      const errors: Ably.ErrorInfo[] = [];
+      transport.on('error', (e) => errors.push(e));
+
+      await transport.view.send({ id: 'u1', content: 'hi' });
+      await mockFetch.waitForCalls(1);
+
+      simulateStateChange(channel, {
+        current: 'failed',
+        previous: 'attached',
+        resumed: false,
+      } as Ably.ChannelStateChange);
+
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.ChannelContinuityLost);
+      expect(errors[0]?.message).toContain('failed');
+
+      await transport.close();
+    });
+
+    it('includes the channel reason as cause when present', async () => {
+      simulateInitialAttach(channel);
+
+      const errors: Ably.ErrorInfo[] = [];
+      transport.on('error', (e) => errors.push(e));
+
+      await transport.view.send({ id: 'u1', content: 'hi' });
+      await mockFetch.waitForCalls(1);
+
+      const reason = new Ably.ErrorInfo('connection lost', 80003, 500);
+      simulateStateChange(channel, {
+        current: 'suspended',
+        previous: 'attached',
+        resumed: false,
+        reason,
+      } as Ably.ChannelStateChange);
+
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toBeErrorInfo({
+        code: ErrorCode.ChannelContinuityLost,
+        cause: { code: 80003 },
+      });
+
+      await transport.close();
+    });
+
+    it('errors multiple active streams on continuity loss', async () => {
+      simulateInitialAttach(channel);
+
+      const turn1 = await transport.view.send({ id: 'u1', content: 'hi' });
+      const turn2 = await transport.view.send({ id: 'u2', content: 'hey' });
+      await mockFetch.waitForCalls(2);
+
+      simulateStateChange(channel, {
+        current: 'suspended',
+        previous: 'attached',
+        resumed: false,
+      } as Ably.ChannelStateChange);
+
+      const reader1 = turn1.stream.getReader();
+      const reader2 = turn2.stream.getReader();
+      await expect(reader1.read()).rejects.toBeErrorInfoWithCode(ErrorCode.ChannelContinuityLost);
+      await expect(reader2.read()).rejects.toBeErrorInfoWithCode(ErrorCode.ChannelContinuityLost);
+
+      await transport.close();
+    });
+
+    it('unsubscribes from channel state changes on close', async () => {
+      await transport.close();
+      expect(channel.stateListeners.size).toBe(0);
     });
   });
 

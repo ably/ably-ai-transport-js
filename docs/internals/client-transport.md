@@ -102,7 +102,7 @@ With the Vercel AI SDK's default SSE transport, a broken connection surfaces imm
 Cases where the guarantee would be violated and the stream is errored:
 
 - **HTTP POST failure** - the server never received the request, so no events will arrive. The stream is errored with `TransportSendFailed`.
-- **Channel continuity loss** - the channel entered a state where message delivery can no longer be assured (FAILED, SUSPENDED, DETACHED, or re-attached with `resumed: false`). Events may have been lost. _(Not yet implemented.)_
+- **Channel continuity loss** - the channel entered a state where message delivery can no longer be assured (FAILED, SUSPENDED, DETACHED, or re-attached with `resumed: false`). Events may have been lost. The stream is errored with `ChannelContinuityLost`. The transport does not clean up per-turn state or emit synthetic turn-end events — events may still arrive later.
 - **Unhealthy channel at send time** - `send()` is called when the channel is already in a non-attached state. _(Not yet implemented.)_
 
 ## Close
@@ -118,11 +118,11 @@ After close, all methods that create turns throw `TransportClosed`. Event subscr
 
 ## Events
 
-| Event                    | Payload              | When                                                                                                |
-| ------------------------ | -------------------- | --------------------------------------------------------------------------------------------------- |
-| `update` (on view)       | (none)               | View state changed - call `view.flattenNodes()` for current state                                   |
-| `turn` (on tree or view) | `TurnLifecycleEvent` | Turn started or ended (includes turnId, clientId, reason)                                           |
-| `error`                  | `Ably.ErrorInfo`     | Non-fatal error (HTTP POST failure, subscription error). POST failures also error the turn's stream |
-| `ably-message` (on tree) | (none)               | Raw Ably message added - subscribe via `tree.on('ably-message')`                                    |
+| Event                    | Payload              | When                                                                                                                                       |
+| ------------------------ | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `update` (on view)       | (none)               | View state changed - call `view.flattenNodes()` for current state                                                                          |
+| `turn` (on tree or view) | `TurnLifecycleEvent` | Turn started or ended (includes turnId, clientId, reason)                                                                                  |
+| `error`                  | `Ably.ErrorInfo`     | Non-fatal error (HTTP POST failure, channel continuity loss, subscription error). POST and channel failures also error active turn streams |
+| `ably-message` (on tree) | (none)               | Raw Ably message added - subscribe via `tree.on('ably-message')`                                                                           |
 
 See [Transport concept](../concepts/transport.md) for the public API perspective. See [Transport components](transport-components.md) for the sub-component internals. See [Message lifecycle](message-lifecycle.md) for the end-to-end message flow.

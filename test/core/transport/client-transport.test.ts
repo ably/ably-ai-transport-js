@@ -530,7 +530,7 @@ describe('ClientTransport', () => {
       await errorTransport.close();
     });
 
-    it('closes the stream when POST fails', async () => {
+    it('errors the stream when POST fails', async () => {
       const failFetch = createMockFetch(500);
       const failTransport = createClientTransport({
         channel: createMockChannel(),
@@ -546,13 +546,13 @@ describe('ClientTransport', () => {
       await failFetch.waitForCalls(1);
       await flushMicrotasks();
 
-      const items = await drain(turn.stream);
-      expect(items).toEqual([]);
+      const reader = turn.stream.getReader();
+      await expect(reader.read()).rejects.toBeErrorInfoWithCode(ErrorCode.TransportSendFailed);
 
       await failTransport.close();
     });
 
-    it('closes the stream when POST throws a network error', async () => {
+    it('errors the stream when POST throws a network error', async () => {
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.reject directly
       const errorFetch = vi.fn(() => Promise.reject(new Error('network down')));
       const errorTransport = createClientTransport({
@@ -568,8 +568,8 @@ describe('ClientTransport', () => {
       const turn = await errorTransport.view.send({ id: 'u1', content: 'hi' });
       await flushMicrotasks();
 
-      const items = await drain(turn.stream);
-      expect(items).toEqual([]);
+      const reader = turn.stream.getReader();
+      await expect(reader.read()).rejects.toBeErrorInfoWithCode(ErrorCode.TransportSendFailed);
 
       await errorTransport.close();
     });

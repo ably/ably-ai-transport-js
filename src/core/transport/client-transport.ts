@@ -716,29 +716,25 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     })
       .then((response) => {
         if (!response.ok) {
-          this._emitter.emit(
-            'error',
-            new Ably.ErrorInfo(
-              `unable to send; HTTP POST to ${this._api} returned ${String(response.status)} ${response.statusText}`,
-              ErrorCode.TransportSendFailed,
-              response.status,
-            ),
+          const err = new Ably.ErrorInfo(
+            `unable to send; HTTP POST to ${this._api} returned ${String(response.status)} ${response.statusText}`,
+            ErrorCode.TransportSendFailed,
+            response.status,
           );
-          this._router.closeStream(turnId);
+          this._emitter.emit('error', err);
+          this._router.errorStream(turnId, err);
         }
       })
       .catch((error: unknown) => {
         const cause = error instanceof Ably.ErrorInfo ? error : undefined;
-        this._emitter.emit(
-          'error',
-          new Ably.ErrorInfo(
-            `unable to send; HTTP POST to ${this._api} failed: ${error instanceof Error ? error.message : String(error)}`,
-            ErrorCode.TransportSendFailed,
-            500,
-            cause,
-          ),
+        const err = new Ably.ErrorInfo(
+          `unable to send; HTTP POST to ${this._api} failed: ${error instanceof Error ? error.message : String(error)}`,
+          ErrorCode.TransportSendFailed,
+          500,
+          cause,
         );
-        this._router.closeStream(turnId);
+        this._emitter.emit('error', err);
+        this._router.errorStream(turnId, err);
       });
 
     return {

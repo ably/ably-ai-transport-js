@@ -1,6 +1,6 @@
 /**
  * decodeHistory — load conversation history from an Ably channel and
- * return decoded messages as a PaginatedMessages result.
+ * return decoded messages as a paginated HistoryPage result.
  *
  * Uses a fresh decoder (not shared with the live subscription) to avoid
  * state conflicts. Per-turn accumulators handle interleaved turns correctly.
@@ -26,7 +26,7 @@ import { HEADER_AMEND, HEADER_MSG_ID, HEADER_TURN_ID } from '../../constants.js'
 import type { Logger } from '../../logger.js';
 import { getHeaders } from '../../utils.js';
 import type { Codec, DecoderOutput, MessageAccumulator } from '../codec/types.js';
-import type { LoadHistoryOptions, PaginatedMessages } from './types.js';
+import type { HistoryPage, LoadHistoryOptions } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Shared state across pages within one history traversal
@@ -247,19 +247,16 @@ const fetchUntilLimit = async <TEvent, TMessage>(
 };
 
 // ---------------------------------------------------------------------------
-// Build PaginatedMessages result from current state
+// Build HistoryPage result from current state
 // ---------------------------------------------------------------------------
 
 /**
- * Build a PaginatedMessages page from the current decode state.
+ * Build a HistoryPage from the current decode state.
  * @param state - The shared history traversal state.
  * @param limit - Max messages per page.
- * @returns A page of decoded messages with a `next()` cursor.
+ * @returns A page of decoded history with a `next()` cursor.
  */
-const buildResult = <TEvent, TMessage>(
-  state: HistoryState<TEvent, TMessage>,
-  limit: number,
-): PaginatedMessages<TMessage> => {
+const buildResult = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>, limit: number): HistoryPage<TMessage> => {
   // allCompleted is newest-first. Slice from returnedCount for this page,
   // then reverse to chronological for display.
   const allCompleted = decodeAll(state);
@@ -277,9 +274,7 @@ const buildResult = <TEvent, TMessage>(
   state.returnedRawCount = state.rawMessages.length;
 
   return {
-    items: chronSlice.map((d) => d.message),
-    itemHeaders: chronSlice.map((d) => d.headers),
-    itemSerials: chronSlice.map((d) => d.serial),
+    items: chronSlice.map((d) => ({ message: d.message, headers: d.headers, serial: d.serial })),
     rawMessages: rawSlice,
     hasNext: () => moreCompleted || moreAblyPages,
     next: async () => {
@@ -312,7 +307,7 @@ const buildResult = <TEvent, TMessage>(
  * @param codec - The codec for decoding wire messages into domain messages.
  * @param options - Pagination options.
  * @param logger - Logger for diagnostic output.
- * @returns The first page of decoded history messages.
+ * @returns The first page of decoded history.
  */
 // Spec: AIT-CT11, AIT-CT11b
 export const decodeHistory = async <TEvent, TMessage>(
@@ -320,7 +315,7 @@ export const decodeHistory = async <TEvent, TMessage>(
   codec: Codec<TEvent, TMessage>,
   options: LoadHistoryOptions | undefined,
   logger: Logger,
-): Promise<PaginatedMessages<TMessage>> => {
+): Promise<HistoryPage<TMessage>> => {
   const limit = options?.limit ?? 100;
   const state: HistoryState<TEvent, TMessage> = {
     codec,

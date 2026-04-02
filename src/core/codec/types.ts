@@ -236,6 +236,12 @@ export interface EncoderOptions {
   extras?: Extras;
   /** Hook called before each Ably message is published. Mutate the message in place to add transport-level headers. */
   onMessage?: (message: Ably.Message) => void;
+  /**
+   * Domain-level message identity. Domain encoders use this as a fallback
+   * messageId when a lifecycle chunk (e.g. `start`) does not provide one,
+   * ensuring useChat and the transport accumulator assign the same ID.
+   */
+  messageId?: string;
 }
 
 /**

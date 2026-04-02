@@ -240,33 +240,15 @@ export const createChatTransport = (
       });
     }
 
-    // Return an empty stream that closes when the turn ends.
-    // useChat consumes the returned stream to accumulate the assistant message,
-    // but useMessageSync already pushes the transport's authoritative message
-    // state into useChat via setMessages. Returning the real event stream would
-    // cause useChat to accumulate a duplicate assistant message. Instead, we
-    // return a stream that produces no chunks and closes when the turn's stream
-    // finishes, so useChat knows when streaming is done without duplicating state.
-    const { readable, writable } = new TransformStream<AI.UIMessageChunk>();
-    const writer = writable.getWriter();
-    // Fire-and-forget: we only care about the close/error signal, not the piped data.
-    /* eslint-disable @typescript-eslint/no-empty-function -- swallow: rejection after stream teardown is unrecoverable */
-    turn.stream
-      .pipeTo(
-        new WritableStream({
-          close: () => {
-            writer.close().catch(() => {});
-          },
-          abort: (reason: unknown) => {
-            writer.abort(reason).catch(() => {});
-          },
-        }),
-      )
-      .catch((error: unknown) => {
-        writer.abort(error).catch(() => {});
-      });
-    /* eslint-enable @typescript-eslint/no-empty-function */
-    return readable;
+    // Return the real turn stream. useChat reads chunks from this stream to
+    // drive status transitions (submitted → streaming → ready), fire callbacks
+    // (onToolCall, onData, onFinish), and evaluate sendAutomaticallyWhen.
+    //
+    // Both useChat and useMessageSync accumulate messages in parallel:
+    // useChat builds from the stream, useMessageSync pushes from the
+    // transport's message store via setMessages (a full replacement).
+    // The transport's version is always authoritative.
+    return turn.stream;
   },
 
   // Observer mode handles in-progress streams automatically.

@@ -106,10 +106,12 @@ const buildDiscretePayload = (chunk: AI.UIMessageChunk): MessagePayload => {
 
 class DefaultUIMessageEncoder implements StreamEncoder<AI.UIMessageChunk, AI.UIMessage> {
   private readonly _core: EncoderCore;
+  private readonly _messageId: string | undefined;
   private _aborted = false;
 
   constructor(writer: ChannelWriter, options: EncoderCoreOptions = {}) {
     this._core = createEncoderCore(writer, options);
+    this._messageId = options.messageId;
   }
 
   async appendEvent(chunk: AI.UIMessageChunk, perWrite?: WriteOptions): Promise<void> {
@@ -204,7 +206,7 @@ class DefaultUIMessageEncoder implements StreamEncoder<AI.UIMessageChunk, AI.UIM
 
       case 'start': {
         const h = headerWriter()
-          .str('messageId', chunk.messageId)
+          .str('messageId', chunk.messageId ?? this._messageId)
           .json('messageMetadata', chunk.messageMetadata)
           .build();
         await this._core.publishDiscrete({ name: 'start', data: '', headers: h }, perWrite);

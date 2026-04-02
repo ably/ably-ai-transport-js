@@ -1,3 +1,4 @@
+import * as Ably from 'ably';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { StreamRouter } from '../../../src/core/transport/stream-router.js';
@@ -126,6 +127,36 @@ describe('StreamRouter', () => {
       router.createStream('turn-1');
       expect(router.closeStream('turn-1')).toBe(true);
       expect(router.closeStream('turn-1')).toBe(false);
+    });
+  });
+
+  describe('errorStream', () => {
+    const error = new Ably.ErrorInfo('test error', 104006, 500);
+
+    it('errors the stream and removes it from the router', async () => {
+      const stream = router.createStream('turn-1');
+
+      router.errorStream('turn-1', error);
+
+      expect(router.has('turn-1')).toBe(false);
+
+      const reader = stream.getReader();
+      await expect(reader.read()).rejects.toBe(error);
+    });
+
+    it('returns true when a stream was errored', () => {
+      router.createStream('turn-1');
+      expect(router.errorStream('turn-1', error)).toBe(true);
+    });
+
+    it('returns false for a non-existent turnId', () => {
+      expect(router.errorStream('no-such-turn', error)).toBe(false);
+    });
+
+    it('is idempotent — second error returns false', () => {
+      router.createStream('turn-1');
+      expect(router.errorStream('turn-1', error)).toBe(true);
+      expect(router.errorStream('turn-1', error)).toBe(false);
     });
   });
 

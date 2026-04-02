@@ -19,6 +19,7 @@ Events from [observer turns](glossary.md#own-turn-vs-observer-turn) (other clien
 | `createStream(turnId)` | Creates a `ReadableStream`, captures the controller synchronously, returns the stream     |
 | `route(turnId, event)` | Enqueues the event on the turn's stream. If the event is terminal, auto-closes the stream |
 | `closeStream(turnId)`  | Closes the controller and removes the entry                                               |
+| `errorStream(turnId, error)` | Errors the controller with the given `ErrorInfo` and removes the entry              |
 | `has(turnId)`          | Checks whether a turn has an active stream                                                |
 
 ### Terminal detection

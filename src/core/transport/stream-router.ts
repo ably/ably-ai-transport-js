@@ -2,7 +2,8 @@
  * Client-side stream routing.
  *
  * Maintains a map of turnId to ReadableStreamController. Routes decoded events
- * to the correct stream. Closes streams on terminal events or explicit close.
+ * to the correct stream. Closes streams on terminal events, explicit close, or
+ * error.
  */
 
 import * as Ably from 'ably';
@@ -21,6 +22,8 @@ export interface StreamRouter<TEvent> {
   createStream(turnId: string): ReadableStream<TEvent>;
   /** Close the stream for a turnId. Returns true if a stream existed. */
   closeStream(turnId: string): boolean;
+  /** Error the stream for a turnId. The consumer's reader will reject with the given error. Returns true if a stream existed. */
+  errorStream(turnId: string, error: Ably.ErrorInfo): boolean;
   /** Enqueue an event to the correct stream. Returns true if routed successfully. */
   route(turnId: string, event: TEvent): boolean;
   /** Whether a specific turnId has an active stream. */
@@ -72,6 +75,20 @@ class DefaultStreamRouter<TEvent> implements StreamRouter<TEvent> {
     this._logger.debug('StreamRouter.closeStream(); closing stream', { turnId });
     try {
       turn.controller.close();
+    } catch {
+      /* consumer cancelled the stream */
+    }
+    this._turns.delete(turnId);
+    return true;
+  }
+
+  errorStream(turnId: string, error: Ably.ErrorInfo): boolean {
+    const turn = this._turns.get(turnId);
+    if (!turn) return false;
+
+    this._logger.debug('StreamRouter.errorStream(); erroring stream', { turnId });
+    try {
+      turn.controller.error(error);
     } catch {
       /* consumer cancelled the stream */
     }

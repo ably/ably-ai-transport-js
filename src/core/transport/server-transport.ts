@@ -429,10 +429,11 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
         // Per-operation parent overrides the turn-level default.
         const assistantParent = streamOpts?.parent === undefined ? turnParent : streamOpts.parent;
 
+        const msgId = crypto.randomUUID();
         const defaultHeaders = buildTransportHeaders({
           role: 'assistant',
           turnId,
-          msgId: crypto.randomUUID(),
+          msgId,
           turnClientId: turnOwnerClientId,
           parent: assistantParent,
           forkOf: streamOpts?.forkOf ?? turnForkOf,
@@ -440,6 +441,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
         const encoder = codec.createEncoder(channel, {
           extras: { headers: defaultHeaders },
           onMessage,
+          messageId: msgId,
         });
 
         const result = await pipeStream(stream, encoder, signal, onAbort, logger);

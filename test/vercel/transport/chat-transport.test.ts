@@ -26,7 +26,8 @@ interface MockTurn {
   stream: ReadableStream<AI.UIMessageChunk>;
   turnId: string;
   cancel: ReturnType<typeof vi.fn>;
-  optimisticMsgIds: string[];
+  /** Enqueue a chunk into the turn stream. */
+  enqueue: (chunk: AI.UIMessageChunk) => void;
   /** Resolve the stream by closing it. */
   close: () => void;
   /** Error the stream with the given reason. */
@@ -46,6 +47,9 @@ const createMockTurn = (): MockTurn => {
     turnId: 'turn-1',
     cancel,
     optimisticMsgIds: [],
+    enqueue: (chunk: AI.UIMessageChunk) => {
+      controller.enqueue(chunk);
+    },
     close: () => {
       controller.close();
     },
@@ -273,8 +277,8 @@ describe('createChatTransport', () => {
     });
   });
 
-  describe('empty stream return', () => {
-    it('returns a stream with no chunks that closes when the turn stream ends', async () => {
+  describe('real stream return', () => {
+    it('returns the turn stream with chunks flowing through', async () => {
       const { transport, mockTurn } = createMockTransport();
       const chat = createChatTransport(transport);
 
@@ -286,14 +290,27 @@ describe('createChatTransport', () => {
         abortSignal: undefined,
       });
 
-      // Close the turn stream
+      // Enqueue chunks into the turn stream
+      mockTurn.enqueue({ type: 'start', messageId: 'msg-1' });
+      mockTurn.enqueue({ type: 'text-start', id: 'text-1' });
+      mockTurn.enqueue({ type: 'text-delta', id: 'text-1', delta: 'Hello' });
+      mockTurn.enqueue({ type: 'finish', finishReason: 'stop' });
       mockTurn.close();
 
-      // Read the returned stream — should produce no chunks and close
+      // Read the returned stream — should produce the enqueued chunks
       const reader = stream.getReader();
-      const { done, value } = await reader.read();
-      expect(done).toBe(true);
-      expect(value).toBeUndefined();
+      const chunks: AI.UIMessageChunk[] = [];
+      let result = await reader.read();
+      while (!result.done) {
+        chunks.push(result.value);
+        result = await reader.read();
+      }
+
+      expect(chunks).toHaveLength(4);
+      expect(chunks[0]).toMatchObject({ type: 'start', messageId: 'msg-1' });
+      expect(chunks[1]).toMatchObject({ type: 'text-start', id: 'text-1' });
+      expect(chunks[2]).toMatchObject({ type: 'text-delta', delta: 'Hello' });
+      expect(chunks[3]).toMatchObject({ type: 'finish', finishReason: 'stop' });
     });
   });
 

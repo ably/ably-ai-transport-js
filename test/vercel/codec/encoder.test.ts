@@ -234,12 +234,28 @@ describe('Vercel encoder', () => {
       expect(headersOf(msg)[`${D}messageId`]).toBe('msg-1');
     });
 
-    it('omits messageId domain header when start chunk has no messageId', async () => {
+    it('omits messageId domain header when neither chunk nor options provide it', async () => {
       const encoder = createEncoder(writer);
       await encoder.appendEvent({ type: 'start' });
 
       const msg = firstPublish(writer);
       expect(headersOf(msg)[`${D}messageId`]).toBeUndefined();
+    });
+
+    it('falls back to options.messageId when start chunk has no messageId', async () => {
+      const encoder = createEncoder(writer, { messageId: 'fallback-id' });
+      await encoder.appendEvent({ type: 'start' });
+
+      const msg = firstPublish(writer);
+      expect(headersOf(msg)[`${D}messageId`]).toBe('fallback-id');
+    });
+
+    it('prefers chunk.messageId over options.messageId', async () => {
+      const encoder = createEncoder(writer, { messageId: 'fallback-id' });
+      await encoder.appendEvent({ type: 'start', messageId: 'chunk-id' });
+
+      const msg = firstPublish(writer);
+      expect(headersOf(msg)[`${D}messageId`]).toBe('chunk-id');
     });
 
     it('stamps x-ably-msg-id from WriteOptions on all publishes', async () => {

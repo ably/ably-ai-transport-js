@@ -8,8 +8,8 @@ Vercel's `useChat()` manages message state internally. When the user submits a m
 
 1. Determine which messages are new vs history
 2. Compute fork metadata for regeneration
-3. Delegate to the default view's `send()`
-4. Return a stream that signals completion without duplicating state
+3. Delegate to the core transport's `send()`
+4. Return the turn stream so `useChat` can drive status and callbacks
 
 ## sendMessages
 
@@ -28,11 +28,13 @@ The `prepareSendMessagesRequest` hook (optional) lets the server app customize t
 
 Without the hook, the adapter builds a default body with `history` (including per-message Ably headers), `chatId`, `trigger`, and fork metadata fields.
 
-### Empty stream return
+### Real stream return
 
-The adapter returns an **empty stream** that closes when the turn ends - not the real event stream. This is intentional: `useChat()` consumes the returned stream to accumulate the assistant message, but `useMessageSync()` (the companion React hook) already pushes the transport's authoritative message state into `useChat()` via `setMessages`. Returning the real event stream would cause `useChat()` to accumulate a duplicate assistant message.
+The adapter returns the real turn stream from `sendMessages()`. `useChat` consumes this stream to drive status transitions (`submitted` -> `streaming` -> `ready`), fire callbacks (`onToolCall`, `onData`, `onFinish`), and evaluate `sendAutomaticallyWhen`.
 
-The empty stream is created via a `TransformStream` whose writable side closes when the turn's real stream finishes.
+Both `useChat` and `useMessageSync` accumulate messages in parallel: `useChat` builds from the stream, while `useMessageSync` pushes from the transport's message store via `setMessages` (a full replacement). The transport's version is always authoritative - both accumulators produce identical messages from the same chunks, and `setMessages` overwrites `useChat`'s state on every transport event.
+
+The server encoder ensures `messageId` alignment by stamping the transport-assigned `x-ably-msg-id` as a fallback domain `messageId` on the `start` chunk. This ensures both accumulators assign the same message ID.
 
 ### Abort signal
 

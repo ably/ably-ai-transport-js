@@ -46,6 +46,13 @@ export enum ErrorCode {
    * The HTTP POST to the server endpoint failed (network error or non-2xx response).
    */
   TransportSendFailed = 104005,
+
+  /**
+   * The Ably channel lost message continuity — the channel entered FAILED,
+   * SUSPENDED, or DETACHED, or re-attached with `resumed: false`. Active
+   * streams can no longer be guaranteed to receive all events.
+   */
+  ChannelContinuityLost = 104006,
 }
 
 /**

@@ -14,8 +14,9 @@ AI Transport uses `Ably.ErrorInfo` as its error type. Each error has a numeric `
 | 104003 | `TurnLifecycleError` | 500 | A turn lifecycle event (turn-start or turn-end) failed to publish | Non-fatal; the turn may not be visible to other clients. Check channel permissions |
 | 104004 | `TransportClosed` | 400 | An operation was attempted on a closed transport | Create a new transport instance |
 | 104005 | `TransportSendFailed` | 500 | The HTTP POST to the server endpoint failed (network error or non-2xx response) | Check server availability and endpoint URL |
+| 104006 | `ChannelContinuityLost` | 500 | The Ably channel lost message continuity (FAILED, SUSPENDED, DETACHED, or re-attached with `resumed: false`) | Active streams are errored. Check network connectivity and channel state |
 
-Codes 40000 and 40003 are standard Ably error codes. Codes 104000–104005 are specific to the AI Transport SDK.
+Codes 40000 and 40003 are standard Ably error codes. Codes 104000–104006 are specific to the AI Transport SDK.
 
 ## Checking error codes
 
@@ -42,6 +43,7 @@ Errors reach you through different channels depending on context:
 |---|---|
 | Invalid argument to a public method | Thrown synchronously |
 | HTTP POST failure (send/regenerate/edit) | Emitted via `transport.on('error')` and the turn's stream is errored |
+| Channel continuity loss (FAILED, SUSPENDED, DETACHED, resumed: false) | Emitted via `transport.on('error')` and all active turn streams are errored |
 | Channel subscription error | Emitted via `transport.on('error')` |
 | Server-side turn error | `onError` callback on `NewTurnOptions` |
 | Transport-level error (not scoped to a turn) | `onError` callback on `ServerTransportOptions` |

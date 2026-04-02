@@ -336,20 +336,26 @@ export interface CloseOptions {
 // History / pagination
 // ---------------------------------------------------------------------------
 
-/** A page of decoded messages from channel history. */
-export interface PaginatedMessages<TMessage> {
-  /** Decoded messages in chronological order (oldest first). */
-  items: TMessage[];
-  /** Headers for each item, parallel to `items`. Used by the transport to populate the tree. */
-  itemHeaders?: Record<string, string>[];
-  /** Ably serial for each item, parallel to `items`. Used by the transport for tree ordering. */
-  itemSerials?: string[];
+/** A single decoded history item with its transport metadata. */
+export interface HistoryItem<TMessage> {
+  /** The decoded domain message. */
+  message: TMessage;
+  /** Transport headers for tree identity and ordering. */
+  headers: Record<string, string>;
+  /** Ably serial for tree ordering. */
+  serial: string;
+}
+
+/** A page of decoded history from the channel. Internal to View/decodeHistory. */
+export interface HistoryPage<TMessage> {
+  /** Decoded items in chronological order (oldest first). */
+  items: HistoryItem<TMessage>[];
   /** Raw Ably messages that produced this page, in chronological order. */
-  rawMessages?: Ably.InboundMessage[];
+  rawMessages: Ably.InboundMessage[];
   /** Whether there are older pages available. */
   hasNext(): boolean;
   /** Fetch the next (older) page. Returns undefined if no more pages. */
-  next(): Promise<PaginatedMessages<TMessage> | undefined>;
+  next(): Promise<HistoryPage<TMessage> | undefined>;
 }
 
 /** Options for loading channel history. */

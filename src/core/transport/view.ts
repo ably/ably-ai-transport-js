@@ -26,8 +26,8 @@ import type { TreeInternal } from './tree.js';
 import type {
   ActiveTurn,
   EventsNode,
+  HistoryPage,
   MessageNode,
-  PaginatedMessages,
   SendOptions,
   TurnLifecycleEvent,
   View,
@@ -137,7 +137,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   private _hasMoreHistory = false;
 
   /** Internal state for continuing history pagination. */
-  private _lastHistoryPage: PaginatedMessages<TMessage> | undefined;
+  private _lastHistoryPage: HistoryPage<TMessage> | undefined;
 
   /** Buffer of withheld nodes, drained newest-first by successive loadOlder() calls. */
   private readonly _withheldBuffer: MessageNode<TMessage>[] = [];
@@ -197,8 +197,8 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
 
   async loadOlder(limit = 100): Promise<void> {
     if (this._closed || this._loadingOlder) return;
-    this._logger.trace('DefaultView.loadOlder();', { limit });
     this._loadingOlder = true;
+    this._logger.trace('DefaultView.loadOlder();', { limit });
 
     try {
       // Drain withheld buffer first (older messages, released newest-first)
@@ -472,6 +472,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   close(): void {
     this._logger.info('DefaultView.close();');
     this._closed = true;
+    this._loadingOlder = false;
     for (const unsub of this._unsubs) unsub();
     this._unsubs.length = 0;
     this._emitter.off();
@@ -511,7 +512,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     this._releaseWithheld(released);
   }
 
-  private async _loadAndReveal(page: PaginatedMessages<TMessage>, limit: number): Promise<void> {
+  private async _loadAndReveal(page: HistoryPage<TMessage>, limit: number): Promise<void> {
     // Everything currently in the tree is "already known"
     const alreadyKnown = new Set(this._tree.flattenNodes(this._resolveSelections()).map((n) => n.msgId));
 
@@ -533,22 +534,17 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     this._releaseWithheld(batch);
   }
 
-  private _processHistoryPage(page: PaginatedMessages<TMessage>): void {
+  private _processHistoryPage(page: HistoryPage<TMessage>): void {
     this._processingHistory = true;
     try {
-      for (const [i, message] of page.items.entries()) {
-        const headers = page.itemHeaders?.[i] ?? {};
-        const serial = page.itemSerials?.[i];
-        const msgId = headers[HEADER_MSG_ID];
+      for (const item of page.items) {
+        const msgId = item.headers[HEADER_MSG_ID];
         if (!msgId) continue;
-        this._tree.upsert(msgId, message, headers, serial);
+        this._tree.upsert(msgId, item.message, item.headers, item.serial);
       }
 
-      // Forward raw Ably messages through the tree
-      if (page.rawMessages && page.rawMessages.length > 0) {
-        for (const msg of page.rawMessages) {
-          this._tree.emitAblyMessage(msg);
-        }
+      for (const msg of page.rawMessages) {
+        this._tree.emitAblyMessage(msg);
       }
     } finally {
       this._processingHistory = false;
@@ -556,10 +552,10 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   }
 
   private async _loadUntilVisible(
-    firstPage: PaginatedMessages<TMessage>,
+    firstPage: HistoryPage<TMessage>,
     target: number,
     beforeMsgIds: Set<string>,
-  ): Promise<{ newVisible: MessageNode<TMessage>[]; lastPage: PaginatedMessages<TMessage> }> {
+  ): Promise<{ newVisible: MessageNode<TMessage>[]; lastPage: HistoryPage<TMessage> }> {
     this._processHistoryPage(firstPage);
     let page = firstPage;
 

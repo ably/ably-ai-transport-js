@@ -7,7 +7,7 @@ import type { Codec } from '../../../src/core/codec/types.js';
 import { decodeHistory } from '../../../src/core/transport/decode-history.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
-import type { MessageNode, PaginatedMessages, SendOptions, TurnLifecycleEvent } from '../../../src/core/transport/types.js';
+import type { HistoryPage, MessageNode, SendOptions, TurnLifecycleEvent } from '../../../src/core/transport/types.js';
 import type { SendDelegate } from '../../../src/core/transport/view.js';
 import { DefaultView } from '../../../src/core/transport/view.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
@@ -64,14 +64,16 @@ const makePage = (
   headers: Record<string, string>[],
   serials: string[],
   hasNextPage = false,
-  nextPageFn?: () => Promise<PaginatedMessages<TestMessage> | undefined>,
-): PaginatedMessages<TestMessage> => ({
-  items,
-  itemHeaders: headers,
-  itemSerials: serials,
+  nextPageFn?: () => Promise<HistoryPage<TestMessage> | undefined>,
+): HistoryPage<TestMessage> => ({
+  items: items.map((message, i) => ({
+    message,
+    headers: headers[i] ?? {},
+    serial: serials[i] ?? '',
+  })),
   rawMessages: [],
   hasNext: () => hasNextPage,
-  // eslint-disable-next-line @typescript-eslint/promise-function-async, unicorn/no-useless-undefined -- mock needs explicit undefined for PaginatedMessages return type
+  // eslint-disable-next-line @typescript-eslint/promise-function-async, unicorn/no-useless-undefined -- mock needs explicit undefined for HistoryPage return type
   next: nextPageFn ?? (() => Promise.resolve(undefined)),
 });
 
@@ -462,6 +464,33 @@ describe('DefaultView', () => {
       // Third load — buffer empty, fetches next page from page1.next()
       await view.loadOlder(10);
       expect(view.flattenNodes()).toHaveLength(5);
+    });
+
+    it('ignores concurrent loadOlder calls', async () => {
+      let resolveFirst: ((page: HistoryPage<TestMessage>) => void) | undefined;
+      const firstPromise = new Promise<HistoryPage<TestMessage>>((r) => {
+        resolveFirst = r;
+      });
+      vi.mocked(decodeHistory).mockReturnValue(firstPromise);
+
+      const page = makePage(
+        [{ id: '1', content: 'a' }, { id: '2', content: 'b' }],
+        [makeHeaders('h1'), makeHeaders('h2')],
+        ['serial-1', 'serial-2'],
+      );
+
+      // Start two concurrent loadOlder calls
+      const first = view.loadOlder(10);
+      const second = view.loadOlder(10);
+
+      // Resolve the first — the second should have been a no-op
+      if (resolveFirst) resolveFirst(page);
+      await first;
+      await second;
+
+      // decodeHistory should only be called once
+      expect(vi.mocked(decodeHistory)).toHaveBeenCalledOnce();
+      expect(view.flattenNodes()).toHaveLength(2);
     });
 
     it('suppresses ably-message events for withheld nodes', async () => {

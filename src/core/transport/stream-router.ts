@@ -73,7 +73,7 @@ class DefaultStreamRouter<TEvent> implements StreamRouter<TEvent> {
     try {
       turn.controller.close();
     } catch {
-      /* already closed */
+      /* consumer cancelled the stream */
     }
     this._turns.delete(turnId);
     return true;

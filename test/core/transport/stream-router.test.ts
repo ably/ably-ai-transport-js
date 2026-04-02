@@ -113,7 +113,7 @@ describe('StreamRouter', () => {
       expect(items).toEqual([{ type: 'text', text: 'hello' }]);
     });
 
-    it('returns true when a stream was closed', () => {
+    it('returns true when a stream existed', () => {
       router.createStream('turn-1');
       expect(router.closeStream('turn-1')).toBe(true);
     });

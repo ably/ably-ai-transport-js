@@ -1,14 +1,15 @@
 /**
  * useView — reactive paginated view of the conversation.
  *
- * Subscribes to `transport.view.on('update')` and exposes the visible nodes,
- * pagination state, and a `loadOlder` callback. When `options` are provided,
- * auto-loads the first page on mount (SWR-style).
+ * Subscribes to view updates and exposes the visible nodes, branch navigation,
+ * pagination state, and a `loadOlder` callback. Accepts either a
+ * {@link ClientTransport} (uses its default view) or a {@link View} directly.
+ * When `options` are provided, auto-loads the first page on mount (SWR-style).
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import type { ClientTransport, TreeNode } from '../core/transport/types.js';
+import type { ClientTransport, TreeNode, View } from '../core/transport/types.js';
 
 /** Options for configuring the view's initial load behavior. */
 export interface ViewOptions {
@@ -28,61 +29,103 @@ export interface ViewHandle<TMessage> {
   loading: boolean;
   /** Load older messages into the view. No-op if already loading. */
   loadOlder: () => Promise<void>;
+  /** Select a sibling at a fork point by index. Triggers a view update with the new branch. */
+  select: (msgId: string, index: number) => void;
+  /** Index of the currently selected sibling at a fork point. */
+  getSelectedIndex: (msgId: string) => number;
+  /** Get all sibling messages at a fork point, ordered chronologically by serial. */
+  getSiblings: (msgId: string) => TMessage[];
+  /** Whether a message has sibling alternatives (i.e., show navigation arrows). */
+  hasSiblings: (msgId: string) => boolean;
+  /** Get a node by msgId, or undefined if not found. */
+  getNode: (msgId: string) => TreeNode<TMessage> | undefined;
 }
 
 /**
- * Subscribe to the transport's view and return the visible node list with pagination.
- * @param transport - The client transport whose view to observe, or null/undefined if not yet available.
+ * Resolve a {@link View} from either a {@link ClientTransport} or a direct {@link View} reference.
+ * @param source - The transport or view to resolve, or undefined if not yet available.
+ * @returns The resolved View, or undefined if not available.
+ */
+const resolveView = <TMessage>(
+  source: ClientTransport<unknown, TMessage> | View<TMessage> | null | undefined,
+): View<TMessage> | undefined => {
+  if (!source) return undefined;
+  // Discriminate: ClientTransport has a `.view` property; View does not.
+  if ('view' in source) return source.view;
+  return source;
+};
+
+/**
+ * Subscribe to a view and return the visible node list with pagination and branch navigation.
+ * @param source - A client transport (uses its default view), a View directly, or null/undefined.
  * @param options - When provided, auto-loads the first page on mount. Omit or pass null for manual loading.
- * @returns A {@link ViewHandle} with nodes, pagination state, and loadOlder.
+ * @returns A {@link ViewHandle} with nodes, pagination state, navigation, and loadOlder.
  */
 export const useView = <TEvent, TMessage>(
-  transport: ClientTransport<TEvent, TMessage> | null | undefined,
+  source: ClientTransport<TEvent, TMessage> | View<TMessage> | null | undefined,
   options?: ViewOptions | null,
 ): ViewHandle<TMessage> => {
-  const [nodes, setNodes] = useState<TreeNode<TMessage>[]>(() => transport?.view.flattenNodes() ?? []);
-  const [hasOlder, setHasOlder] = useState(() => transport?.view.hasOlder() ?? false);
+  const view = resolveView(source);
+
+  const [nodes, setNodes] = useState<TreeNode<TMessage>[]>(() => view?.flattenNodes() ?? []);
+  const [hasOlder, setHasOlder] = useState(() => view?.hasOlder() ?? false);
   const [loading, setLoading] = useState(false);
   const loadingRef = useRef(false);
 
   // Subscribe to view updates
   useEffect(() => {
-    if (!transport) return;
+    if (!view) return;
 
     // Sync initial state
-    setNodes(transport.view.flattenNodes());
-    setHasOlder(transport.view.hasOlder());
+    setNodes(view.flattenNodes());
+    setHasOlder(view.hasOlder());
 
-    const unsub = transport.view.on('update', () => {
-      setNodes(transport.view.flattenNodes());
-      setHasOlder(transport.view.hasOlder());
+    const unsub = view.on('update', () => {
+      setNodes(view.flattenNodes());
+      setHasOlder(view.hasOlder());
     });
     return unsub;
-  }, [transport]);
+  }, [view]);
 
   const loadOlder = useCallback(async () => {
-    if (!transport || loadingRef.current) return;
+    if (!view || loadingRef.current) return;
     loadingRef.current = true;
     setLoading(true);
     try {
-      await transport.view.loadOlder(options?.limit);
+      await view.loadOlder(options?.limit);
     } finally {
       loadingRef.current = false;
       setLoading(false);
     }
-  }, [transport, options?.limit]);
+  }, [view, options?.limit]);
 
   // Auto-load first page on mount when options are provided (SWR-style).
   const autoLoad = options !== undefined && options !== null;
   const autoLoadedRef = useRef(false);
 
   useEffect(() => {
-    if (!autoLoad || autoLoadedRef.current || !transport) return;
+    if (!autoLoad || autoLoadedRef.current || !view) return;
     autoLoadedRef.current = true;
     void loadOlder();
-  }, [autoLoad, transport, loadOlder]);
+  }, [autoLoad, view, loadOlder]);
 
   const messages = useMemo(() => nodes.map((n) => n.message), [nodes]);
 
-  return { messages, nodes, hasOlder, loading, loadOlder };
+  // Branch navigation callbacks
+  const select = useCallback(
+    (msgId: string, index: number) => {
+      view?.select(msgId, index);
+    },
+    [view],
+  );
+
+  const getSelectedIndex = useCallback((msgId: string) => view?.getSelectedIndex(msgId) ?? 0, [view]);
+
+  const getSiblings = useCallback((msgId: string) => view?.getSiblings(msgId) ?? [], [view]);
+
+  const hasSiblings = useCallback((msgId: string) => view?.hasSiblings(msgId) ?? false, [view]);
+
+  const getNode = useCallback((msgId: string) => view?.getNode(msgId), [view]);
+
+  return { messages, nodes, hasOlder, loading, loadOlder, select, getSelectedIndex, getSiblings, hasSiblings, getNode };
 };

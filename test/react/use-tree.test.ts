@@ -27,23 +27,13 @@ describe('useTree', () => {
     expect(result.current.hasSiblings('msg-1')).toBe(true);
   });
 
-  it('delegates getSelectedIndex to tree', () => {
+  it('delegates getNode to tree', () => {
     const mock = createMockTransport([]);
-    (mock.tree.getSelectedIndex as ReturnType<typeof vi.fn>).mockReturnValue(2);
+    const fakeNode = { message: 'hi', msgId: 'msg-1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined };
+    (mock.tree.getNode as ReturnType<typeof vi.fn>).mockReturnValue(fakeNode);
 
     const { result } = renderHook(() => useTree(mock.transport));
 
-    expect(result.current.getSelectedIndex('msg-1')).toBe(2);
-  });
-
-  it('delegates select to tree.select', () => {
-    const mock = createMockTransport([]);
-
-    const { result } = renderHook(() => useTree(mock.transport));
-
-    result.current.select('msg-1', 1);
-
-    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
-    expect(mock.tree.select).toHaveBeenCalledWith('msg-1', 1);
+    expect(result.current.getNode('msg-1')).toBe(fakeNode);
   });
 });

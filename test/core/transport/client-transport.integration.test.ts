@@ -169,7 +169,7 @@ describe('ClientTransport integration', () => {
     });
 
     // Client sends a user message — optimistically inserted, gets a turn stream
-    const clientTurn = await clientTransport.send({
+    const clientTurn = await clientTransport.view.send({
       id: 'user-msg-rt-1',
       role: 'user',
       parts: [{ type: 'text', text: 'Hello!' }],
@@ -242,7 +242,7 @@ describe('ClientTransport integration', () => {
     });
 
     // Client initiates a send — gets back a turn with a stream
-    const clientTurn = await clientTransport.send({
+    const clientTurn = await clientTransport.view.send({
       id: 'user-msg-stream-1',
       role: 'user',
       parts: [{ type: 'text', text: 'Test' }],
@@ -299,7 +299,7 @@ describe('ClientTransport integration', () => {
     clientTransport.tree.on('turn', (e) => turnEvents.push(e));
 
     // Client sends — ensures channel is attached
-    const clientTurn = await clientTransport.send({
+    const clientTurn = await clientTransport.view.send({
       id: 'user-lc-1',
       role: 'user',
       parts: [{ type: 'text', text: 'test' }],
@@ -360,7 +360,7 @@ describe('ClientTransport integration', () => {
     });
 
     // Client initiates a send
-    const clientTurn = await clientTransport.send({
+    const clientTurn = await clientTransport.view.send({
       id: 'user-msg-cancel-1',
       role: 'user',
       parts: [{ type: 'text', text: 'Long request' }],
@@ -424,7 +424,7 @@ describe('ClientTransport integration', () => {
     });
 
     // Turn 1: client sends, server streams response
-    const clientTurn1 = await clientTransport.send({
+    const clientTurn1 = await clientTransport.view.send({
       id: 'user-seq-1',
       role: 'user',
       parts: [{ type: 'text', text: 'Q1' }],
@@ -442,7 +442,7 @@ describe('ClientTransport integration', () => {
     await waitForMessages(clientTransport, 2);
 
     // Turn 2: client sends again, server streams response
-    const clientTurn2 = await clientTransport.send({
+    const clientTurn2 = await clientTransport.view.send({
       id: 'user-seq-2',
       role: 'user',
       parts: [{ type: 'text', text: 'Q2' }],
@@ -566,7 +566,7 @@ describe('ClientTransport integration', () => {
     clientTransport.tree.on('ably-message', (msg) => rawMessages.push(msg));
 
     // Client sends to ensure attachment
-    const clientTurn = await clientTransport.send({
+    const clientTurn = await clientTransport.view.send({
       id: 'user-raw-1',
       role: 'user',
       parts: [{ type: 'text', text: 'test' }],
@@ -621,7 +621,7 @@ describe('ClientTransport integration', () => {
     });
 
     // Client sends user message
-    const clientTurn = await clientTransport.send({
+    const clientTurn = await clientTransport.view.send({
       id: 'user-hdr-1',
       role: 'user',
       parts: [{ type: 'text', text: 'Question' }],

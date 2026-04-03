@@ -7,7 +7,8 @@ import type { Codec } from '../../../src/core/codec/types.js';
 import { decodeHistory } from '../../../src/core/transport/decode-history.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
-import type { PaginatedMessages, TurnLifecycleEvent } from '../../../src/core/transport/types.js';
+import type { PaginatedMessages, SendOptions, TreeNode, TurnLifecycleEvent } from '../../../src/core/transport/types.js';
+import type { SendDelegate } from '../../../src/core/transport/view.js';
 import { DefaultView } from '../../../src/core/transport/view.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 vi.mock('../../../src/core/transport/decode-history.js', () => ({
@@ -44,6 +45,10 @@ const createMockCodec = (): Codec<TestEvent, TestMessage> => ({
   })),
   isTerminal: vi.fn(() => false),
 });
+
+const createMockSendDelegate = (): SendDelegate<TestEvent, TestMessage> =>
+  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+  vi.fn(() => Promise.resolve({ stream: new ReadableStream(), turnId: 'mock-turn', cancel: () => Promise.resolve() }));
 
 const makeHeaders = (msgId: string, turnId?: string): Record<string, string> => {
   const h: Record<string, string> = { [HEADER_MSG_ID]: msgId };
@@ -82,6 +87,7 @@ describe('DefaultView', () => {
       tree,
       channel: createMockChannel(),
       codec: createMockCodec(),
+      sendDelegate: createMockSendDelegate(),
       logger: silentLogger,
     });
   });
@@ -486,6 +492,7 @@ describe('DefaultView', () => {
         tree,
         channel: createMockChannel(),
         codec: createMockCodec(),
+        sendDelegate: createMockSendDelegate(),
         logger: silentLogger,
       });
 
@@ -511,6 +518,7 @@ describe('DefaultView', () => {
         tree,
         channel: createMockChannel(),
         codec: createMockCodec(),
+        sendDelegate: createMockSendDelegate(),
         logger: silentLogger,
       });
 
@@ -534,6 +542,7 @@ describe('DefaultView', () => {
         tree,
         channel: createMockChannel(),
         codec: createMockCodec(),
+        sendDelegate: createMockSendDelegate(),
         logger: silentLogger,
       });
 
@@ -544,6 +553,103 @@ describe('DefaultView', () => {
       view.on('update', handler);
       tree.upsert('m2', { id: '2', content: 'hello' }, { [HEADER_MSG_ID]: 'm2', 'x-ably-parent': 'm1' });
       expect(handler).toHaveBeenCalledOnce();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Write operations (send / regenerate / edit)
+  // -------------------------------------------------------------------------
+
+  describe('write operations', () => {
+    let mockDelegate: SendDelegate<TestEvent, TestMessage>;
+
+    beforeEach(() => {
+      mockDelegate = createMockSendDelegate();
+      view = new DefaultView({
+        tree,
+        channel: createMockChannel(),
+        codec: createMockCodec(),
+        sendDelegate: mockDelegate,
+        logger: silentLogger,
+      });
+      // Seed a linear chain: m1 -> m2 -> m3
+      tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
+      tree.upsert('m2', { id: '2', content: 'assistant' }, {
+        [HEADER_MSG_ID]: 'm2',
+        'x-ably-parent': 'm1',
+      }, 'serial-2');
+      tree.upsert('m3', { id: '3', content: 'follow-up' }, {
+        [HEADER_MSG_ID]: 'm3',
+        'x-ably-parent': 'm2',
+      }, 'serial-3');
+    });
+
+    it('send passes view context with own flattenNodes', async () => {
+      await view.send({ id: '4', content: 'new msg' });
+      expect(mockDelegate).toHaveBeenCalledOnce();
+      const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
+      const viewContext = call[2] as { flattenNodes: () => TreeNode<TestMessage>[] };
+      const nodes = viewContext.flattenNodes();
+      expect(nodes.map((n) => n.msgId)).toEqual(['m1', 'm2', 'm3']);
+    });
+
+    it('send forwards options to delegate', async () => {
+      await view.send({ id: '4', content: 'msg' }, { parent: 'm1', body: { extra: true } });
+      const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
+      expect(call[0]).toEqual({ id: '4', content: 'msg' });
+      expect(call[1]).toEqual({ parent: 'm1', body: { extra: true } });
+    });
+
+    it('regenerate computes forkOf and parent from target node', async () => {
+      await view.regenerate('m2');
+      const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
+      const options = call[1] as SendOptions;
+      expect(call[0]).toEqual([]);
+      expect(options.forkOf).toBe('m2');
+      expect(options.parent).toBe('m1'); // parent of m2
+    });
+
+    it('regenerate passes truncated history (before target)', async () => {
+      await view.regenerate('m2');
+      const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
+      const options = call[1] as { body: { history: TreeNode<TestMessage>[] } };
+      expect(options.body.history).toHaveLength(1);
+      expect(options.body.history[0]?.msgId).toBe('m1');
+    });
+
+    it('edit computes forkOf and parent from target node', async () => {
+      await view.edit('m3', { id: 'edited', content: 'revised' });
+      const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
+      const options = call[1] as SendOptions;
+      expect(call[0]).toEqual({ id: 'edited', content: 'revised' });
+      expect(options.forkOf).toBe('m3');
+      expect(options.parent).toBe('m2'); // parent of m3
+    });
+
+    it('edit passes truncated history (before target)', async () => {
+      await view.edit('m3', { id: 'edited', content: 'revised' });
+      const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
+      const options = call[1] as { body: { history: TreeNode<TestMessage>[] } };
+      expect(options.body.history).toHaveLength(2); // m1 and m2
+    });
+
+    it('send uses view-local branch selections for context', async () => {
+      // Fork m2
+      tree.upsert('m4', { id: '4', content: 'v2' }, {
+        [HEADER_MSG_ID]: 'm4',
+        'x-ably-parent': 'm1',
+        'x-ably-fork-of': 'm2',
+      }, 'serial-4');
+
+      // Select original branch (m2, not m4)
+      view.select('m2', 0);
+
+      await view.send({ id: '5', content: 'msg' });
+      const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
+      const viewContext = call[2] as { flattenNodes: () => TreeNode<TestMessage>[] };
+      const nodes = viewContext.flattenNodes();
+      // Should follow m1 -> m2 -> m3 (selected branch), not m1 -> m4
+      expect(nodes.map((n) => n.msgId)).toEqual(['m1', 'm2', 'm3']);
     });
   });
 

@@ -344,7 +344,7 @@ describe('ClientTransport', () => {
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
 
-      await defaultTransport.send({ id: 'u1', content: 'hi' });
+      await defaultTransport.view.send({ id: 'u1', content: 'hi' });
       await mockFetch.waitForCalls(1);
 
       expect(mockFetch.calls[0]?.url).toBe('/api/chat');
@@ -359,14 +359,14 @@ describe('ClientTransport', () => {
 
   describe('send', () => {
     it('returns an ActiveTurn with stream, turnId, and cancel', async () => {
-      const turn = await transport.send({ id: 'user-1', content: 'hi' });
+      const turn = await transport.view.send({ id: 'user-1', content: 'hi' });
       expect(turn.stream).toBeInstanceOf(ReadableStream);
       expect(typeof turn.turnId).toBe('string');
       expect(typeof turn.cancel).toBe('function');
     });
 
     it('inserts optimistic user messages into the tree', async () => {
-      await transport.send({ id: 'user-1', content: 'hello' });
+      await transport.view.send({ id: 'user-1', content: 'hello' });
 
       const messages = transport.view.flattenNodes().map((n) => n.message);
       expect(messages).toHaveLength(1);
@@ -386,7 +386,7 @@ describe('ClientTransport', () => {
       const seedNode = seeded.view.flattenNodes()[0];
       expect(seedNode).toBeDefined();
 
-      await seeded.send({ id: 'user-1', content: 'second' });
+      await seeded.view.send({ id: 'user-1', content: 'second' });
       await mockFetch.waitForCalls(1);
 
       const body = mockFetch.body(0);
@@ -396,7 +396,7 @@ describe('ClientTransport', () => {
     });
 
     it('fires HTTP POST with correct body', async () => {
-      const turn = await transport.send({ id: 'user-1', content: 'hello' });
+      const turn = await transport.view.send({ id: 'user-1', content: 'hello' });
       await mockFetch.waitForCalls(1);
 
       expect(mockFetch.calls[0]?.url).toBe('/api/chat');
@@ -409,7 +409,7 @@ describe('ClientTransport', () => {
     });
 
     it('does not include the new message in history (avoids duplication)', async () => {
-      await transport.send({ id: 'user-1', content: 'hello' });
+      await transport.view.send({ id: 'user-1', content: 'hello' });
       await mockFetch.waitForCalls(1);
 
       const body = mockFetch.body(0);
@@ -423,7 +423,7 @@ describe('ClientTransport', () => {
     });
 
     it('includes Content-Type header in POST', async () => {
-      await transport.send({ id: 'user-1', content: 'hello' });
+      await transport.view.send({ id: 'user-1', content: 'hello' });
       await mockFetch.waitForCalls(1);
 
       const headers = mockFetch.calls[0]?.init.headers as Record<string, string>;
@@ -443,14 +443,14 @@ describe('ClientTransport', () => {
         fetch: blockingFetch as unknown as typeof globalThis.fetch,
       });
 
-      const turn = await blockTransport.send({ id: 'u1', content: 'hi' });
+      const turn = await blockTransport.view.send({ id: 'u1', content: 'hi' });
       expect(turn.stream).toBeInstanceOf(ReadableStream);
 
       await blockTransport.close();
     });
 
     it('POST body messages include msg-id and role headers', async () => {
-      await transport.send({ id: 'user-1', content: 'hello' });
+      await transport.view.send({ id: 'user-1', content: 'hello' });
       await mockFetch.waitForCalls(1);
 
       const body = mockFetch.body(0);
@@ -460,7 +460,7 @@ describe('ClientTransport', () => {
     });
 
     it('merges sendOptions.body into the POST body', async () => {
-      await transport.send({ id: 'u1', content: 'hi' }, { body: { customField: 'val' } });
+      await transport.view.send({ id: 'u1', content: 'hi' }, { body: { customField: 'val' } });
       await mockFetch.waitForCalls(1);
 
       const body = mockFetch.body(0);
@@ -468,7 +468,7 @@ describe('ClientTransport', () => {
     });
 
     it('merges sendOptions.headers into the POST headers', async () => {
-      await transport.send({ id: 'u1', content: 'hi' }, { headers: { 'X-Custom': 'token' } });
+      await transport.view.send({ id: 'u1', content: 'hi' }, { headers: { 'X-Custom': 'token' } });
       await mockFetch.waitForCalls(1);
 
       const headers = mockFetch.calls[0]?.init.headers as Record<string, string>;
@@ -476,7 +476,7 @@ describe('ClientTransport', () => {
     });
 
     it('includes forkOf in POST body when set in sendOptions', async () => {
-      await transport.send({ id: 'u1', content: 'hi' }, { forkOf: 'msg-original' });
+      await transport.view.send({ id: 'u1', content: 'hi' }, { forkOf: 'msg-original' });
       await mockFetch.waitForCalls(1);
 
       const body = mockFetch.body(0);
@@ -494,7 +494,7 @@ describe('ClientTransport', () => {
       const errors: Ably.ErrorInfo[] = [];
       failTransport.on('error', (e) => errors.push(e));
 
-      await failTransport.send({ id: 'u1', content: 'hi' });
+      await failTransport.view.send({ id: 'u1', content: 'hi' });
       await failFetch.waitForCalls(1);
       await flushMicrotasks();
 
@@ -516,7 +516,7 @@ describe('ClientTransport', () => {
       const errors: Ably.ErrorInfo[] = [];
       errorTransport.on('error', (e) => errors.push(e));
 
-      await errorTransport.send({ id: 'u1', content: 'hi' });
+      await errorTransport.view.send({ id: 'u1', content: 'hi' });
       await flushMicrotasks();
 
       expect(errors).toHaveLength(1);
@@ -538,7 +538,7 @@ describe('ClientTransport', () => {
         /* consume error */
       });
 
-      const turn = await failTransport.send({ id: 'u1', content: 'hi' });
+      const turn = await failTransport.view.send({ id: 'u1', content: 'hi' });
       await failFetch.waitForCalls(1);
       await flushMicrotasks();
 
@@ -561,7 +561,7 @@ describe('ClientTransport', () => {
         /* consume error */
       });
 
-      const turn = await errorTransport.send({ id: 'u1', content: 'hi' });
+      const turn = await errorTransport.view.send({ id: 'u1', content: 'hi' });
       await flushMicrotasks();
 
       const items = await drain(turn.stream);
@@ -572,7 +572,7 @@ describe('ClientTransport', () => {
 
     it('throws when transport is closed', async () => {
       await transport.close();
-      await expect(transport.send({ id: 'u1', content: 'hi' })).rejects.toThrow('transport is closed');
+      await expect(transport.view.send({ id: 'u1', content: 'hi' })).rejects.toThrow('transport is closed');
     });
 
     it('createView throws when transport is closed', async () => {
@@ -589,7 +589,7 @@ describe('ClientTransport', () => {
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
 
-      await dynTransport.send({ id: 'u1', content: 'hi' });
+      await dynTransport.view.send({ id: 'u1', content: 'hi' });
       await mockFetch.waitForCalls(1);
 
       const headers = mockFetch.calls[0]?.init.headers as Record<string, string>;
@@ -609,7 +609,7 @@ describe('ClientTransport', () => {
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
 
-      await credTransport.send({ id: 'u1', content: 'hi' });
+      await credTransport.view.send({ id: 'u1', content: 'hi' });
       await mockFetch.waitForCalls(1);
 
       const callArgs = vi.mocked(mockFetch.fn).mock.calls[0] as [string, RequestInit];
@@ -619,7 +619,7 @@ describe('ClientTransport', () => {
     });
 
     it('handles array of messages', async () => {
-      const turn = await transport.send([
+      const turn = await transport.view.send([
         { id: 'u1', content: 'a' },
         { id: 'u2', content: 'b' },
       ]);
@@ -632,7 +632,7 @@ describe('ClientTransport', () => {
     });
 
     it('sets explicit parent when provided in sendOptions', async () => {
-      await transport.send({ id: 'u1', content: 'hi' }, { parent: 'explicit-parent' });
+      await transport.view.send({ id: 'u1', content: 'hi' }, { parent: 'explicit-parent' });
       await mockFetch.waitForCalls(1);
 
       const body = mockFetch.body(0);
@@ -648,7 +648,7 @@ describe('ClientTransport', () => {
       });
 
       // eslint-disable-next-line unicorn/no-null -- testing null parent explicitly (root message)
-      await seeded.send({ id: 'u1', content: 'hi' }, { parent: null });
+      await seeded.view.send({ id: 'u1', content: 'hi' }, { parent: null });
       await mockFetch.waitForCalls(1);
 
       const body = mockFetch.body(0);
@@ -666,7 +666,7 @@ describe('ClientTransport', () => {
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
 
-      await seeded.send({ id: 'u1', content: 'hi' }, { forkOf: 'seed-1' });
+      await seeded.view.send({ id: 'u1', content: 'hi' }, { forkOf: 'seed-1' });
       await mockFetch.waitForCalls(1);
 
       // forkOf skips autoParent computation
@@ -677,29 +677,29 @@ describe('ClientTransport', () => {
     });
 
     it('stamps forkOf on optimistic message headers', async () => {
-      await transport.send({ id: 'u1', content: 'hi' }, { forkOf: 'original-msg' });
+      await transport.view.send({ id: 'u1', content: 'hi' }, { forkOf: 'original-msg' });
 
       const nodes = transport.view.flattenNodes();
       expect(nodes[0]?.headers[HEADER_FORK_OF]).toBe('original-msg');
     });
 
     it('stamps role on optimistic message headers', async () => {
-      await transport.send({ id: 'u1', content: 'hi' });
+      await transport.view.send({ id: 'u1', content: 'hi' });
 
       const nodes = transport.view.flattenNodes();
       expect(nodes[0]?.headers[HEADER_ROLE]).toBe('user');
     });
 
     it('stamps turnId on optimistic message headers', async () => {
-      const turn = await transport.send({ id: 'u1', content: 'hi' });
+      const turn = await transport.view.send({ id: 'u1', content: 'hi' });
 
       const nodes = transport.view.flattenNodes();
       expect(nodes[0]?.headers[HEADER_TURN_ID]).toBe(turn.turnId);
     });
 
     it('generates unique turnId for each send', async () => {
-      const turn1 = await transport.send({ id: 'u1', content: 'a' });
-      const turn2 = await transport.send({ id: 'u2', content: 'b' });
+      const turn1 = await transport.view.send({ id: 'u1', content: 'a' });
+      const turn2 = await transport.view.send({ id: 'u2', content: 'b' });
       expect(turn1.turnId).not.toBe(turn2.turnId);
     });
   });
@@ -841,7 +841,7 @@ describe('ClientTransport', () => {
     });
 
     it('routes decoded events to own turn stream', async () => {
-      const turn = await transport.send({ id: 'u1', content: 'hi' });
+      const turn = await transport.view.send({ id: 'u1', content: 'hi' });
       await mockFetch.waitForCalls(1);
 
       decoder.outputs.push({ kind: 'event', event: { type: 'text', text: 'hello' } });
@@ -858,7 +858,7 @@ describe('ClientTransport', () => {
     });
 
     it('reconciles optimistic entry when relayed own message arrives (msg-id match)', async () => {
-      const turn = await transport.send({ id: 'u1', content: 'hello' });
+      const turn = await transport.view.send({ id: 'u1', content: 'hello' });
       await mockFetch.waitForCalls(1);
 
       const body = mockFetch.body(0);
@@ -963,7 +963,7 @@ describe('ClientTransport', () => {
     });
 
     it('closes stream on turn-end for own turn', async () => {
-      const turn = await transport.send({ id: 'u1', content: 'hi' });
+      const turn = await transport.view.send({ id: 'u1', content: 'hi' });
       await mockFetch.waitForCalls(1);
 
       decoder.outputs.push({ kind: 'event', event: { type: 'text', text: 'data' } });
@@ -1047,7 +1047,7 @@ describe('ClientTransport', () => {
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
       vi.mocked(codec.createAccumulator).mockReturnValue(mockAccum);
 
-      const turn = await transport.send({ id: 'u1', content: 'hi' });
+      const turn = await transport.view.send({ id: 'u1', content: 'hi' });
       await mockFetch.waitForCalls(1);
 
       const messageHandler = vi.fn();
@@ -1066,7 +1066,7 @@ describe('ClientTransport', () => {
     });
 
     it('skips late arrival events for completed own turns', async () => {
-      const turn = await transport.send({ id: 'u1', content: 'hi' });
+      const turn = await transport.view.send({ id: 'u1', content: 'hi' });
       await mockFetch.waitForCalls(1);
 
       // Route some events and close the stream via terminal
@@ -1128,7 +1128,7 @@ describe('ClientTransport', () => {
         configurable: true,
       });
 
-      const turn = await transport.send({ id: 'u1', content: 'hi' });
+      const turn = await transport.view.send({ id: 'u1', content: 'hi' });
       await mockFetch.waitForCalls(1);
 
       // Stream an event to establish the observer with x-ably-status: streaming
@@ -1188,7 +1188,7 @@ describe('ClientTransport', () => {
       }, 'serial-0000');
 
       // --- send two user messages in one turn ---
-      const turn = await transport.send([
+      const turn = await transport.view.send([
         { id: 'u1', content: 'Actually, about Paris' },
         { id: 'u2', content: 'No Milan' },
       ]);
@@ -1304,7 +1304,7 @@ describe('ClientTransport', () => {
       }, 'serial-0000');
 
       // --- send two messages ---
-      const turn = await transport.send([
+      const turn = await transport.view.send([
         { id: 'u1', content: 'first' },
         { id: 'u2', content: 'second' },
       ]);
@@ -1342,7 +1342,7 @@ describe('ClientTransport', () => {
       }));
 
       // Edit msg1 → creates a fork sibling
-      const editTurn = await transport.edit(msg1Id, [{ id: 'u1-edited', content: 'edited first' }]);
+      const editTurn = await transport.view.edit(msg1Id, [{ id: 'u1-edited', content: 'edited first' }]);
       await mockFetch.waitForCalls(2);
 
       // After editing, the tree should show the fork, not the original branch.
@@ -1370,7 +1370,7 @@ describe('ClientTransport', () => {
         { id: 'asst-msg', content: 'answer' },
       ]);
 
-      await seeded.regenerate('asst-msg');
+      await seeded.view.regenerate('asst-msg');
       await mockFetch.waitForCalls(1);
 
       const body = mockFetch.body(0);
@@ -1384,7 +1384,7 @@ describe('ClientTransport', () => {
         { id: 'msg-1', content: 'hi' },
       ]);
 
-      await seeded.regenerate('msg-1');
+      await seeded.view.regenerate('msg-1');
       await mockFetch.waitForCalls(1);
 
       const body = mockFetch.body(0);
@@ -1399,7 +1399,7 @@ describe('ClientTransport', () => {
         { id: 'a1', content: 'answer' },
       ]);
 
-      await seeded.regenerate('a1');
+      await seeded.view.regenerate('a1');
       await mockFetch.waitForCalls(1);
 
       const body = mockFetch.body(0);
@@ -1417,7 +1417,7 @@ describe('ClientTransport', () => {
         { id: 'a1', content: 'answer' },
       ]);
 
-      await seeded.regenerate('a1');
+      await seeded.view.regenerate('a1');
       await mockFetch.waitForCalls(1);
 
       const body = mockFetch.body(0);
@@ -1432,7 +1432,7 @@ describe('ClientTransport', () => {
         { id: 'msg-1', content: 'hi' },
       ]);
 
-      const turn = await seeded.regenerate('msg-1');
+      const turn = await seeded.view.regenerate('msg-1');
       expect(turn.stream).toBeInstanceOf(ReadableStream);
       expect(typeof turn.turnId).toBe('string');
 
@@ -1450,7 +1450,7 @@ describe('ClientTransport', () => {
         { id: 'user-msg', content: 'original' },
       ]);
 
-      await seeded.edit('user-msg', { id: 'edited', content: 'revised' });
+      await seeded.view.edit('user-msg', { id: 'edited', content: 'revised' });
       await mockFetch.waitForCalls(1);
 
       const body = mockFetch.body(0);
@@ -1464,7 +1464,7 @@ describe('ClientTransport', () => {
         { id: 'user-msg', content: 'original' },
       ]);
 
-      await seeded.edit('user-msg', [
+      await seeded.view.edit('user-msg', [
         { id: 'edit-1', content: 'revised-1' },
         { id: 'edit-2', content: 'revised-2' },
       ]);
@@ -1483,7 +1483,7 @@ describe('ClientTransport', () => {
         { id: 'u1', content: 'user message' },
       ]);
 
-      await seeded.edit('u1', { id: 'edited', content: 'revised' });
+      await seeded.view.edit('u1', { id: 'edited', content: 'revised' });
       await mockFetch.waitForCalls(1);
 
       const body = mockFetch.body(0);
@@ -1498,7 +1498,7 @@ describe('ClientTransport', () => {
         { id: 'user-msg', content: 'original' },
       ]);
 
-      const turn = await seeded.edit('user-msg', { id: 'edited', content: 'revised' });
+      const turn = await seeded.view.edit('user-msg', { id: 'edited', content: 'revised' });
       expect(turn.stream).toBeInstanceOf(ReadableStream);
 
       await seeded.close();
@@ -1515,7 +1515,7 @@ describe('ClientTransport', () => {
         { id: 'u3', content: 'About Paris' },
       ]);
 
-      await seeded.edit('u2', { id: 'u2-edit', content: 'Actually a haiku' });
+      await seeded.view.edit('u2', { id: 'u2-edit', content: 'Actually a haiku' });
       await mockFetch.waitForCalls(1);
 
       const body = mockFetch.body(0);
@@ -1543,7 +1543,7 @@ describe('ClientTransport', () => {
     });
 
     it('closes matching own turn streams', async () => {
-      const turn = await transport.send({ id: 'u1', content: 'hi' });
+      const turn = await transport.view.send({ id: 'u1', content: 'hi' });
       await mockFetch.waitForCalls(1);
 
       await transport.cancel({ turnId: turn.turnId });
@@ -1590,7 +1590,7 @@ describe('ClientTransport', () => {
         configurable: true,
       });
 
-      const turn = await transport.send({ id: 'u1', content: 'hi' });
+      const turn = await transport.view.send({ id: 'u1', content: 'hi' });
       await mockFetch.waitForCalls(1);
 
       // Stream some events before cancel
@@ -1612,7 +1612,7 @@ describe('ClientTransport', () => {
     });
 
     it('does not recreate observer accumulator after cancel with turnId filter', async () => {
-      const turn = await transport.send({ id: 'u1', content: 'hi' });
+      const turn = await transport.view.send({ id: 'u1', content: 'hi' });
       await mockFetch.waitForCalls(1);
 
       // Stream an event — creates the observer accumulator
@@ -1635,7 +1635,7 @@ describe('ClientTransport', () => {
     });
 
     it('does not recreate observer accumulator after cancel with own filter', async () => {
-      const turn = await transport.send({ id: 'u1', content: 'hi' });
+      const turn = await transport.view.send({ id: 'u1', content: 'hi' });
       await mockFetch.waitForCalls(1);
 
       decoder.outputs.push({ kind: 'event', event: { type: 'text', text: 'partial' } });
@@ -1925,7 +1925,7 @@ describe('ClientTransport', () => {
     });
 
     it('reflects optimistic messages after send', async () => {
-      await transport.send({ id: 'u1', content: 'hi' });
+      await transport.view.send({ id: 'u1', content: 'hi' });
       const messages = transport.view.flattenNodes().map((n) => n.message);
       expect(messages.length).toBeGreaterThan(0);
     });
@@ -2033,7 +2033,7 @@ describe('ClientTransport', () => {
     });
 
     it('clears active streams', async () => {
-      const turn = await transport.send({ id: 'u1', content: 'hi' });
+      const turn = await transport.view.send({ id: 'u1', content: 'hi' });
       await transport.close();
 
       const items = await drain(turn.stream);
@@ -2078,7 +2078,7 @@ describe('ClientTransport', () => {
     });
 
     it('closes matching streams when cancel option specifies turnId', async () => {
-      const turn = await transport.send({ id: 'u1', content: 'hi' });
+      const turn = await transport.view.send({ id: 'u1', content: 'hi' });
       await transport.close({ cancel: { turnId: turn.turnId } });
 
       const items = await drain(turn.stream);
@@ -2144,7 +2144,7 @@ describe('ClientTransport', () => {
 
   describe('turn-end cleanup', () => {
     it('cleans up per-turn state after turn-end', async () => {
-      const turn = await transport.send({ id: 'u1', content: 'hi' });
+      const turn = await transport.view.send({ id: 'u1', content: 'hi' });
       await mockFetch.waitForCalls(1);
 
       simulateMessage(
@@ -2208,8 +2208,8 @@ describe('ClientTransport', () => {
 
   describe('cancel with filter variants', () => {
     it('closes streams for all own turns when filter is { own: true }', async () => {
-      const turn1 = await transport.send({ id: 'u1', content: 'a' });
-      const turn2 = await transport.send({ id: 'u2', content: 'b' });
+      const turn1 = await transport.view.send({ id: 'u1', content: 'a' });
+      const turn2 = await transport.view.send({ id: 'u2', content: 'b' });
 
       await transport.cancel({ own: true });
 
@@ -2220,7 +2220,7 @@ describe('ClientTransport', () => {
     });
 
     it('closes streams for all turns when filter is { all: true }', async () => {
-      const turn = await transport.send({ id: 'u1', content: 'a' });
+      const turn = await transport.view.send({ id: 'u1', content: 'a' });
       await transport.cancel({ all: true });
 
       const items = await drain(turn.stream);
@@ -2228,8 +2228,8 @@ describe('ClientTransport', () => {
     });
 
     it('closes stream for specific turn when filter has turnId', async () => {
-      const turn1 = await transport.send({ id: 'u1', content: 'a' });
-      const turn2 = await transport.send({ id: 'u2', content: 'b' });
+      const turn1 = await transport.view.send({ id: 'u1', content: 'a' });
+      const turn2 = await transport.view.send({ id: 'u2', content: 'b' });
 
       await transport.cancel({ turnId: turn1.turnId });
 
@@ -2264,7 +2264,7 @@ describe('ClientTransport', () => {
 
   describe('ActiveTurn.cancel', () => {
     it('cancels the specific turn via the handle', async () => {
-      const turn = await transport.send({ id: 'u1', content: 'hi' });
+      const turn = await transport.view.send({ id: 'u1', content: 'hi' });
       await turn.cancel();
 
       const items = await drain(turn.stream);
@@ -2280,8 +2280,8 @@ describe('ClientTransport', () => {
 
   describe('concurrent turns', () => {
     it('routes events to the correct turn stream independently', async () => {
-      const turn1 = await transport.send({ id: 'u1', content: 'a' });
-      const turn2 = await transport.send({ id: 'u2', content: 'b' });
+      const turn1 = await transport.view.send({ id: 'u1', content: 'a' });
+      const turn2 = await transport.view.send({ id: 'u2', content: 'b' });
       await mockFetch.waitForCalls(2);
 
       // Route events to turn1
@@ -2313,8 +2313,8 @@ describe('ClientTransport', () => {
     });
 
     it('cancel one turn does not affect the other', async () => {
-      const turn1 = await transport.send({ id: 'u1', content: 'a' });
-      const turn2 = await transport.send({ id: 'u2', content: 'b' });
+      const turn1 = await transport.view.send({ id: 'u1', content: 'a' });
+      const turn2 = await transport.view.send({ id: 'u2', content: 'b' });
       await mockFetch.waitForCalls(2);
 
       await transport.cancel({ turnId: turn1.turnId });
@@ -2460,7 +2460,7 @@ describe('ClientTransport', () => {
       });
 
       // Start send() — it will await the _attachPromise
-      const sendPromise = pendingTransport.send({ id: 'u1', content: 'hi' });
+      const sendPromise = pendingTransport.view.send({ id: 'u1', content: 'hi' });
 
       // Close while attach is pending
       await pendingTransport.close();

@@ -6,5 +6,5 @@ export { useRegenerate } from './use-regenerate.js';
 export { useSend } from './use-send.js';
 export type { TreeHandle } from './use-tree.js';
 export { useTree } from './use-tree.js';
-export type { ViewHandle, ViewOptions } from './use-view.js';
+export type { UseViewOptions, ViewHandle } from './use-view.js';
 export { useView } from './use-view.js';

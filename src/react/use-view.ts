@@ -14,7 +14,7 @@ import type { ActiveTurn, ClientTransport, SendOptions, TreeNode, View } from '.
 import { ErrorCode } from '../errors.js';
 
 /** Options for configuring the view's initial load behavior. */
-export interface ViewOptions {
+export interface UseViewOptions {
   /** Maximum number of older messages to load per page. Defaults to 100. */
   limit?: number;
 }
@@ -71,7 +71,7 @@ const resolveView = <TEvent, TMessage>(
  */
 export const useView = <TEvent, TMessage>(
   source: ClientTransport<TEvent, TMessage> | View<TEvent, TMessage> | null | undefined,
-  options?: ViewOptions | null,
+  options?: UseViewOptions | null,
 ): ViewHandle<TEvent, TMessage> => {
   const view = resolveView(source ?? undefined);
 

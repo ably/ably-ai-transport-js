@@ -13,9 +13,10 @@
  * visible nodes, and 'turn' only for turns with visible messages.
  */
 
-import type * as Ably from 'ably';
+import * as Ably from 'ably';
 
 import { HEADER_MSG_ID, HEADER_TURN_ID } from '../../constants.js';
+import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import { getHeaders } from '../../utils.js';
@@ -96,8 +97,11 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   /** Msg-ids loaded from history but not yet revealed to the UI. */
   private readonly _withheldMsgIds = new Set<string>();
 
-  /** Snapshot of visible msgIds — used to detect whether tree updates affect the view. */
+  /** Snapshot of visible msgIds — used to detect structural changes and for selection pinning. */
   private _lastVisibleIds: string[] = [];
+
+  /** Snapshot of visible message references — used to detect in-place content updates (streaming). */
+  private _lastVisibleMessages: TMessage[] = [];
 
   /** Whether there are more history pages to fetch from the channel. */
   private _hasMoreHistory = false;
@@ -111,6 +115,14 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   /** Unsubscribe functions for tree event subscriptions. */
   private readonly _unsubs: (() => void)[] = [];
 
+  /**
+   * Fork-of msgIds from this view's own send/regenerate calls where the
+   * optimistic insert hasn't created a sibling yet (e.g. regenerate sends
+   * no user messages). When the server response arrives and creates the new
+   * sibling, `_onTreeUpdate` will auto-select it instead of pinning the old branch.
+   */
+  private readonly _pendingForkSelections = new Set<string>();
+
   private _closed = false;
 
   constructor(options: ViewOptions<TEvent, TMessage>) {
@@ -119,10 +131,11 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     this._codec = options.codec;
     this._sendDelegate = options.sendDelegate;
     this._logger = options.logger.withContext({ component: 'View' });
+    this._logger.trace('DefaultView();');
     this._emitter = new EventEmitter<ViewEventsMap>(this._logger);
 
     // Snapshot initial visible state
-    this._lastVisibleIds = this._computeVisibleIds();
+    this._updateVisibleSnapshot();
 
     // Subscribe to tree events and re-emit scoped versions
     this._unsubs.push(
@@ -242,7 +255,35 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   // Spec: AIT-CT3, AIT-CT4
   async send(input: TMessage | TMessage[], options?: SendOptions): Promise<ActiveTurn<TEvent>> {
     this._logger.trace('DefaultView.send();');
-    return this._sendDelegate(input, options, { flattenNodes: () => this.flattenNodes() });
+
+    // Capture sibling count before the delegate so we can detect whether
+    // an optimistic insert actually added a new sibling (edit) or not (regenerate).
+    const siblingsBefore = options?.forkOf ? this._tree.getSiblings(options.forkOf).length : 0;
+
+    const result = await this._sendDelegate(input, options, { flattenNodes: () => this.flattenNodes() });
+
+    // Auto-select the new fork in this view when creating a fork.
+    // The delegate's optimistic insert created the sibling — pin this
+    // view to the latest (new) sibling so the user sees their edit/regeneration.
+    if (options?.forkOf) {
+      const groupRoot = this._tree.getGroupRoot(options.forkOf);
+      const siblings = this._tree.getSiblings(options.forkOf);
+      if (siblings.length > siblingsBefore) {
+        // Optimistic insert added a sibling — select it immediately.
+        this._selections.set(groupRoot, siblings.length - 1);
+        this._updateVisibleSnapshot();
+        this._emitter.emit('update');
+      } else {
+        // No new sibling yet (e.g. regenerate sends no user messages). Defer
+        // auto-selection until the server response creates the new sibling.
+        // Store the group root (not the raw forkOf) so _pinVisibleSelections
+        // can match it regardless of which sibling is currently visible.
+        this._pendingForkSelections.add(groupRoot);
+        this._logger.debug('DefaultView.send(); deferring fork auto-selection', { forkOf: options.forkOf, groupRoot });
+      }
+    }
+
+    return result;
   }
 
   // Spec: AIT-CT5
@@ -250,7 +291,14 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     this._logger.trace('DefaultView.regenerate();', { messageId });
 
     const node = this._tree.getNode(messageId);
-    const parentId = node?.parentId;
+    if (!node) {
+      throw new Ably.ErrorInfo(
+        `unable to regenerate; message not found in tree: ${messageId}`,
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+    const parentId = node.parentId;
 
     return this.send([], {
       ...options,
@@ -272,7 +320,14 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     this._logger.trace('DefaultView.edit();', { messageId });
 
     const node = this._tree.getNode(messageId);
-    const parentId = node?.parentId;
+    if (!node) {
+      throw new Ably.ErrorInfo(
+        `unable to edit; message not found in tree: ${messageId}`,
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+    const parentId = node.parentId;
 
     return this.send(newMessages, {
       ...options,
@@ -289,7 +344,13 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     this._logger.trace('DefaultView._getHistoryBefore();', { messageId });
     const all = this.flattenNodes();
     const idx = all.findIndex((n) => n.msgId === messageId);
-    return idx === -1 ? all : all.slice(0, idx);
+    if (idx === -1) {
+      this._logger.warn('DefaultView._getHistoryBefore(); target not in visible nodes, returning full list', {
+        messageId,
+      });
+      return all;
+    }
+    return all.slice(0, idx);
   }
 
   // -------------------------------------------------------------------------
@@ -351,6 +412,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     for (const unsub of this._unsubs) unsub();
     this._unsubs.length = 0;
     this._selections.clear();
+    this._pendingForkSelections.clear();
     this._withheldMsgIds.clear();
     this._withheldBuffer.length = 0;
   }
@@ -456,19 +518,66 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   // Private: scoped event forwarding
   // -------------------------------------------------------------------------
 
-  private _computeVisibleIds(): string[] {
-    return this.flattenNodes().map((n) => n.msgId);
+  private _computeVisibleNodes(): TreeNode<TMessage>[] {
+    return this.flattenNodes();
   }
 
   private _updateVisibleSnapshot(): void {
-    this._lastVisibleIds = this._computeVisibleIds();
+    const nodes = this._computeVisibleNodes();
+    this._lastVisibleIds = nodes.map((n) => n.msgId);
+    this._lastVisibleMessages = nodes.map((n) => n.message);
   }
 
   private _onTreeUpdate(): void {
-    const newIds = this._computeVisibleIds();
-    if (this._visibleChanged(newIds)) {
+    // Pin selections for previously-visible nodes that now have siblings.
+    // This prevents new forks (from other views' edits/regenerates) from
+    // shifting this view to a branch the user didn't navigate to.
+    this._pinVisibleSelections();
+
+    const nodes = this._computeVisibleNodes();
+    const newIds = nodes.map((n) => n.msgId);
+    const newMessages = nodes.map((n) => n.message);
+    if (this._visibleChanged(newIds, newMessages)) {
       this._lastVisibleIds = newIds;
+      this._lastVisibleMessages = newMessages;
       this._emitter.emit('update');
+    }
+  }
+
+  /**
+   * For each previously-visible message that now has siblings but no
+   * explicit selection, pin the selection to that message's index.
+   * This preserves the current branch when new forks appear from
+   * other views or external sources.
+   *
+   * Exception: if the fork was initiated by this view (tracked in
+   * `_pendingForkSelections`), select the newest sibling instead of
+   * pinning the old one. This handles regenerate, where no optimistic
+   * insert was possible at send time.
+   */
+  private _pinVisibleSelections(): void {
+    for (const msgId of this._lastVisibleIds) {
+      if (!this._tree.hasSiblings(msgId)) continue;
+      const groupRoot = this._tree.getGroupRoot(msgId);
+
+      // Check if this fork was initiated by this view (e.g. regenerate).
+      // If so, select the newest sibling and clear the pending state.
+      // The pending set stores the forkOf msgId (the group root), but the
+      // visible list may contain a different sibling — so check via groupRoot.
+      if (this._pendingForkSelections.has(groupRoot)) {
+        const siblings = this._tree.getSiblings(msgId);
+        const index = siblings.length - 1;
+        this._logger.debug('DefaultView._pinVisibleSelections(); auto-selecting pending fork', { msgId, index });
+        this._selections.set(groupRoot, index);
+        this._pendingForkSelections.delete(groupRoot);
+        continue;
+      }
+
+      if (this._selections.has(groupRoot)) continue;
+      const idx = this._tree.getSiblingIndex(msgId);
+      if (idx >= 0) {
+        this._selections.set(groupRoot, idx);
+      }
     }
   }
 
@@ -481,7 +590,8 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
       this._emitter.emit('ably-message', msg);
       return;
     }
-    if (!this._withheldMsgIds.has(msgId)) {
+    // Check that msgId is on the visible branch and not withheld
+    if (this._lastVisibleIds.includes(msgId)) {
       this._emitter.emit('ably-message', msg);
     }
   }
@@ -498,10 +608,14 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     }
   }
 
-  private _visibleChanged(newIds: string[]): boolean {
+  private _visibleChanged(newIds: string[], newMessages: TMessage[]): boolean {
     if (newIds.length !== this._lastVisibleIds.length) return true;
     for (const [i, newId] of newIds.entries()) {
       if (newId !== this._lastVisibleIds[i]) return true;
+    }
+    // Also detect in-place content updates (e.g. streaming) via reference comparison
+    for (const [i, msg] of newMessages.entries()) {
+      if (msg !== this._lastVisibleMessages[i]) return true;
     }
     return false;
   }

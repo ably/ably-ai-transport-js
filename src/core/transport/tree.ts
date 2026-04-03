@@ -53,6 +53,12 @@ export interface TreeInternal<TMessage> extends Tree<TMessage> {
    */
   getGroupRoot(msgId: string): string;
 
+  /**
+   * Get the index of a specific msgId within its sibling group.
+   * Returns -1 if the msgId is not found.
+   */
+  getSiblingIndex(msgId: string): number;
+
   /** Forward a raw Ably message event to tree subscribers. */
   emitAblyMessage(msg: Ably.InboundMessage): void;
   /** Forward a turn lifecycle event to tree subscribers. */
@@ -342,6 +348,10 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
 
   hasSiblings(msgId: string): boolean {
     return this._getSiblingGroup(msgId).length > 1;
+  }
+
+  getSiblingIndex(msgId: string): number {
+    return this._getSiblingGroup(msgId).findIndex((n) => n.msgId === msgId);
   }
 
   getNode(msgId: string): TreeNode<TMessage> | undefined {

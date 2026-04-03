@@ -2,21 +2,17 @@
 
 import { useRef, useEffect } from 'react';
 import type { UIMessage } from 'ai';
-import type { TreeNode } from '@ably/ai-transport';
-import type { TreeHandle } from '@ably/ai-transport/react';
+import type { ViewHandle } from '@ably/ai-transport/react';
 import { MessageBubble } from './message-bubble';
 
 interface MessageListProps {
-  nodes: TreeNode<UIMessage>[];
-  tree: TreeHandle<UIMessage>;
-  hasOlder: boolean;
-  loading: boolean;
-  onLoadOlder: () => void;
+  view: ViewHandle<UIMessage>;
   onRegenerate: (messageId: string) => void;
   onEdit: (messageId: string, newText: string) => void;
 }
 
-export function MessageList({ nodes, tree, hasOlder, loading, onLoadOlder, onRegenerate, onEdit }: MessageListProps) {
+export function MessageList({ view, onRegenerate, onEdit }: MessageListProps) {
+  const { nodes, hasOlder, loading, loadOlder } = view;
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const prevLastIdRef = useRef<string | undefined>(undefined);
@@ -36,6 +32,10 @@ export function MessageList({ nodes, tree, hasOlder, loading, onLoadOlder, onReg
     if (el.scrollTop < 60) {
       onLoadOlder();
     }
+  };
+
+  const onLoadOlder = () => {
+    void loadOlder();
   };
 
   return (
@@ -64,10 +64,10 @@ export function MessageList({ nodes, tree, hasOlder, loading, onLoadOlder, onReg
           key={node.message.id}
           message={node.message}
           headers={node.headers}
-          hasSiblings={tree.hasSiblings(node.msgId)}
-          siblings={tree.getSiblings(node.msgId)}
-          selectedIndex={tree.getSelectedIndex(node.msgId)}
-          onSelectSibling={(index) => tree.select(node.msgId, index)}
+          hasSiblings={view.hasSiblings(node.msgId)}
+          siblings={view.getSiblings(node.msgId)}
+          selectedIndex={view.getSelectedIndex(node.msgId)}
+          onSelectSibling={(index) => view.select(node.msgId, index)}
           onRegenerate={node.message.role === 'assistant' ? () => onRegenerate(node.msgId) : undefined}
           onEdit={node.message.role === 'user' ? (text) => onEdit(node.msgId, text) : undefined}
         />

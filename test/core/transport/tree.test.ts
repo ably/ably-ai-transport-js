@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { HEADER_FORK_OF, HEADER_PARENT } from '../../../src/constants.js';
+import type { TreeInternal } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
-import type { Tree } from '../../../src/core/transport/types.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 
 // ---------------------------------------------------------------------------
@@ -15,6 +15,9 @@ interface TestMessage {
 }
 
 const silentLogger = makeLogger({ logLevel: LogLevel.Silent });
+
+/** Empty selections — always picks the latest sibling at every fork. */
+const NO_SELECTIONS = new Map<string, number>();
 
 /**
  * Build headers for a tree node.
@@ -35,7 +38,7 @@ const headers = (opts?: { parent?: string; forkOf?: string }): Record<string, st
 // ---------------------------------------------------------------------------
 
 describe('Tree', () => {
-  let tree: Tree<TestMessage>;
+  let tree: TreeInternal<TestMessage>;
 
   beforeEach(() => {
     tree = createTree(silentLogger);
@@ -48,7 +51,7 @@ describe('Tree', () => {
   describe('linear conversation', () => {
     it('flattens a single message', () => {
       tree.upsert('m1', { id: 'a', content: 'hi' }, headers(), 'serial-001');
-      expect(tree.flattenNodes().map((n) => n.message)).toEqual([{ id: 'a', content: 'hi' }]);
+      expect(tree.flattenNodes(NO_SELECTIONS).map((n) => n.message)).toEqual([{ id: 'a', content: 'hi' }]);
     });
 
     it('flattens a linear chain in serial order', () => {
@@ -56,7 +59,7 @@ describe('Tree', () => {
       tree.upsert('m2', { id: 'b', content: 'second' }, headers({ parent: 'm1' }), 'serial-002');
       tree.upsert('m3', { id: 'c', content: 'third' }, headers({ parent: 'm2' }), 'serial-003');
 
-      const flat = tree.flattenNodes().map((n) => n.message);
+      const flat = tree.flattenNodes(NO_SELECTIONS).map((n) => n.message);
       expect(flat).toEqual([
         { id: 'a', content: 'first' },
         { id: 'b', content: 'second' },
@@ -96,7 +99,7 @@ describe('Tree', () => {
       tree.upsert('m1', { id: 'a', content: 'v1' }, headers(), 'serial-001');
       tree.upsert('m1', { id: 'a', content: 'v2' }, headers(), 'serial-001');
 
-      const flat = tree.flattenNodes().map((n) => n.message);
+      const flat = tree.flattenNodes(NO_SELECTIONS).map((n) => n.message);
       expect(flat).toEqual([{ id: 'a', content: 'v2' }]);
     });
 
@@ -141,7 +144,7 @@ describe('Tree', () => {
       // After promotion, m1 sorts before m2
       tree.upsert('m1', { id: 'a', content: 'first' }, headers(), 'serial-001');
 
-      const flat = tree.flattenNodes().map((n) => n.message);
+      const flat = tree.flattenNodes(NO_SELECTIONS).map((n) => n.message);
       expect(flat[0]).toEqual({ id: 'a', content: 'first' });
       expect(flat[1]).toEqual({ id: 'b', content: 'second' });
     });
@@ -166,7 +169,7 @@ describe('Tree', () => {
       tree.upsert('m1', { id: 'a', content: 'first' }, headers(), 'serial-001');
       tree.upsert('m2', { id: 'b', content: 'second' }, headers({ parent: 'm1' }), 'serial-002');
 
-      const flat = tree.flattenNodes().map((n) => n.message);
+      const flat = tree.flattenNodes(NO_SELECTIONS).map((n) => n.message);
       expect(flat).toEqual([
         { id: 'a', content: 'first' },
         { id: 'b', content: 'second' },
@@ -178,7 +181,7 @@ describe('Tree', () => {
       tree.upsert('m1', { id: 'a', content: 'serial' }, headers(), 'serial-001');
       tree.upsert('m2', { id: 'b', content: 'optimistic' }, headers({ parent: 'm1' }));
 
-      const flat = tree.flattenNodes().map((n) => n.message);
+      const flat = tree.flattenNodes(NO_SELECTIONS).map((n) => n.message);
       expect(flat).toEqual([
         { id: 'a', content: 'serial' },
         { id: 'b', content: 'optimistic' },
@@ -190,7 +193,7 @@ describe('Tree', () => {
       tree.upsert('m2', { id: 'b', content: 'second' }, headers({ parent: 'm1' }));
       tree.upsert('m3', { id: 'c', content: 'third' }, headers({ parent: 'm2' }));
 
-      const flat = tree.flattenNodes().map((n) => n.message);
+      const flat = tree.flattenNodes(NO_SELECTIONS).map((n) => n.message);
       expect(flat).toEqual([
         { id: 'a', content: 'first' },
         { id: 'b', content: 'second' },
@@ -224,51 +227,46 @@ describe('Tree', () => {
       expect(siblings[1]).toEqual({ id: 'd', content: 'assistant-v2' });
     });
 
-    it('default selection is the latest sibling', () => {
+    it('default selection (no selections) picks the latest sibling', () => {
       tree.upsert('m4', { id: 'd', content: 'assistant-v2' }, headers({ parent: 'm1', forkOf: 'm2' }), 'serial-004');
 
-      // Default selection should be the last (newest) sibling
-      const selectedIdx = tree.getSelectedIndex('m2');
-      expect(selectedIdx).toBe(1); // m4 is at index 1
-
-      // Flatten should follow the latest branch (m4, not m2)
-      const flat = tree.flattenNodes().map((n) => n.message);
+      // Flatten with empty selections follows the latest branch (m4, not m2)
+      const flat = tree.flattenNodes(NO_SELECTIONS).map((n) => n.message);
       expect(flat).toEqual([
         { id: 'a', content: 'user' },
         { id: 'd', content: 'assistant-v2' },
       ]);
     });
 
-    it('select changes the active branch', () => {
+    it('selections map controls which branch is followed', () => {
       tree.upsert('m4', { id: 'd', content: 'assistant-v2' }, headers({ parent: 'm1', forkOf: 'm2' }), 'serial-004');
 
+      const groupRoot = tree.getGroupRoot('m2');
       // Select the first sibling (original m2)
-      tree.select('m2', 0);
+      const selections = new Map([[groupRoot, 0]]);
 
-      const flat = tree.flattenNodes().map((n) => n.message);
+      const flat = tree.flattenNodes(selections).map((n) => n.message);
       expect(flat).toEqual([
         { id: 'a', content: 'user' },
         { id: 'b', content: 'assistant-v1' },
         { id: 'c', content: 'follow-up' },
       ]);
-
-      expect(tree.getSelectedIndex('m2')).toBe(0);
     });
 
-    it('select clamps out-of-range index', () => {
+    it('selections clamp out-of-range indices', () => {
       tree.upsert('m4', { id: 'd', content: 'v2' }, headers({ parent: 'm1', forkOf: 'm2' }), 'serial-004');
 
-      tree.select('m2', 999);
-      expect(tree.getSelectedIndex('m2')).toBe(1);
+      const groupRoot = tree.getGroupRoot('m2');
 
-      tree.select('m2', -5);
-      expect(tree.getSelectedIndex('m2')).toBe(0);
-    });
+      // Over-index selects last
+      const over = new Map([[groupRoot, 999]]);
+      const flatOver = tree.flattenNodes(over).map((n) => n.message.content);
+      expect(flatOver).toContain('v2');
 
-    it('select is a no-op for a node with no siblings', () => {
-      // m1 has no siblings
-      tree.select('m1', 5);
-      expect(tree.getSelectedIndex('m1')).toBe(0);
+      // Under-index selects first
+      const under = new Map([[groupRoot, -5]]);
+      const flatUnder = tree.flattenNodes(under).map((n) => n.message.content);
+      expect(flatUnder).toContain('assistant-v1');
     });
 
     it('getSiblings returns single-element array for non-forked nodes', () => {
@@ -294,12 +292,23 @@ describe('Tree', () => {
       tree.upsert('m5', { id: 'e', content: 'child-of-v2' }, headers({ parent: 'm4' }), 'serial-005');
 
       // Default selects latest (m4), so m5 should be included, m3 excluded
-      const flat = tree.flattenNodes().map((n) => n.message);
+      const flat = tree.flattenNodes(NO_SELECTIONS).map((n) => n.message);
       expect(flat).toEqual([
         { id: 'a', content: 'user' },
         { id: 'd', content: 'v2' },
         { id: 'e', content: 'child-of-v2' },
       ]);
+    });
+
+    it('getGroupRoot returns the original message in a fork chain', () => {
+      tree.upsert('m4', { id: 'd', content: 'v2' }, headers({ parent: 'm1', forkOf: 'm2' }), 'serial-004');
+
+      expect(tree.getGroupRoot('m2')).toBe('m2');
+      expect(tree.getGroupRoot('m4')).toBe('m2');
+    });
+
+    it('getGroupRoot returns msgId for non-forked nodes', () => {
+      expect(tree.getGroupRoot('m1')).toBe('m1');
     });
   });
 
@@ -313,7 +322,7 @@ describe('Tree', () => {
       tree.upsert('m2', { id: 'b', content: 'second' }, headers({ parent: 'm1' }), 'serial-002');
 
       tree.delete('m2');
-      expect(tree.flattenNodes().map((n) => n.message)).toEqual([{ id: 'a', content: 'first' }]);
+      expect(tree.flattenNodes(NO_SELECTIONS).map((n) => n.message)).toEqual([{ id: 'a', content: 'first' }]);
     });
 
     it('removes the node from getNode', () => {
@@ -329,7 +338,7 @@ describe('Tree', () => {
 
       tree.delete('m1');
       // Children still exist in the tree but are unreachable via flatten
-      expect(tree.flattenNodes().map((n) => n.message)).toEqual([]);
+      expect(tree.flattenNodes(NO_SELECTIONS).map((n) => n.message)).toEqual([]);
       // m2 and m3 still accessible by getNode
       expect(tree.getNode('m2')).toBeDefined();
       expect(tree.getNode('m3')).toBeDefined();
@@ -338,7 +347,7 @@ describe('Tree', () => {
     it('is a no-op for unknown msgId', () => {
       tree.upsert('m1', { id: 'a', content: 'hi' }, headers(), 'serial-001');
       tree.delete('unknown');
-      expect(tree.flattenNodes().map((n) => n.message)).toEqual([{ id: 'a', content: 'hi' }]);
+      expect(tree.flattenNodes(NO_SELECTIONS).map((n) => n.message)).toEqual([{ id: 'a', content: 'hi' }]);
     });
 
     it('removes the deleted node from sibling groups', () => {
@@ -360,23 +369,14 @@ describe('Tree', () => {
 
   describe('edge cases', () => {
     it('empty tree returns empty flatten', () => {
-      expect(tree.flattenNodes().map((n) => n.message)).toEqual([]);
-    });
-
-    it('getSelectedIndex returns 0 for a single message', () => {
-      tree.upsert('m1', { id: 'a', content: 'hi' }, headers(), 'serial-001');
-      expect(tree.getSelectedIndex('m1')).toBe(0);
-    });
-
-    it('getSelectedIndex returns 0 for unknown msgId', () => {
-      expect(tree.getSelectedIndex('unknown')).toBe(0);
+      expect(tree.flattenNodes(NO_SELECTIONS).map((n) => n.message)).toEqual([]);
     });
 
     it('handles messages with same serial by insertion order', () => {
       tree.upsert('m1', { id: 'a', content: 'first' }, headers(), 'serial-001');
       tree.upsert('m2', { id: 'b', content: 'second' }, headers({ parent: 'm1' }), 'serial-001');
 
-      const flat = tree.flattenNodes().map((n) => n.message);
+      const flat = tree.flattenNodes(NO_SELECTIONS).map((n) => n.message);
       expect(flat[0]).toEqual({ id: 'a', content: 'first' });
       expect(flat[1]).toEqual({ id: 'b', content: 'second' });
     });
@@ -407,16 +407,6 @@ describe('Tree', () => {
       const handler = vi.fn();
       tree.on('update', handler);
       tree.delete('m1');
-      expect(handler).toHaveBeenCalledOnce();
-    });
-
-    it('emits update on select', () => {
-      tree.upsert('m1', { id: '1', content: 'original' }, headers());
-      tree.upsert('m2', { id: '2', content: 'fork' }, headers({ forkOf: 'm1' }), 'serial-2');
-
-      const handler = vi.fn();
-      tree.on('update', handler);
-      tree.select('m1', 0);
       expect(handler).toHaveBeenCalledOnce();
     });
 

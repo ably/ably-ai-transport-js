@@ -39,6 +39,20 @@ interface InternalNode<TMessage> {
 
 /** Internal tree surface used by View — not part of the public Tree API. */
 export interface TreeInternal<TMessage> extends Tree<TMessage> {
+  /**
+   * Flatten the tree along selected branches into a linear node list.
+   * The `selections` map provides the selected sibling index at each
+   * fork point, keyed by group root msgId. Fork points not present in
+   * the map default to the latest sibling.
+   */
+  flattenNodes(selections: Map<string, number>): TreeNode<TMessage>[];
+
+  /**
+   * Get the "group root" msgId for a sibling group — the original message
+   * that all forks in the group trace back to.
+   */
+  getGroupRoot(msgId: string): string;
+
   /** Forward a raw Ably message event to tree subscribers. */
   emitAblyMessage(msg: Ably.InboundMessage): void;
   /** Forward a turn lifecycle event to tree subscribers. */
@@ -77,12 +91,6 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
    * Nodes with no parent are indexed under the key `null`.
    */
   private readonly _parentIndex = new Map<string | undefined, Set<string>>();
-
-  /**
-   * Selected sibling index at each fork point, keyed by the msgId of
-   * the first sibling in the group (the fork target). Default: last.
-   */
-  private readonly _selections = new Map<string, number>();
 
   private readonly _emitter: EventEmitter<TreeEventsMap>;
   private readonly _logger: Logger;
@@ -265,7 +273,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
    * @param msgId - Any msg-id in the sibling group.
    * @returns The msg-id of the group root.
    */
-  private _getGroupRoot(msgId: string): string {
+  getGroupRoot(msgId: string): string {
     const entry = this._nodeIndex.get(msgId);
     if (!entry) return msgId;
 
@@ -285,7 +293,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   // Public query methods
   // -------------------------------------------------------------------------
 
-  flattenNodes(): TreeNode<TMessage>[] {
+  flattenNodes(selections: Map<string, number>): TreeNode<TMessage>[] {
     this._logger.trace('DefaultTree.flattenNodes();');
     const result: TreeNode<TMessage>[] = [];
     const currentPath = new Set<string>();
@@ -305,10 +313,10 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
       // Step 2: Check sibling selection.
       const group = this._getSiblingGroup(msgId);
       if (group.length > 1) {
-        const groupRootId = this._getGroupRoot(msgId);
+        const groupRootId = this.getGroupRoot(msgId);
         let selectedId = resolvedGroups.get(groupRootId);
         if (selectedId === undefined) {
-          const selectedIdx = this._selections.get(groupRootId) ?? group.length - 1;
+          const selectedIdx = selections.get(groupRootId) ?? group.length - 1;
           const clamped = Math.max(0, Math.min(selectedIdx, group.length - 1));
           const selected = group[clamped];
           if (!selected) break; // unreachable: clamped is always in bounds
@@ -334,26 +342,6 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
 
   hasSiblings(msgId: string): boolean {
     return this._getSiblingGroup(msgId).length > 1;
-  }
-
-  getSelectedIndex(msgId: string): number {
-    const group = this._getSiblingGroup(msgId);
-    if (group.length <= 1) return 0;
-    const groupRootId = this._getGroupRoot(msgId);
-    const stored = this._selections.get(groupRootId);
-    if (stored !== undefined) return Math.max(0, Math.min(stored, group.length - 1));
-    return group.length - 1; // default: latest
-  }
-
-  // Spec: AIT-CT13c
-  select(msgId: string, index: number): void {
-    this._logger.trace('DefaultTree.select();', { msgId, index });
-    this._logger.debug('Tree.select();', { msgId, index });
-    const group = this._getSiblingGroup(msgId);
-    if (group.length <= 1) return;
-    const groupRootId = this._getGroupRoot(msgId);
-    this._selections.set(groupRootId, Math.max(0, Math.min(index, group.length - 1)));
-    this._emitter.emit('update');
   }
 
   getNode(msgId: string): TreeNode<TMessage> | undefined {
@@ -430,7 +418,6 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
 
     // Remove from primary index
     this._nodeIndex.delete(msgId);
-    this._selections.delete(msgId);
 
     // Children are NOT deleted — they become unreachable in flattenNodes()
     // because their parent is no longer on the active path.

@@ -1,7 +1,7 @@
 import type * as AI from 'ai';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ClientTransport, SendOptions,Tree } from '../../../src/core/transport/types.js';
+import type { ClientTransport, SendOptions, Tree, View } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 import type { ChatTransportOptions } from '../../../src/vercel/transport/chat-transport.js';
 import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
@@ -53,16 +53,14 @@ interface MockTransport {
   close: ReturnType<typeof vi.fn>;
   mockTurn: MockTurn;
   tree: Tree<AI.UIMessage>;
+  view: View<AI.UIMessage>;
 }
 
 const createMockTransport = (): MockTransport => {
   const mockTurn = createMockTurn();
   const tree: Tree<AI.UIMessage> = {
-    flattenNodes: vi.fn(() => []),
     getSiblings: vi.fn(() => []),
     hasSiblings: vi.fn(() => false),
-    getSelectedIndex: vi.fn(() => 0),
-    select: vi.fn(),
     getNode: vi.fn(),
     getHeaders: vi.fn(),
     upsert: vi.fn(),
@@ -72,11 +70,17 @@ const createMockTransport = (): MockTransport => {
     on: vi.fn(() => () => {}),
   };
 
-  const view = {
+  const view: View<AI.UIMessage> = {
     flattenNodes: vi.fn(() => []),
+    getMessages: vi.fn(() => []),
     hasOlder: vi.fn(() => false),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     loadOlder: vi.fn(() => Promise.resolve()),
+    select: vi.fn(),
+    getSelectedIndex: vi.fn(() => 0),
+    getSiblings: vi.fn(() => []),
+    hasSiblings: vi.fn(() => false),
+    getNode: vi.fn(),
     getActiveTurnIds: vi.fn(() => new Map()),
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
     on: vi.fn(() => () => {}),
@@ -93,6 +97,7 @@ const createMockTransport = (): MockTransport => {
   const transport = {
     tree,
     view,
+    createView: vi.fn(() => view),
     send,
     cancel,
     close,
@@ -102,7 +107,7 @@ const createMockTransport = (): MockTransport => {
     on: vi.fn(() => noop),
   } as unknown as ClientTransport<AI.UIMessageChunk, AI.UIMessage>;
 
-  return { transport, send, cancel, close, mockTurn, tree };
+  return { transport, send, cancel, close, mockTurn, tree, view };
 };
 
 // ---------------------------------------------------------------------------
@@ -112,14 +117,14 @@ const createMockTransport = (): MockTransport => {
 describe('createChatTransport', () => {
   describe('sendMessages — submit-message', () => {
     it('sends the last message and passes history in body', async () => {
-      const { transport, send, tree, mockTurn } = createMockTransport();
+      const { transport, send, view, mockTurn } = createMockTransport();
       const chat = createChatTransport(transport);
 
       const m1 = makeMessage('1');
       const m2 = makeMessage('2');
       const m3 = makeMessage('3');
 
-      (tree.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
+      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
         { message: m1, msgId: 'n1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
         { message: m2, msgId: 'n2', parentId: 'n1', forkOf: undefined, headers: {}, serial: undefined },
         { message: m3, msgId: 'n3', parentId: 'n2', forkOf: undefined, headers: {}, serial: undefined },
@@ -202,10 +207,10 @@ describe('createChatTransport', () => {
     });
 
     it('resolves fork metadata from the conversation tree', async () => {
-      const { transport, send, tree, mockTurn } = createMockTransport();
+      const { transport, send, view, mockTurn } = createMockTransport();
 
       const msg = makeMessage('ui-message-id');
-      (tree.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
+      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
         {
           message: msg,
           msgId: 'wire-msg-id',
@@ -235,8 +240,8 @@ describe('createChatTransport', () => {
     });
 
     it('falls back to raw messageId when node not found in tree', async () => {
-      const { transport, send, tree, mockTurn } = createMockTransport();
-      (tree.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([]);
+      const { transport, send, view, mockTurn } = createMockTransport();
+      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([]);
 
       const chat = createChatTransport(transport);
 
@@ -354,13 +359,13 @@ describe('createChatTransport', () => {
   });
 
   describe('default body construction', () => {
-    it('includes history nodes from transport.tree.flattenNodes', async () => {
-      const { transport, send, tree, mockTurn } = createMockTransport();
+    it('includes history nodes from transport.view.flattenNodes', async () => {
+      const { transport, send, view, mockTurn } = createMockTransport();
 
       const m1 = makeMessage('1');
       const m2 = makeMessage('2');
       const m3 = makeMessage('3');
-      (tree.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
+      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
         { message: m1, msgId: 'h1', parentId: undefined, forkOf: undefined, headers: { 'x-ably-msg-id': 'h1' }, serial: undefined },
         { message: m2, msgId: 'h2', parentId: 'h1', forkOf: undefined, headers: { 'x-ably-msg-id': 'h2' }, serial: undefined },
         { message: m3, msgId: 'h3', parentId: 'h2', forkOf: undefined, headers: { 'x-ably-msg-id': 'h3' }, serial: undefined },

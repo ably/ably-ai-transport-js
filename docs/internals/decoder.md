@@ -21,7 +21,7 @@ For each streamed message, the decoder maintains a `StreamTrackerState` keyed by
 
 ```typescript
 interface StreamTrackerState {
-  name: string;           // Ably message name (e.g. "text", "tool-input")
+  name: string;           // Ably message name (e.g. "text", "reasoning")
   streamId: string;       // From x-ably-stream-id header
   accumulated: string;    // Full text accumulated so far
   headers: Record<string, string>;  // Current headers

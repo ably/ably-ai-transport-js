@@ -47,24 +47,16 @@ Use the generic React hooks directly. You manage message state through the trans
 import {
   useClientTransport,
   useView,
-  useTree,
-  useSend,
-  useRegenerate,
-  useEdit,
   useActiveTurns,
 } from '@ably/ai-transport/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 
 const transport = useClientTransport({ channel, codec: UIMessageCodec, clientId });
-const { nodes, hasOlder, loading, loadOlder } = useView(transport, { limit: 30 });
-const tree = useTree(transport);
-const send = useSend(transport);
-const regenerate = useRegenerate(transport);
-const edit = useEdit(transport);
+const { nodes, hasOlder, loading, loadOlder, send, regenerate, edit, select, getSelectedIndex, getSiblings, hasSiblings } = useView(transport, { limit: 30 });
 const activeTurns = useActiveTurns(transport);
 ```
 
-This path gives you conversation branching UI (sibling navigation), per-operation hooks, and direct access to the tree state.
+This path gives you conversation branching UI (sibling navigation), write operations, and direct access to the view state.
 
 ### When to use which
 
@@ -72,7 +64,7 @@ This path gives you conversation branching UI (sibling navigation), per-operatio
 |---|---|
 | You want the simplest integration | You need conversation branching UI |
 | `useChat`'s message state management is sufficient | You need custom message construction |
-| You don't need edit or branch navigation | You need `edit()` or `tree.select()` |
+| You don't need edit or branch navigation | You need `edit()` or `view.select()` |
 | You're already using `useChat` and adding AI Transport | You're building a custom chat UI from scratch |
 
 ## Entry points
@@ -112,7 +104,7 @@ await turn.end(reason);
 transport.close();
 ```
 
-`result.toUIMessageStream()` produces a `ReadableStream<UIMessageChunk>` - the codec knows how to encode these chunks as Ably messages (message appends for text/reasoning, discrete messages for tool calls and lifecycle events).
+`result.toUIMessageStream()` produces a `ReadableStream<UIMessageChunk>` - the codec knows how to encode these chunks as Ably messages (message appends for text/reasoning, discrete messages for lifecycle events).
 
 ## Codec details
 
@@ -122,12 +114,10 @@ transport.close();
 |---|---|
 | `text-delta` | Message append (text accumulation) |
 | `reasoning-delta` | Message append (reasoning accumulation) |
-| `tool-input-start/delta/available` | Message append (tool input accumulation) |
-| `tool-output-available` | Discrete message |
 | `finish` | Discrete message (closes the stream) |
 | `error` | Discrete message (closes the stream with error) |
 
-The codec handles the full `UIMessageChunk` union. On the decode side, it reconstructs `UIMessage` objects with the correct `parts` array (text, reasoning, tool invocations) from the streamed chunks.
+The codec handles the full `UIMessageChunk` union. On the decode side, it reconstructs `UIMessage` objects with the correct `parts` array (text, reasoning) from the streamed chunks.
 
 ## Status
 

@@ -6,12 +6,12 @@ Without concurrent turn support, a transport must serialize interactions: one re
 
 ## How it works
 
-Each call to `send()`, `regenerate()`, or `edit()` on the client creates a new turn. On the server, each incoming request calls `newTurn()`. Turns are identified by `turnId` and tracked by `clientId`.
+Each call to `view.send()`, `view.regenerate()`, or `view.edit()` on the client creates a new turn. On the server, each incoming request calls `newTurn()`. Turns are identified by `turnId` and tracked by `clientId`.
 
 ```typescript
 // Client: two sends in quick succession create two concurrent turns
-const turnA = await transport.send(messageA);
-const turnB = await transport.send(messageB);
+const turnA = await view.send(messageA);
+const turnB = await view.send(messageB);
 
 // Each has its own stream
 const readerA = turnA.stream.getReader();
@@ -97,4 +97,3 @@ Concurrent turns happen in these scenarios:
 - **Interruption without cancel** - user sends a new message without stopping the current response (see [Interruption](interruption.md))
 - **Multi-user** - two users on the same channel both send messages (see [Multi-client sync](multi-client.md))
 - **Multi-agent** - a server creates multiple turns for different agents responding to the same prompt
-- **Parallel tool execution** - a server creates separate turns for parallel tool call results

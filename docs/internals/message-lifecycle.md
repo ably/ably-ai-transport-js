@@ -6,7 +6,7 @@ How a message travels from the Ably channel to the UI. This doc ties together th
 
 The entire generic layer is parameterized by two types: `TEvent` and `TMessage`.
 
-**`TEvent`** is a streaming fragment - an individually meaningless piece of a message. For the Vercel codec, this is `UIMessageChunk`: a text delta, a tool-input start signal, a finish event. Events are the unit of real-time streaming. The [stream router](transport-components.md) delivers them one-by-one to own-turn consumers; the [accumulator](codec-interface.md#accumulator) assembles them into complete messages.
+**`TEvent`** is a streaming fragment - an individually meaningless piece of a message. For the Vercel codec, this is `UIMessageChunk`: a text delta, a reasoning delta, a finish event. Events are the unit of real-time streaming. The [stream router](transport-components.md) delivers them one-by-one to own-turn consumers; the [accumulator](codec-interface.md#accumulator) assembles them into complete messages.
 
 **`TMessage`** is a complete domain message - a fully-formed object with all its parts, metadata, and role. For the Vercel codec, this is `UIMessage`. Messages are the unit of state: what the [conversation tree](conversation-tree.md) stores, what the view's `flattenNodes()` returns, what React hooks render.
 
@@ -47,7 +47,7 @@ flowchart TD
 
 When the client transport receives messages from the channel, it routes them based on who started the turn:
 
-- **Own turn** - a turn this client initiated (via `send()`, `regenerate()`, `edit()`). Decoded events go to **both** the [stream router](transport-components.md) and a per-turn [accumulator](codec-interface.md#accumulator). The stream router enqueues events on a `ReadableStream` that framework adapters can consume (see [why the stream exists](#why-own-turns-have-a-stream)). The accumulator simultaneously builds complete `TMessage` objects and upserts them into the tree on every event - so the view always reflects the latest partial state, even while streaming.
+- **Own turn** - a turn this client initiated (via `view.send()`, `view.regenerate()`, `view.edit()`). Decoded events go to **both** the [stream router](transport-components.md) and a per-turn [accumulator](codec-interface.md#accumulator). The stream router enqueues events on a `ReadableStream` that framework adapters can consume (see [why the stream exists](#why-own-turns-have-a-stream)). The accumulator simultaneously builds complete `TMessage` objects and upserts them into the tree on every event - so the view always reflects the latest partial state, even while streaming.
 - **Observer turn** - a turn started by another client. Decoded events go to the accumulator only. There is no stream because no caller initiated the turn on this client - there is nobody holding a stream handle.
 
 Both paths use the same `_accumulateAndEmit()` method. The only difference is that own turns additionally route through the stream router.
@@ -74,13 +74,13 @@ Discrete messages (e.g. user messages published by `send()`) are inserted into t
 
 ### Why own turns have a stream
 
-The `ReadableStream<TEvent>` returned from `send()` exists primarily as an **integration seam for framework adapters**. Vercel's `useChat`, for example, expects a `ReadableStream` as its transport contract - the stream is how AI Transport plugs into the Vercel AI SDK's rendering pipeline.
+The `ReadableStream<TEvent>` returned from `view.send()` exists primarily as an **integration seam for framework adapters**. Vercel's `useChat`, for example, expects a `ReadableStream` as its transport contract - the stream is how AI Transport plugs into the Vercel AI SDK's rendering pipeline.
 
 For most application code, the accumulated messages via `view.flattenNodes()` / `view.on('update')` are the right consumption path. The accumulator updates the tree on every event, so it provides the same granularity as the stream - you see each partial message as tokens arrive. The stream offers no timing advantage.
 
 Cases where direct stream consumption adds value are narrow: non-rendering side effects that need per-event granularity (e.g. playing a sound per token, logging individual event types), or custom accumulation logic that differs from the codec's accumulator.
 
-Observer turns have no stream because there is no caller holding a handle - nobody on this client called `send()` for that turn. If observer-side event streaming were needed, it would require a separate API surface (e.g. `transport.observeTurn(turnId)`).
+Observer turns have no stream because there is no caller holding a handle - nobody on this client called `view.send()` for that turn. If observer-side event streaming were needed, it would require a separate API surface (e.g. `transport.observeTurn(turnId)`).
 
 ### Discrete messages: direct insert
 
@@ -95,12 +95,13 @@ The `View` wraps the tree and provides an `'update'` event plus `flattenNodes()`
 React hooks follow an identical pattern:
 
 ```typescript
-const [nodes, setNodes] = useState(() => transport.view.flattenNodes());
+const view = transport.view;
+const [nodes, setNodes] = useState(() => view.flattenNodes());
 useEffect(() => {
-  const update = () => setNodes(transport.view.flattenNodes());
-  transport.view.on('update', update);
-  return () => transport.view.off('update', update);
-}, [transport]);
+  const update = () => setNodes(view.flattenNodes());
+  view.on('update', update);
+  return () => view.off('update', update);
+}, [view]);
 ```
 
 Every `'update'` event triggers a full `flattenNodes()` call, which rebuilds the array from the tree. The hooks that follow this pattern: `useView()`, `useMessageSync()`.

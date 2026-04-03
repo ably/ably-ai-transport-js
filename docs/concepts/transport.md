@@ -62,13 +62,14 @@ The client transport manages conversation state: the message list, conversation 
 import { createClientTransport } from '@ably/ai-transport/vercel';
 
 const transport = createClientTransport({ channel, clientId });
+const view = transport.view;
 
 // Send a message - returns immediately with a turn handle
-const turn = await transport.send(userMessage);
+const turn = await view.send(userMessage);
 
 // Subscribe to accumulated messages - updates on every token
-transport.view.on('update', () => {
-  const messages = transport.view.flattenNodes().map(n => n.message);
+view.on('update', () => {
+  const messages = view.flattenNodes().map(n => n.message);
   // the last assistant message grows as tokens stream in
 });
 
@@ -79,12 +80,11 @@ transport.view.on('update', () => {
 In React, the hooks handle subscriptions and state management:
 
 ```typescript
-import { useClientTransport, useView, useSend } from '@ably/ai-transport/react';
+import { useClientTransport, useView } from '@ably/ai-transport/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 
 const transport = useClientTransport({ channel, codec: UIMessageCodec, clientId });
-const { nodes } = useView(transport);
-const send = useSend(transport);
+const { nodes, send } = useView(transport);
 ```
 
 ## The codec

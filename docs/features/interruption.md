@@ -18,10 +18,10 @@ Two patterns:
 The most common pattern: cancel active turns before sending the new message.
 
 ```typescript
-import { useActiveTurns, useSend } from '@ably/ai-transport/react';
+import { useActiveTurns, useView } from '@ably/ai-transport/react';
 
 const activeTurns = useActiveTurns(transport);
-const send = useSend(transport);
+const { send } = useView(transport);
 const isStreaming = activeTurns.size > 0;
 
 async function handleSend(text: string) {

@@ -6,7 +6,7 @@ Without optimistic insertion, the user would see a gap between pressing "send" a
 
 ## How it works
 
-The client generates a unique message ID (`x-ably-msg-id`) for each user message and inserts it into the conversation tree with no [serial](../internals/glossary.md#serial-ably) (Ably's server-assigned ordering identifier). The message is visible via `transport.view.flattenNodes()` immediately. The HTTP POST to the server is [fire-and-forget](../internals/glossary.md#fire-and-forget) - `send()` returns without waiting for the server to respond.
+The client generates a unique message ID (`x-ably-msg-id`) for each user message and inserts it into the conversation tree with no [serial](../internals/glossary.md#serial-ably) (Ably's server-assigned ordering identifier). The message is visible via `view.flattenNodes()` immediately. The HTTP POST to the server is [fire-and-forget](../internals/glossary.md#fire-and-forget) - `send()` returns without waiting for the server to respond.
 
 The server receives the user message and relays it onto the Ably channel, preserving the original `x-ably-msg-id`. All clients on the channel - including the sender - receive this relay. The sending client recognises its own message by matching the `x-ably-msg-id` against the set of IDs it optimistically inserted. Instead of creating a duplicate, it updates the existing entry with the server-assigned serial, which moves the message from the end of the list to its correct position in serial order. This process is called [optimistic reconciliation](../internals/glossary.md#optimistic-reconciliation).
 
@@ -30,20 +30,20 @@ sequenceDiagram
 Optimistic updates are automatic - there is no opt-in or configuration. Every call to `send()`, `edit()`, or `regenerate()` that includes user messages uses the same mechanism.
 
 ```typescript
-const turn = await transport.send(userMessage);
+const view = transport.view;
+const turn = await view.send(userMessage);
 
 // The user message is already in the view - no waiting for the server
-const messages = transport.view.flattenNodes().map(n => n.message);
+const messages = view.flattenNodes().map(n => n.message);
 // messages includes userMessage at the end of the conversation
 ```
 
 In React, `useView()` re-renders immediately after `send()` because the optimistic insert triggers an `update` event on the view:
 
 ```typescript
-import { useView, useSend } from '@ably/ai-transport/react';
+import { useView } from '@ably/ai-transport/react';
 
-const { nodes } = useView(transport);
-const send = useSend(transport);
+const { nodes, send } = useView(transport);
 
 // After send(), messages updates instantly with the new user message
 await send([userMessage]);
@@ -69,7 +69,7 @@ When `send()` receives an array of messages, each gets its own `x-ably-msg-id` a
 
 ```typescript
 // Both messages appear immediately, chained in order
-const turn = await transport.send([questionOne, questionTwo]);
+const turn = await view.send([questionOne, questionTwo]);
 ```
 
 ## Edge cases

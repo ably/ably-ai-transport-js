@@ -19,11 +19,8 @@ Instead of `useChat`, compose the generic hooks directly:
 import { useChannel, ChannelProvider } from 'ably/react';
 import {
   useClientTransport,
-  useSend,
-  useRegenerate,
   useActiveTurns,
   useView,
-  useTree,
 } from '@ably/ai-transport/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import type { UIMessage } from 'ai';
@@ -43,12 +40,9 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
     body: () => ({ id: chatId }),
   });
 
-  // Each operation is a separate hook
-  const tree = useTree(transport);
-  const send = useSend(transport);
-  const regenerate = useRegenerate(transport);
+  // useView provides message state, navigation, and write operations
+  const { nodes, hasOlder, loading, loadOlder, send, regenerate, hasSiblings, getSiblings, getSelectedIndex, select } = useView(transport, { limit: 30 });
   const activeTurns = useActiveTurns(transport);
-  const { nodes, hasOlder, loading, loadOlder } = useView(transport, { limit: 30 });
 
   const isStreaming = activeTurns.size > 0;
 
@@ -84,11 +78,11 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
           ))}
 
           {/* Branch navigation */}
-          {tree.hasSiblings(node.msgId) && (
+          {hasSiblings(node.msgId) && (
             <span>
-              {tree.getSelectedIndex(node.msgId) + 1} / {tree.getSiblings(node.msgId).length}
-              <button onClick={() => tree.select(node.msgId, tree.getSelectedIndex(node.msgId) - 1)}>prev</button>
-              <button onClick={() => tree.select(node.msgId, tree.getSelectedIndex(node.msgId) + 1)}>next</button>
+              {getSelectedIndex(node.msgId) + 1} / {getSiblings(node.msgId).length}
+              <button onClick={() => select(node.msgId, getSelectedIndex(node.msgId) - 1)}>prev</button>
+              <button onClick={() => select(node.msgId, getSelectedIndex(node.msgId) + 1)}>next</button>
             </span>
           )}
 
@@ -133,7 +127,7 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
 | **Send** | `sendMessage({ text })` | `send([uiMessage])` - you construct the `UIMessage` |
 | **Regenerate** | `regenerate({ messageId })` | `regenerate(messageId)` |
 | **Edit** | Not built into `useChat` | `edit(messageId, [newMessage])` |
-| **Branch navigation** | Not available | `tree.getSiblings()`, `tree.select()` |
+| **Branch navigation** | Not available | `view.getSiblings()`, `view.select()` via `useView` |
 | **Stop** | `stop()` from `useChat` | `transport.cancel({ own: true })` |
 | **Observer sync** | Requires `useMessageSync` | Built-in - `useView` includes all clients |
 | **Hooks needed** | `useChatTransport` + `useMessageSync` | Individual hooks per operation |

@@ -1,8 +1,8 @@
 # Conversation tree
 
-The conversation tree (`src/core/transport/conversation-tree.ts`) materializes a branching conversation from a flat stream of Ably messages. It handles message ordering, sibling grouping for edit/regenerate forks, and branch selection - producing a linear message list via `flattenNodes()` that represents the currently selected conversation path.
+The conversation tree (`src/core/transport/conversation-tree.ts`) materializes a branching conversation from a flat stream of Ably messages. It handles message ordering and sibling grouping for edit/regenerate forks. The tree is a pure data structure - it stores all nodes and their relationships, but selection state and navigation (`select()`, `getSelectedIndex()`) live on the View.
 
-The tree is the single source of truth for conversation state. The view's `flattenNodes()` delegates to the tree's `flattenNodes()` with pagination filtering.
+The tree is the single source of truth for conversation state. The view's `flattenNodes()` delegates to the tree's internal `flattenNodes()` with pagination filtering and branch selection.
 
 ## Ordering: serial-first
 
@@ -66,7 +66,7 @@ Cycle detection guards against malformed `forkOf` chains.
 
 ### Selection
 
-Each sibling group has a selected index (default: last, i.e. the most recent fork). `select(msgId, index)` changes which sibling is active. The selection is stored by the group root's msgId.
+Each sibling group has a selected index (default: last, i.e. the most recent fork). Selection state is managed by the View - `view.select(msgId, index)` changes which sibling is active. The selection is stored by the group root's msgId.
 
 ## Flatten: producing the linear path
 
@@ -89,15 +89,22 @@ Sibling group resolution is cached per `flattenNodes()` call using a `resolvedGr
 
 ## Querying
 
+The public `Tree` interface exposes:
+
+| Method | Returns |
+|---|---|
+| `getSiblings(msgId)` | All messages in the sibling group containing `msgId` |
+| `hasSiblings(msgId)` | Whether the message has alternative versions |
+| `getNode(msgId)` | The `TreeNode` by msg-id |
+| `getHeaders(msgId)` | Headers for a specific message |
+
+The following are on the `View`, not the public `Tree` interface:
+
 | Method | Returns |
 |---|---|
 | `flattenNodes()` | Linear message list following selected branches |
-| `getSiblings(msgId)` | All messages in the sibling group containing `msgId` |
-| `hasSiblings(msgId)` | Whether the message has alternative versions |
+| `select(msgId, index)` | Switch to a different sibling at a fork point |
 | `getSelectedIndex(msgId)` | Currently selected index in the sibling group |
-| `getNode(msgId)` | The `TreeNode` by msg-id |
-
-| `getHeaders(msgId)` | Headers for a specific message |
 
 ## Delete
 
@@ -114,9 +121,9 @@ Assistant: "Four"            msgId: m3, parent: m1, forkOf: m2
 Sibling group for m2: [m2, m3]
 Selection default: index 1 (m3, the latest)
 
-flattenNodes() → ["What is 2+2?", "Four"]
-select(m2, 0)
-flattenNodes() → ["What is 2+2?", "4"]
+view.flattenNodes() → ["What is 2+2?", "Four"]
+view.select(m2, 0)
+view.flattenNodes() → ["What is 2+2?", "4"]
 ```
 
 See [Wire protocol](wire-protocol.md) for the branching headers (`x-ably-parent`, `x-ably-fork-of`). See [History hydration](history.md) for how the tree is populated from channel history.

@@ -10,7 +10,7 @@ Cancel a specific turn or all matching turns:
 
 ```typescript
 // Cancel a specific turn (returned by send/regenerate/edit)
-const turn = await transport.send(userMessage);
+const turn = await view.send(userMessage);
 await turn.cancel();
 
 // Cancel all your own active turns

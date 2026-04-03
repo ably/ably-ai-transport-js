@@ -125,7 +125,7 @@ describe('DefaultView', () => {
 
     it('delegates to tree when nothing is withheld', () => {
       tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'));
-      expect(view.flattenNodes()).toStrictEqual(tree.flattenNodes());
+      expect(view.flattenNodes()).toStrictEqual(tree.flattenNodes(new Map()));
     });
   });
 
@@ -167,7 +167,7 @@ describe('DefaultView', () => {
       }, 'serial-2');
 
       // m2 is selected (latest sibling, default). Select m1 instead.
-      tree.select('m1', 0);
+      view.select('m1', 0);
 
       // Visible list is now [m1]. Snapshot is captured after select.
       const handler = vi.fn();
@@ -190,7 +190,7 @@ describe('DefaultView', () => {
       const handler = vi.fn();
       view.on('update', handler);
 
-      tree.select('m1', 0);
+      view.select('m1', 0);
       expect(handler).toHaveBeenCalledOnce();
     });
 
@@ -400,6 +400,157 @@ describe('DefaultView', () => {
   // close
   // -------------------------------------------------------------------------
 
+  // -------------------------------------------------------------------------
+  // Branch navigation (view-local selections)
+  // -------------------------------------------------------------------------
+
+  describe('branch navigation', () => {
+    beforeEach(() => {
+      tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
+      tree.upsert('m2', { id: '2', content: 'v1' }, {
+        [HEADER_MSG_ID]: 'm2',
+        'x-ably-parent': 'm1',
+      }, 'serial-2');
+      tree.upsert('m3', { id: '3', content: 'v2' }, {
+        [HEADER_MSG_ID]: 'm3',
+        'x-ably-parent': 'm1',
+        'x-ably-fork-of': 'm2',
+      }, 'serial-3');
+    });
+
+    it('select changes which branch flattenNodes follows', () => {
+      // Default: latest sibling (m3)
+      expect(view.flattenNodes().map((n) => n.message.content)).toEqual(['user', 'v2']);
+
+      view.select('m2', 0);
+      expect(view.flattenNodes().map((n) => n.message.content)).toEqual(['user', 'v1']);
+    });
+
+    it('getSelectedIndex returns view-local selection', () => {
+      expect(view.getSelectedIndex('m2')).toBe(1); // default: latest
+      view.select('m2', 0);
+      expect(view.getSelectedIndex('m2')).toBe(0);
+    });
+
+    it('getSelectedIndex returns 0 for non-forked nodes', () => {
+      expect(view.getSelectedIndex('m1')).toBe(0);
+    });
+
+    it('select clamps out-of-range index', () => {
+      view.select('m2', 999);
+      expect(view.getSelectedIndex('m2')).toBe(1);
+
+      view.select('m2', -5);
+      expect(view.getSelectedIndex('m2')).toBe(0);
+    });
+
+    it('select is a no-op for non-forked nodes', () => {
+      view.select('m1', 5);
+      expect(view.getSelectedIndex('m1')).toBe(0);
+    });
+
+    it('getSiblings delegates to tree', () => {
+      const siblings = view.getSiblings('m2');
+      expect(siblings).toHaveLength(2);
+    });
+
+    it('hasSiblings delegates to tree', () => {
+      expect(view.hasSiblings('m2')).toBe(true);
+      expect(view.hasSiblings('m1')).toBe(false);
+    });
+
+    it('getNode delegates to tree', () => {
+      expect(view.getNode('m1')?.msgId).toBe('m1');
+      expect(view.getNode('unknown')).toBeUndefined();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Multi-view
+  // -------------------------------------------------------------------------
+
+  describe('multi-view', () => {
+    it('two views over the same tree have independent selections', () => {
+      tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
+      tree.upsert('m2', { id: '2', content: 'v1' }, {
+        [HEADER_MSG_ID]: 'm2',
+        'x-ably-parent': 'm1',
+      }, 'serial-2');
+      tree.upsert('m3', { id: '3', content: 'v2' }, {
+        [HEADER_MSG_ID]: 'm3',
+        'x-ably-parent': 'm1',
+        'x-ably-fork-of': 'm2',
+      }, 'serial-3');
+
+      const view2 = new DefaultView<TestEvent, TestMessage>({
+        tree,
+        channel: createMockChannel(),
+        codec: createMockCodec(),
+        logger: silentLogger,
+      });
+
+      // Both start at default (latest = m3)
+      expect(view.flattenNodes().map((n) => n.message.content)).toEqual(['user', 'v2']);
+      expect(view2.flattenNodes().map((n) => n.message.content)).toEqual(['user', 'v2']);
+
+      // Select different branches
+      view.select('m2', 0);
+      expect(view.flattenNodes().map((n) => n.message.content)).toEqual(['user', 'v1']);
+      expect(view2.flattenNodes().map((n) => n.message.content)).toEqual(['user', 'v2']);
+
+      view2.select('m2', 0);
+      expect(view2.flattenNodes().map((n) => n.message.content)).toEqual(['user', 'v1']);
+
+      view2.close();
+    });
+
+    it('tree mutation propagates to both views', () => {
+      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'));
+
+      const view2 = new DefaultView<TestEvent, TestMessage>({
+        tree,
+        channel: createMockChannel(),
+        codec: createMockCodec(),
+        logger: silentLogger,
+      });
+
+      const handler1 = vi.fn();
+      const handler2 = vi.fn();
+      view.on('update', handler1);
+      view2.on('update', handler2);
+
+      tree.upsert('m2', { id: '2', content: 'hello' }, { [HEADER_MSG_ID]: 'm2', 'x-ably-parent': 'm1' });
+
+      expect(handler1).toHaveBeenCalledOnce();
+      expect(handler2).toHaveBeenCalledOnce();
+
+      view2.close();
+    });
+
+    it('closing one view does not affect the other', () => {
+      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'));
+
+      const view2 = new DefaultView<TestEvent, TestMessage>({
+        tree,
+        channel: createMockChannel(),
+        codec: createMockCodec(),
+        logger: silentLogger,
+      });
+
+      view2.close();
+
+      // view still works
+      const handler = vi.fn();
+      view.on('update', handler);
+      tree.upsert('m2', { id: '2', content: 'hello' }, { [HEADER_MSG_ID]: 'm2', 'x-ably-parent': 'm1' });
+      expect(handler).toHaveBeenCalledOnce();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // close
+  // -------------------------------------------------------------------------
+
   describe('close', () => {
     it('stops forwarding events after close', () => {
       const handler = vi.fn();
@@ -409,6 +560,27 @@ describe('DefaultView', () => {
 
       tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'));
       expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('clears selections on close', () => {
+      tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
+      tree.upsert('m2', { id: '2', content: 'v1' }, {
+        [HEADER_MSG_ID]: 'm2',
+        'x-ably-parent': 'm1',
+      }, 'serial-2');
+      tree.upsert('m3', { id: '3', content: 'v2' }, {
+        [HEADER_MSG_ID]: 'm3',
+        'x-ably-parent': 'm1',
+        'x-ably-fork-of': 'm2',
+      }, 'serial-3');
+
+      view.select('m2', 0);
+      expect(view.getSelectedIndex('m2')).toBe(0);
+
+      view.close();
+
+      // After close, getSelectedIndex returns default (latest)
+      expect(view.getSelectedIndex('m2')).toBe(1);
     });
   });
 });

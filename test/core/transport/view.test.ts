@@ -165,23 +165,38 @@ describe('DefaultView', () => {
       // The test verifies the view does not crash.
     });
 
-    it('does not emit update when tree change does not affect visible output', () => {
+    it('emits update when visible message content changes in place (streaming)', () => {
+      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'), 'serial-1');
+
+      const handler = vi.fn();
+      view.on('update', handler);
+
+      // Update m1's content — the msgId list hasn't changed, but the
+      // message reference differs, so the view emits.
+      tree.upsert('m1', { id: '1', content: 'updated' }, makeHeaders('m1'), 'serial-1');
+
+      expect(handler).toHaveBeenCalledOnce();
+    });
+
+    it('does not emit update when change is on a non-visible branch', () => {
       tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'), 'serial-1');
       tree.upsert('m2', { id: '2', content: 'fork' }, {
         [HEADER_MSG_ID]: 'm2',
         'x-ably-fork-of': 'm1',
       }, 'serial-2');
 
-      // m2 is selected (latest sibling, default). Select m1 instead.
+      // m1 is pinned (was visible when m2 forked). Select m1 explicitly.
       view.select('m1', 0);
 
-      // Visible list is now [m1]. Snapshot is captured after select.
       const handler = vi.fn();
       view.on('update', handler);
 
-      // Update m1's content — the visible msgId list is still ['m1'],
-      // so the view should not emit (structural comparison by msgId).
-      tree.upsert('m1', { id: '1', content: 'updated' }, makeHeaders('m1'), 'serial-1');
+      // Update m2's content — m2 is on a non-visible branch,
+      // so the view should not emit.
+      tree.upsert('m2', { id: '2', content: 'updated fork' }, {
+        [HEADER_MSG_ID]: 'm2',
+        'x-ably-fork-of': 'm1',
+      }, 'serial-2');
 
       expect(handler).not.toHaveBeenCalled();
     });
@@ -226,6 +241,29 @@ describe('DefaultView', () => {
 
       expect(handler).toHaveBeenCalledOnce();
       expect(handler).toHaveBeenCalledWith(msg);
+    });
+
+    it('does not forward ably-message for nodes on non-selected branches', () => {
+      tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
+      tree.upsert('m2', { id: '2', content: 'v1' }, {
+        [HEADER_MSG_ID]: 'm2',
+        'x-ably-parent': 'm1',
+      }, 'serial-2');
+      // Fork m2 — view pins to m2
+      tree.upsert('m3', { id: '3', content: 'v2' }, {
+        [HEADER_MSG_ID]: 'm3',
+        'x-ably-parent': 'm1',
+        'x-ably-fork-of': 'm2',
+      }, 'serial-3');
+
+      const handler = vi.fn();
+      view.on('ably-message', handler);
+
+      // Message for m3 (off-branch) should NOT be forwarded
+      const msg = { extras: { headers: { [HEADER_MSG_ID]: 'm3' } } } as unknown as Ably.InboundMessage;
+      tree.emitAblyMessage(msg);
+
+      expect(handler).not.toHaveBeenCalled();
     });
 
     it('forwards ably-message without msg-id (turn events)', () => {
@@ -425,17 +463,18 @@ describe('DefaultView', () => {
     });
 
     it('select changes which branch flattenNodes follows', () => {
-      // Default: latest sibling (m3)
-      expect(view.flattenNodes().map((n) => n.message.content)).toEqual(['user', 'v2']);
-
-      view.select('m2', 0);
+      // Pinned to m2 (was visible when m3 forked it)
       expect(view.flattenNodes().map((n) => n.message.content)).toEqual(['user', 'v1']);
+
+      view.select('m2', 1);
+      expect(view.flattenNodes().map((n) => n.message.content)).toEqual(['user', 'v2']);
     });
 
     it('getSelectedIndex returns view-local selection', () => {
-      expect(view.getSelectedIndex('m2')).toBe(1); // default: latest
-      view.select('m2', 0);
+      // Pinned to m2 (index 0) when m3 appeared
       expect(view.getSelectedIndex('m2')).toBe(0);
+      view.select('m2', 1);
+      expect(view.getSelectedIndex('m2')).toBe(1);
     });
 
     it('getSelectedIndex returns 0 for non-forked nodes', () => {
@@ -496,13 +535,13 @@ describe('DefaultView', () => {
         logger: silentLogger,
       });
 
-      // Both start at default (latest = m3)
-      expect(view.flattenNodes().map((n) => n.message.content)).toEqual(['user', 'v2']);
+      // view pinned to m2 (was visible when m3 forked); view2 created after fork, defaults to latest (m3)
+      expect(view.flattenNodes().map((n) => n.message.content)).toEqual(['user', 'v1']);
       expect(view2.flattenNodes().map((n) => n.message.content)).toEqual(['user', 'v2']);
 
-      // Select different branches
-      view.select('m2', 0);
-      expect(view.flattenNodes().map((n) => n.message.content)).toEqual(['user', 'v1']);
+      // Select different branches — view navigates to m3, view2 navigates to m2
+      view.select('m2', 1);
+      expect(view.flattenNodes().map((n) => n.message.content)).toEqual(['user', 'v2']);
       expect(view2.flattenNodes().map((n) => n.message.content)).toEqual(['user', 'v2']);
 
       view2.select('m2', 0);
@@ -533,6 +572,236 @@ describe('DefaultView', () => {
       expect(handler2).toHaveBeenCalledOnce();
 
       view2.close();
+    });
+
+    it('fork from one view does not shift the other view', () => {
+      tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
+      tree.upsert('m2', { id: '2', content: 'asst' }, {
+        [HEADER_MSG_ID]: 'm2',
+        'x-ably-parent': 'm1',
+      }, 'serial-2');
+
+      const view2 = new DefaultView<TestEvent, TestMessage>({
+        tree,
+        channel: createMockChannel(),
+        codec: createMockCodec(),
+        sendDelegate: createMockSendDelegate(),
+        logger: silentLogger,
+      });
+
+      // Both show [m1, m2]
+      expect(view.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
+      expect(view2.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
+
+      // Fork m2 — simulates an edit/regenerate from view2
+      tree.upsert('m3', { id: '3', content: 'fork' }, {
+        [HEADER_MSG_ID]: 'm3',
+        'x-ably-parent': 'm1',
+        'x-ably-fork-of': 'm2',
+      }, 'serial-3');
+
+      // view stays on m2 (pinned), view2 also pinned to m2
+      expect(view.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
+      expect(view2.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
+
+      // view2 navigates to the fork
+      view2.select('m2', 1);
+      expect(view2.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
+      // view unaffected
+      expect(view.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
+
+      view2.close();
+    });
+
+    it('send with forkOf auto-selects new fork in calling view', async () => {
+      // Create a delegate that inserts a fork when called
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+      const forkDelegate: SendDelegate<TestEvent, TestMessage> = vi.fn(() => {
+        tree.upsert('m3', { id: '3', content: 'fork' }, {
+          [HEADER_MSG_ID]: 'm3',
+          'x-ably-parent': 'm1',
+          'x-ably-fork-of': 'm2',
+        }, 'serial-3');
+        return Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-1', cancel: vi.fn() });
+      });
+
+      const forkView = new DefaultView<TestEvent, TestMessage>({
+        tree,
+        channel: createMockChannel(),
+        codec: createMockCodec(),
+        sendDelegate: forkDelegate,
+        logger: silentLogger,
+      });
+
+      tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
+      tree.upsert('m2', { id: '2', content: 'asst' }, {
+        [HEADER_MSG_ID]: 'm2',
+        'x-ably-parent': 'm1',
+      }, 'serial-2');
+
+      await forkView.send([], { forkOf: 'm2', parent: 'm1' });
+
+      // forkView auto-selected the new fork (m3, latest sibling)
+      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
+
+      forkView.close();
+    });
+
+    it('send with forkOf defers auto-select when no optimistic sibling exists (regenerate)', async () => {
+      // Delegate does NOT insert any sibling — simulates regenerate where
+      // the server creates the fork later.
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+      const noopDelegate: SendDelegate<TestEvent, TestMessage> = vi.fn(() =>
+        Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-1', cancel: vi.fn() }),
+      );
+
+      const forkView = new DefaultView<TestEvent, TestMessage>({
+        tree,
+        channel: createMockChannel(),
+        codec: createMockCodec(),
+        sendDelegate: noopDelegate,
+        logger: silentLogger,
+      });
+
+      tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
+      tree.upsert('m2', { id: '2', content: 'asst' }, {
+        [HEADER_MSG_ID]: 'm2',
+        'x-ably-parent': 'm1',
+      }, 'serial-2');
+
+      // Regenerate: send with forkOf but no optimistic insert
+      await forkView.send([], { forkOf: 'm2', parent: 'm1' });
+
+      // Still on original branch — no sibling yet
+      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
+
+      const handler = vi.fn();
+      forkView.on('update', handler);
+
+      // Server response arrives, creating the fork
+      tree.upsert('m3', { id: '3', content: 'regenerated' }, {
+        [HEADER_MSG_ID]: 'm3',
+        'x-ably-parent': 'm1',
+        'x-ably-fork-of': 'm2',
+      }, 'serial-3');
+
+      // forkView auto-selected the new fork (m3, latest sibling)
+      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
+      expect(handler).toHaveBeenCalled();
+
+      // Pending state was consumed — a second fork doesn't force re-selection
+      handler.mockClear();
+      tree.upsert('m4', { id: '4', content: 'another fork' }, {
+        [HEADER_MSG_ID]: 'm4',
+        'x-ably-parent': 'm1',
+        'x-ably-fork-of': 'm2',
+      }, 'serial-4');
+
+      // View stays pinned on m3, does not jump to m4
+      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
+
+      forkView.close();
+    });
+
+    it('send with forkOf defers auto-select even when siblings already exist', async () => {
+      // Regression: when forkOf already has siblings (e.g. regenerating for the 2nd+ time),
+      // siblings.length > 1 before the delegate, but no NEW sibling was optimistically
+      // inserted. The view must still defer selection until the server response arrives.
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+      const noopDelegate: SendDelegate<TestEvent, TestMessage> = vi.fn(() =>
+        Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-1', cancel: vi.fn() }),
+      );
+
+      const forkView = new DefaultView<TestEvent, TestMessage>({
+        tree,
+        channel: createMockChannel(),
+        codec: createMockCodec(),
+        sendDelegate: noopDelegate,
+        logger: silentLogger,
+      });
+
+      // Set up: m1 → m2 (original) and m3 (first regeneration, already a sibling of m2)
+      tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
+      tree.upsert('m2', { id: '2', content: 'asst v1' }, {
+        [HEADER_MSG_ID]: 'm2',
+        'x-ably-parent': 'm1',
+      }, 'serial-2');
+      tree.upsert('m3', { id: '3', content: 'asst v2' }, {
+        [HEADER_MSG_ID]: 'm3',
+        'x-ably-parent': 'm1',
+        'x-ably-fork-of': 'm2',
+      }, 'serial-3');
+
+      // View is showing m3 (latest sibling, index 1)
+      forkView.select('m2', 1);
+      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
+
+      // Regenerate again: forkOf m2, no optimistic insert
+      await forkView.send([], { forkOf: 'm2', parent: 'm1' });
+
+      // Still showing m3 — no new sibling yet
+      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
+
+      // Server response arrives, creating a third sibling
+      tree.upsert('m4', { id: '4', content: 'asst v3' }, {
+        [HEADER_MSG_ID]: 'm4',
+        'x-ably-parent': 'm1',
+        'x-ably-fork-of': 'm2',
+      }, 'serial-4');
+
+      // forkView auto-selected the newest sibling (m4, index 2)
+      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm4']);
+
+      forkView.close();
+    });
+
+    it('regenerate on a non-root sibling defers auto-select correctly', async () => {
+      // Regression: regenerating while viewing a non-root sibling (e.g. m3 with
+      // forkOf m2) must store the group root in _pendingForkSelections so that
+      // _pinVisibleSelections can match it via groupRoot.
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+      const noopDelegate: SendDelegate<TestEvent, TestMessage> = vi.fn(() =>
+        Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-1', cancel: vi.fn() }),
+      );
+
+      const forkView = new DefaultView<TestEvent, TestMessage>({
+        tree,
+        channel: createMockChannel(),
+        codec: createMockCodec(),
+        sendDelegate: noopDelegate,
+        logger: silentLogger,
+      });
+
+      tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
+      tree.upsert('m2', { id: '2', content: 'asst v1' }, {
+        [HEADER_MSG_ID]: 'm2',
+        'x-ably-parent': 'm1',
+      }, 'serial-2');
+      tree.upsert('m3', { id: '3', content: 'asst v2' }, {
+        [HEADER_MSG_ID]: 'm3',
+        'x-ably-parent': 'm1',
+        'x-ably-fork-of': 'm2',
+      }, 'serial-3');
+
+      // Navigate to original (m2) then back to m3
+      forkView.select('m2', 0);
+      forkView.select('m2', 1);
+      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
+
+      // Regenerate while viewing m3 — forkOf is m3, not the group root m2
+      await forkView.send([], { forkOf: 'm3', parent: 'm1' });
+
+      // Server response creates a new sibling (forks from m2 via m3's group)
+      tree.upsert('m4', { id: '4', content: 'asst v3' }, {
+        [HEADER_MSG_ID]: 'm4',
+        'x-ably-parent': 'm1',
+        'x-ably-fork-of': 'm3',
+      }, 'serial-4');
+
+      // Auto-selected the newest sibling
+      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm4']);
+
+      forkView.close();
     });
 
     it('closing one view does not affect the other', () => {
@@ -633,6 +902,16 @@ describe('DefaultView', () => {
       expect(options.body.history).toHaveLength(2); // m1 and m2
     });
 
+    it('regenerate throws for unknown messageId', async () => {
+      await expect(view.regenerate('nonexistent')).rejects.toThrow('message not found in tree');
+    });
+
+    it('edit throws for unknown messageId', async () => {
+      await expect(view.edit('nonexistent', { id: 'x', content: 'y' })).rejects.toThrow(
+        'message not found in tree',
+      );
+    });
+
     it('send uses view-local branch selections for context', async () => {
       // Fork m2
       tree.upsert('m4', { id: '4', content: 'v2' }, {
@@ -666,6 +945,13 @@ describe('DefaultView', () => {
 
       tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'));
       expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('loadOlder is a no-op after close', async () => {
+      view.close();
+      // Should not throw or load anything
+      await view.loadOlder();
+      expect(view.flattenNodes()).toEqual([]);
     });
 
     it('clears selections on close', () => {

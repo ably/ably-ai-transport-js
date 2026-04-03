@@ -182,6 +182,7 @@ export const createChatTransport = (
       // Look up the parent of the message being regenerated.
       // messageId comes from useChat (UIMessage.id) — scan the flattened
       // nodes to find the one whose domain message matches this ID.
+      // Uses the transport's default view — ChatTransport is single-view (one useChat per channel).
       const node = transport.view.flattenNodes().find((n) => n.message.id === messageId);
       if (node) {
         // Use the tree node's msgId (x-ably-msg-id) as forkOf — this is

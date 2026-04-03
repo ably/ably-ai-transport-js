@@ -348,13 +348,6 @@ export interface TreeNode<TMessage> {
  */
 export interface Tree<TMessage> {
   /**
-   * Flatten the tree along the currently selected branches into
-   * a linear list of conversation nodes. Each node carries the domain
-   * message, its transport-assigned msgId, and headers.
-   */
-  flattenNodes(): TreeNode<TMessage>[];
-
-  /**
    * Get all messages that are siblings (alternatives) at a given
    * fork point. Returns an array ordered chronologically by serial.
    * The message identified by msgId is always included.
@@ -363,16 +356,6 @@ export interface Tree<TMessage> {
 
   /** Whether a message has sibling alternatives (i.e., show navigation arrows). */
   hasSiblings(msgId: string): boolean;
-
-  /** Get the index of the currently selected sibling at a fork point. */
-  getSelectedIndex(msgId: string): number;
-
-  /**
-   * Select a sibling at a fork point by index. Updates the active branch.
-   * Calling flattenNodes() after this returns the new linear thread.
-   * Index is clamped to `[0, siblings.length - 1]`.
-   */
-  select(msgId: string, index: number): void;
 
   /** Get a node by msgId, or undefined if not found. */
   getNode(msgId: string): TreeNode<TMessage> | undefined;
@@ -398,7 +381,7 @@ export interface Tree<TMessage> {
   /** Active turn IDs grouped by clientId (all turns, not just visible). */
   getActiveTurnIds(): Map<string, Set<string>>;
 
-  /** Subscribe to tree structure changes (insert, update, delete, or branch selection). */
+  /** Subscribe to tree structure changes (insert, update, delete). */
   on(event: 'update', handler: () => void): () => void;
 
   /** Subscribe to raw Ably messages arriving on the channel. */
@@ -438,6 +421,32 @@ export interface View<TMessage> {
    */
   loadOlder(limit?: number): Promise<void>;
 
+  // --- Branch navigation ---
+
+  /**
+   * Select a sibling at a fork point by index. Updates this view's
+   * branch selection. Index is clamped to `[0, siblings.length - 1]`.
+   * Emits 'update' when the visible output changes.
+   */
+  select(msgId: string, index: number): void;
+
+  /** Get the index of the currently selected sibling at a fork point. */
+  getSelectedIndex(msgId: string): number;
+
+  /**
+   * Get all messages that are siblings (alternatives) at a given
+   * fork point. Returns an array ordered chronologically by serial.
+   */
+  getSiblings(msgId: string): TMessage[];
+
+  /** Whether a message has sibling alternatives (i.e., show navigation arrows). */
+  hasSiblings(msgId: string): boolean;
+
+  /** Get a node by msgId, or undefined if not found. */
+  getNode(msgId: string): TreeNode<TMessage> | undefined;
+
+  // --- Observation ---
+
   /** Active turn IDs for turns with visible messages, grouped by clientId. */
   getActiveTurnIds(): Map<string, Set<string>>;
 
@@ -475,8 +484,16 @@ export interface ClientTransport<TEvent, TMessage> {
   /** The complete conversation tree — all known nodes, events for any change. */
   readonly tree: Tree<TMessage>;
 
-  /** The paginated, branch-aware view for rendering — events scoped to visible messages. */
+  /** The default paginated, branch-aware view for rendering — events scoped to visible messages. */
   readonly view: View<TMessage>;
+
+  /**
+   * Create an additional view over the same conversation tree.
+   * Each view has independent branch selections and pagination state.
+   * The caller is responsible for calling `close()` on the returned view
+   * when it is no longer needed, or it will be closed when the transport closes.
+   */
+  createView(): View<TMessage>;
 
   /**
    * Send one or more messages and start a new turn. Returns a handle to the

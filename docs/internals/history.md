@@ -34,7 +34,7 @@ After all wire messages have been decoded, the transport reads `completedMessage
 The `limit` option controls how many completed domain messages appear in each page of results:
 
 ```typescript
-await transport.view.loadOlder(10);
+await view.loadOlder(10);
 // view.flattenNodes() returns up to 10 completed messages
 // view.hasOlder - more history available
 // view.loadOlder(10) - load more older messages

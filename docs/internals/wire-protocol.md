@@ -29,14 +29,13 @@ Transport headers are set by the generic transport layer. They handle turn corre
 
 ### Domain headers (`x-domain-*`)
 
-Domain headers are set by the codec layer. They carry framework-specific metadata - field IDs, tool call IDs, provider metadata. The transport layer passes them through without interpreting them.
+Domain headers are set by the codec layer. They carry framework-specific metadata - field IDs, provider metadata. The transport layer passes them through without interpreting them.
 
 For the Vercel `UIMessageCodec`, domain headers include:
 
 | Header | Purpose |
 |---|---|
 | `x-domain-id` | Chunk/message ID |
-| `x-domain-toolCallId` | Tool call identifier |
 | `x-domain-providerMetadata` | JSON-serialized provider metadata |
 | `x-domain-finishReason` | Why the LLM stopped generating |
 | `x-domain-error` | Error message |
@@ -58,13 +57,13 @@ Lifecycle events are published by the transport layer to coordinate turn state. 
 
 ## Content messages
 
-Content messages carry domain data - user messages, assistant text, tool calls. They are published through Ably's message primitives and decoded by the codec layer.
+Content messages carry domain data - user messages, assistant text. They are published through Ably's message primitives and decoded by the codec layer.
 
 ### Discrete messages
 
 A discrete message is a single, immutable Ably publish. It carries `x-ably-stream: "false"` and appears as a `message.create` action on the subscriber.
 
-Used for: user messages, tool output, data parts, lifecycle events (start, finish, error).
+Used for: user messages, data parts, lifecycle events (start, finish, error).
 
 ```
 Ably message:
@@ -173,8 +172,8 @@ Every domain message - user or assistant - gets a unique `x-ably-msg-id` (a `cry
 The msg-id flows through the header pipeline:
 
 1. The transport calls `buildTransportHeaders({ msgId, ... })` which sets `headers['x-ably-msg-id'] = msgId`.
-2. For **discrete messages** (user messages, tool output, lifecycle events), these headers are passed to the encoder via `WriteOptions.messageId`. The [encoder core's](encoder.md#header-merging) `_buildHeaders()` stamps it into the Ably message's `extras.headers`.
-3. For **streamed messages** (assistant text, tool input), the msg-id is included in the persistent headers captured at `startStream()`. Every append - including the closing append - carries the same `x-ably-msg-id`, so the entire message append lifecycle shares one identity.
+2. For **discrete messages** (user messages, lifecycle events), these headers are passed to the encoder via `WriteOptions.messageId`. The [encoder core's](encoder.md#header-merging) `_buildHeaders()` stamps it into the Ably message's `extras.headers`.
+3. For **streamed messages** (assistant text, reasoning), the msg-id is included in the persistent headers captured at `startStream()`. Every append - including the closing append - carries the same `x-ably-msg-id`, so the entire message append lifecycle shares one identity.
 
 ### How it's consumed
 

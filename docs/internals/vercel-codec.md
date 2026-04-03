@@ -14,11 +14,10 @@ Each `UIMessageChunk` type maps to exactly one encoder core operation:
 
 | Chunk category | Examples | Core operation |
 |---|---|---|
-| Stream start | `text-start`, `reasoning-start`, `tool-input-start` | `startStream` - opens a message stream |
-| Stream delta | `text-delta`, `reasoning-delta`, `tool-input-delta` | `appendStream` - appends text to in-flight message |
-| Stream end | `text-end`, `reasoning-end`, `tool-input-available` | `closeStream` - closes the stream |
+| Stream start | `text-start`, `reasoning-start` | `startStream` - opens a message stream |
+| Stream delta | `text-delta`, `reasoning-delta` | `appendStream` - appends text to in-flight message |
+| Stream end | `text-end`, `reasoning-end` | `closeStream` - closes the stream |
 | Lifecycle | `start`, `start-step`, `finish-step`, `finish`, `error`, `abort` | `publishDiscrete` - standalone message |
-| Tool lifecycle | `tool-input-error`, `tool-output-available`, `tool-output-error`, `tool-approval-request`, `tool-output-denied` | `publishDiscrete` |
 | Content | `file`, `source-url`, `source-document`, `message-metadata` | `publishDiscrete` |
 | Custom data | `data-*` | `publishDiscrete` (with `ephemeral` flag for transient chunks) |
 
@@ -50,9 +49,9 @@ The decoder provides four hooks to the core:
 
 These hooks reconstruct `UIMessageChunk` events from stream tracker state. The decoder reads [domain headers](headers.md) to populate chunk fields:
 
-- **Start** → `text-start`, `reasoning-start`, or `tool-input-start` (based on Ably message name)
-- **Delta** → `text-delta`, `reasoning-delta`, or `tool-input-delta`
-- **End** → `text-end`, `reasoning-end`, or `tool-input-available` (tool input parses accumulated JSON)
+- **Start** → `text-start` or `reasoning-start` (based on Ably message name)
+- **Delta** → `text-delta` or `reasoning-delta`
+- **End** → `text-end` or `reasoning-end`
 
 Start hooks also call `ensurePhases` on the [lifecycle tracker](lifecycle-tracker.md) to synthesize missing `start` / `start-step` events for mid-stream joins.
 
@@ -72,14 +71,8 @@ Handles non-streamed messages. Two categories:
 | `finish` | `finish` chunk | Clears lifecycle tracker scope |
 | `error` | `error` chunk | |
 | `abort` | `abort` chunk | Clears lifecycle tracker scope |
-| `tool-input` (discrete) | `tool-input-start` + `tool-input-available` | Non-streaming tool call |
 | `file`, `source-url`, `source-document` | Corresponding chunks | |
-| Tool lifecycle events | Corresponding chunks | |
 | `data-*` | `data-*` chunk | Custom data events |
-
-### Non-streaming tool calls
-
-When `tool-input-available` arrives but no stream tracker exists for the `toolCallId`, the encoder falls back to publishing a discrete `tool-input` message. The decoder handles this by emitting both `tool-input-start` and `tool-input-available` in sequence, preceded by any missing lifecycle phases.
 
 ## Accumulator
 
@@ -92,7 +85,6 @@ The accumulator consumes `DecoderOutput[]` and groups streaming events into `UIM
 Each active message tracks:
 
 - **textStreams** / **reasoningStreams** - `DeltaStreamTracker` instances that map stream IDs to part indices
-- **toolTrackers** - per-toolCallId trackers with accumulated input text and part index
 - **streamStatus** - per-stream status (`streaming` / `finished` / `aborted`)
 
 ### Event processing
@@ -104,10 +96,6 @@ Each active message tracks:
 | `text-start` / `reasoning-start` | Push empty text/reasoning part, register stream |
 | `text-delta` / `reasoning-delta` | Append to registered part's text |
 | `text-end` / `reasoning-end` | Mark stream finished |
-| `tool-input-start` | Push `dynamic-tool` part in `input-streaming` state |
-| `tool-input-delta` | Accumulate JSON fragment, attempt parse, update part |
-| `tool-input-available` | Set final parsed input, transition to `input-available` |
-| `tool-output-available` | Transition tool part to `output-available` |
 | `finish-step` | Reset text/reasoning stream trackers for next step |
 | `finish` | Set final metadata, remove from active messages |
 | `abort` | Mark all streaming parts as aborted, remove from active |

@@ -27,9 +27,9 @@ User: "What is Rust?"                     (msg-1, parent: null)
 Regeneration forks an assistant message - the server produces a new response for the same prompt:
 
 ```typescript
-import { useRegenerate } from '@ably/ai-transport/react';
+import { useView } from '@ably/ai-transport/react';
 
-const regenerate = useRegenerate(transport);
+const { regenerate } = useView(transport);
 
 // Fork the assistant message - starts a new turn with no new user messages.
 // nodeId is the x-ably-msg-id (see treeMsgId helper in the quickstart).
@@ -43,9 +43,9 @@ The transport automatically computes `forkOf` (the assistant message being repla
 Editing forks a user message - the user provides replacement content, and the server produces a new response:
 
 ```typescript
-import { useEdit } from '@ably/ai-transport/react';
+import { useView } from '@ably/ai-transport/react';
 
-const edit = useEdit(transport);
+const { edit } = useView(transport);
 
 const newMessage = {
   id: crypto.randomUUID(),
@@ -61,21 +61,21 @@ await edit(nodeId, [newMessage]);
 
 ## Branch navigation
 
-`useTree` provides the tree state and navigation:
+`useView` provides branch navigation alongside message state:
 
 ```typescript
-import { useTree } from '@ably/ai-transport/react';
+import { useView } from '@ably/ai-transport/react';
 
-const tree = useTree(transport);
+const view = useView(transport);
 
-// tree.hasSiblings(nodeId) - does this message have alternatives?
-// tree.getSiblings(nodeId) - all alternatives at this fork point
-// tree.getSelectedIndex(nodeId) - which sibling is currently selected
-// tree.select(nodeId, index) - switch to a different sibling
-// tree.getNode(nodeId) - look up a node by msgId
+// view.hasSiblings(nodeId) - does this message have alternatives?
+// view.getSiblings(nodeId) - all alternatives at this fork point
+// view.getSelectedIndex(nodeId) - which sibling is currently selected
+// view.select(nodeId, index) - switch to a different sibling
+// view.getNode(nodeId) - look up a node by msgId
 //
-// nodeId is the msgId on each TreeNode — iterate tree.flattenNodes():
-//   transport.tree.flattenNodes().map((node) => {
+// nodeId is the msgId on each TreeNode — iterate view.nodes:
+//   view.nodes.map((node) => {
 //     const nodeId = node.msgId;
 //   });
 ```
@@ -83,18 +83,18 @@ const tree = useTree(transport);
 Build a sibling navigator (where `nodeId` is the resolved `x-ably-msg-id` for the message):
 
 ```typescript
-{tree.hasSiblings(nodeId) && (
+{view.hasSiblings(nodeId) && (
   <div>
     <button
-      onClick={() => tree.select(nodeId, tree.getSelectedIndex(nodeId) - 1)}
-      disabled={tree.getSelectedIndex(nodeId) === 0}
+      onClick={() => view.select(nodeId, view.getSelectedIndex(nodeId) - 1)}
+      disabled={view.getSelectedIndex(nodeId) === 0}
     >
       ←
     </button>
-    <span>{tree.getSelectedIndex(nodeId) + 1} / {tree.getSiblings(nodeId).length}</span>
+    <span>{view.getSelectedIndex(nodeId) + 1} / {view.getSiblings(nodeId).length}</span>
     <button
-      onClick={() => tree.select(nodeId, tree.getSelectedIndex(nodeId) + 1)}
-      disabled={tree.getSelectedIndex(nodeId) === tree.getSiblings(nodeId).length - 1}
+      onClick={() => view.select(nodeId, view.getSelectedIndex(nodeId) + 1)}
+      disabled={view.getSelectedIndex(nodeId) === view.getSiblings(nodeId).length - 1}
     >
       →
     </button>
@@ -102,7 +102,7 @@ Build a sibling navigator (where `nodeId` is the resolved `x-ably-msg-id` for th
 )}
 ```
 
-Calling `select` updates the tree's active branch. The view re-renders with the selected path.
+Calling `select` updates the view's active branch and re-renders with the selected path.
 
 ## Server handling
 
@@ -125,6 +125,31 @@ await turn.end(reason);
 ```
 
 The transport stamps `x-ably-parent` and `x-ably-fork-of` headers on the published messages. All clients on the channel see these headers and update their local tree.
+
+## Multiple views
+
+With a single view, navigating to a different branch in one part of the UI changes what every other part sees. Split-pane comparison UIs need independent views so each pane can show a different branch of the same conversation without interfering with the other.
+
+`useCreateView` has the same API as `useView` but creates an independent view instead of using the transport's default. The view is closed automatically when the component unmounts or the transport changes:
+
+```typescript
+import { useClientTransport, useCreateView, useView } from '@ably/ai-transport/react';
+
+const transport = useClientTransport({ channel, codec, clientId });
+
+// Default view for the left pane
+const left = useView(transport, { limit: 50 });
+
+// Independent view for the right pane (only created when split is active)
+const right = useCreateView(split ? transport : undefined, { limit: 50 });
+
+// Selecting a sibling in the left pane does not affect the right pane
+left.select(nodeId, 1);
+```
+
+Both views share the same underlying tree - new messages from the server appear in both. But branch selections, pagination windows, and write operations are scoped to each view.
+
+See [React hooks reference](../reference/react-hooks.md#usecreateview) for the full `useCreateView` API.
 
 ## Tree from history
 

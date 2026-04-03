@@ -6,7 +6,7 @@ Without a durable transport, streaming responses are ephemeral: if the connectio
 
 ## How it works
 
-The server encoder creates an Ably message for each content stream (text, reasoning, tool input) and appends token deltas as they arrive. The client decoder accumulates these appends into complete messages.
+The server encoder creates an Ably message for each content stream (text, reasoning) and appends token deltas as they arrive. The client decoder accumulates these appends into complete messages.
 
 ```mermaid
 sequenceDiagram
@@ -64,11 +64,12 @@ transport.close();
 On the client, every streaming event is accumulated into the conversation tree as it arrives. The view updates on every event, so the last assistant message grows token by token:
 
 ```typescript
-const turn = await transport.send(userMessage);
+const view = transport.view;
+const turn = await view.send(userMessage);
 
 // Subscribe to accumulated messages - updates on every token
-const unsubscribe = transport.view.on('update', () => {
-  const messages = transport.view.flattenNodes().map(n => n.message);
+const unsubscribe = view.on('update', () => {
+  const messages = view.flattenNodes().map(n => n.message);
   // the last assistant message grows as tokens arrive
 });
 ```
@@ -81,7 +82,7 @@ This is the primary consumption path. In React, the `useView()` hook handles the
 
 ```typescript
 // Framework adapter usage - most apps won't consume this directly
-const turn = await transport.send(userMessage);
+const turn = await view.send(userMessage);
 const reader = turn.stream.getReader();
 while (true) {
   const { done, value } = await reader.read();
@@ -106,11 +107,9 @@ The transport streams whatever events the codec produces. For the Vercel AI SDK 
 |---|---|
 | `text-delta` | Message append |
 | `reasoning-delta` | Message append (separate stream) |
-| `tool-input-delta` | Message append (per tool call) |
-| `tool-output-available` | Discrete message |
 | `finish` | Discrete message (terminal - closes the stream) |
 | `error` | Discrete message (terminal - closes the stream with error) |
 
-Multiple content streams can be active within a single turn (e.g., reasoning + text, or multiple tool calls). Each gets its own message with its own stream ID.
+Multiple content streams can be active within a single turn (e.g., reasoning + text). Each gets its own message with its own stream ID.
 
 See [React hooks reference](../reference/react-hooks.md) for the full `useView` and `useClientTransport` API. See [Cancel](cancel.md) for how streams are aborted. For the internal mechanics of message encoding, decoding, and recovery, see the [Encoder](../internals/encoder.md), [Decoder](../internals/decoder.md), and [Wire protocol](../internals/wire-protocol.md) internals pages.

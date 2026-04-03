@@ -8,7 +8,7 @@ Domain codecs don't interact with Ably directly. They call encoder core methods 
 
 ### Discrete messages
 
-`publishDiscrete(payload)` publishes a single, immutable Ably message with `x-ably-stream: "false"`. Used for user messages, tool output, lifecycle events - anything that arrives as a complete unit.
+`publishDiscrete(payload)` publishes a single, immutable Ably message with `x-ably-stream: "false"`. Used for user messages, lifecycle events - anything that arrives as a complete unit.
 
 `publishDiscreteBatch(payloads)` publishes multiple discrete messages atomically in a single channel publish call.
 

@@ -8,6 +8,8 @@ interface DebugPaneProps {
   messages: UIMessage[];
   ablyMessages: Ably.InboundMessage[];
   activeTurns: Map<string, Set<string>>;
+  /** When true, render inline (no fixed toggle button). Used in split-pane mode. */
+  inline?: boolean;
 }
 
 type Tab = 'ably' | 'uimessages';
@@ -36,9 +38,10 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
       )}
       {entries.map((entry, idx) => {
         const headers = extractHeaders(entry);
+        const key = entry.serial ?? `idx-${String(idx)}`;
         return (
           <div
-            key={idx}
+            key={key}
             className="rounded border border-zinc-800 bg-zinc-900/50 p-2 text-[11px] font-mono"
           >
             <div className="flex items-center gap-2 text-zinc-500 mb-1">
@@ -114,9 +117,79 @@ function UIMessagesTab({ messages, activeTurns }: { messages: UIMessage[]; activ
   );
 }
 
-export function DebugPane({ messages, ablyMessages, activeTurns }: DebugPaneProps) {
-  const [isOpen, setIsOpen] = useState(false);
+function DebugContent({ messages, ablyMessages, activeTurns, onClose }: DebugPaneProps & { onClose?: () => void }) {
   const [tab, setTab] = useState<Tab>('ably');
+
+  return (
+    <div className="w-[420px] flex-shrink-0 border-l border-zinc-800 flex flex-col bg-zinc-950">
+      <div className="flex items-center justify-between border-b border-zinc-800 px-3 py-2">
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setTab('ably')}
+            className={`text-[10px] px-2 py-1 rounded transition-colors ${
+              tab === 'ably' ? 'bg-zinc-800 text-zinc-300' : 'text-zinc-600 hover:text-zinc-400'
+            }`}
+          >
+            Ably Messages
+            <span className="ml-1 text-zinc-600">{ablyMessages.length}</span>
+          </button>
+          <button
+            onClick={() => setTab('uimessages')}
+            className={`text-[10px] px-2 py-1 rounded transition-colors ${
+              tab === 'uimessages' ? 'bg-zinc-800 text-zinc-300' : 'text-zinc-600 hover:text-zinc-400'
+            }`}
+          >
+            UIMessages
+            <span className="ml-1 text-zinc-600">{messages.length}</span>
+          </button>
+        </div>
+        {onClose && (
+          <button
+            onClick={onClose}
+            className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors"
+          >
+            close
+          </button>
+        )}
+      </div>
+      {tab === 'ably' ? (
+        <AblyMessagesTab entries={ablyMessages} />
+      ) : (
+        <UIMessagesTab
+          messages={messages}
+          activeTurns={activeTurns}
+        />
+      )}
+    </div>
+  );
+}
+
+export function DebugPane({ messages, ablyMessages, activeTurns, inline }: DebugPaneProps) {
+  const [isOpen, setIsOpen] = useState(false);
+
+  if (inline) {
+    return (
+      <>
+        {!isOpen && (
+          <button
+            onClick={() => setIsOpen(true)}
+            className="border-l border-zinc-800 bg-zinc-950 px-1.5 text-xs text-zinc-600 hover:text-zinc-400 transition-colors"
+            title="Show debug pane"
+          >
+            &lsaquo;
+          </button>
+        )}
+        {isOpen && (
+          <DebugContent
+            messages={messages}
+            ablyMessages={ablyMessages}
+            activeTurns={activeTurns}
+            onClose={() => setIsOpen(false)}
+          />
+        )}
+      </>
+    );
+  }
 
   return (
     <>
@@ -131,44 +204,12 @@ export function DebugPane({ messages, ablyMessages, activeTurns }: DebugPaneProp
       )}
 
       {isOpen && (
-        <div className="w-[420px] flex-shrink-0 border-l border-zinc-800 flex flex-col bg-zinc-950">
-          <div className="flex items-center justify-between border-b border-zinc-800 px-3 py-2">
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => setTab('ably')}
-                className={`text-[10px] px-2 py-1 rounded transition-colors ${
-                  tab === 'ably' ? 'bg-zinc-800 text-zinc-300' : 'text-zinc-600 hover:text-zinc-400'
-                }`}
-              >
-                Ably Messages
-                <span className="ml-1 text-zinc-600">{ablyMessages.length}</span>
-              </button>
-              <button
-                onClick={() => setTab('uimessages')}
-                className={`text-[10px] px-2 py-1 rounded transition-colors ${
-                  tab === 'uimessages' ? 'bg-zinc-800 text-zinc-300' : 'text-zinc-600 hover:text-zinc-400'
-                }`}
-              >
-                UIMessages
-                <span className="ml-1 text-zinc-600">{messages.length}</span>
-              </button>
-            </div>
-            <button
-              onClick={() => setIsOpen(false)}
-              className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors"
-            >
-              close
-            </button>
-          </div>
-          {tab === 'ably' ? (
-            <AblyMessagesTab entries={ablyMessages} />
-          ) : (
-            <UIMessagesTab
-              messages={messages}
-              activeTurns={activeTurns}
-            />
-          )}
-        </div>
+        <DebugContent
+          messages={messages}
+          ablyMessages={ablyMessages}
+          activeTurns={activeTurns}
+          onClose={() => setIsOpen(false)}
+        />
       )}
     </>
   );

@@ -87,11 +87,8 @@ export const createMockTransport = (initialMessages: string[] = []): MockTranspo
   }));
 
   const tree: Tree<string> = {
-    flattenNodes: vi.fn(() => initialNodes),
     getSiblings: vi.fn((msgId: string) => [msgId]),
     hasSiblings: vi.fn(() => false),
-    getSelectedIndex: vi.fn(() => 0),
-    select: vi.fn(),
     getNode: vi.fn(),
     getHeaders: vi.fn(),
     upsert: vi.fn(),
@@ -106,6 +103,11 @@ export const createMockTransport = (initialMessages: string[] = []): MockTranspo
     hasOlder: vi.fn(() => false),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     loadOlder: vi.fn(() => Promise.resolve()),
+    select: vi.fn(),
+    getSelectedIndex: vi.fn(() => 0),
+    getSiblings: vi.fn((msgId: string) => [msgId]),
+    hasSiblings: vi.fn(() => false),
+    getNode: vi.fn(),
     getActiveTurnIds: vi.fn(() => new Map<string, Set<string>>()),
     on: makeTreeOn(viewHandlers),
     close: vi.fn(),
@@ -131,9 +133,12 @@ export const createMockTransport = (initialMessages: string[] = []): MockTranspo
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const close = vi.fn(() => Promise.resolve());
 
+  const createView = vi.fn(() => view);
+
   const transport = {
     tree,
     view,
+    createView,
     send,
     regenerate,
     edit,

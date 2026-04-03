@@ -2,14 +2,16 @@
  * useView — reactive paginated view of the conversation.
  *
  * Subscribes to view updates and exposes the visible nodes, branch navigation,
- * pagination state, and a `loadOlder` callback. Accepts either a
- * {@link ClientTransport} (uses its default view) or a {@link View} directly.
+ * write operations, pagination state, and a `loadOlder` callback. Accepts either
+ * a {@link ClientTransport} (uses its default view) or a {@link View} directly.
  * When `options` are provided, auto-loads the first page on mount (SWR-style).
  */
 
+import * as Ably from 'ably';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import type { ClientTransport, TreeNode, View } from '../core/transport/types.js';
+import type { ActiveTurn, ClientTransport, SendOptions, TreeNode, View } from '../core/transport/types.js';
+import { ErrorCode } from '../errors.js';
 
 /** Options for configuring the view's initial load behavior. */
 export interface ViewOptions {
@@ -18,7 +20,7 @@ export interface ViewOptions {
 }
 
 /** Handle for the paginated, branch-aware conversation view. */
-export interface ViewHandle<TMessage> {
+export interface ViewHandle<TEvent, TMessage> {
   /** The visible domain messages along the selected branch. */
   messages: TMessage[];
   /** Visible conversation nodes along the selected branch. */
@@ -39,6 +41,12 @@ export interface ViewHandle<TMessage> {
   hasSiblings: (msgId: string) => boolean;
   /** Get a node by msgId, or undefined if not found. */
   getNode: (msgId: string) => TreeNode<TMessage> | undefined;
+  /** Send one or more messages in the context of this view's selected branch. */
+  send: (messages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>;
+  /** Regenerate an assistant message, using this view's branch for history. */
+  regenerate: (messageId: string, options?: SendOptions) => Promise<ActiveTurn<TEvent>>;
+  /** Edit a user message, forking from this view's branch. */
+  edit: (messageId: string, newMessages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>;
 }
 
 /**
@@ -46,9 +54,9 @@ export interface ViewHandle<TMessage> {
  * @param source - The transport or view to resolve, or undefined if not yet available.
  * @returns The resolved View, or undefined if not available.
  */
-const resolveView = <TMessage>(
-  source: ClientTransport<unknown, TMessage> | View<TMessage> | null | undefined,
-): View<TMessage> | undefined => {
+const resolveView = <TEvent, TMessage>(
+  source: ClientTransport<TEvent, TMessage> | View<TEvent, TMessage> | undefined,
+): View<TEvent, TMessage> | undefined => {
   if (!source) return undefined;
   // Discriminate: ClientTransport has a `.view` property; View does not.
   if ('view' in source) return source.view;
@@ -56,16 +64,16 @@ const resolveView = <TMessage>(
 };
 
 /**
- * Subscribe to a view and return the visible node list with pagination and branch navigation.
+ * Subscribe to a view and return the visible node list with pagination, navigation, and write operations.
  * @param source - A client transport (uses its default view), a View directly, or null/undefined.
  * @param options - When provided, auto-loads the first page on mount. Omit or pass null for manual loading.
- * @returns A {@link ViewHandle} with nodes, pagination state, navigation, and loadOlder.
+ * @returns A {@link ViewHandle} with nodes, pagination state, navigation, write operations, and loadOlder.
  */
 export const useView = <TEvent, TMessage>(
-  source: ClientTransport<TEvent, TMessage> | View<TMessage> | null | undefined,
+  source: ClientTransport<TEvent, TMessage> | View<TEvent, TMessage> | null | undefined,
   options?: ViewOptions | null,
-): ViewHandle<TMessage> => {
-  const view = resolveView(source);
+): ViewHandle<TEvent, TMessage> => {
+  const view = resolveView(source ?? undefined);
 
   const [nodes, setNodes] = useState<TreeNode<TMessage>[]>(() => view?.flattenNodes() ?? []);
   const [hasOlder, setHasOlder] = useState(() => view?.hasOlder() ?? false);
@@ -127,5 +135,45 @@ export const useView = <TEvent, TMessage>(
 
   const getNode = useCallback((msgId: string) => view?.getNode(msgId), [view]);
 
-  return { messages, nodes, hasOlder, loading, loadOlder, select, getSelectedIndex, getSiblings, hasSiblings, getNode };
+  // Write operation callbacks
+  const send = useCallback(
+    async (msgs: TMessage | TMessage[], opts?: SendOptions) => {
+      if (!view) throw new Ably.ErrorInfo('unable to send; view is not available', ErrorCode.InvalidArgument, 400);
+      return view.send(msgs, opts);
+    },
+    [view],
+  );
+
+  const regenerate = useCallback(
+    async (messageId: string, opts?: SendOptions) => {
+      if (!view)
+        throw new Ably.ErrorInfo('unable to regenerate; view is not available', ErrorCode.InvalidArgument, 400);
+      return view.regenerate(messageId, opts);
+    },
+    [view],
+  );
+
+  const edit = useCallback(
+    async (messageId: string, newMessages: TMessage | TMessage[], opts?: SendOptions) => {
+      if (!view) throw new Ably.ErrorInfo('unable to edit; view is not available', ErrorCode.InvalidArgument, 400);
+      return view.edit(messageId, newMessages, opts);
+    },
+    [view],
+  );
+
+  return {
+    messages,
+    nodes,
+    hasOlder,
+    loading,
+    loadOlder,
+    select,
+    getSelectedIndex,
+    getSiblings,
+    hasSiblings,
+    getNode,
+    send,
+    regenerate,
+    edit,
+  };
 };

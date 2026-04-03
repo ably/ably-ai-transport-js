@@ -1,7 +1,6 @@
 ---
 name: commit
 description: Generate a commit message for the current staged changes and commit
-disable-model-invocation: true
 allowed-tools: Bash(git diff *), Bash(git status), Bash(git commit *), Bash(git log *), Bash(curl *), AskUserQuestion
 ---
 
@@ -67,15 +66,16 @@ The component prefix is derived from the file paths in the diff. Examples:
 If changes span multiple unrelated components, pick the most significant
 one or use a broader prefix.
 
-## Step 4: Present the message
+## Step 4: Present and confirm
 
 Show the complete commit message to the user in a fenced code block.
 
-Then ask: **"Do you want to commit with this message, edit it, or cancel?"**
+Then use **AskUserQuestion** to ask: "Do you want to commit with this
+message, edit it, or cancel?" with three options: Commit, Edit, Cancel.
 
 ## Step 5: Act on the response
 
-- **Accept / looks good / yes**: Run the commit using a heredoc:
+- **Commit**: Run the commit using a heredoc:
   ```
   git commit -m "$(cat <<'EOF'
   <the message>

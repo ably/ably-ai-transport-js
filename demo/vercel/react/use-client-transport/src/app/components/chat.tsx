@@ -8,7 +8,6 @@ import {
   useEdit,
   useActiveTurns,
   useView,
-  useTree,
   useAblyMessages,
 } from '@ably/ai-transport/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
@@ -37,8 +36,7 @@ export function Chat({ chatId, clientId, historyLimit }: ChatProps) {
     body: () => ({ id: chatId }),
   });
 
-  const tree = useTree(transport);
-  const { nodes, hasOlder, loading, loadOlder } = useView(transport, { limit: historyLimit ?? 30 });
+  const view = useView(transport, { limit: historyLimit ?? 30 });
   const send = useSend(transport);
   const regenerate = useRegenerate(transport);
   const edit = useEdit(transport);
@@ -51,11 +49,7 @@ export function Chat({ chatId, clientId, historyLimit }: ChatProps) {
       <div className="flex flex-1 flex-col">
         <Header clientId={clientId} />
         <MessageList
-          nodes={nodes}
-          tree={tree}
-          hasOlder={hasOlder}
-          loading={loading}
-          onLoadOlder={loadOlder}
+          view={view}
           onRegenerate={(id) => regenerate(id)}
           onEdit={(id, text) => edit(id, [userMessage(text)])}
         />
@@ -69,7 +63,7 @@ export function Chat({ chatId, clientId, historyLimit }: ChatProps) {
         />
       </div>
       <DebugPane
-        messages={nodes.map((n) => n.message)}
+        messages={view.nodes.map((n) => n.message)}
         ablyMessages={ablyMessages}
         activeTurns={activeTurns}
       />

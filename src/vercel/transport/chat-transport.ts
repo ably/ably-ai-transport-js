@@ -182,7 +182,7 @@ export const createChatTransport = (
       // Look up the parent of the message being regenerated.
       // messageId comes from useChat (UIMessage.id) — scan the flattened
       // nodes to find the one whose domain message matches this ID.
-      const node = transport.tree.flattenNodes().find((n) => n.message.id === messageId);
+      const node = transport.view.flattenNodes().find((n) => n.message.id === messageId);
       if (node) {
         // Use the tree node's msgId (x-ably-msg-id) as forkOf — this is
         // what the server stamps on the wire, not the UIMessage.id.
@@ -210,7 +210,7 @@ export const createChatTransport = (
       // Build history nodes from the transport's conversation tree.
       // The local `history` is a subset of messages (excludes the last message
       // being sent). Match by message ID for robustness against cloned objects.
-      const allNodes = transport.tree.flattenNodes();
+      const allNodes = transport.view.flattenNodes();
       const historyIds = new Set(history.map((m) => m.id));
       const historyNodes = allNodes.filter((n) => historyIds.has(n.message.id));
       sendBody = {

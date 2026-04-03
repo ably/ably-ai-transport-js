@@ -228,7 +228,7 @@ export const createChatTransport = (
     if (forkOf !== undefined) sendOpts.forkOf = forkOf;
     if (parent !== undefined) sendOpts.parent = parent;
 
-    const turn = await transport.send(newMessages, sendOpts);
+    const turn = await transport.view.send(newMessages, sendOpts);
 
     // Wire abort signal to cancel all turns on the channel.
     // In multi-user scenarios, any client can stop any stream — cancelling

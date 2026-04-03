@@ -64,7 +64,7 @@ describe('Vercel createClientTransport', () => {
     });
 
     // send() triggers a POST to the configured api endpoint with the configured fetch
-    const sendPromise = transport.send({ id: '1', role: 'user', parts: [] });
+    const sendPromise = transport.view.send({ id: '1', role: 'user', parts: [] });
     const turn = await sendPromise;
 
     // Wait for the fire-and-forget fetch to resolve

@@ -8,7 +8,7 @@ Transport headers are built by [`buildTransportHeaders`](transport-components.md
 
 ## Domain header utilities
 
-Domain headers (`src/utils.ts`) carry codec-specific metadata - field names like `toolCallId`, `providerMetadata`, `finishReason`. The prefix `x-domain-` is applied automatically by the writer and stripped by the reader, so codec code works with unprefixed keys.
+Domain headers (`src/utils.ts`) carry codec-specific metadata - field names like `id`, `providerMetadata`, `finishReason`. The prefix `x-domain-` is applied automatically by the writer and stripped by the reader, so codec code works with unprefixed keys.
 
 ### headerWriter
 
@@ -18,12 +18,11 @@ A fluent builder for constructing domain header records. Each setter method auto
 import { headerWriter } from '@ably/ai-transport';
 
 const headers = headerWriter()
-  .str('toolCallId', chunk.toolCallId)
-  .str('toolName', chunk.toolName)
-  .bool('dynamic', chunk.dynamic)
+  .str('id', chunk.id)
+  .str('finishReason', chunk.finishReason)
   .json('providerMetadata', chunk.providerMetadata)
   .build();
-// → { 'x-domain-toolCallId': 'tc-1', 'x-domain-toolName': 'get_weather', ... }
+// → { 'x-domain-id': 'msg-1', 'x-domain-finishReason': 'stop', ... }
 ```
 
 | Method | Value type | Serialization |
@@ -41,9 +40,9 @@ A typed accessor for reading domain headers. Mirrors `headerWriter` with the sam
 import { headerReader } from '@ably/ai-transport';
 
 const r = headerReader(headers);
-const toolCallId = r.str('toolCallId');        // string | undefined
-const toolName = r.strOr('toolName', '');       // string (with fallback)
-const dynamic = r.bool('dynamic');              // boolean | undefined
+const id = r.str('id');                         // string | undefined
+const finishReason = r.strOr('finishReason', ''); // string (with fallback)
+const error = r.str('error');                   // string | undefined
 const metadata = r.json('providerMetadata');    // unknown (parsed JSON)
 ```
 

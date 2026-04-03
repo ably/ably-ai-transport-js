@@ -1,6 +1,6 @@
 # Chat transport
 
-The chat transport (`src/vercel/transport/chat-transport.ts`) is a thin adapter that wraps a core [ClientTransport](client-transport.md) to satisfy the `ChatTransport` interface that Vercel's `useChat` hook expects. The real logic lives in the core transport - this adapter maps Vercel's `sendMessages` / `reconnectToStream` contract to the core transport's `send()` and `cancel()`.
+The chat transport (`src/vercel/transport/chat-transport.ts`) is a thin adapter that wraps a core [ClientTransport](client-transport.md) to satisfy the `ChatTransport` interface that Vercel's `useChat` hook expects. The real logic lives in the core transport - this adapter maps Vercel's `sendMessages` / `reconnectToStream` contract to the transport's default [view](client-transport.md)'s `send()` and the transport's `cancel()`.
 
 ## Why an adapter
 
@@ -8,7 +8,7 @@ Vercel's `useChat` manages message state internally. When the user submits a mes
 
 1. Determine which messages are new vs history
 2. Compute fork metadata for regeneration
-3. Delegate to the core transport's `send()`
+3. Delegate to the default view's `send()`
 4. Return a stream that signals completion without duplicating state
 
 ## sendMessages

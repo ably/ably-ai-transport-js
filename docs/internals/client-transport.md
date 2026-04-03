@@ -1,6 +1,6 @@
 # Client transport
 
-The client transport (`src/core/transport/client-transport.ts`) manages the full client-side conversation lifecycle over a single Ably channel. It composes a [stream router](transport-components.md#streamrouter), [conversation tree](conversation-tree.md), and codec [decoder](decoder.md)/[accumulator](codec-interface.md#accumulator) to handle sending messages, receiving streamed responses, managing conversation state, and supporting branching operations (edit, regenerate).
+The client transport (`src/core/transport/client-transport.ts`) manages the full client-side conversation lifecycle over a single Ably channel. It composes a [stream router](transport-components.md#streamrouter), [conversation tree](conversation-tree.md), and codec [decoder](decoder.md)/[accumulator](codec-interface.md#accumulator) to handle receiving streamed responses and managing conversation state. Write operations (`send`, `regenerate`, `edit`) live on the View, which delegates to the transport's internal send machinery.
 
 The client never publishes domain messages directly to the channel. Instead, it sends them to the server via HTTP POST. The server publishes user messages and [turn lifecycle events](wire-protocol.md#lifecycle-events) on behalf of the client. The channel subscription is the sole source of truth for conversation state.
 
@@ -8,8 +8,8 @@ The client never publishes domain messages directly to the channel. Instead, it 
 
 ```
 DefaultClientTransport
-├── Tree       - branching message history (flattenNodes)
-├── View       - wraps tree with history pagination and 'update' events
+├── Tree       - branching message history
+├── View       - wraps tree with pagination, selection, 'update' events, and write ops (send/regenerate/edit)
 ├── StreamRouter           - maps turn events to per-turn ReadableStreams
 ├── StreamDecoder          - decodes inbound Ably messages to events/messages
 ├── EventEmitter           - typed event bus for error events
@@ -20,7 +20,7 @@ All sub-components are created in the constructor and share a single Ably channe
 
 ## Send flow
 
-`send()` is the primary entry point for starting a new turn. It handles optimistic insertion, HTTP POST dispatch, and stream creation in a specific order:
+`view.send()` is the primary entry point for starting a new turn. It delegates to the transport's internal `_internalSend` (exposed to views via a `SendDelegate`). The send flow handles optimistic insertion, HTTP POST dispatch, and stream creation in a specific order:
 
 1. **Generate identifiers** - a turn ID and per-message msg-ids (`crypto.randomUUID()`)
 2. **Auto-compute parent** - if no explicit `parent` or `forkOf` is provided, reads the last message in the [flattened tree](conversation-tree.md#flatten-producing-the-linear-path) to chain messages into a linear thread
@@ -75,7 +75,7 @@ On every event, the transport calls `accumulator.processOutputs()`, clones the l
 
 ## Regenerate and edit
 
-`regenerate(messageId)` and `edit(messageId, newMessages)` are convenience methods that delegate to `send()` with computed branching metadata:
+`view.regenerate(messageId)` and `view.edit(messageId, newMessages)` are convenience methods that delegate to the send flow with computed branching metadata:
 
 - **`forkOf`** - the msg-id of the message being replaced
 - **`parent`** - the parent of the forked message in the tree

@@ -376,7 +376,7 @@ Detailed documentation lives in the [`docs/`](./docs/) directory:
 - **[Concepts](./docs/concepts/)** - [Transport architecture](./docs/concepts/transport.md), [Turns](./docs/concepts/turns.md)
 - **[Get started](./docs/get-started/)** - [Vercel AI SDK with useChat](./docs/get-started/vercel-use-chat.md), [Vercel AI SDK with useClientTransport](./docs/get-started/vercel-use-client-transport.md)
 - **[Frameworks](./docs/frameworks/)** - [Vercel AI SDK](./docs/frameworks/vercel-ai-sdk.md)
-- **[Features](./docs/features/)** - [Streaming](./docs/features/streaming.md), [Cancellation](./docs/features/cancel.md), [Barge-in](./docs/features/barge-in.md), [Optimistic updates](./docs/features/optimistic-updates.md), [History](./docs/features/history.md), [Branching](./docs/features/branching.md), [Multi-client sync](./docs/features/multi-client.md), [Tool calls](./docs/features/tool-calls.md), [Concurrent turns](./docs/features/concurrent-turns.md)
+- **[Features](./docs/features/)** - [Streaming](./docs/features/streaming.md), [Cancellation](./docs/features/cancel.md), [Interruption](./docs/features/interruption.md), [Optimistic updates](./docs/features/optimistic-updates.md), [History](./docs/features/history.md), [Branching](./docs/features/branching.md), [Multi-client sync](./docs/features/multi-client.md), [Concurrent turns](./docs/features/concurrent-turns.md)
 - **[Reference](./docs/reference/)** - [React hooks](./docs/reference/react-hooks.md), [Error codes](./docs/reference/error-codes.md)
 - **[Internals](./docs/internals/)** - Architecture details for contributors
 

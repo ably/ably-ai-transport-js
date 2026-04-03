@@ -1,6 +1,6 @@
 # History and replay
 
-`transport.view.loadOlder(limit)` loads conversation history from the Ably channel. A new client - after a page refresh, on a new device, or joining mid-conversation - can hydrate the full conversation from channel history without a separate database.
+`view.loadOlder(limit)` loads conversation history from the Ably channel. A new client - after a page refresh, on a new device, or joining mid-conversation - can hydrate the full conversation from channel history without a separate database.
 
 Without persistent history, page refresh means starting over. With AI Transport, messages are persisted on the Ably channel and decoded through the same codec used for live streaming.
 
@@ -14,7 +14,7 @@ await view.loadOlder(30);
 // Call loadOlder again to fetch more older messages
 ```
 
-History messages are inserted into the transport's conversation tree and trigger an `'update'` notification on the view. After loading history, `transport.view.flattenNodes().map(n => n.message)` returns the combined history + live messages - flattened along the currently selected branch. If the history contains forks (from regeneration or editing), only the active branch is included. Use the conversation tree to navigate between branches (see [Conversation branching](branching.md)).
+History messages are inserted into the transport's conversation tree and trigger an `'update'` notification on the view. After loading history, `view.flattenNodes().map(n => n.message)` returns the combined history + live messages - flattened along the currently selected branch. If the history contains forks (from regeneration or editing), only the active branch is included. Use the conversation tree to navigate between branches (see [Conversation branching](branching.md)).
 
 The `limit` parameter controls how many **complete domain messages** to return, not how many Ably wire messages to fetch. A single assistant message may span dozens of Ably messages (one per append). The implementation pages through Ably history until `limit` complete messages have been assembled.
 
@@ -66,7 +66,7 @@ const { nodes, hasOlder, loading, loadOlder } = useView(transport, { limit: 30 }
 
 History messages carry the same `x-ably-parent` and `x-ably-fork-of` headers as live messages. When loaded, they're inserted into the conversation tree with their full branch structure intact. A client loading history sees the same tree of branches and can navigate siblings just like a client that was present for the original conversation.
 
-Because the tree may contain multiple branches, the view's `flattenNodes()` returns only the messages along the currently selected path - not every message ever published. To see alternative branches, use `useTree` or the tree's `getSiblings()` / `select()` methods.
+Because the tree may contain multiple branches, the view's `flattenNodes()` returns only the messages along the currently selected path - not every message ever published. To see alternative branches, use `useView` or the view's `getSiblings()` / `select()` methods.
 
 See [Conversation branching](branching.md) for the tree model.
 

@@ -40,10 +40,10 @@ Pass `reason` to `end()` so all clients see why the turn ended.
 
 ### Client side
 
-The client transport creates turns implicitly when you call `send()`, `regenerate()`, or `edit()`:
+The client creates turns implicitly when you call `view.send()`, `view.regenerate()`, or `view.edit()`:
 
 ```typescript
-const turn = await transport.send(userMessage);
+const turn = await view.send(userMessage);
 
 // turn.turnId - the unique turn identifier
 // turn.stream - a ReadableStream of decoded events

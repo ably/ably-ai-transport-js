@@ -60,9 +60,6 @@ The domain encoder maps events to core operations:
 | `text-start`                     | `core.startStream(id, { name: 'text' })`               |
 | `text-delta`                     | `core.appendStream(id, delta)`                         |
 | `text-end`                       | `core.closeStream(id, payload)`                        |
-| `tool-input-start`               | `core.startStream(toolCallId, { name: 'tool-input' })` |
-| `tool-input-delta`               | `core.appendStream(toolCallId, delta)`                 |
-| `tool-input-available`           | `core.closeStream(toolCallId, payload)`                |
 | `start`, `finish`, `error`, etc. | `core.publishDiscrete(payload)`                        |
 
 The [encoder core](encoder.md) handles all Ably-specific concerns: serial tracking, append queuing, [flush/recovery](encoder.md#recovery-mechanism), [header persistence](encoder.md#closing-appends-repeat-all-headers).
@@ -149,11 +146,7 @@ The Vercel codec (`src/vercel/codec/`) is the concrete implementation for the Ve
 | `text-start`                                 | Streamed message create (name: `"text"`)                 |
 | `text-delta`                                 | Streamed message append                                  |
 | `text-end`                                   | Streamed message close (status: `"finished"`)            |
-| `tool-input-start`                           | Streamed message create (name: `"tool-input"`)           |
-| `tool-input-delta`                           | Streamed message append                                  |
-| `tool-input-available`                       | Streamed message close or discrete (if no active stream) |
 | `start`, `finish`, `error`                   | Discrete message                                         |
-| `tool-output-available`, `tool-output-error` | Discrete message                                         |
 | `data-*`                                     | Discrete message                                         |
 
 ### Domain headers
@@ -161,7 +154,6 @@ The Vercel codec (`src/vercel/codec/`) is the concrete implementation for the Ve
 The Vercel codec uses [`x-domain-*` headers](wire-protocol.md#domain-headers-x-domain) to carry Vercel-specific metadata:
 
 - `x-domain-id` - chunk/message ID
-- `x-domain-toolCallId` - tool call identifier
 - `x-domain-providerMetadata` - JSON-serialized `ProviderMetadata`
 - `x-domain-finishReason` - why the LLM stopped
 - `x-domain-error` - error message

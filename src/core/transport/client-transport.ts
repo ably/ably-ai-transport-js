@@ -50,7 +50,7 @@ import type {
   TurnLifecycleEvent,
   View,
 } from './types.js';
-import { createView } from './view.js';
+import { createView, type DefaultView } from './view.js';
 
 /**
  * Returned from `on()` when the transport is already closed — the subscription
@@ -109,7 +109,8 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
 
   // Sub-components
   private readonly _tree: DefaultTree<TMessage>;
-  private readonly _view: View<TMessage>;
+  private readonly _view: DefaultView<TEvent, TMessage>;
+  private readonly _views = new Set<DefaultView<TEvent, TMessage>>();
   private readonly _router: StreamRouter<TEvent>;
   private readonly _decoder: StreamDecoder<TEvent, TMessage>;
 
@@ -158,6 +159,8 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     });
     this._router = createStreamRouter<TEvent>(this._codec.isTerminal.bind(this._codec), this._logger);
     this._decoder = this._codec.createDecoder();
+
+    this._views.add(this._view);
 
     // Public accessors (typed as narrow interfaces)
     this.tree = this._tree;
@@ -480,7 +483,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
    * @returns Conversation nodes preceding the target.
    */
   private _getHistoryBefore(messageId: string): TreeNode<TMessage>[] {
-    const all = this._tree.flattenNodes();
+    const all = this._view.flattenNodes();
     const idx = all.findIndex((n) => n.msgId === messageId);
     return idx === -1 ? all : all.slice(0, idx);
   }
@@ -488,6 +491,21 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   // ---------------------------------------------------------------------------
   // Public API
   // ---------------------------------------------------------------------------
+
+  createView(): View<TMessage> {
+    if (this._closed) {
+      throw new Ably.ErrorInfo('unable to create view; transport is closed', ErrorCode.TransportClosed, 400);
+    }
+    this._logger.trace('DefaultClientTransport.createView();');
+    const view = createView<TEvent, TMessage>({
+      tree: this._tree,
+      channel: this._channel,
+      codec: this._codec,
+      logger: this._logger,
+    });
+    this._views.add(view);
+    return view;
+  }
 
   // Spec: AIT-CT3, AIT-CT4
   async send(input: TMessage | TMessage[], sendOptions?: SendOptions): Promise<ActiveTurn<TEvent>> {
@@ -515,7 +533,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     // Capture history BEFORE optimistic inserts. The optimistic messages are
     // sent in the `messages` field — including them in `history` too would
     // cause the server to see them twice.
-    const preInsertHistory = this._tree.flattenNodes();
+    const preInsertHistory = this._view.flattenNodes();
 
     // Spec: AIT-CT3d
     // Auto-compute parent from the current thread if not explicitly provided
@@ -744,7 +762,8 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
 
     this._turnObservers.clear();
     this._emitter.off();
-    this._view.close();
+    for (const v of this._views) v.close();
+    this._views.clear();
     this._ownTurnIds.clear();
     this._ownMsgIds.clear();
     this._turnMsgIds.clear();

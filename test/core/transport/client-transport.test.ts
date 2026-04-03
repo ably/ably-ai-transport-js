@@ -323,8 +323,7 @@ describe('ClientTransport', () => {
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
 
-      const tree = seeded.tree;
-      const nodes = tree.flattenNodes();
+      const nodes = seeded.view.flattenNodes();
       expect(nodes).toHaveLength(2);
       expect(nodes[1]?.parentId).toBe(nodes[0]?.msgId);
     });
@@ -384,7 +383,7 @@ describe('ClientTransport', () => {
       });
 
       // Get the transport-assigned msgId of the seed message
-      const seedNode = seeded.tree.flattenNodes()[0];
+      const seedNode = seeded.view.flattenNodes()[0];
       expect(seedNode).toBeDefined();
 
       await seeded.send({ id: 'user-1', content: 'second' });
@@ -576,6 +575,11 @@ describe('ClientTransport', () => {
       await expect(transport.send({ id: 'u1', content: 'hi' })).rejects.toThrow('transport is closed');
     });
 
+    it('createView throws when transport is closed', async () => {
+      await transport.close();
+      expect(() => transport.createView()).toThrow('transport is closed');
+    });
+
     it('merges dynamic options.headers and options.body', async () => {
       const dynTransport = createClientTransport({
         channel: createMockChannel(),
@@ -675,21 +679,21 @@ describe('ClientTransport', () => {
     it('stamps forkOf on optimistic message headers', async () => {
       await transport.send({ id: 'u1', content: 'hi' }, { forkOf: 'original-msg' });
 
-      const nodes = transport.tree.flattenNodes();
+      const nodes = transport.view.flattenNodes();
       expect(nodes[0]?.headers[HEADER_FORK_OF]).toBe('original-msg');
     });
 
     it('stamps role on optimistic message headers', async () => {
       await transport.send({ id: 'u1', content: 'hi' });
 
-      const nodes = transport.tree.flattenNodes();
+      const nodes = transport.view.flattenNodes();
       expect(nodes[0]?.headers[HEADER_ROLE]).toBe('user');
     });
 
     it('stamps turnId on optimistic message headers', async () => {
       const turn = await transport.send({ id: 'u1', content: 'hi' });
 
-      const nodes = transport.tree.flattenNodes();
+      const nodes = transport.view.flattenNodes();
       expect(nodes[0]?.headers[HEADER_TURN_ID]).toBe(turn.turnId);
     });
 
@@ -1989,8 +1993,8 @@ describe('ClientTransport', () => {
     it('returns the conversation tree', () => {
       const tree = transport.tree;
       expect(tree).toBeDefined();
-      expect(typeof tree.flattenNodes).toBe('function');
       expect(typeof tree.upsert).toBe('function');
+      expect(typeof tree.getSiblings).toBe('function');
     });
 
     it('emits ably-message events for incoming messages', () => {
@@ -2010,7 +2014,7 @@ describe('ClientTransport', () => {
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
 
-      const nodes = seeded.tree.flattenNodes();
+      const nodes = seeded.view.flattenNodes();
       expect(nodes).toHaveLength(1);
       expect(nodes[0]?.message.id).toBe('msg-1');
       expect(nodes[0]?.msgId).toBeDefined();
@@ -2426,7 +2430,7 @@ describe('ClientTransport', () => {
       await histTransport.view.loadOlder(1);
 
       const visible = histTransport.view.flattenNodes();
-      const treeAll = histTransport.tree.flattenNodes();
+      const treeAll = histTransport.view.flattenNodes();
 
       // If windowing is working, visible <= total in tree
       expect(treeAll.length).toBeGreaterThanOrEqual(visible.length);

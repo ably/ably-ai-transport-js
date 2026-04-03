@@ -639,9 +639,9 @@ describe('ClientTransport integration', () => {
     await drain(clientTurn.stream);
     await waitForMessages(clientTransport, 2);
 
-    const nodes = clientTransport.tree.flattenNodes();
-    const userNode = nodes.find((n) => n.message.role === 'user');
-    const asstNode = nodes.find((n) => n.message.role === 'assistant');
+    const nodes = clientTransport.view.flattenNodes();
+    const userNode = nodes.find((n: { message: { role: string } }) => n.message.role === 'user');
+    const asstNode = nodes.find((n: { message: { role: string } }) => n.message.role === 'assistant');
 
     expect(userNode).toBeDefined();
     expect(asstNode).toBeDefined();

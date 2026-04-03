@@ -251,7 +251,7 @@ export interface SendOptions {
   /**
    * The msg-id of the message that precedes this one in the
    * conversation thread. Null means the message is a root.
-   * If omitted, auto-computed from the last message in the tree.
+   * If omitted, auto-computed from the last message in the view.
    */
   parent?: string | null;
 }
@@ -403,7 +403,7 @@ export interface Tree<TMessage> {
  * `loadOlder()`. Events are scoped to the visible window — subscribers
  * are only notified when the visible output changes.
  */
-export interface View<TMessage> {
+export interface View<TEvent, TMessage> {
   /** The visible domain messages along the selected branch. Shorthand for `flattenNodes().map(n => n.message)`. */
   getMessages(): TMessage[];
 
@@ -445,6 +445,31 @@ export interface View<TMessage> {
   /** Get a node by msgId, or undefined if not found. */
   getNode(msgId: string): TreeNode<TMessage> | undefined;
 
+  // --- Write operations ---
+
+  /**
+   * Send one or more messages and start a new turn. The parent is
+   * auto-computed from this view's selected branch unless overridden.
+   * The HTTP POST is fire-and-forget — the returned stream is available
+   * immediately. If the POST fails, the error is surfaced via the
+   * transport's `on("error")`.
+   */
+  send(messages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveTurn<TEvent>>;
+
+  /**
+   * Regenerate an assistant message. Creates a new turn that forks the
+   * target message with no new user messages. Automatically computes
+   * `forkOf`, `parent`, and truncated `history` from this view's branch.
+   */
+  regenerate(messageId: string, options?: SendOptions): Promise<ActiveTurn<TEvent>>;
+
+  /**
+   * Edit a user message. Creates a new turn that forks the target message
+   * with replacement content. Automatically computes `forkOf`, `parent`,
+   * and `history` from this view's branch.
+   */
+  edit(messageId: string, newMessages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveTurn<TEvent>>;
+
   // --- Observation ---
 
   /** Active turn IDs for turns with visible messages, grouped by clientId. */
@@ -485,7 +510,7 @@ export interface ClientTransport<TEvent, TMessage> {
   readonly tree: Tree<TMessage>;
 
   /** The default paginated, branch-aware view for rendering — events scoped to visible messages. */
-  readonly view: View<TMessage>;
+  readonly view: View<TEvent, TMessage>;
 
   /**
    * Create an additional view over the same conversation tree.
@@ -493,32 +518,7 @@ export interface ClientTransport<TEvent, TMessage> {
    * The caller is responsible for calling `close()` on the returned view
    * when it is no longer needed, or it will be closed when the transport closes.
    */
-  createView(): View<TMessage>;
-
-  /**
-   * Send one or more messages and start a new turn. Returns a handle to the
-   * active turn with the decoded event stream and a cancel function.
-   *
-   * The HTTP POST is fire-and-forget — the returned stream is available
-   * immediately. If the POST fails, the error is surfaced via `on("error")`.
-   */
-  send(messages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveTurn<TEvent>>;
-
-  /**
-   * Regenerate an assistant message. Creates a new turn that forks the
-   * target message with no new user messages. Automatically computes
-   * `forkOf`, `parent`, and truncated `history` from the tree.
-   *
-   * Pass `options.body.history` to override the default truncated history.
-   */
-  regenerate(messageId: string, options?: SendOptions): Promise<ActiveTurn<TEvent>>;
-
-  /**
-   * Edit a user message. Creates a new turn that forks the target message
-   * with replacement content. Automatically computes `forkOf`, `parent`,
-   * and `history` from the tree.
-   */
-  edit(messageId: string, newMessages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveTurn<TEvent>>;
+  createView(): View<TEvent, TMessage>;
 
   /** Cancel turns matching the filter. Defaults to `{ own: true }` (all own turns). */
   cancel(filter?: CancelFilter): Promise<void>;

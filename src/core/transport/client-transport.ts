@@ -50,7 +50,7 @@ import type {
   TurnLifecycleEvent,
   View,
 } from './types.js';
-import { createView, type DefaultView } from './view.js';
+import { createView, type DefaultView, type ViewContext } from './view.js';
 
 /**
  * Returned from `on()` when the transport is already closed — the subscription
@@ -116,7 +116,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
 
   // Public accessors
   readonly tree: Tree<TMessage>;
-  readonly view: View<TMessage>;
+  readonly view: View<TEvent, TMessage>;
 
   // Channel subscription — subscribe() returns a Promise that resolves when the channel attaches
   private readonly _attachPromise: Promise<unknown>;
@@ -155,6 +155,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       tree: this._tree,
       channel: this._channel,
       codec: this._codec,
+      sendDelegate: this._internalSend.bind(this),
       logger: this._logger,
     });
     this._router = createStreamRouter<TEvent>(this._codec.isTerminal.bind(this._codec), this._logger);
@@ -476,23 +477,11 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   // Input message helpers
   // ---------------------------------------------------------------------------
 
-  /**
-   * Compute truncated history: everything before the target message.
-   * Used by regenerate so the LLM doesn't see the response being replaced.
-   * @param messageId - The msg-id to truncate history before.
-   * @returns Conversation nodes preceding the target.
-   */
-  private _getHistoryBefore(messageId: string): TreeNode<TMessage>[] {
-    const all = this._view.flattenNodes();
-    const idx = all.findIndex((n) => n.msgId === messageId);
-    return idx === -1 ? all : all.slice(0, idx);
-  }
-
   // ---------------------------------------------------------------------------
   // Public API
   // ---------------------------------------------------------------------------
 
-  createView(): View<TMessage> {
+  createView(): View<TEvent, TMessage> {
     if (this._closed) {
       throw new Ably.ErrorInfo('unable to create view; transport is closed', ErrorCode.TransportClosed, 400);
     }
@@ -501,6 +490,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       tree: this._tree,
       channel: this._channel,
       codec: this._codec,
+      sendDelegate: this._internalSend.bind(this),
       logger: this._logger,
     });
     this._views.add(view);
@@ -508,7 +498,11 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   }
 
   // Spec: AIT-CT3, AIT-CT4
-  async send(input: TMessage | TMessage[], sendOptions?: SendOptions): Promise<ActiveTurn<TEvent>> {
+  private async _internalSend(
+    input: TMessage | TMessage[],
+    sendOptions: SendOptions | undefined,
+    viewContext: ViewContext<TMessage>,
+  ): Promise<ActiveTurn<TEvent>> {
     if (this._closed) {
       throw new Ably.ErrorInfo('unable to send; transport is closed', ErrorCode.TransportClosed, 400);
     }
@@ -520,7 +514,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       throw new Ably.ErrorInfo('unable to send; transport is closed', ErrorCode.TransportClosed, 400);
     }
 
-    this._logger.trace('ClientTransport.send();');
+    this._logger.trace('ClientTransport._internalSend();');
 
     const msgs = Array.isArray(input) ? input : [input];
     const turnId = crypto.randomUUID();
@@ -530,10 +524,8 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     const msgIds = new Set<string>();
     const postMessages: TreeNode<TMessage>[] = [];
 
-    // Capture history BEFORE optimistic inserts. The optimistic messages are
-    // sent in the `messages` field — including them in `history` too would
-    // cause the server to see them twice.
-    const preInsertHistory = this._view.flattenNodes();
+    // Capture history BEFORE optimistic inserts from the calling view's branch.
+    const preInsertHistory = viewContext.flattenNodes();
 
     // Spec: AIT-CT3d
     // Auto-compute parent from the current thread if not explicitly provided
@@ -654,46 +646,6 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       turnId,
       cancel: async () => this.cancel({ turnId }),
     };
-  }
-
-  // Spec: AIT-CT5
-  async regenerate(messageId: string, sendOptions?: SendOptions): Promise<ActiveTurn<TEvent>> {
-    this._logger.trace('ClientTransport.regenerate();', { messageId });
-
-    const node = this._tree.getNode(messageId);
-    const parentId = node?.parentId;
-
-    return this.send([], {
-      ...sendOptions,
-      body: {
-        history: this._getHistoryBefore(messageId),
-        ...sendOptions?.body,
-      },
-      forkOf: messageId,
-      parent: parentId,
-    });
-  }
-
-  // Spec: AIT-CT6
-  async edit(
-    messageId: string,
-    newMessages: TMessage | TMessage[],
-    sendOptions?: SendOptions,
-  ): Promise<ActiveTurn<TEvent>> {
-    this._logger.trace('ClientTransport.edit();', { messageId });
-
-    const node = this._tree.getNode(messageId);
-    const parentId = node?.parentId;
-
-    return this.send(newMessages, {
-      ...sendOptions,
-      body: {
-        history: this._getHistoryBefore(messageId),
-        ...sendOptions?.body,
-      },
-      forkOf: messageId,
-      parent: parentId,
-    });
   }
 
   // Spec: AIT-CT7, AIT-CT7a

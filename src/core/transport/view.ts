@@ -22,7 +22,7 @@ import { getHeaders } from '../../utils.js';
 import type { Codec } from '../codec/types.js';
 import { decodeHistory } from './decode-history.js';
 import type { TreeInternal } from './tree.js';
-import type { PaginatedMessages, TreeNode, TurnLifecycleEvent, View } from './types.js';
+import type { ActiveTurn, PaginatedMessages, SendOptions, TreeNode, TurnLifecycleEvent, View } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Events map
@@ -33,6 +33,29 @@ interface ViewEventsMap {
   'ably-message': Ably.InboundMessage;
   turn: TurnLifecycleEvent;
 }
+
+// ---------------------------------------------------------------------------
+// Send delegate
+// ---------------------------------------------------------------------------
+
+/**
+ * Context provided by the View to the transport's send machinery.
+ * Allows the transport to derive parent and history from the calling view's branch.
+ */
+export interface ViewContext<TMessage> {
+  /** Returns the visible nodes for this view's selected branch. */
+  flattenNodes: () => TreeNode<TMessage>[];
+}
+
+/**
+ * Internal delegate function provided by the transport for executing sends.
+ * The View pre-computes branch context and passes it to the delegate.
+ */
+export type SendDelegate<TEvent, TMessage> = (
+  input: TMessage | TMessage[],
+  options: SendOptions | undefined,
+  viewContext: ViewContext<TMessage>,
+) => Promise<ActiveTurn<TEvent>>;
 
 // ---------------------------------------------------------------------------
 // Options
@@ -46,6 +69,8 @@ export interface ViewOptions<TEvent, TMessage> {
   channel: Ably.RealtimeChannel;
   /** The codec for decoding history messages. */
   codec: Codec<TEvent, TMessage>;
+  /** Delegate for executing sends through the transport. */
+  sendDelegate: SendDelegate<TEvent, TMessage>;
   /** Logger for diagnostic output. */
   logger: Logger;
 }
@@ -54,10 +79,11 @@ export interface ViewOptions<TEvent, TMessage> {
 // Implementation
 // ---------------------------------------------------------------------------
 
-export class DefaultView<TEvent, TMessage> implements View<TMessage> {
+export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   private readonly _tree: TreeInternal<TMessage>;
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: Codec<TEvent, TMessage>;
+  private readonly _sendDelegate: SendDelegate<TEvent, TMessage>;
   private readonly _logger: Logger;
   private readonly _emitter: EventEmitter<ViewEventsMap>;
 
@@ -91,6 +117,7 @@ export class DefaultView<TEvent, TMessage> implements View<TMessage> {
     this._tree = options.tree;
     this._channel = options.channel;
     this._codec = options.codec;
+    this._sendDelegate = options.sendDelegate;
     this._logger = options.logger.withContext({ component: 'View' });
     this._emitter = new EventEmitter<ViewEventsMap>(this._logger);
 
@@ -206,6 +233,63 @@ export class DefaultView<TEvent, TMessage> implements View<TMessage> {
 
   getNode(msgId: string): TreeNode<TMessage> | undefined {
     return this._tree.getNode(msgId);
+  }
+
+  // -------------------------------------------------------------------------
+  // Write operations
+  // -------------------------------------------------------------------------
+
+  // Spec: AIT-CT3, AIT-CT4
+  async send(input: TMessage | TMessage[], options?: SendOptions): Promise<ActiveTurn<TEvent>> {
+    this._logger.trace('DefaultView.send();');
+    return this._sendDelegate(input, options, { flattenNodes: () => this.flattenNodes() });
+  }
+
+  // Spec: AIT-CT5
+  async regenerate(messageId: string, options?: SendOptions): Promise<ActiveTurn<TEvent>> {
+    this._logger.trace('DefaultView.regenerate();', { messageId });
+
+    const node = this._tree.getNode(messageId);
+    const parentId = node?.parentId;
+
+    return this.send([], {
+      ...options,
+      body: {
+        history: this._getHistoryBefore(messageId),
+        ...options?.body,
+      },
+      forkOf: messageId,
+      parent: parentId,
+    });
+  }
+
+  // Spec: AIT-CT6
+  async edit(
+    messageId: string,
+    newMessages: TMessage | TMessage[],
+    options?: SendOptions,
+  ): Promise<ActiveTurn<TEvent>> {
+    this._logger.trace('DefaultView.edit();', { messageId });
+
+    const node = this._tree.getNode(messageId);
+    const parentId = node?.parentId;
+
+    return this.send(newMessages, {
+      ...options,
+      body: {
+        history: this._getHistoryBefore(messageId),
+        ...options?.body,
+      },
+      forkOf: messageId,
+      parent: parentId,
+    });
+  }
+
+  private _getHistoryBefore(messageId: string): TreeNode<TMessage>[] {
+    this._logger.trace('DefaultView._getHistoryBefore();', { messageId });
+    const all = this.flattenNodes();
+    const idx = all.findIndex((n) => n.msgId === messageId);
+    return idx === -1 ? all : all.slice(0, idx);
   }
 
   // -------------------------------------------------------------------------

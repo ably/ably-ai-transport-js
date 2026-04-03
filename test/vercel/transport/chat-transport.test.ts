@@ -53,7 +53,7 @@ interface MockTransport {
   close: ReturnType<typeof vi.fn>;
   mockTurn: MockTurn;
   tree: Tree<AI.UIMessage>;
-  view: View<AI.UIMessage>;
+  view: View<AI.UIMessageChunk, AI.UIMessage>;
 }
 
 const createMockTransport = (): MockTransport => {
@@ -70,7 +70,11 @@ const createMockTransport = (): MockTransport => {
     on: vi.fn(() => () => {}),
   };
 
-  const view: View<AI.UIMessage> = {
+  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+  const send = vi.fn(() => Promise.resolve(mockTurn));
+
+  // CAST: mock object satisfies the subset of View methods used by chat-transport tests
+  const view = {
     flattenNodes: vi.fn(() => []),
     getMessages: vi.fn(() => []),
     hasOlder: vi.fn(() => false),
@@ -81,14 +85,15 @@ const createMockTransport = (): MockTransport => {
     getSiblings: vi.fn(() => []),
     hasSiblings: vi.fn(() => false),
     getNode: vi.fn(),
+    send,
+    regenerate: vi.fn(),
+    edit: vi.fn(),
     getActiveTurnIds: vi.fn(() => new Map()),
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
     on: vi.fn(() => () => {}),
     close: vi.fn(),
-  };
+  } as unknown as View<AI.UIMessageChunk, AI.UIMessage>;
 
-  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-  const send = vi.fn(() => Promise.resolve(mockTurn));
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const cancel = vi.fn(() => Promise.resolve());
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
@@ -98,11 +103,8 @@ const createMockTransport = (): MockTransport => {
     tree,
     view,
     createView: vi.fn(() => view),
-    send,
     cancel,
     close,
-    regenerate: vi.fn(),
-    edit: vi.fn(),
     waitForTurn: vi.fn(),
     on: vi.fn(() => noop),
   } as unknown as ClientTransport<AI.UIMessageChunk, AI.UIMessage>;

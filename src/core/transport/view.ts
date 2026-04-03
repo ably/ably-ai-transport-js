@@ -5,6 +5,9 @@
  * are visible to the UI. New live messages appear immediately; older messages
  * are revealed progressively via `loadOlder()`.
  *
+ * Each View owns its own branch selection state and pagination window,
+ * allowing multiple independent Views over the same Tree.
+ *
  * Events are scoped to the visible window — 'update' only fires when the
  * visible output changes, 'ably-message' only for messages corresponding to
  * visible nodes, and 'turn' only for turns with visible messages.
@@ -57,6 +60,12 @@ export class DefaultView<TEvent, TMessage> implements View<TMessage> {
   private readonly _codec: Codec<TEvent, TMessage>;
   private readonly _logger: Logger;
   private readonly _emitter: EventEmitter<ViewEventsMap>;
+
+  /**
+   * View-local branch selections: group root msgId → selected sibling index.
+   * Fork points not present here default to the latest sibling.
+   */
+  private readonly _selections = new Map<string, number>();
 
   /** Msg-ids loaded from history but not yet revealed to the UI. */
   private readonly _withheldMsgIds = new Set<string>();
@@ -111,8 +120,9 @@ export class DefaultView<TEvent, TMessage> implements View<TMessage> {
   }
 
   flattenNodes(): TreeNode<TMessage>[] {
-    if (this._withheldMsgIds.size === 0) return this._tree.flattenNodes();
-    return this._tree.flattenNodes().filter((n) => !this._withheldMsgIds.has(n.msgId));
+    const nodes = this._tree.flattenNodes(this._selections);
+    if (this._withheldMsgIds.size === 0) return nodes;
+    return nodes.filter((n) => !this._withheldMsgIds.has(n.msgId));
   }
 
   hasOlder(): boolean {
@@ -159,7 +169,51 @@ export class DefaultView<TEvent, TMessage> implements View<TMessage> {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Branch navigation
+  // -------------------------------------------------------------------------
+
+  // Spec: AIT-CT13c
+  select(msgId: string, index: number): void {
+    this._logger.trace('DefaultView.select();', { msgId, index });
+    const group = this._tree.getSiblings(msgId);
+    if (group.length <= 1) return;
+    const groupRootId = this._tree.getGroupRoot(msgId);
+    const clamped = Math.max(0, Math.min(index, group.length - 1));
+    this._selections.set(groupRootId, clamped);
+    this._logger.debug('DefaultView.select();', { msgId, index: clamped });
+    this._updateVisibleSnapshot();
+    this._emitter.emit('update');
+  }
+
+  getSelectedIndex(msgId: string): number {
+    this._logger.trace('DefaultView.getSelectedIndex();', { msgId });
+    const group = this._tree.getSiblings(msgId);
+    if (group.length <= 1) return 0;
+    const groupRootId = this._tree.getGroupRoot(msgId);
+    const stored = this._selections.get(groupRootId);
+    if (stored !== undefined) return Math.max(0, Math.min(stored, group.length - 1));
+    return group.length - 1; // default: latest
+  }
+
+  getSiblings(msgId: string): TMessage[] {
+    return this._tree.getSiblings(msgId);
+  }
+
+  hasSiblings(msgId: string): boolean {
+    return this._tree.hasSiblings(msgId);
+  }
+
+  getNode(msgId: string): TreeNode<TMessage> | undefined {
+    return this._tree.getNode(msgId);
+  }
+
+  // -------------------------------------------------------------------------
+  // Observation
+  // -------------------------------------------------------------------------
+
   getActiveTurnIds(): Map<string, Set<string>> {
+    this._logger.trace('DefaultView.getActiveTurnIds();');
     const allTurns = this._tree.getActiveTurnIds();
     if (this._withheldMsgIds.size === 0) return allTurns;
 
@@ -212,6 +266,7 @@ export class DefaultView<TEvent, TMessage> implements View<TMessage> {
     this._closed = true;
     for (const unsub of this._unsubs) unsub();
     this._unsubs.length = 0;
+    this._selections.clear();
     this._withheldMsgIds.clear();
     this._withheldBuffer.length = 0;
   }
@@ -222,7 +277,7 @@ export class DefaultView<TEvent, TMessage> implements View<TMessage> {
 
   private async _loadFirstPage(limit: number): Promise<void> {
     // Snapshot before loading — everything already in the tree stays visible
-    const beforeMsgIds = new Set(this._tree.flattenNodes().map((n) => n.msgId));
+    const beforeMsgIds = new Set(this._tree.flattenNodes(this._selections).map((n) => n.msgId));
 
     const firstPage = await decodeHistory(this._channel, this._codec, { limit }, this._logger);
     const { newVisible, lastPage } = await this._loadUntilVisible(firstPage, limit, beforeMsgIds);
@@ -243,7 +298,7 @@ export class DefaultView<TEvent, TMessage> implements View<TMessage> {
 
   private async _loadAndReveal(page: PaginatedMessages<TMessage>, limit: number): Promise<void> {
     // Everything currently in the tree is "already known"
-    const alreadyKnown = new Set(this._tree.flattenNodes().map((n) => n.msgId));
+    const alreadyKnown = new Set(this._tree.flattenNodes(this._selections).map((n) => n.msgId));
 
     const { newVisible, lastPage } = await this._loadUntilVisible(page, limit, alreadyKnown);
     this._lastHistoryPage = lastPage;
@@ -286,7 +341,7 @@ export class DefaultView<TEvent, TMessage> implements View<TMessage> {
 
     const newVisibleCount = (): number => {
       let count = 0;
-      for (const n of this._tree.flattenNodes()) {
+      for (const n of this._tree.flattenNodes(this._selections)) {
         if (!beforeMsgIds.has(n.msgId)) count++;
       }
       return count;
@@ -299,7 +354,7 @@ export class DefaultView<TEvent, TMessage> implements View<TMessage> {
       page = nextPage;
     }
 
-    const newVisible = this._tree.flattenNodes().filter((n) => !beforeMsgIds.has(n.msgId));
+    const newVisible = this._tree.flattenNodes(this._selections).filter((n) => !beforeMsgIds.has(n.msgId));
     return { newVisible, lastPage: page };
   }
 

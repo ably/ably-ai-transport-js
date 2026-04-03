@@ -24,7 +24,7 @@ export interface MockTransport {
   /** Fire an event on tree/view (update, ably-message, turn). */
   emitTree: (event: TreeEventType, ...args: unknown[]) => void;
   tree: Tree<string>;
-  view: View<string>;
+  view: View<unknown, string>;
 }
 
 export const createMockTransport = (initialMessages: string[] = []): MockTransport => {
@@ -97,22 +97,6 @@ export const createMockTransport = (initialMessages: string[] = []): MockTranspo
     on: makeTreeOn(treeHandlers),
   };
 
-  const view: View<string> = {
-    getMessages: vi.fn(() => initialMessages),
-    flattenNodes: vi.fn(() => initialNodes),
-    hasOlder: vi.fn(() => false),
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-    loadOlder: vi.fn(() => Promise.resolve()),
-    select: vi.fn(),
-    getSelectedIndex: vi.fn(() => 0),
-    getSiblings: vi.fn((msgId: string) => [msgId]),
-    hasSiblings: vi.fn(() => false),
-    getNode: vi.fn(),
-    getActiveTurnIds: vi.fn(() => new Map<string, Set<string>>()),
-    on: makeTreeOn(viewHandlers),
-    close: vi.fn(),
-  };
-
   const mockTurn = {
     stream: new ReadableStream(),
     turnId: 'turn-1',
@@ -126,6 +110,26 @@ export const createMockTransport = (initialMessages: string[] = []): MockTranspo
   const regenerate = vi.fn(() => Promise.resolve(mockTurn));
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const edit = vi.fn(() => Promise.resolve(mockTurn));
+
+  const view: View<unknown, string> = {
+    getMessages: vi.fn(() => initialMessages),
+    flattenNodes: vi.fn(() => initialNodes),
+    hasOlder: vi.fn(() => false),
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+    loadOlder: vi.fn(() => Promise.resolve()),
+    select: vi.fn(),
+    getSelectedIndex: vi.fn(() => 0),
+    getSiblings: vi.fn((msgId: string) => [msgId]),
+    hasSiblings: vi.fn(() => false),
+    getNode: vi.fn(),
+    send,
+    regenerate,
+    edit,
+    getActiveTurnIds: vi.fn(() => new Map<string, Set<string>>()),
+    on: makeTreeOn(viewHandlers),
+    close: vi.fn(),
+  };
+
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const cancel = vi.fn(() => Promise.resolve());
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
@@ -139,9 +143,6 @@ export const createMockTransport = (initialMessages: string[] = []): MockTranspo
     tree,
     view,
     createView,
-    send,
-    regenerate,
-    edit,
     cancel,
     waitForTurn,
     on,

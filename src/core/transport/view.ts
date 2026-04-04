@@ -23,7 +23,15 @@ import { getHeaders } from '../../utils.js';
 import type { Codec } from '../codec/types.js';
 import { decodeHistory } from './decode-history.js';
 import type { TreeInternal } from './tree.js';
-import type { ActiveTurn, PaginatedMessages, SendOptions, TreeNode, TurnLifecycleEvent, View } from './types.js';
+import type {
+  ActiveTurn,
+  EventNode,
+  PaginatedMessages,
+  SendOptions,
+  TreeNode,
+  TurnLifecycleEvent,
+  View,
+} from './types.js';
 
 // ---------------------------------------------------------------------------
 // Events map
@@ -43,11 +51,14 @@ interface ViewEventsMap {
  * Internal delegate function provided by the transport for executing sends.
  * The View pre-computes the visible branch history and passes it directly,
  * so the delegate has no back-reference to the View.
+ * When `amendments` is provided, the transport includes them in the POST body
+ * for the server to publish as cross-turn amendments.
  */
 export type SendDelegate<TEvent, TMessage> = (
   input: TMessage | TMessage[],
   options: SendOptions | undefined,
   history: TreeNode<TMessage>[],
+  amendments?: EventNode<TEvent>[],
 ) => Promise<ActiveTurn<TEvent>>;
 
 // ---------------------------------------------------------------------------
@@ -385,6 +396,15 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
       forkOf: messageId,
       parent: parentId,
     });
+  }
+
+  async update(msgId: string, events: TEvent[], options?: SendOptions): Promise<ActiveTurn<TEvent>> {
+    if (this._closed) {
+      throw new Ably.ErrorInfo('unable to update; view is closed', ErrorCode.InvalidArgument, 400);
+    }
+    this._logger.trace('DefaultView.update();', { msgId, eventCount: events.length });
+    const amendments: EventNode<TEvent>[] = [{ msgId, events }];
+    return this._sendDelegate([], options, this.flattenNodes(), amendments);
   }
 
   private _getHistoryBefore(messageId: string): TreeNode<TMessage>[] {

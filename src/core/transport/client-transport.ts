@@ -16,6 +16,7 @@ import {
   EVENT_CANCEL,
   EVENT_TURN_END,
   EVENT_TURN_START,
+  HEADER_AMEND,
   HEADER_CANCEL_ALL,
   HEADER_CANCEL_CLIENT_ID,
   HEADER_CANCEL_OWN,
@@ -44,6 +45,7 @@ import type {
   ClientTransport,
   ClientTransportOptions,
   CloseOptions,
+  EventNode,
   SendOptions,
   Tree,
   TreeNode,
@@ -252,6 +254,18 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       const headers = getHeaders(ablyMessage);
       const serial = ablyMessage.serial;
 
+      // Amendment events target an existing message from a prior turn,
+      // bypassing the current turn's accumulator.
+      const amendTarget = headers[HEADER_AMEND];
+      if (amendTarget) {
+        for (const output of outputs) {
+          if (output.kind === 'event') {
+            this._handleAmendmentEvent(amendTarget, output);
+          }
+        }
+        return;
+      }
+
       // Always update observer headers, even when the decoder produces no outputs.
       // This ensures header transitions (e.g. x-ably-status: streaming → aborted)
       // are captured for events that the decoder suppresses (AIT-CD8: aborted
@@ -344,6 +358,32 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     if (this._codec.isTerminal(event)) this._turnObservers.delete(turnId);
   }
 
+  /**
+   * Handle an amendment event targeting an existing message from a prior turn.
+   * Creates a temporary accumulator, seeds it with the existing message,
+   * processes the event, and upserts the updated message into the tree.
+   * @param targetMsgId - The x-ably-msg-id of the message to amend.
+   * @param output - The decoded event output to apply.
+   */
+  private _handleAmendmentEvent(targetMsgId: string, output: DecoderOutput<TEvent, TMessage>): void {
+    this._logger.trace('ClientTransport._handleAmendmentEvent();', { targetMsgId });
+
+    const existingNode = this._tree.getNode(targetMsgId);
+    if (!existingNode) {
+      this._logger.debug('ClientTransport._handleAmendmentEvent(); target not found, dropping', { targetMsgId });
+      return;
+    }
+
+    const accumulator = this._codec.createAccumulator();
+    accumulator.seedMessages([{ messageId: targetMsgId, message: existingNode.message }]);
+    accumulator.processOutputs([output]);
+
+    const updatedMsg = accumulator.messages.at(-1);
+    if (updatedMsg) {
+      this._tree.upsert(targetMsgId, updatedMsg, existingNode.headers, existingNode.serial);
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Tree mutation + notification helpers
   // ---------------------------------------------------------------------------
@@ -403,6 +443,18 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   private _accumulateAndEmit(turnId: string, output: DecoderOutput<TEvent, TMessage>): void {
     const observer = this._turnObservers.get(turnId);
     if (!observer) return;
+
+    // Sync the accumulator with the tree before processing. If the message
+    // was amended externally (via update), seedMessages updates the
+    // accumulator's state so the amendment isn't lost when processing
+    // late turn events like finish-step/finish.
+    const msgId = observer.headers[HEADER_MSG_ID];
+    if (msgId) {
+      const treeNode = this._tree.getNode(msgId);
+      if (treeNode) {
+        observer.accumulator.seedMessages([{ messageId: msgId, message: treeNode.message }]);
+      }
+    }
 
     observer.accumulator.processOutputs([output]);
 
@@ -524,6 +576,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     input: TMessage | TMessage[],
     sendOptions: SendOptions | undefined,
     history: TreeNode<TMessage>[],
+    amendments?: EventNode<TEvent>[],
   ): Promise<ActiveTurn<TEvent>> {
     if (this._closed) {
       throw new Ably.ErrorInfo('unable to send; transport is closed', ErrorCode.TransportClosed, 400);
@@ -542,6 +595,28 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     const turnId = crypto.randomUUID();
     this._ownTurnIds.add(turnId);
     this._tree.trackTurn(turnId, this._clientId ?? '');
+
+    // Optimistic tree updates for amendments — must happen before capturing
+    // history so the POST body includes the amended message state.
+    if (amendments) {
+      for (const node of amendments) {
+        const existingNode = this._tree.getNode(node.msgId);
+        if (existingNode) {
+          const outputs = node.events.map((event) => ({
+            kind: 'event' as const,
+            event,
+            messageId: node.msgId,
+          }));
+          const accumulator = this._codec.createAccumulator();
+          accumulator.seedMessages([{ messageId: node.msgId, message: existingNode.message }]);
+          accumulator.processOutputs(outputs);
+          const updatedMsg = accumulator.messages.at(-1);
+          if (updatedMsg) {
+            this._tree.upsert(node.msgId, updatedMsg, existingNode.headers, existingNode.serial);
+          }
+        }
+      }
+    }
 
     const msgIds = new Set<string>();
     const postMessages: TreeNode<TMessage>[] = [];
@@ -618,6 +693,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       messages: postMessages,
       ...(sendOptions?.forkOf !== undefined && { forkOf: sendOptions.forkOf }),
       ...(postParent !== undefined && { parent: postParent }),
+      ...(amendments && amendments.length > 0 && { amendments }),
     };
 
     const postHeaders: Record<string, string> = {

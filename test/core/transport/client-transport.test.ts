@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   EVENT_TURN_END,
   EVENT_TURN_START,
+  HEADER_AMEND,
   HEADER_FORK_OF,
   HEADER_MSG_ID,
   HEADER_PARENT,
@@ -171,6 +172,7 @@ const createMockDecoder = (): StreamDecoder<TestEvent, TestMessage> & {
 const createMockAccumulator = (): MessageAccumulator<TestEvent, TestMessage> => ({
   processOutputs: vi.fn(),
   updateMessage: vi.fn(),
+  seedMessages: vi.fn(),
   messages: [],
   completedMessages: [],
   hasActiveStream: false,
@@ -1509,6 +1511,118 @@ describe('ClientTransport', () => {
       expect(historyIds).not.toContain('u3');
 
       await seeded.close();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // amendment events
+  // -------------------------------------------------------------------------
+
+  describe('amendment events', () => {
+    it('routes amendment events to _handleAmendmentEvent and updates existing tree node', () => {
+      // Seed a node in the tree
+      transport.tree.upsert('msg-1', { id: 'msg-1', content: 'original' }, {
+        [HEADER_MSG_ID]: 'msg-1',
+        [HEADER_ROLE]: 'assistant',
+      }, 'serial-1');
+
+      // Set up a mock accumulator that seedMessages + processOutputs will use
+      const mockAccum = createMockAccumulator();
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      vi.mocked(codec.createAccumulator).mockReturnValue(mockAccum);
+      Object.defineProperty(mockAccum, 'messages', {
+        get: () => [{ id: 'msg-1', content: 'amended' }],
+        configurable: true,
+      });
+
+      // Simulate an amendment message arriving
+      decoder.outputs.push({
+        kind: 'event',
+        event: { type: 'tool-output' },
+        messageId: 'msg-1',
+      });
+      simulateMessage(
+        channel,
+        ablyMsg('codec-msg', {
+          [HEADER_AMEND]: 'msg-1',
+          [HEADER_ROLE]: 'assistant',
+          [HEADER_TURN_ID]: 'amend-turn',
+          [HEADER_MSG_ID]: 'msg-1',
+        }),
+      );
+
+      // The tree should have been updated with the amended message
+      const node = transport.tree.getNode('msg-1');
+      expect(node?.message.content).toBe('amended');
+
+      // seedMessages should have been called with the original message
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      expect(mockAccum.seedMessages).toHaveBeenCalledWith([{ messageId: 'msg-1', message: { id: 'msg-1', content: 'original' } }]);
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      expect(mockAccum.processOutputs).toHaveBeenCalled();
+    });
+
+    it('silently drops amendment for unknown msgId', () => {
+      // No node with 'unknown-msg' in the tree
+      const updateHandler = vi.fn();
+      transport.view.on('update', updateHandler);
+
+      decoder.outputs.push({
+        kind: 'event',
+        event: { type: 'tool-output' },
+        messageId: 'unknown-msg',
+      });
+      simulateMessage(
+        channel,
+        ablyMsg('codec-msg', {
+          [HEADER_AMEND]: 'unknown-msg',
+          [HEADER_ROLE]: 'assistant',
+          [HEADER_TURN_ID]: 'amend-turn',
+          [HEADER_MSG_ID]: 'unknown-msg',
+        }),
+      );
+
+      // Should not throw and should not create any new nodes
+      expect(transport.tree.getNode('unknown-msg')).toBeUndefined();
+    });
+
+    it('amendment events do not create turn observer state', () => {
+      // Seed a node in the tree
+      transport.tree.upsert('msg-1', { id: 'msg-1', content: 'original' }, {
+        [HEADER_MSG_ID]: 'msg-1',
+        [HEADER_ROLE]: 'assistant',
+      }, 'serial-1');
+
+      const mockAccum = createMockAccumulator();
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      vi.mocked(codec.createAccumulator).mockReturnValue(mockAccum);
+      Object.defineProperty(mockAccum, 'messages', {
+        get: () => [{ id: 'msg-1', content: 'amended' }],
+        configurable: true,
+      });
+
+      decoder.outputs.push({
+        kind: 'event',
+        event: { type: 'tool-output' },
+        messageId: 'msg-1',
+      });
+      simulateMessage(
+        channel,
+        ablyMsg('codec-msg', {
+          [HEADER_AMEND]: 'msg-1',
+          [HEADER_ROLE]: 'assistant',
+          [HEADER_TURN_ID]: 'amend-turn',
+          [HEADER_MSG_ID]: 'msg-1',
+        }),
+      );
+
+      // Amendment turn should NOT appear in active turns
+      const activeTurns = transport.tree.getActiveTurnIds();
+      const allTurnIds = new Set<string>();
+      for (const turnSet of activeTurns.values()) {
+        for (const tid of turnSet) allTurnIds.add(tid);
+      }
+      expect(allTurnIds.has('amend-turn')).toBe(false);
     });
   });
 

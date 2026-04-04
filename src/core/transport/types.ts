@@ -80,6 +80,17 @@ export interface AddMessagesResult {
   msgIds: string[];
 }
 
+/**
+ * A batch of events targeting an existing message for amendment.
+ * Each node specifies the target message and the events to apply to it.
+ */
+export interface EventNode<TEvent> {
+  /** The `x-ably-msg-id` of the existing message to amend. */
+  msgId: string;
+  /** Events to apply to the target message. */
+  events: TEvent[];
+}
+
 /** Options for streamResponse — per-operation overrides for the assistant message. */
 export interface StreamResponseOptions {
   /** The msg-id of the immediately preceding message in this branch. */
@@ -173,6 +184,18 @@ export interface Turn<TEvent, TMessage> {
    * Does NOT call end() — the caller must call end() after streamResponse returns.
    */
   streamResponse(stream: ReadableStream<TEvent>, options?: StreamResponseOptions): Promise<StreamResult>;
+
+  /**
+   * Publish events targeting existing messages in the tree. Each node
+   * specifies a target message (by `msgId`) and the events to apply.
+   * Events are encoded and published with the target's `x-ably-msg-id`,
+   * so receiving clients apply them to the existing node rather than
+   * creating a new one.
+   *
+   * Used for cross-turn amendments such as tool result delivery after
+   * approval or client-side tool execution.
+   */
+  addEvents(nodes: EventNode<TEvent>[]): Promise<void>;
 
   /** Publish turn-end event to the channel and clean up. */
   end(reason: TurnEndReason): Promise<void>;
@@ -483,6 +506,18 @@ export interface View<TEvent, TMessage> {
    * and `history` from this view's branch.
    */
   edit(messageId: string, newMessages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveTurn<TEvent>>;
+
+  /**
+   * Amend an existing message and start a continuation turn.
+   * The local tree is updated optimistically, then the amendments are sent
+   * to the server in the POST body. The server publishes them to the channel
+   * and streams a continuation response.
+   * @param msgId - The `x-ably-msg-id` of the existing message to amend.
+   * @param events - Events to apply to the target message (e.g. tool output).
+   * @param options - Optional send options (body, headers).
+   * @returns An active turn with the continuation response stream.
+   */
+  update(msgId: string, events: TEvent[], options?: SendOptions): Promise<ActiveTurn<TEvent>>;
 
   // --- Observation ---
 

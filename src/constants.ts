@@ -38,6 +38,9 @@ export const HEADER_TURN_CLIENT_ID = 'x-ably-turn-client-id';
 /** Header: message role (e.g. "user", "assistant"). */
 export const HEADER_ROLE = 'x-ably-role';
 
+/** Header: the msg-id of the existing message this Ably message amends. Present on cross-turn amendment events. */
+export const HEADER_AMEND = 'x-ably-amend';
+
 // ---------------------------------------------------------------------------
 // Cancel headers
 // ---------------------------------------------------------------------------

@@ -31,6 +31,7 @@ import type {
   AddMessagesResult,
   CancelFilter,
   CancelRequest,
+  EventNode,
   NewTurnOptions,
   ServerTransport,
   ServerTransportOptions,
@@ -358,6 +359,44 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
 
         logger?.debug('Turn.addMessages(); messages published', { turnId, count: nodes.length });
         return { msgIds };
+      },
+
+      addEvents: async (nodes: EventNode<TEvent>[]): Promise<void> => {
+        logger?.trace('Turn.addEvents();', { turnId, count: nodes.length });
+
+        if (!started) {
+          throw new Ably.ErrorInfo(
+            `unable to add events; start() must be called before addEvents() (turn ${turnId})`,
+            ErrorCode.InvalidArgument,
+            400,
+          );
+        }
+        await attachPromise;
+
+        const turnOwnerClientId = turnManager.getClientId(turnId);
+
+        for (const node of nodes) {
+          const headers = buildTransportHeaders({
+            role: 'assistant',
+            turnId,
+            msgId: node.msgId,
+            turnClientId: turnOwnerClientId,
+            amend: node.msgId,
+          });
+
+          const encoder = codec.createEncoder(channel, {
+            extras: { headers },
+            onMessage,
+          });
+
+          for (const event of node.events) {
+            await encoder.writeEvent(event);
+          }
+
+          await encoder.close();
+        }
+
+        logger?.debug('Turn.addEvents(); events published', { turnId, count: nodes.length });
       },
 
       // Spec: AIT-ST6, AIT-ST6a, AIT-ST6b, AIT-ST6b1, AIT-ST6b2, AIT-ST6b3, AIT-ST6c

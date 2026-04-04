@@ -58,7 +58,10 @@ project-specific guidance takes precedence.
 
 The component prefix is derived from the file paths in the diff. Examples:
 - `codec:` `codec/vercel:` `transport:` `transport/vercel:`
+- `react:` `react/vercel:`
+- `claude/skills:` `claude/rules:`
 - `docs:` `docs/concepts:`
+- `demo:`
 - `test/unit:`
 - `test/integration:`
 - `project:`

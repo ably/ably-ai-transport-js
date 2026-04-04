@@ -6,6 +6,7 @@ import { useClientTransport, useCreateView, useActiveTurns, useView, useAblyMess
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 
 import { userMessage } from '../helpers';
+import { useClientTools } from '../hooks/use-client-tools';
 import { useMessageQueue } from '../hooks/use-message-queue';
 import { Header } from './header';
 import { MessageList } from './message-list';
@@ -34,6 +35,8 @@ export function Chat({ chatId, clientId, historyLimit }: ChatProps) {
   const limit = historyLimit ?? 30;
   const view = useView(transport, { limit });
   const splitView = useCreateView(split ? transport : undefined, { limit });
+
+  useClientTools(view);
 
   const activeTurns = useActiveTurns(transport);
   const ablyMessages = useAblyMessages(transport);

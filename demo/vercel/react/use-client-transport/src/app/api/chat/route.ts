@@ -12,7 +12,9 @@ import type { UIMessage } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
 import { createServerTransport } from '@ably/ai-transport/vercel';
-import type { TreeNode } from '@ably/ai-transport';
+import type { EventNode, TreeNode } from '@ably/ai-transport';
+import type { UIMessageChunk } from 'ai';
+import { tools } from './tools.js';
 
 /** Shape of the POST body sent by the client transport. */
 interface ChatRequestBody {
@@ -20,6 +22,7 @@ interface ChatRequestBody {
   clientId: string;
   messages: TreeNode<UIMessage>[];
   history?: TreeNode<UIMessage>[];
+  amendments?: EventNode<UIMessageChunk>[];
   id: string;
   forkOf?: string;
   parent?: string | null;
@@ -29,13 +32,19 @@ interface ChatRequestBody {
 const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY! });
 
 export async function POST(req: Request) {
-  const { messages, history, id, turnId, clientId, forkOf, parent } = (await req.json()) as ChatRequestBody;
+  const { messages, history, amendments, id, turnId, clientId, forkOf, parent } = (await req.json()) as ChatRequestBody;
+
   const channel = ably.channels.get(id);
 
   const transport = createServerTransport({ channel });
   const turn = transport.newTurn({ turnId, clientId, parent, forkOf });
 
   await turn.start();
+
+  // Publish amendments (tool results targeting existing messages)
+  if (amendments && amendments.length > 0) {
+    await turn.addEvents(amendments);
+  }
 
   // Publish user messages (if any). Fork metadata (parent/forkOf) is
   // configured at the turn level — addMessages picks it up automatically.
@@ -52,8 +61,9 @@ export async function POST(req: Request) {
 
   const result = streamText({
     model: anthropic('claude-sonnet-4-20250514'),
-    system: 'You are a helpful assistant.',
+    system: `You are a helpful assistant. When the user asks about weather, use the getWeather tool. If they don't specify a location, call getLocation first to get their coordinates, then call getWeather with a description of that location.`,
     messages: await convertToModelMessages(allMessages),
+    tools,
     abortSignal: turn.abortSignal,
   });
 

@@ -1,6 +1,7 @@
 'use client';
 
-import type { UIMessage } from 'ai';
+import type { UIMessage, DynamicToolUIPart } from 'ai';
+import { ToolInvocation } from './tool-invocation';
 
 interface MessageBubbleProps {
   message: UIMessage;
@@ -66,7 +67,17 @@ export function MessageBubble({ message, headers, onRegenerate }: MessageBubbleP
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div className="max-w-[75%]">
         <div className={bubbleClasses(isUser, status)}>
-          {message.parts.map((part, i) => (part.type === 'text' ? <span key={i}>{part.text}</span> : null))}
+          {message.parts.map((part, i) => {
+            if (part.type === 'text') return <span key={i}>{part.text}</span>;
+            if (part.type === 'dynamic-tool')
+              return (
+                <ToolInvocation
+                  key={i}
+                  part={part as DynamicToolUIPart}
+                />
+              );
+            return null;
+          })}
           {!isUser && status === 'streaming' && (
             <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-amber-500/60 animate-pulse rounded-sm align-text-bottom" />
           )}

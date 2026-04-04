@@ -125,6 +125,8 @@ export const createMockTransport = (initialMessages: string[] = []): MockTranspo
     send,
     regenerate,
     edit,
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+    update: vi.fn(() => Promise.resolve(mockTurn)),
     getActiveTurnIds: vi.fn(() => new Map<string, Set<string>>()),
     on: makeTreeOn(viewHandlers),
     close: vi.fn(),

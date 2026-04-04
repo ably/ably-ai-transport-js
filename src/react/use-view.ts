@@ -47,6 +47,8 @@ export interface ViewHandle<TEvent, TMessage> {
   regenerate: (messageId: string, options?: SendOptions) => Promise<ActiveTurn<TEvent>>;
   /** Edit a user message, forking from this view's branch. */
   edit: (messageId: string, newMessages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>;
+  /** Amend an existing message and start a continuation turn (e.g. tool results). */
+  update: (msgId: string, events: TEvent[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>;
 }
 
 /**
@@ -165,6 +167,14 @@ export const useView = <TEvent, TMessage>(
     [view],
   );
 
+  const update = useCallback(
+    async (msgId: string, events: TEvent[], opts?: SendOptions) => {
+      if (!view) throw new Ably.ErrorInfo('unable to update; view is not available', ErrorCode.InvalidArgument, 400);
+      return view.update(msgId, events, opts);
+    },
+    [view],
+  );
+
   return {
     messages,
     nodes,
@@ -179,5 +189,6 @@ export const useView = <TEvent, TMessage>(
     send,
     regenerate,
     edit,
+    update,
   };
 };

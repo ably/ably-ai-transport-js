@@ -94,7 +94,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
    */
   private readonly _selections = new Map<string, number>();
 
-  /** Msg-ids loaded from history but not yet revealed to the UI. */
+  /** Spec: AIT-CT11c — msg-ids loaded from history but not yet revealed to the UI. */
   private readonly _withheldMsgIds = new Set<string>();
 
   /** Snapshot of visible msgIds — used to detect structural changes and for selection pinning. */
@@ -159,6 +159,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     return this.flattenNodes().map((n) => n.message);
   }
 
+  // Spec: AIT-CT9, AIT-CT11c
   flattenNodes(): TreeNode<TMessage>[] {
     const nodes = this._tree.flattenNodes(this._selections);
     if (this._withheldMsgIds.size === 0) return nodes;
@@ -262,6 +263,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
 
     const result = await this._sendDelegate(input, options, { flattenNodes: () => this.flattenNodes() });
 
+    // Spec: AIT-CT13e
     // Auto-select the new fork in this view when creating a fork.
     // The delegate's optimistic insert created the sibling — pin this
     // view to the latest (new) sibling so the user sees their edit/regeneration.
@@ -357,6 +359,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   // Observation
   // -------------------------------------------------------------------------
 
+  // Spec: AIT-CT17
   getActiveTurnIds(): Map<string, Set<string>> {
     this._logger.trace('DefaultView.getActiveTurnIds();');
     const allTurns = this._tree.getActiveTurnIds();
@@ -384,6 +387,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   // Event subscription
   // -------------------------------------------------------------------------
 
+  // Spec: AIT-CT8a, AIT-CT8b, AIT-CT8e
   on(event: 'update', handler: () => void): () => void;
   on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
   on(event: 'turn', handler: (event: TurnLifecycleEvent) => void): () => void;
@@ -504,6 +508,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     return { newVisible, lastPage: page };
   }
 
+  // Spec: AIT-CT11a
   private _releaseWithheld(nodes: TreeNode<TMessage>[]): void {
     for (const n of nodes) {
       this._withheldMsgIds.delete(n.msgId);
@@ -560,6 +565,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
       if (!this._tree.hasSiblings(msgId)) continue;
       const groupRoot = this._tree.getGroupRoot(msgId);
 
+      // Spec: AIT-CT13e
       // Check if this fork was initiated by this view (e.g. regenerate).
       // If so, select the newest sibling and clear the pending state.
       // The pending set stores the forkOf msgId (the group root), but the
@@ -573,6 +579,8 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
         continue;
       }
 
+      // Spec: AIT-CT13f
+      // External fork — pin to the currently-visible sibling.
       if (this._selections.has(groupRoot)) continue;
       const idx = this._tree.getSiblingIndex(msgId);
       if (idx >= 0) {

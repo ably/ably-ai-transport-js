@@ -154,6 +154,7 @@ class DefaultEncoderCore implements EncoderCore {
     const result = await this._writer.publish(msg);
     const serial = result.serials[0];
 
+    // Spec: AIT-CD2a
     if (!serial) {
       throw new Ably.ErrorInfo(
         `unable to start stream; no serial returned for stream '${payload.name}' (streamId: ${streamId})`,
@@ -181,6 +182,7 @@ class DefaultEncoderCore implements EncoderCore {
   // Spec: AIT-CD3
   appendStream(streamId: string, data: string): void {
     this._assertNotClosed();
+    // Spec: AIT-CD3a
     const tracker = this._trackers.get(streamId);
     if (!tracker) {
       throw new Ably.ErrorInfo(

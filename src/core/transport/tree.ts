@@ -438,6 +438,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   // Events
   // -------------------------------------------------------------------------
 
+  // Spec: AIT-CT17
   getActiveTurnIds(): Map<string, Set<string>> {
     this._logger.trace('DefaultTree.getActiveTurnIds();');
     const result = new Map<string, Set<string>>();
@@ -452,6 +453,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
     return result;
   }
 
+  // Spec: AIT-CT8b, AIT-CT8e
   on(event: 'update', handler: () => void): () => void;
   on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
   on(event: 'turn', handler: (event: TurnLifecycleEvent) => void): () => void;

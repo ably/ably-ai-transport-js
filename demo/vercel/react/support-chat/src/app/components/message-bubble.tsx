@@ -229,11 +229,35 @@ function inferAgentId(message: UIMessage): string | null {
   return null;
 }
 
+function HumanAgentBubble({ message }: { message: UIMessage }) {
+  return (
+    <div className="max-w-[85%]">
+      <div className="text-[10px] text-emerald-500/80 font-medium mb-0.5 ml-1">Support Agent</div>
+      <div className="rounded-lg px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap bg-emerald-900/30 border border-emerald-800/30 text-emerald-200">
+        {message.parts.map((part, i) => {
+          if (part.type === 'text') return <MarkdownText key={i} text={part.text} />;
+          return null;
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function MessageBubble({ message, headers, onCancelTurn, onSendMessage }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const status = headers?.['x-ably-status'];
   const clientId = headers?.['x-ably-turn-client-id'];
   const turnId = headers?.['x-ably-turn-id'];
+
+  // Human agent messages — green bubble with label
+  const isHumanAgent = clientId === 'support-agent';
+  if (isHumanAgent) {
+    return (
+      <div className="flex justify-start">
+        <HumanAgentBubble message={message} />
+      </div>
+    );
+  }
 
   // Show as sub-agent bubble if the message is from a known agent (by clientId
   // header or inferred from progress data).

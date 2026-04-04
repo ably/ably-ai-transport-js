@@ -5,9 +5,10 @@ import { AGENT_STYLES } from './agent-colors';
 interface HeaderProps {
   clientId: string | undefined;
   activeTurns: Map<string, Set<string>>;
+  humanAgentPresent?: boolean;
 }
 
-export function Header({ clientId, activeTurns }: HeaderProps) {
+export function Header({ clientId, activeTurns, humanAgentPresent }: HeaderProps) {
   // Collect active agents (excluding the user's own turns and unlabeled turns)
   const activeAgentIds: string[] = [];
   for (const [cid, turns] of activeTurns) {
@@ -37,6 +38,12 @@ export function Header({ clientId, activeTurns }: HeaderProps) {
             );
           })}
           <span className="text-[11px] text-zinc-500">working...</span>
+        </div>
+      )}
+      {humanAgentPresent && (
+        <div className="flex items-center gap-1.5 ml-2">
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500" />
+          <span className="text-[11px] text-emerald-400 font-medium">Human agent connected</span>
         </div>
       )}
       {clientId && <span className="ml-auto text-xs text-zinc-600 font-mono">{clientId}</span>}

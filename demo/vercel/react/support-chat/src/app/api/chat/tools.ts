@@ -226,6 +226,16 @@ export const tools: Record<string, Tool> = {
       return { query, streaming: true };
     },
   },
+
+  escalateToHuman: {
+    description: 'Escalate the conversation to a human support agent. Use when the customer explicitly asks to speak to a human or when you cannot resolve their issue.',
+    inputSchema: z.object({
+      reason: z.string().describe('Brief reason for escalation'),
+    }),
+    execute: async ({ reason }: { reason: string }) => {
+      return { escalated: true, reason };
+    },
+  },
 };
 
 // ---------------------------------------------------------------------------

@@ -229,7 +229,19 @@ function ToolError({ name, errorText }: { name: string; errorText: string }) {
 // Main dispatch
 // ---------------------------------------------------------------------------
 
+/** Delegate tools that render nothing in all states — they spawn sub-agents or separate turns. */
+const SILENT_TOOLS = new Set([
+  'getReviews',
+  'purchaseProduct',
+  'processReturnWorkflow',
+  'productResearch',
+  'planTasks',
+]);
+
 export function ToolInvocation({ part }: { part: DynamicToolUIPart }) {
+  // Delegate tools never render — sub-agents handle the UI
+  if (SILENT_TOOLS.has(part.toolName)) return null;
+
   switch (part.state) {
     case 'input-streaming':
     case 'input-available':
@@ -283,15 +295,16 @@ export function ToolInvocation({ part }: { part: DynamicToolUIPart }) {
       if (part.toolName === 'getLocation') {
         return <LocationResult output={part.output} />;
       }
-      if (
-        part.toolName === 'getReviews' ||
-        part.toolName === 'purchaseProduct' ||
-        part.toolName === 'processReturnWorkflow' ||
-        part.toolName === 'productResearch' ||
-        part.toolName === 'planTasks'
-      ) {
-        // Don't render — delegate tools spawn sub-agents or separate turns
-        return null;
+      if (part.toolName === 'escalateToHuman') {
+        return (
+          <div className="rounded-lg bg-amber-950/20 border border-amber-800/30 p-3 my-1.5 max-w-[340px]">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-amber-400 text-sm">🔄</span>
+              <span className="text-xs font-medium text-amber-400">Transferring to human agent</span>
+            </div>
+            <div className="text-[11px] text-zinc-400">A support agent will join the conversation shortly. You can continue chatting once they connect.</div>
+          </div>
+        );
       }
       // Generic fallback
       return (

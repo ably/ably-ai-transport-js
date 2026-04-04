@@ -65,6 +65,7 @@ Tool selection:
 - getReviews: Use when the user asks for reviews of a specific product. Streams 3 markdown-formatted reviews.
 - processRefund: Use when the customer confirms they want a refund. Pass the returnId, orderId, and amount.
 - cancelReturn: Use when the customer wants to cancel a return. Pass the returnId and orderId.
+- escalateToHuman: Use when the customer asks to speak to a human agent, or when you cannot resolve their issue. After calling this, tell the customer a human agent will join shortly.
 - lookupOrder / searchProducts / processReturn: Quick single-operation tools for simple lookups.
 
 When the customer says "near me" or "nearby" without a specific location, call getLocation first, then use the coordinates with getStoresNearLocation. When they specify a place (e.g. "stores near Portland"), call getStoresNearLocation directly with the location string.
@@ -96,6 +97,20 @@ export async function POST(req: Request) {
   if (messages.length > 0) {
     const { msgIds } = await turn.addMessages(messages, { clientId });
     lastUserMsgId = msgIds.at(-1);
+  }
+
+  // If a human support agent is present on the channel, skip AI — just
+  // publish the user message and end the turn. The human will respond directly.
+  try {
+    const presenceMembers = await channel.presence.get();
+    const humanPresent = presenceMembers.some((m) => m.clientId === 'support-agent');
+    if (humanPresent) {
+      await turn.end('complete');
+      transport.close();
+      return new Response(null, { status: 200 });
+    }
+  } catch {
+    // Presence check failed — continue with AI (best effort)
   }
 
   const historyMsgs = (history ?? []).map((h) => h.message);

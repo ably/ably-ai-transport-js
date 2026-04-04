@@ -1,10 +1,10 @@
 'use client';
 
-import { useChannel } from 'ably/react';
+import { useChannel, usePresenceListener } from 'ably/react';
 import { useClientTransport, useActiveTurns, useView } from '@ably/ai-transport/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import type { UIMessage } from 'ai';
 import { useClientTools } from '../hooks/use-client-tools';
 import { useMessageQueue } from '../hooks/use-message-queue';
@@ -37,9 +37,15 @@ export function Chat({ chatId, clientId, historyLimit }: ChatProps) {
   const activeTurns = useActiveTurns(transport);
   const queue = useMessageQueue(transport, view.send);
 
+  const { presenceData } = usePresenceListener({ channelName: chatId });
+  const humanAgentPresent = useMemo(
+    () => presenceData.some((m) => m.clientId === 'support-agent'),
+    [presenceData],
+  );
+
   return (
     <div className="flex h-dvh flex-col">
-      <Header clientId={clientId} activeTurns={activeTurns} />
+      <Header clientId={clientId} activeTurns={activeTurns} humanAgentPresent={humanAgentPresent} />
       <MessageList
         view={view}
         onCancelTurn={(turnId) => transport.cancel({ turnId })}

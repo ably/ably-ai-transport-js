@@ -68,17 +68,24 @@ export function MessageList({ view, onCancelTurn, onSendMessage }: MessageListPr
   const { nodes, hasOlder, loading, loadOlder } = view;
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const prevLastIdRef = useRef<string | undefined>(undefined);
 
-  const collapsed = useMemo(() => collapseProgressNodes(nodes), [nodes]);
+  const collapsed = useMemo(() => {
+    const progress = collapseProgressNodes(nodes);
+    // Filter out assistant messages with no visible content (e.g. only silent tool calls)
+    return progress.filter((node) => {
+      if (node.message.role !== 'assistant') return true;
+      const hasText = node.message.parts.some((p) => p.type === 'text' && 'text' in p && (p as { text: string }).text.trim());
+      const hasVisibleTool = node.message.parts.some((p) => p.type === 'dynamic-tool');
+      const hasProgress = hasAgentProgress(node.message);
+      const hasData = node.message.parts.some((p) => p.type.startsWith('data-'));
+      return hasText || hasVisibleTool || hasProgress || hasData;
+    });
+  }, [nodes]);
 
+  // Auto-scroll on any content change (new messages or streaming updates)
   useEffect(() => {
-    const lastId = collapsed.length > 0 ? collapsed[collapsed.length - 1].message.id : undefined;
-    if (lastId && lastId !== prevLastIdRef.current) {
-      prevLastIdRef.current = lastId;
-      endRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [collapsed]);
+    endRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [nodes]);
 
   const handleScroll = () => {
     const el = scrollRef.current;

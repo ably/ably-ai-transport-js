@@ -8,6 +8,7 @@ import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import { useState } from 'react';
 import { MessageList } from './components/message-list';
 import { DebugPane } from './components/debug-pane';
+import { useClientTools } from './hooks/use-client-tools';
 
 // ---------------------------------------------------------------------------
 // Chat component
@@ -20,12 +21,21 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
   const transport = useClientTransport({ channel, codec: UIMessageCodec, clientId });
   const chatTransport = useChatTransport(transport);
 
-  const { setMessages, sendMessage, stop, status, regenerate } = useChat({
+  const {
+    setMessages,
+    sendMessage,
+    stop,
+    status,
+    regenerate,
+    addToolResult,
+    messages: chatMessages,
+  } = useChat({
     id: chatId,
     transport: chatTransport,
   });
 
   useMessageSync(transport, setMessages);
+  useClientTools(chatMessages, addToolResult);
 
   const activeTurns = useActiveTurns(transport);
   const hasAnyTurns = activeTurns.size > 0;

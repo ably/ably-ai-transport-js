@@ -8,6 +8,7 @@ import { MessageList } from './message-list';
 import { InputBar } from './input-bar';
 import { MessageQueue } from './message-queue';
 import { DebugPane } from './debug-pane';
+import { useClientTools } from '../hooks/use-client-tools';
 import { useMessageQueue } from '../hooks/use-message-queue';
 import { userMessage } from '../helpers';
 
@@ -23,6 +24,7 @@ interface ChatPaneProps {
 }
 
 export function ChatPane({ label, transport, view, ablyMessages, activeTurns, clientId }: ChatPaneProps) {
+  useClientTools(view);
   const queue = useMessageQueue(transport, view.send);
 
   return (

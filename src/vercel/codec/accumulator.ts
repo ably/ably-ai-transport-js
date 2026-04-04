@@ -172,6 +172,63 @@ class DefaultUIMessageAccumulator implements MessageAccumulator<AI.UIMessageChun
     }
   }
 
+  seedMessages(messages: { messageId: string; message: AI.UIMessage }[]): void {
+    for (const { messageId, message } of messages) {
+      this._seedOne(messageId, message);
+    }
+  }
+
+  private _seedOne(messageId: string, message: AI.UIMessage): void {
+    const existing = this._activeMessages.get(messageId);
+
+    if (existing) {
+      // Update: sync the active state with an externally amended message.
+      // Replace the message and rebuild tool trackers so the accumulator
+      // reflects amendments (e.g. tool results published via update)
+      // that happened outside the streaming flow.
+      const cloned = structuredClone(message);
+      const listIdx = this._messageList.indexOf(existing.message);
+      existing.message = cloned;
+      if (listIdx !== -1) {
+        this._messageList[listIdx] = cloned;
+      }
+      existing.toolTrackers = {};
+      for (let i = 0; i < cloned.parts.length; i++) {
+        const part = cloned.parts[i];
+        if (part?.type === 'dynamic-tool') {
+          existing.toolTrackers[part.toolCallId] = { partIndex: i, inputText: '' };
+          existing.streamStatus.set(part.toolCallId, 'finished');
+        }
+      }
+      return;
+    }
+
+    const cloned = structuredClone(message);
+    const toolTrackers: Record<string, ToolPartTracker> = {};
+    const streamStatus = new Map<string, StreamStatus>();
+
+    // Reconstruct tool trackers from existing dynamic-tool parts
+    for (let i = 0; i < cloned.parts.length; i++) {
+      const part = cloned.parts[i];
+      if (part?.type === 'dynamic-tool') {
+        toolTrackers[part.toolCallId] = { partIndex: i, inputText: '' };
+        // All existing tool parts have completed their input phase
+        streamStatus.set(part.toolCallId, 'finished');
+      }
+    }
+
+    const state: ActiveMessageState = {
+      message: cloned,
+      textStreams: new DeltaStreamTracker('text'),
+      reasoningStreams: new DeltaStreamTracker('reasoning'),
+      toolTrackers,
+      streamStatus,
+    };
+
+    this._activeMessages.set(messageId, state);
+    this._messageList.push(state.message);
+  }
+
   // -------------------------------------------------------------------------
   // Shared helpers
   // -------------------------------------------------------------------------

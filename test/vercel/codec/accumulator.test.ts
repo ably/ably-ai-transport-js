@@ -443,6 +443,116 @@ describe('Vercel accumulator', () => {
     });
   });
 
+  // -- seedMessages ----------------------------------------------------------
+
+  describe('seedMessages', () => {
+    it('reconstructs tool trackers from a UIMessage with dynamic-tool parts', () => {
+      const acc = createAccumulator();
+
+      const existingMsg: AI.UIMessage = {
+        id: 'msg-1',
+        role: 'assistant',
+        parts: [
+          { type: 'text', text: 'Let me search for that.' },
+          {
+            type: 'dynamic-tool',
+            toolCallId: 'tc-1',
+            toolName: 'search',
+            state: 'approval-requested',
+            input: { q: 'test' },
+          } as AI.DynamicToolUIPart,
+        ],
+      };
+
+      acc.seedMessages([{ messageId: 'msg-1', message: existingMsg }]);
+
+      expect(acc.messages).toHaveLength(1);
+      expect(acc.messages[0]?.id).toBe('msg-1');
+      expect(acc.messages[0]?.parts).toHaveLength(2);
+
+      const toolPart = acc.messages[0]?.parts.find(
+        (p) => p.type === 'dynamic-tool',
+      ) as AI.DynamicToolUIPart | undefined;
+      expect(toolPart?.toolCallId).toBe('tc-1');
+      expect(toolPart?.state).toBe('approval-requested');
+    });
+
+    it('after seedMessages, processOutputs transitions tool from approval-requested to output-available', () => {
+      const acc = createAccumulator();
+
+      const existingMsg: AI.UIMessage = {
+        id: 'msg-1',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'dynamic-tool',
+            toolCallId: 'tc-1',
+            toolName: 'search',
+            state: 'approval-requested',
+            input: { q: 'test' },
+          } as AI.DynamicToolUIPart,
+        ],
+      };
+
+      acc.seedMessages([{ messageId: 'msg-1', message: existingMsg }]);
+
+      acc.processOutputs([
+        event({
+          type: 'tool-output-available',
+          toolCallId: 'tc-1',
+          output: { result: 42 },
+        }, 'msg-1'),
+      ]);
+
+      const toolPart = acc.messages[0]?.parts.find(
+        (p) => p.type === 'dynamic-tool',
+      ) as AI.DynamicToolUIPart | undefined;
+      expect(toolPart?.state).toBe('output-available');
+      expect(toolPart?.output).toEqual({ result: 42 });
+    });
+
+    it('updates existing state when called again with the same messageId', () => {
+      const acc = createAccumulator();
+
+      const msg1: AI.UIMessage = {
+        id: 'msg-1',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'first' }],
+      };
+      const msg2: AI.UIMessage = {
+        id: 'msg-1',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'second' }],
+      };
+
+      acc.seedMessages([{ messageId: 'msg-1', message: msg1 }]);
+      acc.seedMessages([{ messageId: 'msg-1', message: msg2 }]);
+
+      expect(acc.messages).toHaveLength(1);
+      // Should be the second message — seedMessages syncs from external state
+      const textPart = acc.messages[0]?.parts.find((p) => p.type === 'text');
+      expect(textPart).toEqual(expect.objectContaining({ text: 'second' }));
+    });
+
+    it('handles a message with no tool parts (text-only)', () => {
+      const acc = createAccumulator();
+
+      const textOnlyMsg: AI.UIMessage = {
+        id: 'msg-1',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'hello world' }],
+      };
+
+      acc.seedMessages([{ messageId: 'msg-1', message: textOnlyMsg }]);
+
+      expect(acc.messages).toHaveLength(1);
+      expect(acc.messages[0]?.parts).toHaveLength(1);
+      expect(acc.messages[0]?.parts[0]).toEqual(
+        expect.objectContaining({ type: 'text', text: 'hello world' }),
+      );
+    });
+  });
+
   // -- complete message insertion -------------------------------------------
 
   describe('complete message insertion', () => {

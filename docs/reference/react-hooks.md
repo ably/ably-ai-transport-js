@@ -69,10 +69,13 @@ const view = useView<TEvent, TMessage>(
 | `send(messages, options?)` | `(messages: TMessage \| TMessage[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>` | Send messages in this view's branch context |
 | `regenerate(messageId, options?)` | `(messageId: string, options?: SendOptions) => Promise<ActiveTurn<TEvent>>` | Fork an assistant message with no new user input |
 | `edit(messageId, newMessages, options?)` | `(messageId: string, newMessages: TMessage \| TMessage[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>` | Fork a user message with replacement content |
+| `update(msgId, events, options?)` | `(msgId: string, events: TEvent[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>` | Amend an existing message and start a continuation turn (e.g. [tool results](../features/tool-calling.md#client-executed-tools)) |
 
 Each view has independent branch selections and pagination state. When you pass a transport, the hook uses its default view. For [split-pane UIs](../features/branching.md#multiple-views) where each pane needs its own branch and message history, use [`useCreateView`](#usecreateview) to create independent views with the same API.
 
 Write operations (`send`, `regenerate`, `edit`) automatically derive the parent message and conversation history from this view's selected branch.
+
+`update` amends an existing message and starts a continuation turn. The tree updates optimistically before sending. Used for [client-executed tool results](../features/tool-calling.md#client-executed-tools) - the tool output is sent to the server in the POST body, published to the channel, and the model streams a follow-up response in the same turn.
 
 ---
 

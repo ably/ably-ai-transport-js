@@ -112,4 +112,4 @@ The transport streams whatever events the codec produces. For the Vercel AI SDK 
 
 Multiple content streams can be active within a single turn (e.g., reasoning + text). Each gets its own message with its own stream ID.
 
-See [React hooks reference](../reference/react-hooks.md) for the full `useView` and `useClientTransport` API. See [Cancel](cancel.md) for how streams are aborted. For the internal mechanics of message encoding, decoding, and recovery, see the [Encoder](../internals/encoder.md), [Decoder](../internals/decoder.md), and [Wire protocol](../internals/wire-protocol.md) internals pages.
+See [Tool calling](tool-calling.md) for how tool input deltas and results are streamed. See [React hooks reference](../reference/react-hooks.md) for the full `useView` and `useClientTransport` API. See [Cancel](cancel.md) for how streams are aborted. For the internal mechanics of message encoding, decoding, and recovery, see the [Encoder](../internals/encoder.md), [Decoder](../internals/decoder.md), and [Wire protocol](../internals/wire-protocol.md) internals pages.

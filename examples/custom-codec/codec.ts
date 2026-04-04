@@ -512,6 +512,16 @@ class AgentAccumulator implements MessageAccumulator<AgentEvent, AgentMessage> {
       this._messages[idx] = message;
     }
   }
+
+  /**
+   * Seed the accumulator with an existing message for cross-turn amendments.
+   * Not supported by this simple codec.
+   * @param _messages - The messages to seed (unused).
+   */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- interface contract requires parameters
+  seedMessages(_messages: { messageId: string; message: AgentMessage }[]): void {
+    // No-op — cross-turn amendments are not supported by this codec.
+  }
 }
 
 // ---------------------------------------------------------------------------

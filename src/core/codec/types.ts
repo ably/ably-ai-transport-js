@@ -203,6 +203,13 @@ export interface MessageAccumulator<TEvent, TMessage> {
   processOutputs(outputs: DecoderOutput<TEvent, TMessage>[]): void;
   /** Apply an external update to a message (e.g. from an update callback). */
   updateMessage(message: TMessage): void;
+  /**
+   * Seed the accumulator with existing messages so subsequent events
+   * targeting these messageIds update the existing state rather than creating
+   * blank messages. Used for cross-turn amendments (e.g. tool result delivery)
+   * and history replay where multiple messages may need seeding.
+   */
+  seedMessages(messages: { messageId: string; message: TMessage }[]): void;
   /** All messages accumulated so far (in-progress and completed). */
   readonly messages: TMessage[];
   /** Only messages whose streams have finished. */

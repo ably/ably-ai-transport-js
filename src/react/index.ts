@@ -1,3 +1,4 @@
+export type { EventNode } from '../core/transport/types.js';
 export { useAblyMessages } from './use-ably-messages.js';
 export { useActiveTurns } from './use-active-turns.js';
 export { useClientTransport } from './use-client-transport.js';

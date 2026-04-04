@@ -122,6 +122,22 @@ describe('useView', () => {
     expect(mock.view.loadOlder).not.toHaveBeenCalled();
   });
 
+  it('update calls the view update method', async () => {
+    const mock = createMockTransport();
+    const { result } = renderHook(() => useView(mock.transport));
+
+    const events = ['tool-output'];
+
+    await act(async () => {
+      await result.current.update('target-1', events);
+    });
+
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
+    expect(mock.view.update).toHaveBeenCalledOnce();
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
+    expect(mock.view.update).toHaveBeenCalledWith('target-1', events, undefined);
+  });
+
   it('unsubscribes on unmount', () => {
     const mock = createMockTransport(['hello']);
     const { unmount } = renderHook(() => useView(mock.transport));

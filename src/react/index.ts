@@ -1,6 +1,7 @@
 export { useAblyMessages } from './use-ably-messages.js';
 export { useActiveTurns } from './use-active-turns.js';
 export { useClientTransport } from './use-client-transport.js';
+export { useCreateView } from './use-create-view.js';
 export { useEdit } from './use-edit.js';
 export { useRegenerate } from './use-regenerate.js';
 export { useSend } from './use-send.js';

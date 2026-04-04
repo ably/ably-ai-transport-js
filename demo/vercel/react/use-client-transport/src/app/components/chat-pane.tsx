@@ -1,30 +1,29 @@
 'use client';
 
+import type * as Ably from 'ably';
 import type { UIMessage, UIMessageChunk } from 'ai';
 import type { ViewHandle } from '@ably/ai-transport/react';
-import type { ClientTransport, View } from '@ably/ai-transport';
+import type { ClientTransport } from '@ably/ai-transport';
 import { MessageList } from './message-list';
 import { InputBar } from './input-bar';
 import { MessageQueue } from './message-queue';
 import { DebugPane } from './debug-pane';
 import { useMessageQueue } from '../hooks/use-message-queue';
-import { useViewAblyMessages } from '../hooks/use-view-ably-messages';
 import { userMessage } from '../helpers';
 
 interface ChatPaneProps {
   label: string;
   transport: ClientTransport<UIMessageChunk, UIMessage>;
-  /** The raw View — used for subscribing to scoped ably-message events. */
-  rawView: View<UIMessageChunk, UIMessage>;
-  /** The reactive ViewHandle from useView — used for rendering and write ops. */
+  /** The reactive ViewHandle from useView or useCreateView. */
   view: ViewHandle<UIMessageChunk, UIMessage>;
+  /** Raw Ably messages for the debug pane. */
+  ablyMessages: Ably.InboundMessage[];
   activeTurns: Map<string, Set<string>>;
   clientId: string | undefined;
 }
 
-export function ChatPane({ label, transport, rawView, view, activeTurns, clientId }: ChatPaneProps) {
+export function ChatPane({ label, transport, view, ablyMessages, activeTurns, clientId }: ChatPaneProps) {
   const queue = useMessageQueue(transport, view.send);
-  const ablyMessages = useViewAblyMessages(rawView);
 
   return (
     <div className="flex flex-1 min-w-0 min-h-0">

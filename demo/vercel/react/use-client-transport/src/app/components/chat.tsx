@@ -1,10 +1,8 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState } from 'react';
 import { useChannel } from 'ably/react';
-import { useClientTransport, useActiveTurns, useView, useAblyMessages } from '@ably/ai-transport/react';
-import type { View } from '@ably/ai-transport';
-import type { UIMessageChunk, UIMessage } from 'ai';
+import { useClientTransport, useCreateView, useActiveTurns, useView, useAblyMessages } from '@ably/ai-transport/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 
 import { userMessage } from '../helpers';
@@ -22,31 +20,6 @@ interface ChatProps {
   historyLimit?: number;
 }
 
-/**
- * Create a secondary View lazily when split mode is active, and close it
- * when split mode is deactivated or the component unmounts.
- */
-function useSecondView(transport: ReturnType<typeof useClientTransport>, split: boolean, historyLimit: number) {
-  const viewRef = useRef<View<UIMessageChunk, UIMessage> | null>(null);
-
-  // Create or close the raw view when split changes
-  useEffect(() => {
-    if (split && !viewRef.current) {
-      viewRef.current = transport.createView();
-    }
-    return () => {
-      if (viewRef.current) {
-        viewRef.current.close();
-        viewRef.current = null;
-      }
-    };
-  }, [split, transport]);
-
-  const rawView = split ? viewRef.current : null;
-  const handle = useView(rawView, rawView ? { limit: historyLimit } : null);
-  return { rawView, handle };
-}
-
 export function Chat({ chatId, clientId, historyLimit }: ChatProps) {
   const { channel } = useChannel({ channelName: chatId });
   const [split, setSplit] = useState(false);
@@ -60,7 +33,7 @@ export function Chat({ chatId, clientId, historyLimit }: ChatProps) {
 
   const limit = historyLimit ?? 30;
   const view = useView(transport, { limit });
-  const { rawView: secondRawView, handle: view2 } = useSecondView(transport, split, limit);
+  const splitView = useCreateView(split ? transport : undefined, { limit });
 
   const activeTurns = useActiveTurns(transport);
   const ablyMessages = useAblyMessages(transport);
@@ -79,22 +52,20 @@ export function Chat({ chatId, clientId, historyLimit }: ChatProps) {
             <ChatPane
               label="View A"
               transport={transport}
-              rawView={transport.view}
               view={view}
+              ablyMessages={ablyMessages}
               activeTurns={activeTurns}
               clientId={clientId}
             />
             <div className="w-px bg-zinc-800" />
-            {secondRawView && (
-              <ChatPane
-                label="View B"
-                transport={transport}
-                rawView={secondRawView}
-                view={view2}
-                activeTurns={activeTurns}
-                clientId={clientId}
-              />
-            )}
+            <ChatPane
+              label="View B"
+              transport={transport}
+              view={splitView}
+              ablyMessages={ablyMessages}
+              activeTurns={activeTurns}
+              clientId={clientId}
+            />
           </div>
         ) : (
           <>

@@ -35,13 +35,14 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
   });
 
   useMessageSync(transport, setMessages);
-  useClientTools(chatMessages, addToolResult);
 
   const activeTurns = useActiveTurns(transport);
   const hasAnyTurns = activeTurns.size > 0;
 
   // Auto-loads first page on mount (options provided = enabled)
   const { nodes, hasOlder, loading, loadOlder } = useView(transport, { limit: historyLimit ?? 30 });
+
+  useClientTools(chatMessages, addToolResult, nodes, clientId);
 
   const ablyMessages = useAblyMessages(transport);
 

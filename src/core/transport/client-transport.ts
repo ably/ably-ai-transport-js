@@ -114,7 +114,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   private readonly _router: StreamRouter<TEvent>;
   private readonly _decoder: StreamDecoder<TEvent, TMessage>;
 
-  // Public accessors
+  // Spec: AIT-CT10, AIT-CT10a
   readonly tree: Tree<TMessage>;
   readonly view: View<TEvent, TMessage>;
 
@@ -481,6 +481,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   // Public API
   // ---------------------------------------------------------------------------
 
+  // Spec: AIT-CT10b
   createView(): View<TEvent, TMessage> {
     if (this._closed) {
       throw new Ably.ErrorInfo('unable to create view; transport is closed', ErrorCode.TransportClosed, 400);
@@ -678,7 +679,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     });
   }
 
-  // Spec: AIT-CT8c, AIT-CT8d
+  // Spec: AIT-CT8, AIT-CT8c, AIT-CT8d
   on(event: 'error', handler: (error: Ably.ErrorInfo) => void): () => void {
     if (this._closed) return noopUnsubscribe;
     // CAST: the overload signature enforces the correct handler type.
@@ -689,7 +690,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     };
   }
 
-  // Spec: AIT-CT12, AIT-CT12a, AIT-CT12b
+  // Spec: AIT-CT12, AIT-CT12a, AIT-CT12b, AIT-CT10c
   async close(options?: CloseOptions): Promise<void> {
     if (this._closed) return;
     this._closed = true;

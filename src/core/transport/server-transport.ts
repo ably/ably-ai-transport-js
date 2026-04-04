@@ -142,10 +142,11 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
     return [];
   }
 
-  // Spec: AIT-ST8, AIT-ST9
+  // Spec: AIT-ST8, AIT-ST8a, AIT-ST8b, AIT-ST8c, AIT-ST8d, AIT-ST9, AIT-ST9a
   private async _handleCancelMessage(msg: Ably.InboundMessage): Promise<void> {
     const headers = getHeaders(msg);
 
+    // Spec: AIT-ST8a, AIT-ST8b, AIT-ST8c, AIT-ST8d
     const filter: CancelFilter = {};
     if (headers[HEADER_CANCEL_TURN_ID]) {
       filter.turnId = headers[HEADER_CANCEL_TURN_ID];
@@ -253,7 +254,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
     let started = false;
     let ended = false;
 
-    // Register immediately so early cancels can fire the abort signal.
+    // Spec: AIT-ST3a — register immediately so early cancels can fire the abort signal.
     const registration: RegisteredTurn = {
       turnId,
       clientId: turnClientId ?? '',
@@ -280,10 +281,11 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
         return controller.signal;
       },
 
-      // Spec: AIT-ST4
+      // Spec: AIT-ST4, AIT-ST4a, AIT-ST4b
       start: async (): Promise<void> => {
         logger?.trace('Turn.start();', { turnId });
 
+        // Spec: AIT-ST4a
         if (controller.signal.aborted) {
           throw new Ably.ErrorInfo(
             `unable to start turn; turn ${turnId} was cancelled before start()`,
@@ -311,7 +313,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
         logger?.debug('Turn.start(); turn started', { turnId });
       },
 
-      // Spec: AIT-ST5
+      // Spec: AIT-ST5, AIT-ST5a, AIT-ST5b
       addMessages: async (nodes: TreeNode<TMessage>[], opts?: AddMessageOptions): Promise<AddMessagesResult> => {
         logger?.trace('Turn.addMessages();', { turnId, count: nodes.length });
 
@@ -355,7 +357,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
         return { msgIds };
       },
 
-      // Spec: AIT-ST6
+      // Spec: AIT-ST6, AIT-ST6a, AIT-ST6b, AIT-ST6b1, AIT-ST6b2, AIT-ST6b3, AIT-ST6c
       streamResponse: async (
         stream: ReadableStream<TEvent>,
         streamOpts?: StreamResponseOptions,
@@ -397,7 +399,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
         return result;
       },
 
-      // Spec: AIT-ST7
+      // Spec: AIT-ST7, AIT-ST7a
       end: async (reason: TurnEndReason): Promise<void> => {
         logger?.trace('Turn.end();', { turnId, reason });
 

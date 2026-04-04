@@ -24,7 +24,7 @@ interface ChatPaneProps {
 }
 
 export function ChatPane({ label, transport, view, ablyMessages, activeTurns, clientId }: ChatPaneProps) {
-  useClientTools(view);
+  useClientTools(view, clientId);
   const queue = useMessageQueue(transport, view.send);
 
   return (

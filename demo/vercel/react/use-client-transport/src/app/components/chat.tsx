@@ -36,7 +36,7 @@ export function Chat({ chatId, clientId, historyLimit }: ChatProps) {
   const view = useView(transport, { limit });
   const splitView = useCreateView(split ? transport : undefined, { limit });
 
-  useClientTools(view);
+  useClientTools(view, clientId);
 
   const activeTurns = useActiveTurns(transport);
   const ablyMessages = useAblyMessages(transport);

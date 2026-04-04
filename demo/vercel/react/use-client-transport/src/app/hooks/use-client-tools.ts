@@ -19,7 +19,8 @@ import type { TreeNode } from '@ably/ai-transport';
 type ClientToolExecutor = (input: unknown) => Promise<unknown>;
 
 const clientTools: Record<string, ClientToolExecutor> = {
-  getLocation: async () => {
+  getLocation: async (input) => {
+    const { highAccuracy } = (input ?? {}) as { highAccuracy?: boolean };
     return new Promise<unknown>((resolve) => {
       if (!navigator.geolocation) {
         resolve({ error: 'Geolocation is not supported by this browser' });
@@ -41,7 +42,7 @@ const clientTools: Record<string, ClientToolExecutor> = {
   },
 };
 
-export function useClientTools(view: ViewHandle<UIMessageChunk, UIMessage>) {
+export function useClientTools(view: ViewHandle<UIMessageChunk, UIMessage>, clientId: string | undefined) {
   // Track which tool calls we've already handled to avoid re-executing
   const handledRef = useRef(new Set<string>());
 
@@ -53,6 +54,13 @@ export function useClientTools(view: ViewHandle<UIMessageChunk, UIMessage>) {
       const node = nodes[i];
       const msg = node.message;
       if (msg.role !== 'assistant') continue;
+
+      // Only execute client tools for turns initiated by this client.
+      // Other clients on the same channel see the tool call but should
+      // not execute it — only the requesting client has the context
+      // (e.g. browser geolocation) to provide the result.
+      const turnClientId = node.headers['x-ably-turn-client-id'];
+      if (turnClientId && turnClientId !== clientId) continue;
 
       // If there's a later assistant message, this tool call was already
       // resolved in a previous session — skip to prevent re-execution

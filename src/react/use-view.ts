@@ -82,7 +82,11 @@ export const useView = <TEvent, TMessage>(
 
   // Subscribe to view updates
   useEffect(() => {
-    if (!view) return;
+    if (!view) {
+      setNodes([]);
+      setHasOlder(false);
+      return;
+    }
 
     // Sync initial state
     setNodes(view.flattenNodes());

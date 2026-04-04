@@ -13,6 +13,7 @@ import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
 import { createServerTransport } from '@ably/ai-transport/vercel';
 import type { TreeNode } from '@ably/ai-transport';
+import { tools } from './tools.js';
 
 /** Shape of the POST body sent by the client transport. */
 interface ChatRequestBody {
@@ -52,8 +53,9 @@ export async function POST(req: Request) {
 
   const result = streamText({
     model: anthropic('claude-sonnet-4-20250514'),
-    system: 'You are a helpful assistant.',
+    system: `You are a helpful assistant. When the user asks about weather, use the getWeather tool. If they don't specify a location, call getLocation first to get their coordinates, then call getWeather with a description of that location.`,
     messages: await convertToModelMessages(allMessages),
+    tools,
     abortSignal: turn.abortSignal,
   });
 

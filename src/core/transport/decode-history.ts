@@ -22,7 +22,7 @@
 
 import type * as Ably from 'ably';
 
-import { HEADER_MSG_ID, HEADER_TURN_ID } from '../../constants.js';
+import { HEADER_AMEND, HEADER_MSG_ID, HEADER_TURN_ID } from '../../constants.js';
 import type { Logger } from '../../logger.js';
 import { getHeaders } from '../../utils.js';
 import type { Codec, DecoderOutput, MessageAccumulator } from '../codec/types.js';
@@ -94,6 +94,30 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
     const turnId = headers[HEADER_TURN_ID];
     const msgId = headers[HEADER_MSG_ID];
     const serial = msg.serial;
+    const amendTarget = headers[HEADER_AMEND];
+
+    // Amendment events target an existing message from a different turn.
+    // Route them to the turn accumulator that owns the target msgId
+    // so the tool part state transitions correctly in history.
+    if (amendTarget) {
+      for (const turn of turns.values()) {
+        if (turn.msgHeaders.has(amendTarget)) {
+          // Seed the accumulator with the message's current state so the
+          // amendment events update the correct tool parts. Use the
+          // accumulator's full messages list (includes in-progress) and
+          // match by position against the msgHeaders insertion order.
+          const headerKeys = [...turn.msgHeaders.keys()];
+          const msgIndex = headerKeys.indexOf(amendTarget);
+          const currentMsg = msgIndex === -1 ? undefined : turn.accumulator.messages[msgIndex];
+          if (currentMsg) {
+            turn.accumulator.seedMessages([{ messageId: amendTarget, message: currentMsg }]);
+          }
+          turn.accumulator.processOutputs(outputs);
+          break;
+        }
+      }
+      continue;
+    }
 
     if (turnId) {
       let turn = turns.get(turnId);

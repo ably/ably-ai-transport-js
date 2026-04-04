@@ -23,7 +23,15 @@ import { getHeaders } from '../../utils.js';
 import type { Codec } from '../codec/types.js';
 import { decodeHistory } from './decode-history.js';
 import type { TreeInternal } from './tree.js';
-import type { ActiveTurn, PaginatedMessages, SendOptions, TreeNode, TurnLifecycleEvent, View } from './types.js';
+import type {
+  ActiveTurn,
+  EventNode,
+  PaginatedMessages,
+  SendOptions,
+  TreeNode,
+  TurnLifecycleEvent,
+  View,
+} from './types.js';
 
 // ---------------------------------------------------------------------------
 // Events map
@@ -51,11 +59,14 @@ export interface ViewContext<TMessage> {
 /**
  * Internal delegate function provided by the transport for executing sends.
  * The View pre-computes branch context and passes it to the delegate.
+ * When `amendments` is provided, the transport includes them in the POST body
+ * for the server to publish as cross-turn amendments.
  */
 export type SendDelegate<TEvent, TMessage> = (
   input: TMessage | TMessage[],
   options: SendOptions | undefined,
   viewContext: ViewContext<TMessage>,
+  amendments?: EventNode<TEvent>[],
 ) => Promise<ActiveTurn<TEvent>>;
 
 // ---------------------------------------------------------------------------
@@ -342,6 +353,15 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     });
   }
 
+  async update(msgId: string, events: TEvent[], options?: SendOptions): Promise<ActiveTurn<TEvent>> {
+    if (this._closed) {
+      throw new Ably.ErrorInfo('unable to update; view is closed', ErrorCode.InvalidArgument, 400);
+    }
+    this._logger.trace('DefaultView.update();', { msgId, eventCount: events.length });
+    const amendments: EventNode<TEvent>[] = [{ msgId, events }];
+    return this._sendDelegate([], options, { flattenNodes: () => this.flattenNodes() }, amendments);
+  }
+
   private _getHistoryBefore(messageId: string): TreeNode<TMessage>[] {
     this._logger.trace('DefaultView._getHistoryBefore();', { messageId });
     const all = this.flattenNodes();
@@ -523,12 +543,8 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   // Private: scoped event forwarding
   // -------------------------------------------------------------------------
 
-  private _computeVisibleNodes(): TreeNode<TMessage>[] {
-    return this.flattenNodes();
-  }
-
   private _updateVisibleSnapshot(): void {
-    const nodes = this._computeVisibleNodes();
+    const nodes = this.flattenNodes();
     this._lastVisibleIds = nodes.map((n) => n.msgId);
     this._lastVisibleMessages = nodes.map((n) => n.message);
   }
@@ -539,7 +555,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     // shifting this view to a branch the user didn't navigate to.
     this._pinVisibleSelections();
 
-    const nodes = this._computeVisibleNodes();
+    const nodes = this.flattenNodes();
     const newIds = nodes.map((n) => n.msgId);
     const newMessages = nodes.map((n) => n.message);
     if (this._visibleChanged(newIds, newMessages)) {

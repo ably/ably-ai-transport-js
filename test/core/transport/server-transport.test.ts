@@ -7,6 +7,7 @@ import {
   EVENT_CANCEL,
   EVENT_TURN_END,
   EVENT_TURN_START,
+  HEADER_AMEND,
   HEADER_CANCEL_ALL,
   HEADER_CANCEL_CLIENT_ID,
   HEADER_CANCEL_OWN,
@@ -315,6 +316,73 @@ describe('ServerTransport', () => {
       expect(msgIds).toHaveLength(2);
       expect(msgIds[0]).toBe(node1.msgId);
       expect(msgIds[1]).toBe(node2.msgId);
+    });
+  });
+
+  describe('addEvents', () => {
+    it('creates encoder with amend header and target msgId headers', async () => {
+      const turn = transport.newTurn({ turnId: 'turn-1', clientId: 'user-a' });
+      await turn.start();
+      await turn.addEvents([{ msgId: 'target-msg-1', events: [{ type: 'tool-output' }] }]);
+
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      expect(codec.createEncoder).toHaveBeenCalled();
+      const opts = lastEncoderOpts(codec);
+      const headers = opts?.extras?.headers ?? {};
+      expect(headers[HEADER_AMEND]).toBe('target-msg-1');
+      expect(headers[HEADER_ROLE]).toBe('assistant');
+      expect(headers[HEADER_MSG_ID]).toBe('target-msg-1');
+      expect(headers[HEADER_TURN_ID]).toBe('turn-1');
+    });
+
+    it('calls writeEvent per event in each node', async () => {
+      const turn = transport.newTurn({ turnId: 'turn-1' });
+      await turn.start();
+      await turn.addEvents([{
+        msgId: 'target-1',
+        events: [{ type: 'ev-a' }, { type: 'ev-b' }, { type: 'ev-c' }],
+      }]);
+
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      const calls = vi.mocked(codec.createEncoder).mock.results;
+      const encoder = calls.at(-1)?.value as ReturnType<typeof createMockEncoder>;
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      expect(vi.mocked(encoder.writeEvent).mock.calls).toHaveLength(3);
+    });
+
+    it('throws if turn not started', async () => {
+      const turn = transport.newTurn({ turnId: 'turn-1' });
+      await expect(
+        turn.addEvents([{ msgId: 'target-1', events: [{ type: 'ev' }] }]),
+      ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+    });
+
+    it('handles multiple EventNodes', async () => {
+      const turn = transport.newTurn({ turnId: 'turn-1', clientId: 'user-a' });
+      await turn.start();
+      await turn.addEvents([
+        { msgId: 'target-1', events: [{ type: 'ev-1' }] },
+        { msgId: 'target-2', events: [{ type: 'ev-2' }] },
+      ]);
+
+      // Each EventNode gets its own encoder
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      const encoderCalls = vi.mocked(codec.createEncoder).mock.calls;
+      // addMessages calls may also have created encoders, so check the last 2
+      // which correspond to the addEvents call
+      const addEventsCalls = encoderCalls.filter((_call, i) => {
+        const opts = encoderCalls[i]?.[1];
+        const headers = opts?.extras?.headers ?? {};
+        return headers[HEADER_AMEND] !== undefined;
+      });
+      expect(addEventsCalls).toHaveLength(2);
+
+      // Verify each targets the correct msgId
+      const msgIds = addEventsCalls.map((call) => {
+        const opts = call[1];
+        return opts?.extras?.headers?.[HEADER_MSG_ID];
+      });
+      expect(msgIds).toEqual(['target-1', 'target-2']);
     });
   });
 

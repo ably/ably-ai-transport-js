@@ -8,6 +8,7 @@ export type {
   ClientTransport,
   ClientTransportOptions,
   CloseOptions,
+  EventNode,
   NewTurnOptions,
   SendOptions,
   ServerTransport,

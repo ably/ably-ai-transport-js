@@ -39,6 +39,7 @@ const createMockCodec = (): Codec<TestEvent, TestMessage> => ({
   createAccumulator: vi.fn(() => ({
     processOutputs: vi.fn(),
     updateMessage: vi.fn(),
+    seedMessages: vi.fn(),
     messages: [],
     completedMessages: [],
     hasActiveStream: false,
@@ -49,6 +50,7 @@ const createMockCodec = (): Codec<TestEvent, TestMessage> => ({
 const createMockSendDelegate = (): SendDelegate<TestEvent, TestMessage> =>
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   vi.fn(() => Promise.resolve({ stream: new ReadableStream(), turnId: 'mock-turn', cancel: () => Promise.resolve() }));
+
 
 const makeHeaders = (msgId: string, turnId?: string): Record<string, string> => {
   const h: Record<string, string> = { [HEADER_MSG_ID]: msgId };
@@ -88,6 +90,7 @@ describe('DefaultView', () => {
       channel: createMockChannel(),
       codec: createMockCodec(),
       sendDelegate: createMockSendDelegate(),
+
       logger: silentLogger,
     });
   });
@@ -441,6 +444,39 @@ describe('DefaultView', () => {
   });
 
   // -------------------------------------------------------------------------
+  // update
+  // -------------------------------------------------------------------------
+
+  describe('update', () => {
+    it('delegates to sendDelegate with amendments', async () => {
+      const mockDelegate = createMockSendDelegate();
+      const updateView = new DefaultView<TestEvent, TestMessage>({
+        tree,
+        channel: createMockChannel(),
+        codec: createMockCodec(),
+        sendDelegate: mockDelegate,
+        logger: silentLogger,
+      });
+
+      const events = [{ type: 'tool-output' }];
+
+      await updateView.update('target-1', events);
+
+      expect(mockDelegate).toHaveBeenCalledOnce();
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- expect.any(Function) returns any
+      const expectedContext = expect.objectContaining({ flattenNodes: expect.any(Function) });
+      expect(mockDelegate).toHaveBeenCalledWith(
+        [],
+        undefined,
+        expectedContext,
+        [{ msgId: 'target-1', events }],
+      );
+
+      updateView.close();
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // close
   // -------------------------------------------------------------------------
 
@@ -532,6 +568,7 @@ describe('DefaultView', () => {
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: createMockSendDelegate(),
+  
         logger: silentLogger,
       });
 
@@ -558,6 +595,7 @@ describe('DefaultView', () => {
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: createMockSendDelegate(),
+  
         logger: silentLogger,
       });
 
@@ -586,6 +624,7 @@ describe('DefaultView', () => {
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: createMockSendDelegate(),
+  
         logger: silentLogger,
       });
 
@@ -630,6 +669,7 @@ describe('DefaultView', () => {
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: forkDelegate,
+  
         logger: silentLogger,
       });
 
@@ -655,11 +695,13 @@ describe('DefaultView', () => {
         Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-1', cancel: vi.fn() }),
       );
 
+
       const forkView = new DefaultView<TestEvent, TestMessage>({
         tree,
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: noopDelegate,
+  
         logger: silentLogger,
       });
 
@@ -712,11 +754,13 @@ describe('DefaultView', () => {
         Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-1', cancel: vi.fn() }),
       );
 
+
       const forkView = new DefaultView<TestEvent, TestMessage>({
         tree,
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: noopDelegate,
+  
         logger: silentLogger,
       });
 
@@ -764,11 +808,13 @@ describe('DefaultView', () => {
         Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-1', cancel: vi.fn() }),
       );
 
+
       const forkView = new DefaultView<TestEvent, TestMessage>({
         tree,
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: noopDelegate,
+  
         logger: silentLogger,
       });
 
@@ -812,6 +858,7 @@ describe('DefaultView', () => {
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: createMockSendDelegate(),
+  
         logger: silentLogger,
       });
 
@@ -839,6 +886,7 @@ describe('DefaultView', () => {
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: mockDelegate,
+  
         logger: silentLogger,
       });
       // Seed a linear chain: m1 -> m2 -> m3

@@ -7,6 +7,7 @@
  */
 
 import {
+  HEADER_AMEND,
   HEADER_FORK_OF,
   HEADER_MSG_ID,
   HEADER_PARENT,
@@ -24,6 +25,7 @@ import {
  * @param opts.turnClientId - ClientId of the turn initiator.
  * @param opts.parent - Preceding message's msg-id (for branching). Null means root.
  * @param opts.forkOf - Forked message's msg-id (for edit/regen).
+ * @param opts.amend - The msg-id of the existing message this message amends (cross-turn amendments).
  * @returns A headers record with the `x-ably-*` transport headers set.
  */
 export const buildTransportHeaders = (opts: {
@@ -33,6 +35,7 @@ export const buildTransportHeaders = (opts: {
   turnClientId?: string;
   parent?: string | null;
   forkOf?: string;
+  amend?: string;
 }): Record<string, string> => {
   const h: Record<string, string> = {
     [HEADER_ROLE]: opts.role,
@@ -42,5 +45,6 @@ export const buildTransportHeaders = (opts: {
   if (opts.turnClientId !== undefined) h[HEADER_TURN_CLIENT_ID] = opts.turnClientId;
   if (opts.parent) h[HEADER_PARENT] = opts.parent;
   if (opts.forkOf) h[HEADER_FORK_OF] = opts.forkOf;
+  if (opts.amend) h[HEADER_AMEND] = opts.amend;
   return h;
 };

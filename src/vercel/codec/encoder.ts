@@ -41,6 +41,66 @@ import { ErrorCode, errorInfoIs } from '../../errors.js';
 import { headerWriter } from '../../utils.js';
 
 // ---------------------------------------------------------------------------
+// Discrete event payload builder
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a MessagePayload for discrete (non-streaming) event types.
+ * Used by both `writeEvent` and `appendEvent` for tool output events,
+ * content parts, and data-* custom chunks.
+ * @param chunk - The UI message chunk to encode.
+ * @returns The message payload for publishing to the channel.
+ */
+const buildDiscretePayload = (chunk: AI.UIMessageChunk): MessagePayload => {
+  switch (chunk.type) {
+    case 'tool-output-available': {
+      const h = headerWriter()
+        .str('toolCallId', chunk.toolCallId)
+        .bool('dynamic', chunk.dynamic)
+        .bool('providerExecuted', chunk.providerExecuted)
+        .bool('preliminary', chunk.preliminary)
+        .build();
+      return { name: 'tool-output-available', data: { output: chunk.output }, headers: h };
+    }
+
+    case 'tool-output-error': {
+      const h = headerWriter()
+        .str('toolCallId', chunk.toolCallId)
+        .bool('dynamic', chunk.dynamic)
+        .bool('providerExecuted', chunk.providerExecuted)
+        .build();
+      return { name: 'tool-output-error', data: { errorText: chunk.errorText }, headers: h };
+    }
+
+    case 'tool-approval-request': {
+      const h = headerWriter().str('toolCallId', chunk.toolCallId).str('approvalId', chunk.approvalId).build();
+      return { name: 'tool-approval-request', data: '', headers: h };
+    }
+
+    case 'tool-output-denied': {
+      const h = headerWriter().str('toolCallId', chunk.toolCallId).build();
+      return { name: 'tool-output-denied', data: '', headers: h };
+    }
+
+    default: {
+      if (chunk.type.startsWith('data-')) {
+        // CAST: data-* chunks always have id, transient, and data fields per AI SDK types.
+        // TypeScript can't narrow the template literal union in a default case.
+        const dataChunk = chunk as Extract<AI.UIMessageChunk, { type: `data-${string}` }>;
+        const h = headerWriter().str('id', dataChunk.id).bool('transient', dataChunk.transient).build();
+        const ephemeral = dataChunk.transient === true;
+        return { name: chunk.type, data: dataChunk.data, headers: h, ephemeral };
+      }
+      throw new Ably.ErrorInfo(
+        `unable to write event; unsupported chunk type '${chunk.type}'`,
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+  }
+};
+
+// ---------------------------------------------------------------------------
 // Default implementation
 // ---------------------------------------------------------------------------
 
@@ -204,44 +264,11 @@ class DefaultUIMessageEncoder implements StreamEncoder<AI.UIMessageChunk, AI.UIM
         break;
       }
 
-      case 'tool-output-available': {
-        const h = headerWriter()
-          .str('toolCallId', chunk.toolCallId)
-          .bool('dynamic', chunk.dynamic)
-          .bool('providerExecuted', chunk.providerExecuted)
-          .bool('preliminary', chunk.preliminary)
-          .build();
-        await this._core.publishDiscrete({
-          name: 'tool-output-available',
-          data: { output: chunk.output },
-          headers: h,
-        });
-        break;
-      }
-
-      case 'tool-output-error': {
-        const h = headerWriter()
-          .str('toolCallId', chunk.toolCallId)
-          .bool('dynamic', chunk.dynamic)
-          .bool('providerExecuted', chunk.providerExecuted)
-          .build();
-        await this._core.publishDiscrete({
-          name: 'tool-output-error',
-          data: { errorText: chunk.errorText },
-          headers: h,
-        });
-        break;
-      }
-
-      case 'tool-approval-request': {
-        const h = headerWriter().str('toolCallId', chunk.toolCallId).str('approvalId', chunk.approvalId).build();
-        await this._core.publishDiscrete({ name: 'tool-approval-request', data: '', headers: h }, perWrite);
-        break;
-      }
-
+      case 'tool-output-available':
+      case 'tool-output-error':
+      case 'tool-approval-request':
       case 'tool-output-denied': {
-        const h = headerWriter().str('toolCallId', chunk.toolCallId).build();
-        await this._core.publishDiscrete({ name: 'tool-output-denied', data: '', headers: h }, perWrite);
+        await this._core.publishDiscrete(buildDiscretePayload(chunk), perWrite);
         break;
       }
 
@@ -298,22 +325,7 @@ class DefaultUIMessageEncoder implements StreamEncoder<AI.UIMessageChunk, AI.UIM
   }
 
   async writeEvent(chunk: AI.UIMessageChunk, perWrite?: WriteOptions): Promise<Ably.PublishResult> {
-    if (!chunk.type.startsWith('data-')) {
-      throw new Ably.ErrorInfo(
-        `unable to write event; only data-* chunk types are supported, got '${chunk.type}'`,
-        ErrorCode.InvalidArgument,
-        400,
-      );
-    }
-    const h = headerWriter()
-      .str('id', 'id' in chunk ? chunk.id : undefined)
-      .bool('transient', 'transient' in chunk ? chunk.transient : undefined)
-      .build();
-    const ephemeral = 'transient' in chunk && chunk.transient === true;
-    return this._core.publishDiscrete(
-      { name: chunk.type, data: 'data' in chunk ? chunk.data : undefined, headers: h, ephemeral },
-      perWrite,
-    );
+    return this._core.publishDiscrete(buildDiscretePayload(chunk), perWrite);
   }
 
   async writeMessages(messages: AI.UIMessage[], perWrite?: WriteOptions): Promise<Ably.PublishResult> {

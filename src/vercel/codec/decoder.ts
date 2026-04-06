@@ -277,7 +277,8 @@ const decodeFinish = (r: VercelHeaderReader, turnId: string, lifecycle: Lifecycl
   );
 };
 
-const decodeError = (data: unknown): Out[] => {
+const decodeError = (data: unknown, turnId: string, lifecycle: LifecycleTracker<AI.UIMessageChunk>): Out[] => {
+  lifecycle.clearScope(turnId);
   const errorText = typeof data === 'string' ? data : '';
   return event({ type: 'error', errorText });
 };
@@ -523,7 +524,7 @@ const decodeDiscretePayload = (input: MessagePayload, lifecycle: LifecycleTracke
       return decodeFinish(r, turnId, lifecycle);
     }
     case 'error': {
-      return decodeError(input.data);
+      return decodeError(input.data, turnId, lifecycle);
     }
     case 'abort': {
       return decodeAbort(input.data, turnId, lifecycle);

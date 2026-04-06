@@ -23,13 +23,7 @@ import type { LifecycleTracker } from '../../core/codec/lifecycle-tracker.js';
 import { createLifecycleTracker } from '../../core/codec/lifecycle-tracker.js';
 import type { DecoderOutput, MessagePayload, StreamDecoder, StreamTrackerState } from '../../core/codec/types.js';
 import { headerReader } from '../../utils.js';
-import type { AgentCodecEvent, AgentMessage, StreamEvent } from './types.js';
-
-/**
- * The `message` field from a `message_start` stream event. Extracted
- * via indexed access to avoid importing `BetaMessage` directly.
- */
-type BetaMessageShape = Anthropic.SDKAssistantMessage['message'];
+import type { AgentCodecEvent, AgentMessage, BetaMessage, StreamEvent } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Shared output type alias
@@ -91,7 +85,7 @@ const createAgentLifecycleTracker = (): LifecycleTracker<AgentCodecEvent> =>
           stop_reason: null,
           stop_sequence: null,
           usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
-        } as unknown as BetaMessageShape;
+        } as unknown as BetaMessage;
         /* eslint-enable unicorn/no-null */
 
         const syntheticEvent = {
@@ -272,7 +266,7 @@ const decodeMessageStart = (
       {
         type: 'message_start',
         // CAST: Trust boundary — encoder serialized a BetaMessage from the wire.
-        message: input.data as BetaMessageShape,
+        message: input.data as BetaMessage,
       } as StreamEvent,
       h,
     ),
@@ -339,7 +333,8 @@ const decodeUserMessage = (input: MessagePayload): Out[] => {
   return [{ kind: 'message', message }];
 };
 
-const decodeResult = (input: MessagePayload): Out[] => {
+const decodeResult = (input: MessagePayload, turnId: string, lifecycle: LifecycleTracker<AgentCodecEvent>): Out[] => {
+  lifecycle.clearScope(turnId);
   // CAST: Trust boundary — encoder serialized the full SDKResultMessage.
   const result = input.data as Anthropic.SDKResultMessage;
   return event(result);
@@ -446,7 +441,7 @@ const decodeDiscretePayload = (input: MessagePayload, lifecycle: LifecycleTracke
       return decodeUserMessage(input);
     }
     case 'result': {
-      return decodeResult(input);
+      return decodeResult(input, turnId, lifecycle);
     }
     case 'tool-progress': {
       return decodeToolProgress(input);

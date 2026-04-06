@@ -18,14 +18,7 @@ import type { UUID } from 'node:crypto';
 import type * as Anthropic from '@anthropic-ai/claude-agent-sdk';
 
 import type { DecoderOutput, MessageAccumulator } from '../../core/codec/types.js';
-import type { AgentCodecEvent, AgentMessage, StreamEvent } from './types.js';
-
-// ---------------------------------------------------------------------------
-// Internal type aliases
-// ---------------------------------------------------------------------------
-
-/** The BetaMessage type, derived from SDKAssistantMessage. */
-type BetaMessage = Anthropic.SDKAssistantMessage['message'];
+import type { AgentCodecEvent, AgentMessage, BetaMessage, StreamEvent } from './types.js';
 
 /** Status of a content block stream. */
 type StreamStatus = 'streaming' | 'finished' | 'aborted';

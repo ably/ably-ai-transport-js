@@ -75,3 +75,10 @@ export type AgentMessage = Anthropic.SDKAssistantMessage | Anthropic.SDKUserMess
  * `content_block_stop`, `message_delta`, and `message_stop`.
  */
 export type StreamEvent = Anthropic.SDKPartialAssistantMessage['event'];
+
+/**
+ * The `BetaMessage` type from the Anthropic SDK, extracted via indexed
+ * access on `SDKAssistantMessage` to avoid importing it directly from the
+ * transitive `@anthropic-ai/sdk` dependency.
+ */
+export type BetaMessage = Anthropic.SDKAssistantMessage['message'];

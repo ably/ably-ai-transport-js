@@ -89,6 +89,12 @@ class DefaultAgentAccumulator implements MessageAccumulator<AgentCodecEvent, Age
     }
   }
 
+  // Note: This method is not currently called by the core transport. The
+  // identity key (uuid ?? session_id) is best-effort — SDKUserMessage.uuid
+  // is optional and session_id can be empty. The object-identity check
+  // (m === message) handles the common case where the caller holds a
+  // reference to the same object already in the list. If this method becomes
+  // load-bearing, the interface should be extended to pass x-ably-msg-id.
   updateMessage(message: AgentMessage): void {
     const key = message.uuid ?? message.session_id;
 
@@ -453,6 +459,7 @@ class DefaultAgentAccumulator implements MessageAccumulator<AgentCodecEvent, Age
     // CAST: Defensive creation for mid-stream join — message_start was missed.
     // The accumulator creates a minimal shell that will be updated as more events arrive.
 
+    /* eslint-disable unicorn/no-null -- SDK types use null for absent optional fields */
     const shell: Anthropic.SDKAssistantMessage = {
       type: 'assistant',
       message: {
@@ -461,40 +468,28 @@ class DefaultAgentAccumulator implements MessageAccumulator<AgentCodecEvent, Age
         role: 'assistant',
         model: 'unknown',
         content: [],
-        // eslint-disable-next-line unicorn/no-null -- SDK type requires null
         stop_reason: null,
-        // eslint-disable-next-line unicorn/no-null -- SDK type requires null
         stop_sequence: null,
         usage: {
           input_tokens: 0,
           output_tokens: 0,
-          // eslint-disable-next-line unicorn/no-null -- SDK type requires null
           cache_creation_input_tokens: null,
-          // eslint-disable-next-line unicorn/no-null -- SDK type requires null
           cache_read_input_tokens: null,
-          // eslint-disable-next-line unicorn/no-null -- SDK type requires null
           cache_creation: null,
-          // eslint-disable-next-line unicorn/no-null -- SDK type requires null
           inference_geo: null,
-          // eslint-disable-next-line unicorn/no-null -- SDK type requires null
           iterations: null,
-          // eslint-disable-next-line unicorn/no-null -- SDK type requires null
           server_tool_use: null,
-          // eslint-disable-next-line unicorn/no-null -- SDK type requires null
           service_tier: null,
-          // eslint-disable-next-line unicorn/no-null -- SDK type requires null
           speed: null,
         },
-        // eslint-disable-next-line unicorn/no-null -- SDK type requires null
         container: null,
-        // eslint-disable-next-line unicorn/no-null -- SDK type requires null
         context_management: null,
       } as BetaMessage,
-      // eslint-disable-next-line unicorn/no-null -- SDK type requires null
       parent_tool_use_id: null,
       uuid: messageId as UUID,
       session_id: '',
     };
+    /* eslint-enable unicorn/no-null */
 
     const state: ActiveMessageState = {
       message: shell,

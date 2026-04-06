@@ -50,10 +50,7 @@ function sdkMessageStream(queryResult: AsyncIterable<SDKMessage>): ReadableStrea
 }
 
 /** Extract the user's prompt text from the conversation messages. */
-function extractPrompt(
-  messages: ConversationNode<AgentMessage>[],
-  history: ConversationNode<AgentMessage>[],
-): string {
+function extractPrompt(messages: ConversationNode<AgentMessage>[], history: ConversationNode<AgentMessage>[]): string {
   // Get the latest user message text
   const allMsgs = [...history, ...messages];
   const lastUser = allMsgs.filter((m) => m.message.type === 'user').at(-1);
@@ -65,7 +62,10 @@ function extractPrompt(
   // Content is an array of content blocks — extract text
   if (Array.isArray(content)) {
     return content
-      .filter((block): block is { type: 'text'; text: string } => typeof block === 'object' && block !== null && 'type' in block && block.type === 'text')
+      .filter(
+        (block): block is { type: 'text'; text: string } =>
+          typeof block === 'object' && block !== null && 'type' in block && block.type === 'text',
+      )
       .map((block) => block.text)
       .join('\n');
   }
@@ -95,6 +95,12 @@ export async function POST(req: Request) {
   // Extract the user's prompt for the Agent SDK
   const prompt = extractPrompt(messages, history);
 
+  // Bridge the transport's abort signal to an AbortController for the Agent SDK.
+  // When the client cancels a turn, the transport fires turn.abortSignal, which
+  // propagates to the Agent SDK to stop the LLM call.
+  const abortController = new AbortController();
+  turn.abortSignal.addEventListener('abort', () => abortController.abort(), { once: true });
+
   // Call the Agent SDK — this spawns a Claude Code process that calls the
   // Anthropic API with the ANTHROPIC_API_KEY environment variable.
   const conversation = query({
@@ -103,7 +109,7 @@ export async function POST(req: Request) {
       includePartialMessages: true,
       maxTurns: 1,
       systemPrompt: 'You are a helpful assistant.',
-      abortController: new AbortController(), // TODO: wire to turn.abortSignal
+      abortController,
     },
   });
 

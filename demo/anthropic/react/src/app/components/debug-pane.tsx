@@ -27,14 +27,20 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
   }, [entries]);
 
   return (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-3">
+    <div
+      ref={scrollRef}
+      className="flex-1 overflow-y-auto p-3 space-y-3"
+    >
       {entries.length === 0 && (
         <p className="text-xs text-zinc-700 text-center mt-8">Raw Ably messages will appear here.</p>
       )}
       {entries.map((entry, idx) => {
         const headers = extractHeaders(entry);
         return (
-          <div key={idx} className="rounded border border-zinc-800 bg-zinc-900/50 p-2 text-[11px] font-mono">
+          <div
+            key={idx}
+            className="rounded border border-zinc-800 bg-zinc-900/50 p-2 text-[11px] font-mono"
+          >
             <div className="flex items-center gap-2 text-zinc-500 mb-1">
               <span className="text-zinc-600">#{idx}</span>
               <span>{new Date(entry.timestamp ?? Date.now()).toLocaleTimeString()}</span>
@@ -44,7 +50,10 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
             {Object.keys(headers).length > 0 && (
               <div className="ml-2 mb-1 space-y-0.5">
                 {Object.entries(headers).map(([k, v]) => (
-                  <div key={k} className="text-zinc-600">
+                  <div
+                    key={k}
+                    className="text-zinc-600"
+                  >
                     <span className="text-zinc-500">{k}</span>
                     <span className="text-zinc-700">: </span>
                     <span className="text-zinc-400">{v}</span>
@@ -64,7 +73,13 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
   );
 }
 
-function DomainMessagesTab({ messages, activeTurns }: { messages: AgentMessage[]; activeTurns: Map<string, Set<string>> }) {
+function DomainMessagesTab({
+  messages,
+  activeTurns,
+}: {
+  messages: AgentMessage[];
+  activeTurns: Map<string, Set<string>>;
+}) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -78,13 +93,18 @@ function DomainMessagesTab({ messages, activeTurns }: { messages: AgentMessage[]
       ? Array.from(activeTurns.entries())
           .map(
             ([cid, tids]) =>
-              `${cid}: [${Array.from(tids).map((t) => t.slice(0, 8)).join(', ')}]`,
+              `${cid}: [${Array.from(tids)
+                .map((t) => t.slice(0, 8))
+                .join(', ')}]`,
           )
           .join('; ')
       : 'none';
 
   return (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto p-3">
+    <div
+      ref={scrollRef}
+      className="flex-1 overflow-y-auto p-3"
+    >
       <div className="mb-3 rounded border border-zinc-800 bg-zinc-900/50 px-2 py-1.5 text-[10px]">
         <span className="text-zinc-600">Active turns: </span>
         <span className={`font-mono ${activeTurns.size > 0 ? 'text-blue-400' : 'text-zinc-600'}`}>{turnsDisplay}</span>
@@ -149,7 +169,10 @@ export function DebugPane({ messages, ablyMessages, activeTurns }: DebugPaneProp
           {tab === 'ably' ? (
             <AblyMessagesTab entries={ablyMessages} />
           ) : (
-            <DomainMessagesTab messages={messages} activeTurns={activeTurns} />
+            <DomainMessagesTab
+              messages={messages}
+              activeTurns={activeTurns}
+            />
           )}
         </div>
       )}

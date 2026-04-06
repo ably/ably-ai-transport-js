@@ -76,28 +76,23 @@ const createAgentLifecycleTracker = (): LifecycleTracker<AgentCodecEvent> =>
     {
       key: 'message_start',
       build: (ctx) => {
-        // CAST: Synthetic BetaMessage for lifecycle tracker — only id, model, and
-        // structural fields are needed. The accumulator creates the message container
-        // from this shell and fills in real data as streaming events arrive.
-        // CAST: Synthetic BetaMessage — cast through unknown because the
-        // BetaMessage type has many optional SDK fields that are irrelevant
-        // for the lifecycle tracker's shell object.
+        // CAST: Synthetic BetaMessage — cast through unknown because the SDK type
+        // has many required fields irrelevant for this shell. The accumulator fills
+        // in real data as streaming events arrive.
+        /* eslint-disable unicorn/no-null -- SDK types use null for absent optional fields */
         const syntheticMessage = {
           id: ctx.messageId ?? 'synthetic',
           type: 'message',
           role: 'assistant',
           model: ctx.model ?? 'unknown',
           content: [],
-          // eslint-disable-next-line unicorn/no-null -- SDK type requires null
           container: null,
-          // eslint-disable-next-line unicorn/no-null -- SDK type requires null
           context_management: null,
-          // eslint-disable-next-line unicorn/no-null -- SDK type requires null
           stop_reason: null,
-          // eslint-disable-next-line unicorn/no-null -- SDK type requires null
           stop_sequence: null,
           usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
         } as unknown as BetaMessageShape;
+        /* eslint-enable unicorn/no-null */
 
         const syntheticEvent = {
           type: 'message_start' as const,
@@ -358,14 +353,11 @@ const decodeToolProgress = (input: MessagePayload): Out[] => {
 
 const decodeAbort = (input: MessagePayload, turnId: string, lifecycle: LifecycleTracker<AgentCodecEvent>): Out[] => {
   lifecycle.clearScope(turnId);
-  // Construct a terminal SDKResultMessage to signal the stream ended.
-  // CAST: Minimal SDKResultError for abort — only structural fields needed.
-  // The abort event is a transport-level signal; the result carries enough
-  // data for the stream router's isTerminal check and accumulator cleanup.
+  // CAST: Construct a minimal SDKResultMessage to signal the stream ended.
+  // Synthetic transport signal with placeholder fields — carries enough data
+  // for the stream router's isTerminal check and accumulator cleanup.
   const reason = typeof input.data === 'string' && input.data ? input.data : 'cancelled';
-  // CAST: Minimal SDKResultError for abort — synthetic transport signal with
-  // placeholder usage fields. The result carries enough data for the stream
-  // router's isTerminal check and accumulator cleanup.
+  /* eslint-disable unicorn/no-null -- SDK types use null for absent optional fields */
   const result = {
     type: 'result' as const,
     subtype: 'error_during_execution' as const,
@@ -378,19 +370,13 @@ const decodeAbort = (input: MessagePayload, turnId: string, lifecycle: Lifecycle
     usage: {
       input_tokens: 0,
       output_tokens: 0,
-      // eslint-disable-next-line unicorn/no-null -- SDK type requires null
       cache_creation: null,
       cache_creation_input_tokens: 0,
       cache_read_input_tokens: 0,
-      // eslint-disable-next-line unicorn/no-null -- SDK type requires null
       inference_geo: null,
-      // eslint-disable-next-line unicorn/no-null -- SDK type requires null
       iterations: null,
-      // eslint-disable-next-line unicorn/no-null -- SDK type requires null
       server_tool_use: null,
-      // eslint-disable-next-line unicorn/no-null -- SDK type requires null
       service_tier: null,
-      // eslint-disable-next-line unicorn/no-null -- SDK type requires null
       speed: null,
     },
     modelUsage: {},
@@ -399,6 +385,7 @@ const decodeAbort = (input: MessagePayload, turnId: string, lifecycle: Lifecycle
     uuid: '' as unknown as UUID,
     session_id: '',
   } as unknown as Anthropic.SDKResultMessage;
+  /* eslint-enable unicorn/no-null */
   return event(result);
 };
 

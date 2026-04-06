@@ -26,7 +26,13 @@ function StatusBadge({ status }: { status: string }) {
         : status === 'aborted'
           ? 'bg-red-950 text-red-400'
           : 'bg-zinc-900 text-zinc-500';
-  return <Badge label="status" value={status} color={color} />;
+  return (
+    <Badge
+      label="status"
+      value={status}
+      color={color}
+    />
+  );
 }
 
 function bubbleClasses(isUser: boolean, status: string | undefined): string {
@@ -53,13 +59,19 @@ function renderAssistantContent(msg: SDKAssistantMessage) {
         return <span key={i}>{String(block.text ?? '')}</span>;
       case 'thinking':
         return (
-          <div key={i} className="text-zinc-500 italic border-l-2 border-zinc-700 pl-2 my-1">
+          <div
+            key={i}
+            className="text-zinc-500 italic border-l-2 border-zinc-700 pl-2 my-1"
+          >
             {String(block.thinking ?? '')}
           </div>
         );
       case 'tool_use':
         return (
-          <div key={i} className="text-xs bg-zinc-800 rounded px-2 py-1 my-1 font-mono">
+          <div
+            key={i}
+            className="text-xs bg-zinc-800 rounded px-2 py-1 my-1 font-mono"
+          >
             <span className="text-blue-400">{String(block.name ?? 'tool')}</span>
             <span className="text-zinc-600">(</span>
             <span className="text-zinc-400">{JSON.stringify(block.input ?? {})}</span>
@@ -109,9 +121,25 @@ export function MessageBubble({ message, headers }: MessageBubbleProps) {
         {/* Debug badges */}
         {headers && (
           <div className="mt-1 flex items-center gap-1.5 flex-wrap">
-            <Badge label="role" value={role} color="bg-zinc-900 text-zinc-500" />
-            {clientId && <Badge label="client" value={clientId} color="bg-zinc-900 text-zinc-500" />}
-            {turnId && <Badge label="turn" value={turnId.slice(0, 8)} color="bg-zinc-900 text-zinc-500" />}
+            <Badge
+              label="role"
+              value={role}
+              color="bg-zinc-900 text-zinc-500"
+            />
+            {clientId && (
+              <Badge
+                label="client"
+                value={clientId}
+                color="bg-zinc-900 text-zinc-500"
+              />
+            )}
+            {turnId && (
+              <Badge
+                label="turn"
+                value={turnId.slice(0, 8)}
+                color="bg-zinc-900 text-zinc-500"
+              />
+            )}
             {status && <StatusBadge status={status} />}
           </div>
         )}

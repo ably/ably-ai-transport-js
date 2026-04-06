@@ -36,7 +36,11 @@ export function MessageList({ tree, hasNext, loading, onNext }: MessageListProps
   };
 
   return (
-    <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+    <div
+      ref={scrollRef}
+      onScroll={handleScroll}
+      className="flex-1 overflow-y-auto px-4 py-4 space-y-4"
+    >
       {hasNext && (
         <div className="text-center">
           <button
@@ -53,7 +57,11 @@ export function MessageList({ tree, hasNext, loading, onNext }: MessageListProps
         <p className="text-sm text-zinc-600 text-center mt-20">Send a message to start chatting.</p>
       )}
       {nodes.map((node) => (
-        <MessageBubble key={node.msgId} message={node.message} headers={node.headers} />
+        <MessageBubble
+          key={node.msgId}
+          message={node.message}
+          headers={node.headers}
+        />
       ))}
       <div ref={endRef} />
     </div>

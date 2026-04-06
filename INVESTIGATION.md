@@ -2,7 +2,7 @@
 
 **Goal**: Fully understand the SDK's primitives, architecture, and implementation details so we can contribute new codecs for other AI providers (e.g. Anthropic API, Anthropic Agents SDK).
 
-**Status**: Complete -- all phases reviewed, Anthropic Agent SDK codec implemented, conclusions documented
+**Status**: Complete -- all phases reviewed, Anthropic Agent SDK codec implemented, reviewed, and ready for merge
 
 ---
 
@@ -1263,9 +1263,12 @@ Based on the Vercel reference and accounting for differences:
 |---|------|----------|-------------|--------|
 | 1 | Design issue / PR | `Codec.getMessageKey()`, ConversationTree | Transport layer depended on codec for message identity via `getMessageKey()`. This couples transport to domain message shape and breaks for frameworks where messages don't have IDs (e.g. Anthropic user messages). PR #11 (`refactor/message-id`) removes `getMessageKey()` from the Codec interface entirely, making transport use only `x-ably-msg-id`. Also replaces `flatten()` with `flattenNodes()`, `getMessageHeaders()`/`getMessagesWithHeaders()` with `getNodes()`. | Open PR #11 |
 | 2 | ~~Potential issue~~ | `pipe-stream.ts` error path | Initially raised in 2.4: pipeStream called `encoder.close()` on abort instead of aborting. **Fixed in commit 2.9** (`b0f1814`): added `StreamEncoder.abort()` to the interface, pipeStream now calls `encoder.abort('cancelled')` on the cancel path. The error path still calls `encoder.close()` (best-effort), which is reasonable -- errors are signaled via a discrete `error` event before the stream throws. | Resolved by 2.9 |
-| 3 | Codec authoring tension | Lifecycle tracker + complex SDK types | The lifecycle tracker synthesizes events for mid-stream joins. For Vercel, synthetic events are simple (`{ type: 'start', messageId }` — flat objects). For Anthropic, synthetic events require constructing nested `BetaMessage` objects with many required fields (`id`, `role`, `type`, `model`, `content`, `stop_reason`, `stop_sequence`, `usage`, `container`, `context_management`). This is fragile — if the Anthropic SDK adds a required field, the synthetic construction breaks. **Suggestion**: The lifecycle tracker could accept a simpler "phase event" type that the accumulator knows how to handle, rather than requiring full TEvent construction. Or the accumulator could be designed to lazily create messages on first content block without requiring a preceding start event. | Design friction — noted during implementation |
+| 3 | Codec authoring tension | Lifecycle tracker + complex SDK types | The lifecycle tracker synthesizes events for mid-stream joins. For Vercel, synthetic events are simple (`{ type: 'start', messageId }` — flat objects). For Anthropic, synthetic events require constructing nested `BetaMessage` objects with many required fields (`id`, `role`, `type`, `model`, `content`, `stop_reason`, `stop_sequence`, `usage`, `container`, `context_management`). This is fragile — if the Anthropic SDK adds a required field, the synthetic construction breaks at runtime (the `as unknown as` cast bypasses compile-time checks). **Mitigated** with block-level `eslint-disable` for `unicorn/no-null` and clear CAST comments. The fundamental friction remains: the lifecycle tracker forces codecs to construct full `TEvent` objects. A future improvement would be for the tracker to just report missing phases, letting the decoder's existing hooks handle construction. | Known limitation — documented, mitigated |
 | 4 | Codec authoring tension | `getMessageKey` with union TMessage | For Vercel, `getMessageKey` is trivial (`message.id`). For Anthropic's `SDKAssistantMessage | SDKUserMessage` union, `uuid` is optional on `SDKUserMessage`, requiring a fallback. This confirms the PR #11 decision to remove `getMessageKey` — it couples the codec interface to domain message identity assumptions that don't hold for all frameworks. | Confirms PR #11 motivation |
 | 5 | CI / type resolution | Agent SDK broken `.d.ts` | See detailed writeup below. | Per-line eslint-disable on affected lines |
+| 6 | Codec limitation | `accumulator.updateMessage()` | The `updateMessage` method uses `uuid ?? session_id` as its identity key. `SDKUserMessage.uuid` is optional and `session_id` can be empty `''`, so the key can produce false-positive matches. **Not currently called** by the core transport — it's on the `MessageAccumulator` interface but unused in `client-transport.ts`. The object-identity check (`m === message`) handles the common reference case. If the method becomes load-bearing, the interface should be extended to pass `x-ably-msg-id`. Documented in accumulator source. | Known limitation — unused, documented |
+| 7 | Build / packaging | `./anthropic` export entry | Initially pointed to raw `.ts` source instead of built `dist/` artifacts. **Fixed**: added `src/anthropic/vite.config.ts`, `build:anthropic` script, updated exports to `dist/anthropic/`, excluded from core dts plugin. Build verified producing ES + UMD bundles with declarations. | Resolved |
+| 8 | Demo | Abort signal not wired | The demo's `api/chat/route.ts` created a standalone `AbortController()` instead of bridging `turn.abortSignal`. Client cancellation would close the Ably stream but the Agent SDK process would keep running. **Fixed**: bridged via `turn.abortSignal.addEventListener('abort', () => abortController.abort(), { once: true })`. | Resolved |
 
 ### Issue 5: Anthropic Agent SDK broken type declarations in CI
 
@@ -1333,7 +1336,7 @@ The custom-codec example was an effective starting template. The Vercel codec se
 
 1. **Transitive SDK type resolution.** The Anthropic Agent SDK (`@anthropic-ai/claude-agent-sdk`) depends on `@anthropic-ai/sdk` for types like `BetaRawMessageStreamEvent` and `BetaMessage`. With `skipLibCheck: true`, TypeScript resolves these as error types, causing every property access to require `eslint-disable` comments. This is the single biggest source of friction -- approximately 40% of the eslint-disable comments in our codec exist solely because of transitive type resolution. **This is not a problem with the AI Transport SDK's design**, but it is a real pain point for codec authors whose framework SDK has deep type dependency chains.
 
-2. **Complex nested SDK types require `as unknown as` casts.** The Anthropic codec has 30 `as unknown as` casts in source files (vs 0 in Vercel). These exist because the decoder and accumulator construct SDK types (`BetaRawMessageStreamEvent`, `BetaMessage`, content blocks) from decoded wire data. The object literals don't structurally satisfy the full union types -- for example, `BetaContentBlock` is a union of 14 variants, and constructing any one of them requires all fields for that variant. The root cause is using complex SDK types as `TEvent`/`TMessage`. If we defined our own simpler types (like the custom-codec example's flat `AgentMessage { id, role, text, toolCalls }`), there'd be zero casts -- but consumers couldn't work with familiar SDK types. The casts are at well-defined trust boundaries and validated by the switch-based type narrowing, so they're correct -- just not ideal for maintainability.
+2. **Complex nested SDK types require `as unknown as` casts.** The Anthropic codec has ~30 `as unknown as` casts in source files (vs 0 in Vercel). These exist because the decoder and accumulator construct SDK types (`BetaRawMessageStreamEvent`, `BetaMessage`, content blocks) from decoded wire data. The object literals don't structurally satisfy the full union types -- for example, `BetaContentBlock` is a union of 14 variants, and constructing any one of them requires all fields for that variant. The root cause is using complex SDK types as `TEvent`/`TMessage`. If we defined our own simpler types (like the custom-codec example's flat `AgentMessage { id, role, text, toolCalls }`), there'd be zero casts -- but consumers couldn't work with familiar SDK types. The casts are at well-defined trust boundaries and validated by the switch-based type narrowing, so they're correct -- just not ideal for maintainability. Additionally, the Anthropic SDK uses `null` where the project linter prefers `undefined`, requiring `eslint-disable` for `unicorn/no-null`. These are consolidated into block-level disables around shell object constructions (lifecycle tracker, accumulator, decoder abort) to minimize noise.
 
 3. **Events that don't self-identify.** Vercel's `UIMessageChunk` types carry their own identity (e.g. `text-delta` has `chunk.id`). Anthropic's `content_block_delta` and `content_block_stop` only carry an `index`, so the encoder must track open blocks to map index to stream ID. This is a minor annoyance, not a fundamental problem, but it adds state that the Vercel encoder doesn't need.
 
@@ -1399,6 +1402,12 @@ The custom-codec example was an effective starting template. The Vercel codec se
 
    **Current decision**: Left as a known limitation. The accumulated `SDKAssistantMessage` has the correct `session_id` (from the `message_start` event data). Only the transient `SDKPartialAssistantMessage` wrappers produced by the decoder have `session_id: ''`, and nothing currently reads that field from streaming events. Fix when a consumer needs it.
 
+6. **Build and packaging.** The Anthropic entry point initially exported raw `.ts` source instead of built artifacts. Fixed during review: added `src/anthropic/vite.config.ts` (following the Vercel pattern), `build:anthropic` script, updated package.json exports to point to `dist/anthropic/`, and excluded `anthropic/**` from the core dts plugin. Build produces ES + UMD bundles with correct declarations.
+
+7. **Demo abort signal wiring.** The demo's `api/chat/route.ts` was creating a standalone `AbortController()` not connected to the transport's cancel chain. Fixed during review by bridging `turn.abortSignal` via `addEventListener('abort', ...)` to the `AbortController` passed to `query()`.
+
+8. **Accumulator `updateMessage` identity.** Uses `uuid ?? session_id` as the lookup key, which is fragile for `SDKUserMessage` (uuid optional, session_id can be empty). Not currently called by the core transport — documented as a known limitation in the source. If the interface gains callers, the right fix is to extend the accumulator interface to pass `x-ably-msg-id`.
+
 ### Bugs found in existing primitives
 
 No bugs were found in the existing encoder core, decoder core, lifecycle tracker, transport, or other base primitives. The architecture is solid and the implementations are correct.
@@ -1415,31 +1424,17 @@ No bugs were found in the existing encoder core, decoder core, lifecycle tracker
    build: (ctx) => [{ type: 'start', messageId: ctx.messageId }]
    ```
 
-   For Anthropic, `TEvent` includes `SDKPartialAssistantMessage` -- a wrapper around deeply nested Anthropic SDK types. The `build()` function must construct:
-   ```typescript
-   // Anthropic: ~25 lines, multiple casts, 5 eslint-disable comments
-   {
-     type: 'stream_event',
-     event: {                          // BetaRawMessageStreamEvent
-       type: 'message_start',
-       message: {                      // BetaMessage -- 10+ required fields
-         id: '...', type: 'message', role: 'assistant', model: '...',
-         content: [], stop_reason: null, stop_sequence: null,
-         usage: { input_tokens: 0, output_tokens: 0, ... },
-         container: null, context_management: null,
-       }
-     },
-     parent_tool_use_id: null, uuid: '...', session_id: '',
-   }
-   ```
+   For Anthropic, `TEvent` includes `SDKPartialAssistantMessage` -- a wrapper around deeply nested Anthropic SDK types. The `build()` function must construct a ~25-line object with multiple casts and a block-level `eslint-disable` for `unicorn/no-null`. The `as unknown as` cast bypasses compile-time safety, so if the SDK adds a required field, the synthetic construction breaks at runtime, not at build time.
 
-   The root cause: `build()` is forced to return `TEvent[]`. For frameworks with simple event types this is trivial; for frameworks with complex nested types it's painful and fragile (if the SDK adds a required field, the synthetic construction breaks).
+   The root cause: `build()` is forced to return `TEvent[]`. For frameworks with simple event types this is trivial; for frameworks with complex nested types it's painful and fragile.
 
    A simpler alternative: the lifecycle tracker could just report which phases are missing and let the decoder's own hooks handle construction. The hooks already know how to build events -- they do it for every stream start. The tracker doesn't need to build events itself; it just needs to track what's been emitted and what hasn't.
 
+   **Current mitigation**: The synthetic objects use block-level `eslint-disable` and clear CAST comments. The friction is documented but not resolved at the architecture level.
+
 2. **Remove `getMessageKey` from the Codec interface** (PR #11, already in review). Our experience confirms this is the right call. The transport's own `x-ably-msg-id` is sufficient for identity. Requiring codecs to provide a domain key couples the interface to assumptions about message identity that don't hold for all frameworks (e.g. `SDKUserMessage.uuid` is optional).
 
-3. **Add `@anthropic-ai/sdk` as a peer dependency to fix transitive type resolution.** The Anthropic codec initially had 41 `eslint-disable` comments (vs 0 for Vercel) because `@anthropic-ai/claude-agent-sdk` references types from `@anthropic-ai/sdk` (a transitive dependency not installed in our project). With `skipLibCheck: true`, TypeScript resolved these as error types, requiring `eslint-disable` on every property access. Adding `@anthropic-ai/sdk` as an explicit peer dependency fixed this: the types resolve correctly, 28 transitive-type disables were removed, and proper type checking caught real incompleteness in our synthetic objects (missing `BetaUsage` fields, `BetaThinkingBlock.signature`, etc.) that were hidden when the types were `any`. After fixing those, the codec has 30 remaining `eslint-disable` comments -- all for the legitimate `unicorn/no-null` rule (the Anthropic SDK requires `null` where the project linter prefers `undefined`). The Vercel codec has 0 because `UIMessage` types don't use `null`.
+3. **Add `@anthropic-ai/sdk` as a peer dependency to fix transitive type resolution.** The Anthropic codec initially had 41 `eslint-disable` comments (vs 0 for Vercel) because `@anthropic-ai/claude-agent-sdk` references types from `@anthropic-ai/sdk` (a transitive dependency not installed in our project). With `skipLibCheck: true`, TypeScript resolved these as error types, requiring `eslint-disable` on every property access. Adding `@anthropic-ai/sdk` as an explicit peer dependency fixed this: the types resolve correctly, 28 transitive-type disables were removed, and proper type checking caught real incompleteness in our synthetic objects (missing `BetaUsage` fields, `BetaThinkingBlock.signature`, etc.) that were hidden when the types were `any`. After fixing those, the remaining `eslint-disable` comments are all for the legitimate `unicorn/no-null` rule (the Anthropic SDK requires `null` where the project linter prefers `undefined`), consolidated into block-level disables around shell object constructions. The Vercel codec has 0 because `UIMessage` types don't use `null`.
 
 4. **The accumulator contract should specify that `messages` returns a stable reference.** The `MessageAccumulator` interface says `messages` returns `TMessage[]` but doesn't say whether it's the same array every time or a new copy. This matters because the transport reads `accumulator.messages` on every streaming token (potentially hundreds per response) -- allocating a new array each time is wasteful. Both the Vercel accumulator and the custom-codec example return the same array (mutated in place), but nothing in the interface documents this. Our initial Anthropic accumulator accidentally created a new array on every access (`return [...completed, ...inProgress]`). A one-line JSDoc addition would prevent this: `"Returns a stable reference — the same array instance on every access, mutated in place as events arrive."`
 

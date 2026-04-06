@@ -8,21 +8,23 @@ export default defineConfig({
     dts({
       entryRoot: resolve(__dirname, '.'),
       insertTypesEntry: true,
-      exclude: ['react/**', 'vercel/**', 'anthropic/**'],
     }),
   ],
   build: {
-    outDir: '../dist',
+    outDir: '../../dist/anthropic',
     lib: {
       entry: resolve(__dirname, 'index.ts'),
-      name: 'AblyAiTransport',
-      fileName: 'ably-ai-transport',
+      name: 'AblyAiTransportAnthropic',
+      fileName: 'ably-ai-transport-anthropic',
+      formats: ['es', 'umd'],
     },
     rollupOptions: {
-      external: ['ably'],
+      external: ['ably', '@anthropic-ai/claude-agent-sdk', '@anthropic-ai/sdk'],
       output: {
         globals: {
           ably: 'Ably',
+          '@anthropic-ai/claude-agent-sdk': 'AnthropicAgentSDK',
+          '@anthropic-ai/sdk': 'AnthropicSDK',
         },
       },
     },

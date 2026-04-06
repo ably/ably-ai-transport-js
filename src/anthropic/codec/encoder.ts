@@ -75,7 +75,11 @@ class DefaultAgentEncoder implements StreamEncoder<AgentCodecEvent, AgentMessage
         break;
       }
 
-      // -- Complete assistant message (non-streaming or post-stream)
+      // -- Complete assistant message (non-streaming or post-stream).
+      // Publishes the full BetaMessage as data. For typical responses this is
+      // well under Ably's 64 KB message limit, but very large tool inputs or
+      // multi-block responses could approach it. Streaming mode avoids this
+      // because content arrives as small deltas instead.
       case 'assistant': {
         const messageId = event.message.id;
         const h = headerWriter()

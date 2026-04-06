@@ -17,7 +17,11 @@ function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; 
 
   return (
     <ChannelProvider channelName={channelName}>
-      <Chat chatId={channelName} clientId={clientId} historyLimit={limit} />
+      <Chat
+        chatId={channelName}
+        clientId={clientId}
+        historyLimit={limit}
+      />
     </ChannelProvider>
   );
 }
@@ -30,7 +34,11 @@ function ChatPage() {
 
   return (
     <Providers clientId={clientId}>
-      <ChatWhenReady channelName={channelName} clientId={clientId} limit={limit} />
+      <ChatWhenReady
+        channelName={channelName}
+        clientId={clientId}
+        limit={limit}
+      />
     </Providers>
   );
 }

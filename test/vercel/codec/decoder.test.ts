@@ -681,6 +681,132 @@ describe('Vercel decoder', () => {
       expect(eventTypesOf(outputs)).toContain('start-step');
       expect(eventTypesOf(outputs)).not.toContain('start'); // start already emitted for this turn
     });
+
+    it('clears lifecycle scope after finish', () => {
+      const decoder = createDecoder();
+
+      // Stream content — synthesizes start + start-step
+      decoder.decode(
+        withHeaders(
+          { action: 'message.create', serial: 's1', name: 'text', data: '' },
+          {
+            [HEADER_STREAM]: 'true',
+            [HEADER_STATUS]: 'streaming',
+            [HEADER_STREAM_ID]: 'txt-1',
+            [HEADER_TURN_ID]: 'turn-1',
+            [`${D}id`]: 'txt-1',
+          },
+        ),
+      );
+
+      // finish — clears scope
+      decoder.decode(
+        withHeaders(
+          { action: 'message.create', name: 'finish', data: '' },
+          { [HEADER_STREAM]: 'false', [HEADER_TURN_ID]: 'turn-1', [`${D}finishReason`]: 'stop' },
+        ),
+      );
+
+      // New content on same turn — should re-synthesize start + start-step
+      const outputs = decoder.decode(
+        withHeaders(
+          { action: 'message.create', serial: 's2', name: 'text', data: '' },
+          {
+            [HEADER_STREAM]: 'true',
+            [HEADER_STATUS]: 'streaming',
+            [HEADER_STREAM_ID]: 'txt-2',
+            [HEADER_TURN_ID]: 'turn-1',
+            [`${D}id`]: 'txt-2',
+          },
+        ),
+      );
+      expect(eventTypesOf(outputs)).toContain('start');
+      expect(eventTypesOf(outputs)).toContain('start-step');
+    });
+
+    it('clears lifecycle scope after abort', () => {
+      const decoder = createDecoder();
+
+      // Stream content — synthesizes start + start-step
+      decoder.decode(
+        withHeaders(
+          { action: 'message.create', serial: 's1', name: 'text', data: '' },
+          {
+            [HEADER_STREAM]: 'true',
+            [HEADER_STATUS]: 'streaming',
+            [HEADER_STREAM_ID]: 'txt-1',
+            [HEADER_TURN_ID]: 'turn-1',
+            [`${D}id`]: 'txt-1',
+          },
+        ),
+      );
+
+      // abort — clears scope
+      decoder.decode(
+        withHeaders(
+          { action: 'message.create', name: 'abort', data: 'cancelled' },
+          { [HEADER_STREAM]: 'false', [HEADER_TURN_ID]: 'turn-1' },
+        ),
+      );
+
+      // New content on same turn — should re-synthesize start + start-step
+      const outputs = decoder.decode(
+        withHeaders(
+          { action: 'message.create', serial: 's2', name: 'text', data: '' },
+          {
+            [HEADER_STREAM]: 'true',
+            [HEADER_STATUS]: 'streaming',
+            [HEADER_STREAM_ID]: 'txt-2',
+            [HEADER_TURN_ID]: 'turn-1',
+            [`${D}id`]: 'txt-2',
+          },
+        ),
+      );
+      expect(eventTypesOf(outputs)).toContain('start');
+      expect(eventTypesOf(outputs)).toContain('start-step');
+    });
+
+    it('clears lifecycle scope after error', () => {
+      const decoder = createDecoder();
+
+      // Stream content — synthesizes start + start-step
+      decoder.decode(
+        withHeaders(
+          { action: 'message.create', serial: 's1', name: 'text', data: '' },
+          {
+            [HEADER_STREAM]: 'true',
+            [HEADER_STATUS]: 'streaming',
+            [HEADER_STREAM_ID]: 'txt-1',
+            [HEADER_TURN_ID]: 'turn-1',
+            [`${D}id`]: 'txt-1',
+          },
+        ),
+      );
+
+      // error — clears scope
+      decoder.decode(
+        withHeaders(
+          { action: 'message.create', name: 'error', data: 'something broke' },
+          { [HEADER_STREAM]: 'false', [HEADER_TURN_ID]: 'turn-1' },
+        ),
+      );
+
+      // New content on same turn — should re-synthesize start + start-step
+      const outputs = decoder.decode(
+        withHeaders(
+          { action: 'message.create', serial: 's2', name: 'text', data: '' },
+          {
+            [HEADER_STREAM]: 'true',
+            [HEADER_STATUS]: 'streaming',
+            [HEADER_STREAM_ID]: 'txt-2',
+            [HEADER_TURN_ID]: 'turn-1',
+            [`${D}id`]: 'txt-2',
+          },
+        ),
+      );
+      expect(eventTypesOf(outputs)).toContain('start');
+      expect(eventTypesOf(outputs)).toContain('start-step');
+    });
   });
 
   // -- first-contact update -------------------------------------------------

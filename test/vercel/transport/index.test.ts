@@ -20,7 +20,7 @@ interface MockChannel {
 
 const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
   const mock: MockChannel = {
-    state: 'initialized',
+    state: 'attached',
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     publish: vi.fn(() => Promise.resolve()),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly

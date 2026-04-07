@@ -103,7 +103,7 @@ Cases where the guarantee would be violated and the stream is errored:
 
 - **HTTP POST failure** - the server never received the request, so no events will arrive. The stream is errored with `TransportSendFailed`.
 - **Channel continuity loss** - the channel entered a state where message delivery can no longer be assured (FAILED, SUSPENDED, DETACHED, or re-attached with `resumed: false`). Events may have been lost. The stream is errored with `ChannelContinuityLost`. The transport does not clean up per-turn state or emit synthetic turn-end events — events may still arrive later.
-- **Unhealthy channel at send time** - `send()` is called when the channel is already in a non-attached state. *(Not yet implemented.)*
+- **Unhealthy channel at send time** - `send()` is called when the channel is not `attached` or `attaching`. The send is rejected with `ChannelNotReady`.
 
 ## Close
 

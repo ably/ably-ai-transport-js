@@ -104,7 +104,7 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
   const mock: MockChannel = {
     listener: undefined,
     stateListeners,
-    state: 'initialized',
+    state: 'attached',
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     publish: vi.fn(() => Promise.resolve()),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
@@ -603,6 +603,29 @@ describe('ClientTransport', () => {
     it('throws when transport is closed', async () => {
       await transport.close();
       await expect(transport.send({ id: 'u1', content: 'hi' })).rejects.toThrow('transport is closed');
+    });
+
+    for (const state of ['failed', 'suspended', 'detached', 'initialized'] as const) {
+      it(`throws when channel is ${state}`, async () => {
+        simulateInitialAttach(channel);
+        channel.state = state;
+
+        await expect(transport.send({ id: 'u1', content: 'hi' })).rejects.toBeErrorInfoWithCode(
+          ErrorCode.ChannelNotReady,
+        );
+
+        await transport.close();
+      });
+    }
+
+    it('allows send when channel is attaching', async () => {
+      simulateInitialAttach(channel);
+      channel.state = 'attaching';
+
+      const turn = await transport.send({ id: 'u1', content: 'hi' });
+      expect(turn.stream).toBeInstanceOf(ReadableStream);
+
+      await transport.close();
     });
 
     it('merges dynamic options.headers and options.body', async () => {
@@ -2150,10 +2173,19 @@ describe('ClientTransport', () => {
     });
 
     it('does not treat the initial attach as continuity loss', async () => {
-      const errors: Ably.ErrorInfo[] = [];
-      transport.on('error', (e) => errors.push(e));
+      const uninitChannel = createMockChannel();
+      uninitChannel.state = 'initialized';
 
-      simulateStateChange(channel, {
+      const uninitTransport = createClientTransport({
+        channel: uninitChannel,
+        codec,
+        fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
+      });
+
+      const errors: Ably.ErrorInfo[] = [];
+      uninitTransport.on('error', (e) => errors.push(e));
+
+      simulateStateChange(uninitChannel, {
         current: 'attached',
         previous: 'attaching',
         resumed: false,
@@ -2161,20 +2193,29 @@ describe('ClientTransport', () => {
 
       expect(errors).toHaveLength(0);
 
-      await transport.close();
+      await uninitTransport.close();
     });
 
     it('emits error event if channel fails before first attach', async () => {
-      const errors: Ably.ErrorInfo[] = [];
-      transport.on('error', (e) => errors.push(e));
+      const uninitChannel = createMockChannel();
+      uninitChannel.state = 'initialized';
 
-      simulateStateChange(channel, {
+      const uninitTransport = createClientTransport({
+        channel: uninitChannel,
+        codec,
+        fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
+      });
+
+      const errors: Ably.ErrorInfo[] = [];
+      uninitTransport.on('error', (e) => errors.push(e));
+
+      simulateStateChange(uninitChannel, {
         current: 'attaching',
         previous: 'initialized',
         resumed: false,
       } as Ably.ChannelStateChange);
 
-      simulateStateChange(channel, {
+      simulateStateChange(uninitChannel, {
         current: 'failed',
         previous: 'attaching',
         resumed: false,
@@ -2186,7 +2227,7 @@ describe('ClientTransport', () => {
       expect(errors).toHaveLength(1);
       expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.ChannelContinuityLost);
 
-      await transport.close();
+      await uninitTransport.close();
     });
 
     for (const state of ['failed', 'suspended', 'detached'] as const) {

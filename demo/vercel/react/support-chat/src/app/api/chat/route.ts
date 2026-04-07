@@ -78,6 +78,10 @@ When you use planTasks, your response will be shown to the customer while the su
 
 Use conversation context to infer tool parameters whenever possible. If the user asks a follow-up like "show me reviews" after discussing a specific product, call the tool with that product — don't ask them to clarify what's already obvious from the conversation.
 
+If the user refines or follows up on a previous request (e.g. "make sure they have noise cancelling" after asking for headphones), call the tool again with the updated query — do NOT assume a previous tool call is still running or will cover the new request. Always re-invoke the tool with the refined parameters.
+
+Never tell the user that something is "in progress" or "being worked on" — if a task was cancelled or the user wants something different, start fresh.
+
 Be concise and helpful. Use a warm but professional tone.`;
 
 export async function POST(req: Request) {

@@ -53,6 +53,12 @@ export enum ErrorCode {
    * streams can no longer be guaranteed to receive all events.
    */
   ChannelContinuityLost = 104006,
+
+  /**
+   * An operation was attempted but the channel is not in a usable state
+   * (not ATTACHED or ATTACHING).
+   */
+  ChannelNotReady = 104007,
 }
 
 /**

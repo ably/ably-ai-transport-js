@@ -20,7 +20,9 @@ interface MockChannel {
 
 const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
   const mock: MockChannel = {
-    state: 'initialized',
+    // Default to 'attached' so send() doesn't reject — it requires the
+    // channel to be ATTACHED or ATTACHING.
+    state: 'attached',
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     publish: vi.fn(() => Promise.resolve()),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly

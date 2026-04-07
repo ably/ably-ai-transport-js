@@ -16,7 +16,9 @@ AI Transport uses `Ably.ErrorInfo` as its error type. Each error has a numeric `
 | 104005 | `TransportSendFailed`        | 500    | The HTTP POST to the server endpoint failed (network error or non-2xx response)                              | Check server availability and endpoint URL                                          |
 | 104006 | `ChannelContinuityLost`      | 500    | The Ably channel lost message continuity (FAILED, SUSPENDED, DETACHED, or re-attached with `resumed: false`) | Active streams are errored. Check network connectivity and channel state            |
 
-Codes 40000 and 40003 are standard Ably error codes. Codes 104000–104006 are specific to the AI Transport SDK.
+| 104007 | `ChannelNotReady` | 400 | An operation was attempted but the channel is not ATTACHED or ATTACHING | Check the channel state and why it entered that state |
+
+Codes 40000 and 40003 are standard Ably error codes. Codes 104000–104007 are specific to the AI Transport SDK.
 
 ## Checking error codes
 

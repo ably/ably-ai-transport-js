@@ -56,7 +56,7 @@ const view = useView<TEvent, TMessage>(
 
 | Property/Method | Type | Description |
 |---|---|---|
-| `nodes` | `TreeNode<TMessage>[]` | Flattened nodes for the current branch. Updates on every message change (including streaming deltas) |
+| `nodes` | `MessageNode<TMessage>[]` | Flattened nodes for the current branch. Updates on every message change (including streaming deltas) |
 | `messages` | `TMessage[]` | The visible domain messages (shorthand for `nodes.map(n => n.message)`) |
 | `hasOlder` | `boolean` | Are there older pages? False until history has been loaded |
 | `loading` | `boolean` | Is a page being fetched? |
@@ -65,11 +65,11 @@ const view = useView<TEvent, TMessage>(
 | `getSelectedIndex(msgId)` | `(msgId: string) => number` | Index of the currently selected sibling |
 | `getSiblings(msgId)` | `(msgId: string) => TMessage[]` | All alternatives at a fork point |
 | `hasSiblings(msgId)` | `(msgId: string) => boolean` | Whether to show navigation arrows |
-| `getNode(msgId)` | `(msgId: string) => TreeNode<TMessage> \| undefined` | Look up a node by msgId |
+| `getNode(msgId)` | `(msgId: string) => MessageNode<TMessage> \| undefined` | Look up a node by msgId |
 | `send(messages, options?)` | `(messages: TMessage \| TMessage[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>` | Send messages in this view's branch context |
 | `regenerate(messageId, options?)` | `(messageId: string, options?: SendOptions) => Promise<ActiveTurn<TEvent>>` | Fork an assistant message with no new user input |
 | `edit(messageId, newMessages, options?)` | `(messageId: string, newMessages: TMessage \| TMessage[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>` | Fork a user message with replacement content |
-| `update(msgId, events, options?)` | `(msgId: string, events: TEvent[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>` | Amend an existing message and start a continuation turn (e.g. [tool results](../features/tool-calling.md#client-executed-tools)) |
+| `update(msgId, events, options?)` | `(msgId: string, events: TEvent[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>` | Update an existing message and start a continuation turn (e.g. [tool results](../features/tool-calling.md#client-executed-tools)) |
 
 Each view has independent branch selections and pagination state. When you pass a transport, the hook uses its default view. For [split-pane UIs](../features/branching.md#multiple-views) where each pane needs its own branch and message history, use [`useCreateView`](#usecreateview) to create independent views with the same API.
 
@@ -212,7 +212,7 @@ const tree = useTree<TEvent, TMessage>(transport: ClientTransport<TEvent, TMessa
 |---|---|---|
 | `getSiblings(msgId)` | `(msgId: string) => TMessage[]` | All alternatives at a fork point |
 | `hasSiblings(msgId)` | `(msgId: string) => boolean` | Whether to show navigation arrows |
-| `getNode(msgId)` | `(msgId: string) => TreeNode<TMessage> \| undefined` | Look up a node by msgId |
+| `getNode(msgId)` | `(msgId: string) => MessageNode<TMessage> \| undefined` | Look up a node by msgId |
 
 Branch navigation (`select`, `getSelectedIndex`) and write operations (`send`, `regenerate`, `edit`) are on `ViewHandle` from `useView`, not `TreeHandle`. The tree provides structural queries that are the same regardless of which branch is selected.
 

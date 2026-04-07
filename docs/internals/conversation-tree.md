@@ -22,7 +22,7 @@ _parentIndex:   Map<parentId, Set<msgId>>       Children of each parent
 _selections:    Map<groupRootId, index>         Selected sibling at each fork
 ```
 
-Each `TreeNode` stores:
+Each `MessageNode` stores:
 
 ```typescript
 {
@@ -40,7 +40,7 @@ Each `TreeNode` stores:
 `upsert(msgId, message, headers, serial?)` is the only way to add or update messages:
 
 **Insert (new msgId):**
-1. Create a `TreeNode` from the message, headers, and serial
+1. Create a `MessageNode` from the message, headers, and serial
 2. Add to the node index and parent index
 3. Insert into the sorted list at the correct position (binary search for serial-bearing, append for null-serial)
 
@@ -95,7 +95,7 @@ The public `Tree` interface exposes:
 |---|---|
 | `getSiblings(msgId)` | All messages in the sibling group containing `msgId` |
 | `hasSiblings(msgId)` | Whether the message has alternative versions |
-| `getNode(msgId)` | The `TreeNode` by msg-id |
+| `getNode(msgId)` | The `MessageNode` by msg-id |
 | `getHeaders(msgId)` | Headers for a specific message |
 
 The following are on the `View`, not the public `Tree` interface:

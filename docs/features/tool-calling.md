@@ -93,7 +93,7 @@ const tools = {
 Watch for tool parts in the `input-available` state, execute the browser API, then publish the result back to the channel:
 
 ```typescript
-import type { EventNode } from '@ably/ai-transport';
+import type { EventsNode } from '@ably/ai-transport';
 
 // 1. Find the pending tool call in the assistant message
 const node = view.nodes.find(n =>
@@ -110,7 +110,7 @@ const position = await new Promise((resolve, reject) =>
   navigator.geolocation.getCurrentPosition(resolve, reject)
 );
 
-// 3. Amend the assistant message with the result and start a continuation turn
+// 3. Update the assistant message with the result and start a continuation turn
 await view.update(node.msgId, [{
   type: 'tool-output-available',
   toolCallId: toolPart.toolCallId,
@@ -121,7 +121,7 @@ await view.update(node.msgId, [{
 }]);
 ```
 
-`update` amends the existing assistant message and starts a continuation [turn](../concepts/turns.md) in a single call. The tree updates optimistically, then the amendment is sent to the server in the POST body. The server publishes it to the channel (with `x-ably-amend` header targeting the assistant message's `x-ably-msg-id`) and calls `streamText()` again with the tool result in the conversation history. All clients see the tool part transition from `input-available` to `output-available`.
+`update` updates the existing assistant message and starts a continuation [turn](../concepts/turns.md) in a single call. The tree updates optimistically, then the events are sent to the server in the POST body. The server publishes them to the channel (with `x-ably-amend` header targeting the assistant message's `x-ably-msg-id`) and calls `streamText()` again with the tool result in the conversation history. All clients see the tool part transition from `input-available` to `output-available`.
 
 ## Multi-client tool execution
 
@@ -136,9 +136,9 @@ if (turnClientId !== myClientId) {
 }
 ```
 
-Observer clients see the tool call arrive (the assistant message streams normally) and see the result appear when the server publishes the amendment. No special handling is needed on the observer side.
+Observer clients see the tool call arrive (the assistant message streams normally) and see the result appear when the server publishes the events. No special handling is needed on the observer side.
 
-## Server-side tool result amendments
+## Server-side tool result events
 
 For tool calls that require server-mediated approval workflows or deferred execution, the server can publish tool results targeting a previous turn's message using `turn.addEvents()`:
 
@@ -148,6 +148,7 @@ await turn.start();
 
 // Publish the tool result targeting a message from a previous turn
 await turn.addEvents([{
+  kind: 'event',
   msgId: previousAssistantMsgId,
   events: [{ type: 'tool-output-available', toolCallId, output: result }],
 }]);
@@ -160,9 +161,9 @@ await turn.end(reason);
 
 ## History and persistence
 
-Tool call events persist in Ably channel history. When a client loads history, the decoder reconstructs tool parts with their final state - including amendments. A tool that was called, executed, and resolved in a previous session appears with `state: 'output-available'` and the full output.
+Tool call events persist in Ably channel history. When a client loads history, the decoder reconstructs tool parts with their final state - including cross-turn events. A tool that was called, executed, and resolved in a previous session appears with `state: 'output-available'` and the full output.
 
-Amendment events (from `view.update()` or server-side `turn.addEvents()`) are stored in history with `x-ably-amend` header identifying the target message. The history decoder detects these and routes them to the correct message's accumulator, so the tool part state is reconstructed correctly.
+Cross-turn events (from `view.update()` or server-side `turn.addEvents()`) are stored in history with `x-ably-amend` header identifying the target message. The history decoder detects these and routes them to the correct message's accumulator, so the tool part state is reconstructed correctly.
 
 To avoid re-executing client tools after a page refresh, check whether the tool call already has a follow-up assistant message (which means the model already consumed the result):
 

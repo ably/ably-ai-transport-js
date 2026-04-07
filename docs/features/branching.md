@@ -74,7 +74,7 @@ const view = useView(transport);
 // view.select(nodeId, index) - switch to a different sibling
 // view.getNode(nodeId) - look up a node by msgId
 //
-// nodeId is the msgId on each TreeNode — iterate view.nodes:
+// nodeId is the msgId on each MessageNode — iterate view.nodes:
 //   view.nodes.map((node) => {
 //     const nodeId = node.msgId;
 //   });

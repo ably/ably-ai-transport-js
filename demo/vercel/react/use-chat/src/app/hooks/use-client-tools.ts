@@ -9,7 +9,7 @@
 
 import { useEffect, useRef } from 'react';
 import type { ChatAddToolOutputFunction, DynamicToolUIPart, UIMessage } from 'ai';
-import type { TreeNode } from '@ably/ai-transport';
+import type { MessageNode } from '@ably/ai-transport';
 
 type ClientToolExecutor = (input: unknown) => Promise<unknown>;
 
@@ -40,7 +40,7 @@ const clientTools: Record<string, ClientToolExecutor> = {
 export function useClientTools(
   messages: UIMessage[],
   addToolResult: ChatAddToolOutputFunction<UIMessage>,
-  nodes: TreeNode<UIMessage>[],
+  nodes: MessageNode<UIMessage>[],
   clientId: string | undefined,
 ) {
   const handledRef = useRef(new Set<string>());

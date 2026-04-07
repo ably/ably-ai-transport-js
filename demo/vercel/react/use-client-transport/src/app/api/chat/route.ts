@@ -12,7 +12,7 @@ import type { UIMessage } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
 import { createServerTransport } from '@ably/ai-transport/vercel';
-import type { EventNode, TreeNode } from '@ably/ai-transport';
+import type { EventsNode, MessageNode } from '@ably/ai-transport';
 import type { UIMessageChunk } from 'ai';
 import { tools } from './tools.js';
 
@@ -20,9 +20,9 @@ import { tools } from './tools.js';
 interface ChatRequestBody {
   turnId: string;
   clientId: string;
-  messages: TreeNode<UIMessage>[];
-  history?: TreeNode<UIMessage>[];
-  amendments?: EventNode<UIMessageChunk>[];
+  messages: MessageNode<UIMessage>[];
+  history?: MessageNode<UIMessage>[];
+  events?: EventsNode<UIMessageChunk>[];
   id: string;
   forkOf?: string;
   parent?: string;
@@ -32,7 +32,7 @@ interface ChatRequestBody {
 const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY! });
 
 export async function POST(req: Request) {
-  const { messages, history, amendments, id, turnId, clientId, forkOf, parent } = (await req.json()) as ChatRequestBody;
+  const { messages, history, events, id, turnId, clientId, forkOf, parent } = (await req.json()) as ChatRequestBody;
 
   const channel = ably.channels.get(id);
 
@@ -41,9 +41,9 @@ export async function POST(req: Request) {
 
   await turn.start();
 
-  // Publish amendments (tool results targeting existing messages)
-  if (amendments && amendments.length > 0) {
-    await turn.addEvents(amendments);
+  // Publish events (tool results targeting existing messages)
+  if (events && events.length > 0) {
+    await turn.addEvents(events);
   }
 
   // Publish user messages (if any). Fork metadata (parent/forkOf) is

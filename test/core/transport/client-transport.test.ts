@@ -173,6 +173,7 @@ const createMockAccumulator = (): MessageAccumulator<TestEvent, TestMessage> => 
   processOutputs: vi.fn(),
   updateMessage: vi.fn(),
   seedMessages: vi.fn(),
+  completeSeeded: vi.fn(),
   messages: [],
   completedMessages: [],
   hasActiveStream: false,

@@ -113,6 +113,10 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
             turn.accumulator.seedMessages([{ messageId: amendTarget, message: currentMsg }]);
           }
           turn.accumulator.processOutputs(outputs);
+          // Complete the seeded message so it appears in completedMessages.
+          // Amendments are standalone events with no finish lifecycle — the
+          // seed re-activated the message temporarily for the update.
+          turn.accumulator.completeSeeded(amendTarget);
           break;
         }
       }

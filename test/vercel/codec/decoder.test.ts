@@ -757,13 +757,13 @@ describe('Vercel decoder', () => {
       );
     });
 
-    it('does not decode text as a discrete message when x-ably-role is absent', () => {
+    it('does not decode text as a discrete message when x-domain-messageId is absent', () => {
       const decoder = createDecoder();
-      // Without x-ably-role, this is a lifecycle event context (e.g. streamed text)
-      // and should not produce a message output
+      // Without x-domain-messageId, this is a lifecycle event context (e.g. streamed text)
+      // and should not produce a message output — even if x-ably-role is present
       const msg = withHeaders(
         { name: 'text', data: 'delta' },
-        { [HEADER_STREAM]: 'false', [HEADER_TURN_ID]: 'turn-1', [HEADER_MSG_ID]: 'msg-3' },
+        { [HEADER_STREAM]: 'false', [HEADER_ROLE]: 'assistant', [HEADER_TURN_ID]: 'turn-1', [HEADER_MSG_ID]: 'msg-3' },
       );
 
       const outputs = decoder.decode(msg);
@@ -784,6 +784,47 @@ describe('Vercel decoder', () => {
 
       expect(messages).toHaveLength(1);
       expect(messages[0]?.role).toBe('system');
+    });
+
+    it('decodes data-* with x-domain-messageId as a discrete message', () => {
+      const decoder = createDecoder();
+      const msg = withHeaders(
+        { name: 'data-agent-progress', data: { agentLabel: 'Returns', tasks: [] } },
+        { [HEADER_STREAM]: 'false', [HEADER_ROLE]: 'user', [HEADER_MSG_ID]: 'msg-d1', [`${D}messageId`]: 'ui-d1', [`${D}id`]: 'dp-1' },
+      );
+
+      const outputs = decoder.decode(msg);
+      const messages = messagesOf(outputs);
+
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toEqual(
+        expect.objectContaining({
+          id: 'ui-d1',
+          role: 'user',
+          parts: [{ type: 'data-agent-progress', id: 'dp-1', data: { agentLabel: 'Returns', tasks: [] } }],
+        }),
+      );
+    });
+
+    it('decodes data-* without x-domain-messageId as an event, not a discrete message', () => {
+      const decoder = createDecoder();
+      // Streaming data-* events have x-ably-role (from encoder defaults) but
+      // NOT x-domain-messageId. They must be decoded as events so the
+      // accumulator can merge them into the streamed response message.
+      const msg = withHeaders(
+        { name: 'data-agent-progress', data: { agentLabel: 'Returns', tasks: [] } },
+        { [HEADER_STREAM]: 'false', [HEADER_ROLE]: 'assistant', [HEADER_TURN_ID]: 'turn-1', [HEADER_MSG_ID]: 'msg-d2' },
+      );
+
+      const outputs = decoder.decode(msg);
+      const messages = messagesOf(outputs);
+      const events = eventsOf(outputs);
+
+      expect(messages).toHaveLength(0);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual(
+        expect.objectContaining({ type: 'data-agent-progress', data: { agentLabel: 'Returns', tasks: [] } }),
+      );
     });
 
     it('tags message outputs with messageId from x-ably-msg-id', () => {

@@ -248,22 +248,21 @@ export const createChatTransport = (
     // finishes, so useChat knows when streaming is done without duplicating state.
     const { readable, writable } = new TransformStream<AI.UIMessageChunk>();
     const writer = writable.getWriter();
-    // Fire-and-forget: we only care about the close/abort signal, not the piped data.
-    // Errors on the turn stream are surfaced via transport.on('error'), not here.
-    /* eslint-disable @typescript-eslint/no-empty-function -- swallow: writer.close() rejection after stream teardown is unrecoverable */
+    // Fire-and-forget: we only care about the close/error signal, not the piped data.
+    /* eslint-disable @typescript-eslint/no-empty-function -- swallow: rejection after stream teardown is unrecoverable */
     turn.stream
       .pipeTo(
         new WritableStream({
           close: () => {
             writer.close().catch(() => {});
           },
-          abort: () => {
-            writer.close().catch(() => {});
+          abort: (reason: unknown) => {
+            writer.abort(reason).catch(() => {});
           },
         }),
       )
-      .catch(() => {
-        writer.close().catch(() => {});
+      .catch((error: unknown) => {
+        writer.abort(error).catch(() => {});
       });
     /* eslint-enable @typescript-eslint/no-empty-function */
     return readable;

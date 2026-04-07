@@ -14,7 +14,7 @@
 import type * as Ably from 'ably';
 import type * as AI from 'ai';
 
-import { HEADER_ROLE, HEADER_TURN_ID } from '../../constants.js';
+import { HEADER_DISCRETE, HEADER_ROLE, HEADER_TURN_ID } from '../../constants.js';
 import type { DecoderCore, DecoderCoreHooks, DecoderCoreOptions } from '../../core/codec/decoder.js';
 import { createDecoderCore, eventOutput } from '../../core/codec/decoder.js';
 import type { LifecycleTracker } from '../../core/codec/lifecycle-tracker.js';
@@ -483,14 +483,16 @@ const decodeDiscreteMessage = (input: MessagePayload): Out[] => {
 
 /**
  * Whether a message name represents a discrete message part (written by writeMessages)
- * rather than a streaming lifecycle event. Discrete message parts carry x-ably-role
- * and encode a single UIMessage part each.
+ * rather than a streaming lifecycle event. Distinguished by the `x-ably-discrete` header
+ * which {@link publishDiscreteBatch} sets on batch-published message payloads. Lifecycle
+ * events published via {@link publishDiscrete} (including streaming `data-*` chunks)
+ * do not carry this header.
  * @param name - The Ably message name to check.
- * @param headers - The Ably message headers to inspect for role presence.
+ * @param headers - The Ably message headers to inspect for discrete marker presence.
  * @returns True if this is a discrete message part, false if it's a lifecycle event.
  */
 const isDiscreteMessagePart = (name: string, headers: Record<string, string>): boolean =>
-  (name === 'text' || name === 'file' || isDataEventName(name)) && HEADER_ROLE in headers;
+  (name === 'text' || name === 'file' || isDataEventName(name)) && HEADER_DISCRETE in headers;
 
 const decodeDiscretePayload = (input: MessagePayload, lifecycle: LifecycleTracker<AI.UIMessageChunk>): Out[] => {
   const h = input.headers ?? {};
@@ -498,7 +500,7 @@ const decodeDiscretePayload = (input: MessagePayload, lifecycle: LifecycleTracke
   const turnId = h[HEADER_TURN_ID] ?? '';
 
   // Discrete message parts from writeMessages (user messages, history entries).
-  // Distinguished from lifecycle events by the presence of x-ably-role.
+  // Distinguished from lifecycle events by the presence of x-ably-discrete.
   if (isDiscreteMessagePart(input.name, h)) {
     return decodeDiscreteMessage(input);
   }

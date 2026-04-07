@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DOMAIN_HEADER_PREFIX as D,
+  HEADER_DISCRETE,
   HEADER_MSG_ID,
   HEADER_ROLE,
   HEADER_STATUS,
@@ -721,7 +722,7 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
       const msg = withHeaders(
         { name: 'text', data: 'Hello world' },
-        { [HEADER_STREAM]: 'false', [HEADER_ROLE]: 'user', [HEADER_MSG_ID]: 'msg-1', [`${D}messageId`]: 'ui-1' },
+        { [HEADER_STREAM]: 'false', [HEADER_DISCRETE]: 'true', [HEADER_ROLE]: 'user', [HEADER_MSG_ID]: 'msg-1', [`${D}messageId`]: 'ui-1' },
       );
 
       const outputs = decoder.decode(msg);
@@ -741,7 +742,7 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
       const msg = withHeaders(
         { name: 'file', data: 'https://example.com/img.png' },
-        { [HEADER_STREAM]: 'false', [HEADER_ROLE]: 'user', [HEADER_MSG_ID]: 'msg-2', [`${D}messageId`]: 'ui-2', [`${D}mediaType`]: 'image/png' },
+        { [HEADER_STREAM]: 'false', [HEADER_DISCRETE]: 'true', [HEADER_ROLE]: 'user', [HEADER_MSG_ID]: 'msg-2', [`${D}messageId`]: 'ui-2', [`${D}mediaType`]: 'image/png' },
       );
 
       const outputs = decoder.decode(msg);
@@ -757,13 +758,13 @@ describe('Vercel decoder', () => {
       );
     });
 
-    it('does not decode text as a discrete message when x-ably-role is absent', () => {
+    it('does not decode text as a discrete message when x-ably-discrete is absent', () => {
       const decoder = createDecoder();
-      // Without x-ably-role, this is a lifecycle event context (e.g. streamed text)
-      // and should not produce a message output
+      // Without x-ably-discrete, this is a lifecycle event context (e.g. streamed text)
+      // and should not produce a message output — even if x-ably-role is present
       const msg = withHeaders(
         { name: 'text', data: 'delta' },
-        { [HEADER_STREAM]: 'false', [HEADER_TURN_ID]: 'turn-1', [HEADER_MSG_ID]: 'msg-3' },
+        { [HEADER_STREAM]: 'false', [HEADER_ROLE]: 'assistant', [HEADER_TURN_ID]: 'turn-1', [HEADER_MSG_ID]: 'msg-3' },
       );
 
       const outputs = decoder.decode(msg);
@@ -772,11 +773,59 @@ describe('Vercel decoder', () => {
       expect(messages).toHaveLength(0);
     });
 
+    it('decodes data-* with x-ably-discrete as a discrete message', () => {
+      const decoder = createDecoder();
+      const msg = withHeaders(
+        { name: 'data-agent-progress', data: { agentLabel: 'Returns', tasks: [] } },
+        {
+          [HEADER_STREAM]: 'false',
+          [HEADER_DISCRETE]: 'true',
+          [HEADER_ROLE]: 'user',
+          [HEADER_MSG_ID]: 'msg-d1',
+          [`${D}messageId`]: 'ui-d1',
+          [`${D}id`]: 'dp-1',
+        },
+      );
+
+      const outputs = decoder.decode(msg);
+      const messages = messagesOf(outputs);
+
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toEqual(
+        expect.objectContaining({
+          id: 'ui-d1',
+          role: 'user',
+          parts: [{ type: 'data-agent-progress', id: 'dp-1', data: { agentLabel: 'Returns', tasks: [] } }],
+        }),
+      );
+    });
+
+    it('decodes data-* without x-ably-discrete as an event, not a discrete message', () => {
+      const decoder = createDecoder();
+      // Streaming data-* events have x-ably-role (from encoder defaults) but
+      // NOT x-ably-discrete. They must be decoded as events so the
+      // accumulator can merge them into the streamed response message.
+      const msg = withHeaders(
+        { name: 'data-agent-progress', data: { agentLabel: 'Returns', tasks: [] } },
+        { [HEADER_STREAM]: 'false', [HEADER_ROLE]: 'assistant', [HEADER_TURN_ID]: 'turn-1', [HEADER_MSG_ID]: 'msg-d2' },
+      );
+
+      const outputs = decoder.decode(msg);
+      const messages = messagesOf(outputs);
+      const events = eventsOf(outputs);
+
+      expect(messages).toHaveLength(0);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual(
+        expect.objectContaining({ type: 'data-agent-progress', data: { agentLabel: 'Returns', tasks: [] } }),
+      );
+    });
+
     it('preserves role from headers', () => {
       const decoder = createDecoder();
       const msg = withHeaders(
         { name: 'text', data: 'System message' },
-        { [HEADER_STREAM]: 'false', [HEADER_ROLE]: 'system', [HEADER_MSG_ID]: 'msg-4', [`${D}messageId`]: 'ui-4' },
+        { [HEADER_STREAM]: 'false', [HEADER_DISCRETE]: 'true', [HEADER_ROLE]: 'system', [HEADER_MSG_ID]: 'msg-4', [`${D}messageId`]: 'ui-4' },
       );
 
       const outputs = decoder.decode(msg);
@@ -790,7 +839,7 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
       const msg = withHeaders(
         { name: 'text', data: 'hi' },
-        { [HEADER_STREAM]: 'false', [HEADER_ROLE]: 'user', [HEADER_MSG_ID]: 'msg-5', [`${D}messageId`]: 'ui-5' },
+        { [HEADER_STREAM]: 'false', [HEADER_DISCRETE]: 'true', [HEADER_ROLE]: 'user', [HEADER_MSG_ID]: 'msg-5', [`${D}messageId`]: 'ui-5' },
       );
 
       const outputs = decoder.decode(msg);

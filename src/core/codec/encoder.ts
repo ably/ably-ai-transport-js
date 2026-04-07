@@ -11,7 +11,7 @@
 
 import * as Ably from 'ably';
 
-import { HEADER_MSG_ID, HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID } from '../../constants.js';
+import { HEADER_DISCRETE, HEADER_MSG_ID, HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import { mergeHeaders } from '../../utils.js';
@@ -129,6 +129,13 @@ class DefaultEncoderCore implements EncoderCore {
     this._assertNotClosed();
     this._logger?.trace('DefaultEncoderCore.publishDiscreteBatch();', { count: payloads.length });
     const msgs = payloads.map((p) => this._buildDiscreteMessage(p, opts));
+    // Mark batch-published payloads as discrete message parts (from writeMessages).
+    // The decoder relies on this header to distinguish message parts from lifecycle
+    // events that also happen to be discrete (x-ably-stream: false).
+    for (const msg of msgs) {
+      // CAST: extras is built by _buildDiscreteMessage with a known { headers } shape.
+      (msg.extras as { headers: Record<string, string> }).headers[HEADER_DISCRETE] = 'true';
+    }
     return this._writer.publish(msgs);
   }
 

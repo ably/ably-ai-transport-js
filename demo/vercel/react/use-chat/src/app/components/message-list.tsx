@@ -2,11 +2,11 @@
 
 import { useRef, useEffect } from 'react';
 import type { UIMessage } from 'ai';
-import type { TreeNode } from '@ably/ai-transport';
+import type { MessageNode } from '@ably/ai-transport';
 import { MessageBubble } from './message-bubble';
 
 interface MessageListProps {
-  nodes: TreeNode<UIMessage>[];
+  nodes: MessageNode<UIMessage>[];
   hasOlder: boolean;
   loading: boolean;
   onLoadOlder: () => void;

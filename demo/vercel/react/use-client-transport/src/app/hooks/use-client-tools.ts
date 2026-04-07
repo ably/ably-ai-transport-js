@@ -14,7 +14,7 @@
 import { useEffect, useRef } from 'react';
 import type { DynamicToolUIPart, UIMessage, UIMessageChunk } from 'ai';
 import type { ViewHandle } from '@ably/ai-transport/react';
-import type { TreeNode } from '@ably/ai-transport';
+import type { MessageNode } from '@ably/ai-transport';
 
 type ClientToolExecutor = (input: unknown) => Promise<unknown>;
 
@@ -86,7 +86,7 @@ export function useClientTools(view: ViewHandle<UIMessageChunk, UIMessage>, clie
 
 async function executeClientTool(
   view: ViewHandle<UIMessageChunk, UIMessage>,
-  node: TreeNode<UIMessage>,
+  node: MessageNode<UIMessage>,
   toolPart: DynamicToolUIPart,
 ): Promise<void> {
   const executor = clientTools[toolPart.toolName];

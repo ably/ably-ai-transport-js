@@ -32,7 +32,7 @@ import { useView } from '@ably/ai-transport/react';
 // Auto-loads first page on mount (passing options = enabled)
 const { nodes, hasOlder, loading, loadOlder } = useView(transport, { limit: 30 });
 
-// nodes - TreeNode[] for the current branch
+// nodes - MessageNode[] for the current branch
 // hasOlder - are there older pages?
 // loading - is a page being fetched?
 // loadOlder() - load more older messages

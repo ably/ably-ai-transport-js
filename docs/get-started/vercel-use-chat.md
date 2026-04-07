@@ -94,13 +94,13 @@ import type { UIMessage } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
 import { createServerTransport } from '@ably/ai-transport/vercel';
-import type { TreeNode } from '@ably/ai-transport';
+import type { MessageNode } from '@ably/ai-transport';
 
 interface ChatRequestBody {
   turnId: string;
   clientId: string;
-  messages: TreeNode<UIMessage>[];
-  history?: TreeNode<UIMessage>[];
+  messages: MessageNode<UIMessage>[];
+  history?: MessageNode<UIMessage>[];
   id: string;
   forkOf?: string;
   parent?: string | null;

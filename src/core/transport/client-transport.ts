@@ -328,8 +328,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
         }
         const updated = this._codec.applyEvent(cloned, event);
         if (updated) {
-          this._tree.upsert(eventMsgId, updated, node.headers, node.serial);
-          this._emitter.emit('message');
+          this._upsertAndNotify(updated, node.headers, node.serial);
           return;
         }
       }

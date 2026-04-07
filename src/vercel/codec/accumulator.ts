@@ -178,6 +178,10 @@ class DefaultUIMessageAccumulator implements MessageAccumulator<AI.UIMessageChun
     }
   }
 
+  completeSeeded(messageId: string): void {
+    this._activeMessages.delete(messageId);
+  }
+
   private _seedOne(messageId: string, message: AI.UIMessage): void {
     const existing = this._activeMessages.get(messageId);
 
@@ -226,7 +230,16 @@ class DefaultUIMessageAccumulator implements MessageAccumulator<AI.UIMessageChun
     };
 
     this._activeMessages.set(messageId, state);
-    this._messageList.push(state.message);
+
+    // If this message is already in the list (completed previously),
+    // replace it in-place so amendments update the same reference.
+    // Otherwise push as a new entry.
+    const existingIdx = this._messageList.findIndex((m) => m.id === message.id);
+    if (existingIdx === -1) {
+      this._messageList.push(state.message);
+    } else {
+      this._messageList[existingIdx] = state.message;
+    }
   }
 
   // -------------------------------------------------------------------------

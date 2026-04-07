@@ -88,6 +88,11 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
   // Track which msgId produced each non-turn discrete message output (in order).
   const discreteMsgIds: string[] = [];
 
+  // Amendment targets to complete after all events are processed.
+  // Deferred so that finish/abort events that follow the amendment in serial
+  // order can still process on the active message (e.g. applying messageMetadata).
+  const deferredCompletions: { accumulator: MessageAccumulator<TEvent, TMessage>; messageId: string }[] = [];
+
   for (const msg of chronological) {
     const outputs: DecoderOutput<TEvent, TMessage>[] = decoder.decode(msg);
     const headers = getHeaders(msg);
@@ -113,6 +118,13 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
             turn.accumulator.seedMessages([{ messageId: amendTarget, message: currentMsg }]);
           }
           turn.accumulator.processOutputs(outputs);
+          // Defer completion until after all events are processed. A finish
+          // event that follows this amendment in serial order must still be
+          // able to find the message in _activeMessages (e.g. to apply
+          // messageMetadata). If no finish event arrives, the deferred
+          // completeSeeded ensures the message still appears in
+          // completedMessages.
+          deferredCompletions.push({ accumulator: turn.accumulator, messageId: amendTarget });
           break;
         }
       }
@@ -161,6 +173,13 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
         }
       }
     }
+  }
+
+  // Complete any seeded-for-amendment messages that were not already completed
+  // by a finish/abort event. Idempotent — if finish already removed the message
+  // from _activeMessages, completeSeeded is a no-op.
+  for (const { accumulator, messageId } of deferredCompletions) {
+    accumulator.completeSeeded(messageId);
   }
 
   // Collect completed messages in chronological order (oldest first) by turn.

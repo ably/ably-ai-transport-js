@@ -210,6 +210,12 @@ export interface MessageAccumulator<TEvent, TMessage> {
    * and history replay where multiple messages may need seeding.
    */
   seedMessages(messages: { messageId: string; message: TMessage }[]): void;
+  /**
+   * Mark a previously seeded message as completed. Called after processing
+   * amendment outputs — the seed temporarily re-activates the message,
+   * and this call finalizes it so it appears in {@link completedMessages}.
+   */
+  completeSeeded(messageId: string): void;
   /** All messages accumulated so far (in-progress and completed). */
   readonly messages: TMessage[];
   /** Only messages whose streams have finished. */

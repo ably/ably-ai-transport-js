@@ -14,14 +14,7 @@ interface MessageListProps {
   onToolDeny?: (toolCallId: string, toolName: string, input: Record<string, unknown>) => void;
 }
 
-export function MessageList({
-  tree,
-  hasNext,
-  loading,
-  onNext,
-  onToolApprove,
-  onToolDeny,
-}: MessageListProps) {
+export function MessageList({ tree, hasNext, loading, onNext, onToolApprove, onToolDeny }: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const prevLastIdRef = useRef<string | undefined>(undefined);

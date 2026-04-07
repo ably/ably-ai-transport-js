@@ -243,7 +243,7 @@ export interface Codec<TEvent, TMessage> {
 
   /** Whether an event signals stream completion (finish, error, abort). */
   isTerminal(event: TEvent): boolean;
-  
+
   /**
    * Apply a decoded event to an existing message, returning the updated message.
    *

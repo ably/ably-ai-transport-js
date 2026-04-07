@@ -127,10 +127,7 @@ const toolCallMsgIdMap = new Map<string, string>();
  *
  * Returns the map of toolCallIds → targetMsgIds for cross-turn publishing.
  */
-function patchToolApprovals(
-  allMessages: UIMessage[],
-  approvals: ToolApproval[],
-): Map<string, string> {
+function patchToolApprovals(allMessages: UIMessage[], approvals: ToolApproval[]): Map<string, string> {
   const pendingPublish = new Map<string, string>();
 
   for (const approval of approvals) {
@@ -251,14 +248,15 @@ export async function POST(req: Request) {
   // approved. This prevents an infinite approval loop where the LLM calls
   // the same tool again in multi-step mode.
   const approvedToolNames = new Set((toolApprovals ?? []).filter((a) => a.approved).map((a) => a.toolName));
-  const effectiveTools = approvedToolNames.size > 0
-    ? Object.fromEntries(
-        Object.entries(tools).map(([name, def]) => [
-          name,
-          approvedToolNames.has(name) ? { ...def, needsApproval: false } : def,
-        ]),
-      )
-    : tools;
+  const effectiveTools =
+    approvedToolNames.size > 0
+      ? Object.fromEntries(
+          Object.entries(tools).map(([name, def]) => [
+            name,
+            approvedToolNames.has(name) ? { ...def, needsApproval: false } : def,
+          ]),
+        )
+      : tools;
 
   const result = streamText({
     model: anthropic('claude-sonnet-4-20250514'),

@@ -52,9 +52,7 @@ type ToolOutputChunk = Extract<
  * @returns The updated UIMessage, or undefined if no matching tool part was found.
  */
 const applyToolOutput = (message: AI.UIMessage, chunk: ToolOutputChunk): AI.UIMessage | undefined => {
-  const partIndex = message.parts.findIndex(
-    (p) => p.type === 'dynamic-tool' && p.toolCallId === chunk.toolCallId,
-  );
+  const partIndex = message.parts.findIndex((p) => p.type === 'dynamic-tool' && p.toolCallId === chunk.toolCallId);
   if (partIndex === -1) return undefined;
 
   // CAST: findIndex above checked p.type === 'dynamic-tool', narrowing to DynamicToolUIPart

@@ -58,7 +58,13 @@ function StatusBadge({ status }: { status: string }) {
         : status === 'aborted'
           ? 'bg-red-950 text-red-400'
           : 'bg-zinc-900 text-zinc-500';
-  return <Badge label="status" value={status} color={color} />;
+  return (
+    <Badge
+      label="status"
+      value={status}
+      color={color}
+    />
+  );
 }
 
 function bubbleClasses(isUser: boolean, status: string | undefined): string {
@@ -96,7 +102,10 @@ function ToolResultInline({ toolName, output }: { toolName: string; output: unkn
         <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-zinc-500">Search results</p>
         <ul className="space-y-1">
           {items.map((item, i) => (
-            <li key={i} className="text-xs">
+            <li
+              key={i}
+              className="text-xs"
+            >
               <span className="font-medium text-zinc-300">{item.title}</span>
               <span className="text-zinc-500"> &mdash; {item.snippet}</span>
             </li>
@@ -111,9 +120,7 @@ function ToolResultInline({ toolName, output }: { toolName: string; output: unkn
     const article = output as { title: string; extract: string };
     return (
       <div className="my-1 rounded border border-zinc-700 bg-zinc-800/50 px-2 py-1.5">
-        <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-zinc-500">
-          Article: {article.title}
-        </p>
+        <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-zinc-500">Article: {article.title}</p>
         <p className="text-xs text-zinc-400 line-clamp-4">{article.extract}</p>
       </div>
     );
@@ -123,9 +130,7 @@ function ToolResultInline({ toolName, output }: { toolName: string; output: unkn
     <div className="my-1 rounded border border-zinc-700 bg-zinc-800/50 px-2 py-1.5 text-xs">
       <span className="text-zinc-500">Result from </span>
       <span className="font-mono text-blue-400">{toolName}</span>
-      <pre className="mt-1 max-h-24 overflow-auto text-[10px] text-zinc-500">
-        {JSON.stringify(output, null, 2)}
-      </pre>
+      <pre className="mt-1 max-h-24 overflow-auto text-[10px] text-zinc-500">{JSON.stringify(output, null, 2)}</pre>
     </div>
   );
 }
@@ -134,9 +139,19 @@ function ToolPartRenderer({ part }: { part: DynamicToolPart }) {
   switch (part.state) {
     case 'input-streaming':
     case 'input-available':
-      return <ToolCallInProgress toolName={part.toolName} input={part.input} />;
+      return (
+        <ToolCallInProgress
+          toolName={part.toolName}
+          input={part.input}
+        />
+      );
     case 'output-available':
-      return <ToolResultInline toolName={part.toolName} output={part.output} />;
+      return (
+        <ToolResultInline
+          toolName={part.toolName}
+          output={part.output}
+        />
+      );
     case 'output-error':
       return (
         <div className="my-1 rounded border border-red-800/50 bg-red-950/30 px-2 py-1.5 text-xs text-red-400">
@@ -158,12 +173,7 @@ function ToolPartRenderer({ part }: { part: DynamicToolPart }) {
 // Message bubble
 // ---------------------------------------------------------------------------
 
-export function MessageBubble({
-  message,
-  headers,
-  onToolApprove,
-  onToolDeny,
-}: MessageBubbleProps) {
+export function MessageBubble({ message, headers, onToolApprove, onToolDeny }: MessageBubbleProps) {
   const isUser = message.role === 'user';
 
   const role = headers?.['x-ably-role'] ?? message.role;
@@ -181,9 +191,7 @@ export function MessageBubble({
   const approvalParts = dynamicTools.filter((p) => p.approval !== undefined);
   const approvalToolCallIds = new Set(approvalParts.map((p) => p.toolCallId));
 
-  const hasTextContent = message.parts.some(
-    (p) => p.type === 'text' && (p as { text: string }).text.trim().length > 0,
-  );
+  const hasTextContent = message.parts.some((p) => p.type === 'text' && (p as { text: string }).text.trim().length > 0);
   const hasInlineContent = hasTextContent || dynamicTools.some((p) => !approvalToolCallIds.has(p.toolCallId));
 
   return (
@@ -197,7 +205,12 @@ export function MessageBubble({
                 return <span key={i}>{(part as { type: 'text'; text: string }).text}</span>;
               }
               if (isDynamicTool(part) && !approvalToolCallIds.has(part.toolCallId)) {
-                return <ToolPartRenderer key={i} part={part} />;
+                return (
+                  <ToolPartRenderer
+                    key={i}
+                    part={part}
+                  />
+                );
               }
               return null;
             })}
@@ -219,18 +232,32 @@ export function MessageBubble({
             onApprove={() =>
               onToolApprove?.(part.toolCallId, part.toolName, (part.input ?? {}) as Record<string, unknown>)
             }
-            onDeny={() =>
-              onToolDeny?.(part.toolCallId, part.toolName, (part.input ?? {}) as Record<string, unknown>)
-            }
+            onDeny={() => onToolDeny?.(part.toolCallId, part.toolName, (part.input ?? {}) as Record<string, unknown>)}
           />
         ))}
 
         {/* Debug badges */}
         {headers && (
           <div className="mt-1 flex flex-wrap items-center gap-1.5">
-            <Badge label="role" value={role} color="bg-zinc-900 text-zinc-500" />
-            {clientId && <Badge label="client" value={clientId} color="bg-zinc-900 text-zinc-500" />}
-            {turnId && <Badge label="turn" value={turnId.slice(0, 8)} color="bg-zinc-900 text-zinc-500" />}
+            <Badge
+              label="role"
+              value={role}
+              color="bg-zinc-900 text-zinc-500"
+            />
+            {clientId && (
+              <Badge
+                label="client"
+                value={clientId}
+                color="bg-zinc-900 text-zinc-500"
+              />
+            )}
+            {turnId && (
+              <Badge
+                label="turn"
+                value={turnId.slice(0, 8)}
+                color="bg-zinc-900 text-zinc-500"
+              />
+            )}
             {status && <StatusBadge status={status} />}
           </div>
         )}

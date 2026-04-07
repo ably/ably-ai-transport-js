@@ -22,6 +22,9 @@ export const HEADER_STATUS = 'x-ably-status';
 /** Header: stream identity. Set by the encoder on every streamed message; read by the decoder to correlate streams. */
 export const HEADER_STREAM_ID = 'x-ably-stream-id';
 
+/** Header: marks a message as a discrete message part (from writeMessages). Set by publishDiscreteBatch; not set on lifecycle events from publishDiscrete. */
+export const HEADER_DISCRETE = 'x-ably-discrete';
+
 // ---------------------------------------------------------------------------
 // Identity headers (used by transport for turn correlation)
 // ---------------------------------------------------------------------------

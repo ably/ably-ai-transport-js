@@ -1,7 +1,7 @@
 import type * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { HEADER_MSG_ID, HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID } from '../../../src/constants.js';
+import { HEADER_DISCRETE, HEADER_MSG_ID, HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID } from '../../../src/constants.js';
 import { createEncoderCore } from '../../../src/core/codec/encoder.js';
 import type { ChannelWriter, MessagePayload, StreamPayload } from '../../../src/core/codec/types.js';
 import { ErrorCode } from '../../../src/errors.js';
@@ -151,6 +151,13 @@ describe('createEncoderCore', () => {
       expect(headersOf(first(writer.publishCalls) as Ably.Message)[HEADER_STREAM]).toBe('false');
     });
 
+    it('does not set x-ably-discrete on single-published messages', async () => {
+      const core = createEncoderCore(writer);
+      await core.publishDiscrete(payload({ name: 'data-progress', data: {} }));
+      const msg = first(writer.publishCalls) as Ably.Message;
+      expect(headersOf(msg)[HEADER_DISCRETE]).toBeUndefined();
+    });
+
     it('throws after close', async () => {
       const core = createEncoderCore(writer);
       await core.close();
@@ -172,6 +179,16 @@ describe('createEncoderCore', () => {
       expect(batch[1]?.name).toBe('b');
       for (const msg of batch) {
         expect(headersOf(msg)[HEADER_STREAM]).toBe('false');
+      }
+    });
+
+    it('sets x-ably-discrete on batch-published messages', async () => {
+      const core = createEncoderCore(writer);
+      await core.publishDiscreteBatch([payload({ name: 'text', data: 'hi' })]);
+
+      const batch = first(writer.publishCalls) as Ably.Message[];
+      for (const msg of batch) {
+        expect(headersOf(msg)[HEADER_DISCRETE]).toBe('true');
       }
     });
 

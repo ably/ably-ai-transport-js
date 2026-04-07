@@ -647,6 +647,11 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       throw new Ably.ErrorInfo('unable to send; transport is closed', ErrorCode.TransportClosed, 400);
     }
 
+    const state = this._channel.state;
+    if (state !== 'attached' && state !== 'attaching') {
+      throw new Ably.ErrorInfo(`unable to send; channel is ${state}`, ErrorCode.ChannelNotReady, 400);
+    }
+
     this._logger.trace('ClientTransport._internalSend();');
 
     const msgs = Array.isArray(input) ? input : [input];

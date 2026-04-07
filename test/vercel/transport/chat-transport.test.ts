@@ -29,6 +29,8 @@ interface MockTurn {
   optimisticMsgIds: string[];
   /** Resolve the stream by closing it. */
   close: () => void;
+  /** Error the stream with the given reason. */
+  error: (reason: unknown) => void;
 }
 
 const createMockTurn = (): MockTurn => {
@@ -46,6 +48,9 @@ const createMockTurn = (): MockTurn => {
     optimisticMsgIds: [],
     close: () => {
       controller.close();
+    },
+    error: (reason: unknown) => {
+      controller.error(reason);
     },
   };
 };
@@ -289,6 +294,27 @@ describe('createChatTransport', () => {
       const { done, value } = await reader.read();
       expect(done).toBe(true);
       expect(value).toBeUndefined();
+    });
+  });
+
+  describe('stream error propagation', () => {
+    it('errors the returned stream when the turn stream errors', async () => {
+      const { transport, mockTurn } = createMockTransport();
+      const chat = createChatTransport(transport);
+
+      const stream = await chat.sendMessages({
+        trigger: 'regenerate-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: [],
+        abortSignal: undefined,
+      });
+
+      const error = new Error('channel continuity lost');
+      mockTurn.error(error);
+
+      const reader = stream.getReader();
+      await expect(reader.read()).rejects.toBe(error);
     });
   });
 

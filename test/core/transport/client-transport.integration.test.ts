@@ -497,6 +497,7 @@ describe('ClientTransport integration', () => {
     const turn = serverTransport.newTurn({ turnId: 'turn-hist-1', clientId: 'user-d' });
     await turn.start();
     await turn.addMessages([{
+      kind: 'message',
       message: { id: 'user-hist-1', role: 'user', parts: [{ type: 'text', text: 'History question' }] },
       msgId: crypto.randomUUID(),
       parentId: undefined,

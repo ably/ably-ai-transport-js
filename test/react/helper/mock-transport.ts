@@ -78,6 +78,7 @@ export const createMockTransport = (initialMessages: string[] = []): MockTranspo
     });
 
   const initialNodes = initialMessages.map((m, i) => ({
+    kind: 'message' as const,
     message: m,
     msgId: `msg-${String(i)}`,
     parentId: undefined,

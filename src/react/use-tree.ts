@@ -9,7 +9,7 @@
 
 import { useCallback } from 'react';
 
-import type { ClientTransport, TreeNode } from '../core/transport/types.js';
+import type { ClientTransport, MessageNode } from '../core/transport/types.js';
 
 /** Handle for querying the conversation tree structure. */
 export interface TreeHandle<TMessage> {
@@ -18,7 +18,7 @@ export interface TreeHandle<TMessage> {
   /** Whether a message has sibling alternatives (i.e., show navigation arrows). */
   hasSiblings: (msgId: string) => boolean;
   /** Get a node by msgId, or undefined if not found. */
-  getNode: (msgId: string) => TreeNode<TMessage> | undefined;
+  getNode: (msgId: string) => MessageNode<TMessage> | undefined;
 }
 
 /**

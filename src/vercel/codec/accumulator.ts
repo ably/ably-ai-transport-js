@@ -186,9 +186,9 @@ class DefaultUIMessageAccumulator implements MessageAccumulator<AI.UIMessageChun
     const existing = this._activeMessages.get(messageId);
 
     if (existing) {
-      // Update: sync the active state with an externally amended message.
+      // Update: sync the active state with an externally updated message.
       // Replace the message and rebuild tool trackers so the accumulator
-      // reflects amendments (e.g. tool results published via update)
+      // reflects updates (e.g. tool results published via cross-turn events)
       // that happened outside the streaming flow.
       const cloned = structuredClone(message);
       const listIdx = this._messageList.indexOf(existing.message);
@@ -232,7 +232,7 @@ class DefaultUIMessageAccumulator implements MessageAccumulator<AI.UIMessageChun
     this._activeMessages.set(messageId, state);
 
     // If this message is already in the list (completed previously),
-    // replace it in-place so amendments update the same reference.
+    // replace it in-place so updates apply to the same reference.
     // Otherwise push as a new entry.
     const existingIdx = this._messageList.findIndex((m) => m.id === message.id);
     if (existingIdx === -1) {

@@ -31,13 +31,13 @@ import type {
   AddMessagesResult,
   CancelFilter,
   CancelRequest,
-  EventNode,
+  EventsNode,
+  MessageNode,
   NewTurnOptions,
   ServerTransport,
   ServerTransportOptions,
   StreamResponseOptions,
   StreamResult,
-  TreeNode,
   Turn,
   TurnEndReason,
 } from './types.js';
@@ -318,7 +318,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
       },
 
       // Spec: AIT-ST5, AIT-ST5a, AIT-ST5b
-      addMessages: async (nodes: TreeNode<TMessage>[], opts?: AddMessageOptions): Promise<AddMessagesResult> => {
+      addMessages: async (nodes: MessageNode<TMessage>[], opts?: AddMessageOptions): Promise<AddMessagesResult> => {
         logger?.trace('Turn.addMessages();', { turnId, count: nodes.length });
 
         if (!started) {
@@ -361,7 +361,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
         return { msgIds };
       },
 
-      addEvents: async (nodes: EventNode<TEvent>[]): Promise<void> => {
+      addEvents: async (nodes: EventsNode<TEvent>[]): Promise<void> => {
         logger?.trace('Turn.addEvents();', { turnId, count: nodes.length });
 
         if (!started) {

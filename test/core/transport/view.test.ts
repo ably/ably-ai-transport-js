@@ -7,7 +7,7 @@ import type { Codec } from '../../../src/core/codec/types.js';
 import { decodeHistory } from '../../../src/core/transport/decode-history.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
-import type { PaginatedMessages, SendOptions, TreeNode, TurnLifecycleEvent } from '../../../src/core/transport/types.js';
+import type { MessageNode, PaginatedMessages, SendOptions, TurnLifecycleEvent } from '../../../src/core/transport/types.js';
 import type { SendDelegate } from '../../../src/core/transport/view.js';
 import { DefaultView } from '../../../src/core/transport/view.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
@@ -496,7 +496,7 @@ describe('DefaultView', () => {
   // -------------------------------------------------------------------------
 
   describe('update', () => {
-    it('delegates to sendDelegate with amendments', async () => {
+    it('delegates to sendDelegate with events', async () => {
       const mockDelegate = createMockSendDelegate();
       const updateView = new DefaultView<TestEvent, TestMessage>({
         tree,
@@ -515,7 +515,7 @@ describe('DefaultView', () => {
         [],
         undefined,
         expect.any(Array),
-        [{ msgId: 'target-1', events }],
+        [{ kind: 'event', msgId: 'target-1', events }],
       );
 
       updateView.close();
@@ -992,7 +992,7 @@ describe('DefaultView', () => {
       await view.send({ id: '4', content: 'new msg' });
       expect(mockDelegate).toHaveBeenCalledOnce();
       const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
-      const history = call[2] as TreeNode<TestMessage>[];
+      const history = call[2] as MessageNode<TestMessage>[];
       expect(history.map((n) => n.msgId)).toEqual(['m1', 'm2', 'm3']);
     });
 
@@ -1015,7 +1015,7 @@ describe('DefaultView', () => {
     it('regenerate passes truncated history (before target)', async () => {
       await view.regenerate('m2');
       const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
-      const options = call[1] as { body: { history: TreeNode<TestMessage>[] } };
+      const options = call[1] as { body: { history: MessageNode<TestMessage>[] } };
       expect(options.body.history).toHaveLength(1);
       expect(options.body.history[0]?.msgId).toBe('m1');
     });
@@ -1032,7 +1032,7 @@ describe('DefaultView', () => {
     it('edit passes truncated history (before target)', async () => {
       await view.edit('m3', { id: 'edited', content: 'revised' });
       const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
-      const options = call[1] as { body: { history: TreeNode<TestMessage>[] } };
+      const options = call[1] as { body: { history: MessageNode<TestMessage>[] } };
       expect(options.body.history).toHaveLength(2); // m1 and m2
     });
 
@@ -1059,7 +1059,7 @@ describe('DefaultView', () => {
 
       await view.send({ id: '5', content: 'msg' });
       const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
-      const history = call[2] as TreeNode<TestMessage>[];
+      const history = call[2] as MessageNode<TestMessage>[];
       // Should follow m1 -> m2 -> m3 (selected branch), not m1 -> m4
       expect(history.map((n) => n.msgId)).toEqual(['m1', 'm2', 'm3']);
     });

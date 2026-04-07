@@ -81,15 +81,21 @@ export interface AddMessagesResult {
 }
 
 /**
- * A batch of events targeting an existing message for amendment.
+ * A batch of events targeting an existing message.
  * Each node specifies the target message and the events to apply to it.
+ * Used for cross-turn updates such as tool result delivery.
  */
-export interface EventNode<TEvent> {
-  /** The `x-ably-msg-id` of the existing message to amend. */
+export interface EventsNode<TEvent> {
+  /** Discriminator — identifies this as an events node. */
+  kind: 'event';
+  /** The `x-ably-msg-id` of the existing message to update. */
   msgId: string;
   /** Events to apply to the target message. */
   events: TEvent[];
 }
+
+/** @deprecated Use {@link EventsNode} instead. */
+export type EventNode<TEvent> = EventsNode<TEvent>;
 
 /** Options for streamResponse — per-operation overrides for the assistant message. */
 export interface StreamResponseOptions {
@@ -176,7 +182,7 @@ export interface Turn<TEvent, TMessage> {
    * (e.g. for optimistic reconciliation with the client's inserts).
    * @returns The msg-ids of all published messages, in order.
    */
-  addMessages(messages: TreeNode<TMessage>[], options?: AddMessageOptions): Promise<AddMessagesResult>;
+  addMessages(messages: MessageNode<TMessage>[], options?: AddMessageOptions): Promise<AddMessagesResult>;
 
   /**
    * Pipe a ReadableStream through the encoder to the channel.
@@ -192,10 +198,10 @@ export interface Turn<TEvent, TMessage> {
    * so receiving clients apply them to the existing node rather than
    * creating a new one.
    *
-   * Used for cross-turn amendments such as tool result delivery after
+   * Used for cross-turn updates such as tool result delivery after
    * approval or client-side tool execution.
    */
-  addEvents(nodes: EventNode<TEvent>[]): Promise<void>;
+  addEvents(nodes: EventsNode<TEvent>[]): Promise<void>;
 
   /** Publish turn-end event to the channel and clean up. */
   end(reason: TurnEndReason): Promise<void>;
@@ -357,7 +363,9 @@ export interface LoadHistoryOptions {
 // ---------------------------------------------------------------------------
 
 /** A node in the conversation tree, representing a single domain message. */
-export interface TreeNode<TMessage> {
+export interface MessageNode<TMessage> {
+  /** Discriminator — identifies this as a message node. */
+  kind: 'message';
   /** The domain message. */
   message: TMessage;
   /** The x-ably-msg-id of this node — primary key in the tree. */
@@ -375,6 +383,9 @@ export interface TreeNode<TMessage> {
    */
   serial: string | undefined;
 }
+
+/** @deprecated Use {@link MessageNode} instead. */
+export type TreeNode<TMessage> = MessageNode<TMessage>;
 
 /**
  * Materializes a branching conversation tree from a flat oplog.
@@ -395,7 +406,7 @@ export interface Tree<TMessage> {
   hasSiblings(msgId: string): boolean;
 
   /** Get a node by msgId, or undefined if not found. */
-  getNode(msgId: string): TreeNode<TMessage> | undefined;
+  getNode(msgId: string): MessageNode<TMessage> | undefined;
 
   /** Get the stored headers for a node by msgId, or undefined if not found. */
   getHeaders(msgId: string): Record<string, string> | undefined;
@@ -445,7 +456,7 @@ export interface View<TEvent, TMessage> {
   getMessages(): TMessage[];
 
   /** Visible nodes along the selected branch, filtered by the pagination window. */
-  flattenNodes(): TreeNode<TMessage>[];
+  flattenNodes(): MessageNode<TMessage>[];
 
   /** Whether there are older messages that can be loaded or revealed. */
   hasOlder(): boolean;
@@ -480,7 +491,7 @@ export interface View<TEvent, TMessage> {
   hasSiblings(msgId: string): boolean;
 
   /** Get a node by msgId, or undefined if not found. */
-  getNode(msgId: string): TreeNode<TMessage> | undefined;
+  getNode(msgId: string): MessageNode<TMessage> | undefined;
 
   // --- Write operations ---
 
@@ -508,8 +519,8 @@ export interface View<TEvent, TMessage> {
   edit(messageId: string, newMessages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveTurn<TEvent>>;
 
   /**
-   * Amend an existing message and start a continuation turn.
-   * The local tree is updated optimistically, then the amendments are sent
+   * Update an existing message and start a continuation turn.
+   * The local tree is updated optimistically, then the events are sent
    * to the server in the POST body. The server publishes them to the channel
    * and streams a continuation response.
    * @param msgId - The `x-ably-msg-id` of the existing message to amend.

@@ -1,4 +1,6 @@
-export type { EventNode } from '../core/transport/types.js';
+export type { EventsNode, MessageNode } from '../core/transport/types.js';
+// eslint-disable-next-line @typescript-eslint/no-deprecated -- intentional re-export for backwards compatibility
+export type { EventNode, TreeNode } from '../core/transport/types.js';
 export { useAblyMessages } from './use-ably-messages.js';
 export { useActiveTurns } from './use-active-turns.js';
 export { useClientTransport } from './use-client-transport.js';

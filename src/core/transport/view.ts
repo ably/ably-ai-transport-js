@@ -25,10 +25,10 @@ import { decodeHistory } from './decode-history.js';
 import type { TreeInternal } from './tree.js';
 import type {
   ActiveTurn,
-  EventNode,
+  EventsNode,
+  MessageNode,
   PaginatedMessages,
   SendOptions,
-  TreeNode,
   TurnLifecycleEvent,
   View,
 } from './types.js';
@@ -51,14 +51,14 @@ interface ViewEventsMap {
  * Internal delegate function provided by the transport for executing sends.
  * The View pre-computes the visible branch history and passes it directly,
  * so the delegate has no back-reference to the View.
- * When `amendments` is provided, the transport includes them in the POST body
- * for the server to publish as cross-turn amendments.
+ * When `eventNodes` is provided, the transport includes them in the POST body
+ * for the server to publish as cross-turn events.
  */
 export type SendDelegate<TEvent, TMessage> = (
   input: TMessage | TMessage[],
   options: SendOptions | undefined,
-  history: TreeNode<TMessage>[],
-  amendments?: EventNode<TEvent>[],
+  history: MessageNode<TMessage>[],
+  eventNodes?: EventsNode<TEvent>[],
 ) => Promise<ActiveTurn<TEvent>>;
 
 // ---------------------------------------------------------------------------
@@ -140,7 +140,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   private _lastHistoryPage: PaginatedMessages<TMessage> | undefined;
 
   /** Buffer of withheld nodes, drained newest-first by successive loadOlder() calls. */
-  private readonly _withheldBuffer: TreeNode<TMessage>[] = [];
+  private readonly _withheldBuffer: MessageNode<TMessage>[] = [];
 
   /** Unsubscribe functions for tree event subscriptions. */
   private readonly _unsubs: (() => void)[] = [];
@@ -185,7 +185,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   }
 
   // Spec: AIT-CT9, AIT-CT11c
-  flattenNodes(): TreeNode<TMessage>[] {
+  flattenNodes(): MessageNode<TMessage>[] {
     const nodes = this._tree.flattenNodes(this._resolveSelections());
     if (this._withheldMsgIds.size === 0) return nodes;
     return nodes.filter((n) => !this._withheldMsgIds.has(n.msgId));
@@ -279,7 +279,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     return this._tree.hasSiblings(msgId);
   }
 
-  getNode(msgId: string): TreeNode<TMessage> | undefined {
+  getNode(msgId: string): MessageNode<TMessage> | undefined {
     return this._tree.getNode(msgId);
   }
 
@@ -403,11 +403,11 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
       throw new Ably.ErrorInfo('unable to update; view is closed', ErrorCode.InvalidArgument, 400);
     }
     this._logger.trace('DefaultView.update();', { msgId, eventCount: events.length });
-    const amendments: EventNode<TEvent>[] = [{ msgId, events }];
-    return this._sendDelegate([], options, this.flattenNodes(), amendments);
+    const eventNodes: EventsNode<TEvent>[] = [{ kind: 'event', msgId, events }];
+    return this._sendDelegate([], options, this.flattenNodes(), eventNodes);
   }
 
-  private _getHistoryBefore(messageId: string): TreeNode<TMessage>[] {
+  private _getHistoryBefore(messageId: string): MessageNode<TMessage>[] {
     this._logger.trace('DefaultView._getHistoryBefore();', { messageId });
     const all = this.flattenNodes();
     const idx = all.findIndex((n) => n.msgId === messageId);
@@ -559,7 +559,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     firstPage: PaginatedMessages<TMessage>,
     target: number,
     beforeMsgIds: Set<string>,
-  ): Promise<{ newVisible: TreeNode<TMessage>[]; lastPage: PaginatedMessages<TMessage> }> {
+  ): Promise<{ newVisible: MessageNode<TMessage>[]; lastPage: PaginatedMessages<TMessage> }> {
     this._processHistoryPage(firstPage);
     let page = firstPage;
 
@@ -583,7 +583,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   }
 
   // Spec: AIT-CT11a
-  private _releaseWithheld(nodes: TreeNode<TMessage>[]): void {
+  private _releaseWithheld(nodes: MessageNode<TMessage>[]): void {
     for (const n of nodes) {
       this._withheldMsgIds.delete(n.msgId);
     }

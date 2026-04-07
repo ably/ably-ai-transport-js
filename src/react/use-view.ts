@@ -10,7 +10,7 @@
 import * as Ably from 'ably';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import type { ActiveTurn, ClientTransport, SendOptions, TreeNode, View } from '../core/transport/types.js';
+import type { ActiveTurn, ClientTransport, MessageNode, SendOptions, View } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
 
 /** Options for configuring the view's initial load behavior. */
@@ -24,7 +24,7 @@ export interface ViewHandle<TEvent, TMessage> {
   /** The visible domain messages along the selected branch. */
   messages: TMessage[];
   /** Visible conversation nodes along the selected branch. */
-  nodes: TreeNode<TMessage>[];
+  nodes: MessageNode<TMessage>[];
   /** Whether there are older messages that can be revealed via `loadOlder`. */
   hasOlder: boolean;
   /** Whether a page load is currently in progress. */
@@ -40,7 +40,7 @@ export interface ViewHandle<TEvent, TMessage> {
   /** Whether a message has sibling alternatives (i.e., show navigation arrows). */
   hasSiblings: (msgId: string) => boolean;
   /** Get a node by msgId, or undefined if not found. */
-  getNode: (msgId: string) => TreeNode<TMessage> | undefined;
+  getNode: (msgId: string) => MessageNode<TMessage> | undefined;
   /** Send one or more messages in the context of this view's selected branch. */
   send: (messages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>;
   /** Regenerate an assistant message, using this view's branch for history. */
@@ -77,7 +77,7 @@ export const useView = <TEvent, TMessage>(
 ): ViewHandle<TEvent, TMessage> => {
   const view = resolveView(source ?? undefined);
 
-  const [nodes, setNodes] = useState<TreeNode<TMessage>[]>(() => view?.flattenNodes() ?? []);
+  const [nodes, setNodes] = useState<MessageNode<TMessage>[]>(() => view?.flattenNodes() ?? []);
   const [hasOlder, setHasOlder] = useState(() => view?.hasOlder() ?? false);
   const [loading, setLoading] = useState(false);
   const loadingRef = useRef(false);

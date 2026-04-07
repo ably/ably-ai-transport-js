@@ -8,7 +8,8 @@ export type {
   ClientTransport,
   ClientTransportOptions,
   CloseOptions,
-  EventNode,
+  EventsNode,
+  MessageNode,
   NewTurnOptions,
   SendOptions,
   ServerTransport,
@@ -16,12 +17,17 @@ export type {
   StreamResponseOptions,
   StreamResult,
   Tree,
-  TreeNode,
   Turn,
   TurnEndReason,
   TurnLifecycleEvent,
   View,
 } from './core/transport/index.js';
+
+// Deprecated aliases — intentional re-export of deprecated types for backwards compatibility.
+// eslint-disable-next-line @typescript-eslint/no-deprecated
+export type { EventNode } from './core/transport/index.js';
+// eslint-disable-next-line @typescript-eslint/no-deprecated
+export type { TreeNode } from './core/transport/index.js';
 export { buildTransportHeaders, createClientTransport, createServerTransport } from './core/transport/index.js';
 
 // Core codec

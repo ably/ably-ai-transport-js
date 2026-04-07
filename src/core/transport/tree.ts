@@ -21,14 +21,14 @@ import type * as Ably from 'ably';
 import { HEADER_FORK_OF, HEADER_PARENT } from '../../constants.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
-import type { Tree, TreeNode, TurnLifecycleEvent } from './types.js';
+import type { MessageNode, Tree, TurnLifecycleEvent } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Internal node type
 // ---------------------------------------------------------------------------
 
 interface InternalNode<TMessage> {
-  node: TreeNode<TMessage>;
+  node: MessageNode<TMessage>;
   /** Insertion sequence — tiebreaker for null-serial messages. */
   insertSeq: number;
 }
@@ -46,7 +46,7 @@ export interface TreeInternal<TMessage> extends Tree<TMessage> {
    * the map default to the latest sibling. If a selectedMsgId is not
    * found in the sibling group (stale/deleted), falls back to latest.
    */
-  flattenNodes(selections: Map<string, string>): TreeNode<TMessage>[];
+  flattenNodes(selections: Map<string, string>): MessageNode<TMessage>[];
 
   /**
    * Get the "group root" msgId for a sibling group — the original message
@@ -55,10 +55,10 @@ export interface TreeInternal<TMessage> extends Tree<TMessage> {
   getGroupRoot(msgId: string): string;
 
   /**
-   * Get the sibling group that `msgId` belongs to, as full TreeNode objects.
+   * Get the sibling group that `msgId` belongs to, as full MessageNode objects.
    * Allows callers to resolve index ↔ msgId without losing identity.
    */
-  getSiblingNodes(msgId: string): TreeNode<TMessage>[];
+  getSiblingNodes(msgId: string): MessageNode<TMessage>[];
 
   /** Forward a raw Ably message event to tree subscribers. */
   emitAblyMessage(msg: Ably.InboundMessage): void;
@@ -212,7 +212,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
    * @returns The ordered list of sibling nodes.
    */
   // Spec: AIT-CT13b
-  private _getSiblingGroup(msgId: string): TreeNode<TMessage>[] {
+  private _getSiblingGroup(msgId: string): MessageNode<TMessage>[] {
     const entry = this._nodeIndex.get(msgId);
     if (!entry) return [];
 
@@ -259,7 +259,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
    * @param originalId - The group root to match against.
    * @returns True if the node belongs to the sibling group.
    */
-  private _isSiblingOf(node: TreeNode<TMessage>, originalId: string): boolean {
+  private _isSiblingOf(node: MessageNode<TMessage>, originalId: string): boolean {
     if (node.msgId === originalId) return true;
     let current = node;
     const visited = new Set<string>([current.msgId]);
@@ -300,9 +300,9 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   // Public query methods
   // -------------------------------------------------------------------------
 
-  flattenNodes(selections: Map<string, string>): TreeNode<TMessage>[] {
+  flattenNodes(selections: Map<string, string>): MessageNode<TMessage>[] {
     this._logger.trace('DefaultTree.flattenNodes();');
-    const result: TreeNode<TMessage>[] = [];
+    const result: MessageNode<TMessage>[] = [];
     const currentPath = new Set<string>();
     // Track which sibling groups we've already resolved to avoid
     // re-resolving for every member of the group.
@@ -351,7 +351,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
     return this._getSiblingGroup(msgId).map((n) => n.message);
   }
 
-  getSiblingNodes(msgId: string): TreeNode<TMessage>[] {
+  getSiblingNodes(msgId: string): MessageNode<TMessage>[] {
     return this._getSiblingGroup(msgId);
   }
 
@@ -359,7 +359,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
     return this._getSiblingGroup(msgId).length > 1;
   }
 
-  getNode(msgId: string): TreeNode<TMessage> | undefined {
+  getNode(msgId: string): MessageNode<TMessage> | undefined {
     this._logger.trace('DefaultTree.getNode();', { msgId });
     return this._nodeIndex.get(msgId)?.node;
   }
@@ -401,7 +401,8 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
 
     this._logger.trace('Tree.upsert(); inserting new node', { msgId, parentId, forkOf });
 
-    const node: TreeNode<TMessage> = {
+    const node: MessageNode<TMessage> = {
+      kind: 'message',
       message,
       msgId,
       parentId,

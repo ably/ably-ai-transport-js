@@ -8,7 +8,8 @@ export type {
   ClientTransport,
   ClientTransportOptions,
   CloseOptions,
-  EventNode,
+  EventsNode,
+  MessageNode,
   NewTurnOptions,
   SendOptions,
   ServerTransport,
@@ -16,12 +17,17 @@ export type {
   StreamResponseOptions,
   StreamResult,
   Tree,
-  TreeNode,
   Turn,
   TurnEndReason,
   TurnLifecycleEvent,
   View,
 } from './types.js';
+
+// Deprecated aliases — intentional re-export of deprecated types for backwards compatibility.
+// eslint-disable-next-line @typescript-eslint/no-deprecated
+export type { EventNode } from './types.js';
+// eslint-disable-next-line @typescript-eslint/no-deprecated
+export type { TreeNode } from './types.js';
 
 // Internal tree interface (consumed by View implementations)
 export type { TreeInternal } from './tree.js';

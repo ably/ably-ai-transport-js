@@ -19,7 +19,7 @@ import {
 } from '../../../src/constants.js';
 import type { Codec, StreamEncoder } from '../../../src/core/codec/types.js';
 import { createServerTransport } from '../../../src/core/transport/server-transport.js';
-import type { ServerTransport,TreeNode } from '../../../src/core/transport/types.js';
+import type { MessageNode, ServerTransport } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 
 // ---------------------------------------------------------------------------
@@ -29,7 +29,8 @@ import { ErrorCode } from '../../../src/errors.js';
 interface TestEvent { type: string; text?: string }
 interface TestMessage { id: string; content: string }
 
-const makeNode = (message: TestMessage, overrides?: Partial<TreeNode<TestMessage>>): TreeNode<TestMessage> => ({
+const makeNode = (message: TestMessage, overrides?: Partial<MessageNode<TestMessage>>): MessageNode<TestMessage> => ({
+  kind: 'message',
   message,
   msgId: overrides?.msgId ?? crypto.randomUUID(),
   parentId: undefined,
@@ -323,7 +324,7 @@ describe('ServerTransport', () => {
     it('creates encoder with amend header and target msgId headers', async () => {
       const turn = transport.newTurn({ turnId: 'turn-1', clientId: 'user-a' });
       await turn.start();
-      await turn.addEvents([{ msgId: 'target-msg-1', events: [{ type: 'tool-output' }] }]);
+      await turn.addEvents([{ kind: 'event', msgId: 'target-msg-1', events: [{ type: 'tool-output' }] }]);
 
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
       expect(codec.createEncoder).toHaveBeenCalled();
@@ -339,6 +340,7 @@ describe('ServerTransport', () => {
       const turn = transport.newTurn({ turnId: 'turn-1' });
       await turn.start();
       await turn.addEvents([{
+        kind: 'event',
         msgId: 'target-1',
         events: [{ type: 'ev-a' }, { type: 'ev-b' }, { type: 'ev-c' }],
       }]);
@@ -353,19 +355,19 @@ describe('ServerTransport', () => {
     it('throws if turn not started', async () => {
       const turn = transport.newTurn({ turnId: 'turn-1' });
       await expect(
-        turn.addEvents([{ msgId: 'target-1', events: [{ type: 'ev' }] }]),
+        turn.addEvents([{ kind: 'event', msgId: 'target-1', events: [{ type: 'ev' }] }]),
       ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
 
-    it('handles multiple EventNodes', async () => {
+    it('handles multiple EventsNodes', async () => {
       const turn = transport.newTurn({ turnId: 'turn-1', clientId: 'user-a' });
       await turn.start();
       await turn.addEvents([
-        { msgId: 'target-1', events: [{ type: 'ev-1' }] },
-        { msgId: 'target-2', events: [{ type: 'ev-2' }] },
+        { kind: 'event', msgId: 'target-1', events: [{ type: 'ev-1' }] },
+        { kind: 'event', msgId: 'target-2', events: [{ type: 'ev-2' }] },
       ]);
 
-      // Each EventNode gets its own encoder
+      // Each EventsNode gets its own encoder
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
       const encoderCalls = vi.mocked(codec.createEncoder).mock.calls;
       // addMessages calls may also have created encoders, so check the last 2

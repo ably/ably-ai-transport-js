@@ -206,13 +206,13 @@ export interface MessageAccumulator<TEvent, TMessage> {
   /**
    * Seed the accumulator with existing messages so subsequent events
    * targeting these messageIds update the existing state rather than creating
-   * blank messages. Used for cross-turn amendments (e.g. tool result delivery)
+   * blank messages. Used for cross-turn events (e.g. tool result delivery)
    * and history replay where multiple messages may need seeding.
    */
   seedMessages(messages: { messageId: string; message: TMessage }[]): void;
   /**
    * Mark a previously seeded message as completed. Called after processing
-   * amendment outputs — the seed temporarily re-activates the message,
+   * cross-turn event outputs — the seed temporarily re-activates the message,
    * and this call finalizes it so it appears in {@link completedMessages}.
    */
   completeSeeded(messageId: string): void;

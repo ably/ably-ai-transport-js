@@ -509,6 +509,7 @@ describe('ServerTransport integration', () => {
       parts: [{ type: 'text', text: 'What is the weather?' }],
     };
     const { msgIds } = await turn.addMessages([{
+      kind: 'message',
       message: userMessage,
       msgId: crypto.randomUUID(),
       parentId: undefined,

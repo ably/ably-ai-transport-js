@@ -25,7 +25,7 @@ import {
  * @param opts.turnClientId - ClientId of the turn initiator.
  * @param opts.parent - Preceding message's msg-id (for branching).
  * @param opts.forkOf - Forked message's msg-id (for edit/regen).
- * @param opts.amend - The msg-id of the existing message this message amends (cross-turn amendments).
+ * @param opts.amend - The msg-id of the existing message this message targets (cross-turn events).
  * @returns A headers record with the `x-ably-*` transport headers set.
  */
 export const buildTransportHeaders = (opts: {

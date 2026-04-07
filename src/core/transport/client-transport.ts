@@ -45,10 +45,10 @@ import type {
   ClientTransport,
   ClientTransportOptions,
   CloseOptions,
-  EventNode,
+  EventsNode,
+  MessageNode,
   SendOptions,
   Tree,
-  TreeNode,
   TurnEndReason,
   TurnLifecycleEvent,
   View,
@@ -254,7 +254,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       const headers = getHeaders(ablyMessage);
       const serial = ablyMessage.serial;
 
-      // Amendment events target an existing message from a prior turn,
+      // Cross-turn events target an existing message from a prior turn,
       // bypassing the current turn's accumulator.
       const amendTarget = headers[HEADER_AMEND];
       if (amendTarget) {
@@ -359,10 +359,10 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   }
 
   /**
-   * Handle an amendment event targeting an existing message from a prior turn.
+   * Handle a cross-turn event targeting an existing message from a prior turn.
    * Creates a temporary accumulator, seeds it with the existing message,
    * processes the event, and upserts the updated message into the tree.
-   * @param targetMsgId - The x-ably-msg-id of the message to amend.
+   * @param targetMsgId - The x-ably-msg-id of the message to update.
    * @param output - The decoded event output to apply.
    */
   private _handleAmendmentEvent(targetMsgId: string, output: DecoderOutput<TEvent, TMessage>): void {
@@ -445,8 +445,8 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     if (!observer) return;
 
     // Sync the accumulator with the tree before processing. If the message
-    // was amended externally (via update), seedMessages updates the
-    // accumulator's state so the amendment isn't lost when processing
+    // was updated externally (via cross-turn events), seedMessages updates the
+    // accumulator's state so the update isn't lost when processing
     // late turn events like finish-step/finish.
     const msgId = observer.headers[HEADER_MSG_ID];
     if (msgId) {
@@ -575,8 +575,8 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   private async _internalSend(
     input: TMessage | TMessage[],
     sendOptions: SendOptions | undefined,
-    history: TreeNode<TMessage>[],
-    amendments?: EventNode<TEvent>[],
+    history: MessageNode<TMessage>[],
+    eventNodes?: EventsNode<TEvent>[],
   ): Promise<ActiveTurn<TEvent>> {
     if (this._closed) {
       throw new Ably.ErrorInfo('unable to send; transport is closed', ErrorCode.TransportClosed, 400);
@@ -596,10 +596,10 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     this._ownTurnIds.add(turnId);
     this._tree.trackTurn(turnId, this._clientId ?? '');
 
-    // Optimistic tree updates for amendments — must happen before capturing
-    // history so the POST body includes the amended message state.
-    if (amendments) {
-      for (const node of amendments) {
+    // Optimistic tree updates for cross-turn events — must happen before
+    // capturing history so the POST body includes the updated message state.
+    if (eventNodes) {
+      for (const node of eventNodes) {
         const existingNode = this._tree.getNode(node.msgId);
         if (existingNode) {
           const outputs = node.events.map((event) => ({
@@ -619,7 +619,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     }
 
     const msgIds = new Set<string>();
-    const postMessages: TreeNode<TMessage>[] = [];
+    const postMessages: MessageNode<TMessage>[] = [];
 
     // The View pre-computed the visible branch before calling this delegate,
     // so preInsertHistory reflects the state before any optimistic inserts.
@@ -657,8 +657,9 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       // Optimistically insert each user message into the tree
       this._upsertAndNotify(message, optimisticHeaders);
 
-      // Build TreeNode for the POST body
+      // Build MessageNode for the POST body
       postMessages.push({
+        kind: 'message',
         message,
         msgId,
         parentId: resolvedParent,
@@ -693,7 +694,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       messages: postMessages,
       ...(sendOptions?.forkOf !== undefined && { forkOf: sendOptions.forkOf }),
       ...(postParent !== undefined && { parent: postParent }),
-      ...(amendments && amendments.length > 0 && { amendments }),
+      ...(eventNodes && eventNodes.length > 0 && { events: eventNodes }),
     };
 
     const postHeaders: Record<string, string> = {

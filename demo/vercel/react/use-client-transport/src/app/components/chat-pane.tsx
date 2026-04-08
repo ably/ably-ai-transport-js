@@ -1,5 +1,6 @@
 'use client';
 
+import { useCallback } from 'react';
 import type * as Ably from 'ably';
 import type { UIMessage, UIMessageChunk } from 'ai';
 import type { ViewHandle } from '@ably/ai-transport/react';
@@ -11,6 +12,7 @@ import { DebugPane } from './debug-pane';
 import { useClientTools } from '../hooks/use-client-tools';
 import { useMessageQueue } from '../hooks/use-message-queue';
 import { userMessage } from '../helpers';
+import type { ToolApproval } from './chat';
 
 interface ChatPaneProps {
   label: string;
@@ -27,6 +29,30 @@ export function ChatPane({ label, transport, view, ablyMessages, activeTurns, cl
   useClientTools(view, clientId);
   const queue = useMessageQueue(transport, view.send);
 
+  const handleToolApprove = useCallback(
+    (msgId: string, toolCallId: string, toolName: string, input: unknown) => {
+      const inputObj = input as Record<string, string> | undefined;
+      const label = inputObj?.location ?? toolName;
+      const approval: ToolApproval = { toolCallId, toolName, input, approved: true, targetMsgId: msgId };
+      view.send([userMessage(`Approved: ${label}`)], {
+        body: { toolApprovals: [approval] },
+      });
+    },
+    [view],
+  );
+
+  const handleToolDeny = useCallback(
+    (msgId: string, toolCallId: string, toolName: string, input: unknown) => {
+      const inputObj = input as Record<string, string> | undefined;
+      const label = inputObj?.location ?? toolName;
+      const approval: ToolApproval = { toolCallId, toolName, input, approved: false, targetMsgId: msgId };
+      view.send([userMessage(`Denied: ${label}`)], {
+        body: { toolApprovals: [approval] },
+      });
+    },
+    [view],
+  );
+
   return (
     <div className="flex flex-1 min-w-0 min-h-0">
       <div className="flex flex-1 flex-col min-w-0">
@@ -37,6 +63,8 @@ export function ChatPane({ label, transport, view, ablyMessages, activeTurns, cl
           view={view}
           onRegenerate={(id) => view.regenerate(id)}
           onEdit={(id, text) => view.edit(id, [userMessage(text)])}
+          onToolApprove={handleToolApprove}
+          onToolDeny={handleToolDeny}
         />
         <MessageQueue queue={queue} />
         <InputBar

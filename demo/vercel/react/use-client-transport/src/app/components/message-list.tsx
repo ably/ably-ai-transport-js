@@ -9,9 +9,11 @@ interface MessageListProps {
   view: ViewHandle<UIMessageChunk, UIMessage>;
   onRegenerate: (messageId: string) => void;
   onEdit: (messageId: string, newText: string) => void;
+  onToolApprove?: (msgId: string, toolCallId: string, toolName: string, input: unknown) => void;
+  onToolDeny?: (msgId: string, toolCallId: string, toolName: string, input: unknown) => void;
 }
 
-export function MessageList({ view, onRegenerate, onEdit }: MessageListProps) {
+export function MessageList({ view, onRegenerate, onEdit, onToolApprove, onToolDeny }: MessageListProps) {
   const { nodes, hasOlder, loading, loadOlder } = view;
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -70,6 +72,8 @@ export function MessageList({ view, onRegenerate, onEdit }: MessageListProps) {
           onSelectSibling={(index) => view.select(node.msgId, index)}
           onRegenerate={node.message.role === 'assistant' ? () => onRegenerate(node.msgId) : undefined}
           onEdit={node.message.role === 'user' ? (text) => onEdit(node.msgId, text) : undefined}
+          onToolApprove={onToolApprove}
+          onToolDeny={onToolDeny}
         />
       ))}
       <div ref={endRef} />

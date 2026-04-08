@@ -13,6 +13,8 @@ interface MessageBubbleProps {
   onSelectSibling: (index: number) => void;
   onRegenerate?: () => void;
   onEdit?: (newText: string) => void;
+  onToolApprove?: (msgId: string, toolCallId: string, toolName: string, input: unknown) => void;
+  onToolDeny?: (msgId: string, toolCallId: string, toolName: string, input: unknown) => void;
 }
 
 function Badge({ label, value, color }: { label: string; value: string; color: string }) {
@@ -175,6 +177,8 @@ export function MessageBubble({
   onSelectSibling,
   onRegenerate,
   onEdit,
+  onToolApprove,
+  onToolDeny,
 }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const [isEditing, setIsEditing] = useState(false);
@@ -205,13 +209,25 @@ export function MessageBubble({
             <div className={bubbleClasses(isUser, status)}>
               {message.parts.map((part, i) => {
                 if (part.type === 'text') return <span key={i}>{part.text}</span>;
-                if (part.type === 'dynamic-tool')
+                if (part.type === 'dynamic-tool') {
+                  const toolPart = part as DynamicToolUIPart;
                   return (
                     <ToolInvocation
                       key={i}
-                      part={part as DynamicToolUIPart}
+                      part={toolPart}
+                      onApprove={
+                        toolPart.state === 'approval-requested' && onToolApprove && headers?.['x-ably-msg-id']
+                          ? () => onToolApprove(headers['x-ably-msg-id'], toolPart.toolCallId, toolPart.toolName, toolPart.input)
+                          : undefined
+                      }
+                      onDeny={
+                        toolPart.state === 'approval-requested' && onToolDeny && headers?.['x-ably-msg-id']
+                          ? () => onToolDeny(headers['x-ably-msg-id'], toolPart.toolCallId, toolPart.toolName, toolPart.input)
+                          : undefined
+                      }
                     />
                   );
+                }
                 return null;
               })}
               {!isUser && status === 'streaming' && (

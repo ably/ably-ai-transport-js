@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { useChannel } from 'ably/react';
 import { useClientTransport, useCreateView, useActiveTurns, useView, useAblyMessages } from '@ably/ai-transport/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
@@ -14,6 +14,14 @@ import { MessageQueue } from './message-queue';
 import { InputBar } from './input-bar';
 import { DebugPane } from './debug-pane';
 import { ChatPane } from './chat-pane';
+
+export interface ToolApproval {
+  toolCallId: string;
+  toolName: string;
+  input: unknown;
+  approved: boolean;
+  targetMsgId: string;
+}
 
 interface ChatProps {
   chatId: string;
@@ -41,6 +49,30 @@ export function Chat({ chatId, clientId, historyLimit }: ChatProps) {
   const activeTurns = useActiveTurns(transport);
   const ablyMessages = useAblyMessages(transport);
   const queue = useMessageQueue(transport, view.send);
+
+  const handleToolApproved = useCallback(
+    (msgId: string, toolCallId: string, toolName: string, input: unknown) => {
+      const inputObj = input as Record<string, string> | undefined;
+      const label = inputObj?.location ?? toolName;
+      const approval: ToolApproval = { toolCallId, toolName, input, approved: true, targetMsgId: msgId };
+      view.send([userMessage(`Approved: ${label}`)], {
+        body: { toolApprovals: [approval] },
+      });
+    },
+    [view],
+  );
+
+  const handleToolDeny = useCallback(
+    (msgId: string, toolCallId: string, toolName: string, input: unknown) => {
+      const inputObj = input as Record<string, string> | undefined;
+      const label = inputObj?.location ?? toolName;
+      const approval: ToolApproval = { toolCallId, toolName, input, approved: false, targetMsgId: msgId };
+      view.send([userMessage(`Denied: ${label}`)], {
+        body: { toolApprovals: [approval] },
+      });
+    },
+    [view],
+  );
 
   return (
     <div className="flex h-dvh">
@@ -76,6 +108,8 @@ export function Chat({ chatId, clientId, historyLimit }: ChatProps) {
               view={view}
               onRegenerate={(id) => view.regenerate(id)}
               onEdit={(id, text) => view.edit(id, [userMessage(text)])}
+              onToolApprove={handleToolApproved}
+              onToolDeny={handleToolDeny}
             />
             <MessageQueue queue={queue} />
             <InputBar

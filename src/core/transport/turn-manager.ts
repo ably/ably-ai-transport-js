@@ -11,6 +11,8 @@ import type * as Ably from 'ably';
 import {
   EVENT_TURN_END,
   EVENT_TURN_START,
+  HEADER_FORK_OF,
+  HEADER_PARENT,
   HEADER_TURN_CLIENT_ID,
   HEADER_TURN_ID,
   HEADER_TURN_REASON,
@@ -25,7 +27,12 @@ import type { TurnEndReason } from './types.js';
 /** Manages active turns and publishes turn lifecycle events on the channel. */
 export interface TurnManager {
   /** Register a new turn. Publishes turn-start on the channel. Returns AbortSignal. */
-  startTurn(turnId: string, clientId?: string, controller?: AbortController): Promise<AbortSignal>;
+  startTurn(
+    turnId: string,
+    clientId?: string,
+    controller?: AbortController,
+    metadata?: { parent?: string | null; forkOf?: string },
+  ): Promise<AbortSignal>;
   /** End a turn. Publishes turn-end on the channel. Cleans up internal state. */
   endTurn(turnId: string, reason: TurnEndReason): Promise<void>;
   /** Get the AbortSignal for a turn. */
@@ -63,21 +70,32 @@ class DefaultTurnManager implements TurnManager {
     this._logger = logger?.withContext({ component: 'TurnManager' });
   }
 
-  async startTurn(turnId: string, clientId?: string, externalController?: AbortController): Promise<AbortSignal> {
+  async startTurn(
+    turnId: string,
+    clientId?: string,
+    externalController?: AbortController,
+    metadata?: { parent?: string | null; forkOf?: string },
+  ): Promise<AbortSignal> {
     this._logger?.trace('DefaultTurnManager.startTurn();', { turnId, clientId });
 
     const controller = externalController ?? new AbortController();
     const resolvedClientId = clientId ?? '';
     this._activeTurns.set(turnId, { controller, clientId: resolvedClientId });
 
+    const headers: Record<string, string> = {
+      [HEADER_TURN_ID]: turnId,
+      [HEADER_TURN_CLIENT_ID]: resolvedClientId,
+    };
+    if (metadata?.parent !== undefined) {
+      headers[HEADER_PARENT] = metadata.parent === null ? '' : metadata.parent;
+    }
+    if (metadata?.forkOf !== undefined) {
+      headers[HEADER_FORK_OF] = metadata.forkOf;
+    }
+
     await this._channel.publish({
       name: EVENT_TURN_START,
-      extras: {
-        headers: {
-          [HEADER_TURN_ID]: turnId,
-          [HEADER_TURN_CLIENT_ID]: resolvedClientId,
-        },
-      },
+      extras: { headers },
     });
 
     this._logger?.debug('DefaultTurnManager.startTurn(); turn started', { turnId });

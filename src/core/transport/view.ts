@@ -15,7 +15,7 @@
 
 import * as Ably from 'ably';
 
-import { HEADER_MSG_ID, HEADER_TURN_ID } from '../../constants.js';
+import { EVENT_TURN_START, HEADER_MSG_ID, HEADER_TURN_ID } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
@@ -74,6 +74,8 @@ export interface ViewOptions<TEvent, TMessage> {
   sendDelegate: SendDelegate<TEvent, TMessage>;
   /** Logger for diagnostic output. */
   logger: Logger;
+  /** Called when the view is closed, allowing the owner to clean up references. */
+  onClose?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -87,6 +89,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   private readonly _sendDelegate: SendDelegate<TEvent, TMessage>;
   private readonly _logger: Logger;
   private readonly _emitter: EventEmitter<ViewEventsMap>;
+  private readonly _onClose?: () => void;
 
   /**
    * View-local branch selections: group root msgId → selected sibling index.
@@ -123,6 +126,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
    */
   private readonly _pendingForkSelections = new Set<string>();
 
+  private _loadingOlder = false;
   private _closed = false;
 
   constructor(options: ViewOptions<TEvent, TMessage>) {
@@ -130,6 +134,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     this._channel = options.channel;
     this._codec = options.codec;
     this._sendDelegate = options.sendDelegate;
+    this._onClose = options.onClose;
     this._logger = options.logger.withContext({ component: 'View' });
     this._logger.trace('DefaultView();');
     this._emitter = new EventEmitter<ViewEventsMap>(this._logger);
@@ -171,8 +176,9 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   }
 
   async loadOlder(limit = 100): Promise<void> {
-    if (this._closed) return;
+    if (this._closed || this._loadingOlder) return;
     this._logger.trace('DefaultView.loadOlder();', { limit });
+    this._loadingOlder = true;
 
     try {
       // Drain withheld buffer first (older messages, released newest-first)
@@ -198,8 +204,10 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
       }
 
       const nextPage = await this._lastHistoryPage.next();
-      if (!nextPage) {
-        this._hasMoreHistory = false;
+      // Re-check: close() may be called during the await from another call stack
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- close() may be called during await
+      if (this._closed || !nextPage) {
+        if (!nextPage) this._hasMoreHistory = false;
         return;
       }
 
@@ -207,6 +215,8 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     } catch (error) {
       this._logger.error('DefaultView.loadOlder(); failed', { error });
       throw error;
+    } finally {
+      this._loadingOlder = false;
     }
   }
 
@@ -259,6 +269,11 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
 
     // Capture sibling count before the delegate so we can detect whether
     // an optimistic insert actually added a new sibling (edit) or not (regenerate).
+    // NOTE: There is a small race window between this capture and the post-delegate
+    // check. If another source adds a sibling to the same group during the await
+    // (e.g. another view's concurrent send), we may incorrectly attribute it to
+    // this send and auto-select it. The window is small (typically only the channel
+    // attach promise) and self-correcting on the next tree update.
     const siblingsBefore = options?.forkOf ? this._tree.getSiblings(options.forkOf).length : 0;
 
     const result = await this._sendDelegate(input, options, { flattenNodes: () => this.flattenNodes() });
@@ -415,10 +430,12 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     this._closed = true;
     for (const unsub of this._unsubs) unsub();
     this._unsubs.length = 0;
+    this._emitter.off();
     this._selections.clear();
     this._pendingForkSelections.clear();
     this._withheldMsgIds.clear();
     this._withheldBuffer.length = 0;
+    this._onClose?.();
   }
 
   // -------------------------------------------------------------------------
@@ -430,7 +447,10 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     const beforeMsgIds = new Set(this._tree.flattenNodes(this._selections).map((n) => n.msgId));
 
     const firstPage = await decodeHistory(this._channel, this._codec, { limit }, this._logger);
+    if (this._closed) return;
     const { newVisible, lastPage } = await this._loadUntilVisible(firstPage, limit, beforeMsgIds);
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- close() may be called during await
+    if (this._closed) return;
 
     this._lastHistoryPage = lastPage;
     this._hasMoreHistory = lastPage.hasNext();
@@ -451,6 +471,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     const alreadyKnown = new Set(this._tree.flattenNodes(this._selections).map((n) => n.msgId));
 
     const { newVisible, lastPage } = await this._loadUntilVisible(page, limit, alreadyKnown);
+    if (this._closed) return;
     this._lastHistoryPage = lastPage;
     this._hasMoreHistory = lastPage.hasNext();
 
@@ -499,7 +520,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
 
     while (newVisibleCount() < target && page.hasNext()) {
       const nextPage = await page.next();
-      if (!nextPage) break;
+      if (!nextPage || this._closed) break;
       this._processHistoryPage(nextPage);
       page = nextPage;
     }
@@ -605,15 +626,41 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   }
 
   private _onTreeTurn(event: TurnLifecycleEvent): void {
-    // Re-emit only if the turn has visible messages
+    // Check if any messages for this turn are already on the visible branch.
     const visibleTurnIds = new Set<string>();
     for (const n of this.flattenNodes()) {
       const turnId = n.headers[HEADER_TURN_ID];
       if (turnId) visibleTurnIds.add(turnId);
     }
+
     if (visibleTurnIds.has(event.turnId)) {
       this._emitter.emit('turn', event);
+      return;
     }
+
+    // For turn-start, use branch metadata to predict visibility before
+    // messages arrive. Own turns have optimistic inserts (caught above).
+    // Remote turns carry parent/forkOf from the server.
+    if (event.type === EVENT_TURN_START && this._isTurnStartVisible(event)) {
+      this._emitter.emit('turn', event);
+    }
+  }
+
+  /**
+   * Predict whether a turn-start's messages will be visible on this view's branch
+   * using the parent/forkOf metadata from the event.
+   * @param event - The turn-start lifecycle event with optional branch metadata.
+   * @returns True if the turn's messages are expected to be visible on this view's branch.
+   */
+  private _isTurnStartVisible(event: TurnLifecycleEvent & { type: typeof EVENT_TURN_START }): boolean {
+    const { parent } = event;
+
+    // No parent metadata — can't determine branch, forward as default.
+    // This covers root turns (parent omitted) and backward compat.
+    if (parent === undefined) return true;
+
+    // Check if the parent is on the visible branch
+    return this._lastVisibleIds.includes(parent);
   }
 
   private _visibleChanged(newIds: string[], newMessages: TMessage[]): boolean {

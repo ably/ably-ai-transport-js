@@ -296,13 +296,76 @@ describe('DefaultView', () => {
       expect(handler).toHaveBeenCalledWith(event);
     });
 
-    it('does not forward turn events for turns without visible messages', () => {
+    it('forwards turn-start when no metadata is present (backward compat)', () => {
       tree.trackTurn('turn-99', 'client-x');
 
       const handler = vi.fn();
       view.on('turn', handler);
 
       const event: TurnLifecycleEvent = { type: 'x-ably-turn-start', turnId: 'turn-99', clientId: 'client-x' };
+      tree.emitTurn(event);
+
+      expect(handler).toHaveBeenCalledOnce();
+    });
+
+    it('forwards turn-start when parent is on the visible branch', () => {
+      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'), 'serial-1');
+
+      const handler = vi.fn();
+      view.on('turn', handler);
+
+      const event: TurnLifecycleEvent = {
+        type: 'x-ably-turn-start', turnId: 'turn-2', clientId: 'client-b', parent: 'm1',
+      };
+      tree.emitTurn(event);
+
+      expect(handler).toHaveBeenCalledOnce();
+    });
+
+    it('does not forward turn-start when parent is on a non-visible branch', () => {
+      // Create a fork: m2 and m3 are siblings under m1
+      tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
+      tree.upsert('m2', { id: '2', content: 'v1' }, {
+        [HEADER_MSG_ID]: 'm2', 'x-ably-parent': 'm1',
+      }, 'serial-2');
+      tree.upsert('m3', { id: '3', content: 'v2' }, {
+        [HEADER_MSG_ID]: 'm3', 'x-ably-parent': 'm1', 'x-ably-fork-of': 'm2',
+      }, 'serial-3');
+
+      // Select m2 (index 0), so m3 and its descendants are not visible
+      view.select('m2', 0);
+
+      const handler = vi.fn();
+      view.on('turn', handler);
+
+      // Turn whose parent is m3 (on the non-selected branch)
+      const event: TurnLifecycleEvent = {
+        type: 'x-ably-turn-start', turnId: 'turn-hidden', clientId: 'remote', parent: 'm3',
+      };
+      tree.emitTurn(event);
+
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('forwards turn-start for root turn (no parent)', () => {
+      const handler = vi.fn();
+      view.on('turn', handler);
+
+      const event: TurnLifecycleEvent = {
+        type: 'x-ably-turn-start', turnId: 'turn-root', clientId: 'client-a',
+      };
+      tree.emitTurn(event);
+
+      expect(handler).toHaveBeenCalledOnce();
+    });
+
+    it('does not forward turn-end for turns without visible messages', () => {
+      tree.trackTurn('turn-99', 'client-x');
+
+      const handler = vi.fn();
+      view.on('turn', handler);
+
+      const event: TurnLifecycleEvent = { type: 'x-ably-turn-end', turnId: 'turn-99', clientId: 'client-x', reason: 'complete' };
       tree.emitTurn(event);
 
       expect(handler).not.toHaveBeenCalled();
@@ -973,6 +1036,31 @@ describe('DefaultView', () => {
 
       // After close, getSelectedIndex returns default (latest)
       expect(view.getSelectedIndex('m2')).toBe(1);
+    });
+
+    it('clears all emitter listeners on close', () => {
+      const updateHandler = vi.fn();
+      const ablyHandler = vi.fn();
+      const turnHandler = vi.fn();
+      view.on('update', updateHandler);
+      view.on('ably-message', ablyHandler);
+      view.on('turn', turnHandler);
+
+      view.close();
+
+      // Trigger tree events — view handlers should not fire
+      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1', 'turn-1'), 'serial-1');
+      tree.emitAblyMessage({ name: 'test', extras: { headers: { [HEADER_MSG_ID]: 'm1' } } } as Ably.InboundMessage);
+      tree.emitTurn({ type: 'x-ably-turn-end', turnId: 'turn-1', clientId: 'c1', reason: 'complete' });
+
+      expect(updateHandler).not.toHaveBeenCalled();
+      expect(ablyHandler).not.toHaveBeenCalled();
+      expect(turnHandler).not.toHaveBeenCalled();
+    });
+
+    it('is idempotent — double close does not throw', () => {
+      view.close();
+      expect(() => { view.close(); }).not.toThrow();
     });
   });
 });

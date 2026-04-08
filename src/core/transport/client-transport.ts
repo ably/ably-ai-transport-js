@@ -20,6 +20,7 @@ import {
   HEADER_CANCEL_CLIENT_ID,
   HEADER_CANCEL_OWN,
   HEADER_CANCEL_TURN_ID,
+  HEADER_FORK_OF,
   HEADER_MSG_ID,
   HEADER_PARENT,
   HEADER_TURN_CLIENT_ID,
@@ -107,6 +108,9 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   // A single .delete(turnId) cleans up all three.
   private readonly _turnObservers = new Map<string, TurnObserverState<TEvent, TMessage>>();
 
+  // Callbacks to resolve pending waitForTurn promises on close, preventing leaked subscriptions.
+  private readonly _closeResolvers: (() => void)[] = [];
+
   // Sub-components
   private readonly _tree: DefaultTree<TMessage>;
   private readonly _view: DefaultView<TEvent, TMessage>;
@@ -157,6 +161,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       codec: this._codec,
       sendDelegate: this._internalSend.bind(this),
       logger: this._logger,
+      onClose: () => this._views.delete(this._view),
     });
     this._router = createStreamRouter<TEvent>(this._codec.isTerminal.bind(this._codec), this._logger);
     this._decoder = this._codec.createDecoder();
@@ -194,8 +199,6 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   private _handleMessage(ablyMessage: Ably.InboundMessage): void {
     if (this._closed) return;
 
-    this._tree.emitAblyMessage(ablyMessage);
-
     try {
       // Spec: AIT-CT16a
       // --- Turn lifecycle events from the server ---
@@ -205,8 +208,19 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
         const turnCid = headers[HEADER_TURN_CLIENT_ID] ?? '';
         if (turnId) {
           this._tree.trackTurn(turnId, turnCid);
-          this._tree.emitTurn({ type: EVENT_TURN_START, turnId, clientId: turnCid });
+          const parentRaw = headers[HEADER_PARENT];
+          const forkOf = headers[HEADER_FORK_OF];
+          this._tree.emitTurn({
+            type: EVENT_TURN_START,
+            turnId,
+            clientId: turnCid,
+            // Empty string encodes root turn (null parent) — omit from event
+            // so _isTurnStartVisible treats it as "always visible"
+            ...(parentRaw && { parent: parentRaw }),
+            ...(forkOf !== undefined && { forkOf }),
+          });
         }
+        this._tree.emitAblyMessage(ablyMessage);
         return;
       }
 
@@ -229,6 +243,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
           this._ownTurnIds.delete(turnId);
           this._tree.emitTurn({ type: EVENT_TURN_END, turnId, clientId: turnCid, reason });
         }
+        this._tree.emitAblyMessage(ablyMessage);
         return;
       }
 
@@ -253,6 +268,11 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
           this._handleEventOutput(output, headers);
         }
       }
+
+      // Emit ably-message AFTER decode/upsert so that View subscribers can
+      // find the node in _lastVisibleIds (which is refreshed by tree 'update'
+      // events triggered during upsert).
+      this._tree.emitAblyMessage(ablyMessage);
     } catch (error) {
       const cause = error instanceof Ably.ErrorInfo ? error : undefined;
       this._emitter.emit(
@@ -493,6 +513,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       codec: this._codec,
       sendDelegate: this._internalSend.bind(this),
       logger: this._logger,
+      onClose: () => this._views.delete(view),
     });
     this._views.add(view);
     return view;
@@ -668,14 +689,22 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     this._logger.debug('ClientTransport.waitForTurn();', { turnIds: [...remaining] });
 
     return new Promise<void>((resolve) => {
+      let resolved = false;
+      const done = (): void => {
+        if (resolved) return;
+        resolved = true;
+        unsub();
+        resolve();
+      };
+
       const unsub = this._tree.on('turn', (event: TurnLifecycleEvent) => {
         if (event.type !== EVENT_TURN_END) return;
         remaining.delete(event.turnId);
-        if (remaining.size === 0) {
-          unsub();
-          resolve();
-        }
+        if (remaining.size === 0) done();
       });
+
+      // Resolve on transport close to prevent leaked subscriptions
+      this._closeResolvers.push(done);
     });
   }
 
@@ -717,6 +746,8 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     this._emitter.off();
     for (const v of this._views) v.close();
     this._views.clear();
+    for (const resolve of this._closeResolvers) resolve();
+    this._closeResolvers.length = 0;
     this._ownTurnIds.clear();
     this._ownMsgIds.clear();
     this._turnMsgIds.clear();

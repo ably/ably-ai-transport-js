@@ -80,6 +80,10 @@ export const useView = <TEvent, TMessage>(
   const [loading, setLoading] = useState(false);
   const loadingRef = useRef(false);
 
+  // Auto-load first page on mount when options are provided (SWR-style).
+  const autoLoad = options !== undefined && options !== null;
+  const autoLoadedRef = useRef(false);
+
   // Subscribe to view updates
   useEffect(() => {
     if (!view) {
@@ -87,6 +91,9 @@ export const useView = <TEvent, TMessage>(
       setHasOlder(false);
       return;
     }
+
+    // Reset auto-load flag so the new view gets its first page loaded
+    autoLoadedRef.current = false;
 
     // Sync initial state
     setNodes(view.flattenNodes());
@@ -110,10 +117,6 @@ export const useView = <TEvent, TMessage>(
       setLoading(false);
     }
   }, [view, options?.limit]);
-
-  // Auto-load first page on mount when options are provided (SWR-style).
-  const autoLoad = options !== undefined && options !== null;
-  const autoLoadedRef = useRef(false);
 
   useEffect(() => {
     if (!autoLoad || autoLoadedRef.current || !view) return;

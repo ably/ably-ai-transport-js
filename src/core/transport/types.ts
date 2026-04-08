@@ -262,7 +262,15 @@ export interface SendOptions {
 
 /** A structured event describing a turn starting or ending. */
 export type TurnLifecycleEvent =
-  | { type: 'x-ably-turn-start'; turnId: string; clientId: string }
+  | {
+      type: 'x-ably-turn-start';
+      turnId: string;
+      clientId: string;
+      /** The msg-id of the parent message, if known. Omitted for root turns. */
+      parent?: string;
+      /** The msg-id being forked/replaced, if this is a regeneration or edit. */
+      forkOf?: string;
+    }
   | { type: 'x-ably-turn-end'; turnId: string; clientId: string; reason: TurnEndReason };
 
 // ---------------------------------------------------------------------------

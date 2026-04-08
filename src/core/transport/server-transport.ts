@@ -297,7 +297,10 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
         started = true;
 
         try {
-          await turnManager.startTurn(turnId, turnClientId, controller);
+          await turnManager.startTurn(turnId, turnClientId, controller, {
+            parent: turnParent,
+            forkOf: turnForkOf,
+          });
         } catch (error) {
           const errInfo = new Ably.ErrorInfo(
             `unable to publish turn-start for turn ${turnId}; ${error instanceof Error ? error.message : String(error)}`,

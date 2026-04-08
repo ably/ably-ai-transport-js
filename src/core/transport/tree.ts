@@ -41,11 +41,12 @@ interface InternalNode<TMessage> {
 export interface TreeInternal<TMessage> extends Tree<TMessage> {
   /**
    * Flatten the tree along selected branches into a linear node list.
-   * The `selections` map provides the selected sibling index at each
+   * The `selections` map provides the selected sibling's msgId at each
    * fork point, keyed by group root msgId. Fork points not present in
-   * the map default to the latest sibling.
+   * the map default to the latest sibling. If a selectedMsgId is not
+   * found in the sibling group (stale/deleted), falls back to latest.
    */
-  flattenNodes(selections: Map<string, number>): TreeNode<TMessage>[];
+  flattenNodes(selections: Map<string, string>): TreeNode<TMessage>[];
 
   /**
    * Get the "group root" msgId for a sibling group — the original message
@@ -54,10 +55,10 @@ export interface TreeInternal<TMessage> extends Tree<TMessage> {
   getGroupRoot(msgId: string): string;
 
   /**
-   * Get the index of a specific msgId within its sibling group.
-   * Returns -1 if the msgId is not found.
+   * Get the sibling group that `msgId` belongs to, as full TreeNode objects.
+   * Allows callers to resolve index ↔ msgId without losing identity.
    */
-  getSiblingIndex(msgId: string): number;
+  getSiblingNodes(msgId: string): TreeNode<TMessage>[];
 
   /** Forward a raw Ably message event to tree subscribers. */
   emitAblyMessage(msg: Ably.InboundMessage): void;
@@ -299,7 +300,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   // Public query methods
   // -------------------------------------------------------------------------
 
-  flattenNodes(selections: Map<string, number>): TreeNode<TMessage>[] {
+  flattenNodes(selections: Map<string, string>): TreeNode<TMessage>[] {
     this._logger.trace('DefaultTree.flattenNodes();');
     const result: TreeNode<TMessage>[] = [];
     const currentPath = new Set<string>();
@@ -322,11 +323,15 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
         const groupRootId = this.getGroupRoot(msgId);
         let selectedId = resolvedGroups.get(groupRootId);
         if (selectedId === undefined) {
-          const selectedIdx = selections.get(groupRootId) ?? group.length - 1;
-          const clamped = Math.max(0, Math.min(selectedIdx, group.length - 1));
-          const selected = group[clamped];
-          if (!selected) break; // unreachable: clamped is always in bounds
-          selectedId = selected.msgId;
+          const preferredId = selections.get(groupRootId);
+          // Verify the preferred msgId is in the group, otherwise default to latest
+          if (preferredId && group.some((n) => n.msgId === preferredId)) {
+            selectedId = preferredId;
+          } else {
+            const latest = group.at(-1);
+            if (!latest) break; // unreachable: group.length > 1
+            selectedId = latest.msgId;
+          }
           resolvedGroups.set(groupRootId, selectedId);
         }
         if (msgId !== selectedId) {
@@ -346,12 +351,12 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
     return this._getSiblingGroup(msgId).map((n) => n.message);
   }
 
-  hasSiblings(msgId: string): boolean {
-    return this._getSiblingGroup(msgId).length > 1;
+  getSiblingNodes(msgId: string): TreeNode<TMessage>[] {
+    return this._getSiblingGroup(msgId);
   }
 
-  getSiblingIndex(msgId: string): number {
-    return this._getSiblingGroup(msgId).findIndex((n) => n.msgId === msgId);
+  hasSiblings(msgId: string): boolean {
+    return this._getSiblingGroup(msgId).length > 1;
   }
 
   getNode(msgId: string): TreeNode<TMessage> | undefined {

@@ -30,7 +30,7 @@ import { createClientTransport as createCoreClientTransport } from '../transport
  */
 const isClientTransport = (
   x: ClientTransport<AI.UIMessageChunk, AI.UIMessage> | VercelClientTransportOptions,
-): x is ClientTransport<AI.UIMessageChunk, AI.UIMessage> => 'send' in x && typeof x.send === 'function';
+): x is ClientTransport<AI.UIMessageChunk, AI.UIMessage> => 'view' in x;
 
 /**
  * Create and memoize a {@link ChatTransport} for Vercel's useChat hook.

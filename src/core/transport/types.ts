@@ -83,7 +83,7 @@ export interface AddMessagesResult {
 /** Options for streamResponse — per-operation overrides for the assistant message. */
 export interface StreamResponseOptions {
   /** The msg-id of the immediately preceding message in this branch. */
-  parent?: string | null;
+  parent?: string;
   /** The msg-id of the message this response replaces (for regeneration). */
   forkOf?: string;
 }
@@ -107,7 +107,7 @@ export interface NewTurnOptions<TEvent> {
    * Used as the default parent for user messages (via addMessages) and
    * assistant messages (via streamResponse) when not overridden per-operation.
    */
-  parent?: string | null;
+  parent?: string;
 
   /**
    * The msg-id of the message this turn replaces (creates a fork).
@@ -250,10 +250,10 @@ export interface SendOptions {
   forkOf?: string;
   /**
    * The msg-id of the message that precedes this one in the
-   * conversation thread. Null means the message is a root.
-   * If omitted, auto-computed from the last message in the view.
+   * conversation thread. If omitted, auto-computed from the last
+   * message in the view.
    */
-  parent?: string | null;
+  parent?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +285,12 @@ export interface ActiveTurn<TEvent> {
   turnId: string;
   /** Cancel this specific turn. Publishes a cancel message and closes the local stream. */
   cancel(): Promise<void>;
+  /**
+   * The msg-ids of optimistically inserted user messages, in order.
+   * Present when the send included user messages (edit); empty for
+   * regeneration (no user messages to insert optimistically).
+   */
+  optimisticMsgIds: string[];
 }
 
 // ---------------------------------------------------------------------------

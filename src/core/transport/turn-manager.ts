@@ -31,7 +31,7 @@ export interface TurnManager {
     turnId: string,
     clientId?: string,
     controller?: AbortController,
-    metadata?: { parent?: string | null; forkOf?: string },
+    metadata?: { parent?: string; forkOf?: string },
   ): Promise<AbortSignal>;
   /** End a turn. Publishes turn-end on the channel. Cleans up internal state. */
   endTurn(turnId: string, reason: TurnEndReason): Promise<void>;
@@ -74,7 +74,7 @@ class DefaultTurnManager implements TurnManager {
     turnId: string,
     clientId?: string,
     externalController?: AbortController,
-    metadata?: { parent?: string | null; forkOf?: string },
+    metadata?: { parent?: string; forkOf?: string },
   ): Promise<AbortSignal> {
     this._logger?.trace('DefaultTurnManager.startTurn();', { turnId, clientId });
 
@@ -87,7 +87,7 @@ class DefaultTurnManager implements TurnManager {
       [HEADER_TURN_CLIENT_ID]: resolvedClientId,
     };
     if (metadata?.parent !== undefined) {
-      headers[HEADER_PARENT] = metadata.parent === null ? '' : metadata.parent;
+      headers[HEADER_PARENT] = metadata.parent;
     }
     if (metadata?.forkOf !== undefined) {
       headers[HEADER_FORK_OF] = metadata.forkOf;

@@ -15,7 +15,7 @@
 
 import * as Ably from 'ably';
 
-import { EVENT_TURN_START, HEADER_MSG_ID, HEADER_TURN_ID } from '../../constants.js';
+import { EVENT_TURN_END, EVENT_TURN_START, HEADER_MSG_ID, HEADER_TURN_ID } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
@@ -40,22 +40,14 @@ interface ViewEventsMap {
 // ---------------------------------------------------------------------------
 
 /**
- * Context provided by the View to the transport's send machinery.
- * Allows the transport to derive parent and history from the calling view's branch.
- */
-export interface ViewContext<TMessage> {
-  /** Returns the visible nodes for this view's selected branch. */
-  flattenNodes: () => TreeNode<TMessage>[];
-}
-
-/**
  * Internal delegate function provided by the transport for executing sends.
- * The View pre-computes branch context and passes it to the delegate.
+ * The View pre-computes the visible branch history and passes it directly,
+ * so the delegate has no back-reference to the View.
  */
 export type SendDelegate<TEvent, TMessage> = (
   input: TMessage | TMessage[],
   options: SendOptions | undefined,
-  viewContext: ViewContext<TMessage>,
+  history: TreeNode<TMessage>[],
 ) => Promise<ActiveTurn<TEvent>>;
 
 // ---------------------------------------------------------------------------
@@ -79,6 +71,24 @@ export interface ViewOptions<TEvent, TMessage> {
 }
 
 // ---------------------------------------------------------------------------
+// Branch selection
+// ---------------------------------------------------------------------------
+
+/**
+ * Tagged union representing why a branch was selected.
+ * Stored per group root in the View's `_branchSelections` map.
+ */
+type BranchSelection =
+  /** Explicit navigation via `select()`. */
+  | { kind: 'user'; selectedId: string }
+  /** This view initiated a fork (edit or regenerate) — auto-selected the result. */
+  | { kind: 'auto'; selectedId: string }
+  /** An external fork appeared — pinned to the currently-visible sibling to prevent drift. */
+  | { kind: 'pinned'; selectedId: string }
+  /** This view's `regenerate()` is in flight — select newest when turn's response arrives. */
+  | { kind: 'pending'; turnId: string };
+
+// ---------------------------------------------------------------------------
 // Implementation
 // ---------------------------------------------------------------------------
 
@@ -92,10 +102,13 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   private readonly _onClose?: () => void;
 
   /**
-   * View-local branch selections: group root msgId → selected sibling index.
+   * View-local branch selections: group root msgId → selection intent.
    * Fork points not present here default to the latest sibling.
+   * Replaces the previous numeric-index _selections and _pendingForkSelections
+   * with a single tagged-union map that carries the selected msgId (not index)
+   * and the reason for the selection.
    */
-  private readonly _selections = new Map<string, number>();
+  private readonly _branchSelections = new Map<string, BranchSelection>();
 
   /** Spec: AIT-CT11c — msg-ids loaded from history but not yet revealed to the UI. */
   private readonly _withheldMsgIds = new Set<string>();
@@ -105,6 +118,9 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
 
   /** Snapshot of visible message references — used to detect in-place content updates (streaming). */
   private _lastVisibleMessages: TMessage[] = [];
+
+  /** Cached set of turn IDs present on the visible branch — avoids recomputing flattenNodes() on turn events. */
+  private _lastVisibleTurnIds = new Set<string>();
 
   /** Whether there are more history pages to fetch from the channel. */
   private _hasMoreHistory = false;
@@ -118,15 +134,8 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   /** Unsubscribe functions for tree event subscriptions. */
   private readonly _unsubs: (() => void)[] = [];
 
-  /**
-   * Fork-of msgIds from this view's own send/regenerate calls where the
-   * optimistic insert hasn't created a sibling yet (e.g. regenerate sends
-   * no user messages). When the server response arrives and creates the new
-   * sibling, `_onTreeUpdate` will auto-select it instead of pinning the old branch.
-   */
-  private readonly _pendingForkSelections = new Set<string>();
-
   private _loadingOlder = false;
+  private _processingHistory = false;
   private _closed = false;
 
   constructor(options: ViewOptions<TEvent, TMessage>) {
@@ -166,7 +175,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
 
   // Spec: AIT-CT9, AIT-CT11c
   flattenNodes(): TreeNode<TMessage>[] {
-    const nodes = this._tree.flattenNodes(this._selections);
+    const nodes = this._tree.flattenNodes(this._resolveSelections());
     if (this._withheldMsgIds.size === 0) return nodes;
     return nodes.filter((n) => !this._withheldMsgIds.has(n.msgId));
   }
@@ -227,24 +236,28 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   // Spec: AIT-CT13c
   select(msgId: string, index: number): void {
     this._logger.trace('DefaultView.select();', { msgId, index });
-    const group = this._tree.getSiblings(msgId);
-    if (group.length <= 1) return;
+    const nodes = this._tree.getSiblingNodes(msgId);
+    if (nodes.length <= 1) return;
     const groupRootId = this._tree.getGroupRoot(msgId);
-    const clamped = Math.max(0, Math.min(index, group.length - 1));
-    this._selections.set(groupRootId, clamped);
-    this._logger.debug('DefaultView.select();', { msgId, index: clamped });
+    const clamped = Math.max(0, Math.min(index, nodes.length - 1));
+    const selected = nodes[clamped];
+    if (!selected) return; // unreachable: clamped is always in bounds
+    this._branchSelections.set(groupRootId, { kind: 'user', selectedId: selected.msgId });
+    this._logger.debug('DefaultView.select();', { msgId, index: clamped, selectedId: selected.msgId });
     this._updateVisibleSnapshot();
     this._emitter.emit('update');
   }
 
   getSelectedIndex(msgId: string): number {
     this._logger.trace('DefaultView.getSelectedIndex();', { msgId });
-    const group = this._tree.getSiblings(msgId);
-    if (group.length <= 1) return 0;
+    const nodes = this._tree.getSiblingNodes(msgId);
+    if (nodes.length <= 1) return 0;
     const groupRootId = this._tree.getGroupRoot(msgId);
-    const stored = this._selections.get(groupRootId);
-    if (stored !== undefined) return Math.max(0, Math.min(stored, group.length - 1));
-    return group.length - 1; // default: latest
+    const sel = this._branchSelections.get(groupRootId);
+    if (!sel || sel.kind === 'pending') return nodes.length - 1; // default: latest
+    const idx = nodes.findIndex((n) => n.msgId === sel.selectedId);
+    if (idx === -1) return nodes.length - 1; // fallback if stale
+    return idx;
   }
 
   getSiblings(msgId: string): TMessage[] {
@@ -266,37 +279,54 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   // Spec: AIT-CT3, AIT-CT4
   async send(input: TMessage | TMessage[], options?: SendOptions): Promise<ActiveTurn<TEvent>> {
     this._logger.trace('DefaultView.send();');
+    if (this._closed) {
+      throw new Ably.ErrorInfo('unable to send; view is closed', ErrorCode.InvalidArgument, 400);
+    }
 
-    // Capture sibling count before the delegate so we can detect whether
-    // an optimistic insert actually added a new sibling (edit) or not (regenerate).
-    // NOTE: There is a small race window between this capture and the post-delegate
-    // check. If another source adds a sibling to the same group during the await
-    // (e.g. another view's concurrent send), we may incorrectly attribute it to
-    // this send and auto-select it. The window is small (typically only the channel
-    // attach promise) and self-correcting on the next tree update.
-    const siblingsBefore = options?.forkOf ? this._tree.getSiblings(options.forkOf).length : 0;
-
-    const result = await this._sendDelegate(input, options, { flattenNodes: () => this.flattenNodes() });
+    // Pre-compute visible branch history before the delegate call so the
+    // transport has no back-reference to the View (one-way dependency).
+    const history = this.flattenNodes();
+    const result = await this._sendDelegate(input, options, history);
 
     // Spec: AIT-CT13e
     // Auto-select the new fork in this view when creating a fork.
-    // The delegate's optimistic insert created the sibling — pin this
-    // view to the latest (new) sibling so the user sees their edit/regeneration.
     if (options?.forkOf) {
       const groupRoot = this._tree.getGroupRoot(options.forkOf);
-      const siblings = this._tree.getSiblings(options.forkOf);
-      if (siblings.length > siblingsBefore) {
-        // Optimistic insert added a sibling — select it immediately.
-        this._selections.set(groupRoot, siblings.length - 1);
-        this._updateVisibleSnapshot();
-        this._emitter.emit('update');
+
+      if (result.optimisticMsgIds.length > 0) {
+        // The delegate optimistically inserted user messages (edit path).
+        // Auto-select the last optimistic msgId — this is deterministic and
+        // avoids the sibling-count race that exists when inferring from tree state.
+        const lastMsgId = result.optimisticMsgIds.at(-1);
+        if (lastMsgId) {
+          this._branchSelections.set(groupRoot, { kind: 'auto', selectedId: lastMsgId });
+          this._updateVisibleSnapshot();
+          this._emitter.emit('update');
+        }
       } else {
-        // No new sibling yet (e.g. regenerate sends no user messages). Defer
+        // No optimistic insert (e.g. regenerate sends no user messages). Defer
         // auto-selection until the server response creates the new sibling.
-        // Store the group root (not the raw forkOf) so _pinVisibleSelections
+        // Store the group root (not the raw forkOf) so _pinBranchSelections
         // can match it regardless of which sibling is currently visible.
-        this._pendingForkSelections.add(groupRoot);
-        this._logger.debug('DefaultView.send(); deferring fork auto-selection', { forkOf: options.forkOf, groupRoot });
+        this._branchSelections.set(groupRoot, { kind: 'pending', turnId: result.turnId });
+        this._logger.debug('DefaultView.send(); deferring fork auto-selection', {
+          forkOf: options.forkOf,
+          groupRoot,
+          turnId: result.turnId,
+        });
+
+        // Bound pending entry lifetime to the turn — clean up on turn-end.
+        const turnUnsub = this._tree.on('turn', (evt) => {
+          if (evt.type !== EVENT_TURN_END || evt.turnId !== result.turnId) return;
+          const sel = this._branchSelections.get(groupRoot);
+          if (sel?.kind === 'pending' && sel.turnId === result.turnId) {
+            this._branchSelections.delete(groupRoot);
+          }
+          turnUnsub();
+          const idx = this._unsubs.indexOf(turnUnsub);
+          if (idx !== -1) this._unsubs.splice(idx, 1);
+        });
+        this._unsubs.push(turnUnsub);
       }
     }
 
@@ -381,17 +411,11 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     if (this._withheldMsgIds.size === 0) return allTurns;
 
     // Filter to turns that have at least one visible message
-    const visibleTurnIds = new Set<string>();
-    for (const n of this.flattenNodes()) {
-      const turnId = n.headers[HEADER_TURN_ID];
-      if (turnId) visibleTurnIds.add(turnId);
-    }
-
     const result = new Map<string, Set<string>>();
     for (const [clientId, turnIds] of allTurns) {
       const filtered = new Set<string>();
       for (const turnId of turnIds) {
-        if (visibleTurnIds.has(turnId)) filtered.add(turnId);
+        if (this._lastVisibleTurnIds.has(turnId)) filtered.add(turnId);
       }
       if (filtered.size > 0) result.set(clientId, filtered);
     }
@@ -431,8 +455,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     for (const unsub of this._unsubs) unsub();
     this._unsubs.length = 0;
     this._emitter.off();
-    this._selections.clear();
-    this._pendingForkSelections.clear();
+    this._branchSelections.clear();
     this._withheldMsgIds.clear();
     this._withheldBuffer.length = 0;
     this._onClose?.();
@@ -444,7 +467,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
 
   private async _loadFirstPage(limit: number): Promise<void> {
     // Snapshot before loading — everything already in the tree stays visible
-    const beforeMsgIds = new Set(this._tree.flattenNodes(this._selections).map((n) => n.msgId));
+    const beforeMsgIds = new Set(this._tree.flattenNodes(this._resolveSelections()).map((n) => n.msgId));
 
     const firstPage = await decodeHistory(this._channel, this._codec, { limit }, this._logger);
     if (this._closed) return;
@@ -455,50 +478,60 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     this._lastHistoryPage = lastPage;
     this._hasMoreHistory = lastPage.hasNext();
 
-    // Withhold ALL new visible messages first, then release the newest batch
-    for (const n of newVisible) {
-      this._withheldMsgIds.add(n.msgId);
-    }
-
+    // Split into withheld (older, kept hidden) and released (newest, shown now).
+    // Only add the actually-withheld messages to the set — adding all then
+    // releasing would cause a spurious empty-list update if a tree event fires
+    // between the two operations.
     const released = newVisible.slice(-limit);
     const withheld = newVisible.slice(0, -limit);
+    for (const n of withheld) {
+      this._withheldMsgIds.add(n.msgId);
+    }
     this._withheldBuffer.push(...withheld);
     this._releaseWithheld(released);
   }
 
   private async _loadAndReveal(page: PaginatedMessages<TMessage>, limit: number): Promise<void> {
     // Everything currently in the tree is "already known"
-    const alreadyKnown = new Set(this._tree.flattenNodes(this._selections).map((n) => n.msgId));
+    const alreadyKnown = new Set(this._tree.flattenNodes(this._resolveSelections()).map((n) => n.msgId));
 
     const { newVisible, lastPage } = await this._loadUntilVisible(page, limit, alreadyKnown);
     if (this._closed) return;
     this._lastHistoryPage = lastPage;
     this._hasMoreHistory = lastPage.hasNext();
 
-    for (const n of newVisible) {
+    // Release the newest `limit` items; rest stays in buffer.
+    // Only add actually-withheld messages to the set — adding all then
+    // releasing would cause a spurious empty-list update if a tree event
+    // fires between the two operations.
+    const batch = newVisible.slice(-limit);
+    const withheld = newVisible.slice(0, -limit);
+    for (const n of withheld) {
       this._withheldMsgIds.add(n.msgId);
     }
-
-    // Release the newest `limit` items; rest stays in buffer
-    const batch = newVisible.splice(-limit, limit);
-    this._withheldBuffer.push(...newVisible);
+    this._withheldBuffer.push(...withheld);
     this._releaseWithheld(batch);
   }
 
   private _processHistoryPage(page: PaginatedMessages<TMessage>): void {
-    for (const [i, message] of page.items.entries()) {
-      const headers = page.itemHeaders?.[i] ?? {};
-      const serial = page.itemSerials?.[i];
-      const msgId = headers[HEADER_MSG_ID];
-      if (!msgId) continue;
-      this._tree.upsert(msgId, message, headers, serial);
-    }
-
-    // Forward raw Ably messages through the tree
-    if (page.rawMessages && page.rawMessages.length > 0) {
-      for (const msg of page.rawMessages) {
-        this._tree.emitAblyMessage(msg);
+    this._processingHistory = true;
+    try {
+      for (const [i, message] of page.items.entries()) {
+        const headers = page.itemHeaders?.[i] ?? {};
+        const serial = page.itemSerials?.[i];
+        const msgId = headers[HEADER_MSG_ID];
+        if (!msgId) continue;
+        this._tree.upsert(msgId, message, headers, serial);
       }
+
+      // Forward raw Ably messages through the tree
+      if (page.rawMessages && page.rawMessages.length > 0) {
+        for (const msg of page.rawMessages) {
+          this._tree.emitAblyMessage(msg);
+        }
+      }
+    } finally {
+      this._processingHistory = false;
     }
   }
 
@@ -512,7 +545,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
 
     const newVisibleCount = (): number => {
       let count = 0;
-      for (const n of this._tree.flattenNodes(this._selections)) {
+      for (const n of this._tree.flattenNodes(this._resolveSelections())) {
         if (!beforeMsgIds.has(n.msgId)) count++;
       }
       return count;
@@ -525,7 +558,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
       page = nextPage;
     }
 
-    const newVisible = this._tree.flattenNodes(this._selections).filter((n) => !beforeMsgIds.has(n.msgId));
+    const newVisible = this._tree.flattenNodes(this._resolveSelections()).filter((n) => !beforeMsgIds.has(n.msgId));
     return { newVisible, lastPage: page };
   }
 
@@ -544,68 +577,125 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   // Private: scoped event forwarding
   // -------------------------------------------------------------------------
 
-  private _computeVisibleNodes(): TreeNode<TMessage>[] {
-    return this.flattenNodes();
-  }
-
-  private _updateVisibleSnapshot(): void {
-    const nodes = this._computeVisibleNodes();
-    this._lastVisibleIds = nodes.map((n) => n.msgId);
-    this._lastVisibleMessages = nodes.map((n) => n.message);
+  private _updateVisibleSnapshot(nodes?: TreeNode<TMessage>[]): void {
+    const resolved = nodes ?? this.flattenNodes();
+    this._lastVisibleIds = resolved.map((n) => n.msgId);
+    this._lastVisibleMessages = resolved.map((n) => n.message);
+    this._lastVisibleTurnIds = new Set<string>();
+    for (const n of resolved) {
+      const turnId = n.headers[HEADER_TURN_ID];
+      if (turnId) this._lastVisibleTurnIds.add(turnId);
+    }
   }
 
   private _onTreeUpdate(): void {
+    // Suppress update forwarding while processing history pages. During
+    // _processHistoryPage, each tree.upsert() fires this handler synchronously
+    // — but _withheldMsgIds hasn't been populated yet, so flattenNodes() would
+    // return unfiltered history. Without this guard, subscribers briefly see all
+    // history messages before the pagination window is applied. The final update
+    // is emitted by _releaseWithheld after withholding is set up.
+    // Scoped to _processingHistory (not _loadingOlder) so that live streaming
+    // updates arriving during the async history fetch are still forwarded.
+    if (this._processingHistory) return;
+
     // Pin selections for previously-visible nodes that now have siblings.
     // This prevents new forks (from other views' edits/regenerates) from
     // shifting this view to a branch the user didn't navigate to.
-    this._pinVisibleSelections();
+    this._pinBranchSelections();
+    this._resolvePendingSelections();
 
-    const nodes = this._computeVisibleNodes();
+    const nodes = this.flattenNodes();
     const newIds = nodes.map((n) => n.msgId);
     const newMessages = nodes.map((n) => n.message);
     if (this._visibleChanged(newIds, newMessages)) {
-      this._lastVisibleIds = newIds;
-      this._lastVisibleMessages = newMessages;
+      this._updateVisibleSnapshot(nodes);
       this._emitter.emit('update');
     }
   }
 
   /**
+   * Build a resolved selections map from `_branchSelections` for passing
+   * to `tree.flattenNodes()`. Pending entries (no sibling yet) are omitted,
+   * causing the tree to use the default (latest sibling).
+   * @returns Resolved map of groupRoot → selectedMsgId.
+   */
+  private _resolveSelections(): Map<string, string> {
+    const resolved = new Map<string, string>();
+    for (const [groupRoot, sel] of this._branchSelections) {
+      if (sel.kind === 'pending') continue;
+      resolved.set(groupRoot, sel.selectedId);
+    }
+    return resolved;
+  }
+
+  /**
    * For each previously-visible message that now has siblings but no
-   * explicit selection, pin the selection to that message's index.
+   * explicit selection, pin the selection to that message's msgId.
    * This preserves the current branch when new forks appear from
    * other views or external sources.
    *
-   * Exception: if the fork was initiated by this view (tracked in
-   * `_pendingForkSelections`), select the newest sibling instead of
+   * Exception: if the fork was initiated by this view (tracked as a
+   * `pending` BranchSelection), select the newest sibling instead of
    * pinning the old one. This handles regenerate, where no optimistic
    * insert was possible at send time.
    */
-  private _pinVisibleSelections(): void {
+  private _pinBranchSelections(): void {
     for (const msgId of this._lastVisibleIds) {
       if (!this._tree.hasSiblings(msgId)) continue;
       const groupRoot = this._tree.getGroupRoot(msgId);
+      const existing = this._branchSelections.get(groupRoot);
 
       // Spec: AIT-CT13e
       // Check if this fork was initiated by this view (e.g. regenerate).
-      // If so, select the newest sibling and clear the pending state.
-      // The pending set stores the forkOf msgId (the group root), but the
-      // visible list may contain a different sibling — so check via groupRoot.
-      if (this._pendingForkSelections.has(groupRoot)) {
-        const siblings = this._tree.getSiblings(msgId);
-        const index = siblings.length - 1;
-        this._logger.debug('DefaultView._pinVisibleSelections(); auto-selecting pending fork', { msgId, index });
-        this._selections.set(groupRoot, index);
-        this._pendingForkSelections.delete(groupRoot);
+      // If so, select the newest sibling — but only if it belongs to the
+      // pending turn. Without this check, a sibling from another view's
+      // concurrent fork would be incorrectly auto-selected.
+      if (existing?.kind === 'pending') {
+        const nodes = this._tree.getSiblingNodes(msgId);
+        const newest = nodes.at(-1);
+        if (newest && newest.msgId !== msgId) {
+          const newestTurnId = newest.headers[HEADER_TURN_ID];
+          if (newestTurnId === existing.turnId) {
+            this._logger.debug('DefaultView._pinBranchSelections(); auto-selecting pending fork', {
+              msgId,
+              newestId: newest.msgId,
+              turnId: existing.turnId,
+            });
+            this._branchSelections.set(groupRoot, { kind: 'auto', selectedId: newest.msgId });
+          }
+        }
         continue;
       }
 
       // Spec: AIT-CT13f
       // External fork — pin to the currently-visible sibling.
-      if (this._selections.has(groupRoot)) continue;
-      const idx = this._tree.getSiblingIndex(msgId);
-      if (idx >= 0) {
-        this._selections.set(groupRoot, idx);
+      if (existing) continue; // already have a selection
+      this._branchSelections.set(groupRoot, { kind: 'pinned', selectedId: msgId });
+    }
+  }
+
+  /**
+   * Resolve pending selections that are no longer on the visible branch.
+   * `_pinBranchSelections` only checks visible nodes, so if the user navigated
+   * away before the server response arrived, the pending entry would linger.
+   * This pass checks all pending entries against the tree directly.
+   */
+  private _resolvePendingSelections(): void {
+    for (const [groupRoot, sel] of this._branchSelections) {
+      if (sel.kind !== 'pending') continue;
+      const nodes = this._tree.getSiblingNodes(groupRoot);
+      if (nodes.length <= 1) continue;
+      const newest = nodes.at(-1);
+      if (!newest || newest.msgId === groupRoot) continue;
+      const newestTurnId = newest.headers[HEADER_TURN_ID];
+      if (newestTurnId === sel.turnId) {
+        this._logger.debug('DefaultView._resolvePendingSelections(); resolving off-branch pending', {
+          groupRoot,
+          newestId: newest.msgId,
+          turnId: sel.turnId,
+        });
+        this._branchSelections.set(groupRoot, { kind: 'auto', selectedId: newest.msgId });
       }
     }
   }
@@ -627,13 +717,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
 
   private _onTreeTurn(event: TurnLifecycleEvent): void {
     // Check if any messages for this turn are already on the visible branch.
-    const visibleTurnIds = new Set<string>();
-    for (const n of this.flattenNodes()) {
-      const turnId = n.headers[HEADER_TURN_ID];
-      if (turnId) visibleTurnIds.add(turnId);
-    }
-
-    if (visibleTurnIds.has(event.turnId)) {
+    if (this._lastVisibleTurnIds.has(event.turnId)) {
       this._emitter.emit('turn', event);
       return;
     }
@@ -642,6 +726,9 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     // messages arrive. Own turns have optimistic inserts (caught above).
     // Remote turns carry parent/forkOf from the server.
     if (event.type === EVENT_TURN_START && this._isTurnStartVisible(event)) {
+      // Track the predicted turnId so the corresponding turn-end is not
+      // dropped if it arrives before messages update the snapshot.
+      this._lastVisibleTurnIds.add(event.turnId);
       this._emitter.emit('turn', event);
     }
   }

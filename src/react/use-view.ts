@@ -81,6 +81,8 @@ export const useView = <TEvent, TMessage>(
   const loadingRef = useRef(false);
 
   // Auto-load first page on mount when options are provided (SWR-style).
+  // Fires once per view instance — subsequent changes to options.limit
+  // only affect manual loadOlder() calls, not the initial auto-load.
   const autoLoad = options !== undefined && options !== null;
   const autoLoadedRef = useRef(false);
 

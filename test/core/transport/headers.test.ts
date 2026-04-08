@@ -67,16 +67,4 @@ describe('buildTransportHeaders', () => {
     expect(headers).not.toHaveProperty(HEADER_PARENT);
     expect(headers).not.toHaveProperty(HEADER_FORK_OF);
   });
-
-   
-  it('omits parent when null', () => {
-    const headers = buildTransportHeaders({
-      role: 'user',
-      turnId: 'turn-1',
-      msgId: 'msg-1',
-      parent: null, // eslint-disable-line unicorn/no-null -- explicit null test
-    });
-
-    expect(headers).not.toHaveProperty(HEADER_PARENT);
-  });
 });

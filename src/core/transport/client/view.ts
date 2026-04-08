@@ -12,14 +12,15 @@
 
 import type * as Ably from 'ably';
 
-import { HEADER_MSG_ID, HEADER_TURN_ID } from '../../constants.js';
-import { EventEmitter } from '../../event-emitter.js';
-import type { Logger } from '../../logger.js';
-import { getHeaders } from '../../utils.js';
-import type { Codec } from '../codec/types.js';
+import { HEADER_MSG_ID, HEADER_TURN_ID } from '../../../constants.js';
+import { EventEmitter } from '../../../event-emitter.js';
+import type { Logger } from '../../../logger.js';
+import { getHeaders } from '../../../utils.js';
+import type { Codec } from '../../codec/types.js';
+import type { TreeNode, TurnLifecycleEvent } from '../types.js';
 import { decodeHistory } from './decode-history.js';
 import type { TreeInternal } from './tree.js';
-import type { PaginatedMessages, TreeNode, TurnLifecycleEvent, View } from './types.js';
+import type { PaginatedMessages, View } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Events map

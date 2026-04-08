@@ -8,7 +8,7 @@
 
 import { useCallback } from 'react';
 
-import type { ClientTransport, TreeNode } from '../core/transport/types.js';
+import type { ClientTransport, TreeNode } from '../core/transport/client/types.js';
 
 /** Handle for navigating the branching conversation tree. */
 export interface TreeHandle<TMessage> {

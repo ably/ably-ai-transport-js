@@ -1,16 +1,16 @@
 import type * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { HEADER_MSG_ID, HEADER_TURN_ID } from '../../../src/constants.js';
-import type { Codec } from '../../../src/core/codec/types.js';
+import { HEADER_MSG_ID, HEADER_TURN_ID } from '../../../../src/constants.js';
+import type { Codec } from '../../../../src/core/codec/types.js';
 // Vitest hoists vi.mock above imports, so this static import gets the mock.
-import { decodeHistory } from '../../../src/core/transport/decode-history.js';
-import type { DefaultTree } from '../../../src/core/transport/tree.js';
-import { createTree } from '../../../src/core/transport/tree.js';
-import type { PaginatedMessages, TurnLifecycleEvent } from '../../../src/core/transport/types.js';
-import { DefaultView } from '../../../src/core/transport/view.js';
-import { LogLevel, makeLogger } from '../../../src/logger.js';
-vi.mock('../../../src/core/transport/decode-history.js', () => ({
+import { decodeHistory } from '../../../../src/core/transport/client/decode-history.js';
+import type { DefaultTree } from '../../../../src/core/transport/client/tree.js';
+import { createTree } from '../../../../src/core/transport/client/tree.js';
+import type { PaginatedMessages, TurnLifecycleEvent } from '../../../../src/core/transport/client/types.js';
+import { DefaultView } from '../../../../src/core/transport/client/view.js';
+import { LogLevel, makeLogger } from '../../../../src/logger.js';
+vi.mock('../../../../src/core/transport/client/decode-history.js', () => ({
   decodeHistory: vi.fn(),
 }));
 

@@ -18,10 +18,11 @@
 
 import type * as Ably from 'ably';
 
-import { HEADER_FORK_OF, HEADER_PARENT } from '../../constants.js';
-import { EventEmitter } from '../../event-emitter.js';
-import type { Logger } from '../../logger.js';
-import type { Tree, TreeNode, TurnLifecycleEvent } from './types.js';
+import { HEADER_FORK_OF, HEADER_PARENT } from '../../../constants.js';
+import { EventEmitter } from '../../../event-emitter.js';
+import type { Logger } from '../../../logger.js';
+import type { TreeNode, TurnLifecycleEvent } from '../types.js';
+import type { Tree } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Internal node type

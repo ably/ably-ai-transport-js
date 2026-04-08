@@ -4,7 +4,7 @@
 
 import { vi } from 'vitest';
 
-import type { ClientTransport, Tree, TurnLifecycleEvent, View } from '../../../src/core/transport/types.js';
+import type { ClientTransport, Tree, TurnLifecycleEvent, View } from '../../../src/core/transport/client/types.js';
 
 type TreeEventType = 'update' | 'ably-message' | 'turn';
 type TransportEventType = 'error';

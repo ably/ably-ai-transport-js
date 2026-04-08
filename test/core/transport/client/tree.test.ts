@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { HEADER_FORK_OF, HEADER_PARENT } from '../../../src/constants.js';
-import { createTree } from '../../../src/core/transport/tree.js';
-import type { Tree } from '../../../src/core/transport/types.js';
-import { LogLevel, makeLogger } from '../../../src/logger.js';
+import { HEADER_FORK_OF, HEADER_PARENT } from '../../../../src/constants.js';
+import { createTree } from '../../../../src/core/transport/client/tree.js';
+import type { Tree } from '../../../../src/core/transport/client/types.js';
+import { LogLevel, makeLogger } from '../../../../src/logger.js';
 
 // ---------------------------------------------------------------------------
 // Helpers

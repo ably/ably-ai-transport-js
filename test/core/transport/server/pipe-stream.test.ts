@@ -1,8 +1,8 @@
 import type * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { StreamEncoder } from '../../../src/core/codec/types.js';
-import { pipeStream } from '../../../src/core/transport/pipe-stream.js';
+import type { StreamEncoder } from '../../../../src/core/codec/types.js';
+import { pipeStream } from '../../../../src/core/transport/server/pipe-stream.js';
 
 // ---------------------------------------------------------------------------
 // Helpers

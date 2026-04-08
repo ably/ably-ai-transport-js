@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import type { StreamRouter } from '../../../src/core/transport/stream-router.js';
-import { createStreamRouter } from '../../../src/core/transport/stream-router.js';
-import { LogLevel, makeLogger } from '../../../src/logger.js';
+import type { StreamRouter } from '../../../../src/core/transport/client/stream-router.js';
+import { createStreamRouter } from '../../../../src/core/transport/client/stream-router.js';
+import { LogLevel, makeLogger } from '../../../../src/logger.js';
 
 // ---------------------------------------------------------------------------
 // Helpers

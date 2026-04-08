@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import type { ClientTransport, TreeNode } from '../core/transport/types.js';
+import type { ClientTransport, TreeNode } from '../core/transport/client/types.js';
 
 /** Options for configuring the view's initial load behavior. */
 export interface ViewOptions {

@@ -1,6 +1,6 @@
 # Client transport
 
-The client transport (`src/core/transport/client-transport.ts`) manages the full client-side conversation lifecycle over a single Ably channel. It composes a [stream router](transport-components.md#streamrouter), [conversation tree](conversation-tree.md), and codec [decoder](decoder.md)/[accumulator](codec-interface.md#accumulator) to handle sending messages, receiving streamed responses, managing conversation state, and supporting branching operations (edit, regenerate).
+The client transport (`src/core/transport/client/client-transport.ts`) manages the full client-side conversation lifecycle over a single Ably channel. It composes a [stream router](transport-components.md#streamrouter), [conversation tree](conversation-tree.md), and codec [decoder](decoder.md)/[accumulator](codec-interface.md#accumulator) to handle sending messages, receiving streamed responses, managing conversation state, and supporting branching operations (edit, regenerate).
 
 The client never publishes domain messages directly to the channel. Instead, it sends them to the server via HTTP POST. The server publishes user messages and [turn lifecycle events](wire-protocol.md#lifecycle-events) on behalf of the client. The channel subscription is the sole source of truth for conversation state.
 

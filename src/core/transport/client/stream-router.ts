@@ -7,8 +7,8 @@
 
 import * as Ably from 'ably';
 
-import { ErrorCode } from '../../errors.js';
-import type { Logger } from '../../logger.js';
+import { ErrorCode } from '../../../errors.js';
+import type { Logger } from '../../../logger.js';
 import type { TurnEntry } from './types.js';
 
 // ---------------------------------------------------------------------------

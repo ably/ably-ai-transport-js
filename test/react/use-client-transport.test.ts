@@ -3,11 +3,11 @@
 import { renderHook } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createClientTransport } from '../../src/core/transport/client-transport.js';
+import { createClientTransport } from '../../src/core/transport/client/client-transport.js';
 import { useClientTransport } from '../../src/react/use-client-transport.js';
 
 // Mock the factory to avoid needing a real Ably channel
-vi.mock('../../src/core/transport/client-transport.js', () => ({
+vi.mock('../../src/core/transport/client/client-transport.js', () => ({
   createClientTransport: vi.fn(() => ({
     send: vi.fn(),
     getMessages: vi.fn(() => []),

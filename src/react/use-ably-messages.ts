@@ -8,7 +8,7 @@
 import type * as Ably from 'ably';
 import { useEffect, useRef, useState } from 'react';
 
-import type { ClientTransport } from '../core/transport/types.js';
+import type { ClientTransport } from '../core/transport/client/types.js';
 
 /**
  * Subscribe to raw Ably message updates from a client transport's tree.

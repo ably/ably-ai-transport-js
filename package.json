@@ -96,6 +96,7 @@
     }
   },
   "devDependencies": {
+    "@ai-sdk/react": "^3.0.151",
     "@eslint/compat": "^1.2.7",
     "@eslint/eslintrc": "^3.3.0",
     "@eslint/js": "^9.12.0",

@@ -529,10 +529,9 @@ describe('ClientTransport integration', () => {
 
     // Verify the assistant message has the correct text
     const asstMsg = messages.find((m) => m.role === 'assistant');
-    if (asstMsg) {
-      const textPart = asstMsg.parts.find((p): p is AI.TextUIPart => p.type === 'text');
-      expect(textPart?.text).toBe('History answer');
-    }
+    expect(asstMsg).toBeDefined();
+    const textPart = asstMsg?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
+    expect(textPart?.text).toBe('History answer');
   });
 
   /**

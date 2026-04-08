@@ -340,7 +340,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
               turnId,
               msgId: node.msgId,
               turnClientId: opts?.clientId,
-              parent: node.parentId ?? turnParent ?? undefined,
+              parent: node.parentId ?? turnParent,
               forkOf: node.forkOf ?? turnForkOf,
             }),
             node.headers,
@@ -380,8 +380,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
         const turnOwnerClientId = turnManager.getClientId(turnId);
 
         // Per-operation parent overrides the turn-level default.
-        const assistantParent =
-          streamOpts?.parent === undefined ? (turnParent ?? undefined) : (streamOpts.parent ?? undefined);
+        const assistantParent = streamOpts?.parent === undefined ? turnParent : streamOpts.parent;
 
         const defaultHeaders = buildTransportHeaders({
           role: 'assistant',

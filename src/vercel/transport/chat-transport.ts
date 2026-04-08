@@ -46,7 +46,7 @@ export interface SendMessagesRequestContext {
   /** The msg-id of the message being forked (regenerated or edited). */
   forkOf?: string;
   /** The msg-id of the predecessor in the conversation thread. */
-  parent?: string | null;
+  parent?: string;
 }
 
 /** Options for customizing the ChatTransport behavior. */
@@ -175,7 +175,7 @@ export const createChatTransport = (
     // For regeneration: forkOf = messageId (the assistant message being regenerated),
     //   parent = the parent of that message in the tree.
     let forkOf: string | undefined;
-    let parent: string | null | undefined;
+    let parent: string | undefined;
 
     if (trigger === 'regenerate-message' && messageId) {
       forkOf = messageId;

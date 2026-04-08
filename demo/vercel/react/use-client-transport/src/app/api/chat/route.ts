@@ -22,7 +22,7 @@ interface ChatRequestBody {
   history?: TreeNode<UIMessage>[];
   id: string;
   forkOf?: string;
-  parent?: string | null;
+  parent?: string;
 }
 
 // Server-side Ably client — uses API key directly (trusted environment).

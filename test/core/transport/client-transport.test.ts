@@ -572,7 +572,7 @@ describe('ClientTransport', () => {
 
     it('throws when transport is closed', async () => {
       await transport.close();
-      await expect(transport.view.send({ id: 'u1', content: 'hi' })).rejects.toThrow('transport is closed');
+      await expect(transport.view.send({ id: 'u1', content: 'hi' })).rejects.toThrow('view is closed');
     });
 
     it('createView throws when transport is closed', async () => {
@@ -639,25 +639,6 @@ describe('ClientTransport', () => {
       expect(body.parent).toBe('explicit-parent');
     });
 
-    it('sets null parent when explicitly provided', async () => {
-      const seeded = createClientTransport({
-        channel: createMockChannel(),
-        codec,
-        messages: [{ id: 'seed-1', content: 'first' }],
-        fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
-      });
-
-      // eslint-disable-next-line unicorn/no-null -- testing null parent explicitly (root message)
-      await seeded.view.send({ id: 'u1', content: 'hi' }, { parent: null });
-      await mockFetch.waitForCalls(1);
-
-      const body = mockFetch.body(0);
-      // parent should be null — not auto-computed from the tree
-      expect(body.parent).toBeNull();
-
-      await seeded.close();
-    });
-
     it('does not auto-compute parent when forkOf is set', async () => {
       const seeded = createClientTransport({
         channel: createMockChannel(),
@@ -669,9 +650,10 @@ describe('ClientTransport', () => {
       await seeded.view.send({ id: 'u1', content: 'hi' }, { forkOf: 'seed-1' });
       await mockFetch.waitForCalls(1);
 
-      // forkOf skips autoParent computation
+      // forkOf skips autoParent computation — parent should not be auto-computed
       const body = mockFetch.body(0);
       expect(body.forkOf).toBe('seed-1');
+      expect(body.parent).toBeUndefined();
 
       await seeded.close();
     });
@@ -801,9 +783,10 @@ describe('ClientTransport', () => {
         }),
       );
 
-      const endEvent = events.find((e) => e.type === EVENT_TURN_END);
-      if (endEvent?.type === EVENT_TURN_END) {
-        expect(endEvent.reason).toBe('complete');
+      expect(events).toHaveLength(2);
+      expect(events[1]?.type).toBe(EVENT_TURN_END);
+      if (events[1]?.type === EVENT_TURN_END) {
+        expect(events[1].reason).toBe('complete');
       }
     });
 
@@ -1080,17 +1063,14 @@ describe('ClientTransport', () => {
       expect(items).toHaveLength(2);
 
       // Late arrival — should be skipped, not accumulated as observer turn
-      const messageHandler = vi.fn();
-      transport.view.on('update', messageHandler);
+      const nodeCountBefore = transport.view.flattenNodes().length;
 
       decoder.outputs.push({ kind: 'event', event: { type: 'text', text: 'late' } });
       simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_TURN_ID]: turn.turnId }));
 
-      // The message handler is called once from the observer path — but since
-      // the own turn has completed and its observer accumulator was cleaned up,
-      // the code path at line 283 should skip the event
-      // We verify by checking no new messages were accumulated (handler may fire
-      // from the dispatcher emit, but the skip happens before observer.process)
+      // The own turn's observer accumulator was cleaned up on stream completion,
+      // so the late event should not produce new tree nodes.
+      expect(transport.view.flattenNodes()).toHaveLength(nodeCountBefore);
     });
 
     it('captures observer headers from streamed events', () => {
@@ -2426,14 +2406,12 @@ describe('ClientTransport', () => {
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
 
-      // Load history with limit=1 — view should show fewer messages than tree
+      // Load history with limit=1 — view should reveal 1 message and withhold the rest
       await histTransport.view.loadOlder(1);
 
       const visible = histTransport.view.flattenNodes();
-      const treeAll = histTransport.view.flattenNodes();
-
-      // If windowing is working, visible <= total in tree
-      expect(treeAll.length).toBeGreaterThanOrEqual(visible.length);
+      expect(visible).toHaveLength(1);
+      expect(histTransport.view.hasOlder()).toBe(true);
 
       await histTransport.close();
     });

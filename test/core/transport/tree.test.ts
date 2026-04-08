@@ -17,7 +17,7 @@ interface TestMessage {
 const silentLogger = makeLogger({ logLevel: LogLevel.Silent });
 
 /** Empty selections — always picks the latest sibling at every fork. */
-const NO_SELECTIONS = new Map<string, number>();
+const NO_SELECTIONS = new Map<string, string>();
 
 /**
  * Build headers for a tree node.
@@ -242,8 +242,8 @@ describe('Tree', () => {
       tree.upsert('m4', { id: 'd', content: 'assistant-v2' }, headers({ parent: 'm1', forkOf: 'm2' }), 'serial-004');
 
       const groupRoot = tree.getGroupRoot('m2');
-      // Select the first sibling (original m2)
-      const selections = new Map([[groupRoot, 0]]);
+      // Select the first sibling (original m2) by msgId
+      const selections = new Map([[groupRoot, 'm2']]);
 
       const flat = tree.flattenNodes(selections).map((n) => n.message);
       expect(flat).toEqual([
@@ -253,20 +253,26 @@ describe('Tree', () => {
       ]);
     });
 
-    it('selections clamp out-of-range indices', () => {
+    it('stale selection msgId falls back to latest sibling', () => {
       tree.upsert('m4', { id: 'd', content: 'v2' }, headers({ parent: 'm1', forkOf: 'm2' }), 'serial-004');
 
       const groupRoot = tree.getGroupRoot('m2');
 
-      // Over-index selects last
-      const over = new Map([[groupRoot, 999]]);
-      const flatOver = tree.flattenNodes(over).map((n) => n.message.content);
-      expect(flatOver).toContain('v2');
+      // Unknown msgId falls back to latest
+      const stale = new Map([[groupRoot, 'nonexistent']]);
+      const flatStale = tree.flattenNodes(stale).map((n) => n.message.content);
+      expect(flatStale).toContain('v2');
+    });
 
-      // Under-index selects first
-      const under = new Map([[groupRoot, -5]]);
-      const flatUnder = tree.flattenNodes(under).map((n) => n.message.content);
-      expect(flatUnder).toContain('assistant-v1');
+    it('getSiblingNodes returns TreeNode objects with msgIds', () => {
+      tree.upsert('m4', { id: 'd', content: 'assistant-v2' }, headers({ parent: 'm1', forkOf: 'm2' }), 'serial-004');
+
+      const nodes = tree.getSiblingNodes('m2');
+      expect(nodes).toHaveLength(2);
+      expect(nodes[0]?.msgId).toBe('m2');
+      expect(nodes[1]?.msgId).toBe('m4');
+      expect(nodes[0]?.message).toEqual({ id: 'b', content: 'assistant-v1' });
+      expect(nodes[1]?.message).toEqual({ id: 'd', content: 'assistant-v2' });
     });
 
     it('getSiblings returns single-element array for non-forked nodes', () => {

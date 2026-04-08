@@ -11,7 +11,9 @@ const createMockTransport = () =>
   }) as unknown as ClientTransport<UIMessageChunk, UIMessage>;
 
 const createMockSend = () =>
-  vi.fn(() => Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-1', cancel: vi.fn() }));
+  vi.fn(() =>
+    Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-1', cancel: vi.fn(), optimisticMsgIds: [] }),
+  );
 
 describe('useSlashCommands', () => {
   it('is inactive when input does not start with /', () => {

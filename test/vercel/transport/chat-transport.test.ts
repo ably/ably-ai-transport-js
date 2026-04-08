@@ -26,6 +26,7 @@ interface MockTurn {
   stream: ReadableStream<AI.UIMessageChunk>;
   turnId: string;
   cancel: ReturnType<typeof vi.fn>;
+  optimisticMsgIds: string[];
   /** Resolve the stream by closing it. */
   close: () => void;
 }
@@ -42,6 +43,7 @@ const createMockTurn = (): MockTurn => {
     stream,
     turnId: 'turn-1',
     cancel,
+    optimisticMsgIds: [],
     close: () => { controller.close(); },
   };
 };

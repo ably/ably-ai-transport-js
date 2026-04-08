@@ -51,7 +51,7 @@ import type {
   TurnLifecycleEvent,
   View,
 } from './types.js';
-import { createView, type DefaultView, type ViewContext } from './view.js';
+import { createView, type DefaultView } from './view.js';
 
 /**
  * Returned from `on()` when the transport is already closed — the subscription
@@ -134,6 +134,8 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     this._clientId = options.clientId;
     this._api = options.api ?? '/api/chat';
     this._credentials = options.credentials;
+    // CAST: TS can't narrow options.headers/body inside a closure because the outer
+    // object is mutable. The truthiness check on the preceding line guarantees non-nullish.
     this._headersFn =
       typeof options.headers === 'function'
         ? options.headers
@@ -214,9 +216,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
             type: EVENT_TURN_START,
             turnId,
             clientId: turnCid,
-            // Empty string encodes root turn (null parent) — omit from event
-            // so _isTurnStartVisible treats it as "always visible"
-            ...(parentRaw && { parent: parentRaw }),
+            ...(parentRaw !== undefined && { parent: parentRaw }),
             ...(forkOf !== undefined && { forkOf }),
           });
         }
@@ -523,7 +523,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   private async _internalSend(
     input: TMessage | TMessage[],
     sendOptions: SendOptions | undefined,
-    viewContext: ViewContext<TMessage>,
+    history: TreeNode<TMessage>[],
   ): Promise<ActiveTurn<TEvent>> {
     if (this._closed) {
       throw new Ably.ErrorInfo('unable to send; transport is closed', ErrorCode.TransportClosed, 400);
@@ -546,8 +546,9 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     const msgIds = new Set<string>();
     const postMessages: TreeNode<TMessage>[] = [];
 
-    // Capture history BEFORE optimistic inserts from the calling view's branch.
-    const preInsertHistory = viewContext.flattenNodes();
+    // The View pre-computed the visible branch before calling this delegate,
+    // so preInsertHistory reflects the state before any optimistic inserts.
+    const preInsertHistory = history;
 
     // Spec: AIT-CT3d
     // Auto-compute parent from the current thread if not explicitly provided
@@ -567,7 +568,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       this._ownMsgIds.add(msgId);
       msgIds.add(msgId);
 
-      const resolvedParent = sendOptions?.parent === undefined ? autoParent : (sendOptions.parent ?? undefined);
+      const resolvedParent = sendOptions?.parent === undefined ? autoParent : sendOptions.parent;
 
       const optimisticHeaders = buildTransportHeaders({
         role: 'user',
@@ -667,6 +668,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       stream,
       turnId,
       cancel: async () => this.cancel({ turnId }),
+      optimisticMsgIds: [...msgIds],
     };
   }
 
@@ -694,6 +696,8 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
         if (resolved) return;
         resolved = true;
         unsub();
+        const idx = this._closeResolvers.indexOf(done);
+        if (idx !== -1) this._closeResolvers.splice(idx, 1);
         resolve();
       };
 

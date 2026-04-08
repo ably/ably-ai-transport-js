@@ -48,7 +48,7 @@ const createMockCodec = (): Codec<TestEvent, TestMessage> => ({
 
 const createMockSendDelegate = (): SendDelegate<TestEvent, TestMessage> =>
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-  vi.fn(() => Promise.resolve({ stream: new ReadableStream(), turnId: 'mock-turn', cancel: () => Promise.resolve() }));
+  vi.fn(() => Promise.resolve({ stream: new ReadableStream(), turnId: 'mock-turn', cancel: () => Promise.resolve(), optimisticMsgIds: [] }));
 
 const makeHeaders = (msgId: string, turnId?: string): Record<string, string> => {
   const h: Record<string, string> = { [HEADER_MSG_ID]: msgId };
@@ -131,7 +131,7 @@ describe('DefaultView', () => {
 
     it('delegates to tree when nothing is withheld', () => {
       tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'));
-      expect(view.flattenNodes()).toStrictEqual(tree.flattenNodes(new Map()));
+      expect(view.flattenNodes()).toStrictEqual(tree.flattenNodes(new Map<string, string>()));
     });
   });
 
@@ -147,22 +147,6 @@ describe('DefaultView', () => {
       tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'));
 
       expect(handler).toHaveBeenCalledOnce();
-    });
-
-    it('emits update when an existing node message changes', () => {
-      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'));
-
-      const handler = vi.fn();
-      view.on('update', handler);
-
-      tree.upsert('m1', { id: '1', content: 'updated' }, makeHeaders('m1'));
-
-      // The tree emits 'update', and since the visible list content changed
-      // (message object differs), the view should re-emit.
-      // Note: view compares msgId arrays, which are the same here,
-      // so it may NOT emit. This is acceptable — the view optimizes
-      // for structural changes (node add/remove/reorder).
-      // The test verifies the view does not crash.
     });
 
     it('emits update when visible message content changes in place (streaming)', () => {
@@ -504,10 +488,6 @@ describe('DefaultView', () => {
   });
 
   // -------------------------------------------------------------------------
-  // close
-  // -------------------------------------------------------------------------
-
-  // -------------------------------------------------------------------------
   // Branch navigation (view-local selections)
   // -------------------------------------------------------------------------
 
@@ -677,7 +657,7 @@ describe('DefaultView', () => {
     });
 
     it('send with forkOf auto-selects new fork in calling view', async () => {
-      // Create a delegate that inserts a fork when called
+      // Create a delegate that inserts a fork when called (simulates optimistic insert)
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
       const forkDelegate: SendDelegate<TestEvent, TestMessage> = vi.fn(() => {
         tree.upsert('m3', { id: '3', content: 'fork' }, {
@@ -685,7 +665,7 @@ describe('DefaultView', () => {
           'x-ably-parent': 'm1',
           'x-ably-fork-of': 'm2',
         }, 'serial-3');
-        return Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-1', cancel: vi.fn() });
+        return Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-1', cancel: vi.fn(), optimisticMsgIds: ['m3'] });
       });
 
       const forkView = new DefaultView<TestEvent, TestMessage>({
@@ -715,7 +695,7 @@ describe('DefaultView', () => {
       // the server creates the fork later.
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
       const noopDelegate: SendDelegate<TestEvent, TestMessage> = vi.fn(() =>
-        Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-1', cancel: vi.fn() }),
+        Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-1', cancel: vi.fn(), optimisticMsgIds: [] }),
       );
 
       const forkView = new DefaultView<TestEvent, TestMessage>({
@@ -741,23 +721,25 @@ describe('DefaultView', () => {
       const handler = vi.fn();
       forkView.on('update', handler);
 
-      // Server response arrives, creating the fork
+      // Server response arrives, creating the fork (stamped with the pending turn's ID)
       tree.upsert('m3', { id: '3', content: 'regenerated' }, {
         [HEADER_MSG_ID]: 'm3',
         'x-ably-parent': 'm1',
         'x-ably-fork-of': 'm2',
+        'x-ably-turn-id': 'turn-1',
       }, 'serial-3');
 
       // forkView auto-selected the new fork (m3, latest sibling)
       expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
       expect(handler).toHaveBeenCalled();
 
-      // Pending state was consumed — a second fork doesn't force re-selection
+      // Pending state was consumed — a second fork from a different turn doesn't force re-selection
       handler.mockClear();
       tree.upsert('m4', { id: '4', content: 'another fork' }, {
         [HEADER_MSG_ID]: 'm4',
         'x-ably-parent': 'm1',
         'x-ably-fork-of': 'm2',
+        'x-ably-turn-id': 'turn-other',
       }, 'serial-4');
 
       // View stays pinned on m3, does not jump to m4
@@ -772,7 +754,7 @@ describe('DefaultView', () => {
       // inserted. The view must still defer selection until the server response arrives.
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
       const noopDelegate: SendDelegate<TestEvent, TestMessage> = vi.fn(() =>
-        Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-1', cancel: vi.fn() }),
+        Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-1', cancel: vi.fn(), optimisticMsgIds: [] }),
       );
 
       const forkView = new DefaultView<TestEvent, TestMessage>({
@@ -805,11 +787,12 @@ describe('DefaultView', () => {
       // Still showing m3 — no new sibling yet
       expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
 
-      // Server response arrives, creating a third sibling
+      // Server response arrives, creating a third sibling (stamped with the pending turn's ID)
       tree.upsert('m4', { id: '4', content: 'asst v3' }, {
         [HEADER_MSG_ID]: 'm4',
         'x-ably-parent': 'm1',
         'x-ably-fork-of': 'm2',
+        'x-ably-turn-id': 'turn-1',
       }, 'serial-4');
 
       // forkView auto-selected the newest sibling (m4, index 2)
@@ -820,11 +803,11 @@ describe('DefaultView', () => {
 
     it('regenerate on a non-root sibling defers auto-select correctly', async () => {
       // Regression: regenerating while viewing a non-root sibling (e.g. m3 with
-      // forkOf m2) must store the group root in _pendingForkSelections so that
+      // forkOf m2) must store the group root in _branchSelections so that
       // _pinVisibleSelections can match it via groupRoot.
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
       const noopDelegate: SendDelegate<TestEvent, TestMessage> = vi.fn(() =>
-        Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-1', cancel: vi.fn() }),
+        Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-1', cancel: vi.fn(), optimisticMsgIds: [] }),
       );
 
       const forkView = new DefaultView<TestEvent, TestMessage>({
@@ -854,15 +837,57 @@ describe('DefaultView', () => {
       // Regenerate while viewing m3 — forkOf is m3, not the group root m2
       await forkView.send([], { forkOf: 'm3', parent: 'm1' });
 
-      // Server response creates a new sibling (forks from m2 via m3's group)
+      // Server response creates a new sibling (forks from m2 via m3's group, stamped with pending turn)
       tree.upsert('m4', { id: '4', content: 'asst v3' }, {
         [HEADER_MSG_ID]: 'm4',
         'x-ably-parent': 'm1',
         'x-ably-fork-of': 'm3',
+        'x-ably-turn-id': 'turn-1',
       }, 'serial-4');
 
       // Auto-selected the newest sibling
       expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm4']);
+
+      forkView.close();
+    });
+
+    it('pending fork selection is cleaned up on turn-end if server never creates sibling', async () => {
+      // Regression: pending entries must not leak if the server never creates
+      // a fork (e.g. the turn ends without producing any messages for this group).
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+      const noopDelegate: SendDelegate<TestEvent, TestMessage> = vi.fn(() =>
+        Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-cleanup', cancel: vi.fn(), optimisticMsgIds: [] }),
+      );
+
+      const forkView = new DefaultView<TestEvent, TestMessage>({
+        tree,
+        channel: createMockChannel(),
+        codec: createMockCodec(),
+        sendDelegate: noopDelegate,
+        logger: silentLogger,
+      });
+
+      tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
+      tree.upsert('m2', { id: '2', content: 'asst' }, {
+        [HEADER_MSG_ID]: 'm2',
+        'x-ably-parent': 'm1',
+      }, 'serial-2');
+
+      // Regenerate: deferred auto-select (pending)
+      await forkView.send([], { forkOf: 'm2', parent: 'm1' });
+
+      // Turn ends without creating a sibling — pending entry should be cleaned up
+      tree.emitTurn({ type: 'x-ably-turn-end', turnId: 'turn-cleanup', clientId: 'client-a', reason: 'complete' });
+
+      // A later unrelated fork should NOT be auto-selected (pending was cleaned up)
+      tree.upsert('m3', { id: '3', content: 'external fork' }, {
+        [HEADER_MSG_ID]: 'm3',
+        'x-ably-parent': 'm1',
+        'x-ably-fork-of': 'm2',
+      }, 'serial-3');
+
+      // View pins to m2 (external fork), does NOT jump to m3
+      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
 
       forkView.close();
     });
@@ -916,13 +941,12 @@ describe('DefaultView', () => {
       }, 'serial-3');
     });
 
-    it('send passes view context with own flattenNodes', async () => {
+    it('send passes pre-computed history to delegate', async () => {
       await view.send({ id: '4', content: 'new msg' });
       expect(mockDelegate).toHaveBeenCalledOnce();
       const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
-      const viewContext = call[2] as { flattenNodes: () => TreeNode<TestMessage>[] };
-      const nodes = viewContext.flattenNodes();
-      expect(nodes.map((n) => n.msgId)).toEqual(['m1', 'm2', 'm3']);
+      const history = call[2] as TreeNode<TestMessage>[];
+      expect(history.map((n) => n.msgId)).toEqual(['m1', 'm2', 'm3']);
     });
 
     it('send forwards options to delegate', async () => {
@@ -988,10 +1012,9 @@ describe('DefaultView', () => {
 
       await view.send({ id: '5', content: 'msg' });
       const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
-      const viewContext = call[2] as { flattenNodes: () => TreeNode<TestMessage>[] };
-      const nodes = viewContext.flattenNodes();
+      const history = call[2] as TreeNode<TestMessage>[];
       // Should follow m1 -> m2 -> m3 (selected branch), not m1 -> m4
-      expect(nodes.map((n) => n.msgId)).toEqual(['m1', 'm2', 'm3']);
+      expect(history.map((n) => n.msgId)).toEqual(['m1', 'm2', 'm3']);
     });
   });
 
@@ -1061,6 +1084,23 @@ describe('DefaultView', () => {
     it('is idempotent — double close does not throw', () => {
       view.close();
       expect(() => { view.close(); }).not.toThrow();
+    });
+
+    it('send rejects after close', async () => {
+      view.close();
+      await expect(view.send({ id: '1', content: 'hi' })).rejects.toThrow('view is closed');
+    });
+
+    it('regenerate rejects after close', async () => {
+      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'), 'serial-1');
+      view.close();
+      await expect(view.regenerate('m1')).rejects.toThrow('view is closed');
+    });
+
+    it('edit rejects after close', async () => {
+      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'), 'serial-1');
+      view.close();
+      await expect(view.edit('m1', { id: '2', content: 'revised' })).rejects.toThrow('view is closed');
     });
   });
 });

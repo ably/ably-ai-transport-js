@@ -22,7 +22,7 @@ import {
  * @param opts.turnId - Turn correlation ID.
  * @param opts.msgId - Message identity.
  * @param opts.turnClientId - ClientId of the turn initiator.
- * @param opts.parent - Preceding message's msg-id (for branching). Null means root.
+ * @param opts.parent - Preceding message's msg-id (for branching).
  * @param opts.forkOf - Forked message's msg-id (for edit/regen).
  * @returns A headers record with the `x-ably-*` transport headers set.
  */
@@ -31,7 +31,7 @@ export const buildTransportHeaders = (opts: {
   turnId: string;
   msgId: string;
   turnClientId?: string;
-  parent?: string | null;
+  parent?: string;
   forkOf?: string;
 }): Record<string, string> => {
   const h: Record<string, string> = {

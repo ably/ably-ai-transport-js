@@ -375,7 +375,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     }
 
     const accumulator = this._codec.createAccumulator();
-    accumulator.seedMessages([{ messageId: targetMsgId, message: existingNode.message }]);
+    accumulator.initMessage(targetMsgId, existingNode.message);
     accumulator.processOutputs([output]);
 
     const updatedMsg = accumulator.messages.at(-1);
@@ -445,14 +445,14 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     if (!observer) return;
 
     // Sync the accumulator with the tree before processing. If the message
-    // was updated externally (via cross-turn events), seedMessages updates the
+    // was updated externally (via cross-turn events), initMessage syncs the
     // accumulator's state so the update isn't lost when processing
     // late turn events like finish-step/finish.
     const msgId = observer.headers[HEADER_MSG_ID];
     if (msgId) {
       const treeNode = this._tree.getNode(msgId);
       if (treeNode) {
-        observer.accumulator.seedMessages([{ messageId: msgId, message: treeNode.message }]);
+        observer.accumulator.initMessage(msgId, treeNode.message);
       }
     }
 
@@ -608,7 +608,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
             messageId: node.msgId,
           }));
           const accumulator = this._codec.createAccumulator();
-          accumulator.seedMessages([{ messageId: node.msgId, message: existingNode.message }]);
+          accumulator.initMessage(node.msgId, existingNode.message);
           accumulator.processOutputs(outputs);
           const updatedMsg = accumulator.messages.at(-1);
           if (updatedMsg) {

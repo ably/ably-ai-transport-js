@@ -102,28 +102,17 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
     const amendTarget = headers[HEADER_AMEND];
 
     // Cross-turn events target an existing message from a different turn.
-    // Route them to the turn accumulator that owns the target msgId
-    // so the tool part state transitions correctly in history.
+    // Route to the owning turn's accumulator via initMessage lifecycle.
     if (amendTarget) {
       for (const turn of turns.values()) {
         if (turn.msgHeaders.has(amendTarget)) {
-          // Seed the accumulator with the message's current state so the
-          // cross-turn events update the correct tool parts. Use the
-          // accumulator's full messages list (includes in-progress) and
-          // match by position against the msgHeaders insertion order.
           const headerKeys = [...turn.msgHeaders.keys()];
           const msgIndex = headerKeys.indexOf(amendTarget);
           const currentMsg = msgIndex === -1 ? undefined : turn.accumulator.messages[msgIndex];
           if (currentMsg) {
-            turn.accumulator.seedMessages([{ messageId: amendTarget, message: currentMsg }]);
+            turn.accumulator.initMessage(amendTarget, currentMsg);
           }
           turn.accumulator.processOutputs(outputs);
-          // Defer completion until after all events are processed. A finish
-          // event that follows this update in serial order must still be
-          // able to find the message in _activeMessages (e.g. to apply
-          // messageMetadata). If no finish event arrives, the deferred
-          // completeSeeded ensures the message still appears in
-          // completedMessages.
           deferredCompletions.push({ accumulator: turn.accumulator, messageId: amendTarget });
           break;
         }
@@ -175,11 +164,11 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
     }
   }
 
-  // Complete any seeded-for-update messages that were not already completed
-  // by a finish/abort event. Idempotent — if finish already removed the message
-  // from _activeMessages, completeSeeded is a no-op.
+  // Complete any messages that were re-activated for cross-turn updates.
+  // Idempotent — if finish already removed the message from active tracking,
+  // completeMessage is a no-op.
   for (const { accumulator, messageId } of deferredCompletions) {
-    accumulator.completeSeeded(messageId);
+    accumulator.completeMessage(messageId);
   }
 
   // Collect completed messages in chronological order (oldest first) by turn.

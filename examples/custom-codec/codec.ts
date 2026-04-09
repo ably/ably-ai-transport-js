@@ -514,17 +514,18 @@ class AgentAccumulator implements MessageAccumulator<AgentEvent, AgentMessage> {
   }
 
   /**
-   * Seed the accumulator with an existing message for cross-turn events.
+   * Initialize the accumulator with an existing message for continuation.
    * Not supported by this simple codec.
-   * @param _messages - The messages to seed (unused).
+   * @param _messageId - The message identifier (unused).
+   * @param _message - The existing message (unused).
    */
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- interface contract requires parameters
-  seedMessages(_messages: { messageId: string; message: AgentMessage }[]): void {
+  initMessage(_messageId: string, _message: AgentMessage): void {
     // No-op — cross-turn events are not supported by this codec.
   }
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- interface contract requires parameters
-  completeSeeded(_messageId: string): void {
+  completeMessage(_messageId: string): void {
     // No-op — cross-turn events are not supported by this codec.
   }
 }

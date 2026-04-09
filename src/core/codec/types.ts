@@ -204,18 +204,18 @@ export interface MessageAccumulator<TEvent, TMessage> {
   /** Apply an external update to a message (e.g. from an update callback). */
   updateMessage(message: TMessage): void;
   /**
-   * Seed the accumulator with existing messages so subsequent events
-   * targeting these messageIds update the existing state rather than creating
-   * blank messages. Used for cross-turn events (e.g. tool result delivery)
-   * and history replay where multiple messages may need seeding.
+   * Ensure the accumulator is ready to process events for the given message.
+   * If not already active, creates internal tracking state from the message.
+   * If already active, syncs internal state with the provided message
+   * (picking up external changes like cross-turn amendments).
+   * Idempotent — safe to call before every processOutputs.
    */
-  seedMessages(messages: { messageId: string; message: TMessage }[]): void;
+  initMessage(messageId: string, message: TMessage): void;
   /**
-   * Mark a previously seeded message as completed. Called after processing
-   * cross-turn event outputs — the seed temporarily re-activates the message,
-   * and this call finalizes it so it appears in {@link completedMessages}.
+   * Mark a message as completed. Removes it from active tracking so it
+   * appears in {@link completedMessages}. No-op if not active.
    */
-  completeSeeded(messageId: string): void;
+  completeMessage(messageId: string): void;
   /** All messages accumulated so far (in-progress and completed). */
   readonly messages: TMessage[];
   /** Only messages whose streams have finished. */

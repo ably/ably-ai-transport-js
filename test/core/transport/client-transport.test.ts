@@ -172,8 +172,8 @@ const createMockDecoder = (): StreamDecoder<TestEvent, TestMessage> & {
 const createMockAccumulator = (): MessageAccumulator<TestEvent, TestMessage> => ({
   processOutputs: vi.fn(),
   updateMessage: vi.fn(),
-  seedMessages: vi.fn(),
-  completeSeeded: vi.fn(),
+  initMessage: vi.fn(),
+  completeMessage: vi.fn(),
   messages: [],
   completedMessages: [],
   hasActiveStream: false,
@@ -1527,7 +1527,7 @@ describe('ClientTransport', () => {
         [HEADER_ROLE]: 'assistant',
       }, 'serial-1');
 
-      // Set up a mock accumulator that seedMessages + processOutputs will use
+      // Set up a mock accumulator that initMessage + processOutputs will use
       const mockAccum = createMockAccumulator();
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
       vi.mocked(codec.createAccumulator).mockReturnValue(mockAccum);
@@ -1556,9 +1556,9 @@ describe('ClientTransport', () => {
       const node = transport.tree.getNode('msg-1');
       expect(node?.message.content).toBe('amended');
 
-      // seedMessages should have been called with the original message
+      // initMessage should have been called with the original message
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
-      expect(mockAccum.seedMessages).toHaveBeenCalledWith([{ messageId: 'msg-1', message: { id: 'msg-1', content: 'original' } }]);
+      expect(mockAccum.initMessage).toHaveBeenCalledWith('msg-1', { id: 'msg-1', content: 'original' });
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
       expect(mockAccum.processOutputs).toHaveBeenCalled();
     });

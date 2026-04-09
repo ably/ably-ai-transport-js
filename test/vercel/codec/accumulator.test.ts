@@ -443,10 +443,10 @@ describe('Vercel accumulator', () => {
     });
   });
 
-  // -- seedMessages ----------------------------------------------------------
+  // -- initMessage -----------------------------------------------------------
 
-  describe('seedMessages', () => {
-    it('reconstructs tool trackers from a UIMessage with dynamic-tool parts', () => {
+  describe('initMessage', () => {
+    it('creates tracking state from an existing message with dynamic-tool parts', () => {
       const acc = createAccumulator();
 
       const existingMsg: AI.UIMessage = {
@@ -464,7 +464,7 @@ describe('Vercel accumulator', () => {
         ],
       };
 
-      acc.seedMessages([{ messageId: 'msg-1', message: existingMsg }]);
+      acc.initMessage('msg-1', existingMsg);
 
       expect(acc.messages).toHaveLength(1);
       expect(acc.messages[0]?.id).toBe('msg-1');
@@ -477,7 +477,7 @@ describe('Vercel accumulator', () => {
       expect(toolPart?.state).toBe('approval-requested');
     });
 
-    it('after seedMessages, processOutputs transitions tool from approval-requested to output-available', () => {
+    it('after initMessage, processOutputs transitions tool from approval-requested to output-available', () => {
       const acc = createAccumulator();
 
       const existingMsg: AI.UIMessage = {
@@ -494,7 +494,7 @@ describe('Vercel accumulator', () => {
         ],
       };
 
-      acc.seedMessages([{ messageId: 'msg-1', message: existingMsg }]);
+      acc.initMessage('msg-1', existingMsg);
 
       acc.processOutputs([
         event({
@@ -511,27 +511,28 @@ describe('Vercel accumulator', () => {
       expect(toolPart?.output).toEqual({ result: 42 });
     });
 
-    it('updates existing state when called again with the same messageId', () => {
+    it('syncs existing active state when called again with the same messageId', () => {
       const acc = createAccumulator();
 
-      const msg1: AI.UIMessage = {
+      // Start a message so it's active
+      acc.processOutputs([
+        event({ type: 'start', messageId: 'msg-1' }),
+        event({ type: 'text-start', id: 'txt-1' }),
+        event({ type: 'text-delta', id: 'txt-1', delta: 'hello' }),
+      ]);
+
+      // External update
+      const updatedMsg: AI.UIMessage = {
         id: 'msg-1',
         role: 'assistant',
-        parts: [{ type: 'text', text: 'first' }],
-      };
-      const msg2: AI.UIMessage = {
-        id: 'msg-1',
-        role: 'assistant',
-        parts: [{ type: 'text', text: 'second' }],
+        parts: [{ type: 'text', text: 'externally updated' }],
       };
 
-      acc.seedMessages([{ messageId: 'msg-1', message: msg1 }]);
-      acc.seedMessages([{ messageId: 'msg-1', message: msg2 }]);
+      acc.initMessage('msg-1', updatedMsg);
 
       expect(acc.messages).toHaveLength(1);
-      // Should be the second message — seedMessages syncs from external state
       const textPart = acc.messages[0]?.parts.find((p) => p.type === 'text');
-      expect(textPart).toEqual(expect.objectContaining({ text: 'second' }));
+      expect(textPart).toEqual(expect.objectContaining({ text: 'externally updated' }));
     });
 
     it('handles a message with no tool parts (text-only)', () => {
@@ -543,13 +544,30 @@ describe('Vercel accumulator', () => {
         parts: [{ type: 'text', text: 'hello world' }],
       };
 
-      acc.seedMessages([{ messageId: 'msg-1', message: textOnlyMsg }]);
+      acc.initMessage('msg-1', textOnlyMsg);
 
       expect(acc.messages).toHaveLength(1);
       expect(acc.messages[0]?.parts).toHaveLength(1);
       expect(acc.messages[0]?.parts[0]).toEqual(
         expect.objectContaining({ type: 'text', text: 'hello world' }),
       );
+    });
+
+    it('init then complete lifecycle moves message to completedMessages', () => {
+      const acc = createAccumulator();
+
+      const msg: AI.UIMessage = {
+        id: 'msg-1',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'done' }],
+      };
+
+      acc.initMessage('msg-1', msg);
+      expect(acc.completedMessages).toHaveLength(0);
+
+      acc.completeMessage('msg-1');
+      expect(acc.completedMessages).toHaveLength(1);
+      expect(acc.completedMessages[0]?.id).toBe('msg-1');
     });
   });
 

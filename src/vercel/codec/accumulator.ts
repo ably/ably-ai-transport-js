@@ -17,6 +17,7 @@ import type * as AI from 'ai';
 
 import type { DecoderOutput, MessageAccumulator } from '../../core/codec/types.js';
 import { stripUndefined } from '../../utils.js';
+import { toolBase, transitionToolPart } from './tool-transitions.js';
 
 // ---------------------------------------------------------------------------
 // Internal types
@@ -38,15 +39,6 @@ interface ToolPartTracker {
   inputText: string;
 }
 
-/** Fields shared by all DynamicToolUIPart state variants. */
-interface ToolBaseFields {
-  type: 'dynamic-tool';
-  toolName: string;
-  toolCallId: string;
-  title?: string;
-  providerExecuted?: boolean;
-}
-
 /** Bundled per-message state for an in-progress message. */
 interface ActiveMessageState {
   message: AI.UIMessage;
@@ -55,34 +47,6 @@ interface ActiveMessageState {
   toolTrackers: Record<string, ToolPartTracker>;
   streamStatus: Map<string, StreamStatus>;
 }
-
-// ---------------------------------------------------------------------------
-// Tool base helper
-// ---------------------------------------------------------------------------
-
-/**
- * Extract the state-independent base fields for a DynamicToolUIPart.
- * Works with both chunks (tool-input-start, etc.) and existing parts.
- * @param source - Any object containing the required tool identity fields.
- * @param source.toolCallId - The tool call identifier.
- * @param source.toolName - The tool name.
- * @param source.title - Optional display title.
- * @param source.providerExecuted - Whether the provider executed the tool.
- * @returns Base fields shared across all DynamicToolUIPart state variants.
- */
-const toolBase = (source: {
-  toolCallId: string;
-  toolName: string;
-  title?: string;
-  providerExecuted?: boolean;
-}): ToolBaseFields =>
-  stripUndefined({
-    type: 'dynamic-tool' as const,
-    toolCallId: source.toolCallId,
-    toolName: source.toolName,
-    title: source.title,
-    providerExecuted: source.providerExecuted,
-  });
 
 // ---------------------------------------------------------------------------
 // DeltaStreamTracker — manages text or reasoning stream accumulation
@@ -172,23 +136,13 @@ class DefaultUIMessageAccumulator implements MessageAccumulator<AI.UIMessageChun
     }
   }
 
-  seedMessages(messages: { messageId: string; message: AI.UIMessage }[]): void {
-    for (const { messageId, message } of messages) {
-      this._seedOne(messageId, message);
-    }
-  }
-
-  completeSeeded(messageId: string): void {
-    this._activeMessages.delete(messageId);
-  }
-
-  private _seedOne(messageId: string, message: AI.UIMessage): void {
+  initMessage(messageId: string, message: AI.UIMessage): void {
     const existing = this._activeMessages.get(messageId);
 
     if (existing) {
-      // Update: sync the active state with an externally updated message.
+      // Already active — sync with the externally updated message.
       // Replace the message and rebuild tool trackers so the accumulator
-      // reflects updates (e.g. tool results published via cross-turn events)
+      // reflects updates (e.g. cross-turn amendments applied to the tree)
       // that happened outside the streaming flow.
       const cloned = structuredClone(message);
       const listIdx = this._messageList.indexOf(existing.message);
@@ -207,16 +161,15 @@ class DefaultUIMessageAccumulator implements MessageAccumulator<AI.UIMessageChun
       return;
     }
 
+    // Not active — create tracking state from the existing message.
     const cloned = structuredClone(message);
     const toolTrackers: Record<string, ToolPartTracker> = {};
     const streamStatus = new Map<string, StreamStatus>();
 
-    // Reconstruct tool trackers from existing dynamic-tool parts
     for (let i = 0; i < cloned.parts.length; i++) {
       const part = cloned.parts[i];
       if (part?.type === 'dynamic-tool') {
         toolTrackers[part.toolCallId] = { partIndex: i, inputText: '' };
-        // All existing tool parts have completed their input phase
         streamStatus.set(part.toolCallId, 'finished');
       }
     }
@@ -232,14 +185,17 @@ class DefaultUIMessageAccumulator implements MessageAccumulator<AI.UIMessageChun
     this._activeMessages.set(messageId, state);
 
     // If this message is already in the list (completed previously),
-    // replace it in-place so updates apply to the same reference.
-    // Otherwise push as a new entry.
+    // replace in-place. Otherwise push as a new entry.
     const existingIdx = this._messageList.findIndex((m) => m.id === message.id);
     if (existingIdx === -1) {
       this._messageList.push(state.message);
     } else {
       this._messageList[existingIdx] = state.message;
     }
+  }
+
+  completeMessage(messageId: string): void {
+    this._activeMessages.delete(messageId);
   }
 
   // -------------------------------------------------------------------------
@@ -573,48 +529,7 @@ class DefaultUIMessageAccumulator implements MessageAccumulator<AI.UIMessageChun
     const found = this._getToolPart(chunk.toolCallId, state);
     if (!found) return;
 
-    switch (chunk.type) {
-      case 'tool-output-available': {
-        state.message.parts[found.tracker.partIndex] = stripUndefined({
-          ...toolBase(found.part),
-          state: 'output-available' as const,
-          input: found.part.input,
-          output: chunk.output,
-          preliminary: chunk.preliminary,
-        });
-        break;
-      }
-
-      case 'tool-output-error': {
-        state.message.parts[found.tracker.partIndex] = {
-          ...toolBase(found.part),
-          state: 'output-error',
-          input: found.part.input,
-          errorText: chunk.errorText,
-        };
-        break;
-      }
-
-      case 'tool-output-denied': {
-        state.message.parts[found.tracker.partIndex] = {
-          ...toolBase(found.part),
-          state: 'output-denied',
-          input: found.part.input,
-          approval: { id: '', approved: false },
-        };
-        break;
-      }
-
-      case 'tool-approval-request': {
-        state.message.parts[found.tracker.partIndex] = {
-          ...toolBase(found.part),
-          state: 'approval-requested',
-          input: found.part.input,
-          approval: { id: chunk.approvalId },
-        };
-        break;
-      }
-    }
+    state.message.parts[found.tracker.partIndex] = transitionToolPart(found.part, chunk);
   }
 
   // -------------------------------------------------------------------------

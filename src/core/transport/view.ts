@@ -597,7 +597,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   // Private: scoped event forwarding
   // -------------------------------------------------------------------------
 
-  private _updateVisibleSnapshot(nodes?: TreeNode<TMessage>[]): void {
+  private _updateVisibleSnapshot(nodes?: MessageNode<TMessage>[]): void {
     const resolved = nodes ?? this.flattenNodes();
     this._lastVisibleIds = resolved.map((n) => n.msgId);
     this._lastVisibleMessages = resolved.map((n) => n.message);

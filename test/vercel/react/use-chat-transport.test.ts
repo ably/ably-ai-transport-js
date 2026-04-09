@@ -65,6 +65,8 @@ const createFakeTransport = (): ClientTransport<AI.UIMessageChunk, AI.UIMessage>
     regenerate: vi.fn(() => Promise.resolve({ stream: new ReadableStream(), turnId: 't', cancel: vi.fn(), optimisticMsgIds: [] })),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
     edit: vi.fn(() => Promise.resolve({ stream: new ReadableStream(), turnId: 't', cancel: vi.fn(), optimisticMsgIds: [] })),
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+    update: vi.fn(() => Promise.resolve({ stream: new ReadableStream(), turnId: 't', cancel: vi.fn(), optimisticMsgIds: [] })),
     getActiveTurnIds: vi.fn(() => new Map()),
     on: vi.fn(() => noop),
     close: vi.fn(),

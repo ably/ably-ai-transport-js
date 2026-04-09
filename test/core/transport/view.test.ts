@@ -39,8 +39,8 @@ const createMockCodec = (): Codec<TestEvent, TestMessage> => ({
   createAccumulator: vi.fn(() => ({
     processOutputs: vi.fn(),
     updateMessage: vi.fn(),
-    seedMessages: vi.fn(),
-    completeSeeded: vi.fn(),
+    initMessage: vi.fn(),
+    completeMessage: vi.fn(),
     messages: [],
     completedMessages: [],
     hasActiveStream: false,

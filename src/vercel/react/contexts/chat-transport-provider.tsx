@@ -22,7 +22,7 @@ import { type PropsWithChildren, type ReactNode, useContext, useMemo } from 'rea
 
 import { createTransportHooks, type TransportProviderProps } from '../../../react/index.js';
 import { UIMessageCodec } from '../../codec/index.js';
-import type { ChatTransportOptions } from '../../transport/index.js';
+import { type ChatTransportOptions, DEFAULT_VERCEL_API } from '../../transport/index.js';
 import { createChatTransport } from '../../transport/index.js';
 import type { ChatTransportSlot } from './chat-transport-context.js';
 import { ChatTransportContext } from './chat-transport-context.js';
@@ -37,16 +37,16 @@ export const {
   useView,
 } = createTransportHooks<AI.UIMessageChunk, AI.UIMessage>();
 
+type CoreTransportProviderProps = Omit<TransportProviderProps<AI.UIMessageChunk, AI.UIMessage>, 'codec' | 'api'> &
+  Partial<Pick<TransportProviderProps<AI.UIMessageChunk, AI.UIMessage>, 'api'>>;
+
 /**
  * Props for {@link ChatTransportProvider}.
  *
  * All {@link TransportProviderProps} for Vercel types except `codec` (baked as UIMessageCodec),
  * plus `chatOptions` for customizing chat request construction.
  */
-export interface ChatTransportProviderProps extends Omit<
-  TransportProviderProps<AI.UIMessageChunk, AI.UIMessage>,
-  'codec'
-> {
+export interface ChatTransportProviderProps extends CoreTransportProviderProps {
   /**
    * Optional hooks for customizing chat request construction (e.g. prepareSendMessagesRequest).
    * Must be stable across renders — wrap in `useMemo` or define outside the component.
@@ -109,6 +109,7 @@ export const ChatTransportProvider = ({
 }: ChatTransportProviderProps & PropsWithChildren): ReactNode => (
   <TransportProvider
     {...transportProps}
+    api={transportProps.api ?? DEFAULT_VERCEL_API}
     codec={UIMessageCodec}
   >
     <ChatTransportProviderInner

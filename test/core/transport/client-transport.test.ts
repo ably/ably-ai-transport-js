@@ -278,6 +278,7 @@ const createSeededTransport = (
     channel: ch,
     codec,
     clientId: 'client-1',
+    api: '/test',
     fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
   });
 
@@ -341,6 +342,7 @@ describe('ClientTransport', () => {
       const seeded = createClientTransport({
         channel: createMockChannel(),
         codec,
+        api: '/test',
         messages: [
           { id: 'msg-1', content: 'hello' },
           { id: 'msg-2', content: 'world' },
@@ -358,6 +360,7 @@ describe('ClientTransport', () => {
       const seeded = createClientTransport({
         channel: createMockChannel(),
         codec,
+        api: '/test',
         messages: [
           { id: 'msg-1', content: 'first' },
           { id: 'msg-2', content: 'second' },
@@ -374,24 +377,10 @@ describe('ClientTransport', () => {
       const empty = createClientTransport({
         channel: createMockChannel(),
         codec,
+        api: '/test',
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
       expect(empty.view.flattenNodes()).toEqual([]);
-    });
-
-    it('uses default api path when not specified', async () => {
-      const defaultTransport = createClientTransport({
-        channel: createMockChannel(),
-        codec,
-        fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
-      });
-
-      await defaultTransport.view.send({ id: 'u1', content: 'hi' });
-      await mockFetch.waitForCalls(1);
-
-      expect(mockFetch.calls[0]?.url).toBe('/api/chat');
-
-      await defaultTransport.close();
     });
   });
 
@@ -420,6 +409,7 @@ describe('ClientTransport', () => {
         channel: createMockChannel(),
         codec,
         clientId: 'client-1',
+        api: '/test',
         messages: [{ id: 'seed-1', content: 'first' }],
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
@@ -483,6 +473,7 @@ describe('ClientTransport', () => {
       const blockTransport = createClientTransport({
         channel: createMockChannel(),
         codec,
+        api: '/test',
         fetch: blockingFetch as unknown as typeof globalThis.fetch,
       });
 
@@ -531,6 +522,7 @@ describe('ClientTransport', () => {
       const failTransport = createClientTransport({
         channel: createMockChannel(),
         codec,
+        api: '/test',
         fetch: failFetch.fn as unknown as typeof globalThis.fetch,
       });
 
@@ -553,6 +545,7 @@ describe('ClientTransport', () => {
       const errorTransport = createClientTransport({
         channel: createMockChannel(),
         codec,
+        api: '/test',
         fetch: errorFetch as unknown as typeof globalThis.fetch,
       });
 
@@ -574,6 +567,7 @@ describe('ClientTransport', () => {
       const failTransport = createClientTransport({
         channel: createMockChannel(),
         codec,
+        api: '/test',
         fetch: failFetch.fn as unknown as typeof globalThis.fetch,
       });
 
@@ -597,6 +591,7 @@ describe('ClientTransport', () => {
       const errorTransport = createClientTransport({
         channel: createMockChannel(),
         codec,
+        api: '/test',
         fetch: errorFetch as unknown as typeof globalThis.fetch,
       });
 
@@ -650,6 +645,7 @@ describe('ClientTransport', () => {
       const dynTransport = createClientTransport({
         channel: createMockChannel(),
         codec,
+        api: '/test',
         headers: () => ({ 'X-Auth': 'bearer-token' }),
         body: () => ({ sessionId: 'abc' }),
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
@@ -671,6 +667,7 @@ describe('ClientTransport', () => {
       const credTransport = createClientTransport({
         channel: createMockChannel(),
         codec,
+        api: '/test',
         credentials: 'include',
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
@@ -709,6 +706,7 @@ describe('ClientTransport', () => {
       const seeded = createClientTransport({
         channel: createMockChannel(),
         codec,
+        api: '/test',
         messages: [{ id: 'seed-1', content: 'first' }],
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
@@ -2236,6 +2234,7 @@ describe('ClientTransport', () => {
       const seeded = createClientTransport({
         channel: createMockChannel(),
         codec,
+        api: '/test',
         messages: [{ id: 'a', content: 'alpha' }],
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
@@ -2329,6 +2328,7 @@ describe('ClientTransport', () => {
       const seeded = createClientTransport({
         channel: createMockChannel(),
         codec,
+        api: '/test',
         messages: [{ id: 'msg-1', content: 'hi' }],
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
@@ -2373,6 +2373,7 @@ describe('ClientTransport', () => {
       const seeded = createClientTransport({
         channel: createMockChannel(),
         codec,
+        api: '/test',
         messages: [{ id: 'msg-1', content: 'hi' }],
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
@@ -2423,6 +2424,7 @@ describe('ClientTransport', () => {
       const preAttachedTransport = createClientTransport({
         channel: preAttachedChannel,
         codec,
+        api: '/test',
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
 
@@ -2450,6 +2452,7 @@ describe('ClientTransport', () => {
       const uninitTransport = createClientTransport({
         channel: uninitChannel,
         codec,
+        api: '/test',
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
 
@@ -2475,6 +2478,7 @@ describe('ClientTransport', () => {
       const uninitTransport = createClientTransport({
         channel: uninitChannel,
         codec,
+        api: '/test',
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
 
@@ -2989,6 +2993,7 @@ describe('ClientTransport', () => {
       const histTransport = createClientTransport({
         channel: histChannel as unknown as Ably.RealtimeChannel,
         codec,
+        api: '/test',
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
 
@@ -3020,6 +3025,7 @@ describe('ClientTransport', () => {
       const pendingTransport = createClientTransport({
         channel: pendingChannel as unknown as Ably.RealtimeChannel,
         codec,
+        api: '/test',
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
 
@@ -3142,6 +3148,7 @@ describe('ClientTransport', () => {
       const seeded = createClientTransport({
         channel: ch as unknown as Ably.RealtimeChannel,
         codec,
+        api: '/test',
         messages: [{ id: 'seed-1', content: 'hi' }],
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });

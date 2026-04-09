@@ -43,7 +43,7 @@ describe('createTransportHooks', () => {
     const { TransportProvider, useClientTransport } = createTransportHooks<unknown, unknown>();
 
     const wrapper = ({ children }: { children: ReactNode }): ReactNode =>
-      createElement(TransportProvider, { channelName: 'ai:test', codec: {} as never }, children);
+      createElement(TransportProvider, { channelName: 'ai:test', codec: {} as never, api: '/test' }, children);
 
     const { result } = renderHook(() => useClientTransport({ channelName: 'ai:test' }), { wrapper });
     expect(result.current).toBeDefined();

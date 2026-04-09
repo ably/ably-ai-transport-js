@@ -17,6 +17,7 @@ Create a `ClientTransport` and make it available to descendant components. Wraps
   channelName="ai:demo"
   codec={UIMessageCodec}
   clientId={clientId}
+  api="/api/chat"
 >
   <Chat />
 </TransportProvider>
@@ -44,10 +45,12 @@ For multiple transports, nest providers with distinct `channelName` values:
 <TransportProvider
   channelName="ai:main"
   codec={UIMessageCodec}
+  api="/api/chat"
 >
   <TransportProvider
     channelName="ai:aux"
     codec={UIMessageCodec}
+    api="/api/chat"
   >
     <App />
   </TransportProvider>

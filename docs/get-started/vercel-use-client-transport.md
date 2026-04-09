@@ -110,6 +110,7 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
       channelName={chatId}
       codec={UIMessageCodec}
       clientId={clientId}
+      api="/api/chat"
       body={() => ({ id: chatId })}
     >
       <ChatInner chatId={chatId} />

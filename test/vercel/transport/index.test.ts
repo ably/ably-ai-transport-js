@@ -58,6 +58,27 @@ describe('Vercel createClientTransport', () => {
     await transport.close();
   });
 
+  it('defaults api to /api/chat when not specified', async () => {
+    const channel = createMockChannel();
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+    const mockFetch = vi.fn(() => Promise.resolve(new Response(undefined, { status: 200 })));
+    const transport = createClientTransport({
+      channel,
+      fetch: mockFetch as unknown as typeof globalThis.fetch,
+    });
+
+    await transport.view.send({ id: '1', role: 'user', parts: [] });
+
+    await vi.waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    const [url] = mockFetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('/api/chat');
+
+    await transport.close();
+  });
+
   it('passes through all options to the core factory', async () => {
     const channel = createMockChannel();
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly

@@ -22,6 +22,7 @@ function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; 
       channelName={channelName}
       codec={UIMessageCodec}
       clientId={clientId}
+      api="api/chat"
       body={() => ({ id: channelName })}
     >
       <Chat

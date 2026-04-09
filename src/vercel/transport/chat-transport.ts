@@ -31,7 +31,7 @@ import { ErrorCode } from '../../errors.js';
  */
 export interface SendMessagesRequestContext {
   /** Chat session ID (from useChat's id). */
-  id?: string;
+  chatId?: string;
   /** What triggered the request: user sent a message, or requested regeneration. */
   trigger: 'submit-message' | 'regenerate-message';
   /**
@@ -197,7 +197,7 @@ export const createChatTransport = (
 
     if (chatOptions?.prepareSendMessagesRequest) {
       const prepared = chatOptions.prepareSendMessagesRequest({
-        id: opts.chatId,
+        chatId: opts.chatId,
         trigger,
         messageId,
         history,
@@ -216,7 +216,7 @@ export const createChatTransport = (
       const historyNodes = allNodes.filter((n) => historyIds.has(n.message.id));
       sendBody = {
         history: historyNodes,
-        id: opts.chatId,
+        chatId: opts.chatId,
         trigger,
         ...(messageId !== undefined && { messageId }),
         ...(forkOf !== undefined && { forkOf }),

@@ -150,7 +150,7 @@ describe('createChatTransport', () => {
       const [msgs, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
       expect(msgs).toEqual([m3]);
       expect(opts.body).toMatchObject({
-        id: 'chat-1',
+        chatId: 'chat-1',
         trigger: 'submit-message',
       });
       // History should include the first two messages
@@ -346,7 +346,7 @@ describe('createChatTransport', () => {
 
       // Verify the hook was called with correct context
       expect(hook).toHaveBeenCalledWith({
-        id: 'chat-1',
+        chatId: 'chat-1',
         trigger: 'submit-message',
         messageId: undefined,
         history: [],

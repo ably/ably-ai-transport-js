@@ -19,13 +19,20 @@ The Vercel AI SDK provides model abstraction, streaming primitives, and React ho
 
 Wrap the transport in a `ChatTransport` adapter and pass it to Vercel's `useChat()`. Message state is managed by `useChat()` - the transport delivers messages over Ably instead of HTTP.
 
-```typescript
-import { useClientTransport } from '@ably/ai-transport/react';
+```tsx
+import { TransportProvider, useClientTransport } from '@ably/ai-transport/react';
 import { useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import { useChat } from '@ai-sdk/react';
+import type * as AI from 'ai';
 
-const transport = useClientTransport({ channel, codec: UIMessageCodec, clientId });
+// Wrap your component tree with TransportProvider
+<TransportProvider channelName={chatId} codec={UIMessageCodec} clientId={clientId}>
+  <ChatInner chatId={chatId} />
+</TransportProvider>
+
+// Inside ChatInner:
+const transport = useClientTransport<AI.UIMessageChunk, AI.UIMessage>();
 const chatTransport = useChatTransport(transport);
 
 const { messages, setMessages, sendMessage, stop } = useChat({
@@ -37,17 +44,28 @@ const { messages, setMessages, sendMessage, stop } = useChat({
 useMessageSync(transport, setMessages);
 ```
 
-`useChatTransport()` wraps the core transport into the `ChatTransport` interface that `useChat()` expects. `useMessageSync()` pushes the transport's authoritative message list into `useChat()`'s state - this is how messages from other clients appear.
+`TransportProvider` creates the transport and wraps children with `ChannelProvider` internally. `useClientTransport()` reads it from context. `useChatTransport()` wraps the core transport into the `ChatTransport` interface that `useChat()` expects. `useMessageSync()` pushes the transport's authoritative message list into `useChat()`'s state - this is how messages from other clients appear.
 
 ### Generic hooks path (more control)
 
 Use the generic React hooks directly. You manage message state through the transport's conversation tree instead of `useChat()`.
 
-```typescript
-import { useClientTransport, useView, useActiveTurns } from '@ably/ai-transport/react';
+```tsx
+import {
+  TransportProvider,
+  useClientTransport,
+  useView,
+  useActiveTurns} from '@ably/ai-transport/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
+import type * as AI from 'ai';
 
-const transport = useClientTransport({ channel, codec: UIMessageCodec, clientId });
+// Wrap your component tree with TransportProvider
+<TransportProvider channelName={chatId} codec={UIMessageCodec} clientId={clientId}>
+  <ChatInner />
+</TransportProvider>
+
+// Inside ChatInner:
+const transport = useClientTransport<AI.UIMessageChunk, AI.UIMessage>();
 const {
   nodes,
   hasOlder,

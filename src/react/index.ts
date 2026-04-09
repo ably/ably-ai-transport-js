@@ -1,3 +1,7 @@
+export type { TransportProviderProps } from './contexts/transport-provider.js';
+export { TransportProvider } from './contexts/transport-provider.js';
+export type { TransportHooks } from './create-transport-hooks.js';
+export { createTransportHooks } from './create-transport-hooks.js';
 export type { EventsNode, MessageNode } from '../core/transport/types.js';
 // eslint-disable-next-line @typescript-eslint/no-deprecated -- intentional re-export for backwards compatibility
 export type { EventNode, TreeNode } from '../core/transport/types.js';

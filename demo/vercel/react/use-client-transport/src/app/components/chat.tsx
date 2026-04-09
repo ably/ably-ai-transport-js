@@ -1,9 +1,8 @@
 'use client';
 
 import { useState, useCallback } from 'react';
-import { useChannel } from 'ably/react';
+import type * as AI from 'ai';
 import { useClientTransport, useCreateView, useActiveTurns, useView, useAblyMessages } from '@ably/ai-transport/react';
-import { UIMessageCodec } from '@ably/ai-transport/vercel';
 
 import { userMessage } from '../helpers';
 import { useClientTools } from '../hooks/use-client-tools';
@@ -30,15 +29,9 @@ interface ChatProps {
 }
 
 export function Chat({ chatId, clientId, historyLimit }: ChatProps) {
-  const { channel } = useChannel({ channelName: chatId });
+  // Transport is created by TransportProvider in page.tsx
+  const transport = useClientTransport<AI.UIMessageChunk, AI.UIMessage>(chatId);
   const [split, setSplit] = useState(false);
-
-  const transport = useClientTransport({
-    channel,
-    codec: UIMessageCodec,
-    clientId,
-    body: () => ({ id: chatId }),
-  });
 
   const limit = historyLimit ?? 30;
   const view = useView(transport, { limit });

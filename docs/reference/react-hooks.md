@@ -1,37 +1,75 @@
 # React hooks
 
-API reference for all React hooks in the SDK. Generic hooks work with any codec; Vercel hooks are specific to the `useChat()` integration path.
+API reference for all React hooks and providers in the SDK. Generic hooks work with any codec; Vercel hooks are specific to the `useChat()` integration path.
 
-## Generic hooks
+## Generic hooks and providers
 
 Import from `@ably/ai-transport/react`.
 
 ---
 
+### TransportProvider
+
+Create a `ClientTransport` and make it available to descendant components. Wraps children with Ably's `ChannelProvider` internally.
+
+```tsx
+<TransportProvider channelName="ai:demo" codec={UIMessageCodec} clientId={clientId}>
+  <Chat />
+</TransportProvider>
+```
+
+| Prop | Type | Description |
+|---|---|---|
+| `channelName` | `string` | The Ably channel name to subscribe to |
+| `codec` | `Codec<TEvent, TMessage>` | The codec for encoding/decoding |
+| `name` | `string?` | Transport name for multi-transport scenarios. Default: `"default"` |
+| `clientId` | `string?` | Client identity, sent to the server in POST body |
+| `api` | `string?` | Server endpoint URL. Default: `"/api/chat"` |
+| `headers` | `Record<string, string> \| (() => Record<string, string>)?` | HTTP POST headers. Function form for dynamic values |
+| `body` | `Record<string, unknown> \| (() => Record<string, unknown>)?` | Additional POST body fields. Function form for dynamic values |
+| `credentials` | `RequestCredentials?` | Fetch credentials mode |
+| `fetch` | `typeof fetch?` | Custom fetch implementation |
+| `messages` | `TMessage[]?` | Initial messages to seed the conversation tree |
+| `logger` | `Logger?` | Logger instance |
+| `children` | `ReactNode?` | Child components that will have access to this transport |
+
+The transport subscribes to the Ably channel immediately on creation. It does not auto-close on unmount — channel lifecycle is managed by the internal `ChannelProvider`.
+
+For multiple transports, nest providers with distinct `name` values:
+
+```tsx
+<TransportProvider name="main" channelName="ai:main" codec={UIMessageCodec}>
+  <TransportProvider name="aux" channelName="ai:aux" codec={UIMessageCodec}>
+    <App />
+  </TransportProvider>
+</TransportProvider>
+```
+
+---
+
 ### useClientTransport
 
-Create and memoize a `ClientTransport` instance across renders.
+Access the `ClientTransport` from the nearest `TransportProvider`.
 
 ```typescript
-const transport = useClientTransport<TEvent, TMessage>(options: ClientTransportOptions<TEvent, TMessage>);
+const transport = useClientTransport<TEvent, TMessage>(name?: string);
 ```
 
 | Parameter             | Type                                                          | Description                                                   |
 | --------------------- | ------------------------------------------------------------- | ------------------------------------------------------------- |
-| `options.channel`     | `Ably.RealtimeChannel`                                        | The Ably channel to subscribe to                              |
-| `options.codec`       | `Codec<TEvent, TMessage>`                                     | The codec for encoding/decoding                               |
-| `options.clientId`    | `string?`                                                     | Client identity, sent to the server in POST body              |
-| `options.api`         | `string?`                                                     | Server endpoint URL. Default: `"/api/chat"`                   |
-| `options.headers`     | `Record<string, string> \| (() => Record<string, string>)?`   | HTTP POST headers. Function form for dynamic values           |
-| `options.body`        | `Record<string, unknown> \| (() => Record<string, unknown>)?` | Additional POST body fields. Function form for dynamic values |
-| `options.credentials` | `RequestCredentials?`                                         | Fetch credentials mode                                        |
-| `options.fetch`       | `typeof fetch?`                                               | Custom fetch implementation                                   |
-| `options.messages`    | `TMessage[]?`                                                 | Initial messages to seed the conversation tree                |
-| `options.logger`      | `Logger?`                                                     | Logger instance                                               |
+| `name`    | `string?`                                                     | Transport name to look up. Defaults to `"default"`. Must match the `name` prop on the enclosing `TransportProvider`              |
 
-**Returns:** `ClientTransport<TEvent, TMessage>` - the memoized transport (same instance on every render).
+**Returns:** `ClientTransport<TEvent, TMessage>`                                                 — the transport instance                                               created by the enclosing `TransportProvider`.
 
-The transport subscribes to the Ably channel immediately on creation. It does not auto-close on unmount - channel lifecycle is managed by Ably's `ChannelProvider`.
+**Throws:** `Ably.ErrorInfo` (code `40000`) if no `TransportProvider` with the given name is found in the component tree.
+
+```typescript
+// Default transport (most common case)
+const transport = useClientTransport<UIMessageChunk, UIMessage>();
+
+// Named transport
+const transport = useClientTransport<UIMessageChunk, UIMessage>('main');
+```
 
 ---
 

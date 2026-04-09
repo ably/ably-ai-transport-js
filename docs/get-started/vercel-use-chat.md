@@ -147,26 +147,24 @@ The `after()` call is a Next.js API that runs work after the HTTP response is se
 
 ## 4. Create the chat component
 
-Wire up `useChat()` with the AI Transport hooks:
+Wire up `useChat()` with the AI Transport hooks. `TransportProvider` creates the transport and wraps children with Ably's `ChannelProvider` internally:
 
 ```typescript
 // app/chat.tsx
 'use client';
 
 import { useChat } from '@ai-sdk/react';
-import { useChannel, ChannelProvider } from 'ably/react';
-import { useClientTransport, useActiveTurns, useView } from '@ably/ai-transport/react';
+import type * as AI from 'ai';
+import { TransportProvider, useClientTransport, useActiveTurns, useView } from '@ably/ai-transport/react';
 import { useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import { useState } from 'react';
 
-function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) {
-  const { channel } = useChannel({ channelName: chatId });
+function ChatInner({ chatId }: { chatId: string }) {
   const [input, setInput] = useState('');
 
-  // 1. Create the core transport - subscribes to the Ably channel and decodes
-  //    incoming messages through UIMessageCodec
-  const transport = useClientTransport({ channel, codec: UIMessageCodec, clientId });
+  // 1. Read the transport created by TransportProvider
+  const transport = useClientTransport<AI.UIMessageChunk, AI.UIMessage>();
 
   // 2. Wrap it for useChat compatibility
   const chatTransport = useChatTransport(transport);
@@ -210,9 +208,10 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
 
 export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
   return (
-    <ChannelProvider channelName={chatId}>
-      <ChatInner chatId={chatId} clientId={clientId} />
-    </ChannelProvider>
+    // TransportProvider creates the ClientTransport and wraps children with ChannelProvider
+    <TransportProvider channelName={chatId} codec={UIMessageCodec} clientId={clientId}>
+      <ChatInner chatId={chatId} />
+    </TransportProvider>
   );
 }
 ```
@@ -245,12 +244,13 @@ Open `http://localhost:3000`. Type a message - you'll see tokens stream in real 
 
 ## What's happening
 
-1. `useClientTransport()` creates a transport that subscribes to the Ably channel before it attaches - no messages are lost.
-2. `useChatTransport()` wraps the transport into Vercel's `ChatTransport` interface, which `useChat()` expects.
-3. When you send a message, `useChat()` calls the chat transport's `sendMessages()`, which fires an HTTP POST to `/api/chat` and opens a stream on the Ably channel.
-4. The server creates a turn, publishes user messages, streams the LLM response through the encoder to the channel, and publishes a turn-end event.
-5. The client transport decodes incoming Ably messages through `UIMessageCodec` and routes them to the stream.
-6. `useMessageSync()` syncs messages from the transport (including messages from other clients) into `useChat()`'s state.
+1. `TransportProvider` creates a `ClientTransport` that subscribes to the Ably channel before it attaches — no messages are lost. It also wraps children with Ably's `ChannelProvider`.
+2. `useClientTransport()` reads the transport from `TransportProvider`'s context — no options needed.
+3. `useChatTransport()` wraps the transport into Vercel's `ChatTransport` interface, which `useChat()` expects.
+4. When you send a message, `useChat()` calls the chat transport's `sendMessages`, which fires an HTTP POST to `/api/chat` and opens a stream on the Ably channel.
+5. The server creates a turn, publishes user messages, streams the LLM response through the encoder to the channel, and publishes a turn-end event.
+6. The client transport decodes incoming Ably messages through `UIMessageCodec` and routes them to the stream.
+7. `useMessageSync()` syncs messages from the transport (including messages from other clients) into `useChat`'s state.
 
 For the conceptual details, see [Client and server transport](../concepts/transport.md) and [Turns](../concepts/turns.md).
 

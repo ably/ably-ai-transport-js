@@ -1,37 +1,38 @@
 /**
- * useClientTransport: creates and memoizes a core ClientTransport instance
- * across renders.
+ * useClientTransport: reads a ClientTransport from the nearest TransportProvider.
  *
- * Stores the instance in a ref so the same transport is returned on every render.
- * The transport manages its own Ably channel subscription in the constructor —
- * this hook adds no subscription logic.
+ * The transport is created by TransportProvider, which also wraps the subtree
+ * with Ably's ChannelProvider. This hook is a thin context reader — it does
+ * not create or manage any transport state.
  *
- * The hook does NOT auto-close the transport on unmount. Channel lifecycle is
- * managed by the Ably provider (useChannel), which detaches the channel and
- * clears all subscriptions. Auto-closing would break React Strict Mode
- * (double-mount calls close() on the first cleanup, leaving a dead transport
- * on the second mount). Call transport.close() explicitly if you need to tear
- * down the transport independently of the channel lifecycle.
+ * Throws if called outside a TransportProvider for the given channelName.
  */
 
-import { useRef } from 'react';
+import * as Ably from 'ably';
+import { useContext } from 'react';
 
-import { createClientTransport } from '../core/transport/client-transport.js';
-import type { ClientTransport, ClientTransportOptions } from '../core/transport/types.js';
+import type { ClientTransport } from '../core/transport/types.js';
+import { ErrorCode } from '../errors.js';
+import { TransportContext } from './contexts/transport-context.js';
 
 /**
- * Create and memoize a {@link ClientTransport} across renders.
- * @param options - Configuration for the client transport.
- * @returns The memoized transport instance.
+ * Access the {@link ClientTransport} from the nearest {@link TransportProvider}.
+ * @param channelName - The channel name passed to the enclosing `TransportProvider`.
+ * @returns The `ClientTransport` instance registered under `channelName`.
+ * @throws {Ably.ErrorInfo} if no `TransportProvider` with the given `channelName` is in the tree.
  */
-export const useClientTransport = <TEvent, TMessage>(
-  options: ClientTransportOptions<TEvent, TMessage>,
-): ClientTransport<TEvent, TMessage> => {
-  const transportRef = useRef<ClientTransport<TEvent, TMessage> | null>(null);
+export const useClientTransport = <TEvent, TMessage>(channelName: string): ClientTransport<TEvent, TMessage> => {
+  const transport = useContext(TransportContext)[channelName];
 
-  if (transportRef.current === null) {
-    transportRef.current = createClientTransport(options);
+  if (!transport) {
+    throw new Ably.ErrorInfo(
+      `unable to use transport; no TransportProvider found for channelName "${channelName}"`,
+      ErrorCode.BadRequest,
+      400,
+    );
   }
 
-  return transportRef.current;
+  // CAST: TransportContext stores transports with erased generics.
+  // The caller is responsible for using type parameters matching those of the TransportProvider.
+  return transport as unknown as ClientTransport<TEvent, TMessage>;
 };

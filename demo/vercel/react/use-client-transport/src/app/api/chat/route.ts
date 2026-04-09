@@ -39,7 +39,7 @@ interface ChatRequestBody {
   events?: EventsNode<UIMessageChunk>[];
   id: string;
   forkOf?: string;
-  parent?: string | null;
+  parent?: string;
   toolApprovals?: ToolApproval[];
 }
 
@@ -116,7 +116,6 @@ function patchToolApprovals(
       break;
     }
   }
-
 }
 
 /**
@@ -140,7 +139,7 @@ function removeTrailingUserMessage(
  * that was just approved. Prevents an infinite approval loop when the LLM
  * calls the same tool again in multi-step mode.
  */
-function disableApprovalForApprovedTools(approvals: ToolApproval[] | undefined): Record<string, unknown> {
+function disableApprovalForApprovedTools(approvals: ToolApproval[] | undefined): typeof tools {
   const approvedNames = new Set((approvals ?? []).filter((a) => a.approved).map((a) => a.toolName));
   if (approvedNames.size === 0) return tools;
   return Object.fromEntries(
@@ -206,10 +205,7 @@ export async function POST(req: Request) {
     patchToolApprovals(pendingPublish, allMessages, toolApprovals);
   }
 
-  const modelMessages = removeTrailingUserMessage(
-    await convertToModelMessages(allMessages),
-    toolApprovals,
-  );
+  const modelMessages = removeTrailingUserMessage(await convertToModelMessages(allMessages), toolApprovals);
 
   const effectiveTools = disableApprovalForApprovedTools(toolApprovals);
 
@@ -231,11 +227,13 @@ export async function POST(req: Request) {
     for (const [toolCallId, targetMsgId] of pendingPublish) {
       const output = capturedOutputs.get(toolCallId);
       if (output !== undefined) {
-        await turn.addEvents([{
-          kind: 'event',
-          msgId: targetMsgId,
-          events: [{ type: 'tool-output-available', toolCallId, output, dynamic: true } as UIMessageChunk],
-        }]);
+        await turn.addEvents([
+          {
+            kind: 'event',
+            msgId: targetMsgId,
+            events: [{ type: 'tool-output-available', toolCallId, output, dynamic: true } as UIMessageChunk],
+          },
+        ]);
       }
     }
 

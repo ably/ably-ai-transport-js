@@ -75,12 +75,17 @@ function ForecastCard({ data }: { data: ForecastData }) {
           const highC = Math.round(((day.high - 32) * 5) / 9);
           const lowC = Math.round(((day.low - 32) * 5) / 9);
           return (
-            <div key={day.day} className="flex items-center justify-between text-xs">
+            <div
+              key={day.day}
+              className="flex items-center justify-between text-xs"
+            >
               <span className="text-zinc-300 w-8">{day.day}</span>
               <span className="text-base">{icon}</span>
               <span className="text-zinc-400 w-24 text-right">
                 {day.high}&deg;/{day.low}&deg;F
-                <span className="text-zinc-600 ml-1">({highC}&deg;/{lowC}&deg;C)</span>
+                <span className="text-zinc-600 ml-1">
+                  ({highC}&deg;/{lowC}&deg;C)
+                </span>
               </span>
             </div>
           );

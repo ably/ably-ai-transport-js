@@ -217,12 +217,24 @@ export function MessageBubble({
                       part={toolPart}
                       onApprove={
                         toolPart.state === 'approval-requested' && onToolApprove && headers?.['x-ably-msg-id']
-                          ? () => onToolApprove(headers['x-ably-msg-id'], toolPart.toolCallId, toolPart.toolName, toolPart.input)
+                          ? () =>
+                              onToolApprove(
+                                headers['x-ably-msg-id'],
+                                toolPart.toolCallId,
+                                toolPart.toolName,
+                                toolPart.input,
+                              )
                           : undefined
                       }
                       onDeny={
                         toolPart.state === 'approval-requested' && onToolDeny && headers?.['x-ably-msg-id']
-                          ? () => onToolDeny(headers['x-ably-msg-id'], toolPart.toolCallId, toolPart.toolName, toolPart.input)
+                          ? () =>
+                              onToolDeny(
+                                headers['x-ably-msg-id'],
+                                toolPart.toolCallId,
+                                toolPart.toolName,
+                                toolPart.input,
+                              )
                           : undefined
                       }
                     />

@@ -168,6 +168,7 @@ describe('ClientTransport integration', () => {
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
       fetch: noopFetch as typeof globalThis.fetch,
+      api: '/test',
     });
 
     // Client sends a user message — optimistically inserted, gets a turn stream
@@ -241,6 +242,7 @@ describe('ClientTransport integration', () => {
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
       fetch: noopFetch as typeof globalThis.fetch,
+      api: '/test',
     });
 
     // Client initiates a send — gets back a turn with a stream
@@ -295,6 +297,7 @@ describe('ClientTransport integration', () => {
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
       fetch: noopFetch as typeof globalThis.fetch,
+      api: '/test',
     });
 
     const turnEvents: TurnLifecycleEvent[] = [];
@@ -359,6 +362,7 @@ describe('ClientTransport integration', () => {
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
       fetch: noopFetch as typeof globalThis.fetch,
+      api: '/test',
     });
 
     // Client initiates a send
@@ -423,6 +427,7 @@ describe('ClientTransport integration', () => {
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
       fetch: noopFetch as typeof globalThis.fetch,
+      api: '/test',
     });
 
     // Turn 1: client sends, server streams response
@@ -524,6 +529,7 @@ describe('ClientTransport integration', () => {
       codec: UIMessageCodec,
       clientId: historyClient.auth.clientId,
       fetch: noopFetch as typeof globalThis.fetch,
+      api: '/test',
     });
 
     await clientTransport.view.loadOlder(10);
@@ -563,6 +569,7 @@ describe('ClientTransport integration', () => {
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
       fetch: noopFetch as typeof globalThis.fetch,
+      api: '/test',
     });
 
     // Collect raw Ably messages via the tree event
@@ -622,6 +629,7 @@ describe('ClientTransport integration', () => {
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
       fetch: noopFetch as typeof globalThis.fetch,
+      api: '/test',
     });
 
     // Client sends user message

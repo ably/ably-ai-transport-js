@@ -85,7 +85,7 @@ import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import type * as AI from 'ai';
 
 // In your layout or page component:
-<TransportProvider channelName="ai:demo" codec={UIMessageCodec} clientId={clientId}>
+<TransportProvider channelName="ai:demo" codec={UIMessageCodec} clientId={clientId} api="/api/chat">
   <Chat />
 </TransportProvider>
 

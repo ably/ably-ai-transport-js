@@ -267,8 +267,8 @@ export interface ClientTransportOptions<TEvent, TMessage> {
   /** The client's identity. Sent to the server in the POST body. */
   clientId?: string;
 
-  /** Server endpoint URL for the HTTP POST. Defaults to `"/api/chat"`. */
-  api?: string;
+  /** Server endpoint URL for the HTTP POST. */
+  api: string;
 
   /** Headers for the HTTP POST. Function form for dynamic values (e.g. auth tokens). */
   headers?: Record<string, string> | (() => Record<string, string>);

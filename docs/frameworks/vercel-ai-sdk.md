@@ -59,6 +59,7 @@ import type * as AI from 'ai';
   channelName={chatId}
   codec={UIMessageCodec}
   clientId={clientId}
+  api="/api/chat"
 >
   <ChatInner />
 </TransportProvider>;

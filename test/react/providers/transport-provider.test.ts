@@ -44,18 +44,30 @@ vi.mock('../../../src/core/transport/client-transport.js', () => ({
 
 // TransportProvider on channelName "ai:test".
 const wrapDefault = ({ children }: { children: ReactNode }): ReactNode =>
-  createElement(TransportProvider<unknown, unknown>, { channelName: 'ai:test', codec: {} as never }, children);
+  createElement(
+    TransportProvider<unknown, unknown>,
+    { channelName: 'ai:test', codec: {} as never, api: '/test' },
+    children,
+  );
 
 // TransportProvider with channelName "ai:demo" for channel-name forwarding test.
 const wrapDemo = ({ children }: { children: ReactNode }): ReactNode =>
-  createElement(TransportProvider<unknown, unknown>, { channelName: 'ai:demo', codec: {} as never }, children);
+  createElement(
+    TransportProvider<unknown, unknown>,
+    { channelName: 'ai:demo', codec: {} as never, api: '/test' },
+    children,
+  );
 
 // Nested outer (channelName="ai:outer") + inner (channelName="ai:inner") TransportProvider pair.
 const wrapNested = ({ children }: { children: ReactNode }): ReactNode =>
   createElement(
     TransportProvider<unknown, unknown>,
-    { channelName: 'ai:outer', codec: {} as never },
-    createElement(TransportProvider<unknown, unknown>, { channelName: 'ai:inner', codec: {} as never }, children),
+    { channelName: 'ai:outer', codec: {} as never, api: '/test' },
+    createElement(
+      TransportProvider<unknown, unknown>,
+      { channelName: 'ai:inner', codec: {} as never, api: '/test' },
+      children,
+    ),
   );
 
 // ---------------------------------------------------------------------------

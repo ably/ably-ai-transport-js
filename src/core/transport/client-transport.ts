@@ -149,7 +149,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     this._channel = options.channel;
     this._codec = options.codec;
     this._clientId = options.clientId;
-    this._api = options.api ?? '/api/chat';
+    this._api = options.api;
     this._credentials = options.credentials;
     // CAST: TS can't narrow options.headers/body inside a closure because the outer
     // object is mutable. The truthiness check on the preceding line guarantees non-nullish.

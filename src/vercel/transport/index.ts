@@ -27,11 +27,16 @@ import type {
 } from '../../core/transport/types.js';
 import { UIMessageCodec } from '../codec/index.js';
 
-/** Options for creating a Vercel client transport. Same as core options but without the codec field. */
-export type VercelClientTransportOptions = Omit<ClientTransportOptions<AI.UIMessageChunk, AI.UIMessage>, 'codec'>;
+/** Core client transport options with Vercel AI SDK types pre-applied. */
+type CoreClientOpts = ClientTransportOptions<AI.UIMessageChunk, AI.UIMessage>;
+
+/** Options for creating a Vercel client transport. Same as core options but without the codec field, and with `api` optional (defaults to `"/api/chat"`). */
+export type VercelClientTransportOptions = Omit<CoreClientOpts, 'codec' | 'api'> & Partial<Pick<CoreClientOpts, 'api'>>;
 
 /** Options for creating a Vercel server transport. Same as core options but without the codec field. */
 export type VercelServerTransportOptions = Omit<ServerTransportOptions<AI.UIMessageChunk, AI.UIMessage>, 'codec'>;
+
+export const DEFAULT_VERCEL_API = '/api/chat';
 
 /**
  * Create a client-side transport pre-configured with the Vercel AI SDK codec.
@@ -42,7 +47,13 @@ export type VercelServerTransportOptions = Omit<ServerTransportOptions<AI.UIMess
  */
 export const createClientTransport = (
   options: VercelClientTransportOptions,
-): ClientTransport<AI.UIMessageChunk, AI.UIMessage> => createCoreClientTransport({ ...options, codec: UIMessageCodec });
+): ClientTransport<AI.UIMessageChunk, AI.UIMessage> =>
+  createCoreClientTransport({
+    ...options,
+    codec: UIMessageCodec,
+    // Mirrors the Vercel AI SDK's DefaultChatTransport default.
+    api: options.api ?? DEFAULT_VERCEL_API,
+  });
 
 /**
  * Create a server-side transport pre-configured with the Vercel AI SDK codec.

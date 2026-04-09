@@ -29,7 +29,7 @@ Regeneration forks an assistant message - the server produces a new response for
 ```typescript
 import { useView } from '@ably/ai-transport/react';
 
-const { regenerate } = useView(transport);
+const { regenerate } = useView();
 
 // Fork the assistant message - starts a new turn with no new user messages.
 // nodeId is the x-ably-msg-id (see treeMsgId helper in the quickstart).
@@ -45,7 +45,7 @@ Editing forks a user message - the user provides replacement content, and the se
 ```typescript
 import { useView } from '@ably/ai-transport/react';
 
-const { edit } = useView(transport);
+const { edit } = useView();
 
 const newMessage = {
   id: crypto.randomUUID(),
@@ -66,7 +66,7 @@ await edit(nodeId, [newMessage]);
 ```typescript
 import { useView } from '@ably/ai-transport/react';
 
-const view = useView(transport);
+const view = useView();
 
 // view.hasSiblings(nodeId) - does this message have alternatives?
 // view.getSiblings(nodeId) - all alternatives at this fork point
@@ -133,15 +133,13 @@ With a single view, navigating to a different branch in one part of the UI chang
 `useCreateView()` has the same API as `useView()` but creates an independent view instead of using the transport's default. The view is closed automatically when the component unmounts or the transport changes:
 
 ```typescript
-import { useClientTransport, useCreateView, useView } from '@ably/ai-transport/react';
-
-const transport = useClientTransport({ channel, codec, clientId });
+import { useCreateView, useView } from '@ably/ai-transport/react';
 
 // Default view for the left pane
-const left = useView(transport, { limit: 50 });
+const left = useView({ limit: 50 });
 
 // Independent view for the right pane (only created when split is active)
-const right = useCreateView(split ? transport : undefined, { limit: 50 });
+const right = useCreateView({ skip: !split, limit: 50 });
 
 // Selecting a sibling in the left pane does not affect the right pane
 left.select(nodeId, 1);

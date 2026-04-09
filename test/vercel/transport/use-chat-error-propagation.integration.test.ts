@@ -113,6 +113,7 @@ describe('useChat error propagation', () => {
       channel: clientChannel,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
+      api: '/api/chat',
       fetch: capturingFetch,
     });
 

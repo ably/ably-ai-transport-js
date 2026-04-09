@@ -10,35 +10,27 @@ Same as the [useChat quickstart](vercel-use-chat.md#prerequisites). Follow steps
 
 ## Create the chat component
 
-Instead of `useChat()`, compose the generic hooks directly:
+Instead of `useChat()`, compose the generic hooks directly. `TransportProvider` creates the transport and wraps children with Ably's `ChannelProvider` internally:
 
 ```typescript
 // app/chat.tsx
 'use client';
 
-import { useChannel, ChannelProvider } from 'ably/react';
 import {
+  TransportProvider,
   useClientTransport,
   useActiveTurns,
   useView,
 } from '@ably/ai-transport/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
-import type { UIMessage } from 'ai';
+import type * as AI from 'ai';
 import { useState } from 'react';
 
-function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) {
-  const { channel } = useChannel({ channelName: chatId });
+function ChatInner({ chatId }: { chatId: string }) {
   const [input, setInput] = useState('');
 
-  // Create the transport - codec is passed explicitly since we're using generic hooks.
-  // body merges extra fields into every HTTP POST - the server uses `id` to
-  // identify which Ably channel to publish the response to.
-  const transport = useClientTransport({
-    channel,
-    codec: UIMessageCodec,
-    clientId,
-    body: () => ({ id: chatId }),
-  });
+  // Read the transport created by TransportProvider
+  const transport = useClientTransport<AI.UIMessageChunk, AI.UIMessage>();
 
   // useView provides message state, navigation, and write operations
   const { nodes, hasOlder, loading, loadOlder, send, regenerate, hasSiblings, getSiblings, getSelectedIndex, select } = useView(transport, { limit: 30 });
@@ -51,7 +43,7 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
     if (!text) return;
     setInput('');
 
-    const userMsg: UIMessage = {
+    const userMsg: AI.UIMessage = {
       id: crypto.randomUUID(),
       role: 'user',
       parts: [{ type: 'text', text }],
@@ -112,9 +104,16 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
 
 export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
   return (
-    <ChannelProvider channelName={chatId}>
-      <ChatInner chatId={chatId} clientId={clientId} />
-    </ChannelProvider>
+    // TransportProvider creates the ClientTransport, wraps children with ChannelProvider,
+    // and merges `body` into every HTTP POST so the server knows which channel to use.
+    <TransportProvider
+      channelName={chatId}
+      codec={UIMessageCodec}
+      clientId={clientId}
+      body={() => ({ id: chatId })}
+    >
+      <ChatInner chatId={chatId} />
+    </TransportProvider>
   );
 }
 ```

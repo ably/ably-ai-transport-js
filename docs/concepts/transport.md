@@ -77,13 +77,20 @@ view.on('update', () => {
 // (e.g. Vercel's useChat), but most apps use the view instead
 ```
 
-In React, the hooks handle subscriptions and state management:
+In React, `TransportProvider` creates the transport and `useClientTransport` reads it from context:
 
 ```typescript
-import { useClientTransport, useView } from '@ably/ai-transport/react';
+import { TransportProvider, useClientTransport, useView } from '@ably/ai-transport/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
+import type * as AI from 'ai';
 
-const transport = useClientTransport({ channel, codec: UIMessageCodec, clientId });
+// In your layout or page component:
+<TransportProvider channelName="ai:demo" codec={UIMessageCodec} clientId={clientId}>
+  <Chat />
+</TransportProvider>
+
+// Inside Chat:
+const transport = useClientTransport<AI.UIMessageChunk, AI.UIMessage>();
 const { nodes, send } = useView(transport);
 ```
 

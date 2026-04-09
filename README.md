@@ -143,15 +143,13 @@ export async function POST(req: Request) {
 'use client';
 
 import { useChat } from '@ai-sdk/react';
-import { useChannel } from 'ably/react';
-import { useClientTransport, useActiveTurns, useView } from '@ably/ai-transport/react';
+import type * as AI from 'ai';
+import { TransportProvider, useClientTransport, useActiveTurns, useView } from '@ably/ai-transport/react';
 import { useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 
-function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
-  const { channel } = useChannel({ channelName: chatId });
-
-  const transport = useClientTransport({ channel, codec: UIMessageCodec, clientId });
+function ChatInner({ chatId }: { chatId: string }) {
+  const transport = useClientTransport<AI.UIMessageChunk, AI.UIMessage>();
   const chatTransport = useChatTransport(transport);
 
   const { messages, setMessages, sendMessage, stop } = useChat({
@@ -162,7 +160,7 @@ function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
   useMessageSync(transport, setMessages);
 
   const activeTurns = useActiveTurns(transport);
-  const view = useView(transport, { limit: 30 });
+  useView(transport, { limit: 30 });
 
   return (
     <div>
@@ -176,17 +174,20 @@ function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
         }}
       >
         {activeTurns.size > 0 ? (
-          <button
-            type="button"
-            onClick={stop}
-          >
-            Stop
-          </button>
+          <button type="button" onClick={stop}>Stop</button>
         ) : (
           <button type="submit">Send</button>
         )}
       </form>
     </div>
+  );
+}
+
+function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
+  return (
+    <TransportProvider channelName={chatId} codec={UIMessageCodec} clientId={clientId}>
+      <ChatInner chatId={chatId} />
+    </TransportProvider>
   );
 }
 ```

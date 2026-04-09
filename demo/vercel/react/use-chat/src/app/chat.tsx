@@ -1,10 +1,9 @@
 'use client';
 
 import { useChat } from '@ai-sdk/react';
-import { useChannel } from 'ably/react';
+import type * as AI from 'ai';
 import { useClientTransport, useActiveTurns, useView, useAblyMessages } from '@ably/ai-transport/react';
 import { useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
-import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import { useState } from 'react';
 import { MessageList } from './components/message-list';
 import { DebugPane } from './components/debug-pane';
@@ -15,10 +14,8 @@ import { useClientTools } from './hooks/use-client-tools';
 // ---------------------------------------------------------------------------
 
 export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clientId?: string; historyLimit?: number }) {
-  const { channel } = useChannel({ channelName: chatId });
-
-  // Create transport immediately (subscribes before attach — RTL7g)
-  const transport = useClientTransport({ channel, codec: UIMessageCodec, clientId, body: () => ({ id: chatId }) });
+  // Transport is created by TransportProvider in page.tsx
+  const transport = useClientTransport<AI.UIMessageChunk, AI.UIMessage>();
   const chatTransport = useChatTransport(transport);
 
   const {

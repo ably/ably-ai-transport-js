@@ -13,12 +13,16 @@ All clients subscribe to the same Ably channel. The transport distinguishes betw
 
 No special API is needed. Connect two clients to the same channel name, and messages sync automatically:
 
-```typescript
-// Client A
-const transportA = useClientTransport({ channel, codec: UIMessageCodec, clientId: 'user-a' });
+```tsx
+// Client A — in its own browser tab
+<TransportProvider channelName="ai:demo" codec={UIMessageCodec} clientId="user-a">
+  <Chat />
+</TransportProvider>
 
-// Client B (different browser tab, device, or user)
-const transportB = useClientTransport({ channel, codec: UIMessageCodec, clientId: 'user-b' });
+// Client B — in a different browser tab, device, or user session
+<TransportProvider channelName="ai:demo" codec={UIMessageCodec} clientId="user-b">
+  <Chat />
+</TransportProvider>
 
 // When Client A sends a message and the server streams a response,
 // Client B sees both the user message and the assistant response

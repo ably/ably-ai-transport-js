@@ -1,7 +1,8 @@
 'use client';
 
 import { Providers, useAblyReady } from './providers';
-import { ChannelProvider } from 'ably/react';
+import { TransportProvider } from '@ably/ai-transport/react';
+import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import { Chat } from './chat';
 import { useSearchParams } from 'next/navigation';
 import { Suspense } from 'react';
@@ -16,13 +17,17 @@ function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; 
   }
 
   return (
-    <ChannelProvider channelName={channelName}>
+    <TransportProvider
+      channelName={channelName}
+      codec={UIMessageCodec}
+      clientId={clientId}
+    >
       <Chat
         chatId={channelName}
         clientId={clientId}
         historyLimit={limit}
       />
-    </ChannelProvider>
+    </TransportProvider>
   );
 }
 

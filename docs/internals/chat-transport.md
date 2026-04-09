@@ -26,7 +26,7 @@ For regeneration, the adapter looks up the target message in the [conversation t
 
 The `prepareSendMessagesRequest` hook (optional) lets the server app customize the POST body and headers. It receives the full context - trigger, history, messages, fork metadata - and returns `{ body, headers }`.
 
-Without the hook, the adapter builds a default body with `history` (including per-message Ably headers), `id`, `trigger`, and fork metadata fields.
+Without the hook, the adapter builds a default body with `history` (including per-message Ably headers), `chatId`, `trigger`, and fork metadata fields.
 
 ### Empty stream return
 
@@ -56,7 +56,7 @@ The `SendMessagesRequestContext` provides:
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | `string?` | Chat session ID from `useChat` |
+| `chatId` | `string?` | Chat session ID from `useChat` |
 | `trigger` | `'submit-message' \| 'regenerate-message'` | What triggered the request |
 | `messageId` | `string?` | Target message ID for regeneration |
 | `history` | `UIMessage[]` | Previous messages (context for the LLM) |

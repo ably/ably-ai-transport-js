@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import type { UIMessage, DynamicToolUIPart } from 'ai';
 import { ToolInvocation } from './tool-invocation';
 
@@ -7,6 +8,7 @@ interface MessageBubbleProps {
   message: UIMessage;
   headers: Record<string, string> | undefined;
   onRegenerate?: () => void;
+  onEdit?: (newText: string) => void;
 }
 
 function Badge({ label, value, color }: { label: string; value: string; color: string }) {
@@ -55,71 +57,161 @@ function bubbleClasses(isUser: boolean, status: string | undefined): string {
   return `${base} bg-zinc-900 text-zinc-300 border border-zinc-800`;
 }
 
-export function MessageBubble({ message, headers, onRegenerate }: MessageBubbleProps) {
+// ---------------------------------------------------------------------------
+// Inline edit form
+// ---------------------------------------------------------------------------
+
+function EditForm({
+  initialText,
+  onSubmit,
+  onCancel,
+}: {
+  initialText: string;
+  onSubmit: (text: string) => void;
+  onCancel: () => void;
+}) {
+  const [text, setText] = useState(initialText);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = text.trim();
+    if (trimmed && trimmed !== initialText) {
+      onSubmit(trimmed);
+    }
+    onCancel();
+  };
+
+  return (
+    <form
+      onSubmit={handleSubmit}
+      className="w-full"
+    >
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        className="w-full rounded-lg bg-zinc-800 border border-zinc-600 px-3 py-2 text-sm text-zinc-200 outline-none focus:border-zinc-400 resize-none"
+        rows={Math.min(6, text.split('\n').length + 1)}
+        autoFocus
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onCancel();
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            handleSubmit(e);
+          }
+        }}
+      />
+      <div className="flex gap-2 mt-1.5">
+        <button
+          type="submit"
+          disabled={!text.trim() || text.trim() === initialText}
+          className="rounded px-2.5 py-1 text-[11px] font-medium bg-zinc-700 text-zinc-200 hover:bg-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          Save &amp; Submit
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded px-2.5 py-1 text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
+export function MessageBubble({ message, headers, onRegenerate, onEdit }: MessageBubbleProps) {
   const isUser = message.role === 'user';
+  const [isEditing, setIsEditing] = useState(false);
 
   const role = headers?.['x-ably-role'] ?? message.role;
   const clientId = headers?.['x-ably-turn-client-id'];
   const turnId = headers?.['x-ably-turn-id'];
   const status = headers?.['x-ably-status'];
 
+  const messageText = message.parts
+    .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+    .map((p) => p.text)
+    .join('');
+
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div className="max-w-[75%]">
-        <div className={bubbleClasses(isUser, status)}>
-          {message.parts.map((part, i) => {
-            if (part.type === 'text') return <span key={i}>{part.text}</span>;
-            if (part.type === 'dynamic-tool')
-              return (
-                <ToolInvocation
-                  key={i}
-                  part={part as DynamicToolUIPart}
-                />
-              );
-            return null;
-          })}
-          {!isUser && status === 'streaming' && (
-            <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-amber-500/60 animate-pulse rounded-sm align-text-bottom" />
-          )}
-        </div>
-        <div className="mt-1 flex items-center gap-1.5 flex-wrap">
-          {/* Regenerate button (assistant messages) */}
-          {onRegenerate && status !== 'streaming' && (
-            <button
-              onClick={onRegenerate}
-              className="text-[10px] text-zinc-500 hover:text-zinc-200 transition-colors rounded bg-zinc-800/60 px-1.5 py-0.5"
-              title="Regenerate response"
-            >
-              regenerate
-            </button>
-          )}
+        {isEditing && onEdit ? (
+          <EditForm
+            initialText={messageText}
+            onSubmit={(text) => onEdit(text)}
+            onCancel={() => setIsEditing(false)}
+          />
+        ) : (
+          <>
+            <div className={bubbleClasses(isUser, status)}>
+              {message.parts.map((part, i) => {
+                if (part.type === 'text') return <span key={i}>{part.text}</span>;
+                if (part.type === 'dynamic-tool')
+                  return (
+                    <ToolInvocation
+                      key={i}
+                      part={part as DynamicToolUIPart}
+                    />
+                  );
+                return null;
+              })}
+              {!isUser && status === 'streaming' && (
+                <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-amber-500/60 animate-pulse rounded-sm align-text-bottom" />
+              )}
+            </div>
+            <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+              {/* Edit button (user messages) */}
+              {onEdit && status !== 'streaming' && (
+                <button
+                  onClick={() => setIsEditing(true)}
+                  className="text-[10px] text-zinc-500 hover:text-zinc-200 transition-colors rounded bg-zinc-800/60 px-1.5 py-0.5"
+                  title="Edit message"
+                >
+                  edit
+                </button>
+              )}
 
-          {/* Debug badges */}
-          {headers && (
-            <>
-              <Badge
-                label="role"
-                value={role}
-                color="bg-zinc-900 text-zinc-500"
-              />
-              {clientId && (
-                <Badge
-                  label="client"
-                  value={clientId}
-                  color="bg-zinc-900 text-zinc-500"
-                />
+              {/* Regenerate button (assistant messages) */}
+              {onRegenerate && status !== 'streaming' && (
+                <button
+                  onClick={onRegenerate}
+                  className="text-[10px] text-zinc-500 hover:text-zinc-200 transition-colors rounded bg-zinc-800/60 px-1.5 py-0.5"
+                  title="Regenerate response"
+                >
+                  regenerate
+                </button>
               )}
-              {turnId && (
-                <Badge
-                  label="turn"
-                  value={turnId.slice(0, 8)}
-                  color="bg-zinc-900 text-zinc-500"
-                />
+
+              {/* Debug badges */}
+              {headers && (
+                <>
+                  <Badge
+                    label="role"
+                    value={role}
+                    color="bg-zinc-900 text-zinc-500"
+                  />
+                  {clientId && (
+                    <Badge
+                      label="client"
+                      value={clientId}
+                      color="bg-zinc-900 text-zinc-500"
+                    />
+                  )}
+                  {turnId && (
+                    <Badge
+                      label="turn"
+                      value={turnId.slice(0, 8)}
+                      color="bg-zinc-900 text-zinc-500"
+                    />
+                  )}
+                  {status && <StatusBadge status={status} />}
+                </>
               )}
-              {status && <StatusBadge status={status} />}
-            </>
-          )}
-        </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

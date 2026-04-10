@@ -278,6 +278,97 @@ describe('createChatTransport', () => {
     });
   });
 
+  describe('sendMessages — submit-message with messageId (edit)', () => {
+    it('resolves fork metadata from the conversation tree', async () => {
+      const { transport, send, view, mockTurn } = createMockTransport();
+
+      const edited = makeMessage('ui-msg-id');
+      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
+        {
+          message: edited,
+          msgId: 'wire-msg-id',
+          parentId: 'wire-parent-id',
+          forkOf: undefined,
+          headers: {},
+          serial: undefined,
+        },
+      ]);
+
+      const chat = createChatTransport(transport);
+
+      const streamPromise = chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: 'ui-msg-id',
+        messages: [edited],
+        abortSignal: undefined,
+      });
+
+      mockTurn.close();
+      await streamPromise;
+
+      const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
+      expect(opts.forkOf).toBe('wire-msg-id');
+      expect(opts.parent).toBe('wire-parent-id');
+    });
+
+    it('falls back to raw messageId when node not found in tree', async () => {
+      const { transport, send, view, mockTurn } = createMockTransport();
+      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([]);
+
+      const chat = createChatTransport(transport);
+
+      const streamPromise = chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: 'unknown-id',
+        messages: [makeMessage('1')],
+        abortSignal: undefined,
+      });
+
+      mockTurn.close();
+      await streamPromise;
+
+      const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
+      expect(opts.forkOf).toBe('unknown-id');
+      expect(opts.parent).toBeUndefined();
+    });
+
+    it('sends the edited message as new and prior messages as history', async () => {
+      const { transport, send, view, mockTurn } = createMockTransport();
+
+      const m1 = makeMessage('1');
+      const edited = makeMessage('2');
+
+      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
+        { message: m1, msgId: 'n1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+        { message: edited, msgId: 'n2', parentId: 'n1', forkOf: undefined, headers: {}, serial: undefined },
+      ]);
+
+      const chat = createChatTransport(transport);
+
+      const streamPromise = chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: '2',
+        messages: [m1, edited],
+        abortSignal: undefined,
+      });
+
+      mockTurn.close();
+      await streamPromise;
+
+      const [msgs, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
+      expect(msgs).toEqual([edited]);
+      // CAST: body is always set by the adapter; narrowing to non-undefined.
+      // eslint-disable-next-line @typescript-eslint/non-nullable-type-assertion-style -- prefer `as` over `!` per TYPES.md
+      const body = opts.body as Record<string, unknown>;
+      const bodyHistory = body.history as { message: AI.UIMessage }[];
+      expect(bodyHistory).toHaveLength(1);
+      expect(bodyHistory.at(0)?.message).toEqual(m1);
+    });
+  });
+
   describe('real stream return', () => {
     it('returns the turn stream with chunks flowing through', async () => {
       const { transport, mockTurn } = createMockTransport();

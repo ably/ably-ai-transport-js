@@ -11,9 +11,10 @@ interface MessageListProps {
   loading: boolean;
   onLoadOlder: () => void;
   onRegenerate: (messageId: string) => void;
+  onEdit: (messageId: string, newText: string) => void;
 }
 
-export function MessageList({ nodes, hasOlder, loading, onLoadOlder, onRegenerate }: MessageListProps) {
+export function MessageList({ nodes, hasOlder, loading, onLoadOlder, onRegenerate, onEdit }: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const prevLastIdRef = useRef<string | undefined>(undefined);
@@ -61,6 +62,7 @@ export function MessageList({ nodes, hasOlder, loading, onLoadOlder, onRegenerat
           message={message}
           headers={headers}
           onRegenerate={message.role === 'assistant' ? () => onRegenerate(message.id) : undefined}
+          onEdit={message.role === 'user' ? (text) => onEdit(message.id, text) : undefined}
         />
       ))}
       <div ref={endRef} />

@@ -7,12 +7,18 @@
  * to the core transport's send/cancel methods.
  *
  * useChat manages message state before calling sendMessages:
- * - submit-message: appends the new user message, passes the full array
+ * - submit-message (new): appends the new user message, passes the full array
+ * - submit-message (edit): truncates after the edited message, replaces it,
+ *   passes the truncated array with messageId set
  * - regenerate-message: truncates after the target, passes the truncated array
  *
  * The adapter uses `trigger` to determine the history/messages split:
  * - submit-message: last message is new (publish to channel), rest is history
  * - regenerate-message: no new messages, entire array is history
+ *
+ * When messageId is set (edit or regeneration), the adapter computes fork
+ * metadata (forkOf/parent) from the conversation tree so the server can
+ * place the response on the correct branch.
  */
 
 import * as Ably from 'ably';
@@ -35,8 +41,10 @@ export interface SendMessagesRequestContext {
   /** What triggered the request: user sent a message, or requested regeneration. */
   trigger: 'submit-message' | 'regenerate-message';
   /**
-   * The message ID for regeneration requests. Identifies which assistant
-   * message to regenerate. Undefined for submit-message.
+   * The message ID for edit or regeneration requests. For regeneration,
+   * identifies the assistant message to regenerate. For edits (submit-message
+   * with messageId), identifies the user message being replaced. Undefined
+   * when submitting a new message.
    */
   messageId?: string;
   /** Previous messages in the conversation (context for the LLM). */
@@ -239,11 +247,19 @@ export const createChatTransport = (
     }
 
     // Compute fork metadata from the conversation tree.
+    // For regeneration: messageId is the assistant message being regenerated.
+    // For edit: messageId is the user message being replaced.
+    // In both cases: forkOf = the x-ably-msg-id of that message,
+    //   parent = the parent of that message in the tree.
     let forkOf: string | undefined;
     let parent: string | undefined;
 
-    if (trigger === 'regenerate-message' && messageId) {
+    if (messageId) {
       forkOf = messageId;
+      // Look up the message in the tree to resolve x-ably-msg-id.
+      // messageId comes from useChat (UIMessage.id) — scan the flattened
+      // nodes to find the one whose domain message matches this ID.
+      // Uses the transport's default view — ChatTransport is single-view (one useChat per channel).
       const node = transport.view.flattenNodes().find((n) => n.message.id === messageId);
       if (node) {
         forkOf = node.msgId;

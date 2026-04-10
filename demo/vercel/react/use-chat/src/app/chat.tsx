@@ -88,6 +88,7 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
           loading={loading}
           onLoadOlder={loadOlder}
           onRegenerate={(messageId) => regenerate({ messageId })}
+          onEdit={(messageId, text) => sendMessage({ text, messageId })}
         />
         <InputBar
           onSend={(text) => sendMessage({ text })}

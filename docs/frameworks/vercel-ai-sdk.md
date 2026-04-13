@@ -27,9 +27,13 @@ import { useChat } from '@ai-sdk/react';
 import type * as AI from 'ai';
 
 // Wrap your component tree with TransportProvider
-<TransportProvider channelName={chatId} codec={UIMessageCodec} clientId={clientId}>
+<TransportProvider
+  channelName={chatId}
+  codec={UIMessageCodec}
+  clientId={clientId}
+>
   <ChatInner chatId={chatId} />
-</TransportProvider>
+</TransportProvider>;
 
 // Inside ChatInner:
 const transport = useClientTransport<AI.UIMessageChunk, AI.UIMessage>();
@@ -51,18 +55,18 @@ useMessageSync(transport, setMessages);
 Use the generic React hooks directly. You manage message state through the transport's conversation tree instead of `useChat()`.
 
 ```tsx
-import {
-  TransportProvider,
-  useClientTransport,
-  useView,
-  useActiveTurns} from '@ably/ai-transport/react';
+import { TransportProvider, useClientTransport, useView, useActiveTurns } from '@ably/ai-transport/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import type * as AI from 'ai';
 
 // Wrap your component tree with TransportProvider
-<TransportProvider channelName={chatId} codec={UIMessageCodec} clientId={clientId}>
+<TransportProvider
+  channelName={chatId}
+  codec={UIMessageCodec}
+  clientId={clientId}
+>
   <ChatInner />
-</TransportProvider>
+</TransportProvider>;
 
 // Inside ChatInner:
 const transport = useClientTransport<AI.UIMessageChunk, AI.UIMessage>();

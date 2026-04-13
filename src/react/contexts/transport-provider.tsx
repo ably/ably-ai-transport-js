@@ -24,7 +24,7 @@ import { type PropsWithChildren, type ReactNode, useContext, useEffect, useMemo,
 
 import { createClientTransport } from '../../core/transport/client-transport.js';
 import type { ClientTransport, ClientTransportOptions } from '../../core/transport/types.js';
-import { TransportContext } from '../contexts/transport-context.js';
+import { NearestTransportContext, TransportContext } from '../contexts/transport-context.js';
 
 /**
  * Props for {@link TransportProvider}.
@@ -81,7 +81,13 @@ const TransportProviderInner = <TEvent, TMessage>({
     [],
   );
 
-  return <TransportContext.Provider value={contextValue}>{children}</TransportContext.Provider>;
+  return (
+    <TransportContext.Provider value={contextValue}>
+      <NearestTransportContext.Provider value={transportRef.current as ClientTransport<unknown, unknown>}>
+        {children}
+      </NearestTransportContext.Provider>
+    </TransportContext.Provider>
+  );
 };
 
 /**
@@ -98,7 +104,7 @@ const TransportProviderInner = <TEvent, TMessage>({
  * </TransportProvider>
  *
  * // Inside Chat:
- * const transport = useClientTransport('ai:demo');
+ * const transport = useClientTransport({ channelName: 'ai:demo' });
  * ```
  *
  * For multiple transports, nest providers with distinct channelNames:
@@ -111,8 +117,8 @@ const TransportProviderInner = <TEvent, TMessage>({
  * </TransportProvider>
  *
  * // Inside App:
- * const main = useClientTransport('ai:main');
- * const aux  = useClientTransport('ai:aux');
+ * const main = useClientTransport({ channelName: 'ai:main' });
+ * const aux  = useClientTransport({ channelName: 'ai:aux' });
  * ```
  * @param props - Provider configuration including `channelName`, `codec`, and all other {@link ClientTransportOptions}.
  * @returns A React element wrapping children with ChannelProvider and TransportContext.

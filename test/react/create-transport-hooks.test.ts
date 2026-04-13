@@ -45,7 +45,7 @@ describe('createTransportHooks', () => {
     const wrapper = ({ children }: { children: ReactNode }): ReactNode =>
       createElement(TransportProvider, { channelName: 'ai:test', codec: {} as never }, children);
 
-    const { result } = renderHook(() => useClientTransport('ai:test'), { wrapper });
+    const { result } = renderHook(() => useClientTransport({ channelName: 'ai:test' }), { wrapper });
     expect(result.current).toBeDefined();
   });
 
@@ -54,7 +54,7 @@ describe('createTransportHooks', () => {
 
     const { result } = renderHook(() => {
       try {
-        useClientTransport('ai:test');
+        useClientTransport({ channelName: 'ai:test' });
         // Return value is irrelevant — the throw above is what matters
       } catch (error) {
         return error;

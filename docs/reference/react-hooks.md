@@ -13,33 +13,42 @@ Import from `@ably/ai-transport/react`.
 Create a `ClientTransport` and make it available to descendant components. Wraps children with Ably's `ChannelProvider` internally.
 
 ```tsx
-<TransportProvider channelName="ai:demo" codec={UIMessageCodec} clientId={clientId}>
+<TransportProvider
+  channelName="ai:demo"
+  codec={UIMessageCodec}
+  clientId={clientId}
+>
   <Chat />
 </TransportProvider>
 ```
 
-| Prop | Type | Description |
-|---|---|---|
-| `channelName` | `string` | The Ably channel name to subscribe to |
-| `codec` | `Codec<TEvent, TMessage>` | The codec for encoding/decoding |
-| `name` | `string?` | Transport name for multi-transport scenarios. Default: `"default"` |
-| `clientId` | `string?` | Client identity, sent to the server in POST body |
-| `api` | `string?` | Server endpoint URL. Default: `"/api/chat"` |
-| `headers` | `Record<string, string> \| (() => Record<string, string>)?` | HTTP POST headers. Function form for dynamic values |
-| `body` | `Record<string, unknown> \| (() => Record<string, unknown>)?` | Additional POST body fields. Function form for dynamic values |
-| `credentials` | `RequestCredentials?` | Fetch credentials mode |
-| `fetch` | `typeof fetch?` | Custom fetch implementation |
-| `messages` | `TMessage[]?` | Initial messages to seed the conversation tree |
-| `logger` | `Logger?` | Logger instance |
-| `children` | `ReactNode?` | Child components that will have access to this transport |
+| Prop          | Type                                                          | Description                                                                  |
+| ------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `channelName` | `string`                                                      | The Ably channel name to subscribe to. Also used as the context registry key |
+| `codec`       | `Codec<TEvent, TMessage>`                                     | The codec for encoding/decoding                                              |
+| `clientId`    | `string?`                                                     | Client identity, sent to the server in POST body                             |
+| `api`         | `string?`                                                     | Server endpoint URL. Default: `"/api/chat"`                                  |
+| `headers`     | `Record<string, string> \| (() => Record<string, string>)?`   | HTTP POST headers. Function form for dynamic values                          |
+| `body`        | `Record<string, unknown> \| (() => Record<string, unknown>)?` | Additional POST body fields. Function form for dynamic values                |
+| `credentials` | `RequestCredentials?`                                         | Fetch credentials mode                                                       |
+| `fetch`       | `typeof fetch?`                                               | Custom fetch implementation                                                  |
+| `messages`    | `TMessage[]?`                                                 | Initial messages to seed the conversation tree                               |
+| `logger`      | `Logger?`                                                     | Logger instance                                                              |
+| `children`    | `ReactNode?`                                                  | Child components that will have access to this transport                     |
 
 The transport subscribes to the Ably channel immediately on creation. It does not auto-close on unmount — channel lifecycle is managed by the internal `ChannelProvider`.
 
-For multiple transports, nest providers with distinct `name` values:
+For multiple transports, nest providers with distinct `channelName` values:
 
 ```tsx
-<TransportProvider name="main" channelName="ai:main" codec={UIMessageCodec}>
-  <TransportProvider name="aux" channelName="ai:aux" codec={UIMessageCodec}>
+<TransportProvider
+  channelName="ai:main"
+  codec={UIMessageCodec}
+>
+  <TransportProvider
+    channelName="ai:aux"
+    codec={UIMessageCodec}
+  >
     <App />
   </TransportProvider>
 </TransportProvider>
@@ -52,43 +61,45 @@ For multiple transports, nest providers with distinct `name` values:
 Access the `ClientTransport` from the nearest `TransportProvider`.
 
 ```typescript
-const transport = useClientTransport<TEvent, TMessage>(name?: string);
+const transport = useClientTransport<TEvent, TMessage>({ channelName?, skip? } = {});
 ```
 
-| Parameter             | Type                                                          | Description                                                   |
-| --------------------- | ------------------------------------------------------------- | ------------------------------------------------------------- |
-| `name`    | `string?`                                                     | Transport name to look up. Defaults to `"default"`. Must match the `name` prop on the enclosing `TransportProvider`              |
+| Prop          | Type       | Description                                                                                               |
+| ------------- | ---------- | --------------------------------------------------------------------------------------------------------- |
+| `channelName` | `string?`  | Channel name to look up. Omit to use the nearest `TransportProvider` in the tree                          |
+| `skip`        | `boolean?` | When `true`, return a stub transport that throws on any access — safe to hold before conditions are ready |
 
-**Returns:** `ClientTransport<TEvent, TMessage>`                                                 — the transport instance                                               created by the enclosing `TransportProvider`.
+**Returns:** `ClientTransport<TEvent, TMessage>` — the transport instance, or a stub whose every property/method throws `Ably.ErrorInfo` when `skip` is `true`.
 
-**Throws:** `Ably.ErrorInfo` (code `40000`) if no `TransportProvider` with the given name is found in the component tree.
+**Throws:** `Ably.ErrorInfo` (code `40000`) if `skip` is falsy and no matching `TransportProvider` is found in the component tree.
 
 ```typescript
-// Default transport (most common case)
+// Nearest provider (most common)
 const transport = useClientTransport<UIMessageChunk, UIMessage>();
 
-// Named transport
-const transport = useClientTransport<UIMessageChunk, UIMessage>('main');
+// Specific channel
+const transport = useClientTransport<UIMessageChunk, UIMessage>({ channelName: 'ai:main' });
+
+// Deferred until auth resolves — stub throws on any access
+const transport = useClientTransport<UIMessageChunk, UIMessage>({ skip: !userId });
 ```
 
 ---
 
 ### useView
 
-Subscribe to a view and return nodes with pagination, branch navigation, and write operations. Accepts either a `ClientTransport` (uses its default view) or a `View` directly.
+Subscribe to a view and return nodes with pagination, branch navigation, and write operations. Pass `transport` to use its default view, `view` to subscribe to a specific `View` directly, or omit both to use the nearest `TransportProvider`.
 
 ```typescript
-const view = useView<TEvent, TMessage>(
-  source: ClientTransport<TEvent, TMessage> | View<TEvent, TMessage> | null | undefined,
-  options?: UseViewOptions | null,
-);
+const view = useView<TEvent, TMessage>({ transport?, view?, limit?, skip? } = {});
 ```
 
-| Parameter       | Type                                           | Description                                                                      |
-| --------------- | ---------------------------------------------- | -------------------------------------------------------------------------------- |
-| `source`        | `ClientTransport \| View \| null \| undefined` | The transport (uses its default view) or a View directly                         |
-| `options`       | `UseViewOptions \| null?`                      | When provided, auto-loads first page on mount. Omit or pass null for manual load |
-| `options.limit` | `number?`                                      | Max messages per page. Default: 100                                              |
+| Prop        | Type                       | Description                                                                    |
+| ----------- | -------------------------- | ------------------------------------------------------------------------------ |
+| `transport` | `ClientTransport \| null?` | Transport whose default view to subscribe to; defaults to the nearest provider |
+| `view`      | `View \| null?`            | A specific `View` to subscribe to directly; takes priority over `transport`    |
+| `limit`     | `number?`                  | When provided, auto-loads the first page on mount. Default: 100                |
+| `skip`      | `boolean?`                 | When `true`, skip all subscriptions and return an empty handle                 |
 
 **Returns:** `ViewHandle<TEvent, TMessage>`
 
@@ -122,25 +133,22 @@ Write operations (`send`, `regenerate`, `edit`) automatically derive the parent 
 Create an independent view with the same API as [`useView()`](#useview). The view is created via `transport.createView()` and closed automatically on unmount or when the transport changes.
 
 ```typescript
-const handle = useCreateView<TEvent, TMessage>(
-  transport: ClientTransport<TEvent, TMessage> | null | undefined,
-  options?: UseViewOptions | null,
-);
+const handle = useCreateView<TEvent, TMessage>({ transport?, limit?, skip? } = {});
 ```
 
-| Parameter       | Type                                   | Description                                                                      |
-| --------------- | -------------------------------------- | -------------------------------------------------------------------------------- |
-| `transport`     | `ClientTransport \| null \| undefined` | The transport to create a view from. Pass null/undefined to defer creation       |
-| `options`       | `UseViewOptions \| null?`              | When provided, auto-loads first page on mount. Omit or pass null for manual load |
-| `options.limit` | `number?`                              | Max messages per page. Default: 100                                              |
+| Prop        | Type                       | Description                                                                                          |
+| ----------- | -------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `transport` | `ClientTransport \| null?` | The transport to create a view from; defaults to the nearest provider. Pass `null` to defer creation |
+| `limit`     | `number?`                  | When provided, auto-loads the first page on mount. Default: 100                                      |
+| `skip`      | `boolean?`                 | When `true`, skip view creation and return an empty handle                                           |
 
-**Returns:** `ViewHandle<TEvent, TMessage>` - the same handle type as `useView()`, with nodes, pagination, navigation, and write operations. Returns an empty handle (no nodes, no messages) when no transport is provided.
+**Returns:** `ViewHandle<TEvent, TMessage>` - the same handle type as `useView()`, with nodes, pagination, navigation, and write operations. Returns an empty handle (no nodes, no messages) when no transport is provided or `skip` is `true`.
 
 ```typescript
 import { useView, useCreateView } from '@ably/ai-transport/react';
 
-const view = useView(transport, { limit: 50 }); // default view
-const splitView = useCreateView(split ? transport : undefined, { limit: 50 }); // independent view
+const view = useView({ limit: 50 }); // default view, nearest provider
+const splitView = useCreateView({ transport: split ? transport : null, limit: 50 }); // independent view
 ```
 
 Each view has its own branch selections and pagination state - selecting a sibling in one view does not affect any other view. Both views share the same underlying conversation tree, so new messages appear in both.
@@ -220,14 +228,14 @@ Automatically computes `forkOf`, `parent`, and history from the view's selected 
 Return a reactive map of all active turns on the channel, keyed by clientId.
 
 ```typescript
-const activeTurns = useActiveTurns<TEvent, TMessage>(transport: ClientTransport<TEvent, TMessage> | null | undefined);
+const activeTurns = useActiveTurns<TEvent, TMessage>({ transport? } = {});
 ```
 
-| Parameter   | Type                                   | Description                                                        |
-| ----------- | -------------------------------------- | ------------------------------------------------------------------ |
-| `transport` | `ClientTransport \| null \| undefined` | The transport to observe. Pass null/undefined if not yet available |
+| Prop        | Type                       | Description                                                                                              |
+| ----------- | -------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `transport` | `ClientTransport \| null?` | The transport to observe; defaults to the nearest provider. Pass `null`/`undefined` if not yet available |
 
-**Returns:** `Map<string, Set<string>>` - keys are clientIds, values are sets of active turnIds. Empty map if transport is null.
+**Returns:** `Map<string, Set<string>>` - keys are clientIds, values are sets of active turnIds. Empty map if no transport is resolved.
 
 Updates on every turn start/end event. Includes turns from all clients on the channel.
 
@@ -238,12 +246,12 @@ Updates on every turn start/end event. Includes turns from all clients on the ch
 Provide stable structural query callbacks for the conversation tree.
 
 ```typescript
-const tree = useTree<TEvent, TMessage>(transport: ClientTransport<TEvent, TMessage>);
+const tree = useTree<TEvent, TMessage>({ transport? } = {});
 ```
 
-| Parameter   | Type                                | Description                       |
-| ----------- | ----------------------------------- | --------------------------------- |
-| `transport` | `ClientTransport<TEvent, TMessage>` | The transport whose tree to query |
+| Prop        | Type               | Description                                                         |
+| ----------- | ------------------ | ------------------------------------------------------------------- |
+| `transport` | `ClientTransport?` | The transport whose tree to query; defaults to the nearest provider |
 
 **Returns:** `TreeHandle<TMessage>`
 
@@ -262,12 +270,13 @@ Branch navigation (`select()`, `getSelectedIndex()`) and write operations (`send
 Subscribe to raw Ably message updates. Useful for debugging.
 
 ```typescript
-const messages = useAblyMessages<TEvent, TMessage>(transport: ClientTransport<TEvent, TMessage>);
+const messages = useAblyMessages<TEvent, TMessage>({ transport?, skip? } = {});
 ```
 
-| Parameter   | Type                                | Description              |
-| ----------- | ----------------------------------- | ------------------------ |
-| `transport` | `ClientTransport<TEvent, TMessage>` | The transport to observe |
+| Prop        | Type               | Description                                                   |
+| ----------- | ------------------ | ------------------------------------------------------------- |
+| `transport` | `ClientTransport?` | The transport to observe; defaults to the nearest provider    |
+| `skip`      | `boolean?`         | When `true`, skip all subscriptions and return an empty array |
 
 **Returns:** `Ably.InboundMessage[]` - raw Ably messages in chronological order. Includes live and history-loaded messages.
 

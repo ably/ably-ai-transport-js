@@ -30,17 +30,17 @@ interface ChatProps {
 
 export function Chat({ chatId, clientId, historyLimit }: ChatProps) {
   // Transport is created by TransportProvider in page.tsx
-  const transport = useClientTransport<AI.UIMessageChunk, AI.UIMessage>(chatId);
+  const transport = useClientTransport<AI.UIMessageChunk, AI.UIMessage>({ channelName: chatId });
   const [split, setSplit] = useState(false);
 
   const limit = historyLimit ?? 30;
-  const view = useView(transport, { limit });
-  const splitView = useCreateView(split ? transport : undefined, { limit });
+  const view = useView({ transport, limit });
+  const splitView = useCreateView({ transport, limit, skip: !split });
 
   useClientTools(view, clientId);
 
-  const activeTurns = useActiveTurns(transport);
-  const ablyMessages = useAblyMessages(transport);
+  const activeTurns = useActiveTurns({ transport });
+  const ablyMessages = useAblyMessages({ transport });
   const queue = useMessageQueue(transport, view.send);
 
   const handleToolApproved = useCallback(

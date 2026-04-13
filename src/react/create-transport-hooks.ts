@@ -8,7 +8,6 @@
  *   TransportProvider,
  *   useClientTransport,
  *   useView,
- *   useSend,
  *   useActiveTurns,
  * } = createTransportHooks<UIMessageChunk, UIMessage>();
  *
@@ -17,27 +16,24 @@
  *   <Chat />
  * </TransportProvider>
  *
- * // In Chat — no type params needed:
- * const transport = useClientTransport('ai:demo');
- * const { nodes } = useView(transport, { limit: 30 });
- * const send = useSend(transport);
+ * // In Chat — no type params needed, transport is implicit from nearest provider:
+ * const { nodes } = useView({ limit: 30 });
+ * const turns = useActiveTurns();
  */
 
 import type * as Ably from 'ably';
 import type { ComponentType } from 'react';
 
-import type { ActiveTurn, ClientTransport, SendOptions } from '../core/transport/types.js';
+import type { ClientTransport, View } from '../core/transport/types.js';
 import type { TransportProviderProps } from './contexts/transport-provider.js';
 import { TransportProvider as _TransportProvider } from './contexts/transport-provider.js';
 import { useAblyMessages as _useAblyMessages } from './use-ably-messages.js';
 import { useActiveTurns as _useActiveTurns } from './use-active-turns.js';
 import { useClientTransport as _useClientTransport } from './use-client-transport.js';
-import { useEdit as _useEdit } from './use-edit.js';
-import { useRegenerate as _useRegenerate } from './use-regenerate.js';
-import { useSend as _useSend } from './use-send.js';
+import { useCreateView as _useCreateView } from './use-create-view.js';
 import type { TreeHandle } from './use-tree.js';
 import { useTree as _useTree } from './use-tree.js';
-import type { ViewHandle, ViewOptions } from './use-view.js';
+import type { ViewHandle } from './use-view.js';
 import { useView as _useView } from './use-view.js';
 
 /**
@@ -53,58 +49,71 @@ export interface TransportHooks<TEvent, TMessage> {
   TransportProvider: ComponentType<TransportProviderProps<TEvent, TMessage>>;
   /**
    * Read the transport from context. No type params needed.
-   * @param channelName - The channel name passed to the enclosing `TransportProvider`.
-   * @throws {Ably.ErrorInfo} if no `TransportProvider` with the given `channelName` is in the tree.
+   * Omit `channelName` to use the nearest provider. Pass `skip: true` to return a stub
+   * that throws on any access — safe to hold before conditions are ready.
+   * @throws {Ably.ErrorInfo} if `skip` is falsy and no matching provider is found.
    */
-  useClientTransport: (channelName: string) => ClientTransport<TEvent, TMessage>;
+  useClientTransport: (props?: {
+    /** Channel name to look up; omit to use the nearest {@link TransportProvider}. */
+    channelName?: string;
+    /** When `true`, return a stub transport that throws on any access. */
+    skip?: boolean;
+  }) => ClientTransport<TEvent, TMessage>;
   /**
-   * Subscribe to the transport's view and return the visible node list with pagination.
-   * @param transport - The transport to read from.
-   * @param options - When provided, auto-loads the first page on mount.
+   * Subscribe to the nearest transport's view and return the visible node list with pagination.
+   * Pass `transport` to use a transport's default view, `view` to subscribe to a specific view
+   * directly. Pass `limit` to auto-load on mount. Pass `skip: true` for an empty handle.
    */
-  useView: (
-    transport: ClientTransport<TEvent, TMessage> | null | undefined,
-    options?: ViewOptions | null,
-  ) => ViewHandle<TMessage>;
-  /**
-   * Return a stable `send` callback.
-   * The returned function sends messages and returns an {@link ActiveTurn} handle.
-   * @param transport - The transport to send through.
-   */
-  useSend: (
-    transport: ClientTransport<TEvent, TMessage>,
-  ) => (messages: TMessage[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>;
+  useView: (props?: {
+    /** Client transport whose default view to subscribe to; defaults to the nearest {@link TransportProvider}. */
+    transport?: ClientTransport<TEvent, TMessage> | null;
+    /** A specific {@link View} to subscribe to directly. Takes priority over `transport`. */
+    view?: View<TEvent, TMessage> | null;
+    /** When provided, auto-loads the first page on mount. */
+    limit?: number;
+    /** When `true`, skip all subscriptions and return an empty handle. */
+    skip?: boolean;
+  }) => ViewHandle<TEvent, TMessage>;
   /**
    * Track active turns across all clients on the channel.
-   * @param transport - The transport to observe.
+   * Pass `transport` to override; defaults to the nearest {@link TransportProvider}.
    */
-  useActiveTurns: (transport: ClientTransport<TEvent, TMessage> | null | undefined) => Map<string, Set<string>>;
+  useActiveTurns: (props?: {
+    /** Override transport; defaults to the nearest {@link TransportProvider}. */
+    transport?: ClientTransport<TEvent, TMessage> | null;
+  }) => Map<string, Set<string>>;
   /**
    * Navigate conversation branches in the transport tree.
-   * @param transport - The transport to read from.
+   * Pass `transport` to override; defaults to the nearest {@link TransportProvider}.
    */
-  useTree: (transport: ClientTransport<TEvent, TMessage>) => TreeHandle<TMessage>;
-  /**
-   * Return a stable `regenerate` callback.
-   * The returned function regenerates the given message and returns an {@link ActiveTurn} handle.
-   * @param transport - The transport to send through.
-   */
-  useRegenerate: (
-    transport: ClientTransport<TEvent, TMessage>,
-  ) => (messageId: string, options?: SendOptions) => Promise<ActiveTurn<TEvent>>;
-  /**
-   * Return a stable `edit` callback.
-   * The returned function edits the given message and returns an {@link ActiveTurn} handle.
-   * @param transport - The transport to send through.
-   */
-  useEdit: (
-    transport: ClientTransport<TEvent, TMessage>,
-  ) => (messageId: string, newMessages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>;
+  useTree: (props?: {
+    /** Override transport; defaults to the nearest {@link TransportProvider}. */
+    transport?: ClientTransport<TEvent, TMessage>;
+  }) => TreeHandle<TMessage>;
   /**
    * Subscribe to raw Ably messages on the transport channel.
-   * @param transport - The transport to observe.
+   * Pass `transport` to override; defaults to the nearest {@link TransportProvider}.
+   * Pass `skip: true` to return an empty array without subscribing.
    */
-  useAblyMessages: (transport: ClientTransport<TEvent, TMessage>) => Ably.InboundMessage[];
+  useAblyMessages: (props?: {
+    /** Override transport; defaults to the nearest {@link TransportProvider}. */
+    transport?: ClientTransport<TEvent, TMessage>;
+    /** When `true`, skip all subscriptions and return an empty array. */
+    skip?: boolean;
+  }) => Ably.InboundMessage[];
+  /**
+   * Create an independent view over the same tree.
+   * Pass `transport` to override; defaults to the nearest {@link TransportProvider}.
+   * Pass `skip: true` to return an empty handle without creating a view.
+   */
+  useCreateView: (props?: {
+    /** Override transport; defaults to the nearest {@link TransportProvider}. */
+    transport?: ClientTransport<TEvent, TMessage> | null;
+    /** When provided, auto-loads the first page on mount. */
+    limit?: number;
+    /** When `true`, skip view creation and return an empty handle. */
+    skip?: boolean;
+  }) => ViewHandle<TEvent, TMessage>;
 }
 
 /**
@@ -118,12 +127,10 @@ export interface TransportHooks<TEvent, TMessage> {
 export const createTransportHooks = <TEvent, TMessage>(): TransportHooks<TEvent, TMessage> => ({
   // CAST: TransportProvider is generic; factory narrows it to TEvent/TMessage.
   TransportProvider: _TransportProvider as ComponentType<TransportProviderProps<TEvent, TMessage>>,
-  useClientTransport: (channelName: string) => _useClientTransport<TEvent, TMessage>(channelName),
-  useView: (transport, options) => _useView(transport, options),
-  useSend: (transport) => _useSend(transport),
-  useActiveTurns: (transport) => _useActiveTurns(transport),
-  useTree: (transport) => _useTree(transport),
-  useRegenerate: (transport) => _useRegenerate(transport),
-  useEdit: (transport) => _useEdit(transport),
-  useAblyMessages: (transport) => _useAblyMessages(transport),
+  useClientTransport: (props) => _useClientTransport<TEvent, TMessage>(props ?? {}),
+  useView: (props) => _useView<TEvent, TMessage>(props ?? {}),
+  useActiveTurns: (props) => _useActiveTurns<TEvent, TMessage>(props ?? {}),
+  useTree: (props) => _useTree<TEvent, TMessage>(props ?? {}),
+  useAblyMessages: (props) => _useAblyMessages<TEvent, TMessage>(props ?? {}),
+  useCreateView: (props) => _useCreateView<TEvent, TMessage>(props ?? {}),
 });

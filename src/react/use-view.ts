@@ -2,16 +2,18 @@
  * useView — reactive paginated view of the conversation.
  *
  * Subscribes to view updates and exposes the visible nodes, branch navigation,
- * write operations, pagination state, and a `loadOlder` callback. Accepts either
- * a {@link ClientTransport} (uses its default view) or a {@link View} directly.
- * When `options` are provided, auto-loads the first page on mount (SWR-style).
+ * write operations, pagination state, and a `loadOlder` callback. Pass `transport`
+ * to use a transport's default view, or `view` to subscribe to a specific
+ * {@link View} directly. When both are omitted, defaults to the nearest
+ * {@link TransportProvider}'s transport via context.
  */
 
 import * as Ably from 'ably';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { ActiveTurn, ClientTransport, MessageNode, SendOptions, View } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
+import { NearestTransportContext } from './contexts/transport-context.js';
 
 /** Options for configuring the view's initial load behavior. */
 export interface UseViewOptions {
@@ -52,45 +54,54 @@ export interface ViewHandle<TEvent, TMessage> {
 }
 
 /**
- * Resolve a {@link View} from either a {@link ClientTransport} or a direct {@link View} reference.
- * @param source - The transport or view to resolve, or undefined if not yet available.
- * @returns The resolved View, or undefined if not available.
- */
-const resolveView = <TEvent, TMessage>(
-  source: ClientTransport<TEvent, TMessage> | View<TEvent, TMessage> | undefined,
-): View<TEvent, TMessage> | undefined => {
-  if (!source) return undefined;
-  // Discriminate: ClientTransport has a `.view` property; View does not.
-  if ('view' in source) return source.view;
-  return source;
-};
-
-/**
  * Subscribe to a view and return the visible node list with pagination, navigation, and write operations.
- * @param source - A client transport (uses its default view), a View directly, or null/undefined.
- * @param options - When provided, auto-loads the first page on mount. Omit or pass null for manual loading.
+ *
+ * `view` takes priority over `transport`. When neither is provided, the nearest
+ * {@link TransportProvider}'s transport is used. When `limit` is provided, auto-loads
+ * the first page on mount (SWR-style).
+ * @param props - Options for selecting the view source and configuring auto-load.
+ * @param props.transport - Client transport whose default view to subscribe to; defaults to the nearest provider.
+ * @param props.view - A specific {@link View} to subscribe to directly. Takes priority over `transport`.
+ * @param props.limit - Max older messages per page; when provided, auto-loads on mount.
+ * @param props.skip - When `true`, skip all subscriptions and return an empty handle.
  * @returns A {@link ViewHandle} with nodes, pagination state, navigation, write operations, and loadOlder.
  */
-export const useView = <TEvent, TMessage>(
-  source: ClientTransport<TEvent, TMessage> | View<TEvent, TMessage> | null | undefined,
-  options?: UseViewOptions | null,
-): ViewHandle<TEvent, TMessage> => {
-  const view = resolveView(source ?? undefined);
+export const useView = <TEvent, TMessage>({
+  transport,
+  view,
+  limit,
+  skip,
+}: {
+  /** Client transport whose default view to subscribe to; defaults to the nearest provider when omitted. */
+  transport?: ClientTransport<TEvent, TMessage> | null;
+  /** A specific {@link View} to subscribe to directly. Takes priority over `transport`. */
+  view?: View<TEvent, TMessage> | null;
+  /** When provided, auto-loads the first page on mount. Omit for manual loading. */
+  limit?: number;
+  /** When `true`, skip all subscriptions and return an empty handle immediately. */
+  skip?: boolean;
+} = {}): ViewHandle<TEvent, TMessage> => {
+  const nearestTransport = useContext(NearestTransportContext);
+  // CAST: NearestTransportContext stores transport with erased generics; types fixed at call site.
+  const resolvedTransport = skip
+    ? undefined
+    : (transport ?? (nearestTransport as unknown as ClientTransport<TEvent, TMessage> | undefined));
+  const resolvedView = skip ? undefined : (view ?? resolvedTransport?.view);
 
-  const [nodes, setNodes] = useState<MessageNode<TMessage>[]>(() => view?.flattenNodes() ?? []);
-  const [hasOlder, setHasOlder] = useState(() => view?.hasOlder() ?? false);
+  const [nodes, setNodes] = useState<MessageNode<TMessage>[]>(() => resolvedView?.flattenNodes() ?? []);
+  const [hasOlder, setHasOlder] = useState(() => resolvedView?.hasOlder() ?? false);
   const [loading, setLoading] = useState(false);
   const loadingRef = useRef(false);
 
-  // Auto-load first page on mount when options are provided (SWR-style).
-  // Fires once per view instance — subsequent changes to options.limit
+  // Auto-load first page on mount when limit is provided (SWR-style).
+  // Fires once per view instance — subsequent changes to limit
   // only affect manual loadOlder() calls, not the initial auto-load.
-  const autoLoad = options !== undefined && options !== null;
+  const autoLoad = limit !== undefined;
   const autoLoadedRef = useRef(false);
 
   // Subscribe to view updates
   useEffect(() => {
-    if (!view) {
+    if (!resolvedView) {
       setNodes([]);
       setHasOlder(false);
       return;
@@ -100,84 +111,87 @@ export const useView = <TEvent, TMessage>(
     autoLoadedRef.current = false;
 
     // Sync initial state
-    setNodes(view.flattenNodes());
-    setHasOlder(view.hasOlder());
+    setNodes(resolvedView.flattenNodes());
+    setHasOlder(resolvedView.hasOlder());
 
-    const unsub = view.on('update', () => {
-      setNodes(view.flattenNodes());
-      setHasOlder(view.hasOlder());
+    const unsub = resolvedView.on('update', () => {
+      setNodes(resolvedView.flattenNodes());
+      setHasOlder(resolvedView.hasOlder());
     });
     return unsub;
-  }, [view]);
+  }, [resolvedView]);
 
   const loadOlder = useCallback(async () => {
-    if (!view || loadingRef.current) return;
+    if (!resolvedView || loadingRef.current) return;
     loadingRef.current = true;
     setLoading(true);
     try {
-      await view.loadOlder(options?.limit);
+      await resolvedView.loadOlder(limit);
     } finally {
       loadingRef.current = false;
       setLoading(false);
     }
-  }, [view, options?.limit]);
+  }, [resolvedView, limit]);
 
   useEffect(() => {
-    if (!autoLoad || autoLoadedRef.current || !view) return;
+    if (!autoLoad || autoLoadedRef.current || !resolvedView) return;
     autoLoadedRef.current = true;
     void loadOlder();
-  }, [autoLoad, view, loadOlder]);
+  }, [autoLoad, resolvedView, loadOlder]);
 
   const messages = useMemo(() => nodes.map((n) => n.message), [nodes]);
 
   // Branch navigation callbacks
   const select = useCallback(
     (msgId: string, index: number) => {
-      view?.select(msgId, index);
+      resolvedView?.select(msgId, index);
     },
-    [view],
+    [resolvedView],
   );
 
-  const getSelectedIndex = useCallback((msgId: string) => view?.getSelectedIndex(msgId) ?? 0, [view]);
+  const getSelectedIndex = useCallback((msgId: string) => resolvedView?.getSelectedIndex(msgId) ?? 0, [resolvedView]);
 
-  const getSiblings = useCallback((msgId: string) => view?.getSiblings(msgId) ?? [], [view]);
+  const getSiblings = useCallback((msgId: string) => resolvedView?.getSiblings(msgId) ?? [], [resolvedView]);
 
-  const hasSiblings = useCallback((msgId: string) => view?.hasSiblings(msgId) ?? false, [view]);
+  const hasSiblings = useCallback((msgId: string) => resolvedView?.hasSiblings(msgId) ?? false, [resolvedView]);
 
-  const getNode = useCallback((msgId: string) => view?.getNode(msgId), [view]);
+  const getNode = useCallback((msgId: string) => resolvedView?.getNode(msgId), [resolvedView]);
 
   // Write operation callbacks
   const send = useCallback(
     async (msgs: TMessage | TMessage[], opts?: SendOptions) => {
-      if (!view) throw new Ably.ErrorInfo('unable to send; view is not available', ErrorCode.InvalidArgument, 400);
-      return view.send(msgs, opts);
+      if (!resolvedView)
+        throw new Ably.ErrorInfo('unable to send; view is not available', ErrorCode.InvalidArgument, 400);
+      return resolvedView.send(msgs, opts);
     },
-    [view],
+    [resolvedView],
   );
 
   const regenerate = useCallback(
     async (messageId: string, opts?: SendOptions) => {
-      if (!view)
+      if (!resolvedView)
         throw new Ably.ErrorInfo('unable to regenerate; view is not available', ErrorCode.InvalidArgument, 400);
-      return view.regenerate(messageId, opts);
+      return resolvedView.regenerate(messageId, opts);
     },
-    [view],
+    [resolvedView],
   );
 
   const edit = useCallback(
     async (messageId: string, newMessages: TMessage | TMessage[], opts?: SendOptions) => {
-      if (!view) throw new Ably.ErrorInfo('unable to edit; view is not available', ErrorCode.InvalidArgument, 400);
-      return view.edit(messageId, newMessages, opts);
+      if (!resolvedView)
+        throw new Ably.ErrorInfo('unable to edit; view is not available', ErrorCode.InvalidArgument, 400);
+      return resolvedView.edit(messageId, newMessages, opts);
     },
-    [view],
+    [resolvedView],
   );
 
   const update = useCallback(
     async (msgId: string, events: TEvent[], opts?: SendOptions) => {
-      if (!view) throw new Ably.ErrorInfo('unable to update; view is not available', ErrorCode.InvalidArgument, 400);
-      return view.update(msgId, events, opts);
+      if (!resolvedView)
+        throw new Ably.ErrorInfo('unable to update; view is not available', ErrorCode.InvalidArgument, 400);
+      return resolvedView.update(msgId, events, opts);
     },
-    [view],
+    [resolvedView],
   );
 
   return {

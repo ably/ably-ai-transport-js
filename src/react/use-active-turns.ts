@@ -11,29 +11,36 @@
  * Generic — works with any codec, not tied to Vercel types.
  */
 
-import { useEffect, useState } from 'react';
+import { useContext, useEffect, useState } from 'react';
 
 import { EVENT_TURN_START } from '../constants.js';
 import type { ClientTransport, TurnLifecycleEvent } from '../core/transport/types.js';
+import { NearestTransportContext } from './contexts/transport-context.js';
 
 /**
  * Returns a reactive Map of all active turns on the channel, keyed by clientId.
- * Updates when turns start or end.
- * @param transport - The client transport to observe, or null/undefined if not yet available.
+ * Updates when turns start or end. When `transport` is omitted, uses the nearest
+ * {@link TransportProvider}'s transport via context.
+ * @param props - Options including optional `transport`.
+ * @param props.transport - Transport to track turns for; defaults to the nearest provider.
  * @returns A Map where keys are clientIds and values are Sets of active turnIds.
  */
-export const useActiveTurns = <TEvent, TMessage>(
-  transport: ClientTransport<TEvent, TMessage> | null | undefined,
-): Map<string, Set<string>> => {
+export const useActiveTurns = <TEvent, TMessage>({
+  transport,
+}: { transport?: ClientTransport<TEvent, TMessage> | null } = {}): Map<string, Set<string>> => {
+  const nearestTransport = useContext(NearestTransportContext);
+  // CAST: NearestTransportContext stores transport with erased generics; types fixed at call site.
+  const resolved = (transport ?? nearestTransport) as ClientTransport<TEvent, TMessage> | undefined;
+
   const [turns, setTurns] = useState<Map<string, Set<string>>>(() => new Map());
 
   useEffect(() => {
-    if (!transport) return;
+    if (!resolved) return;
 
     // Initialize from current state
-    setTurns(transport.tree.getActiveTurnIds());
+    setTurns(resolved.tree.getActiveTurnIds());
 
-    const unsubscribe = transport.tree.on('turn', (event: TurnLifecycleEvent) => {
+    const unsubscribe = resolved.tree.on('turn', (event: TurnLifecycleEvent) => {
       setTurns((prev) => {
         const next = new Map(prev);
 
@@ -42,9 +49,9 @@ export const useActiveTurns = <TEvent, TMessage>(
           set.add(event.turnId);
           next.set(event.clientId, set);
         } else {
-          const prev = next.get(event.clientId);
-          if (prev) {
-            const updated = new Set(prev);
+          const existing = next.get(event.clientId);
+          if (existing) {
+            const updated = new Set(existing);
             updated.delete(event.turnId);
             if (updated.size === 0) {
               next.delete(event.clientId);
@@ -59,7 +66,7 @@ export const useActiveTurns = <TEvent, TMessage>(
     });
 
     return unsubscribe;
-  }, [transport]);
+  }, [resolved]);
 
   return turns;
 };

@@ -1395,6 +1395,26 @@ describe('DefaultView', () => {
       expect(ref2).toBe(ref1);
     });
 
+    it('does not re-walk the tree during a content-only message update', () => {
+      tree.upsert('m1', { id: '1', content: 'first' }, makeHeaders('m1'), 'serial-1');
+      tree.upsert('m2', { id: '2', content: 'second' }, makeHeaders('m2', 'turn-1'), 'serial-2');
+
+      // Capture the current cached state so the view has a baseline
+      view.flattenNodes();
+
+      const spy = vi.spyOn(tree, 'flattenNodes');
+      spy.mockClear();
+
+      // Content-only update: same msgId, different message content, no serial change
+      tree.upsert('m2', { id: '2', content: 'streaming token' }, makeHeaders('m2', 'turn-1'), 'serial-2');
+
+      // The view should detect this is a content-only update and skip the
+      // full tree walk - using the cached node list instead.
+      expect(spy).not.toHaveBeenCalled();
+
+      spy.mockRestore();
+    });
+
     it('preserves unchanged message references after a content-only update', () => {
       const msg1 = { id: '1', content: 'stable' };
       const msg2 = { id: '2', content: 'will-change' };

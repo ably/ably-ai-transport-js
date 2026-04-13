@@ -152,6 +152,9 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
    */
   private _cachedNodes: MessageNode<TMessage>[] = [];
 
+  /** Last seen tree structural version - used to distinguish content-only from structural updates. */
+  private _lastStructuralVersion = -1;
+
   private _loadingOlder = false;
   private _processingHistory = false;
   private _closed = false;
@@ -168,6 +171,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
 
     // Compute initial cache and snapshot visible state
     this._cachedNodes = this._computeFlatNodes();
+    this._lastStructuralVersion = this._tree.structuralVersion;
     this._updateVisibleSnapshot(this._cachedNodes);
 
     // Subscribe to tree events and re-emit scoped versions
@@ -636,6 +640,27 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     // Scoped to _processingHistory (not _loadingOlder) so that live streaming
     // updates arriving during the async history fetch are still forwarded.
     if (this._processingHistory) return;
+
+    const currentVersion = this._tree.structuralVersion;
+
+    // Content-only fast path: the tree structure hasn't changed (no new
+    // nodes, deletions, or serial reorders), so the cached node list is
+    // still structurally valid. The tree mutated an existing node's
+    // .message in place - check if any visible message reference changed.
+    // JS single-threaded: structuralVersion cannot change between the
+    // check and the response within this synchronous handler invocation.
+    if (currentVersion === this._lastStructuralVersion) {
+      const changed = this._cachedNodes.some((node, i) => node.message !== this._lastVisibleMessages[i]);
+      if (changed) {
+        this._lastVisibleMessages = this._cachedNodes.map((n) => n.message);
+        this._cachedNodes = [...this._cachedNodes];
+        this._emitter.emit('update');
+      }
+      return;
+    }
+
+    // Structural update: full re-walk required.
+    this._lastStructuralVersion = currentVersion;
 
     // Pin selections for previously-visible nodes that now have siblings.
     // This prevents new forks (from other views' edits/regenerates) from

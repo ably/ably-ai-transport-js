@@ -1384,6 +1384,17 @@ describe('DefaultView', () => {
   // -------------------------------------------------------------------------
 
   describe('flattenNodes caching and reference stability', () => {
+    it('returns the same array reference on consecutive calls without intervening changes', () => {
+      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'), 'serial-1');
+
+      const ref1 = view.flattenNodes();
+      const ref2 = view.flattenNodes();
+
+      // flattenNodes() should return a cached result - the same array
+      // reference - when nothing has changed between calls.
+      expect(ref2).toBe(ref1);
+    });
+
     it('preserves unchanged message references after a content-only update', () => {
       const msg1 = { id: '1', content: 'stable' };
       const msg2 = { id: '2', content: 'will-change' };

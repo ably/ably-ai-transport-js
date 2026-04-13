@@ -118,13 +118,18 @@ Every `'update'` event triggers a full `flattenNodes()` call, which rebuilds the
 
 Each turn needs its own accumulator because events from interleaved concurrent turns would corrupt each other's message assembly - a text-delta from turn A would be accumulated into turn B's message.
 
-## Why no cached message list
+## Cached message list
 
-The tree is a DAG with branch selection state. The "current conversation" depends on which sibling is selected at each fork point. There is no single cached `TMessage[]` - every call to `flattenNodes()` rebuilds from scratch.
+The View caches the result of `flattenNodes()` in a `_cachedNodes` field. The public `flattenNodes()` method returns this cache in O(1). The cache is refreshed by `_computeFlatNodes()` - a private method that performs the actual tree walk - whenever the visible output may have changed:
 
-This is a deliberate tradeoff: no cache invalidation complexity, at the cost of repeated traversals. Since message counts are conversation-sized (tens to low hundreds), this is cheap.
+| Trigger                                                       | What refreshes the cache                              |
+| ------------------------------------------------------------- | ----------------------------------------------------- |
+| Tree structural change (new node, deletion, serial promotion) | `_onTreeUpdate()` calls `_computeFlatNodes()`         |
+| Branch selection change                                       | `select()` calls `_computeFlatNodes()`                |
+| Fork auto-selection after `send()`                            | `send()` auto-select path calls `_computeFlatNodes()` |
+| History page revealed                                         | `_releaseWithheld()` calls `_computeFlatNodes()`      |
 
-All consumers go through `view.flattenNodes()`:
+All consumers go through the cached `view.flattenNodes()`:
 
 | Consumer                    | When it calls `flattenNodes()`                    |
 | --------------------------- | ------------------------------------------------- |
@@ -132,5 +137,7 @@ All consumers go through `view.flattenNodes()`:
 | `useMessageSync()` (Vercel) | On every `'update'` event                         |
 | `send()` / `regenerate()`   | To build the HTTP POST body's message history     |
 | `view.loadOlder()`          | To snapshot the current tree state for pagination |
+
+Because all consumers read the cache, a tree update triggers one tree walk (inside the View), not one per consumer. React hooks calling `flattenNodes()` after an `'update'` event get the pre-computed result without a redundant traversal.
 
 See [Conversation tree](conversation-tree.md) for how `flattenNodes()` works. See [Codec interface](codec-interface.md#accumulator) for the accumulator's role. See [History hydration](history.md) for the history decode pipeline.

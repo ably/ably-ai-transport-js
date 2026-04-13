@@ -57,6 +57,16 @@ interface RegisteredTurn {
 }
 
 // ---------------------------------------------------------------------------
+// Internal state machine
+// ---------------------------------------------------------------------------
+
+enum TurnState {
+  INITIALIZED = 'initialized',
+  STARTED = 'started',
+  ENDED = 'ended',
+}
+
+// ---------------------------------------------------------------------------
 // Implementation
 // ---------------------------------------------------------------------------
 
@@ -255,8 +265,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
     } = turnOpts;
 
     const controller = new AbortController();
-    let started = false;
-    let ended = false;
+    let state = TurnState.INITIALIZED;
 
     // Compose the internal controller signal with the external signal (e.g.
     // req.signal) so platform-level cancellation (request cancellation, function
@@ -303,8 +312,8 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
             400,
           );
         }
-        if (started) return;
-        started = true;
+        if (state !== TurnState.INITIALIZED) return;
+        state = TurnState.STARTED;
 
         try {
           await turnManager.startTurn(turnId, turnClientId, controller, {
@@ -330,7 +339,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
       addMessages: async (nodes: MessageNode<TMessage>[], opts?: AddMessageOptions): Promise<AddMessagesResult> => {
         logger?.trace('Turn.addMessages();', { turnId, count: nodes.length });
 
-        if (!started) {
+        if (state === TurnState.INITIALIZED) {
           throw new Ably.ErrorInfo(
             `unable to add messages; start() must be called before addMessages() (turn ${turnId})`,
             ErrorCode.InvalidArgument,
@@ -373,7 +382,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
       addEvents: async (nodes: EventsNode<TEvent>[]): Promise<void> => {
         logger?.trace('Turn.addEvents();', { turnId, count: nodes.length });
 
-        if (!started) {
+        if (state === TurnState.INITIALIZED) {
           throw new Ably.ErrorInfo(
             `unable to add events; start() must be called before addEvents() (turn ${turnId})`,
             ErrorCode.InvalidArgument,
@@ -415,7 +424,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
       ): Promise<StreamResult> => {
         logger?.trace('Turn.streamResponse();', { turnId });
 
-        if (!started) {
+        if (state === TurnState.INITIALIZED) {
           throw new Ably.ErrorInfo(
             `unable to stream response; start() must be called before streamResponse() (turn ${turnId})`,
             ErrorCode.InvalidArgument,
@@ -454,15 +463,15 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
       end: async (reason: TurnEndReason): Promise<void> => {
         logger?.trace('Turn.end();', { turnId, reason });
 
-        if (!started) {
+        if (state === TurnState.INITIALIZED) {
           throw new Ably.ErrorInfo(
             `unable to end turn; start() must be called before end() (turn ${turnId})`,
             ErrorCode.InvalidArgument,
             400,
           );
         }
-        if (ended) return;
-        ended = true;
+        if (state === TurnState.ENDED) return;
+        state = TurnState.ENDED;
 
         try {
           await turnManager.endTurn(turnId, reason);

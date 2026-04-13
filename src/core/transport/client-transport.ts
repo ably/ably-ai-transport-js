@@ -63,6 +63,15 @@ import { createView, type DefaultView } from './view.js';
 const noopUnsubscribe = (): void => {};
 
 // ---------------------------------------------------------------------------
+// Internal state machine
+// ---------------------------------------------------------------------------
+
+enum ClientTransportState {
+  READY = 'ready',
+  CLOSED = 'closed',
+}
+
+// ---------------------------------------------------------------------------
 // Event map for the transport's typed EventEmitter
 // ---------------------------------------------------------------------------
 
@@ -128,7 +137,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   private readonly _attachPromise: Promise<unknown>;
   private readonly _onMessage: (msg: Ably.InboundMessage) => void;
 
-  private _closed = false;
+  private _state = ClientTransportState.READY;
   private _hasAttachedOnce: boolean;
   private readonly _onChannelStateChange: Ably.channelEventCallback;
 
@@ -213,7 +222,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   // ---------------------------------------------------------------------------
 
   private _handleMessage(ablyMessage: Ably.InboundMessage): void {
-    if (this._closed) return;
+    if (this._state === ClientTransportState.CLOSED) return;
 
     try {
       // Spec: AIT-CT16a
@@ -402,7 +411,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
 
   // Spec: AIT-CT19, AIT-CT19a
   private _handleChannelStateChange(stateChange: Ably.ChannelStateChange): void {
-    if (this._closed) return;
+    if (this._state === ClientTransportState.CLOSED) return;
 
     const { current, resumed } = stateChange;
 
@@ -614,7 +623,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
 
   // Spec: AIT-CT10b
   createView(): View<TEvent, TMessage> {
-    if (this._closed) {
+    if (this._state === ClientTransportState.CLOSED) {
       throw new Ably.ErrorInfo('unable to create view; transport is closed', ErrorCode.TransportClosed, 400);
     }
     this._logger.trace('DefaultClientTransport.createView();');
@@ -637,14 +646,14 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     history: MessageNode<TMessage>[],
     eventNodes?: EventsNode<TEvent>[],
   ): Promise<ActiveTurn<TEvent>> {
-    if (this._closed) {
+    if (this._state === ClientTransportState.CLOSED) {
       throw new Ably.ErrorInfo('unable to send; transport is closed', ErrorCode.TransportClosed, 400);
     }
     await this._attachPromise;
     // CAST: re-check after await — close() may have been called while waiting for attach.
-    // TypeScript's control flow narrows _closed to false after the first check, but the
-    // await yields and close() can mutate _closed concurrently.
-    if (this._closed as boolean) {
+    // TypeScript's control flow narrows _state after the first check, but the
+    // await yields and close() can mutate _state concurrently.
+    if ((this._state as ClientTransportState) === ClientTransportState.CLOSED) {
       throw new Ably.ErrorInfo('unable to send; transport is closed', ErrorCode.TransportClosed, 400);
     }
 
@@ -812,7 +821,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
 
   // Spec: AIT-CT7, AIT-CT7a
   async cancel(filter?: CancelFilter): Promise<void> {
-    if (this._closed) return;
+    if (this._state === ClientTransportState.CLOSED) return;
     const resolved = filter ?? { own: true };
     this._logger.debug('ClientTransport.cancel();', { filter: resolved });
     await this._publishCancel(resolved);
@@ -821,7 +830,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
 
   // Spec: AIT-CT18
   async waitForTurn(filter?: CancelFilter): Promise<void> {
-    if (this._closed) return;
+    if (this._state === ClientTransportState.CLOSED) return;
     const resolved = filter ?? { own: true };
     const remaining = this._getMatchingTurnIds(resolved);
     if (remaining.size === 0) return;
@@ -852,7 +861,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
 
   // Spec: AIT-CT8, AIT-CT8c, AIT-CT8d
   on(event: 'error', handler: (error: Ably.ErrorInfo) => void): () => void {
-    if (this._closed) return noopUnsubscribe;
+    if (this._state === ClientTransportState.CLOSED) return noopUnsubscribe;
     // CAST: the overload signature enforces the correct handler type.
     const cb = handler as (arg: ClientTransportEventsMap[keyof ClientTransportEventsMap]) => void;
     this._emitter.on(event, cb);
@@ -863,8 +872,8 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
 
   // Spec: AIT-CT12, AIT-CT12a, AIT-CT12b, AIT-CT10c
   async close(options?: CloseOptions): Promise<void> {
-    if (this._closed) return;
-    this._closed = true;
+    if (this._state === ClientTransportState.CLOSED) return;
+    this._state = ClientTransportState.CLOSED;
     this._logger.info('ClientTransport.close();');
 
     // Best-effort cancel publish before tearing down local state

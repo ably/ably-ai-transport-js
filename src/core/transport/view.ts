@@ -145,6 +145,13 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   /** Unsubscribe functions for tree event subscriptions. */
   private readonly _unsubs: (() => void)[] = [];
 
+  /**
+   * Cached result of the last flattenNodes computation. Public `flattenNodes()`
+   * returns this in O(1); internal callers use `_computeFlatNodes()` when a
+   * fresh tree walk is needed (structural changes, selection changes, history reveal).
+   */
+  private _cachedNodes: MessageNode<TMessage>[] = [];
+
   private _loadingOlder = false;
   private _processingHistory = false;
   private _closed = false;
@@ -159,8 +166,9 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     this._logger.trace('DefaultView();');
     this._emitter = new EventEmitter<ViewEventsMap>(this._logger);
 
-    // Snapshot initial visible state
-    this._updateVisibleSnapshot();
+    // Compute initial cache and snapshot visible state
+    this._cachedNodes = this._computeFlatNodes();
+    this._updateVisibleSnapshot(this._cachedNodes);
 
     // Subscribe to tree events and re-emit scoped versions
     this._unsubs.push(
@@ -186,6 +194,17 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
 
   // Spec: AIT-CT9, AIT-CT11c
   flattenNodes(): MessageNode<TMessage>[] {
+    return this._cachedNodes;
+  }
+
+  /**
+   * Walk the tree and compute a fresh visible node list, applying branch
+   * selections and withheld-message filtering. Use this instead of the
+   * public `flattenNodes()` when the cache may be stale (structural
+   * changes, selection changes, history reveal).
+   * @returns A fresh array of visible nodes.
+   */
+  private _computeFlatNodes(): MessageNode<TMessage>[] {
     const nodes = this._tree.flattenNodes(this._resolveSelections());
     if (this._withheldMsgIds.size === 0) return nodes;
     return nodes.filter((n) => !this._withheldMsgIds.has(n.msgId));
@@ -255,7 +274,8 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     if (!selected) return; // unreachable: clamped is always in bounds
     this._branchSelections.set(groupRootId, { kind: 'user', selectedId: selected.msgId });
     this._logger.debug('DefaultView.select();', { msgId, index: clamped, selectedId: selected.msgId });
-    this._updateVisibleSnapshot();
+    this._cachedNodes = this._computeFlatNodes();
+    this._updateVisibleSnapshot(this._cachedNodes);
     this._emitter.emit('update');
   }
 
@@ -311,7 +331,8 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
         const lastMsgId = result.optimisticMsgIds.at(-1);
         if (lastMsgId) {
           this._branchSelections.set(groupRoot, { kind: 'auto', selectedId: lastMsgId });
-          this._updateVisibleSnapshot();
+          this._cachedNodes = this._computeFlatNodes();
+          this._updateVisibleSnapshot(this._cachedNodes);
           this._emitter.emit('update');
         }
       } else {
@@ -584,7 +605,8 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
       this._withheldMsgIds.delete(n.msgId);
     }
     if (nodes.length > 0) {
-      this._updateVisibleSnapshot();
+      this._cachedNodes = this._computeFlatNodes();
+      this._updateVisibleSnapshot(this._cachedNodes);
       this._emitter.emit('update');
     }
   }
@@ -621,10 +643,11 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     this._pinBranchSelections();
     this._resolvePendingSelections();
 
-    const nodes = this.flattenNodes();
+    const nodes = this._computeFlatNodes();
     const newIds = nodes.map((n) => n.msgId);
     const newMessages = nodes.map((n) => n.message);
     if (this._visibleChanged(newIds, newMessages)) {
+      this._cachedNodes = nodes;
       this._updateVisibleSnapshot(nodes);
       this._emitter.emit('update');
     }

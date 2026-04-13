@@ -15,7 +15,7 @@ import { useClientTools } from './hooks/use-client-tools';
 
 export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clientId?: string; historyLimit?: number }) {
   // Transport is created by TransportProvider in page.tsx
-  const transport = useClientTransport<AI.UIMessageChunk, AI.UIMessage>();
+  const transport = useClientTransport<AI.UIMessageChunk, AI.UIMessage>({ channelName: chatId });
   const chatTransport = useChatTransport(transport);
 
   const {
@@ -33,15 +33,15 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
 
   useMessageSync(transport, setMessages);
 
-  const activeTurns = useActiveTurns(transport);
+  const activeTurns = useActiveTurns({ transport });
   const hasAnyTurns = activeTurns.size > 0;
 
-  // Auto-loads first page on mount (options provided = enabled)
-  const { nodes, hasOlder, loading, loadOlder } = useView(transport, { limit: historyLimit ?? 30 });
+  // Auto-loads first page on mount
+  const { nodes, hasOlder, loading, loadOlder } = useView({ transport, limit: historyLimit ?? 30 });
 
   useClientTools(chatMessages, addToolResult, nodes, clientId);
 
-  const ablyMessages = useAblyMessages(transport);
+  const ablyMessages = useAblyMessages({ transport });
 
   return (
     <div className="flex h-dvh">

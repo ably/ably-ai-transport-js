@@ -10,3 +10,11 @@ export type TransportContextValue = Readonly<Record<string, ClientTransport<unkn
  * Populated by {@link TransportProvider}; read by {@link useClientTransport}.
  */
 export const TransportContext = createContext<TransportContextValue>({});
+
+/**
+ * Context that holds the nearest (innermost) registered {@link ClientTransport}.
+ * Each {@link TransportProvider} sets this to its own transport, so descendants
+ * can access the nearest transport without knowing its channel name.
+ * Read by hooks whose `transport` argument is omitted.
+ */
+export const NearestTransportContext = createContext<ClientTransport<unknown, unknown> | undefined>(undefined);

@@ -6,14 +6,18 @@
  * {@link useView}. The view is closed automatically on unmount or when the
  * transport reference changes.
  *
- * Pass `null` or `undefined` to defer creation (e.g. when a split pane is
+ * Pass `null` or omit `transport` to defer creation (e.g. when a split pane is
  * collapsed). The returned handle has empty state until a transport is provided.
+ * When `transport` is omitted entirely, defaults to the nearest
+ * {@link TransportProvider}'s transport via context.
+ * Pass `skip: true` to bypass all context reads and view creation entirely.
  */
 
-import { useEffect, useState } from 'react';
+import { useContext, useEffect, useState } from 'react';
 
 import type { ClientTransport, View } from '../core/transport/types.js';
-import type { UseViewOptions, ViewHandle } from './use-view.js';
+import { NearestTransportContext } from './contexts/transport-context.js';
+import type { ViewHandle } from './use-view.js';
 import { useView } from './use-view.js';
 
 /**
@@ -21,27 +25,44 @@ import { useView } from './use-view.js';
  * Returns the same {@link ViewHandle} as {@link useView}, but backed by a
  * newly created view with its own branch selections and pagination state.
  * The view is closed on unmount or when the transport changes.
- * @param transport - The transport to create a view from, or null/undefined to skip.
- * @param options - When provided, auto-loads the first page on mount. Omit or pass null for manual load.
+ * When `transport` is omitted, uses the nearest {@link TransportProvider}'s transport via context.
+ * @param props - Options including optional `transport`, `limit` for auto-load, and `skip`.
+ * @param props.transport - Transport to create a view from; defaults to the nearest provider.
+ * @param props.limit - Max older messages per page; when provided, auto-loads on mount.
+ * @param props.skip - When `true`, skip view creation and return an empty handle.
  * @returns A {@link ViewHandle} with nodes, pagination, navigation, and write operations.
  */
-export const useCreateView = <TEvent, TMessage>(
-  transport: ClientTransport<TEvent, TMessage> | null | undefined,
-  options?: UseViewOptions | null,
-): ViewHandle<TEvent, TMessage> => {
+export const useCreateView = <TEvent, TMessage>({
+  transport,
+  limit,
+  skip,
+}: {
+  /** The transport to create a view from, or null/undefined to use the nearest provider. */
+  transport?: ClientTransport<TEvent, TMessage> | null;
+  /** When provided, auto-loads the first page on mount. Omit for manual load. */
+  limit?: number;
+  /** When `true`, skip view creation and return an empty handle immediately. */
+  skip?: boolean;
+} = {}): ViewHandle<TEvent, TMessage> => {
+  const nearestTransport = useContext(NearestTransportContext);
+  // CAST: NearestTransportContext stores transport with erased generics; types fixed at call site.
+  const resolved = skip
+    ? undefined
+    : ((transport ?? nearestTransport) as ClientTransport<TEvent, TMessage> | null | undefined);
+
   const [view, setView] = useState<View<TEvent, TMessage> | undefined>();
 
   useEffect(() => {
-    if (!transport) {
+    if (!resolved) {
       setView(undefined);
       return;
     }
-    const v = transport.createView();
+    const v = resolved.createView();
     setView(v);
     return () => {
       v.close();
     };
-  }, [transport]);
+  }, [resolved]);
 
-  return useView(view, options);
+  return useView({ view, limit, skip });
 };

@@ -44,11 +44,7 @@ const wrapNested = ({ children }: { children: ReactNode }): ReactNode =>
   createElement(
     TransportProvider<unknown, unknown>,
     { channelName: 'ai:outer', codec: {} as never },
-    createElement(
-      TransportProvider<unknown, unknown>,
-      { channelName: 'ai:inner', codec: {} as never },
-      children,
-    ),
+    createElement(TransportProvider<unknown, unknown>, { channelName: 'ai:inner', codec: {} as never }, children),
   );
 
 // ---------------------------------------------------------------------------
@@ -62,13 +58,13 @@ describe('TransportProvider', () => {
   });
 
   it('creates a transport and makes it available via useClientTransport(channelName)', () => {
-    const { result } = renderHook(() => useClientTransport('ai:test'), { wrapper: wrapDefault });
+    const { result } = renderHook(() => useClientTransport({ channelName: 'ai:test' }), { wrapper: wrapDefault });
     expect(result.current).toBeDefined();
     expect(createClientTransportMock).toHaveBeenCalledTimes(1);
   });
 
   it('passes channelName to createClientTransport via useChannel', () => {
-    renderHook(() => useClientTransport('ai:demo'), { wrapper: wrapDemo });
+    renderHook(() => useClientTransport({ channelName: 'ai:demo' }), { wrapper: wrapDemo });
 
     // CAST: wire-boundary assertion — vitest types mock args as unknown
     const callArgs = createClientTransportMock.mock.calls[0]?.[0] as { channel: { name: string } };
@@ -76,14 +72,14 @@ describe('TransportProvider', () => {
   });
 
   it('registers the transport under channelName', () => {
-    const { result } = renderHook(() => useClientTransport('ai:test'), { wrapper: wrapDefault });
+    const { result } = renderHook(() => useClientTransport({ channelName: 'ai:test' }), { wrapper: wrapDefault });
     expect(result.current).toBeDefined();
   });
 
   it('throws when no TransportProvider is in the tree', () => {
     const { result } = renderHook(() => {
       try {
-        useClientTransport('ai:test');
+        useClientTransport({ channelName: 'ai:test' });
         // Return value is irrelevant — the throw above is what matters
       } catch (error) {
         return error;
@@ -93,7 +89,7 @@ describe('TransportProvider', () => {
   });
 
   it('creates the transport exactly once across re-renders', () => {
-    const { rerender } = renderHook(() => useClientTransport('ai:test'), { wrapper: wrapDefault });
+    const { rerender } = renderHook(() => useClientTransport({ channelName: 'ai:test' }), { wrapper: wrapDefault });
     act(() => {
       rerender();
     });
@@ -105,10 +101,10 @@ describe('TransportProvider', () => {
   });
 
   it('stacks two nested providers so both transports are accessible', () => {
-    const { result: outerResult } = renderHook(() => useClientTransport('ai:outer'), {
+    const { result: outerResult } = renderHook(() => useClientTransport({ channelName: 'ai:outer' }), {
       wrapper: wrapNested,
     });
-    const { result: innerResult } = renderHook(() => useClientTransport('ai:inner'), {
+    const { result: innerResult } = renderHook(() => useClientTransport({ channelName: 'ai:inner' }), {
       wrapper: wrapNested,
     });
 
@@ -135,7 +131,7 @@ describe('TransportProvider', () => {
         children,
       );
 
-    renderHook(() => useClientTransport('ai:test'), { wrapper: wrapWithLogger });
+    renderHook(() => useClientTransport({ channelName: 'ai:test' }), { wrapper: wrapWithLogger });
 
     // CAST: accessing vitest mock call args as the known options type
     const callArgs = createClientTransportMock.mock.calls[0]?.[0] as { api: string; logger: unknown };

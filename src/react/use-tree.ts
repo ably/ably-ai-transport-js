@@ -5,11 +5,15 @@
  * These are thin `useCallback` wrappers around `transport.tree` — no local
  * state or subscriptions. Branch navigation (select, getSelectedIndex) is
  * on {@link ViewHandle} from {@link useView}.
+ *
+ * When `transport` is omitted, defaults to the nearest
+ * {@link TransportProvider}'s transport via context.
  */
 
-import { useCallback } from 'react';
+import { useCallback, useContext } from 'react';
 
 import type { ClientTransport, MessageNode } from '../core/transport/types.js';
+import { NearestTransportContext } from './contexts/transport-context.js';
 
 /** Handle for querying the conversation tree structure. */
 export interface TreeHandle<TMessage> {
@@ -23,15 +27,23 @@ export interface TreeHandle<TMessage> {
 
 /**
  * Provide stable structural query callbacks backed by the transport's tree.
- * @param transport - The client transport whose conversation tree to query.
+ * When `transport` is omitted, uses the nearest {@link TransportProvider}'s transport via context.
+ * @param props - Options including optional `transport`.
+ * @param props.transport - Transport to read tree structure from; defaults to the nearest provider.
  * @returns A {@link TreeHandle} with structural query methods.
  */
-export const useTree = <TEvent, TMessage>(transport: ClientTransport<TEvent, TMessage>): TreeHandle<TMessage> => {
-  const getSiblings = useCallback((msgId: string) => transport.tree.getSiblings(msgId), [transport]);
+export const useTree = <TEvent, TMessage>({
+  transport,
+}: { transport?: ClientTransport<TEvent, TMessage> } = {}): TreeHandle<TMessage> => {
+  const nearestTransport = useContext(NearestTransportContext);
+  // CAST: NearestTransportContext stores transport with erased generics; types fixed at call site.
+  const resolved = (transport ?? nearestTransport) as ClientTransport<TEvent, TMessage> | undefined;
 
-  const hasSiblings = useCallback((msgId: string) => transport.tree.hasSiblings(msgId), [transport]);
+  const getSiblings = useCallback((msgId: string) => resolved?.tree.getSiblings(msgId) ?? [], [resolved]);
 
-  const getNode = useCallback((msgId: string) => transport.tree.getNode(msgId), [transport]);
+  const hasSiblings = useCallback((msgId: string) => resolved?.tree.hasSiblings(msgId) ?? false, [resolved]);
+
+  const getNode = useCallback((msgId: string) => resolved?.tree.getNode(msgId), [resolved]);
 
   return {
     getSiblings,

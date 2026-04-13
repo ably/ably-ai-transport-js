@@ -52,6 +52,8 @@ interface RegisteredTurn {
   controller: AbortController;
   onCancel?: (request: CancelRequest) => Promise<boolean>;
   onError?: (error: Ably.ErrorInfo) => void;
+  /** Removes the listener from the external signal, if one was provided. */
+  cleanupExternalSignal?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +118,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
     this._logger?.trace('DefaultServerTransport.close();');
     this._channel.unsubscribe(EVENT_CANCEL, this._channelListener);
     for (const reg of this._registeredTurns.values()) {
+      reg.cleanupExternalSignal?.();
       reg.controller.abort();
     }
     this._registeredTurns.clear();
@@ -249,11 +252,35 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
       onError: turnOnError,
       parent: turnParent,
       forkOf: turnForkOf,
+      signal: externalSignal,
     } = turnOpts;
 
     const controller = new AbortController();
     let started = false;
     let ended = false;
+
+    // Link external signal (e.g. req.signal) to the internal controller so
+    // platform-level cancellation (client disconnect, function timeout) aborts
+    // the turn through the same path as Ably cancel messages.
+    let cleanupExternalSignal: (() => void) | undefined;
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        this._logger?.debug('DefaultServerTransport._createTurn(); external signal already aborted', { turnId });
+        controller.abort();
+      } else {
+        const listener = () => {
+          this._logger?.debug('DefaultServerTransport._createTurn(); external signal fired, aborting turn', {
+            turnId,
+          });
+          controller.abort();
+        };
+        externalSignal.addEventListener('abort', listener, { once: true });
+        cleanupExternalSignal = () => {
+          externalSignal.removeEventListener('abort', listener);
+        };
+        this._logger?.debug('DefaultServerTransport._createTurn(); linked external signal', { turnId });
+      }
+    }
 
     // Spec: AIT-ST3a — register immediately so early cancels can fire the abort signal.
     const registration: RegisteredTurn = {
@@ -262,6 +289,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
       controller,
       onCancel,
       onError: turnOnError,
+      cleanupExternalSignal,
     };
     this._registeredTurns.set(turnId, registration);
 
@@ -468,6 +496,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
           throw errInfo;
         } finally {
           registeredTurns.delete(turnId);
+          cleanupExternalSignal?.();
         }
 
         logger?.debug('Turn.end(); turn ended', { turnId, reason });

@@ -179,7 +179,7 @@ export async function POST(req: Request) {
     }
   };
 
-  const turn = transport.newTurn({ turnId, clientId, parent, forkOf, onMessage });
+  const turn = transport.newTurn({ turnId, clientId, parent, forkOf, onMessage, signal: req.signal });
 
   await turn.start();
 

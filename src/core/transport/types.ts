@@ -158,6 +158,14 @@ export interface NewTurnOptions<TEvent> {
    * publish failure, encoder recovery failure, stream encoding errors.
    */
   onError?: (error: Ably.ErrorInfo) => void;
+
+  /**
+   * An external abort signal (typically the HTTP request's `req.signal`) that,
+   * when fired, aborts this turn. This allows platform-level cancellation —
+   * client disconnect, serverless function timeout — to stop LLM generation
+   * and stream piping gracefully.
+   */
+  signal?: AbortSignal;
 }
 
 // ---------------------------------------------------------------------------

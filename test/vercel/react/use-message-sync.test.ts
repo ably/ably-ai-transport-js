@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ClientTransport } from '../../../src/core/transport/types.js';
 import { useMessageSync } from '../../../src/vercel/react/use-message-sync.js';
+import type { ChatTransport } from '../../../src/vercel/transport/chat-transport.js';
 
 type Handler = () => void;
 
@@ -73,8 +74,36 @@ const createMockTransport = (): MockTransport => {
   return { transport, emitView, viewFlattenNodes };
 };
 
+/** Create a mock ChatTransport with controllable streaming state. */
+const createMockChatTransport = (): {
+  chatTransport: ChatTransport;
+  setStreaming: (value: boolean) => void;
+} => {
+  const callbacks = new Set<(streaming: boolean) => void>();
+  let streaming = false;
+
+  const setStreaming = (value: boolean): void => {
+    streaming = value;
+    for (const cb of callbacks) cb(value);
+  };
+
+  const chatTransport = {
+    sendMessages: vi.fn(),
+    // eslint-disable-next-line unicorn/no-null -- required by AI SDK ChatTransport contract
+    reconnectToStream: vi.fn().mockResolvedValue(null),
+    close: vi.fn(),
+    get streaming() { return streaming; },
+    onStreamingChange: (cb: (s: boolean) => void) => {
+      callbacks.add(cb);
+      return () => { callbacks.delete(cb); };
+    },
+  } as unknown as ChatTransport;
+
+  return { chatTransport, setStreaming };
+};
+
 describe('useMessageSync', () => {
-  it('calls setMessages when transport emits view update event', () => {
+  it('syncs immediately on mount and on view update events', () => {
     const mock = createMockTransport();
     const msgs = [makeMessage('1')];
     mock.viewFlattenNodes.mockReturnValue(
@@ -93,14 +122,17 @@ describe('useMessageSync', () => {
       useMessageSync(mock.transport, setMessages);
     });
 
+    // Called once on mount (immediate sync)
+    expect(setMessages).toHaveBeenCalledTimes(1);
+    const updater = setMessages.mock.calls[0]?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
+    expect(updater([])).toEqual(msgs);
+
+    // Called again on view update
     act(() => {
       mock.emitView('update');
     });
 
-    expect(setMessages).toHaveBeenCalled();
-    // setMessages is called with an updater function
-    const updater = setMessages.mock.calls[0]?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
-    expect(updater([])).toEqual(msgs);
+    expect(setMessages).toHaveBeenCalledTimes(2);
   });
 
   it('does not subscribe when transport is undefined', () => {
@@ -108,7 +140,7 @@ describe('useMessageSync', () => {
     renderHook(() => {
       useMessageSync(undefined, setMessages);
     });
-    // No crash, no subscription
+    expect(setMessages).not.toHaveBeenCalled();
   });
 
   it('unsubscribes on unmount', () => {
@@ -118,6 +150,7 @@ describe('useMessageSync', () => {
       useMessageSync(mock.transport, setMessages);
     });
 
+    setMessages.mockClear();
     unmount();
 
     // Emitting after unmount should not call setMessages
@@ -125,5 +158,97 @@ describe('useMessageSync', () => {
       mock.emitView('update');
     });
     expect(setMessages).not.toHaveBeenCalled();
+  });
+
+  describe('streaming gate', () => {
+    it('suppresses setMessages while chatTransport is streaming', () => {
+      const mock = createMockTransport();
+      const { chatTransport, setStreaming } = createMockChatTransport();
+      const msgs = [makeMessage('1')];
+      mock.viewFlattenNodes.mockReturnValue(msgs.map((m) => ({ message: m, msgId: m.id, parentId: undefined, forkOf: undefined, headers: {}, serial: undefined })));
+
+      const setMessages = vi.fn();
+      renderHook(() => { useMessageSync(mock.transport, setMessages, chatTransport); });
+
+      // Initial sync fires on mount (not yet streaming)
+      expect(setMessages).toHaveBeenCalledTimes(1);
+      setMessages.mockClear();
+
+      // Start streaming — gate closes
+      act(() => { setStreaming(true); });
+
+      // View updates should be suppressed
+      act(() => { mock.emitView('update'); });
+      expect(setMessages).not.toHaveBeenCalled();
+    });
+
+    it('syncs immediately when streaming ends', () => {
+      const mock = createMockTransport();
+      const { chatTransport, setStreaming } = createMockChatTransport();
+      const msgs = [makeMessage('1'), makeMessage('2', 'assistant')];
+      mock.viewFlattenNodes.mockReturnValue(msgs.map((m) => ({ message: m, msgId: m.id, parentId: undefined, forkOf: undefined, headers: {}, serial: undefined })));
+
+      const setMessages = vi.fn();
+      renderHook(() => { useMessageSync(mock.transport, setMessages, chatTransport); });
+      setMessages.mockClear();
+
+      // Gate: streaming on then off
+      act(() => { setStreaming(true); });
+      act(() => { setStreaming(false); });
+
+      // Immediate sync on gate open
+      expect(setMessages).toHaveBeenCalledTimes(1);
+      const updater = setMessages.mock.calls[0]?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
+      expect(updater([])).toEqual(msgs);
+    });
+
+    it('works without chatTransport (no gating)', () => {
+      const mock = createMockTransport();
+      const setMessages = vi.fn();
+      renderHook(() => { useMessageSync(mock.transport, setMessages); });
+
+      // Initial sync + view update both work
+      act(() => { mock.emitView('update'); });
+      expect(setMessages).toHaveBeenCalledTimes(2);
+    });
+
+    it('observer messages arriving during streaming appear after gate opens', () => {
+      const mock = createMockTransport();
+      const { chatTransport, setStreaming } = createMockChatTransport();
+
+      // Start with one user message
+      const userMsg = makeMessage('1');
+      mock.viewFlattenNodes.mockReturnValue([
+        { message: userMsg, msgId: '1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+      ]);
+
+      const setMessages = vi.fn();
+      renderHook(() => { useMessageSync(mock.transport, setMessages, chatTransport); });
+
+      // Initial sync: just the user message
+      expect(setMessages).toHaveBeenCalledTimes(1);
+      const initialUpdater = setMessages.mock.calls[0]?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
+      expect(initialUpdater([])).toEqual([userMsg]);
+      setMessages.mockClear();
+
+      // Own-turn stream starts — gate closes
+      act(() => { setStreaming(true); });
+
+      // Observer message arrives while gated (another user's assistant response).
+      // The transport tree has it, but setMessages should NOT fire.
+      const observerMsg = makeMessage('observer-1', 'assistant');
+      mock.viewFlattenNodes.mockReturnValue([
+        { message: userMsg, msgId: '1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+        { message: observerMsg, msgId: 'observer-1', parentId: '1', forkOf: undefined, headers: {}, serial: undefined },
+      ]);
+      act(() => { mock.emitView('update'); });
+      expect(setMessages).not.toHaveBeenCalled();
+
+      // Own-turn stream ends — gate opens, immediate sync picks up observer message
+      act(() => { setStreaming(false); });
+      expect(setMessages).toHaveBeenCalledTimes(1);
+      const gateOpenUpdater = setMessages.mock.calls[0]?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
+      expect(gateOpenUpdater([])).toEqual([userMsg, observerMsg]);
+    });
   });
 });

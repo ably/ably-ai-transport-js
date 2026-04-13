@@ -68,7 +68,7 @@ interface MockTurn {
   close: () => void;
 }
 
-const createMockTurn = (): MockTurn => {
+const createMockTurn = (turnId = 'turn-1'): MockTurn => {
   let controller!: ReadableStreamDefaultController<AI.UIMessageChunk>;
   const stream = new ReadableStream<AI.UIMessageChunk>({
     start: (c) => {
@@ -77,7 +77,7 @@ const createMockTurn = (): MockTurn => {
   });
   return {
     stream,
-    turnId: 'turn-1',
+    turnId,
     cancel: vi.fn(),
     enqueue: (chunk: AI.UIMessageChunk) => {
       controller.enqueue(chunk);
@@ -88,10 +88,8 @@ const createMockTurn = (): MockTurn => {
   };
 };
 
-const createMockTransport = () => {
-  const mockTurn = createMockTurn();
-  // CAST: mock object typed to satisfy ConversationTree — vi.fn() returns are untyped
-  const tree = {
+const createMockTree = () =>
+  ({
     flattenNodes: vi.fn(() => []),
     getSiblings: vi.fn(() => []),
     hasSiblings: vi.fn(() => false),
@@ -101,19 +99,33 @@ const createMockTransport = () => {
     getHeaders: vi.fn(),
     upsert: vi.fn(),
     delete: vi.fn(),
-  } as unknown as Tree<AI.UIMessage>;
+  }) as unknown as Tree<AI.UIMessage>;
+
+const createMockTransport = () => {
+  const mockTurn = createMockTurn();
+  const tree = createMockTree();
 
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const send = vi.fn(() => Promise.resolve(mockTurn));
 
+  const view = {
+    flattenNodes: vi.fn(() => []),
+    send,
+    regenerate: vi.fn(),
+    edit: vi.fn(),
+    getActiveTurnIds: vi.fn(() => new Map()),
+    // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
+    on: vi.fn(() => () => {}),
+  };
+
   const transport = {
     send,
+    tree,
+    view,
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     cancel: vi.fn(() => Promise.resolve()),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     close: vi.fn(() => Promise.resolve()),
-    getTree: vi.fn(() => tree),
-    getNodes: vi.fn(() => []),
     regenerate: vi.fn(),
     edit: vi.fn(),
     waitForTurn: vi.fn(),
@@ -125,6 +137,69 @@ const createMockTransport = () => {
   } as unknown as ClientTransport<AI.UIMessageChunk, AI.UIMessage>;
 
   return { transport, send, mockTurn };
+};
+
+const createMultiTurnMockTransport = () => {
+  const turnA = createMockTurn('turn-a');
+  const turnB = createMockTurn('turn-b');
+  const send = vi.fn().mockResolvedValueOnce(turnA).mockResolvedValueOnce(turnB);
+  const tree = createMockTree();
+
+  const view = {
+    flattenNodes: vi.fn(() => []),
+    send,
+    regenerate: vi.fn(),
+    edit: vi.fn(),
+    getActiveTurnIds: vi.fn(() => new Map()),
+    // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
+    on: vi.fn(() => () => {}),
+  };
+
+  const transport = {
+    send,
+    tree,
+    view,
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+    cancel: vi.fn(() => Promise.resolve()),
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+    close: vi.fn(() => Promise.resolve()),
+    regenerate: vi.fn(),
+    edit: vi.fn(),
+    waitForTurn: vi.fn(),
+    on: vi.fn(() => noop),
+    getActiveTurnIds: vi.fn(() => new Map()),
+    getMessages: vi.fn(() => []),
+    getAblyMessages: vi.fn(() => []),
+    history: vi.fn(),
+  } as unknown as ClientTransport<AI.UIMessageChunk, AI.UIMessage>;
+
+  return { transport, send, turnA, turnB };
+};
+
+/**
+ * Enqueue a complete text response into a mock turn stream.
+ * Sequence: start → text-start → text-delta(s) → text-end → finish → close
+ * @param turn
+ * @param messageId
+ * @param textId
+ * @param deltas
+ */
+/** Extract the concatenated text from an assistant message's parts. */
+const getAssistantText = (msg: AI.UIMessage): string =>
+  msg.parts
+    .filter((p): p is AI.TextUIPart => p.type === 'text')
+    .map((p) => p.text)
+    .join('');
+
+const enqueueTextResponse = (turn: MockTurn, messageId: string, textId: string, deltas: string[]): void => {
+  turn.enqueue({ type: 'start', messageId });
+  turn.enqueue({ type: 'text-start', id: textId });
+  for (const delta of deltas) {
+    turn.enqueue({ type: 'text-delta', id: textId, delta });
+  }
+  turn.enqueue({ type: 'text-end', id: textId });
+  turn.enqueue({ type: 'finish', finishReason: 'stop' });
+  turn.close();
 };
 
 // ---------------------------------------------------------------------------
@@ -298,6 +373,129 @@ describe('ChatTransport useChat integration — features work with the real stre
 
       // sendAutomaticallyWhen is called after the stream closes.
       expect(sendAutomaticallyWhen).toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Multiple streaming responses
+  // -------------------------------------------------------------------------
+  // These tests verify how useChat behaves when the transport delivers two
+  // separate assistant responses. Test 1 (sequential) shows the happy path.
+  // Test 2 (concurrent) shows the broken behavior caused by useChat's single
+  // activeResponse slot.
+  // -------------------------------------------------------------------------
+
+  describe('multiple streaming responses', () => {
+
+    it('sequential: two responses produce four correctly ordered messages', async () => {
+      const { transport, turnA, turnB } = createMultiTurnMockTransport();
+      const chatTransport = createChatTransport(transport);
+
+      let idCounter = 0;
+      const onFinish = vi.fn();
+      const statusLog: AI.ChatStatus[] = [];
+
+      const chat = new TestChat({
+        transport: chatTransport,
+        generateId: () => `generated-${String(idCounter++)}`,
+        onFinish,
+      });
+
+      const origSetStatus = chat.setStatus.bind(chat);
+      chat.setStatus = (opts: { status: AI.ChatStatus; error?: Error }) => {
+        statusLog.push(opts.status);
+        origSetStatus(opts);
+      };
+
+      // --- Response A ---
+      const p1 = chat.sendMessage({ text: 'First' });
+      await new Promise((r) => setTimeout(r, 10));
+      enqueueTextResponse(turnA, 'assistant-a', 'text-a', ['Response ', 'A.']);
+      await p1;
+
+      // --- Response B ---
+      const p2 = chat.sendMessage({ text: 'Second' });
+      await new Promise((r) => setTimeout(r, 10));
+      enqueueTextResponse(turnB, 'assistant-b', 'text-b', ['Response ', 'B.']);
+      await p2;
+
+      // Four messages in the correct order
+      const msgs = chat.messages;
+      expect(msgs).toHaveLength(4);
+      expect(msgs[0]?.role).toBe('user');
+      expect(msgs[1]?.role).toBe('assistant');
+      expect(msgs[2]?.role).toBe('user');
+      expect(msgs[3]?.role).toBe('assistant');
+
+      expect(msgs[1]?.id).toBe('assistant-a');
+      expect(getAssistantText(msgs[1] ?? { id: '', role: 'assistant', parts: [] } as AI.UIMessage)).toBe('Response A.');
+      expect(msgs[3]?.id).toBe('assistant-b');
+      expect(getAssistantText(msgs[3] ?? { id: '', role: 'assistant', parts: [] } as AI.UIMessage)).toBe('Response B.');
+
+      // onFinish fires twice with the correct messages
+      expect(onFinish).toHaveBeenCalledTimes(2);
+
+      // Status transitions: submitted → streaming (repeated per chunk) → ready (twice)
+      // Deduplicate consecutive duplicates to check the logical transitions.
+      const deduped = statusLog.filter((s, i) => i === 0 || s !== statusLog[i - 1]);
+      expect(deduped).toEqual(['submitted', 'streaming', 'ready', 'submitted', 'streaming', 'ready']);
+    });
+
+    it('concurrent: serialized sendMessages prevents dual streams but cannot fix activeResponse overwrite', async () => {
+      const { transport, turnA, turnB } = createMultiTurnMockTransport();
+      const chatTransport = createChatTransport(transport);
+
+      let idCounter = 0;
+      const onFinish = vi.fn();
+      const consoleErrors: unknown[] = [];
+      const origConsoleError = console.error;
+      console.error = (...args: unknown[]) => consoleErrors.push(...args);
+
+      const chat = new TestChat({
+        transport: chatTransport,
+        generateId: () => `generated-${String(idCounter++)}`,
+        onFinish,
+      });
+
+      try {
+        // Fire both sendMessage calls without awaiting.
+        //
+        // AbstractChat.sendMessage pushes the user message AND creates
+        // activeResponse BEFORE calling sendMessages. The overwrite at
+        // chat.ts:668 (this.activeResponse = activeResponse) happens
+        // before the transport has any opportunity to intervene. This is
+        // a useChat limitation that can only be fixed by preventing
+        // concurrent sendMessage calls at the UI level (disabling the
+        // send button while status !== 'ready').
+        const p1 = chat.sendMessage({ text: 'First' });
+        const p2 = chat.sendMessage({ text: 'Second' });
+
+        // Let the first transport.send resolve
+        await new Promise((r) => setTimeout(r, 10));
+        enqueueTextResponse(turnA, 'assistant-a', 'text-a', ['Response ', 'A.']);
+
+        // Let the queue advance
+        await new Promise((r) => setTimeout(r, 10));
+        enqueueTextResponse(turnB, 'assistant-b', 'text-b', ['Response ', 'B.']);
+
+        await Promise.allSettled([p1, p2]);
+
+        // All four messages present, ordering still wrong.
+        const msgs = chat.messages;
+        expect(msgs).toHaveLength(4);
+        expect(msgs.map((m) => m.role)).toEqual(['user', 'user', 'assistant', 'assistant']);
+
+        // Content correct for both responses.
+        expect(getAssistantText(msgs[2] ?? { id: '', role: 'assistant', parts: [] } as AI.UIMessage)).toBe('Response A.');
+        expect(getAssistantText(msgs[3] ?? { id: '', role: 'assistant', parts: [] } as AI.UIMessage)).toBe('Response B.');
+
+        // onFinish still fires once — the activeResponse overwrite happens
+        // before sendMessages, so our queue can't prevent it.
+        expect(onFinish).toHaveBeenCalledTimes(1);
+        expect(consoleErrors).toHaveLength(1);
+      } finally {
+        console.error = origConsoleError;
+      }
     });
   });
 });

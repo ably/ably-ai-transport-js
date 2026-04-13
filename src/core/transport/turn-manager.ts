@@ -51,7 +51,7 @@ export interface TurnManager {
 // Internal state
 // ---------------------------------------------------------------------------
 
-interface TurnState {
+interface ActiveTurnsEntry {
   controller: AbortController;
   clientId: string;
 }
@@ -63,7 +63,7 @@ interface TurnState {
 class DefaultTurnManager implements TurnManager {
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _logger: Logger | undefined;
-  private readonly _activeTurns = new Map<string, TurnState>();
+  private readonly _activeTurns = new Map<string, ActiveTurnsEntry>();
 
   constructor(channel: Ably.RealtimeChannel, logger?: Logger) {
     this._channel = channel;

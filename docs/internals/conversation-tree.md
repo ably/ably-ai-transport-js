@@ -16,10 +16,11 @@ Note that serial order is not necessarily delivery order - messages published co
 ## Data structures
 
 ```
-_nodeIndex:     Map<msgId, InternalNode>        Primary index
-_sortedList:    InternalNode[]                  All nodes, sorted by serial
-_parentIndex:   Map<parentId, Set<msgId>>       Children of each parent
-_selections:    Map<groupRootId, index>         Selected sibling at each fork
+_nodeIndex:          Map<msgId, InternalNode>        Primary index
+_sortedList:         InternalNode[]                  All nodes, sorted by serial
+_parentIndex:        Map<parentId, Set<msgId>>       Children of each parent
+_selections:         Map<groupRootId, index>         Selected sibling at each fork
+_structuralVersion:  number                          Monotonic counter (see below)
 ```
 
 Each `MessageNode` stores:
@@ -51,6 +52,10 @@ Each `MessageNode` stores:
 2. If a serial is provided and the existing node has no serial (optimistic → relay), promote the serial: remove from sorted list, re-insert at correct position
 
 Serial promotion handles the common case where a client inserts an optimistic message (null serial), then the server publishes it to the channel (with serial). The node moves from the end of the sorted list to its correct serial-order position.
+
+### Structural version
+
+The tree maintains a `structuralVersion` counter (exposed via `TreeInternal`) that increments on changes affecting the `flattenNodes()` output structure - node inserts, deletions, and serial promotions (which reorder the sorted list). Content-only updates (replacing an existing node's message) do not increment the counter. The [View](message-lifecycle.md#cached-message-list) uses this to skip full tree walks during streaming - when only message content changed, the cached node list is still structurally valid.
 
 ## Sibling groups and fork chains
 

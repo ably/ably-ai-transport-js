@@ -583,6 +583,75 @@ describe('ServerTransport', () => {
     });
   });
 
+  describe('external signal', () => {
+    it('aborts the turn when the external signal fires', async () => {
+      const externalController = new AbortController();
+      const turn = transport.newTurn({ turnId: 'turn-1', signal: externalController.signal });
+      await turn.start();
+
+      externalController.abort();
+
+      expect(turn.abortSignal.aborted).toBe(true);
+    });
+
+    it('aborts the turn immediately when the external signal is already aborted', () => {
+      const turn = transport.newTurn({ turnId: 'turn-1', signal: AbortSignal.abort() });
+
+      expect(turn.abortSignal.aborted).toBe(true);
+    });
+
+    it('start() throws when the external signal was already aborted', async () => {
+      const turn = transport.newTurn({ turnId: 'turn-1', signal: AbortSignal.abort() });
+
+      await expect(turn.start()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+    });
+
+    it('cancels an in-flight streamResponse when the external signal fires', async () => {
+      const externalController = new AbortController();
+      const turn = transport.newTurn({ turnId: 'turn-1', signal: externalController.signal });
+      await turn.start();
+
+      // A stream that never closes on its own — waits for cancellation.
+      const stream = new ReadableStream<TestEvent>({
+        start: (controller) => {
+          controller.enqueue({ type: 'text', text: 'partial' });
+        },
+      });
+
+      const resultPromise = turn.streamResponse(stream);
+      externalController.abort();
+
+      const result = await resultPromise;
+      expect(result.reason).toBe('cancelled');
+    });
+
+    it('removes the external signal listener when the turn ends', async () => {
+      const externalController = new AbortController();
+      const signal = externalController.signal;
+      const removeSpy = vi.spyOn(signal, 'removeEventListener');
+
+      const turn = transport.newTurn({ turnId: 'turn-1', signal });
+      await turn.start();
+      await turn.end('complete');
+
+      expect(removeSpy).toHaveBeenCalledWith('abort', expect.any(Function));
+    });
+
+    it('does not interfere with Ably cancel routing', async () => {
+      const externalController = new AbortController();
+      const turn = transport.newTurn({ turnId: 'turn-1', clientId: 'user-a', signal: externalController.signal });
+      await turn.start();
+
+      // Cancel via Ably channel message (not external signal)
+      simulateCancel(channel, { [HEADER_CANCEL_TURN_ID]: 'turn-1' });
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(turn.abortSignal.aborted).toBe(true);
+      // External signal was NOT fired
+      expect(externalController.signal.aborted).toBe(false);
+    });
+  });
+
   describe('close', () => {
     it('aborts all registered turns', async () => {
       const turn1 = transport.newTurn({ turnId: 'turn-1' });
@@ -599,6 +668,17 @@ describe('ServerTransport', () => {
     it('unsubscribes from cancel messages', () => {
       transport.close();
       expect(channel.unsubscribe).toHaveBeenCalledWith(EVENT_CANCEL, expect.any(Function));
+    });
+
+    it('removes external signal listeners on close', () => {
+      const externalController = new AbortController();
+      const removeSpy = vi.spyOn(externalController.signal, 'removeEventListener');
+
+      transport.newTurn({ turnId: 'turn-1', signal: externalController.signal });
+
+      transport.close();
+
+      expect(removeSpy).toHaveBeenCalledWith('abort', expect.any(Function));
     });
   });
 });

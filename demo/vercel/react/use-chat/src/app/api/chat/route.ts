@@ -34,7 +34,7 @@ export async function POST(req: Request) {
   const channel = ably.channels.get(id);
 
   const transport = createServerTransport({ channel });
-  const turn = transport.newTurn({ turnId, clientId, parent, forkOf });
+  const turn = transport.newTurn({ turnId, clientId, parent, forkOf, signal: req.signal });
 
   await turn.start();
 

@@ -495,4 +495,125 @@ describe('createChatTransport', () => {
       expect(close).toHaveBeenCalledWith(undefined);
     });
   });
+
+  describe('streaming signal', () => {
+    it('streaming is false initially', () => {
+      const { transport } = createMockTransport();
+      const chat = createChatTransport(transport);
+      expect(chat.streaming).toBe(false);
+    });
+
+    it('streaming becomes true during sendMessages and false after stream closes', async () => {
+      const { transport, mockTurn } = createMockTransport();
+      const chat = createChatTransport(transport);
+
+      const streamPromise = chat.sendMessages({
+        trigger: 'regenerate-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: [],
+        abortSignal: undefined,
+      });
+
+      const stream = await streamPromise;
+      expect(chat.streaming).toBe(true);
+
+      // Close the stream and drain it
+      mockTurn.close();
+      const reader = stream.getReader();
+      for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+        // drain
+      }
+
+      // Allow microtasks (pipeTo completion + done.then) to settle
+      await new Promise((r) => setTimeout(r, 0));
+      expect(chat.streaming).toBe(false);
+    });
+
+    it('onStreamingChange fires on transitions', async () => {
+      const { transport, mockTurn } = createMockTransport();
+      const chat = createChatTransport(transport);
+
+      const log: boolean[] = [];
+      const unsub = chat.onStreamingChange((s) => log.push(s));
+
+      const stream = await chat.sendMessages({
+        trigger: 'regenerate-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: [],
+        abortSignal: undefined,
+      });
+
+      expect(log).toEqual([true]);
+
+      mockTurn.close();
+      const reader = stream.getReader();
+      for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+        // drain
+      }
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(log).toEqual([true, false]);
+
+      unsub();
+    });
+
+    it('streaming resets to false when the source stream errors', async () => {
+      const { transport, mockTurn } = createMockTransport();
+      const chat = createChatTransport(transport);
+
+      const log: boolean[] = [];
+      chat.onStreamingChange((s) => log.push(s));
+
+      const stream = await chat.sendMessages({
+        trigger: 'regenerate-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: [],
+        abortSignal: undefined,
+      });
+
+      expect(chat.streaming).toBe(true);
+
+      // Error the source stream instead of closing it cleanly
+      mockTurn.enqueue({ type: 'text-start', id: 'text-1' });
+      mockTurn.close(); // close source so pipeTo finishes (error path is via reader cancel)
+
+      const reader = stream.getReader();
+      await reader.cancel('test cancel');
+
+      // Allow pipeTo catch + done.then to settle
+      await new Promise((r) => setTimeout(r, 10));
+      expect(chat.streaming).toBe(false);
+      expect(log).toEqual([true, false]);
+    });
+
+    it('streaming resets to false when sendMessages throws', async () => {
+      const { transport, send } = createMockTransport();
+      const chat = createChatTransport(transport);
+
+      // Make transport.send reject
+      send.mockRejectedValueOnce(new Error('send failed'));
+
+      const log: boolean[] = [];
+      chat.onStreamingChange((s) => log.push(s));
+
+      await expect(
+        chat.sendMessages({
+          trigger: 'regenerate-message',
+          chatId: 'chat-1',
+          messageId: undefined,
+          messages: [],
+          abortSignal: undefined,
+        }),
+      ).rejects.toThrow('send failed');
+
+      // streaming should never have been set to true because the error
+      // occurred before wrapStreamWithDone was called
+      expect(chat.streaming).toBe(false);
+      expect(log).toEqual([]);
+    });
+  });
+
 });

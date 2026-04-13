@@ -91,7 +91,8 @@ interface ChatRequestOptions {
  *
  * Structurally compatible with the AI SDK's internal `ChatTransport<UIMessage>`
  * interface. Extended with `close()` for releasing the underlying Ably transport
- * resources.
+ * resources and `streaming` / `onStreamingChange` for coordinating with
+ * useMessageSync.
  */
 export interface ChatTransport {
   /** Send messages and return a streaming response of UIMessageChunk events. */
@@ -123,7 +124,53 @@ export interface ChatTransport {
 
   /** Close the underlying transport, releasing all resources. */
   close(options?: CloseOptions): Promise<void>;
+
+  /** Whether an own-turn stream is currently being consumed by useChat. */
+  readonly streaming: boolean;
+
+  /**
+   * Subscribe to streaming state changes. The callback fires when the
+   * ChatTransport transitions between streaming and idle. Used by
+   * useMessageSync to gate setMessages calls during active streams.
+   * @param callback - Called with `true` when a stream starts, `false` when it ends.
+   * @returns Unsubscribe function.
+   */
+  onStreamingChange(callback: (streaming: boolean) => void): () => void;
 }
+
+// ---------------------------------------------------------------------------
+// Stream wrapper — passthrough that signals completion via a promise
+// ---------------------------------------------------------------------------
+
+/**
+ * Wrap a ReadableStream in a passthrough TransformStream that resolves a
+ * promise when the stream completes or errors. The returned stream passes
+ * all chunks through unchanged.
+ * @param source - The original stream to wrap.
+ * @returns The wrapped stream and a `done` promise that resolves when the stream closes.
+ */
+const wrapStreamWithDone = <T>(source: ReadableStream<T>): { stream: ReadableStream<T>; done: Promise<void> } => {
+  let resolveDone: () => void;
+  const done = new Promise<void>((resolve) => {
+    resolveDone = resolve;
+  });
+
+  const passthrough = new TransformStream<T, T>({
+    flush: () => {
+      resolveDone();
+    },
+  });
+
+  // Pipe in the background. If the source errors or is cancelled, resolve
+  // done so the serialization queue advances.
+  // Fire-and-forget: the pipe runs independently; errors surface through
+  // the readable side that useChat consumes.
+  source.pipeTo(passthrough.writable).catch(() => {
+    resolveDone();
+  });
+
+  return { stream: passthrough.readable, done };
+};
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -132,11 +179,14 @@ export interface ChatTransport {
 /**
  * Create a Vercel ChatTransport from a core ClientTransport.
  *
- * Maps Vercel's useChat contract to the core transport's methods:
- * - trigger 'submit-message' → transport.send(lastMessage) with history in body
- * - trigger 'regenerate-message' → transport.send([]) with all messages as history
- * - abortSignal → transport.cancel({ all: true })
- * - reconnectToStream → null (observer mode handles in-progress streams)
+ * Exposes a `streaming` flag and `onStreamingChange` callback so that
+ * `useMessageSync` can gate `setMessages` calls during active own-turn
+ * streams, preventing the push/replace ID mismatch in useChat's `write()`.
+ *
+ * Note: concurrent `sendMessage` calls from the same user are a useChat
+ * limitation that cannot be fixed from the transport layer. The
+ * developer must respect useChat's `status` and only call `sendMessage`
+ * when status is `'ready'`.
  * @param transport - The core client transport to wrap.
  * @param chatOptions - Optional hooks for customizing request construction.
  * @returns A {@link ChatTransport} compatible with Vercel's useChat hook.
@@ -144,13 +194,30 @@ export interface ChatTransport {
 export const createChatTransport = (
   transport: ClientTransport<AI.UIMessageChunk, AI.UIMessage>,
   chatOptions?: ChatTransportOptions,
-): ChatTransport => ({
-  sendMessages: async (opts) => {
+): ChatTransport => {
+  // -- Streaming state -------------------------------------------------------
+  let _streaming = false;
+  const streamingCallbacks = new Set<(streaming: boolean) => void>();
+
+  const setStreaming = (value: boolean): void => {
+    _streaming = value;
+    for (const cb of streamingCallbacks) {
+      try {
+        cb(value);
+      } catch {
+        // Isolate subscriber errors so one bad handler doesn't prevent
+        // other subscribers from being notified or block the streaming
+        // state transition.
+      }
+    }
+  };
+
+  // -- sendMessages implementation -------------------------------------------
+
+  const sendMessages: ChatTransport['sendMessages'] = async (opts) => {
     const { messages, abortSignal, trigger, messageId } = opts;
 
     // Determine the history/messages split based on trigger.
-    // - submit-message: useChat appended the new user message → last is new
-    // - regenerate-message: useChat truncated the array → no new messages
     let newMessages: AI.UIMessage[];
     let history: AI.UIMessage[];
 
@@ -172,21 +239,13 @@ export const createChatTransport = (
     }
 
     // Compute fork metadata from the conversation tree.
-    // For regeneration: forkOf = messageId (the assistant message being regenerated),
-    //   parent = the parent of that message in the tree.
     let forkOf: string | undefined;
     let parent: string | undefined;
 
     if (trigger === 'regenerate-message' && messageId) {
       forkOf = messageId;
-      // Look up the parent of the message being regenerated.
-      // messageId comes from useChat (UIMessage.id) — scan the flattened
-      // nodes to find the one whose domain message matches this ID.
-      // Uses the transport's default view — ChatTransport is single-view (one useChat per channel).
       const node = transport.view.flattenNodes().find((n) => n.message.id === messageId);
       if (node) {
-        // Use the tree node's msgId (x-ably-msg-id) as forkOf — this is
-        // what the server stamps on the wire, not the UIMessage.id.
         forkOf = node.msgId;
         parent = node.parentId;
       }
@@ -208,9 +267,6 @@ export const createChatTransport = (
       sendBody = prepared.body ?? {};
       sendHeaders = prepared.headers;
     } else {
-      // Build history nodes from the transport's conversation tree.
-      // The local `history` is a subset of messages (excludes the last message
-      // being sent). Match by message ID for robustness against cloned objects.
       const allNodes = transport.view.flattenNodes();
       const historyIds = new Set(history.map((m) => m.id));
       const historyNodes = allNodes.filter((n) => historyIds.has(n.message.id));
@@ -231,32 +287,47 @@ export const createChatTransport = (
 
     const turn = await transport.view.send(newMessages, sendOpts);
 
-    // Wire abort signal to cancel all turns on the channel.
-    // In multi-user scenarios, any client can stop any stream — cancelling
-    // by specific turnId would only work for the sender.
     if (abortSignal) {
       abortSignal.addEventListener('abort', () => void transport.cancel({ all: true }), {
         once: true,
       });
     }
 
-    // Return the real turn stream. useChat reads chunks from this stream to
-    // drive status transitions (submitted → streaming → ready), fire callbacks
-    // (onToolCall, onData, onFinish), and evaluate sendAutomaticallyWhen.
-    //
-    // Both useChat and useMessageSync accumulate messages in parallel:
-    // useChat builds from the stream, useMessageSync pushes from the
-    // transport's message store via setMessages (a full replacement).
-    // The transport's version is always authoritative.
-    return turn.stream;
-  },
+    // Wrap the stream to detect completion. The streaming flag gates
+    // useMessageSync so that setMessages doesn't interfere with
+    // useChat's internal write() during active streams.
+    const { stream, done } = wrapStreamWithDone(turn.stream);
+    setStreaming(true);
 
-  // Observer mode handles in-progress streams automatically.
-  // The transport subscribes before attach — on the next server append,
-  // observer accumulation emits lifecycle events that useMessageSync
-  // upserts into React state.
-  // eslint-disable-next-line unicorn/no-null, @typescript-eslint/promise-function-async -- null is required by the AI SDK ChatTransport contract; no await needed
-  reconnectToStream: () => Promise.resolve(null),
+    // Fire-and-forget: clear the streaming flag when the stream ends.
+    void done.then(() => {
+      setStreaming(false);
+    });
 
-  close: async (options?: CloseOptions) => transport.close(options),
-});
+    return stream;
+  };
+
+  return {
+    sendMessages,
+
+    // Observer mode handles in-progress streams automatically.
+    // The transport subscribes before attach — on the next server append,
+    // observer accumulation emits lifecycle events that useMessageSync
+    // upserts into React state.
+    // eslint-disable-next-line unicorn/no-null, @typescript-eslint/promise-function-async -- null is required by the AI SDK ChatTransport contract; no await needed
+    reconnectToStream: () => Promise.resolve(null),
+
+    close: async (options?: CloseOptions) => transport.close(options),
+
+    get streaming(): boolean {
+      return _streaming;
+    },
+
+    onStreamingChange: (callback: (streaming: boolean) => void): (() => void) => {
+      streamingCallbacks.add(callback);
+      return () => {
+        streamingCallbacks.delete(callback);
+      };
+    },
+  };
+};

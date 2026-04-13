@@ -740,7 +740,6 @@ describe('DefaultView', () => {
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: createMockSendDelegate(),
-
         logger: silentLogger,
       });
 
@@ -767,7 +766,6 @@ describe('DefaultView', () => {
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: createMockSendDelegate(),
-
         logger: silentLogger,
       });
 
@@ -801,7 +799,6 @@ describe('DefaultView', () => {
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: createMockSendDelegate(),
-
         logger: silentLogger,
       });
 
@@ -861,7 +858,6 @@ describe('DefaultView', () => {
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: forkDelegate,
-
         logger: silentLogger,
       });
 
@@ -897,7 +893,6 @@ describe('DefaultView', () => {
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: noopDelegate,
-
         logger: silentLogger,
       });
 
@@ -972,7 +967,6 @@ describe('DefaultView', () => {
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: noopDelegate,
-
         logger: silentLogger,
       });
 
@@ -1041,7 +1035,6 @@ describe('DefaultView', () => {
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: noopDelegate,
-
         logger: silentLogger,
       });
 
@@ -1157,7 +1150,6 @@ describe('DefaultView', () => {
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: createMockSendDelegate(),
-
         logger: silentLogger,
       });
 
@@ -1185,7 +1177,6 @@ describe('DefaultView', () => {
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: mockDelegate,
-
         logger: silentLogger,
       });
       // Seed a linear chain: m1 -> m2 -> m3
@@ -1385,6 +1376,74 @@ describe('DefaultView', () => {
       tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'), 'serial-1');
       view.close();
       await expect(view.edit('m1', { id: '2', content: 'revised' })).rejects.toThrow('view is closed');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // flattenNodes caching and reference stability
+  // -------------------------------------------------------------------------
+
+  describe('flattenNodes caching and reference stability', () => {
+    it('preserves unchanged message references after a content-only update', () => {
+      const msg1 = { id: '1', content: 'stable' };
+      const msg2 = { id: '2', content: 'will-change' };
+      tree.upsert('m1', msg1, makeHeaders('m1'), 'serial-1');
+      tree.upsert('m2', msg2, makeHeaders('m2'), 'serial-2');
+
+      const before = view.flattenNodes();
+      const msg1RefBefore = before[0]?.message;
+
+      // Content-only update to m2 only
+      tree.upsert('m2', { id: '2', content: 'changed' }, makeHeaders('m2'), 'serial-2');
+
+      const after = view.flattenNodes();
+
+      // m1's message reference should be preserved (identical object)
+      expect(after[0]?.message).toBe(msg1RefBefore);
+      // m2's message reference should differ (content changed)
+      expect(after[1]?.message).not.toBe(msg2);
+      expect(after[1]?.message).toEqual({ id: '2', content: 'changed' });
+    });
+
+    it('returns a new array reference after a content-only update so React detects the change', () => {
+      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'), 'serial-1');
+
+      const before = view.flattenNodes();
+
+      tree.upsert('m1', { id: '1', content: 'updated' }, makeHeaders('m1'), 'serial-1');
+
+      const after = view.flattenNodes();
+      // The array itself must be a new reference (so React state updates trigger),
+      // even though the tree structure hasn't changed.
+      expect(after).not.toBe(before);
+    });
+
+    it('simulated streaming: only the active message reference changes per token', () => {
+      // Set up a conversation with 3 messages, then simulate token-by-token
+      // streaming updates to the last message (m3). Only m3's message
+      // reference should change; m1 and m2 should remain stable.
+      const msg1 = { id: '1', content: 'user msg' };
+      const msg2 = { id: '2', content: 'assistant msg' };
+      tree.upsert('m1', msg1, makeHeaders('m1'), 'serial-1');
+      tree.upsert('m2', msg2, { [HEADER_MSG_ID]: 'm2', 'x-ably-parent': 'm1' }, 'serial-2');
+      tree.upsert('m3', { id: '3', content: '' }, { [HEADER_MSG_ID]: 'm3', 'x-ably-parent': 'm2' }, 'serial-3');
+
+      const snap0 = view.flattenNodes();
+      const m1Ref0 = snap0[0]?.message;
+      const m2Ref0 = snap0[1]?.message;
+
+      // Simulate 3 streaming tokens updating m3
+      const tokens = ['Hello', 'Hello world', 'Hello world!'];
+      for (const token of tokens) {
+        tree.upsert('m3', { id: '3', content: token }, {}, 'serial-3');
+
+        const snap = view.flattenNodes();
+        // m1 and m2 references must remain the same object
+        expect(snap[0]?.message).toBe(m1Ref0);
+        expect(snap[1]?.message).toBe(m2Ref0);
+        // m3 content must reflect the latest token
+        expect(snap[2]?.message.content).toBe(token);
+      }
     });
   });
 });

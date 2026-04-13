@@ -22,6 +22,15 @@ const makeMessage = (id: string, role: AI.UIMessage['role'] = 'user'): AI.UIMess
   parts: [],
 });
 
+const makeNode = (m: AI.UIMessage) => ({
+  message: m,
+  msgId: m.id,
+  parentId: undefined,
+  forkOf: undefined,
+  headers: {},
+  serial: undefined,
+});
+
 const createMockTransport = (): MockTransport => {
   const viewHandlers = new Map<string, Set<Handler>>();
 
@@ -299,5 +308,47 @@ describe('useMessageSync', () => {
       const gateOpenUpdater = setMessages.mock.calls[0]?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
       expect(gateOpenUpdater([])).toEqual([userMsg, observerMsg]);
     });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Reference stability during streaming
+  // ---------------------------------------------------------------------------
+
+  it('preserves unchanged message references across streaming updates', () => {
+    const mock = createMockTransport();
+    const msg1 = makeMessage('1');
+    const msg2 = makeMessage('2', 'assistant');
+
+    mock.viewFlattenNodes.mockReturnValue([makeNode(msg1), makeNode(msg2)]);
+
+    const setMessages = vi.fn();
+    renderHook(() => {
+      useMessageSync(mock.transport, setMessages);
+    });
+
+    // First update - populates messages
+    act(() => {
+      mock.emitView('update');
+    });
+
+    // msg2 gets updated content (new reference), msg1 stays same
+    const msg2Updated = makeMessage('2', 'assistant');
+    msg2Updated.parts = [{ type: 'text', text: 'Hello' }];
+    mock.viewFlattenNodes.mockReturnValue([makeNode(msg1), makeNode(msg2Updated)]);
+
+    // Second update - streaming token
+    act(() => {
+      mock.emitView('update');
+    });
+
+    // Extract the messages produced by the second update's updater
+    // CAST: setMessages receives an updater function from useMessageSync
+    const updater = setMessages.mock.calls[1]?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
+    const result = updater([]);
+
+    // msg1 should be the exact same reference (not cloned)
+    expect(result[0]).toBe(msg1);
+    // msg2 should be the new reference
+    expect(result[1]).toBe(msg2Updated);
   });
 });

@@ -180,4 +180,36 @@ describe('useView', () => {
     expect(result.current.nodes).toHaveLength(1);
     expect(result.current.messages).toEqual(['hello']);
   });
+
+  // ---------------------------------------------------------------------------
+  // Reference stability during streaming
+  // ---------------------------------------------------------------------------
+
+  it('preserves message references for unchanged messages during streaming update', () => {
+    const msg1 = 'stable-message';
+    const msg2 = 'streaming-message';
+    const mock = createMockTransport([msg1, msg2]);
+    const { result } = renderHook(() => useView(mock.transport));
+
+    // Verify initial messages
+    expect(result.current.messages[0]).toBe(msg1);
+    expect(result.current.messages[1]).toBe(msg2);
+
+    // Simulate streaming update: msg2 changes, msg1 stays (same reference)
+    const msg2Updated = 'streaming-message-updated';
+    const updatedNodes = [
+      { message: msg1, msgId: 'msg-0', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+      { message: msg2Updated, msgId: 'msg-1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+    ];
+    (mock.view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue(updatedNodes);
+
+    act(() => {
+      mock.emitTree('update');
+    });
+
+    // msg1's reference should be preserved - same string object
+    expect(result.current.messages[0]).toBe(msg1);
+    // msg2's reference should be the new value
+    expect(result.current.messages[1]).toBe(msg2Updated);
+  });
 });

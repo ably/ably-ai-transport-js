@@ -18,7 +18,7 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
   const { channel } = useChannel({ channelName: chatId });
 
   // Create transport immediately (subscribes before attach — RTL7g)
-  const transport = useClientTransport({ channel, codec: UIMessageCodec, clientId });
+  const transport = useClientTransport({ channel, codec: UIMessageCodec, clientId, body: () => ({ id: chatId }) });
   const chatTransport = useChatTransport(transport);
 
   const {

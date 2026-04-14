@@ -49,7 +49,7 @@ Both turns produce independent event streams. The message list grows with respon
 
 ## Detecting active turns
 
-Use `useActiveTurns` to know whether any turn is streaming:
+Use `useActiveTurns()` to know whether any turn is streaming:
 
 ```typescript
 import { useActiveTurns } from '@ably/ai-transport/react';

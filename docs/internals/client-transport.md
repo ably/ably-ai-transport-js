@@ -22,9 +22,9 @@ All sub-components are created in the constructor and share a single Ably channe
 
 `view.send()` is the primary entry point for starting a new turn. It delegates to the transport's internal `_internalSend` (exposed to views via a `SendDelegate`). The send flow handles optimistic insertion, HTTP POST dispatch, and stream creation in a specific order:
 
-1. **Generate identifiers** - a turn ID and per-message msg-ids (`crypto.randomUUID()`)
+1. **Generate identifiers** - a turn ID and per-message message IDs (`crypto.randomUUID()`)
 2. **Auto-compute parent** - if no explicit `parent` or `forkOf` is provided, reads the last message in the [flattened tree](conversation-tree.md#flatten-producing-the-linear-path) to chain messages into a linear thread
-3. **Optimistic insert** - each user message is inserted into the conversation tree immediately with [transport headers](wire-protocol.md#transport-headers-x-ably) (role, turn ID, msg-id, parent). This makes the message visible to the view before the server acknowledges it
+3. **Optimistic insert** - each user message is inserted into the conversation tree immediately with [transport headers](wire-protocol.md#transport-headers-x-ably) (role, turn ID, message ID, parent). This makes the message visible to the view before the server acknowledges it
 4. **Create stream** - the [stream router](transport-components.md#streamrouter) creates a `ReadableStream` for the turn, capturing the controller synchronously
 5. **Fire-and-forget POST** - the HTTP POST is dispatched without `await` so the stream is returned immediately. POST errors are surfaced via the `error` event, not thrown
 6. **Return `ActiveTurn`** - the caller receives `{ stream, turnId, cancel() }` synchronously
@@ -33,11 +33,11 @@ The POST body includes `history` (all messages before the optimistic inserts), `
 
 ### Multi-message chaining
 
-When `send()` receives multiple messages, it chains them into a linear thread: each message after the first uses the previous message's msg-id as its `parent`. This produces a connected sequence rather than siblings at the same fork point.
+When `send()` receives multiple messages, it chains them into a linear thread: each message after the first uses the previous message's message ID as its `parent`. This produces a connected sequence rather than siblings at the same fork point.
 
 ## Optimistic reconciliation
 
-When the server relays user messages back onto the channel, the client receives them like any other message. The transport detects own-message relays by matching the `x-ably-msg-id` against the set of optimistically inserted msg-ids (`_ownMsgIds`).
+When the server relays user messages back onto the channel, the client receives them like any other message. The transport detects own-message relays by matching the `x-ably-msg-id` against the set of optimistically inserted message IDs (`_ownMsgIds`).
 
 On relay match, the transport upserts the message with the server-assigned [serial](glossary.md#serial-ably), which triggers [serial promotion](glossary.md#serial-promotion) in the conversation tree - the optimistic entry (null serial, sorted last) moves to its correct position in serial order.
 
@@ -77,7 +77,7 @@ On every event, the transport calls `accumulator.processOutputs()`, clones the l
 
 `view.regenerate(messageId)` and `view.edit(messageId, newMessages)` are convenience methods that delegate to the send flow with computed branching metadata:
 
-- **`forkOf`** - the msg-id of the message being replaced
+- **`forkOf`** - the message ID of the message being replaced
 - **`parent`** - the parent of the forked message in the tree
 - **`history`** - messages truncated before the fork point (the LLM doesn't see the response being replaced)
 

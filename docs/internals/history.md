@@ -1,6 +1,6 @@
 # History hydration
 
-`decodeHistory` (`src/core/transport/decode-history.ts`) loads conversation history from an Ably channel's history API and returns decoded domain messages. It handles the mismatch between Ably's newest-first history pagination and the decoder's requirement for chronological input.
+`decodeHistory()` (`src/core/transport/decode-history.ts`) loads conversation history from an Ably channel's history API and returns decoded domain messages. It handles the mismatch between Ably's newest-first history pagination and the decoder's requirement for chronological input.
 
 ## The problem
 
@@ -10,7 +10,7 @@ Additionally, the `limit` parameter should control the number of complete **doma
 
 ## Strategy: collect and re-decode
 
-Rather than trying to decode pages incrementally, `decodeHistory` collects all raw Ably messages and re-decodes the full set from scratch after each page fetch:
+Rather than trying to decode pages incrementally, `decodeHistory()` collects all raw Ably messages and re-decodes the full set from scratch after each page fetch:
 
 1. Fetch a page of Ably history (newest-first)
 2. Append raw messages to the collection
@@ -67,7 +67,7 @@ interface PaginatedMessages<TMessage> {
 
 ## Channel attach and untilAttach
 
-`decodeHistory` [attaches the channel](glossary.md#channel-attach-ably) (idempotent) and uses [`untilAttach: true`](glossary.md#untilattach-ably) on the history call. This guarantees no gap between historical messages and the live subscription - the history ends exactly where the subscription starts.
+`decodeHistory()` [attaches the channel](glossary.md#channel-attach-ably) (idempotent) and uses [`untilAttach: true`](glossary.md#untilattach-ably) on the history call. This guarantees no gap between historical messages and the live subscription - the history ends exactly where the subscription starts.
 
 ## Shared state across pages
 
@@ -83,9 +83,9 @@ Each `next()` call either slices more completed messages from the already-decode
 
 Each completed domain message needs its canonical transport headers and Ably serial for the conversation tree. The implementation tracks:
 
-- **Per-turn headers by msg-id** - the last-seen headers for each [`x-ably-msg-id`](wire-protocol.md#message-identity-x-ably-msg-id) within a turn (closing appends override earlier headers, e.g. [status](wire-protocol.md#streamed-messages) changes from `"streaming"` to `"finished"`)
+- **Per-turn headers by message ID** - the last-seen headers for each [`x-ably-msg-id`](wire-protocol.md#message-identity-x-ably-msg-id) within a turn (closing appends override earlier headers, e.g. [status](wire-protocol.md#streamed-messages) changes from `"streaming"` to `"finished"`)
 - **Discrete message headers** - captured when the decoder produces a `kind: 'message'` output
-- **Serials** - from the first Ably message for each msg-id
+- **Serials** - from the first Ably message for each message ID
 
 These are matched to completed messages and returned as parallel arrays alongside `items`.
 

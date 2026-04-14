@@ -36,7 +36,7 @@ const { regenerate } = useView(transport);
 await regenerate(nodeId);
 ```
 
-The transport automatically computes `forkOf` (the assistant message being replaced) and `parent` (the message before it). The server receives these in the POST body and passes them to `newTurn`.
+The transport automatically computes `forkOf` (the assistant message being replaced) and `parent` (the message before it). The server receives these in the POST body and passes them to `newTurn()`.
 
 ## Edit
 
@@ -61,7 +61,7 @@ await edit(nodeId, [newMessage]);
 
 ## Branch navigation
 
-`useView` provides branch navigation alongside message state:
+`useView()` provides branch navigation alongside message state:
 
 ```typescript
 import { useView } from '@ably/ai-transport/react';
@@ -106,7 +106,7 @@ Calling `select` updates the view's active branch and re-renders with the select
 
 ## Server handling
 
-The server receives `forkOf` and `parent` in the POST body. Pass them through to `newTurn`:
+The server receives `forkOf` and `parent` in the POST body. Pass them through to `newTurn()`:
 
 ```typescript
 const { turnId, clientId, forkOf, parent, messages, history } = await req.json();
@@ -130,7 +130,7 @@ The transport stamps `x-ably-parent` and `x-ably-fork-of` headers on the publish
 
 With a single view, navigating to a different branch in one part of the UI changes what every other part sees. Split-pane comparison UIs need independent views so each pane can show a different branch of the same conversation without interfering with the other.
 
-`useCreateView` has the same API as `useView` but creates an independent view instead of using the transport's default. The view is closed automatically when the component unmounts or the transport changes:
+`useCreateView()` has the same API as `useView()` but creates an independent view instead of using the transport's default. The view is closed automatically when the component unmounts or the transport changes:
 
 ```typescript
 import { useClientTransport, useCreateView, useView } from '@ably/ai-transport/react';
@@ -149,7 +149,7 @@ left.select(nodeId, 1);
 
 Both views share the same underlying tree - new messages from the server appear in both. But branch selections, pagination windows, and write operations are scoped to each view.
 
-See [React hooks reference](../reference/react-hooks.md#usecreateview) for the full `useCreateView` API.
+See [React hooks reference](../reference/react-hooks.md#usecreateview) for the full `useCreateView()` API.
 
 ## Tree from history
 

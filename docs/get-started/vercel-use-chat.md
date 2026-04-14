@@ -1,6 +1,6 @@
 # Get Started: Vercel AI SDK with useChat
 
-Build a streaming chat app using Vercel AI SDK's `useChat` hook and AI Transport. This is the simplest integration path - `useChat` manages message state, and AI Transport handles real-time delivery over Ably.
+Build a streaming chat app using Vercel AI SDK's `useChat()` hook and AI Transport. This is the simplest integration path - `useChat()` manages message state, and AI Transport handles real-time delivery over Ably.
 
 ## Prerequisites
 
@@ -147,7 +147,7 @@ The `after()` call is a Next.js API that runs work after the HTTP response is se
 
 ## 4. Create the chat component
 
-Wire up `useChat` with the AI Transport hooks:
+Wire up `useChat()` with the AI Transport hooks:
 
 ```typescript
 // app/chat.tsx
@@ -245,12 +245,12 @@ Open `http://localhost:3000`. Type a message - you'll see tokens stream in real 
 
 ## What's happening
 
-1. `useClientTransport` creates a transport that subscribes to the Ably channel before it attaches - no messages are lost.
-2. `useChatTransport` wraps the transport into Vercel's `ChatTransport` interface, which `useChat` expects.
-3. When you send a message, `useChat` calls the chat transport's `sendMessages`, which fires an HTTP POST to `/api/chat` and opens a stream on the Ably channel.
+1. `useClientTransport()` creates a transport that subscribes to the Ably channel before it attaches - no messages are lost.
+2. `useChatTransport()` wraps the transport into Vercel's `ChatTransport` interface, which `useChat()` expects.
+3. When you send a message, `useChat()` calls the chat transport's `sendMessages()`, which fires an HTTP POST to `/api/chat` and opens a stream on the Ably channel.
 4. The server creates a turn, publishes user messages, streams the LLM response through the encoder to the channel, and publishes a turn-end event.
 5. The client transport decodes incoming Ably messages through `UIMessageCodec` and routes them to the stream.
-6. `useMessageSync` syncs messages from the transport (including messages from other clients) into `useChat`'s state.
+6. `useMessageSync()` syncs messages from the transport (including messages from other clients) into `useChat()`'s state.
 
 For the conceptual details, see [Client and server transport](../concepts/transport.md) and [Turns](../concepts/turns.md).
 

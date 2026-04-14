@@ -43,7 +43,7 @@ Called when the real event arrives from the wire, so the tracker doesn't re-synt
 
 ### resetPhase
 
-Resets a phase so it will be re-synthesized on the next `ensurePhases` call. Used for repeating phases - the Vercel codec resets `start-step` after each `finish-step`, because multi-step turns require a new `start-step` before each step's content.
+Resets a phase so it will be re-synthesized on the next `ensurePhases()` call. Used for repeating phases - the Vercel codec resets `start-step` after each `finish-step`, because multi-step turns require a new `start-step` before each step's content.
 
 ### clearScope
 
@@ -62,7 +62,7 @@ Removes all tracking state for a scope. Called on turn completion (`finish`, `ab
 
 The Vercel decoder creates a lifecycle tracker with two phases: `start` and `start-step`. It composes the tracker into the decoder hooks:
 
-- **Before every streamed event** - `ensurePhases` is called with the turn ID and a context containing the `messageId` from headers. Any missing lifecycle events are prepended to the decoder output.
+- **Before every streamed event** - `ensurePhases()` is called with the turn ID and a context containing the `messageId` from headers. Any missing lifecycle events are prepended to the decoder output.
 - **On `start` event** - `markEmitted(turnId, 'start')`
 - **On `start-step` event** - `markEmitted(turnId, 'start-step')`
 - **On `finish-step` event** - `resetPhase(turnId, 'start-step')` (next step needs a new start-step)

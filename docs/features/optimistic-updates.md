@@ -78,6 +78,6 @@ const turn = await view.send([questionOne, questionTwo]);
 
 **Multi-client ordering** - in a conversation with multiple clients sending concurrently, optimistic messages appear at the end of the local tree until reconciliation. After reconciliation, the serial determines the canonical order, which may differ from the optimistic insertion order. All clients converge on the same order once relays are reconciled.
 
-**Cleanup** - the transport tracks optimistic msg-ids per turn. When a [turn](../concepts/turns.md) ends (via `x-ably-turn-end` on the channel), the tracking state for that turn is cleaned up. This prevents stale msg-ids from matching against unrelated messages in future turns.
+**Cleanup** - the transport tracks optimistic message IDs per turn. When a [turn](../concepts/turns.md) ends (via `x-ably-turn-end` on the channel), the tracking state for that turn is cleaned up. This prevents stale message IDs from matching against unrelated messages in future turns.
 
 For the internal implementation details, see [Client transport: optimistic reconciliation](../internals/client-transport.md#optimistic-reconciliation), [Conversation tree: upsert](../internals/conversation-tree.md#upsert-the-sole-mutation), and [Wire protocol: message identity](../internals/wire-protocol.md#message-identity-x-ably-msg-id).

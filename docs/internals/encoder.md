@@ -2,7 +2,7 @@
 
 The encoder core (`src/core/codec/encoder.ts`) translates domain events into Ably publish operations. It implements the [message append](glossary.md#message-actions-ably) lifecycle - creating, appending to, closing, and aborting streamed messages - and handles recovery when appends fail.
 
-Domain codecs don't interact with Ably directly. They call encoder core methods (`startStream`, `appendStream`, `closeStream`) and the core handles serialization, header merging, and error recovery.
+Domain codecs don't interact with Ably directly. They call encoder core methods (`startStream()`, `appendStream()`, `closeStream()`) and the core handles serialization, header merging, and error recovery.
 
 ## Two message modes
 
@@ -56,7 +56,7 @@ Sends an append with `x-ably-status: "aborted"` and empty data. Marks the tracke
 
 Appends are fire-and-forget for performance - each token-level delta doesn't wait for the previous one to be acknowledged. But appends can fail (network issues, rate limits). The encoder handles this through batched flush and recovery.
 
-When `closeStream` or `abortStream` is called, `_flushPending()` awaits all collected append promises via `Promise.allSettled`. For any failed stream:
+When `closeStream()` or `abortStream()` is called, `_flushPending()` awaits all collected append promises via `Promise.allSettled`. For any failed stream:
 
 1. Build a recovery message with the **full accumulated text** (not just the failed delta)
 2. Call `channel.updateMessage()` to replace the message content entirely
@@ -76,13 +76,13 @@ Headers are merged in priority order (later wins):
 2. Per-write overrides - headers passed to individual write calls
 3. Codec headers - domain-specific headers from the payload
 
-If `WriteOptions.messageId` is set, the encoder stamps it as [`x-ably-msg-id`](wire-protocol.md#message-identity-x-ably-msg-id) during header merging. For streamed messages, this header is included in `persistentHeaders` - so every append and the closing append carry the same msg-id, giving the entire message append lifecycle a single identity.
+If `WriteOptions.messageId` is set, the encoder stamps it as [`x-ably-msg-id`](wire-protocol.md#message-identity-x-ably-msg-id) during header merging. For streamed messages, this header is included in `persistentHeaders` - so every append and the closing append carry the same message ID, giving the entire message append lifecycle a single identity.
 
 After the headers are merged, the `onMessage` hook runs as a post-processing step - it receives the fully constructed `Ably.Message` object and can mutate it in place. The transport uses this hook to stamp [transport-level headers](wire-protocol.md#transport-headers-x-ably) (turn ID, role, parent, fork-of) onto every message without the codec needing to know about them.
 
 ### Closing appends repeat all headers
 
-Ably replaces the entire `extras` object on each append. The encoder builds closing headers by starting from `persistentHeaders` (captured at `startStream`) and layering caller and codec overrides on top. This ensures the final message state has all necessary headers.
+Ably replaces the entire `extras` object on each append. The encoder builds closing headers by starting from `persistentHeaders` (captured at `startStream()`) and layering caller and codec overrides on top. This ensures the final message state has all necessary headers.
 
 ## ChannelWriter interface
 

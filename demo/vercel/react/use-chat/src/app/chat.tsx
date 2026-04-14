@@ -4,9 +4,10 @@ import { useChat } from '@ai-sdk/react';
 import type * as AI from 'ai';
 import { useClientTransport, useActiveTurns, useView, useAblyMessages } from '@ably/ai-transport/react';
 import { useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { MessageList } from './components/message-list';
 import { DebugPane } from './components/debug-pane';
+import type { CallbackLogEntry } from './components/debug-pane';
 import { useClientTools } from './hooks/use-client-tools';
 
 // ---------------------------------------------------------------------------
@@ -17,6 +18,14 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
   // Transport is created by TransportProvider in page.tsx
   const transport = useClientTransport<AI.UIMessageChunk, AI.UIMessage>({ channelName: chatId });
   const chatTransport = useChatTransport(transport);
+
+  // -- Callback & status logging for debug pane ----------------------------
+  const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);
+  const [statusLog, setStatusLog] = useState<{ time: number; status: string }[]>([]);
+  const clearLogs = useCallback(() => {
+    setCallbackLog([]);
+    setStatusLog([]);
+  }, []);
 
   const {
     setMessages,
@@ -29,9 +38,28 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
   } = useChat({
     id: chatId,
     transport: chatTransport,
+    onToolCall: ({ toolCall }) => {
+      setCallbackLog(prev => [...prev, {
+        time: Date.now(),
+        type: 'onToolCall',
+        summary: `${toolCall.toolName}(${JSON.stringify(toolCall.input)})`,
+      }]);
+    },
+    onFinish: ({ message, finishReason }) => {
+      setCallbackLog(prev => [...prev, {
+        time: Date.now(),
+        type: 'onFinish',
+        summary: `reason=${String(finishReason)}, parts=${String(message.parts.length)}`,
+      }]);
+    },
   });
 
-  useMessageSync(transport, setMessages);
+  useMessageSync(transport, setMessages, chatTransport);
+
+  // Track status transitions
+  useEffect(() => {
+    setStatusLog(prev => [...prev, { time: Date.now(), status }]);
+  }, [status]);
 
   const activeTurns = useActiveTurns({ transport });
   const hasAnyTurns = activeTurns.size > 0;
@@ -65,6 +93,9 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
         ablyMessages={ablyMessages}
         activeTurns={activeTurns}
         status={status}
+        callbackLog={callbackLog}
+        statusLog={statusLog}
+        onClearLogs={clearLogs}
       />
     </div>
   );

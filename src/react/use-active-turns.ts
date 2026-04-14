@@ -45,7 +45,7 @@ export const useActiveTurns = <TEvent, TMessage>({
         const next = new Map(prev);
 
         if (event.type === EVENT_TURN_START) {
-          const set = new Set(next.get(event.clientId) ?? []);
+          const set = new Set(next.get(event.clientId));
           set.add(event.turnId);
           next.set(event.clientId, set);
         } else {

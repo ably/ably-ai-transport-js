@@ -82,6 +82,7 @@ class DefaultStreamRouter<TEvent> implements StreamRouter<TEvent> {
     return true;
   }
 
+  // Spec: AIT-CT14c
   errorStream(turnId: string, error: Ably.ErrorInfo): boolean {
     const turn = this._turns.get(turnId);
     if (!turn) return false;

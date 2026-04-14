@@ -13,7 +13,7 @@ import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
 import { createServerTransport } from '@ably/ai-transport/vercel';
 import type { MessageNode } from '@ably/ai-transport';
-import { tools } from './tools.js';
+import { tools } from './tools';
 
 /** Shape of the POST body sent by the client transport. */
 interface ChatRequestBody {

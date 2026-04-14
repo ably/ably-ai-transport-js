@@ -32,7 +32,7 @@ jobs:
         run: npm run docs
       # Only upload docs from the main repo (not forks or dependabot)
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         if: >-
           github.repository == 'ably/ably-ai-transport-js' &&
           (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) &&

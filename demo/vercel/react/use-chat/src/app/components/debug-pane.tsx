@@ -20,7 +20,7 @@ interface DebugPaneProps {
   onClearLogs: () => void;
 }
 
-type Tab = 'ably' | 'uimessages' | 'callbacks';
+type Tab = 'ably' | 'uimessages' | 'lifecycle';
 
 function extractHeaders(msg: Ably.InboundMessage): Record<string, string> {
   const extras = msg.extras as { headers?: Record<string, string> } | undefined;
@@ -159,7 +159,7 @@ const statusColors: Record<string, string> = {
   error: 'text-red-400',
 };
 
-function CallbacksTab({
+function LifecycleTab({
   callbackLog,
   statusLog,
   onClear,
@@ -177,9 +177,12 @@ function CallbacksTab({
   }, [callbackLog, statusLog]);
 
   return (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-3">
+    <div
+      ref={scrollRef}
+      className="flex-1 overflow-y-auto p-3 space-y-3"
+    >
       <div className="flex items-center justify-between mb-2">
-        <span className="text-[10px] text-zinc-600 uppercase tracking-wider">Status transitions</span>
+        <span className="text-[10px] text-zinc-400 uppercase tracking-wider">Status transitions</span>
         <button
           onClick={onClear}
           className="text-[10px] text-zinc-600 hover:text-zinc-400 transition-colors"
@@ -189,11 +192,14 @@ function CallbacksTab({
       </div>
 
       {statusLog.length === 0 ? (
-        <p className="text-xs text-zinc-700 text-center">No status changes yet.</p>
+        <p className="text-xs text-zinc-500 text-center">No status changes yet.</p>
       ) : (
         <div className="rounded border border-zinc-800 bg-zinc-900/50 p-2 text-[11px] font-mono flex flex-wrap gap-1 items-center">
           {statusLog.map((entry, idx) => (
-            <span key={idx} className="flex items-center gap-1">
+            <span
+              key={idx}
+              className="flex items-center gap-1"
+            >
               {idx > 0 && <span className="text-zinc-700">&rarr;</span>}
               <span className={statusColors[entry.status] ?? 'text-zinc-500'}>{entry.status}</span>
             </span>
@@ -202,13 +208,11 @@ function CallbacksTab({
       )}
 
       <div className="mt-4 mb-2">
-        <span className="text-[10px] text-zinc-600 uppercase tracking-wider">Callbacks</span>
+        <span className="text-[10px] text-zinc-400 uppercase tracking-wider">Callbacks</span>
       </div>
 
       {callbackLog.length === 0 ? (
-        <p className="text-xs text-zinc-700 text-center">
-          Callbacks (onToolCall, onFinish) will appear here.
-        </p>
+        <p className="text-xs text-zinc-500 text-center">Callbacks (onToolCall, onFinish) will appear here.</p>
       ) : (
         callbackLog.map((entry, idx) => (
           <div
@@ -216,16 +220,10 @@ function CallbacksTab({
             className="rounded border border-zinc-800 bg-zinc-900/50 p-2 text-[11px] font-mono"
           >
             <div className="flex items-center gap-2 mb-1">
-              <span className="text-zinc-600">
-                {new Date(entry.time).toLocaleTimeString()}
-              </span>
-              <span className={callbackTypeColors[entry.type] ?? 'text-zinc-400'}>
-                {entry.type}
-              </span>
+              <span className="text-zinc-400">{new Date(entry.time).toLocaleTimeString()}</span>
+              <span className={callbackTypeColors[entry.type] ?? 'text-zinc-400'}>{entry.type}</span>
             </div>
-            <div className="text-zinc-500 break-all whitespace-pre-wrap">
-              {entry.summary}
-            </div>
+            <div className="text-indigo-300 break-all whitespace-pre-wrap">{entry.summary}</div>
           </div>
         ))
       )}
@@ -233,7 +231,15 @@ function CallbacksTab({
   );
 }
 
-export function DebugPane({ messages, ablyMessages, activeTurns, status, callbackLog, statusLog, onClearLogs }: DebugPaneProps) {
+export function DebugPane({
+  messages,
+  ablyMessages,
+  activeTurns,
+  status,
+  callbackLog,
+  statusLog,
+  onClearLogs,
+}: DebugPaneProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [tab, setTab] = useState<Tab>('ably');
 
@@ -272,12 +278,12 @@ export function DebugPane({ messages, ablyMessages, activeTurns, status, callbac
                 <span className="ml-1 text-zinc-600">{messages.length}</span>
               </button>
               <button
-                onClick={() => setTab('callbacks')}
+                onClick={() => setTab('lifecycle')}
                 className={`text-[10px] px-2 py-1 rounded transition-colors ${
-                  tab === 'callbacks' ? 'bg-zinc-800 text-zinc-300' : 'text-zinc-600 hover:text-zinc-400'
+                  tab === 'lifecycle' ? 'bg-zinc-800 text-zinc-300' : 'text-zinc-600 hover:text-zinc-400'
                 }`}
               >
-                Callbacks
+                Lifecycle
                 <span className="ml-1 text-zinc-600">{callbackLog.length}</span>
               </button>
             </div>
@@ -297,7 +303,7 @@ export function DebugPane({ messages, ablyMessages, activeTurns, status, callbac
               status={status}
             />
           ) : (
-            <CallbacksTab
+            <LifecycleTab
               callbackLog={callbackLog}
               statusLog={statusLog}
               onClear={onClearLogs}

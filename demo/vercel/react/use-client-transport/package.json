@@ -17,7 +17,7 @@
     "ably": "^2",
     "ai": "^6",
     "jsonwebtoken": "^9",
-    "next": "^15",
+    "next": "^16",
     "react": "^19",
     "react-dom": "^19"
   },
@@ -29,7 +29,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "^15",
+    "eslint-config-next": "^16",
     "jsdom": "^26",
     "tailwindcss": "^4",
     "typescript": "^5",

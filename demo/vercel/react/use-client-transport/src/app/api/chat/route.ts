@@ -17,7 +17,7 @@ import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
 import { createServerTransport } from '@ably/ai-transport/vercel';
 import type { EventsNode, MessageNode } from '@ably/ai-transport';
-import { tools } from './tools.js';
+import { tools } from './tools';
 
 // ---------------------------------------------------------------------------
 // Types

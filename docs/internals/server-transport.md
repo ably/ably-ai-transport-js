@@ -40,7 +40,7 @@ sequenceDiagram
 
 Synchronous - no channel activity. Creates a `Turn` object and registers it for cancel routing immediately, so early cancels (arriving before `start()`) fire the abort signal.
 
-Each turn gets its own `AbortController`. The `abortSignal` property exposes it so the server app can pass it to LLM calls.
+Each turn gets its own `AbortController`. If `opts.signal` is provided (typically `req.signal` from the HTTP request), `AbortSignal.any()` composes it with the controller's signal into a single composite signal. The `abortSignal` property exposes this composite signal so the server app can pass it to LLM calls. Either source - an Ably cancel message or the external signal - triggers the same downstream abort.
 
 ### start
 

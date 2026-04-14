@@ -39,18 +39,24 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
     id: chatId,
     transport: chatTransport,
     onToolCall: ({ toolCall }) => {
-      setCallbackLog(prev => [...prev, {
-        time: Date.now(),
-        type: 'onToolCall',
-        summary: `${toolCall.toolName}(${JSON.stringify(toolCall.input)})`,
-      }]);
+      setCallbackLog((prev) => [
+        ...prev,
+        {
+          time: Date.now(),
+          type: 'onToolCall',
+          summary: `${toolCall.toolName}(${JSON.stringify(toolCall.input)})`,
+        },
+      ]);
     },
     onFinish: ({ message, finishReason }) => {
-      setCallbackLog(prev => [...prev, {
-        time: Date.now(),
-        type: 'onFinish',
-        summary: `reason=${String(finishReason)}, parts=${String(message.parts.length)}`,
-      }]);
+      setCallbackLog((prev) => [
+        ...prev,
+        {
+          time: Date.now(),
+          type: 'onFinish',
+          summary: `reason=${String(finishReason)}, parts=${String(message.parts.length)}`,
+        },
+      ]);
     },
   });
 
@@ -58,7 +64,7 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
 
   // Track status transitions
   useEffect(() => {
-    setStatusLog(prev => [...prev, { time: Date.now(), status }]);
+    setStatusLog((prev) => [...prev, { time: Date.now(), status }]);
   }, [status]);
 
   const activeTurns = useActiveTurns({ transport });

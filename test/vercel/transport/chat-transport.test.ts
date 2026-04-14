@@ -26,6 +26,7 @@ interface MockTurn {
   stream: ReadableStream<AI.UIMessageChunk>;
   turnId: string;
   cancel: ReturnType<typeof vi.fn>;
+  optimisticMsgIds: string[];
   /** Enqueue a chunk into the turn stream. */
   enqueue: (chunk: AI.UIMessageChunk) => void;
   /** Resolve the stream by closing it. */
@@ -615,5 +616,4 @@ describe('createChatTransport', () => {
       expect(log).toEqual([]);
     });
   });
-
 });

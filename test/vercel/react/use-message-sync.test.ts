@@ -74,7 +74,10 @@ const createMockTransport = (): MockTransport => {
   return { transport, emitView, viewFlattenNodes };
 };
 
-/** Create a mock ChatTransport with controllable streaming state. */
+/**
+ * Create a mock ChatTransport with controllable streaming state.
+ * @returns Mock chat transport and a function to toggle the streaming flag.
+ */
 const createMockChatTransport = (): {
   chatTransport: ChatTransport;
   setStreaming: (value: boolean) => void;
@@ -92,10 +95,14 @@ const createMockChatTransport = (): {
     // eslint-disable-next-line unicorn/no-null -- required by AI SDK ChatTransport contract
     reconnectToStream: vi.fn().mockResolvedValue(null),
     close: vi.fn(),
-    get streaming() { return streaming; },
+    get streaming() {
+      return streaming;
+    },
     onStreamingChange: (cb: (s: boolean) => void) => {
       callbacks.add(cb);
-      return () => { callbacks.delete(cb); };
+      return () => {
+        callbacks.delete(cb);
+      };
     },
   } as unknown as ChatTransport;
 
@@ -165,20 +172,35 @@ describe('useMessageSync', () => {
       const mock = createMockTransport();
       const { chatTransport, setStreaming } = createMockChatTransport();
       const msgs = [makeMessage('1')];
-      mock.viewFlattenNodes.mockReturnValue(msgs.map((m) => ({ message: m, msgId: m.id, parentId: undefined, forkOf: undefined, headers: {}, serial: undefined })));
+      mock.viewFlattenNodes.mockReturnValue(
+        msgs.map((m) => ({
+          message: m,
+          msgId: m.id,
+          parentId: undefined,
+          forkOf: undefined,
+          headers: {},
+          serial: undefined,
+        })),
+      );
 
       const setMessages = vi.fn();
-      renderHook(() => { useMessageSync(mock.transport, setMessages, chatTransport); });
+      renderHook(() => {
+        useMessageSync(mock.transport, setMessages, chatTransport);
+      });
 
       // Initial sync fires on mount (not yet streaming)
       expect(setMessages).toHaveBeenCalledTimes(1);
       setMessages.mockClear();
 
       // Start streaming — gate closes
-      act(() => { setStreaming(true); });
+      act(() => {
+        setStreaming(true);
+      });
 
       // View updates should be suppressed
-      act(() => { mock.emitView('update'); });
+      act(() => {
+        mock.emitView('update');
+      });
       expect(setMessages).not.toHaveBeenCalled();
     });
 
@@ -186,15 +208,30 @@ describe('useMessageSync', () => {
       const mock = createMockTransport();
       const { chatTransport, setStreaming } = createMockChatTransport();
       const msgs = [makeMessage('1'), makeMessage('2', 'assistant')];
-      mock.viewFlattenNodes.mockReturnValue(msgs.map((m) => ({ message: m, msgId: m.id, parentId: undefined, forkOf: undefined, headers: {}, serial: undefined })));
+      mock.viewFlattenNodes.mockReturnValue(
+        msgs.map((m) => ({
+          message: m,
+          msgId: m.id,
+          parentId: undefined,
+          forkOf: undefined,
+          headers: {},
+          serial: undefined,
+        })),
+      );
 
       const setMessages = vi.fn();
-      renderHook(() => { useMessageSync(mock.transport, setMessages, chatTransport); });
+      renderHook(() => {
+        useMessageSync(mock.transport, setMessages, chatTransport);
+      });
       setMessages.mockClear();
 
       // Gate: streaming on then off
-      act(() => { setStreaming(true); });
-      act(() => { setStreaming(false); });
+      act(() => {
+        setStreaming(true);
+      });
+      act(() => {
+        setStreaming(false);
+      });
 
       // Immediate sync on gate open
       expect(setMessages).toHaveBeenCalledTimes(1);
@@ -205,10 +242,14 @@ describe('useMessageSync', () => {
     it('works without chatTransport (no gating)', () => {
       const mock = createMockTransport();
       const setMessages = vi.fn();
-      renderHook(() => { useMessageSync(mock.transport, setMessages); });
+      renderHook(() => {
+        useMessageSync(mock.transport, setMessages);
+      });
 
       // Initial sync + view update both work
-      act(() => { mock.emitView('update'); });
+      act(() => {
+        mock.emitView('update');
+      });
       expect(setMessages).toHaveBeenCalledTimes(2);
     });
 
@@ -223,7 +264,9 @@ describe('useMessageSync', () => {
       ]);
 
       const setMessages = vi.fn();
-      renderHook(() => { useMessageSync(mock.transport, setMessages, chatTransport); });
+      renderHook(() => {
+        useMessageSync(mock.transport, setMessages, chatTransport);
+      });
 
       // Initial sync: just the user message
       expect(setMessages).toHaveBeenCalledTimes(1);
@@ -232,7 +275,9 @@ describe('useMessageSync', () => {
       setMessages.mockClear();
 
       // Own-turn stream starts — gate closes
-      act(() => { setStreaming(true); });
+      act(() => {
+        setStreaming(true);
+      });
 
       // Observer message arrives while gated (another user's assistant response).
       // The transport tree has it, but setMessages should NOT fire.
@@ -241,11 +286,15 @@ describe('useMessageSync', () => {
         { message: userMsg, msgId: '1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
         { message: observerMsg, msgId: 'observer-1', parentId: '1', forkOf: undefined, headers: {}, serial: undefined },
       ]);
-      act(() => { mock.emitView('update'); });
+      act(() => {
+        mock.emitView('update');
+      });
       expect(setMessages).not.toHaveBeenCalled();
 
       // Own-turn stream ends — gate opens, immediate sync picks up observer message
-      act(() => { setStreaming(false); });
+      act(() => {
+        setStreaming(false);
+      });
       expect(setMessages).toHaveBeenCalledTimes(1);
       const gateOpenUpdater = setMessages.mock.calls[0]?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
       expect(gateOpenUpdater([])).toEqual([userMsg, observerMsg]);

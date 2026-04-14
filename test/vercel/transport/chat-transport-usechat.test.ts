@@ -184,7 +184,11 @@ const createMultiTurnMockTransport = () => {
  * @param textId
  * @param deltas
  */
-/** Extract the concatenated text from an assistant message's parts. */
+/**
+ * Extract the concatenated text from an assistant message's parts.
+ * @param msg - The assistant message to extract text from.
+ * @returns Concatenated text content.
+ */
 const getAssistantText = (msg: AI.UIMessage): string =>
   msg.parts
     .filter((p): p is AI.TextUIPart => p.type === 'text')
@@ -386,7 +390,6 @@ describe('ChatTransport useChat integration — features work with the real stre
   // -------------------------------------------------------------------------
 
   describe('multiple streaming responses', () => {
-
     it('sequential: two responses produce four correctly ordered messages', async () => {
       const { transport, turnA, turnB } = createMultiTurnMockTransport();
       const chatTransport = createChatTransport(transport);
@@ -428,9 +431,13 @@ describe('ChatTransport useChat integration — features work with the real stre
       expect(msgs[3]?.role).toBe('assistant');
 
       expect(msgs[1]?.id).toBe('assistant-a');
-      expect(getAssistantText(msgs[1] ?? { id: '', role: 'assistant', parts: [] } as AI.UIMessage)).toBe('Response A.');
+      expect(getAssistantText(msgs[1] ?? ({ id: '', role: 'assistant', parts: [] } as AI.UIMessage))).toBe(
+        'Response A.',
+      );
       expect(msgs[3]?.id).toBe('assistant-b');
-      expect(getAssistantText(msgs[3] ?? { id: '', role: 'assistant', parts: [] } as AI.UIMessage)).toBe('Response B.');
+      expect(getAssistantText(msgs[3] ?? ({ id: '', role: 'assistant', parts: [] } as AI.UIMessage))).toBe(
+        'Response B.',
+      );
 
       // onFinish fires twice with the correct messages
       expect(onFinish).toHaveBeenCalledTimes(2);
@@ -486,8 +493,12 @@ describe('ChatTransport useChat integration — features work with the real stre
         expect(msgs.map((m) => m.role)).toEqual(['user', 'user', 'assistant', 'assistant']);
 
         // Content correct for both responses.
-        expect(getAssistantText(msgs[2] ?? { id: '', role: 'assistant', parts: [] } as AI.UIMessage)).toBe('Response A.');
-        expect(getAssistantText(msgs[3] ?? { id: '', role: 'assistant', parts: [] } as AI.UIMessage)).toBe('Response B.');
+        expect(getAssistantText(msgs[2] ?? ({ id: '', role: 'assistant', parts: [] } as AI.UIMessage))).toBe(
+          'Response A.',
+        );
+        expect(getAssistantText(msgs[3] ?? ({ id: '', role: 'assistant', parts: [] } as AI.UIMessage))).toBe(
+          'Response B.',
+        );
 
         // onFinish still fires once — the activeResponse overwrite happens
         // before sendMessages, so our queue can't prevent it.

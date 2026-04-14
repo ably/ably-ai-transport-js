@@ -110,12 +110,13 @@ On the client, each `send()` call returns its own `ActiveTurn`. Cancellation is 
 
 ## The abort signal
 
-Each server-side turn exposes an `AbortSignal` that fires when the turn is cancelled:
+Each server-side turn exposes an `AbortSignal` that fires when the turn is cancelled. The signal has two sources: Ably cancel messages from clients, and an optional external signal (typically `req.signal`) for platform-level cancellation like request cancellation or serverless function timeout.
 
 ```typescript
 const turn = transport.newTurn({
   turnId,
   clientId,
+  signal: req.signal, // platform-level cancellation (optional)
   onCancel: async (request) => {
     // Return false to reject the cancel (turn continues)
     // Return true to allow it (abortSignal fires)
@@ -132,6 +133,8 @@ const turn = transport.newTurn({
 const result = streamText({ model, messages, abortSignal: turn.abortSignal });
 ```
 
-The `onCancel` hook lets you authorize cancellation - useful for preventing one user from cancelling another user's turn. The `onAbort` hook runs after the signal fires, giving you a chance to write final data before the stream closes.
+The `onCancel` hook lets you authorize cancellation - useful for preventing one user from cancelling another user's turn. It only fires for Ably cancel messages, not for the external signal. The `onAbort` hook runs after the signal fires from either source, giving you a chance to write final data before the stream closes.
+
+See [Platform-level cancellation](../features/cancel.md#platform-level-cancellation) for details on the `signal` option.
 
 For the internal mechanics, see [TurnManager](../internals/transport-components.md#turnmanager) and [pipeStream](../internals/transport-components.md#pipestream) for how abort signals flow through the system, and [Wire protocol](../internals/wire-protocol.md#turn-lifecycle-over-the-wire) for the message sequence on the channel.

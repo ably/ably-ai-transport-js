@@ -102,6 +102,24 @@ sequenceDiagram
 
 The client closes its local streams immediately on cancel - it doesn't wait for the server to confirm. The server-side turn ends with `reason: 'cancelled'`, which all clients see via turn lifecycle events.
 
+## Platform-level cancellation
+
+Ably cancel messages are the primary cancellation path, but the server may also need to abort a turn when the platform signals shutdown - the HTTP request is cancelled, or a serverless function hits its execution timeout.
+
+Pass the platform's abort signal to `newTurn()` via the `signal` option:
+
+```typescript
+const turn = transport.newTurn({
+  turnId,
+  clientId,
+  signal: req.signal, // fires on request cancellation or function timeout
+});
+```
+
+When the external signal fires, it aborts the turn through the same path as an Ably cancel message - `turn.abortSignal` fires, `streamText` stops generation, and `pipeStream` closes the stream. The `onCancel` hook is **not** called for platform-level signals (it only fires for Ably cancel messages), but `onAbort` runs normally.
+
+Internally, `AbortSignal.any()` composes the external signal with the turn's own abort controller, so either source triggers the same downstream abort.
+
 ## Cancel on close
 
 Cancel active turns as part of transport teardown:

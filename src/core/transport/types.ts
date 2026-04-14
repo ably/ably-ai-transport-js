@@ -162,7 +162,7 @@ export interface NewTurnOptions<TEvent> {
   /**
    * An external abort signal (typically the HTTP request's `req.signal`) that,
    * when fired, aborts this turn. This allows platform-level cancellation —
-   * client disconnect, serverless function timeout — to stop LLM generation
+   * request cancellation, serverless function timeout — to stop LLM generation
    * and stream piping gracefully.
    */
   signal?: AbortSignal;

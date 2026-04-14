@@ -16,7 +16,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: true
       - uses: actions/setup-node@v6
@@ -29,7 +29,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: true
       - uses: actions/setup-node@v6
@@ -53,7 +53,7 @@ jobs:
         node-version: [20, 22, 24]
     name: test node ${{ matrix.node-version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: true
       - uses: actions/setup-node@v6
@@ -86,7 +86,7 @@ jobs:
         node-version: [20, 22, 24]
     name: test-integration node ${{ matrix.node-version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: true
       - uses: actions/setup-node@v6
@@ -106,7 +106,7 @@ jobs:
           - demo/vercel/react/use-client-transport
     name: demo ${{ matrix.demo }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: true
       - uses: actions/setup-node@v6

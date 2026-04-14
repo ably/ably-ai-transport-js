@@ -625,18 +625,6 @@ describe('ServerTransport', () => {
       expect(result.reason).toBe('cancelled');
     });
 
-    it('removes the external signal listener when the turn ends', async () => {
-      const externalController = new AbortController();
-      const signal = externalController.signal;
-      const removeSpy = vi.spyOn(signal, 'removeEventListener');
-
-      const turn = transport.newTurn({ turnId: 'turn-1', signal });
-      await turn.start();
-      await turn.end('complete');
-
-      expect(removeSpy).toHaveBeenCalledWith('abort', expect.any(Function));
-    });
-
     it('does not interfere with Ably cancel routing', async () => {
       const externalController = new AbortController();
       const turn = transport.newTurn({ turnId: 'turn-1', clientId: 'user-a', signal: externalController.signal });
@@ -668,17 +656,6 @@ describe('ServerTransport', () => {
     it('unsubscribes from cancel messages', () => {
       transport.close();
       expect(channel.unsubscribe).toHaveBeenCalledWith(EVENT_CANCEL, expect.any(Function));
-    });
-
-    it('removes external signal listeners on close', () => {
-      const externalController = new AbortController();
-      const removeSpy = vi.spyOn(externalController.signal, 'removeEventListener');
-
-      transport.newTurn({ turnId: 'turn-1', signal: externalController.signal });
-
-      transport.close();
-
-      expect(removeSpy).toHaveBeenCalledWith('abort', expect.any(Function));
     });
   });
 });

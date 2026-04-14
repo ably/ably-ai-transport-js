@@ -50,10 +50,10 @@ interface RegisteredTurn {
   turnId: string;
   clientId: string;
   controller: AbortController;
+  /** Composite signal that fires when either the internal controller or the external signal aborts. */
+  signal: AbortSignal;
   onCancel?: (request: CancelRequest) => Promise<boolean>;
   onError?: (error: Ably.ErrorInfo) => void;
-  /** Removes the listener from the external signal, if one was provided. */
-  cleanupExternalSignal?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -118,7 +118,6 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
     this._logger?.trace('DefaultServerTransport.close();');
     this._channel.unsubscribe(EVENT_CANCEL, this._channelListener);
     for (const reg of this._registeredTurns.values()) {
-      reg.cleanupExternalSignal?.();
       reg.controller.abort();
     }
     this._registeredTurns.clear();
@@ -259,37 +258,19 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
     let started = false;
     let ended = false;
 
-    // Link external signal (e.g. req.signal) to the internal controller so
-    // platform-level cancellation (client disconnect, function timeout) aborts
-    // the turn through the same path as Ably cancel messages.
-    let cleanupExternalSignal: (() => void) | undefined;
-    if (externalSignal) {
-      if (externalSignal.aborted) {
-        this._logger?.debug('DefaultServerTransport._createTurn(); external signal already aborted', { turnId });
-        controller.abort();
-      } else {
-        const listener = () => {
-          this._logger?.debug('DefaultServerTransport._createTurn(); external signal fired, aborting turn', {
-            turnId,
-          });
-          controller.abort();
-        };
-        externalSignal.addEventListener('abort', listener, { once: true });
-        cleanupExternalSignal = () => {
-          externalSignal.removeEventListener('abort', listener);
-        };
-        this._logger?.debug('DefaultServerTransport._createTurn(); linked external signal', { turnId });
-      }
-    }
+    // Compose the internal controller signal with the external signal (e.g.
+    // req.signal) so platform-level cancellation (request cancellation, function
+    // timeout) aborts the turn through the same path as Ably cancel messages.
+    const signal = externalSignal ? AbortSignal.any([controller.signal, externalSignal]) : controller.signal;
 
     // Spec: AIT-ST3a — register immediately so early cancels can fire the abort signal.
     const registration: RegisteredTurn = {
       turnId,
       clientId: turnClientId ?? '',
       controller,
+      signal,
       onCancel,
       onError: turnOnError,
-      cleanupExternalSignal,
     };
     this._registeredTurns.set(turnId, registration);
 
@@ -307,7 +288,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
         return turnId;
       },
       get abortSignal() {
-        return controller.signal;
+        return signal;
       },
 
       // Spec: AIT-ST4, AIT-ST4a, AIT-ST4b
@@ -315,7 +296,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
         logger?.trace('Turn.start();', { turnId });
 
         // Spec: AIT-ST4a
-        if (controller.signal.aborted) {
+        if (signal.aborted) {
           throw new Ably.ErrorInfo(
             `unable to start turn; turn ${turnId} was cancelled before start()`,
             ErrorCode.InvalidArgument,
@@ -443,7 +424,6 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
         }
         await attachPromise;
 
-        const signal = turnManager.getSignal(turnId);
         const turnOwnerClientId = turnManager.getClientId(turnId);
 
         // Per-operation parent overrides the turn-level default.
@@ -496,7 +476,6 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
           throw errInfo;
         } finally {
           registeredTurns.delete(turnId);
-          cleanupExternalSignal?.();
         }
 
         logger?.debug('Turn.end(); turn ended', { turnId, reason });

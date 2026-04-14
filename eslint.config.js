@@ -2,7 +2,7 @@ import { fixupConfigRules, fixupPluginRules } from '@eslint/compat';
 import typescriptEslint from '@typescript-eslint/eslint-plugin';
 import security from 'eslint-plugin-security';
 import jsdoc from 'eslint-plugin-jsdoc';
-import _import from 'eslint-plugin-import';
+import importX from 'eslint-plugin-import-x';
 import simpleImportSort from 'eslint-plugin-simple-import-sort';
 import unicorn from 'eslint-plugin-unicorn';
 import globals from 'globals';
@@ -24,6 +24,8 @@ const compat = new FlatCompat({
 export default [
   unicorn.configs.recommended,
   jsdoc.configs['flat/recommended-typescript'],
+  importX.flatConfigs.recommended,
+  security.configs.recommended,
   {
     ignores: [
       'demo/**',
@@ -50,16 +52,12 @@ export default [
       'plugin:@typescript-eslint/recommended-type-checked',
       'plugin:@typescript-eslint/strict-type-checked',
       'plugin:@typescript-eslint/stylistic-type-checked',
-      'plugin:security/recommended-legacy',
-      'plugin:import/recommended',
     ),
   ),
   {
     plugins: {
       '@typescript-eslint': fixupPluginRules(typescriptEslint),
-      security: fixupPluginRules(security),
       jsdoc,
-      import: fixupPluginRules(_import),
       'simple-import-sort': simpleImportSort,
       'prefer-arrow-functions': fixupPluginRules(preferArrowFunctions),
     },
@@ -150,7 +148,7 @@ export default [
 
     rules: {
       '@typescript-eslint/no-unused-vars': ['error'],
-      'import/no-unresolved': 'off',
+      'import-x/no-unresolved': 'off',
       'no-undef': 'off',
       'no-dupe-class-members': 'off',
       'require-await': 'off',
@@ -168,7 +166,7 @@ export default [
         },
       ],
 
-      'import/extensions': [
+      'import-x/extensions': [
         'error',
         'always',
         {

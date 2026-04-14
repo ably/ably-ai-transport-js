@@ -30,11 +30,11 @@ await turn.end(reason);
 
 `streamResponse()` returns a `StreamResult` with a `reason` field:
 
-| Reason | What happened |
-|---|---|
-| `'complete'` | The stream finished normally |
+| Reason        | What happened                                             |
+| ------------- | --------------------------------------------------------- |
+| `'complete'`  | The stream finished normally                              |
 | `'cancelled'` | A client published a cancel signal that matched this turn |
-| `'error'` | The stream or encoder encountered an error |
+| `'error'`     | The stream or encoder encountered an error                |
 
 Pass `reason` to `end()` so all clients see why the turn ended.
 

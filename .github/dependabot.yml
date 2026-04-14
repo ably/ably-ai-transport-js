@@ -1,70 +1,70 @@
 version: 2
 updates:
-  - package-ecosystem: "github-actions"
-    directory: "/"
+  - package-ecosystem: 'github-actions'
+    directory: '/'
     schedule:
-      interval: "monthly"
-    labels: [ ] # prevent the default `dependencies` label from being added to pull requests
-  - package-ecosystem: "npm"
-    directory: "/"
+      interval: 'monthly'
+    labels: [] # prevent the default `dependencies` label from being added to pull requests
+  - package-ecosystem: 'npm'
+    directory: '/'
     schedule:
-      interval: "monthly"
-    labels: [ ] # prevent the default `dependencies` label from being added to pull requests
+      interval: 'monthly'
+    labels: [] # prevent the default `dependencies` label from being added to pull requests
     groups:
       simple:
         applies-to: version-updates
         update-types:
-          - "minor"
-          - "patch"
+          - 'minor'
+          - 'patch'
       upgrades:
         applies-to: version-updates
         update-types:
-          - "major"
+          - 'major'
       securityUpdates:
         applies-to: security-updates
         update-types:
-          - "minor"
-          - "major"
-          - "patch"
-  - package-ecosystem: "npm"
-    directory: "/demo/vercel/react/use-chat/"
+          - 'minor'
+          - 'major'
+          - 'patch'
+  - package-ecosystem: 'npm'
+    directory: '/demo/vercel/react/use-chat/'
     schedule:
-      interval: "monthly"
-    labels: [ ] # prevent the default `dependencies` label from being added to pull requests
+      interval: 'monthly'
+    labels: [] # prevent the default `dependencies` label from being added to pull requests
     groups:
       simple:
         applies-to: version-updates
         update-types:
-          - "minor"
-          - "patch"
+          - 'minor'
+          - 'patch'
       upgrades:
         applies-to: version-updates
         update-types:
-          - "major"
+          - 'major'
       securityUpdates:
         applies-to: security-updates
         update-types:
-          - "minor"
-          - "major"
-          - "patch"
-  - package-ecosystem: "npm"
-    directory: "/demo/vercel/react/use-client-transport/"
+          - 'minor'
+          - 'major'
+          - 'patch'
+  - package-ecosystem: 'npm'
+    directory: '/demo/vercel/react/use-client-transport/'
     schedule:
-      interval: "monthly"
-    labels: [ ] # prevent the default `dependencies` label from being added to pull requests
+      interval: 'monthly'
+    labels: [] # prevent the default `dependencies` label from being added to pull requests
     groups:
       simple:
         applies-to: version-updates
         update-types:
-          - "minor"
-          - "patch"
+          - 'minor'
+          - 'patch'
       upgrades:
         applies-to: version-updates
         update-types:
-          - "major"
+          - 'major'
       securityUpdates:
         applies-to: security-updates
         update-types:
-          - "minor"
-          - "major"
-          - "patch"
+          - 'minor'
+          - 'major'
+          - 'patch'

@@ -57,11 +57,11 @@ All other messages pass through the codec decoder. Each `DecoderOutput` is route
 - **`message` outputs** - user messages or discrete content. Upserted into the conversation tree (with relay detection for own messages)
 - **`event` outputs** - streaming fragments. Routed by turn ownership:
 
-| Turn type | Stream router | Accumulator | Tree upsert |
-|---|---|---|---|
-| [Own turn](glossary.md#own-turn-vs-observer-turn) (active stream) | Enqueued | Processed, snapshot upserted | On every event |
-| Own turn (stream closed) | Skipped | Skipped | No |
-| [Observer turn](glossary.md#own-turn-vs-observer-turn) | No stream exists | Processed, snapshot upserted | On every event |
+| Turn type                                                         | Stream router    | Accumulator                  | Tree upsert    |
+| ----------------------------------------------------------------- | ---------------- | ---------------------------- | -------------- |
+| [Own turn](glossary.md#own-turn-vs-observer-turn) (active stream) | Enqueued         | Processed, snapshot upserted | On every event |
+| Own turn (stream closed)                                          | Skipped          | Skipped                      | No             |
+| [Observer turn](glossary.md#own-turn-vs-observer-turn)            | No stream exists | Processed, snapshot upserted | On every event |
 
 ### Observer accumulation
 
@@ -108,11 +108,11 @@ After close, all methods that create turns throw `TransportClosed`. Event subscr
 
 ## Events
 
-| Event | Payload | When |
-|---|---|---|
-| `update` (on view) | (none) | View state changed - call `view.flattenNodes()` for current state |
-| `turn` (on tree or view) | `TurnLifecycleEvent` | Turn started or ended (includes turnId, clientId, reason) |
-| `error` | `Ably.ErrorInfo` | Non-fatal error (HTTP POST failure, subscription error) |
-| `ably-message` (on tree) | (none) | Raw Ably message added - subscribe via `tree.on('ably-message')` |
+| Event                    | Payload              | When                                                              |
+| ------------------------ | -------------------- | ----------------------------------------------------------------- |
+| `update` (on view)       | (none)               | View state changed - call `view.flattenNodes()` for current state |
+| `turn` (on tree or view) | `TurnLifecycleEvent` | Turn started or ended (includes turnId, clientId, reason)         |
+| `error`                  | `Ably.ErrorInfo`     | Non-fatal error (HTTP POST failure, subscription error)           |
+| `ably-message` (on tree) | (none)               | Raw Ably message added - subscribe via `tree.on('ably-message')`  |
 
 See [Transport concept](../concepts/transport.md) for the public API perspective. See [Transport components](transport-components.md) for the sub-component internals. See [Message lifecycle](message-lifecycle.md) for the end-to-end message flow.

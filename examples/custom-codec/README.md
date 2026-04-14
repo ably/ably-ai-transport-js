@@ -22,11 +22,11 @@ Message appends must be enabled on a per-namespace basis in your Ably app settin
 
 A codec sits between your domain events and Ably's message primitives. It decides **how** each event type maps to Ably operations:
 
-| Domain event | Ably operation | Why |
-|---|---|---|
-| `text-delta` | Message **append** | Incremental delivery — each token extends the same message |
-| `tool-call` | Discrete **publish** | Complete on arrival — no streaming needed |
-| `start`, `finish` | Discrete **publish** | Lifecycle signals |
+| Domain event      | Ably operation       | Why                                                        |
+| ----------------- | -------------------- | ---------------------------------------------------------- |
+| `text-delta`      | Message **append**   | Incremental delivery — each token extends the same message |
+| `tool-call`       | Discrete **publish** | Complete on arrival — no streaming needed                  |
+| `start`, `finish` | Discrete **publish** | Lifecycle signals                                          |
 
 On the receiving side, the decoder reverses this mapping, and the accumulator assembles everything into a single `AgentMessage`:
 
@@ -34,18 +34,18 @@ On the receiving side, the decoder reverses this mapping, and the accumulator as
 interface AgentMessage {
   id: string;
   role: 'user' | 'assistant';
-  text: string;           // ← accumulated from text-delta appends
-  toolCalls: ToolCall[];  // ← collected from discrete tool-call publishes
+  text: string; // ← accumulated from text-delta appends
+  toolCalls: ToolCall[]; // ← collected from discrete tool-call publishes
 }
 ```
 
 ## Files
 
-| File | Purpose |
-|---|---|
-| `types.ts` | Domain types — `AgentEvent` (streaming chunks) and `AgentMessage` (assembled result) |
-| `codec.ts` | The `AgentCodec` implementation — encoder, decoder, and accumulator |
-| `simulate.ts` | Live roundtrip over a real Ably channel |
+| File          | Purpose                                                                              |
+| ------------- | ------------------------------------------------------------------------------------ |
+| `types.ts`    | Domain types — `AgentEvent` (streaming chunks) and `AgentMessage` (assembled result) |
+| `codec.ts`    | The `AgentCodec` implementation — encoder, decoder, and accumulator                  |
+| `simulate.ts` | Live roundtrip over a real Ably channel                                              |
 
 ## Prerequisites
 
@@ -118,13 +118,13 @@ const clientTransport = createClientTransport(channel, {
 
 The encoder implements `StreamEncoder<TEvent, TMessage>` (which extends `DiscreteEncoder`). It has five methods — three are called by the transport:
 
-| Method | Called by | Purpose |
-|---|---|---|
-| `appendEvent(event)` | Server transport | The hot path — called for each chunk from the model's streaming response. Map events to streamed or discrete core operations. |
+| Method                    | Called by        | Purpose                                                                                                                                                        |
+| ------------------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `appendEvent(event)`      | Server transport | The hot path — called for each chunk from the model's streaming response. Map events to streamed or discrete core operations.                                  |
 | `writeMessages(messages)` | Server transport | Publish one or more `TMessage`s atomically (user prompts, history entries). All messages share one `x-ably-msg-id` and form one node in the conversation tree. |
-| `abort(reason?)` | Transport | Close open streams as "aborted" and publish an abort signal. |
-| `writeEvent(event)` | Consumer code | Publish a standalone discrete event outside the streaming flow. Not called by the transport. Throw for streaming-only types. |
-| `close()` | Transport | Flush pending appends and run recovery. Always call this. |
+| `abort(reason?)`          | Transport        | Close open streams as "aborted" and publish an abort signal.                                                                                                   |
+| `writeEvent(event)`       | Consumer code    | Publish a standalone discrete event outside the streaming flow. Not called by the transport. Throw for streaming-only types.                                   |
+| `close()`                 | Transport        | Flush pending appends and run recovery. Always call this.                                                                                                      |
 
 Inside `appendEvent`, you delegate to two encoder core primitives:
 

@@ -1,8 +1,18 @@
 import type * as Ably from 'ably';
-import { describe, expect,it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { DOMAIN_HEADER_PREFIX as D } from '../src/constants.js';
-import { getHeaders, headerReader, headerWriter, mergeHeaders, parseBool, parseJson, setHeadersIfPresent, setIfPresent, stripUndefined } from '../src/utils.js';
+import {
+  getHeaders,
+  headerReader,
+  headerWriter,
+  mergeHeaders,
+  parseBool,
+  parseJson,
+  setHeadersIfPresent,
+  setIfPresent,
+  stripUndefined,
+} from '../src/utils.js';
 
 describe('getHeaders', () => {
   it('extracts headers from a well-formed message', () => {
@@ -201,7 +211,6 @@ describe('headerReader', () => {
     expect(r.json('providerMetadata')).toEqual({ anthropic: { cacheControl: 'ephemeral' } });
     expect(r.json('missing')).toBeUndefined();
   });
-
 });
 
 describe('headerWriter', () => {
@@ -228,7 +237,9 @@ describe('headerWriter', () => {
   });
 
   it('writes JSON values with json()', () => {
-    const h = headerWriter().json('providerMetadata', { anthropic: { key: 'val' } }).build();
+    const h = headerWriter()
+      .json('providerMetadata', { anthropic: { key: 'val' } })
+      .build();
     expect(h).toEqual({ [`${D}providerMetadata`]: '{"anthropic":{"key":"val"}}' });
   });
 

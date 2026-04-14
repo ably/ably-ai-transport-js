@@ -87,10 +87,10 @@ Key behaviors:
 
 Errors fall into two categories:
 
-| Scope | Delivery | Examples |
-|---|---|---|
-| Transport-level | `options.onError` callback | Cancel subscription failure, channel attach error |
-| Turn-level | `turnOptions.onError` callback | Turn-start publish failure, stream encoding error |
+| Scope           | Delivery                       | Examples                                          |
+| --------------- | ------------------------------ | ------------------------------------------------- |
+| Transport-level | `options.onError` callback     | Cancel subscription failure, channel attach error |
+| Turn-level      | `turnOptions.onError` callback | Turn-start publish failure, stream encoding error |
 
 Turn-level errors fall back to the transport-level `onError` if no per-turn handler is provided.
 

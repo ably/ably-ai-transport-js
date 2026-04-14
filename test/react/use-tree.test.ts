@@ -29,7 +29,14 @@ describe('useTree', () => {
 
   it('delegates getNode to tree', () => {
     const mock = createMockTransport([]);
-    const fakeNode = { message: 'hi', msgId: 'msg-1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined };
+    const fakeNode = {
+      message: 'hi',
+      msgId: 'msg-1',
+      parentId: undefined,
+      forkOf: undefined,
+      headers: {},
+      serial: undefined,
+    };
     (mock.tree.getNode as ReturnType<typeof vi.fn>).mockReturnValue(fakeNode);
 
     const { result } = renderHook(() => useTree(mock.transport));

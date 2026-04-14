@@ -25,12 +25,12 @@ const headers = headerWriter()
 // → { 'x-domain-id': 'msg-1', 'x-domain-finishReason': 'stop', ... }
 ```
 
-| Method | Value type | Serialization |
-|---|---|---|
-| `str(key, value)` | `string \| undefined` | Stored directly. Skipped if undefined. |
+| Method             | Value type             | Serialization                                         |
+| ------------------ | ---------------------- | ----------------------------------------------------- |
+| `str(key, value)`  | `string \| undefined`  | Stored directly. Skipped if undefined.                |
 | `bool(key, value)` | `boolean \| undefined` | Stored as `"true"` / `"false"`. Skipped if undefined. |
-| `json(key, value)` | `unknown` | `JSON.stringify()`. Skipped if undefined or null. |
-| `build()` | - | Returns the accumulated `Record<string, string>`. |
+| `json(key, value)` | `unknown`              | `JSON.stringify()`. Skipped if undefined or null.     |
+| `build()`          | -                      | Returns the accumulated `Record<string, string>`.     |
 
 ### headerReader
 
@@ -40,18 +40,18 @@ A typed accessor for reading domain headers. Mirrors `headerWriter` with the sam
 import { headerReader } from '@ably/ai-transport';
 
 const r = headerReader(headers);
-const id = r.str('id');                         // string | undefined
+const id = r.str('id'); // string | undefined
 const finishReason = r.strOr('finishReason', ''); // string (with fallback)
-const error = r.str('error');                   // string | undefined
-const metadata = r.json('providerMetadata');    // unknown (parsed JSON)
+const error = r.str('error'); // string | undefined
+const metadata = r.json('providerMetadata'); // unknown (parsed JSON)
 ```
 
-| Method | Return type | Behavior |
-|---|---|---|
-| `str(key)` | `string \| undefined` | Raw value, or undefined if absent. |
-| `strOr(key, fallback)` | `string` | Raw value, or fallback if absent. |
-| `bool(key)` | `boolean \| undefined` | `"true"` → `true`, anything else → `false`, absent → `undefined`. |
-| `json(key)` | `unknown` | `JSON.parse()` the value, or undefined if absent or invalid. |
+| Method                 | Return type            | Behavior                                                          |
+| ---------------------- | ---------------------- | ----------------------------------------------------------------- |
+| `str(key)`             | `string \| undefined`  | Raw value, or undefined if absent.                                |
+| `strOr(key, fallback)` | `string`               | Raw value, or fallback if absent.                                 |
+| `bool(key)`            | `boolean \| undefined` | `"true"` → `true`, anything else → `false`, absent → `undefined`. |
+| `json(key)`            | `unknown`              | `JSON.parse()` the value, or undefined if absent or invalid.      |
 
 ### Vercel-specific extension
 
@@ -66,16 +66,16 @@ const pm = r.providerMetadata(); // AI.ProviderMetadata | undefined
 
 These are used internally by `headerWriter` / `headerReader` and by the transport layer. Codec implementations should prefer the typed reader/writer over calling these directly.
 
-| Function | Purpose |
-|---|---|
-| `getHeaders(msg)` | Extract `extras.headers` from an Ably `InboundMessage`. Returns `{}` if absent. |
-| `mergeHeaders(base, overrides)` | Shallow merge of two header records (overrides win). |
-| `domainHeaders(entries)` | Build a domain headers record from unprefixed key-value pairs. |
-| `getDomainHeader(headers, key)` | Read a single domain header by unprefixed key. |
+| Function                            | Purpose                                                                                                         |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `getHeaders(msg)`                   | Extract `extras.headers` from an Ably `InboundMessage`. Returns `{}` if absent.                                 |
+| `mergeHeaders(base, overrides)`     | Shallow merge of two header records (overrides win).                                                            |
+| `domainHeaders(entries)`            | Build a domain headers record from unprefixed key-value pairs.                                                  |
+| `getDomainHeader(headers, key)`     | Read a single domain header by unprefixed key.                                                                  |
 | `setIfPresent(headers, key, value)` | Set a header if the value is defined - strings directly, booleans/numbers stringified, objects JSON-serialized. |
-| `parseJson(value)` | Parse a JSON string, returning undefined on failure. |
-| `parseBool(value)` | Parse `"true"` / `"false"`, returning undefined if absent. |
-| `stripUndefined(obj)` | Remove undefined-valued keys from an object. Used to build chunk literals with optional fields. |
+| `parseJson(value)`                  | Parse a JSON string, returning undefined on failure.                                                            |
+| `parseBool(value)`                  | Parse `"true"` / `"false"`, returning undefined if absent.                                                      |
+| `stripUndefined(obj)`               | Remove undefined-valued keys from an object. Used to build chunk literals with optional fields.                 |
 
 ## Header merge order
 

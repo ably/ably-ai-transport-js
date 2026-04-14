@@ -1,14 +1,6 @@
 {
-  "include": [
-    "./src/**/*.ts",
-    "./src/**/*.tsx",
-    "./test/**/*.ts",
-    "./test/**/*.d.ts",
-    "./examples/**/*.ts",
-  ],
-  "exclude": [
-    "**/vite.config.ts"
-  ],
+  "include": ["./src/**/*.ts", "./src/**/*.tsx", "./test/**/*.ts", "./test/**/*.d.ts", "./examples/**/*.ts"],
+  "exclude": ["**/vite.config.ts"],
   "compilerOptions": {
     "rootDir": ".",
     "target": "es6",
@@ -29,13 +21,7 @@
     "noEmit": true,
     "allowImportingTsExtensions": true,
     "jsx": "react-jsx",
-    "lib": [
-      "DOM",
-      "DOM.Iterable",
-      "ESNext"
-    ],
-    "types": [
-      "node",
-    ]
+    "lib": ["DOM", "DOM.Iterable", "ESNext"],
+    "types": ["node"]
   }
 }

@@ -73,9 +73,9 @@ The use-client-transport demo shows a queue pattern - messages typed during stre
 ```typescript
 // Simplified queue pattern
 if (isStreaming) {
-  queue.add(text);  // queued locally
+  queue.add(text); // queued locally
 } else {
-  send([userMessage(text)]);  // sent immediately
+  send([userMessage(text)]); // sent immediately
 }
 ```
 

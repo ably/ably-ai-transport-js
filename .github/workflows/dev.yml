@@ -123,7 +123,7 @@ jobs:
       - name: npm run build (demo)
         run: npm run build
         working-directory: ${{ matrix.demo }}
-      # Dummy keys for Next.js build - module-level SDK client initialization
-      # runs during bundling even though the routes are never called at build time
+        # Dummy keys for Next.js build - module-level SDK client initialization
+        # runs during bundling even though the routes are never called at build time
         env:
           ABLY_API_KEY: dummy:key

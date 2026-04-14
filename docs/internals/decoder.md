@@ -8,12 +8,12 @@ Domain codecs provide hooks that know how to build events from stream state. The
 
 The decoder's `decode()` method switches on `message.action`:
 
-| Action | What it means | How the decoder handles it |
-|---|---|---|
-| `message.create` | New message published | Check `x-ably-stream` header: if `"true"`, start tracking a new stream. If `"false"`, delegate to `decodeDiscrete()` |
-| `message.append` | Delta appended to existing message | Look up stream tracker by serial, accumulate delta, check for terminal status |
-| `message.update` | Message content replaced | Either first-contact (create tracker + synthesize events) or prefix-match/replacement on existing tracker |
-| `message.delete` | Message deleted | Fire `onStreamDelete` callback, mark tracker closed |
+| Action           | What it means                      | How the decoder handles it                                                                                           |
+| ---------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `message.create` | New message published              | Check `x-ably-stream` header: if `"true"`, start tracking a new stream. If `"false"`, delegate to `decodeDiscrete()` |
+| `message.append` | Delta appended to existing message | Look up stream tracker by serial, accumulate delta, check for terminal status                                        |
+| `message.update` | Message content replaced           | Either first-contact (create tracker + synthesize events) or prefix-match/replacement on existing tracker            |
+| `message.delete` | Message deleted                    | Fire `onStreamDelete` callback, mark tracker closed                                                                  |
 
 ## Stream tracker
 
@@ -21,11 +21,11 @@ For each streamed message, the decoder maintains a `StreamTrackerState` keyed by
 
 ```typescript
 interface StreamTrackerState {
-  name: string;           // Ably message name (e.g. "text", "reasoning")
-  streamId: string;       // From x-ably-stream-id header
-  accumulated: string;    // Full text accumulated so far
-  headers: Record<string, string>;  // Current headers
-  closed: boolean;        // Whether stream has finished or aborted
+  name: string; // Ably message name (e.g. "text", "reasoning")
+  streamId: string; // From x-ably-stream-id header
+  accumulated: string; // Full text accumulated so far
+  headers: Record<string, string>; // Current headers
+  closed: boolean; // Whether stream has finished or aborted
 }
 ```
 
@@ -35,12 +35,12 @@ The tracker is created on the first `message.create` with `x-ably-stream: "true"
 
 The decoder core delegates event building to four hooks provided by the domain codec:
 
-| Hook | Called when | Returns |
-|---|---|---|
-| `buildStartEvents(tracker)` | A new stream starts | Events for stream start (e.g. `text-start` chunk) |
-| `buildDeltaEvents(tracker, delta)` | Text delta received | Events for the delta (e.g. `text-delta` chunk) |
+| Hook                                      | Called when                          | Returns                                                  |
+| ----------------------------------------- | ------------------------------------ | -------------------------------------------------------- |
+| `buildStartEvents(tracker)`               | A new stream starts                  | Events for stream start (e.g. `text-start` chunk)        |
+| `buildDeltaEvents(tracker, delta)`        | Text delta received                  | Events for the delta (e.g. `text-delta` chunk)           |
 | `buildEndEvents(tracker, closingHeaders)` | Stream finishes (status: `finished`) | Events for stream end (e.g. `text-end`, `finish` chunks) |
-| `decodeDiscrete(payload)` | Discrete message received | Events or complete messages |
+| `decodeDiscrete(payload)`                 | Discrete message received            | Events or complete messages                              |
 
 The hooks receive the tracker state and return arrays of `DecoderOutput<TEvent, TMessage>` - either `{ kind: 'event', event }` or `{ kind: 'message', message }`.
 
@@ -75,11 +75,13 @@ This allows clients that join mid-stream or load from [history](history.md) to r
 The decoder has an existing tracker. It checks whether the incoming data starts with the already-accumulated text:
 
 **Prefix match** (data starts with `tracker.accumulated`):
+
 - Extract the delta: `data.slice(tracker.accumulated.length)`
 - Emit delta events for the new content
 - Check for terminal status
 
 **Not a prefix match** (data doesn't start with accumulated):
+
 - The message was replaced entirely (e.g. [encoder recovery](encoder.md#recovery-mechanism) via `updateMessage`)
 - Replace `tracker.accumulated` and `tracker.headers`
 - Fire `onStreamUpdate` callback

@@ -43,9 +43,7 @@ describe('Vercel accumulator', () => {
       expect(acc.messages[0]?.id).toBe('msg-1');
       expect(acc.messages[0]?.role).toBe('assistant');
       expect(acc.messages[0]?.parts).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ type: 'text', text: 'hello world' }),
-        ]),
+        expect.arrayContaining([expect.objectContaining({ type: 'text', text: 'hello world' })]),
       );
       expect(acc.hasActiveStream).toBe(false);
     });
@@ -80,9 +78,7 @@ describe('Vercel accumulator', () => {
       ]);
 
       expect(acc.messages[0]?.parts).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ type: 'reasoning', text: 'thinking...' }),
-        ]),
+        expect.arrayContaining([expect.objectContaining({ type: 'reasoning', text: 'thinking...' })]),
       );
     });
   });
@@ -111,9 +107,9 @@ describe('Vercel accumulator', () => {
         }),
       ]);
 
-      const toolPart = acc.messages[0]?.parts.find(
-        (p) => p.type === 'dynamic-tool' && p.toolCallId === 'tc-1',
-      ) as AI.DynamicToolUIPart | undefined;
+      const toolPart = acc.messages[0]?.parts.find((p) => p.type === 'dynamic-tool' && p.toolCallId === 'tc-1') as
+        | AI.DynamicToolUIPart
+        | undefined;
 
       expect(toolPart).toBeDefined();
       expect(toolPart?.state).toBe('input-available');
@@ -141,9 +137,9 @@ describe('Vercel accumulator', () => {
         }),
       ]);
 
-      const toolPart = acc.messages[0]?.parts.find(
-        (p) => p.type === 'dynamic-tool',
-      ) as AI.DynamicToolUIPart | undefined;
+      const toolPart = acc.messages[0]?.parts.find((p) => p.type === 'dynamic-tool') as
+        | AI.DynamicToolUIPart
+        | undefined;
       expect(toolPart?.state).toBe('output-available');
       expect(toolPart?.input).toEqual({ x: 1 });
       expect(toolPart?.output).toEqual({ result: 42 });
@@ -168,9 +164,9 @@ describe('Vercel accumulator', () => {
         }),
       ]);
 
-      const toolPart = acc.messages[0]?.parts.find(
-        (p) => p.type === 'dynamic-tool',
-      ) as AI.DynamicToolUIPart | undefined;
+      const toolPart = acc.messages[0]?.parts.find((p) => p.type === 'dynamic-tool') as
+        | AI.DynamicToolUIPart
+        | undefined;
       expect(toolPart?.state).toBe('output-error');
       expect(toolPart?.errorText).toBe('timeout');
     });
@@ -190,9 +186,9 @@ describe('Vercel accumulator', () => {
         event({ type: 'tool-output-denied', toolCallId: 'tc-1' }),
       ]);
 
-      const toolPart = acc.messages[0]?.parts.find(
-        (p) => p.type === 'dynamic-tool',
-      ) as AI.DynamicToolUIPart | undefined;
+      const toolPart = acc.messages[0]?.parts.find((p) => p.type === 'dynamic-tool') as
+        | AI.DynamicToolUIPart
+        | undefined;
       expect(toolPart?.state).toBe('output-denied');
     });
 
@@ -215,9 +211,9 @@ describe('Vercel accumulator', () => {
         }),
       ]);
 
-      const toolPart = acc.messages[0]?.parts.find(
-        (p) => p.type === 'dynamic-tool',
-      ) as AI.DynamicToolUIPart | undefined;
+      const toolPart = acc.messages[0]?.parts.find((p) => p.type === 'dynamic-tool') as
+        | AI.DynamicToolUIPart
+        | undefined;
       expect(toolPart?.state).toBe('approval-requested');
     });
 
@@ -235,9 +231,9 @@ describe('Vercel accumulator', () => {
         }),
       ]);
 
-      const toolPart = acc.messages[0]?.parts.find(
-        (p) => p.type === 'dynamic-tool',
-      ) as AI.DynamicToolUIPart | undefined;
+      const toolPart = acc.messages[0]?.parts.find((p) => p.type === 'dynamic-tool') as
+        | AI.DynamicToolUIPart
+        | undefined;
       expect(toolPart?.state).toBe('output-error');
       expect(toolPart?.errorText).toBe('parse error');
     });
@@ -255,9 +251,7 @@ describe('Vercel accumulator', () => {
       ]);
 
       expect(acc.messages[0]?.parts).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ type: 'file', url: 'https://example.com/img.png' }),
-        ]),
+        expect.arrayContaining([expect.objectContaining({ type: 'file', url: 'https://example.com/img.png' })]),
       );
     });
 
@@ -275,9 +269,7 @@ describe('Vercel accumulator', () => {
       ]);
 
       expect(acc.messages[0]?.parts).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ type: 'source-url', sourceId: 'src-1', title: 'Example' }),
-        ]),
+        expect.arrayContaining([expect.objectContaining({ type: 'source-url', sourceId: 'src-1', title: 'Example' })]),
       );
     });
 
@@ -296,9 +288,7 @@ describe('Vercel accumulator', () => {
       ]);
 
       expect(acc.messages[0]?.parts).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ type: 'source-document', filename: 'doc.pdf' }),
-        ]),
+        expect.arrayContaining([expect.objectContaining({ type: 'source-document', filename: 'doc.pdf' })]),
       );
     });
   });
@@ -310,14 +300,16 @@ describe('Vercel accumulator', () => {
       const acc = createAccumulator();
       acc.processOutputs([
         event({ type: 'start' }),
-        event({ type: 'data-custom' as AI.UIMessageChunk['type'], data: { foo: 'bar' }, id: 'dc-1' } as AI.UIMessageChunk),
+        event({
+          type: 'data-custom' as AI.UIMessageChunk['type'],
+          data: { foo: 'bar' },
+          id: 'dc-1',
+        } as AI.UIMessageChunk),
         event({ type: 'finish', finishReason: 'stop' }),
       ]);
 
       expect(acc.messages[0]?.parts).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ type: 'data-custom', data: { foo: 'bar' }, id: 'dc-1' }),
-        ]),
+        expect.arrayContaining([expect.objectContaining({ type: 'data-custom', data: { foo: 'bar' }, id: 'dc-1' })]),
       );
     });
 
@@ -340,7 +332,11 @@ describe('Vercel accumulator', () => {
       const acc = createAccumulator();
       acc.processOutputs([
         event({ type: 'start' }),
-        event({ type: 'data-status' as AI.UIMessageChunk['type'], data: undefined, transient: true } as AI.UIMessageChunk),
+        event({
+          type: 'data-status' as AI.UIMessageChunk['type'],
+          data: undefined,
+          transient: true,
+        } as AI.UIMessageChunk),
         event({ type: 'finish', finishReason: 'stop' }),
       ]);
 
@@ -385,10 +381,7 @@ describe('Vercel accumulator', () => {
 
     it('uses DecoderOutput messageId as the UIMessage id', () => {
       const acc = createAccumulator();
-      acc.processOutputs([
-        event({ type: 'start' }),
-        event({ type: 'finish', finishReason: 'stop' }),
-      ]);
+      acc.processOutputs([event({ type: 'start' }), event({ type: 'finish', finishReason: 'stop' })]);
 
       expect(acc.messages[0]?.id).toBe(DEFAULT_MSG_ID);
     });
@@ -414,18 +407,12 @@ describe('Vercel accumulator', () => {
 
     it('separates completed from active messages', () => {
       const acc = createAccumulator();
-      acc.processOutputs([
-        event({ type: 'start', messageId: 'msg-1' }),
-        event({ type: 'text-start', id: 'txt-1' }),
-      ]);
+      acc.processOutputs([event({ type: 'start', messageId: 'msg-1' }), event({ type: 'text-start', id: 'txt-1' })]);
 
       expect(acc.messages).toHaveLength(1);
       expect(acc.completedMessages).toHaveLength(0);
 
-      acc.processOutputs([
-        event({ type: 'text-end', id: 'txt-1' }),
-        event({ type: 'finish', finishReason: 'stop' }),
-      ]);
+      acc.processOutputs([event({ type: 'text-end', id: 'txt-1' }), event({ type: 'finish', finishReason: 'stop' })]);
 
       expect(acc.completedMessages).toHaveLength(1);
     });
@@ -470,9 +457,9 @@ describe('Vercel accumulator', () => {
       expect(acc.messages[0]?.id).toBe('msg-1');
       expect(acc.messages[0]?.parts).toHaveLength(2);
 
-      const toolPart = acc.messages[0]?.parts.find(
-        (p) => p.type === 'dynamic-tool',
-      ) as AI.DynamicToolUIPart | undefined;
+      const toolPart = acc.messages[0]?.parts.find((p) => p.type === 'dynamic-tool') as
+        | AI.DynamicToolUIPart
+        | undefined;
       expect(toolPart?.toolCallId).toBe('tc-1');
       expect(toolPart?.state).toBe('approval-requested');
     });
@@ -497,16 +484,19 @@ describe('Vercel accumulator', () => {
       acc.initMessage('msg-1', existingMsg);
 
       acc.processOutputs([
-        event({
-          type: 'tool-output-available',
-          toolCallId: 'tc-1',
-          output: { result: 42 },
-        }, 'msg-1'),
+        event(
+          {
+            type: 'tool-output-available',
+            toolCallId: 'tc-1',
+            output: { result: 42 },
+          },
+          'msg-1',
+        ),
       ]);
 
-      const toolPart = acc.messages[0]?.parts.find(
-        (p) => p.type === 'dynamic-tool',
-      ) as AI.DynamicToolUIPart | undefined;
+      const toolPart = acc.messages[0]?.parts.find((p) => p.type === 'dynamic-tool') as
+        | AI.DynamicToolUIPart
+        | undefined;
       expect(toolPart?.state).toBe('output-available');
       expect(toolPart?.output).toEqual({ result: 42 });
     });
@@ -548,9 +538,7 @@ describe('Vercel accumulator', () => {
 
       expect(acc.messages).toHaveLength(1);
       expect(acc.messages[0]?.parts).toHaveLength(1);
-      expect(acc.messages[0]?.parts[0]).toEqual(
-        expect.objectContaining({ type: 'text', text: 'hello world' }),
-      );
+      expect(acc.messages[0]?.parts[0]).toEqual(expect.objectContaining({ type: 'text', text: 'hello world' }));
     });
 
     it('init then complete lifecycle moves message to completedMessages', () => {
@@ -608,9 +596,7 @@ describe('Vercel accumulator', () => {
       };
       acc.updateMessage(updated);
 
-      expect(acc.messages[0]?.parts).toEqual([
-        expect.objectContaining({ type: 'text', text: 'updated' }),
-      ]);
+      expect(acc.messages[0]?.parts).toEqual([expect.objectContaining({ type: 'text', text: 'updated' })]);
     });
 
     it('does nothing for unknown message ID', () => {

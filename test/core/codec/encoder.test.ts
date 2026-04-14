@@ -1,7 +1,13 @@
 import type * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { HEADER_DISCRETE, HEADER_MSG_ID, HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID } from '../../../src/constants.js';
+import {
+  HEADER_DISCRETE,
+  HEADER_MSG_ID,
+  HEADER_STATUS,
+  HEADER_STREAM,
+  HEADER_STREAM_ID,
+} from '../../../src/constants.js';
 import { createEncoderCore } from '../../../src/core/codec/encoder.js';
 import type { ChannelWriter, MessagePayload, StreamPayload } from '../../../src/core/codec/types.js';
 import { ErrorCode } from '../../../src/errors.js';

@@ -8,8 +8,14 @@ import { pipeStream } from '../../../src/core/transport/pipe-stream.js';
 // Helpers
 // ---------------------------------------------------------------------------
 
-interface TestEvent { type: string; text?: string }
-interface TestMessage { id: string; content: string }
+interface TestEvent {
+  type: string;
+  text?: string;
+}
+interface TestMessage {
+  id: string;
+  content: string;
+}
 
 interface MockEncoder extends StreamEncoder<TestEvent, TestMessage> {
   appendedEvents: TestEvent[];
@@ -91,7 +97,10 @@ describe('pipeStream', () => {
 
   describe('complete stream', () => {
     it('reads all events and calls appendEvent for each', async () => {
-      const events: TestEvent[] = [{ type: 'text', text: 'hello' }, { type: 'text', text: ' world' }];
+      const events: TestEvent[] = [
+        { type: 'text', text: 'hello' },
+        { type: 'text', text: ' world' },
+      ];
       const stream = streamOf(...events);
 
       const result = await pipeStream(stream, encoder, noSignal);
@@ -148,7 +157,11 @@ describe('pipeStream', () => {
         await write({ type: 'custom-abort' });
       });
 
-      const stream = new ReadableStream<TestEvent>({ start: () => { /* paused */ } });
+      const stream = new ReadableStream<TestEvent>({
+        start: () => {
+          /* paused */
+        },
+      });
       // Abort immediately
       controller.abort();
 
@@ -162,7 +175,11 @@ describe('pipeStream', () => {
       const controller = new AbortController();
       controller.abort();
 
-      const stream = new ReadableStream<TestEvent>({ start: () => { /* paused */ } });
+      const stream = new ReadableStream<TestEvent>({
+        start: () => {
+          /* paused */
+        },
+      });
 
       await pipeStream(stream, encoder, controller.signal);
 
@@ -185,7 +202,11 @@ describe('pipeStream', () => {
         callOrder.push('encoder.abort');
       });
 
-      const stream = new ReadableStream<TestEvent>({ start: () => { /* paused */ } });
+      const stream = new ReadableStream<TestEvent>({
+        start: () => {
+          /* paused */
+        },
+      });
 
       await pipeStream(stream, encoder, controller.signal, onAbort);
 
@@ -196,7 +217,11 @@ describe('pipeStream', () => {
       const controller = new AbortController();
       controller.abort();
 
-      const stream = new ReadableStream<TestEvent>({ start: () => { /* never reads */ } });
+      const stream = new ReadableStream<TestEvent>({
+        start: () => {
+          /* never reads */
+        },
+      });
 
       const result = await pipeStream(stream, encoder, controller.signal);
       expect(result.reason).toBe('cancelled');
@@ -223,7 +248,9 @@ describe('pipeStream', () => {
 
     it('handles encoder failure in error path gracefully', async () => {
       // eslint-disable-next-line @typescript-eslint/require-await -- mock throws
-      encoder.close = vi.fn(async () => { throw new Error('encoder also broken'); });
+      encoder.close = vi.fn(async () => {
+        throw new Error('encoder also broken');
+      });
 
       const stream = errorStream([], new Error('stream broke'));
 

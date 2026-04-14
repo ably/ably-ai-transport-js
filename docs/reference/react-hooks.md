@@ -16,18 +16,18 @@ Create and memoize a `ClientTransport` instance across renders.
 const transport = useClientTransport<TEvent, TMessage>(options: ClientTransportOptions<TEvent, TMessage>);
 ```
 
-| Parameter | Type | Description |
-|---|---|---|
-| `options.channel` | `Ably.RealtimeChannel` | The Ably channel to subscribe to |
-| `options.codec` | `Codec<TEvent, TMessage>` | The codec for encoding/decoding |
-| `options.clientId` | `string?` | Client identity, sent to the server in POST body |
-| `options.api` | `string?` | Server endpoint URL. Default: `"/api/chat"` |
-| `options.headers` | `Record<string, string> \| (() => Record<string, string>)?` | HTTP POST headers. Function form for dynamic values |
-| `options.body` | `Record<string, unknown> \| (() => Record<string, unknown>)?` | Additional POST body fields. Function form for dynamic values |
-| `options.credentials` | `RequestCredentials?` | Fetch credentials mode |
-| `options.fetch` | `typeof fetch?` | Custom fetch implementation |
-| `options.messages` | `TMessage[]?` | Initial messages to seed the conversation tree |
-| `options.logger` | `Logger?` | Logger instance |
+| Parameter             | Type                                                          | Description                                                   |
+| --------------------- | ------------------------------------------------------------- | ------------------------------------------------------------- |
+| `options.channel`     | `Ably.RealtimeChannel`                                        | The Ably channel to subscribe to                              |
+| `options.codec`       | `Codec<TEvent, TMessage>`                                     | The codec for encoding/decoding                               |
+| `options.clientId`    | `string?`                                                     | Client identity, sent to the server in POST body              |
+| `options.api`         | `string?`                                                     | Server endpoint URL. Default: `"/api/chat"`                   |
+| `options.headers`     | `Record<string, string> \| (() => Record<string, string>)?`   | HTTP POST headers. Function form for dynamic values           |
+| `options.body`        | `Record<string, unknown> \| (() => Record<string, unknown>)?` | Additional POST body fields. Function form for dynamic values |
+| `options.credentials` | `RequestCredentials?`                                         | Fetch credentials mode                                        |
+| `options.fetch`       | `typeof fetch?`                                               | Custom fetch implementation                                   |
+| `options.messages`    | `TMessage[]?`                                                 | Initial messages to seed the conversation tree                |
+| `options.logger`      | `Logger?`                                                     | Logger instance                                               |
 
 **Returns:** `ClientTransport<TEvent, TMessage>` - the memoized transport (same instance on every render).
 
@@ -46,30 +46,30 @@ const view = useView<TEvent, TMessage>(
 );
 ```
 
-| Parameter | Type | Description |
-|---|---|---|
-| `source` | `ClientTransport \| View \| null \| undefined` | The transport (uses its default view) or a View directly |
-| `options` | `UseViewOptions \| null?` | When provided, auto-loads first page on mount. Omit or pass null for manual load |
-| `options.limit` | `number?` | Max messages per page. Default: 100 |
+| Parameter       | Type                                           | Description                                                                      |
+| --------------- | ---------------------------------------------- | -------------------------------------------------------------------------------- |
+| `source`        | `ClientTransport \| View \| null \| undefined` | The transport (uses its default view) or a View directly                         |
+| `options`       | `UseViewOptions \| null?`                      | When provided, auto-loads first page on mount. Omit or pass null for manual load |
+| `options.limit` | `number?`                                      | Max messages per page. Default: 100                                              |
 
 **Returns:** `ViewHandle<TEvent, TMessage>`
 
-| Property/Method | Type | Description |
-|---|---|---|
-| `nodes` | `MessageNode<TMessage>[]` | Flattened nodes for the current branch. Updates on every message change (including streaming deltas) |
-| `messages` | `TMessage[]` | The visible domain messages (shorthand for `nodes.map(n => n.message)`) |
-| `hasOlder` | `boolean` | Are there older pages? False until history has been loaded |
-| `loading` | `boolean` | Is a page being fetched? |
-| `loadOlder()` | `() => Promise<void>` | Load more older messages |
-| `select(msgId, index)` | `(msgId: string, index: number) => void` | Switch to a sibling branch. Triggers re-render |
-| `getSelectedIndex(msgId)` | `(msgId: string) => number` | Index of the currently selected sibling |
-| `getSiblings(msgId)` | `(msgId: string) => TMessage[]` | All alternatives at a fork point |
-| `hasSiblings(msgId)` | `(msgId: string) => boolean` | Whether to show navigation arrows |
-| `getNode(msgId)` | `(msgId: string) => MessageNode<TMessage> \| undefined` | Look up a node by msgId |
-| `send(messages, options?)` | `(messages: TMessage \| TMessage[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>` | Send messages in this view's branch context |
-| `regenerate(messageId, options?)` | `(messageId: string, options?: SendOptions) => Promise<ActiveTurn<TEvent>>` | Fork an assistant message with no new user input |
-| `edit(messageId, newMessages, options?)` | `(messageId: string, newMessages: TMessage \| TMessage[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>` | Fork a user message with replacement content |
-| `update(msgId, events, options?)` | `(msgId: string, events: TEvent[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>` | Update an existing message and start a continuation turn (e.g. [tool results](../features/tool-calling.md#client-executed-tools)) |
+| Property/Method                          | Type                                                                                                             | Description                                                                                                                       |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `nodes`                                  | `MessageNode<TMessage>[]`                                                                                        | Flattened nodes for the current branch. Updates on every message change (including streaming deltas)                              |
+| `messages`                               | `TMessage[]`                                                                                                     | The visible domain messages (shorthand for `nodes.map(n => n.message)`)                                                           |
+| `hasOlder`                               | `boolean`                                                                                                        | Are there older pages? False until history has been loaded                                                                        |
+| `loading`                                | `boolean`                                                                                                        | Is a page being fetched?                                                                                                          |
+| `loadOlder()`                            | `() => Promise<void>`                                                                                            | Load more older messages                                                                                                          |
+| `select(msgId, index)`                   | `(msgId: string, index: number) => void`                                                                         | Switch to a sibling branch. Triggers re-render                                                                                    |
+| `getSelectedIndex(msgId)`                | `(msgId: string) => number`                                                                                      | Index of the currently selected sibling                                                                                           |
+| `getSiblings(msgId)`                     | `(msgId: string) => TMessage[]`                                                                                  | All alternatives at a fork point                                                                                                  |
+| `hasSiblings(msgId)`                     | `(msgId: string) => boolean`                                                                                     | Whether to show navigation arrows                                                                                                 |
+| `getNode(msgId)`                         | `(msgId: string) => MessageNode<TMessage> \| undefined`                                                          | Look up a node by msgId                                                                                                           |
+| `send(messages, options?)`               | `(messages: TMessage \| TMessage[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>`                       | Send messages in this view's branch context                                                                                       |
+| `regenerate(messageId, options?)`        | `(messageId: string, options?: SendOptions) => Promise<ActiveTurn<TEvent>>`                                      | Fork an assistant message with no new user input                                                                                  |
+| `edit(messageId, newMessages, options?)` | `(messageId: string, newMessages: TMessage \| TMessage[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>` | Fork a user message with replacement content                                                                                      |
+| `update(msgId, events, options?)`        | `(msgId: string, events: TEvent[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>`                        | Update an existing message and start a continuation turn (e.g. [tool results](../features/tool-calling.md#client-executed-tools)) |
 
 Each view has independent branch selections and pagination state. When you pass a transport, the hook uses its default view. For [split-pane UIs](../features/branching.md#multiple-views) where each pane needs its own branch and message history, use [`useCreateView()`](#usecreateview) to create independent views with the same API.
 
@@ -90,18 +90,18 @@ const handle = useCreateView<TEvent, TMessage>(
 );
 ```
 
-| Parameter | Type | Description |
-|---|---|---|
-| `transport` | `ClientTransport \| null \| undefined` | The transport to create a view from. Pass null/undefined to defer creation |
-| `options` | `UseViewOptions \| null?` | When provided, auto-loads first page on mount. Omit or pass null for manual load |
-| `options.limit` | `number?` | Max messages per page. Default: 100 |
+| Parameter       | Type                                   | Description                                                                      |
+| --------------- | -------------------------------------- | -------------------------------------------------------------------------------- |
+| `transport`     | `ClientTransport \| null \| undefined` | The transport to create a view from. Pass null/undefined to defer creation       |
+| `options`       | `UseViewOptions \| null?`              | When provided, auto-loads first page on mount. Omit or pass null for manual load |
+| `options.limit` | `number?`                              | Max messages per page. Default: 100                                              |
 
 **Returns:** `ViewHandle<TEvent, TMessage>` - the same handle type as `useView()`, with nodes, pagination, navigation, and write operations. Returns an empty handle (no nodes, no messages) when no transport is provided.
 
 ```typescript
 import { useView, useCreateView } from '@ably/ai-transport/react';
 
-const view = useView(transport, { limit: 50 });                          // default view
+const view = useView(transport, { limit: 50 }); // default view
 const splitView = useCreateView(split ? transport : undefined, { limit: 50 }); // independent view
 ```
 
@@ -121,13 +121,14 @@ const send = useSend<TEvent, TMessage>(view: View<TEvent, TMessage>);
 const turn = await send(messages, options?);
 ```
 
-| Parameter | Type | Description |
-|---|---|---|
-| `view` | `View<TEvent, TMessage>` | The view to send through |
+| Parameter | Type                     | Description              |
+| --------- | ------------------------ | ------------------------ |
+| `view`    | `View<TEvent, TMessage>` | The view to send through |
 
 **Returns:** `(messages: TMessage[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>`
 
 The returned function sends one or more messages in a new turn, using the view's branch for parent and history computation. Returns an `ActiveTurn` with:
+
 - `turn.stream` - `ReadableStream<TEvent>` of decoded events
 - `turn.turnId` - the turn's unique ID
 - `turn.cancel()` - cancel this specific turn
@@ -146,9 +147,9 @@ const regenerate = useRegenerate<TEvent, TMessage>(view: View<TEvent, TMessage>)
 const turn = await regenerate(messageId, options?);
 ```
 
-| Parameter | Type | Description |
-|---|---|---|
-| `view` | `View<TEvent, TMessage>` | The view to regenerate through |
+| Parameter | Type                     | Description                    |
+| --------- | ------------------------ | ------------------------------ |
+| `view`    | `View<TEvent, TMessage>` | The view to regenerate through |
 
 **Returns:** `(messageId: string, options?: SendOptions) => Promise<ActiveTurn<TEvent>>`
 
@@ -166,9 +167,9 @@ const edit = useEdit<TEvent, TMessage>(view: View<TEvent, TMessage>);
 const turn = await edit(messageId, newMessages, options?);
 ```
 
-| Parameter | Type | Description |
-|---|---|---|
-| `view` | `View<TEvent, TMessage>` | The view to edit through |
+| Parameter | Type                     | Description              |
+| --------- | ------------------------ | ------------------------ |
+| `view`    | `View<TEvent, TMessage>` | The view to edit through |
 
 **Returns:** `(messageId: string, newMessages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>`
 
@@ -184,8 +185,8 @@ Return a reactive map of all active turns on the channel, keyed by clientId.
 const activeTurns = useActiveTurns<TEvent, TMessage>(transport: ClientTransport<TEvent, TMessage> | null | undefined);
 ```
 
-| Parameter | Type | Description |
-|---|---|---|
+| Parameter   | Type                                   | Description                                                        |
+| ----------- | -------------------------------------- | ------------------------------------------------------------------ |
 | `transport` | `ClientTransport \| null \| undefined` | The transport to observe. Pass null/undefined if not yet available |
 
 **Returns:** `Map<string, Set<string>>` - keys are clientIds, values are sets of active turnIds. Empty map if transport is null.
@@ -202,17 +203,17 @@ Provide stable structural query callbacks for the conversation tree.
 const tree = useTree<TEvent, TMessage>(transport: ClientTransport<TEvent, TMessage>);
 ```
 
-| Parameter | Type | Description |
-|---|---|---|
+| Parameter   | Type                                | Description                       |
+| ----------- | ----------------------------------- | --------------------------------- |
 | `transport` | `ClientTransport<TEvent, TMessage>` | The transport whose tree to query |
 
 **Returns:** `TreeHandle<TMessage>`
 
-| Property/Method | Type | Description |
-|---|---|---|
-| `getSiblings(msgId)` | `(msgId: string) => TMessage[]` | All alternatives at a fork point |
-| `hasSiblings(msgId)` | `(msgId: string) => boolean` | Whether to show navigation arrows |
-| `getNode(msgId)` | `(msgId: string) => MessageNode<TMessage> \| undefined` | Look up a node by msgId |
+| Property/Method      | Type                                                    | Description                       |
+| -------------------- | ------------------------------------------------------- | --------------------------------- |
+| `getSiblings(msgId)` | `(msgId: string) => TMessage[]`                         | All alternatives at a fork point  |
+| `hasSiblings(msgId)` | `(msgId: string) => boolean`                            | Whether to show navigation arrows |
+| `getNode(msgId)`     | `(msgId: string) => MessageNode<TMessage> \| undefined` | Look up a node by msgId           |
 
 Branch navigation (`select()`, `getSelectedIndex()`) and write operations (`send()`, `regenerate()`, `edit()`) are on `ViewHandle` from `useView()`, not `TreeHandle`. The tree provides structural queries that are the same regardless of which branch is selected.
 
@@ -226,8 +227,8 @@ Subscribe to raw Ably message updates. Useful for debugging.
 const messages = useAblyMessages<TEvent, TMessage>(transport: ClientTransport<TEvent, TMessage>);
 ```
 
-| Parameter | Type | Description |
-|---|---|---|
+| Parameter   | Type                                | Description              |
+| ----------- | ----------------------------------- | ------------------------ |
 | `transport` | `ClientTransport<TEvent, TMessage>` | The transport to observe |
 
 **Returns:** `Ably.InboundMessage[]` - raw Ably messages in chronological order. Includes live and history-loaded messages.
@@ -251,14 +252,15 @@ const chatTransport = useChatTransport(
 );
 ```
 
-| Parameter | Type | Description |
-|---|---|---|
-| `transportOrOptions` | `ClientTransport \| VercelClientTransportOptions` | An existing transport, or options to create one |
-| `chatOptions` | `ChatTransportOptions?` | Optional hooks for customizing request construction |
+| Parameter            | Type                                              | Description                                         |
+| -------------------- | ------------------------------------------------- | --------------------------------------------------- |
+| `transportOrOptions` | `ClientTransport \| VercelClientTransportOptions` | An existing transport, or options to create one     |
+| `chatOptions`        | `ChatTransportOptions?`                           | Optional hooks for customizing request construction |
 
 **Returns:** `ChatTransport` - compatible with `useChat()`'s `transport` option.
 
 Two usage patterns:
+
 1. **Wrap an existing transport** - pass a `ClientTransport` created by `useClientTransport`
 2. **Create internally** - pass `VercelClientTransportOptions` and the hook creates the transport with `UIMessageCodec`
 
@@ -286,10 +288,10 @@ useMessageSync(
 );
 ```
 
-| Parameter | Type | Description |
-|---|---|---|
-| `transport` | `ClientTransport \| null \| undefined` | The transport to observe |
-| `setMessages` | `(updater: ...) => void` | The `setMessages` function from `useChat()` |
+| Parameter     | Type                                   | Description                                 |
+| ------------- | -------------------------------------- | ------------------------------------------- |
+| `transport`   | `ClientTransport \| null \| undefined` | The transport to observe                    |
+| `setMessages` | `(updater: ...) => void`               | The `setMessages` function from `useChat()` |
 
 **Returns:** `void`
 

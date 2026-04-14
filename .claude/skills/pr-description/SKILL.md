@@ -59,6 +59,7 @@ Write a PR description with this structure:
 ```
 
 Guidelines:
+
 - Lead with motivation, not mechanics
 - Be specific: name the types, methods, and interfaces involved
 - Keep it scannable — reviewers skim first, read deeply second

@@ -151,7 +151,7 @@ export const createMockTransport = (initialMessages: string[] = []): MockTranspo
     waitForTurn,
     on,
     close,
-  // CAST: mock object satisfies the subset of ClientTransport methods used by hooks
+    // CAST: mock object satisfies the subset of ClientTransport methods used by hooks
   } as unknown as ClientTransport<unknown, string>;
 
   return {

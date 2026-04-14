@@ -15,22 +15,21 @@ type TestEvent =
   | { type: 'end'; streamId: string }
   | { type: 'discrete'; name: string; data: string };
 
-interface TestMessage { id: string; text: string }
+interface TestMessage {
+  id: string;
+  text: string;
+}
 
 // ---------------------------------------------------------------------------
 // Mock hooks factory
 // ---------------------------------------------------------------------------
 
 const createMockHooks = (): DecoderCoreHooks<TestEvent, TestMessage> => ({
-  buildStartEvents: (tracker) => [
-    { kind: 'event', event: { type: 'start', streamId: tracker.streamId } },
-  ],
+  buildStartEvents: (tracker) => [{ kind: 'event', event: { type: 'start', streamId: tracker.streamId } }],
   buildDeltaEvents: (tracker, delta) => [
     { kind: 'event', event: { type: 'delta', streamId: tracker.streamId, delta } },
   ],
-  buildEndEvents: (tracker) => [
-    { kind: 'event', event: { type: 'end', streamId: tracker.streamId } },
-  ],
+  buildEndEvents: (tracker) => [{ kind: 'event', event: { type: 'end', streamId: tracker.streamId } }],
   decodeDiscrete: (input) => [
     {
       kind: 'event',
@@ -189,7 +188,10 @@ describe('createDecoderCore', () => {
     it('falls through to update for unknown serial', () => {
       const decoder = createDecoderCore(hooks);
       const outputs = decoder.decode(
-        withHeaders({ action: 'message.append', serial: 'unknown', name: 'user-message', data: 'data' }, { [HEADER_STREAM]: 'false' }),
+        withHeaders(
+          { action: 'message.append', serial: 'unknown', name: 'user-message', data: 'data' },
+          { [HEADER_STREAM]: 'false' },
+        ),
       );
       expect(outputs).toHaveLength(1);
     });
@@ -219,9 +221,7 @@ describe('createDecoderCore', () => {
         ),
       );
 
-      const outputs = decoder.decode(
-        withHeaders({ action: 'message.append', serial: 's1', data: 123 }, {}),
-      );
+      const outputs = decoder.decode(withHeaders({ action: 'message.append', serial: 's1', data: 123 }, {}));
 
       expect(outputs).toHaveLength(0);
     });
@@ -275,7 +275,10 @@ describe('createDecoderCore', () => {
     it('treats non-streamed first-contact as discrete', () => {
       const decoder = createDecoderCore(hooks);
       const outputs = decoder.decode(
-        withHeaders({ action: 'message.update', serial: 's1', name: 'user-message', data: 'updated' }, { [HEADER_STREAM]: 'false' }),
+        withHeaders(
+          { action: 'message.update', serial: 's1', name: 'user-message', data: 'updated' },
+          { [HEADER_STREAM]: 'false' },
+        ),
       );
 
       expect(outputs).toEqual([{ kind: 'event', event: { type: 'discrete', name: 'user-message', data: 'updated' } }]);
@@ -416,11 +419,9 @@ describe('createDecoderCore', () => {
   describe('unknown action', () => {
     it('returns empty array', () => {
       const decoder = createDecoderCore(hooks);
-      expect(
-        decoder.decode(
-          withHeaders({ action: 'message.summary' as Ably.InboundMessage['action'] }, {}),
-        ),
-      ).toEqual([]);
+      expect(decoder.decode(withHeaders({ action: 'message.summary' as Ably.InboundMessage['action'] }, {}))).toEqual(
+        [],
+      );
     });
   });
 
@@ -518,7 +519,12 @@ describe('createDecoderCore', () => {
       const outputs = decoder.decode(
         withHeaders(
           { action: 'message.create', serial: 's1' },
-          { [HEADER_STREAM]: 'true', [HEADER_STATUS]: 'streaming', [HEADER_STREAM_ID]: 'sid-1', [HEADER_MSG_ID]: 'msg-42' },
+          {
+            [HEADER_STREAM]: 'true',
+            [HEADER_STATUS]: 'streaming',
+            [HEADER_STREAM_ID]: 'sid-1',
+            [HEADER_MSG_ID]: 'msg-42',
+          },
         ),
       );
 
@@ -529,10 +535,7 @@ describe('createDecoderCore', () => {
     it('tags discrete event outputs with messageId from x-ably-msg-id header', () => {
       const decoder = createDecoderCore(createMockHooks());
       const outputs = decoder.decode(
-        withHeaders(
-          { action: 'message.create' },
-          { [HEADER_STREAM]: 'false', [HEADER_MSG_ID]: 'msg-99' },
-        ),
+        withHeaders({ action: 'message.create' }, { [HEADER_STREAM]: 'false', [HEADER_MSG_ID]: 'msg-99' }),
       );
 
       expect(outputs).toHaveLength(1);
@@ -541,12 +544,7 @@ describe('createDecoderCore', () => {
 
     it('does not set messageId when x-ably-msg-id header is absent', () => {
       const decoder = createDecoderCore(createMockHooks());
-      const outputs = decoder.decode(
-        withHeaders(
-          { action: 'message.create' },
-          { [HEADER_STREAM]: 'false' },
-        ),
-      );
+      const outputs = decoder.decode(withHeaders({ action: 'message.create' }, { [HEADER_STREAM]: 'false' }));
 
       expect(outputs).toHaveLength(1);
       expect(outputs[0]).toEqual(expect.objectContaining({ kind: 'event' }));
@@ -560,16 +558,18 @@ describe('createDecoderCore', () => {
       decoder.decode(
         withHeaders(
           { action: 'message.create', serial: 's1' },
-          { [HEADER_STREAM]: 'true', [HEADER_STATUS]: 'streaming', [HEADER_STREAM_ID]: 'sid-1', [HEADER_MSG_ID]: 'msg-1' },
+          {
+            [HEADER_STREAM]: 'true',
+            [HEADER_STATUS]: 'streaming',
+            [HEADER_STREAM_ID]: 'sid-1',
+            [HEADER_MSG_ID]: 'msg-1',
+          },
         ),
       );
 
       // Append with msg-id
       const outputs = decoder.decode(
-        withHeaders(
-          { action: 'message.append', serial: 's1', data: 'delta' },
-          { [HEADER_MSG_ID]: 'msg-1' },
-        ),
+        withHeaders({ action: 'message.append', serial: 's1', data: 'delta' }, { [HEADER_MSG_ID]: 'msg-1' }),
       );
 
       expect(outputs).toHaveLength(1);

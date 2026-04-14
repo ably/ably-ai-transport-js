@@ -21,7 +21,7 @@ The four operations that can happen to an Ably message:
 | Action           | Meaning                                             |
 | ---------------- | --------------------------------------------------- |
 | `message.create` | A new message was published                         |
-| `message.append` | Data was appended to an existing message             |
+| `message.append` | Data was appended to an existing message            |
 | `message.update` | An existing message's content was replaced entirely |
 | `message.delete` | A message was deleted                               |
 

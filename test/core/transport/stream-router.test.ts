@@ -165,15 +165,8 @@ describe('StreamRouter', () => {
       const items1 = await drain(stream1);
       const items2 = await drain(stream2);
 
-      expect(items1).toEqual([
-        { type: 'text', text: 'a' },
-        { type: 'finish' },
-      ]);
-      expect(items2).toEqual([
-        { type: 'text', text: 'b' },
-        { type: 'text', text: 'c' },
-        { type: 'finish' },
-      ]);
+      expect(items1).toEqual([{ type: 'text', text: 'a' }, { type: 'finish' }]);
+      expect(items2).toEqual([{ type: 'text', text: 'b' }, { type: 'text', text: 'c' }, { type: 'finish' }]);
     });
   });
 });

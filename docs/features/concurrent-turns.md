@@ -81,12 +81,12 @@ transport.tree.on('turn', (event) => {
 
 Cancel filters let you target specific turns without affecting others:
 
-| Filter | What gets cancelled |
-|---|---|
-| `{ turnId: "abc" }` | Only that one turn |
-| `{ own: true }` | All turns started by this client |
+| Filter                   | What gets cancelled              |
+| ------------------------ | -------------------------------- |
+| `{ turnId: "abc" }`      | Only that one turn               |
+| `{ own: true }`          | All turns started by this client |
 | `{ clientId: "user-2" }` | All turns started by that client |
-| `{ all: true }` | Every turn on the channel |
+| `{ all: true }`          | Every turn on the channel        |
 
 See [Cancel](cancel.md) for the full cancel protocol.
 

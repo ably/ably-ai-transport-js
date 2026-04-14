@@ -126,11 +126,11 @@ This is a deliberate tradeoff: no cache invalidation complexity, at the cost of 
 
 All consumers go through `view.flattenNodes()`:
 
-| Consumer                                  | When it calls `flattenNodes()`                    |
-| ----------------------------------------- | ------------------------------------------------- |
-| `useView()`                               | On mount and every `'update'` event               |
-| `useMessageSync()` (Vercel)               | On every `'update'` event                         |
-| `send()` / `regenerate()`                 | To build the HTTP POST body's message history     |
-| `view.loadOlder()`                        | To snapshot the current tree state for pagination |
+| Consumer                    | When it calls `flattenNodes()`                    |
+| --------------------------- | ------------------------------------------------- |
+| `useView()`                 | On mount and every `'update'` event               |
+| `useMessageSync()` (Vercel) | On every `'update'` event                         |
+| `send()` / `regenerate()`   | To build the HTTP POST body's message history     |
+| `view.loadOlder()`          | To snapshot the current tree state for pagination |
 
 See [Conversation tree](conversation-tree.md) for how `flattenNodes()` works. See [Codec interface](codec-interface.md#accumulator) for the accumulator's role. See [History hydration](history.md) for the history decode pipeline.

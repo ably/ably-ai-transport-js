@@ -187,14 +187,8 @@ class AgentEncoder implements StreamEncoder<AgentEvent, AgentMessage> {
         // 'x-domain-toolCallId' on the wire. The decoder reads them back
         // with headerReader(). The data field accepts any JSON-serializable
         // value — Ably handles serialization natively.
-        const h = headerWriter()
-          .str('toolCallId', event.toolCallId)
-          .str('toolName', event.toolName)
-          .build();
-        await this._core.publishDiscrete(
-          { name: 'tool-call', data: event.args, headers: h },
-          perWrite,
-        );
+        const h = headerWriter().str('toolCallId', event.toolCallId).str('toolName', event.toolName).build();
+        await this._core.publishDiscrete({ name: 'tool-call', data: event.args, headers: h }, perWrite);
         break;
       }
 
@@ -211,9 +205,7 @@ class AgentEncoder implements StreamEncoder<AgentEvent, AgentMessage> {
   // transport. Available for consumers who need to publish a standalone
   // event outside the streaming flow. Not implemented in this example.
   async writeEvent(): Promise<Ably.PublishResult> {
-    return await Promise.reject(
-      new Ably.ErrorInfo('writeEvent is not implemented', ErrorCode.InvalidArgument, 400),
-    );
+    return await Promise.reject(new Ably.ErrorInfo('writeEvent is not implemented', ErrorCode.InvalidArgument, 400));
   }
 
   // Called by the server transport to publish user messages (the prompt)
@@ -308,9 +300,7 @@ class AgentDecoder implements StreamDecoder<AgentEvent, AgentMessage> {
       // accumulated text so far (tracker.accumulated) if you need it.
       //
       // Our codec: emit a text-delta event with just the new fragment.
-      buildDeltaEvents: (_tracker, delta): Out[] => [
-        { kind: 'event', event: { type: 'text-delta', delta } },
-      ],
+      buildDeltaEvents: (_tracker, delta): Out[] => [{ kind: 'event', event: { type: 'text-delta', delta } }],
 
       // Core behaviour: called when a stream closes with x-ably-status:
       // finished. `closingHeaders` may carry updated headers from the
@@ -321,9 +311,7 @@ class AgentDecoder implements StreamDecoder<AgentEvent, AgentMessage> {
       //
       // Our codec: emit a text-end event so the accumulator knows the
       // text stream is complete.
-      buildEndEvents: (): Out[] => [
-        { kind: 'event', event: { type: 'text-end' } },
-      ],
+      buildEndEvents: (): Out[] => [{ kind: 'event', event: { type: 'text-end' } }],
 
       // Core behaviour: called for every non-streamed Ably message
       // (message.create where x-ably-stream is "false"). The payload

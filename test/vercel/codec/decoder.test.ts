@@ -18,10 +18,7 @@ import { createDecoder } from '../../../src/vercel/codec/decoder.js';
 // Helpers
 // ---------------------------------------------------------------------------
 
-const withHeaders = (
-  msg: Partial<Ably.InboundMessage>,
-  headers: Record<string, string>,
-): Ably.InboundMessage =>
+const withHeaders = (msg: Partial<Ably.InboundMessage>, headers: Record<string, string>): Ably.InboundMessage =>
   ({
     serial: 'serial-1',
     action: 'message.create',
@@ -31,15 +28,18 @@ const withHeaders = (
     extras: { headers },
   }) as Ably.InboundMessage;
 
-interface Output { kind: string; event?: AI.UIMessageChunk; message?: AI.UIMessage }
+interface Output {
+  kind: string;
+  event?: AI.UIMessageChunk;
+  message?: AI.UIMessage;
+}
 
 const eventsOf = (outputs: Output[]): AI.UIMessageChunk[] =>
   outputs
     .filter((o): o is Output & { event: AI.UIMessageChunk } => o.kind === 'event' && o.event !== undefined)
     .map((o) => o.event);
 
-const eventTypesOf = (outputs: Output[]): string[] =>
-  eventsOf(outputs).map((e) => e.type);
+const eventTypesOf = (outputs: Output[]): string[] => eventsOf(outputs).map((e) => e.type);
 
 const messagesOf = (outputs: Output[]): AI.UIMessage[] =>
   outputs
@@ -81,18 +81,13 @@ describe('Vercel decoder', () => {
         ),
       );
 
-      expect(eventsOf(outputs)).toEqual([
-        expect.objectContaining({ type: 'finish', finishReason: 'stop' }),
-      ]);
+      expect(eventsOf(outputs)).toEqual([expect.objectContaining({ type: 'finish', finishReason: 'stop' })]);
     });
 
     it('decodes finish-step event', () => {
       const decoder = createDecoder();
       const outputs = decoder.decode(
-        withHeaders(
-          { action: 'message.create', name: 'finish-step', data: '' },
-          { [HEADER_STREAM]: 'false' },
-        ),
+        withHeaders({ action: 'message.create', name: 'finish-step', data: '' }, { [HEADER_STREAM]: 'false' }),
       );
 
       expect(eventTypesOf(outputs)).toContain('finish-step');
@@ -101,29 +96,19 @@ describe('Vercel decoder', () => {
     it('decodes error event', () => {
       const decoder = createDecoder();
       const outputs = decoder.decode(
-        withHeaders(
-          { action: 'message.create', name: 'error', data: 'something broke' },
-          { [HEADER_STREAM]: 'false' },
-        ),
+        withHeaders({ action: 'message.create', name: 'error', data: 'something broke' }, { [HEADER_STREAM]: 'false' }),
       );
 
-      expect(eventsOf(outputs)).toEqual([
-        expect.objectContaining({ type: 'error', errorText: 'something broke' }),
-      ]);
+      expect(eventsOf(outputs)).toEqual([expect.objectContaining({ type: 'error', errorText: 'something broke' })]);
     });
 
     it('decodes abort event', () => {
       const decoder = createDecoder();
       const outputs = decoder.decode(
-        withHeaders(
-          { action: 'message.create', name: 'abort', data: 'cancelled' },
-          { [HEADER_STREAM]: 'false' },
-        ),
+        withHeaders({ action: 'message.create', name: 'abort', data: 'cancelled' }, { [HEADER_STREAM]: 'false' }),
       );
 
-      expect(eventsOf(outputs)).toEqual([
-        expect.objectContaining({ type: 'abort', reason: 'cancelled' }),
-      ]);
+      expect(eventsOf(outputs)).toEqual([expect.objectContaining({ type: 'abort', reason: 'cancelled' })]);
     });
   });
 
@@ -174,9 +159,7 @@ describe('Vercel decoder', () => {
         ),
       );
 
-      expect(eventsOf(outputs)).toEqual([
-        expect.objectContaining({ type: 'text-delta', id: 'txt-1', delta: 'hello' }),
-      ]);
+      expect(eventsOf(outputs)).toEqual([expect.objectContaining({ type: 'text-delta', id: 'txt-1', delta: 'hello' })]);
     });
 
     it('emits text-end on finished append', () => {
@@ -233,9 +216,7 @@ describe('Vercel decoder', () => {
           { [HEADER_TURN_ID]: 'turn-1' },
         ),
       );
-      expect(eventsOf(deltaOutputs)).toEqual([
-        expect.objectContaining({ type: 'reasoning-delta', delta: 'think' }),
-      ]);
+      expect(eventsOf(deltaOutputs)).toEqual([expect.objectContaining({ type: 'reasoning-delta', delta: 'think' })]);
 
       // End
       const endOutputs = decoder.decode(
@@ -270,9 +251,7 @@ describe('Vercel decoder', () => {
       );
       expect(eventTypesOf(startOutputs)).toContain('tool-input-start');
       const startChunk = eventsOf(startOutputs).find((e) => e.type === 'tool-input-start');
-      expect(startChunk).toEqual(
-        expect.objectContaining({ toolCallId: 'tc-1', toolName: 'search' }),
-      );
+      expect(startChunk).toEqual(expect.objectContaining({ toolCallId: 'tc-1', toolName: 'search' }));
 
       // Delta
       const deltaOutputs = decoder.decode(
@@ -442,9 +421,7 @@ describe('Vercel decoder', () => {
         ),
       );
 
-      expect(eventsOf(outputs)).toEqual([
-        expect.objectContaining({ type: 'tool-output-denied', toolCallId: 'tc-1' }),
-      ]);
+      expect(eventsOf(outputs)).toEqual([expect.objectContaining({ type: 'tool-output-denied', toolCallId: 'tc-1' })]);
     });
   });
 
@@ -543,9 +520,7 @@ describe('Vercel decoder', () => {
 
       const events = eventsOf(outputs);
       expect(events).toHaveLength(1);
-      expect(events[0]).toEqual(
-        expect.objectContaining({ type: 'data-custom', data: { foo: 'bar' }, id: 'dc-1' }),
-      );
+      expect(events[0]).toEqual(expect.objectContaining({ type: 'data-custom', data: { foo: 'bar' }, id: 'dc-1' }));
     });
 
     it('decodes data-* with transient flag', () => {
@@ -558,9 +533,7 @@ describe('Vercel decoder', () => {
       );
 
       const events = eventsOf(outputs);
-      expect(events[0]).toEqual(
-        expect.objectContaining({ type: 'data-status', transient: true }),
-      );
+      expect(events[0]).toEqual(expect.objectContaining({ type: 'data-status', transient: true }));
     });
   });
 
@@ -835,9 +808,7 @@ describe('Vercel decoder', () => {
       expect(types).toContain('text-end');
 
       const deltaEvent = eventsOf(outputs).find((e) => e.type === 'text-delta');
-      expect(deltaEvent).toEqual(
-        expect.objectContaining({ type: 'text-delta', delta: 'hello world' }),
-      );
+      expect(deltaEvent).toEqual(expect.objectContaining({ type: 'text-delta', delta: 'hello world' }));
     });
   });
 
@@ -848,7 +819,13 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
       const msg = withHeaders(
         { name: 'text', data: 'Hello world' },
-        { [HEADER_STREAM]: 'false', [HEADER_DISCRETE]: 'true', [HEADER_ROLE]: 'user', [HEADER_MSG_ID]: 'msg-1', [`${D}messageId`]: 'ui-1' },
+        {
+          [HEADER_STREAM]: 'false',
+          [HEADER_DISCRETE]: 'true',
+          [HEADER_ROLE]: 'user',
+          [HEADER_MSG_ID]: 'msg-1',
+          [`${D}messageId`]: 'ui-1',
+        },
       );
 
       const outputs = decoder.decode(msg);
@@ -868,7 +845,14 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
       const msg = withHeaders(
         { name: 'file', data: 'https://example.com/img.png' },
-        { [HEADER_STREAM]: 'false', [HEADER_DISCRETE]: 'true', [HEADER_ROLE]: 'user', [HEADER_MSG_ID]: 'msg-2', [`${D}messageId`]: 'ui-2', [`${D}mediaType`]: 'image/png' },
+        {
+          [HEADER_STREAM]: 'false',
+          [HEADER_DISCRETE]: 'true',
+          [HEADER_ROLE]: 'user',
+          [HEADER_MSG_ID]: 'msg-2',
+          [`${D}messageId`]: 'ui-2',
+          [`${D}mediaType`]: 'image/png',
+        },
       );
 
       const outputs = decoder.decode(msg);
@@ -951,7 +935,13 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
       const msg = withHeaders(
         { name: 'text', data: 'System message' },
-        { [HEADER_STREAM]: 'false', [HEADER_DISCRETE]: 'true', [HEADER_ROLE]: 'system', [HEADER_MSG_ID]: 'msg-4', [`${D}messageId`]: 'ui-4' },
+        {
+          [HEADER_STREAM]: 'false',
+          [HEADER_DISCRETE]: 'true',
+          [HEADER_ROLE]: 'system',
+          [HEADER_MSG_ID]: 'msg-4',
+          [`${D}messageId`]: 'ui-4',
+        },
       );
 
       const outputs = decoder.decode(msg);
@@ -965,7 +955,13 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
       const msg = withHeaders(
         { name: 'text', data: 'hi' },
-        { [HEADER_STREAM]: 'false', [HEADER_DISCRETE]: 'true', [HEADER_ROLE]: 'user', [HEADER_MSG_ID]: 'msg-5', [`${D}messageId`]: 'ui-5' },
+        {
+          [HEADER_STREAM]: 'false',
+          [HEADER_DISCRETE]: 'true',
+          [HEADER_ROLE]: 'user',
+          [HEADER_MSG_ID]: 'msg-5',
+          [`${D}messageId`]: 'ui-5',
+        },
       );
 
       const outputs = decoder.decode(msg);

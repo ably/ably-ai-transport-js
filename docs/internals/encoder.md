@@ -30,6 +30,7 @@ closeStream(streamId, payload)   →  channel.appendMessage()   x-ably-status: f
 Creates a new message on the channel. Captures the [serial](glossary.md#serial-ably) returned by `publish()` - this serial identifies the message for all subsequent appends.
 
 Initializes a tracker that stores:
+
 - `serial` - the Ably-assigned message serial
 - `accumulated` - full text content so far (for recovery)
 - `persistentHeaders` - all headers from the initial publish (repeated on every append)

@@ -35,7 +35,9 @@ describe('useActiveTurns', () => {
 
   it('removes a turn on turn-end event', () => {
     const mock = createMockTransport();
-    (mock.tree.getActiveTurnIds as ReturnType<typeof vi.fn>).mockReturnValue(new Map([['client-1', new Set(['turn-1'])]]));
+    (mock.tree.getActiveTurnIds as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Map([['client-1', new Set(['turn-1'])]]),
+    );
 
     const { result } = renderHook(() => useActiveTurns(mock.transport));
 

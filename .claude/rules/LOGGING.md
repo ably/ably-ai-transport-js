@@ -19,14 +19,14 @@ type LogContext = Record<string, any>;
 
 ## Log Levels
 
-| Level | When to use |
-|---|---|
-| `Trace` | Routine operations — entry point of every key method. The most verbose level. |
-| `Debug` | Useful for debugging but superfluous in normal operation — successful completions, state transitions, decision points. |
-| `Info` | Operationally significant but expected — transport open/close, lifecycle events. |
-| `Warn` | Not an error yet, but could cause problems — unexpected but recoverable states. |
-| `Error` | An operation has failed and cannot be automatically recovered. |
-| `Silent` | No logging. |
+| Level    | When to use                                                                                                            |
+| -------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `Trace`  | Routine operations — entry point of every key method. The most verbose level.                                          |
+| `Debug`  | Useful for debugging but superfluous in normal operation — successful completions, state transitions, decision points. |
+| `Info`   | Operationally significant but expected — transport open/close, lifecycle events.                                       |
+| `Warn`   | Not an error yet, but could cause problems — unexpected but recoverable states.                                        |
+| `Error`  | An operation has failed and cannot be automatically recovered.                                                         |
+| `Silent` | No logging.                                                                                                            |
 
 Levels are hierarchical. Setting the level to `Debug` suppresses `Trace` but shows everything else.
 
@@ -85,7 +85,8 @@ this._logger.debug('Tree.upsert(); inserting new node', { msgId, parentId, forkO
 
 // Warning
 this._logger.warn('DefaultDecoderCore.decode(); unexpected message action', {
-  action, serial: message.serial,
+  action,
+  serial: message.serial,
 });
 
 // Error
@@ -130,7 +131,8 @@ Not yet an error, but something that could cascade:
 
 ```ts
 this._logger.warn('DefaultDecoderCore.decode(); unrecognized message name', {
-  name: message.name, serial: message.serial,
+  name: message.name,
+  serial: message.serial,
 });
 ```
 

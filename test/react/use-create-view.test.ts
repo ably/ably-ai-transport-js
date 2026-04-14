@@ -53,10 +53,9 @@ describe('useCreateView', () => {
     const mock1 = createMockTransport(['first']);
     const mock2 = createMockTransport(['second']);
 
-    const { result, rerender } = renderHook(
-      ({ transport }) => useCreateView(transport),
-      { initialProps: { transport: mock1.transport as ClientTransport<unknown, string> | undefined } },
-    );
+    const { result, rerender } = renderHook(({ transport }) => useCreateView(transport), {
+      initialProps: { transport: mock1.transport as ClientTransport<unknown, string> | undefined },
+    });
 
     expect(result.current.messages).toEqual(['first']);
 
@@ -72,10 +71,9 @@ describe('useCreateView', () => {
   it('closes the view and returns empty handle when transport changes to undefined', () => {
     const mock = createMockTransport(['hello']);
 
-    const { result, rerender } = renderHook(
-      ({ transport }) => useCreateView(transport),
-      { initialProps: { transport: mock.transport as ClientTransport<unknown, string> | undefined } },
-    );
+    const { result, rerender } = renderHook(({ transport }) => useCreateView(transport), {
+      initialProps: { transport: mock.transport as ClientTransport<unknown, string> | undefined },
+    });
 
     expect(result.current.messages).toEqual(['hello']);
 

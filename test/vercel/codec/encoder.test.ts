@@ -293,9 +293,7 @@ describe('Vercel encoder', () => {
       expect(headersOf(abortMsg)[HEADER_STATUS]).toBe('aborted');
 
       // The stream should have been aborted
-      const abortAppend = writer.appendCalls.find(
-        (m) => headersOf(m)[HEADER_STATUS] === 'aborted',
-      );
+      const abortAppend = writer.appendCalls.find((m) => headersOf(m)[HEADER_STATUS] === 'aborted');
       expect(abortAppend).toBeDefined();
     });
 
@@ -309,9 +307,7 @@ describe('Vercel encoder', () => {
       expect(abortMsg.data).toBe('cancelled');
       expect(headersOf(abortMsg)[HEADER_STATUS]).toBe('aborted');
 
-      const abortAppend = writer.appendCalls.find(
-        (m) => headersOf(m)[HEADER_STATUS] === 'aborted',
-      );
+      const abortAppend = writer.appendCalls.find((m) => headersOf(m)[HEADER_STATUS] === 'aborted');
       expect(abortAppend).toBeDefined();
     });
 
@@ -345,9 +341,7 @@ describe('Vercel encoder', () => {
       await encoder.appendEvent({ type: 'start-step' });
 
       expect(writer.publishCalls).toHaveLength(1);
-      expect(firstPublish(writer)).toEqual(
-        expect.objectContaining({ name: 'start-step' }),
-      );
+      expect(firstPublish(writer)).toEqual(expect.objectContaining({ name: 'start-step' }));
     });
   });
 
@@ -514,9 +508,7 @@ describe('Vercel encoder', () => {
 
     it('throws for non-data-* chunk types', async () => {
       const encoder = createEncoder(writer);
-      await expect(
-        encoder.writeEvent({ type: 'start' } as AI.UIMessageChunk),
-      ).rejects.toThrow('unable to write event');
+      await expect(encoder.writeEvent({ type: 'start' } as AI.UIMessageChunk)).rejects.toThrow('unable to write event');
     });
   });
 

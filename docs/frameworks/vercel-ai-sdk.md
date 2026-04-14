@@ -4,14 +4,14 @@ The Vercel AI SDK provides model abstraction, streaming primitives, and React ho
 
 ## What AI Transport adds
 
-| Capability | Vercel AI SDK alone | With AI Transport |
-|---|---|---|
-| Token streaming | HTTP streaming (SSE) - one client, one connection | Ably channel - any number of clients, persistent |
-| Cancel | AbortController on the HTTP stream | Channel-level cancel signal - server receives it, other clients see it |
-| History | None (page refresh = gone) | Channel history - new clients hydrate the full conversation |
-| Branching | None | Conversation tree with regenerate, edit, and sibling navigation |
-| Multi-client | Not supported | Any client on the channel sees messages in real time |
-| Reconnection | Stream breaks on disconnect | Ably handles reconnection; `untilAttach` ensures gapless history |
+| Capability      | Vercel AI SDK alone                               | With AI Transport                                                      |
+| --------------- | ------------------------------------------------- | ---------------------------------------------------------------------- |
+| Token streaming | HTTP streaming (SSE) - one client, one connection | Ably channel - any number of clients, persistent                       |
+| Cancel          | AbortController on the HTTP stream                | Channel-level cancel signal - server receives it, other clients see it |
+| History         | None (page refresh = gone)                        | Channel history - new clients hydrate the full conversation            |
+| Branching       | None                                              | Conversation tree with regenerate, edit, and sibling navigation        |
+| Multi-client    | Not supported                                     | Any client on the channel sees messages in real time                   |
+| Reconnection    | Stream breaks on disconnect                       | Ably handles reconnection; `untilAttach` ensures gapless history       |
 
 ## Two integration paths
 
@@ -44,15 +44,23 @@ useMessageSync(transport, setMessages);
 Use the generic React hooks directly. You manage message state through the transport's conversation tree instead of `useChat()`.
 
 ```typescript
-import {
-  useClientTransport,
-  useView,
-  useActiveTurns,
-} from '@ably/ai-transport/react';
+import { useClientTransport, useView, useActiveTurns } from '@ably/ai-transport/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 
 const transport = useClientTransport({ channel, codec: UIMessageCodec, clientId });
-const { nodes, hasOlder, loading, loadOlder, send, regenerate, edit, select, getSelectedIndex, getSiblings, hasSiblings } = useView(transport, { limit: 30 });
+const {
+  nodes,
+  hasOlder,
+  loading,
+  loadOlder,
+  send,
+  regenerate,
+  edit,
+  select,
+  getSelectedIndex,
+  getSiblings,
+  hasSiblings,
+} = useView(transport, { limit: 30 });
 const activeTurns = useActiveTurns(transport);
 ```
 
@@ -60,20 +68,20 @@ This path gives you conversation branching UI (sibling navigation), write operat
 
 ### When to use which
 
-| Use useChat when... | Use generic hooks when... |
-|---|---|
-| You want the simplest integration | You need conversation branching UI |
-| `useChat()`'s message state management is sufficient | You need custom message construction |
-| You don't need edit or branch navigation | You need `edit()` or `view.select()` |
+| Use useChat when...                                      | Use generic hooks when...                     |
+| -------------------------------------------------------- | --------------------------------------------- |
+| You want the simplest integration                        | You need conversation branching UI            |
+| `useChat()`'s message state management is sufficient     | You need custom message construction          |
+| You don't need edit or branch navigation                 | You need `edit()` or `view.select()`          |
 | You're already using `useChat()` and adding AI Transport | You're building a custom chat UI from scratch |
 
 ## Entry points
 
-| Import | What you get |
-|---|---|
-| `@ably/ai-transport/vercel` | `UIMessageCodec`, `createServerTransport()`, `createClientTransport()`, `createChatTransport()` - all pre-bound to Vercel types |
-| `@ably/ai-transport/vercel/react` | `useChatTransport()`, `useMessageSync()` - hooks for the useChat path |
-| `@ably/ai-transport/react` | Generic hooks - work with any codec including `UIMessageCodec` |
+| Import                            | What you get                                                                                                                    |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `@ably/ai-transport/vercel`       | `UIMessageCodec`, `createServerTransport()`, `createClientTransport()`, `createChatTransport()` - all pre-bound to Vercel types |
+| `@ably/ai-transport/vercel/react` | `useChatTransport()`, `useMessageSync()` - hooks for the useChat path                                                           |
+| `@ably/ai-transport/react`        | Generic hooks - work with any codec including `UIMessageCodec`                                                                  |
 
 The Vercel entry points are convenience wrappers. `createServerTransport()` from `/vercel` is the same as the core `createServerTransport()` with `UIMessageCodec` pre-bound - you don't pass a `codec` option.
 
@@ -110,12 +118,12 @@ transport.close();
 
 `UIMessageCodec` maps between Vercel AI SDK types and Ably messages:
 
-| UIMessageChunk type | Ably encoding |
-|---|---|
-| `text-delta` | Message append (text accumulation) |
-| `reasoning-delta` | Message append (reasoning accumulation) |
-| `finish` | Discrete message (closes the stream) |
-| `error` | Discrete message (closes the stream with error) |
+| UIMessageChunk type | Ably encoding                                   |
+| ------------------- | ----------------------------------------------- |
+| `text-delta`        | Message append (text accumulation)              |
+| `reasoning-delta`   | Message append (reasoning accumulation)         |
+| `finish`            | Discrete message (closes the stream)            |
+| `error`             | Discrete message (closes the stream with error) |
 
 The codec handles the full `UIMessageChunk` union. On the decode side, it reconstructs `UIMessage` objects with the correct `parts` array (text, reasoning) from the streamed chunks.
 

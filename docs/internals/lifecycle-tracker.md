@@ -51,12 +51,12 @@ Removes all tracking state for a scope. Called on turn completion (`finish`, `ab
 
 ## Operations
 
-| Method | What it does |
-|---|---|
+| Method                           | What it does                                                    |
+| -------------------------------- | --------------------------------------------------------------- |
 | `ensurePhases(scopeId, context)` | Returns synthetic events for missing phases, marks them emitted |
-| `markEmitted(scopeId, phaseKey)` | Marks a phase as received from the wire |
-| `resetPhase(scopeId, phaseKey)` | Resets a phase for re-emission (repeating phases) |
-| `clearScope(scopeId)` | Removes all state for a scope |
+| `markEmitted(scopeId, phaseKey)` | Marks a phase as received from the wire                         |
+| `resetPhase(scopeId, phaseKey)`  | Resets a phase for re-emission (repeating phases)               |
+| `clearScope(scopeId)`            | Removes all state for a scope                                   |
 
 ## Vercel codec usage
 

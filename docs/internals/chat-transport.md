@@ -15,10 +15,10 @@ Vercel's `useChat()` manages message state internally. When the user submits a m
 
 The adapter splits the message array based on `trigger`:
 
-| Trigger | New messages | History | Fork metadata |
-|---|---|---|---|
-| `submit-message` | Last message in array | Everything before it | None |
-| `regenerate-message` | None (empty array) | Entire array | `forkOf` = messageId, `parent` = tree parent of that message |
+| Trigger              | New messages          | History              | Fork metadata                                                |
+| -------------------- | --------------------- | -------------------- | ------------------------------------------------------------ |
+| `submit-message`     | Last message in array | Everything before it | None                                                         |
+| `regenerate-message` | None (empty array)    | Entire array         | `forkOf` = messageId, `parent` = tree parent of that message |
 
 For regeneration, the adapter looks up the target message in the [conversation tree](conversation-tree.md) to compute the correct `forkOf` and `parent` values using the tree's `x-ably-msg-id` (not the `UIMessage.id`).
 
@@ -48,20 +48,20 @@ Delegates directly to `transport.close(options)`.
 
 ## ChatTransportOptions
 
-| Option | Type | Purpose |
-|---|---|---|
+| Option                       | Type                                                           | Purpose                                                 |
+| ---------------------------- | -------------------------------------------------------------- | ------------------------------------------------------- |
 | `prepareSendMessagesRequest` | `(context: SendMessagesRequestContext) => { body?, headers? }` | Customize the HTTP POST body and headers before sending |
 
 The `SendMessagesRequestContext` provides:
 
-| Field | Type | Description |
-|---|---|---|
-| `chatId` | `string?` | Chat session ID from `useChat()` |
-| `trigger` | `'submit-message' \| 'regenerate-message'` | What triggered the request |
-| `messageId` | `string?` | Target message ID for regeneration |
-| `history` | `UIMessage[]` | Previous messages (context for the LLM) |
-| `messages` | `UIMessage[]` | New messages being sent (empty for regeneration) |
-| `forkOf` | `string?` | The message ID of the message being forked |
-| `parent` | `string \| null?` | The message ID of the predecessor in the thread |
+| Field       | Type                                       | Description                                      |
+| ----------- | ------------------------------------------ | ------------------------------------------------ |
+| `chatId`    | `string?`                                  | Chat session ID from `useChat()`                 |
+| `trigger`   | `'submit-message' \| 'regenerate-message'` | What triggered the request                       |
+| `messageId` | `string?`                                  | Target message ID for regeneration               |
+| `history`   | `UIMessage[]`                              | Previous messages (context for the LLM)          |
+| `messages`  | `UIMessage[]`                              | New messages being sent (empty for regeneration) |
+| `forkOf`    | `string?`                                  | The message ID of the message being forked       |
+| `parent`    | `string \| null?`                          | The message ID of the predecessor in the thread  |
 
 See [Client transport](client-transport.md) for the core transport that this adapter wraps. See [Vercel AI SDK framework guide](../frameworks/vercel-ai-sdk.md) for the integration paths. See [Vercel codec](vercel-codec.md) for how events are encoded/decoded.

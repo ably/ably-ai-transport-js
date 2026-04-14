@@ -10,22 +10,22 @@ The protocol has two header namespaces and two message types: [transport headers
 
 Transport headers are set by the generic transport layer. They handle turn correlation, stream lifecycle, cancellation, and branching. The codec layer never reads or writes these - the transport layer owns them.
 
-| Header | Values | Purpose |
-|---|---|---|
-| `x-ably-stream` | `"true"` / `"false"` | Whether this message uses the message append lifecycle |
-| `x-ably-status` | `"streaming"` / `"finished"` / `"aborted"` | Current lifecycle state of a streamed message |
-| `x-ably-stream-id` | string | Identity of the streamed message (correlates create → appends → close) |
-| `x-ably-turn-id` | string | [Turn](glossary.md#turn-id-vs-message-id) correlation ID. Every message in a turn carries this |
-| `x-ably-msg-id` | string | [Message identity](#message-identity-x-ably-msg-id). One per domain message (user or assistant). Used for [optimistic reconciliation](#optimistic-reconciliation) |
-| `x-ably-turn-client-id` | string | ClientId of the user who initiated the turn |
-| `x-ably-role` | `"user"` / `"assistant"` | Message role |
-| `x-ably-parent` | message ID | Preceding message in the branch (linear parent) |
-| `x-ably-fork-of` | message ID | Message being replaced (creates a fork in the conversation tree) |
-| `x-ably-cancel-turn-id` | string | Cancel a specific turn |
-| `x-ably-cancel-own` | `"true"` | Cancel all turns belonging to the sender |
-| `x-ably-cancel-client-id` | string | Cancel all turns belonging to a specific clientId |
-| `x-ably-cancel-all` | `"true"` | Cancel all turns on the channel |
-| `x-ably-turn-reason` | `"complete"` / `"cancelled"` / `"error"` | Why a turn ended (on turn-end events) |
+| Header                    | Values                                     | Purpose                                                                                                                                                           |
+| ------------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `x-ably-stream`           | `"true"` / `"false"`                       | Whether this message uses the message append lifecycle                                                                                                            |
+| `x-ably-status`           | `"streaming"` / `"finished"` / `"aborted"` | Current lifecycle state of a streamed message                                                                                                                     |
+| `x-ably-stream-id`        | string                                     | Identity of the streamed message (correlates create → appends → close)                                                                                            |
+| `x-ably-turn-id`          | string                                     | [Turn](glossary.md#turn-id-vs-message-id) correlation ID. Every message in a turn carries this                                                                    |
+| `x-ably-msg-id`           | string                                     | [Message identity](#message-identity-x-ably-msg-id). One per domain message (user or assistant). Used for [optimistic reconciliation](#optimistic-reconciliation) |
+| `x-ably-turn-client-id`   | string                                     | ClientId of the user who initiated the turn                                                                                                                       |
+| `x-ably-role`             | `"user"` / `"assistant"`                   | Message role                                                                                                                                                      |
+| `x-ably-parent`           | message ID                                 | Preceding message in the branch (linear parent)                                                                                                                   |
+| `x-ably-fork-of`          | message ID                                 | Message being replaced (creates a fork in the conversation tree)                                                                                                  |
+| `x-ably-cancel-turn-id`   | string                                     | Cancel a specific turn                                                                                                                                            |
+| `x-ably-cancel-own`       | `"true"`                                   | Cancel all turns belonging to the sender                                                                                                                          |
+| `x-ably-cancel-client-id` | string                                     | Cancel all turns belonging to a specific clientId                                                                                                                 |
+| `x-ably-cancel-all`       | `"true"`                                   | Cancel all turns on the channel                                                                                                                                   |
+| `x-ably-turn-reason`      | `"complete"` / `"cancelled"` / `"error"`   | Why a turn ended (on turn-end events)                                                                                                                             |
 
 ### Domain headers (`x-domain-*`)
 
@@ -33,13 +33,13 @@ Domain headers are set by the codec layer. They carry framework-specific metadat
 
 For the Vercel `UIMessageCodec`, domain headers include:
 
-| Header | Purpose |
-|---|---|
-| `x-domain-id` | Chunk/message ID |
-| `x-domain-providerMetadata` | JSON-serialized provider metadata |
-| `x-domain-finishReason` | Why the LLM stopped generating |
-| `x-domain-error` | Error message |
-| `x-domain-data` | JSON-serialized data payload (for `data-*` parts) |
+| Header                      | Purpose                                           |
+| --------------------------- | ------------------------------------------------- |
+| `x-domain-id`               | Chunk/message ID                                  |
+| `x-domain-providerMetadata` | JSON-serialized provider metadata                 |
+| `x-domain-finishReason`     | Why the LLM stopped generating                    |
+| `x-domain-error`            | Error message                                     |
+| `x-domain-data`             | JSON-serialized data payload (for `data-*` parts) |
 
 The `x-domain-` prefix is defined in `constants.ts` as `DOMAIN_HEADER_PREFIX`. Codecs use `headerWriter()` and `headerReader()` utilities that automatically apply the prefix.
 
@@ -47,13 +47,13 @@ The `x-domain-` prefix is defined in `constants.ts` as `DOMAIN_HEADER_PREFIX`. C
 
 Lifecycle events are published by the transport layer to coordinate turn state. They use Ably message `name` as the event type and carry metadata in headers. They have no `data` payload.
 
-| Event name | Direction | Headers | Purpose |
-|---|---|---|---|
-| `x-ably-turn-start` | Server → Channel | `x-ably-turn-id`, `x-ably-turn-client-id` | Signal that a turn has started |
-| `x-ably-turn-end` | Server → Channel | `x-ably-turn-id`, `x-ably-turn-client-id`, `x-ably-turn-reason` | Signal that a turn has ended |
-| `x-ably-cancel` | Client → Channel | Cancel filter headers | Request cancellation of one or more turns |
-| `x-ably-abort` | Server → Channel | - | Transport-level abort signal (stream cancelled) |
-| `x-ably-error` | Server → Channel | - | Transport-level error signal |
+| Event name          | Direction        | Headers                                                         | Purpose                                         |
+| ------------------- | ---------------- | --------------------------------------------------------------- | ----------------------------------------------- |
+| `x-ably-turn-start` | Server → Channel | `x-ably-turn-id`, `x-ably-turn-client-id`                       | Signal that a turn has started                  |
+| `x-ably-turn-end`   | Server → Channel | `x-ably-turn-id`, `x-ably-turn-client-id`, `x-ably-turn-reason` | Signal that a turn has ended                    |
+| `x-ably-cancel`     | Client → Channel | Cancel filter headers                                           | Request cancellation of one or more turns       |
+| `x-ably-abort`      | Server → Channel | -                                                               | Transport-level abort signal (stream cancelled) |
+| `x-ably-error`      | Server → Channel | -                                                               | Transport-level error signal                    |
 
 ## Content messages
 
@@ -84,11 +84,11 @@ A streamed message uses Ably's [message actions](glossary.md#message-actions-abl
 
 The lifecycle has three states:
 
-| Status | Meaning |
-|---|---|
+| Status      | Meaning                              |
+| ----------- | ------------------------------------ |
 | `streaming` | Stream is active, more data expected |
-| `finished` | Stream completed normally |
-| `aborted` | Stream was cancelled |
+| `finished`  | Stream completed normally            |
+| `aborted`   | Stream was cancelled                 |
 
 A streamed message progresses through these Ably message actions:
 
@@ -161,11 +161,11 @@ Every domain message - user or assistant - gets a unique `x-ably-msg-id` (a `cry
 
 ### Who generates it
 
-| Scenario | Generator | Location |
-|---|---|---|
-| User message (optimistic) | Client transport `send()` | One UUID per message in the batch |
-| User message (server relay) | Server transport `Turn.addMessages()` | One UUID per input; if the input already carries an `x-ably-msg-id` header (from the POST body), the existing value is kept |
-| Assistant response | Server transport `Turn.pipeStream()` / `Turn.streamResponse()` | One UUID for the entire streamed response |
+| Scenario                    | Generator                                                      | Location                                                                                                                    |
+| --------------------------- | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| User message (optimistic)   | Client transport `send()`                                      | One UUID per message in the batch                                                                                           |
+| User message (server relay) | Server transport `Turn.addMessages()`                          | One UUID per input; if the input already carries an `x-ably-msg-id` header (from the POST body), the existing value is kept |
+| Assistant response          | Server transport `Turn.pipeStream()` / `Turn.streamResponse()` | One UUID for the entire streamed response                                                                                   |
 
 ### How it's stamped
 
@@ -177,13 +177,13 @@ The message ID flows through the header pipeline:
 
 ### How it's consumed
 
-| Consumer | What it does with the message ID |
-|---|---|
-| [Decoder core](decoder.md#message-id-tagging) | Reads `x-ably-msg-id` from inbound message headers and tags every emitted `DecoderOutput` event with it |
-| [Accumulator](codec-interface.md#accumulator) | Uses `output.messageId` to route decoded events to the correct in-progress domain message (e.g. the `UIMessage` being built). The message ID becomes the `UIMessage.id` for assistant messages |
-| [Conversation tree](conversation-tree.md#data-structures) | Uses the message ID as the primary key (`_nodeIndex`). Branching headers (`x-ably-parent`, `x-ably-fork-of`) reference other messages by their message ID |
-| [Optimistic reconciliation](#optimistic-reconciliation) | Matches relayed messages to optimistic inserts (see below) |
-| `regenerate()` / `edit()` | Look up the target message in the tree by message ID to compute `forkOf`, `parent`, and truncated history |
+| Consumer                                                  | What it does with the message ID                                                                                                                                                               |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [Decoder core](decoder.md#message-id-tagging)             | Reads `x-ably-msg-id` from inbound message headers and tags every emitted `DecoderOutput` event with it                                                                                        |
+| [Accumulator](codec-interface.md#accumulator)             | Uses `output.messageId` to route decoded events to the correct in-progress domain message (e.g. the `UIMessage` being built). The message ID becomes the `UIMessage.id` for assistant messages |
+| [Conversation tree](conversation-tree.md#data-structures) | Uses the message ID as the primary key (`_nodeIndex`). Branching headers (`x-ably-parent`, `x-ably-fork-of`) reference other messages by their message ID                                      |
+| [Optimistic reconciliation](#optimistic-reconciliation)   | Matches relayed messages to optimistic inserts (see below)                                                                                                                                     |
+| `regenerate()` / `edit()`                                 | Look up the target message in the tree by message ID to compute `forkOf`, `parent`, and truncated history                                                                                      |
 
 ### Optimistic reconciliation
 

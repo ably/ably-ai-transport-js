@@ -26,12 +26,12 @@ Each `MessageNode` stores:
 
 ```typescript
 {
-  message: TMessage;              // The domain message
-  msgId: string;                  // From x-ably-msg-id
-  parentId: string | undefined;   // From x-ably-parent
-  forkOf: string | undefined;     // From x-ably-fork-of
+  message: TMessage; // The domain message
+  msgId: string; // From x-ably-msg-id
+  parentId: string | undefined; // From x-ably-parent
+  forkOf: string | undefined; // From x-ably-fork-of
   headers: Record<string, string>;
-  serial: string | undefined;     // Ably-assigned serial
+  serial: string | undefined; // Ably-assigned serial
 }
 ```
 
@@ -40,11 +40,13 @@ Each `MessageNode` stores:
 `upsert(msgId, message, headers, serial?)` is the only way to add or update messages:
 
 **Insert (new msgId):**
+
 1. Create a `MessageNode` from the message, headers, and serial
 2. Add to the node index and parent index
 3. Insert into the sorted list at the correct position (binary search for serial-bearing, append for null-serial)
 
 **Update (existing msgId):**
+
 1. Update the message content and headers in place
 2. If a serial is provided and the existing node has no serial (optimistic → relay), promote the serial: remove from sorted list, re-insert at correct position
 
@@ -91,20 +93,20 @@ Sibling group resolution is cached per `flattenNodes()` call using a `resolvedGr
 
 The public `Tree` interface exposes:
 
-| Method | Returns |
-|---|---|
+| Method               | Returns                                              |
+| -------------------- | ---------------------------------------------------- |
 | `getSiblings(msgId)` | All messages in the sibling group containing `msgId` |
-| `hasSiblings(msgId)` | Whether the message has alternative versions |
-| `getNode(msgId)` | The `MessageNode` by message ID |
-| `getHeaders(msgId)` | Headers for a specific message |
+| `hasSiblings(msgId)` | Whether the message has alternative versions         |
+| `getNode(msgId)`     | The `MessageNode` by message ID                      |
+| `getHeaders(msgId)`  | Headers for a specific message                       |
 
 The following are on the `View`, not the public `Tree` interface:
 
-| Method | Returns |
-|---|---|
-| `flattenNodes()` | Linear message list following selected branches |
-| `select(msgId, index)` | Switch to a different sibling at a fork point |
-| `getSelectedIndex(msgId)` | Currently selected index in the sibling group |
+| Method                    | Returns                                         |
+| ------------------------- | ----------------------------------------------- |
+| `flattenNodes()`          | Linear message list following selected branches |
+| `select(msgId, index)`    | Switch to a different sibling at a fork point   |
+| `getSelectedIndex(msgId)` | Currently selected index in the sibling group   |
 
 ## Delete
 

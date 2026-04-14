@@ -34,7 +34,7 @@ const view = transport.view;
 const turn = await view.send(userMessage);
 
 // The user message is already in the view - no waiting for the server
-const messages = view.flattenNodes().map(n => n.message);
+const messages = view.flattenNodes().map((n) => n.message);
 // messages includes userMessage at the end of the conversation
 ```
 

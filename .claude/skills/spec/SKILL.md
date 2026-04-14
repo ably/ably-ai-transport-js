@@ -21,6 +21,7 @@ Build a map of spec point ID → description.
 ## Step 2: Find all spec references in code
 
 Search `src/` for any comment referencing an `AIT-` identifier. Collect:
+
 - File path and line number
 - The spec point ID referenced
 - Surrounding code context (the function or block it appears in)
@@ -67,6 +68,7 @@ These map to specific implementations and should have explicit
 #### Direction 1: Code → Spec (are code references valid?)
 
 For each spec reference found in code:
+
 1. Verify the referenced spec point exists in the specification
 2. Verify the code's behavior matches the spec point's description
 3. Flag any references to non-existent spec points
@@ -75,6 +77,7 @@ For each spec reference found in code:
 #### Direction 2: Spec → Code (is the spec covered?)
 
 For each feature spec point in the specification:
+
 1. Check if there is at least one code reference or implementation
 2. Identify spec points with no corresponding code (not yet implemented)
 3. Identify spec points marked `[Testable]` that have no corresponding test
@@ -84,23 +87,29 @@ For each feature spec point in the specification:
 Present a structured report with these sections:
 
 ### General Principles Conformance
+
 For each `AIT-GP*` point: conforming, violating (with locations), or not
 yet applicable. This section should always be present even when no feature
 spec points exist yet.
 
 ### Invalid References
+
 Spec points referenced in code that don't exist in the specification.
 
 ### Contradictions
+
 Code that appears to implement behavior different from what the spec requires.
 
 ### Unimplemented Feature Spec Points
+
 Feature spec points (non-GP) with no corresponding code. Group by section.
 
 ### Untested Spec Points
+
 Spec points marked `[Testable]` with no corresponding test.
 
 ### Coverage Summary
+
 A table showing each spec section and the number of implemented vs total
 spec points. General principles have their own row showing conformance
 count rather than code-reference count.

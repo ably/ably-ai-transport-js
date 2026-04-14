@@ -19,8 +19,13 @@ vi.mock('../../../src/core/transport/decode-history.js', () => ({
 // Helpers
 // ---------------------------------------------------------------------------
 
-interface TestEvent { type: string }
-interface TestMessage { id: string; content: string }
+interface TestEvent {
+  type: string;
+}
+interface TestMessage {
+  id: string;
+  content: string;
+}
 
 const silentLogger = makeLogger({ logLevel: LogLevel.Silent });
 
@@ -50,8 +55,15 @@ const createMockCodec = (): Codec<TestEvent, TestMessage> => ({
 
 const createMockSendDelegate = (): SendDelegate<TestEvent, TestMessage> =>
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-  vi.fn(() => Promise.resolve({ stream: new ReadableStream(), turnId: 'mock-turn', cancel: () => Promise.resolve(), optimisticMsgIds: [] }));
-
+  vi.fn(() =>
+    Promise.resolve({
+      stream: new ReadableStream(),
+      turnId: 'mock-turn',
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+      cancel: () => Promise.resolve(),
+      optimisticMsgIds: [],
+    }),
+  );
 
 const makeHeaders = (msgId: string, turnId?: string): Record<string, string> => {
   const h: Record<string, string> = { [HEADER_MSG_ID]: msgId };
@@ -170,10 +182,15 @@ describe('DefaultView', () => {
 
     it('does not emit update when change is on a non-visible branch', () => {
       tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert('m2', { id: '2', content: 'fork' }, {
-        [HEADER_MSG_ID]: 'm2',
-        'x-ably-fork-of': 'm1',
-      }, 'serial-2');
+      tree.upsert(
+        'm2',
+        { id: '2', content: 'fork' },
+        {
+          [HEADER_MSG_ID]: 'm2',
+          'x-ably-fork-of': 'm1',
+        },
+        'serial-2',
+      );
 
       // m1 is pinned (was visible when m2 forked). Select m1 explicitly.
       view.select('m1', 0);
@@ -183,20 +200,30 @@ describe('DefaultView', () => {
 
       // Update m2's content — m2 is on a non-visible branch,
       // so the view should not emit.
-      tree.upsert('m2', { id: '2', content: 'updated fork' }, {
-        [HEADER_MSG_ID]: 'm2',
-        'x-ably-fork-of': 'm1',
-      }, 'serial-2');
+      tree.upsert(
+        'm2',
+        { id: '2', content: 'updated fork' },
+        {
+          [HEADER_MSG_ID]: 'm2',
+          'x-ably-fork-of': 'm1',
+        },
+        'serial-2',
+      );
 
       expect(handler).not.toHaveBeenCalled();
     });
 
     it('emits update on branch selection change', () => {
       tree.upsert('m1', { id: '1', content: 'original' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert('m2', { id: '2', content: 'fork' }, {
-        [HEADER_MSG_ID]: 'm2',
-        'x-ably-fork-of': 'm1',
-      }, 'serial-2');
+      tree.upsert(
+        'm2',
+        { id: '2', content: 'fork' },
+        {
+          [HEADER_MSG_ID]: 'm2',
+          'x-ably-fork-of': 'm1',
+        },
+        'serial-2',
+      );
 
       const handler = vi.fn();
       view.on('update', handler);
@@ -235,16 +262,26 @@ describe('DefaultView', () => {
 
     it('does not forward ably-message for nodes on non-selected branches', () => {
       tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert('m2', { id: '2', content: 'v1' }, {
-        [HEADER_MSG_ID]: 'm2',
-        'x-ably-parent': 'm1',
-      }, 'serial-2');
+      tree.upsert(
+        'm2',
+        { id: '2', content: 'v1' },
+        {
+          [HEADER_MSG_ID]: 'm2',
+          'x-ably-parent': 'm1',
+        },
+        'serial-2',
+      );
       // Fork m2 — view pins to m2
-      tree.upsert('m3', { id: '3', content: 'v2' }, {
-        [HEADER_MSG_ID]: 'm3',
-        'x-ably-parent': 'm1',
-        'x-ably-fork-of': 'm2',
-      }, 'serial-3');
+      tree.upsert(
+        'm3',
+        { id: '3', content: 'v2' },
+        {
+          [HEADER_MSG_ID]: 'm3',
+          'x-ably-parent': 'm1',
+          'x-ably-fork-of': 'm2',
+        },
+        'serial-3',
+      );
 
       const handler = vi.fn();
       view.on('ably-message', handler);
@@ -305,7 +342,10 @@ describe('DefaultView', () => {
       view.on('turn', handler);
 
       const event: TurnLifecycleEvent = {
-        type: 'x-ably-turn-start', turnId: 'turn-2', clientId: 'client-b', parent: 'm1',
+        type: 'x-ably-turn-start',
+        turnId: 'turn-2',
+        clientId: 'client-b',
+        parent: 'm1',
       };
       tree.emitTurn(event);
 
@@ -315,12 +355,25 @@ describe('DefaultView', () => {
     it('does not forward turn-start when parent is on a non-visible branch', () => {
       // Create a fork: m2 and m3 are siblings under m1
       tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert('m2', { id: '2', content: 'v1' }, {
-        [HEADER_MSG_ID]: 'm2', 'x-ably-parent': 'm1',
-      }, 'serial-2');
-      tree.upsert('m3', { id: '3', content: 'v2' }, {
-        [HEADER_MSG_ID]: 'm3', 'x-ably-parent': 'm1', 'x-ably-fork-of': 'm2',
-      }, 'serial-3');
+      tree.upsert(
+        'm2',
+        { id: '2', content: 'v1' },
+        {
+          [HEADER_MSG_ID]: 'm2',
+          'x-ably-parent': 'm1',
+        },
+        'serial-2',
+      );
+      tree.upsert(
+        'm3',
+        { id: '3', content: 'v2' },
+        {
+          [HEADER_MSG_ID]: 'm3',
+          'x-ably-parent': 'm1',
+          'x-ably-fork-of': 'm2',
+        },
+        'serial-3',
+      );
 
       // Select m2 (index 0), so m3 and its descendants are not visible
       view.select('m2', 0);
@@ -330,7 +383,10 @@ describe('DefaultView', () => {
 
       // Turn whose parent is m3 (on the non-selected branch)
       const event: TurnLifecycleEvent = {
-        type: 'x-ably-turn-start', turnId: 'turn-hidden', clientId: 'remote', parent: 'm3',
+        type: 'x-ably-turn-start',
+        turnId: 'turn-hidden',
+        clientId: 'remote',
+        parent: 'm3',
       };
       tree.emitTurn(event);
 
@@ -342,7 +398,9 @@ describe('DefaultView', () => {
       view.on('turn', handler);
 
       const event: TurnLifecycleEvent = {
-        type: 'x-ably-turn-start', turnId: 'turn-root', clientId: 'client-a',
+        type: 'x-ably-turn-start',
+        turnId: 'turn-root',
+        clientId: 'client-a',
       };
       tree.emitTurn(event);
 
@@ -355,7 +413,12 @@ describe('DefaultView', () => {
       const handler = vi.fn();
       view.on('turn', handler);
 
-      const event: TurnLifecycleEvent = { type: 'x-ably-turn-end', turnId: 'turn-99', clientId: 'client-x', reason: 'complete' };
+      const event: TurnLifecycleEvent = {
+        type: 'x-ably-turn-end',
+        turnId: 'turn-99',
+        clientId: 'client-x',
+        reason: 'complete',
+      };
       tree.emitTurn(event);
 
       expect(handler).not.toHaveBeenCalled();
@@ -395,7 +458,11 @@ describe('DefaultView', () => {
   describe('loadOlder', () => {
     it('loads first page and reveals messages', async () => {
       const page = makePage(
-        [{ id: '1', content: 'old1' }, { id: '2', content: 'old2' }, { id: '3', content: 'old3' }],
+        [
+          { id: '1', content: 'old1' },
+          { id: '2', content: 'old2' },
+          { id: '3', content: 'old3' },
+        ],
         [makeHeaders('h1'), makeHeaders('h2'), makeHeaders('h3')],
         ['serial-1', 'serial-2', 'serial-3'],
       );
@@ -412,8 +479,11 @@ describe('DefaultView', () => {
     it('withholds excess messages and reveals on subsequent calls', async () => {
       const page = makePage(
         [
-          { id: '1', content: 'a' }, { id: '2', content: 'b' }, { id: '3', content: 'c' },
-          { id: '4', content: 'd' }, { id: '5', content: 'e' },
+          { id: '1', content: 'a' },
+          { id: '2', content: 'b' },
+          { id: '3', content: 'c' },
+          { id: '4', content: 'd' },
+          { id: '5', content: 'e' },
         ],
         [makeHeaders('h1'), makeHeaders('h2'), makeHeaders('h3'), makeHeaders('h4'), makeHeaders('h5')],
         ['serial-1', 'serial-2', 'serial-3', 'serial-4', 'serial-5'],
@@ -437,13 +507,20 @@ describe('DefaultView', () => {
 
     it('loads more history when withheld buffer is exhausted', async () => {
       const page2 = makePage(
-        [{ id: '10', content: 'oldest' }, { id: '11', content: 'older' }],
+        [
+          { id: '10', content: 'oldest' },
+          { id: '11', content: 'older' },
+        ],
         [makeHeaders('h10'), makeHeaders('h11')],
         ['serial-10', 'serial-11'],
       );
 
       const page1 = makePage(
-        [{ id: '1', content: 'a' }, { id: '2', content: 'b' }, { id: '3', content: 'c' }],
+        [
+          { id: '1', content: 'a' },
+          { id: '2', content: 'b' },
+          { id: '3', content: 'c' },
+        ],
         [makeHeaders('h1'), makeHeaders('h2'), makeHeaders('h3')],
         ['serial-1', 'serial-2', 'serial-3'],
         true,
@@ -474,7 +551,10 @@ describe('DefaultView', () => {
       vi.mocked(decodeHistory).mockReturnValue(firstPromise);
 
       const page = makePage(
-        [{ id: '1', content: 'a' }, { id: '2', content: 'b' }],
+        [
+          { id: '1', content: 'a' },
+          { id: '2', content: 'b' },
+        ],
         [makeHeaders('h1'), makeHeaders('h2')],
         ['serial-1', 'serial-2'],
       );
@@ -495,7 +575,11 @@ describe('DefaultView', () => {
 
     it('suppresses ably-message events for withheld nodes', async () => {
       const page = makePage(
-        [{ id: '1', content: 'a' }, { id: '2', content: 'b' }, { id: '3', content: 'c' }],
+        [
+          { id: '1', content: 'a' },
+          { id: '2', content: 'b' },
+          { id: '3', content: 'c' },
+        ],
         [makeHeaders('h1'), makeHeaders('h2'), makeHeaders('h3')],
         ['serial-1', 'serial-2', 'serial-3'],
       );
@@ -540,12 +624,9 @@ describe('DefaultView', () => {
       await updateView.update('target-1', events);
 
       expect(mockDelegate).toHaveBeenCalledOnce();
-      expect(mockDelegate).toHaveBeenCalledWith(
-        [],
-        undefined,
-        expect.any(Array),
-        [{ kind: 'event', msgId: 'target-1', events }],
-      );
+      expect(mockDelegate).toHaveBeenCalledWith([], undefined, expect.any(Array), [
+        { kind: 'event', msgId: 'target-1', events },
+      ]);
 
       updateView.close();
     });
@@ -558,15 +639,25 @@ describe('DefaultView', () => {
   describe('branch navigation', () => {
     beforeEach(() => {
       tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert('m2', { id: '2', content: 'v1' }, {
-        [HEADER_MSG_ID]: 'm2',
-        'x-ably-parent': 'm1',
-      }, 'serial-2');
-      tree.upsert('m3', { id: '3', content: 'v2' }, {
-        [HEADER_MSG_ID]: 'm3',
-        'x-ably-parent': 'm1',
-        'x-ably-fork-of': 'm2',
-      }, 'serial-3');
+      tree.upsert(
+        'm2',
+        { id: '2', content: 'v1' },
+        {
+          [HEADER_MSG_ID]: 'm2',
+          'x-ably-parent': 'm1',
+        },
+        'serial-2',
+      );
+      tree.upsert(
+        'm3',
+        { id: '3', content: 'v2' },
+        {
+          [HEADER_MSG_ID]: 'm3',
+          'x-ably-parent': 'm1',
+          'x-ably-fork-of': 'm2',
+        },
+        'serial-3',
+      );
     });
 
     it('select changes which branch flattenNodes follows', () => {
@@ -624,22 +715,32 @@ describe('DefaultView', () => {
   describe('multi-view', () => {
     it('two views over the same tree have independent selections', () => {
       tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert('m2', { id: '2', content: 'v1' }, {
-        [HEADER_MSG_ID]: 'm2',
-        'x-ably-parent': 'm1',
-      }, 'serial-2');
-      tree.upsert('m3', { id: '3', content: 'v2' }, {
-        [HEADER_MSG_ID]: 'm3',
-        'x-ably-parent': 'm1',
-        'x-ably-fork-of': 'm2',
-      }, 'serial-3');
+      tree.upsert(
+        'm2',
+        { id: '2', content: 'v1' },
+        {
+          [HEADER_MSG_ID]: 'm2',
+          'x-ably-parent': 'm1',
+        },
+        'serial-2',
+      );
+      tree.upsert(
+        'm3',
+        { id: '3', content: 'v2' },
+        {
+          [HEADER_MSG_ID]: 'm3',
+          'x-ably-parent': 'm1',
+          'x-ably-fork-of': 'm2',
+        },
+        'serial-3',
+      );
 
       const view2 = new DefaultView<TestEvent, TestMessage>({
         tree,
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: createMockSendDelegate(),
-  
+
         logger: silentLogger,
       });
 
@@ -666,7 +767,7 @@ describe('DefaultView', () => {
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: createMockSendDelegate(),
-  
+
         logger: silentLogger,
       });
 
@@ -685,17 +786,22 @@ describe('DefaultView', () => {
 
     it('fork from one view does not shift the other view', () => {
       tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert('m2', { id: '2', content: 'asst' }, {
-        [HEADER_MSG_ID]: 'm2',
-        'x-ably-parent': 'm1',
-      }, 'serial-2');
+      tree.upsert(
+        'm2',
+        { id: '2', content: 'asst' },
+        {
+          [HEADER_MSG_ID]: 'm2',
+          'x-ably-parent': 'm1',
+        },
+        'serial-2',
+      );
 
       const view2 = new DefaultView<TestEvent, TestMessage>({
         tree,
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: createMockSendDelegate(),
-  
+
         logger: silentLogger,
       });
 
@@ -704,11 +810,16 @@ describe('DefaultView', () => {
       expect(view2.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
 
       // Fork m2 — simulates an edit/regenerate from view2
-      tree.upsert('m3', { id: '3', content: 'fork' }, {
-        [HEADER_MSG_ID]: 'm3',
-        'x-ably-parent': 'm1',
-        'x-ably-fork-of': 'm2',
-      }, 'serial-3');
+      tree.upsert(
+        'm3',
+        { id: '3', content: 'fork' },
+        {
+          [HEADER_MSG_ID]: 'm3',
+          'x-ably-parent': 'm1',
+          'x-ably-fork-of': 'm2',
+        },
+        'serial-3',
+      );
 
       // view stays on m2 (pinned), view2 also pinned to m2
       expect(view.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
@@ -727,12 +838,22 @@ describe('DefaultView', () => {
       // Create a delegate that inserts a fork when called (simulates optimistic insert)
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
       const forkDelegate: SendDelegate<TestEvent, TestMessage> = vi.fn(() => {
-        tree.upsert('m3', { id: '3', content: 'fork' }, {
-          [HEADER_MSG_ID]: 'm3',
-          'x-ably-parent': 'm1',
-          'x-ably-fork-of': 'm2',
-        }, 'serial-3');
-        return Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-1', cancel: vi.fn(), optimisticMsgIds: ['m3'] });
+        tree.upsert(
+          'm3',
+          { id: '3', content: 'fork' },
+          {
+            [HEADER_MSG_ID]: 'm3',
+            'x-ably-parent': 'm1',
+            'x-ably-fork-of': 'm2',
+          },
+          'serial-3',
+        );
+        return Promise.resolve({
+          stream: new ReadableStream(),
+          turnId: 'turn-1',
+          cancel: vi.fn(),
+          optimisticMsgIds: ['m3'],
+        });
       });
 
       const forkView = new DefaultView<TestEvent, TestMessage>({
@@ -740,15 +861,20 @@ describe('DefaultView', () => {
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: forkDelegate,
-  
+
         logger: silentLogger,
       });
 
       tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert('m2', { id: '2', content: 'asst' }, {
-        [HEADER_MSG_ID]: 'm2',
-        'x-ably-parent': 'm1',
-      }, 'serial-2');
+      tree.upsert(
+        'm2',
+        { id: '2', content: 'asst' },
+        {
+          [HEADER_MSG_ID]: 'm2',
+          'x-ably-parent': 'm1',
+        },
+        'serial-2',
+      );
 
       await forkView.send([], { forkOf: 'm2', parent: 'm1' });
 
@@ -766,21 +892,25 @@ describe('DefaultView', () => {
         Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-1', cancel: vi.fn(), optimisticMsgIds: [] }),
       );
 
-
       const forkView = new DefaultView<TestEvent, TestMessage>({
         tree,
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: noopDelegate,
-  
+
         logger: silentLogger,
       });
 
       tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert('m2', { id: '2', content: 'asst' }, {
-        [HEADER_MSG_ID]: 'm2',
-        'x-ably-parent': 'm1',
-      }, 'serial-2');
+      tree.upsert(
+        'm2',
+        { id: '2', content: 'asst' },
+        {
+          [HEADER_MSG_ID]: 'm2',
+          'x-ably-parent': 'm1',
+        },
+        'serial-2',
+      );
 
       // Regenerate: send with forkOf but no optimistic insert
       await forkView.send([], { forkOf: 'm2', parent: 'm1' });
@@ -792,12 +922,17 @@ describe('DefaultView', () => {
       forkView.on('update', handler);
 
       // Server response arrives, creating the fork (stamped with the pending turn's ID)
-      tree.upsert('m3', { id: '3', content: 'regenerated' }, {
-        [HEADER_MSG_ID]: 'm3',
-        'x-ably-parent': 'm1',
-        'x-ably-fork-of': 'm2',
-        'x-ably-turn-id': 'turn-1',
-      }, 'serial-3');
+      tree.upsert(
+        'm3',
+        { id: '3', content: 'regenerated' },
+        {
+          [HEADER_MSG_ID]: 'm3',
+          'x-ably-parent': 'm1',
+          'x-ably-fork-of': 'm2',
+          'x-ably-turn-id': 'turn-1',
+        },
+        'serial-3',
+      );
 
       // forkView auto-selected the new fork (m3, latest sibling)
       expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
@@ -805,12 +940,17 @@ describe('DefaultView', () => {
 
       // Pending state was consumed — a second fork from a different turn doesn't force re-selection
       handler.mockClear();
-      tree.upsert('m4', { id: '4', content: 'another fork' }, {
-        [HEADER_MSG_ID]: 'm4',
-        'x-ably-parent': 'm1',
-        'x-ably-fork-of': 'm2',
-        'x-ably-turn-id': 'turn-other',
-      }, 'serial-4');
+      tree.upsert(
+        'm4',
+        { id: '4', content: 'another fork' },
+        {
+          [HEADER_MSG_ID]: 'm4',
+          'x-ably-parent': 'm1',
+          'x-ably-fork-of': 'm2',
+          'x-ably-turn-id': 'turn-other',
+        },
+        'serial-4',
+      );
 
       // View stays pinned on m3, does not jump to m4
       expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
@@ -827,27 +967,36 @@ describe('DefaultView', () => {
         Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-1', cancel: vi.fn(), optimisticMsgIds: [] }),
       );
 
-
       const forkView = new DefaultView<TestEvent, TestMessage>({
         tree,
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: noopDelegate,
-  
+
         logger: silentLogger,
       });
 
       // Set up: m1 → m2 (original) and m3 (first regeneration, already a sibling of m2)
       tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert('m2', { id: '2', content: 'asst v1' }, {
-        [HEADER_MSG_ID]: 'm2',
-        'x-ably-parent': 'm1',
-      }, 'serial-2');
-      tree.upsert('m3', { id: '3', content: 'asst v2' }, {
-        [HEADER_MSG_ID]: 'm3',
-        'x-ably-parent': 'm1',
-        'x-ably-fork-of': 'm2',
-      }, 'serial-3');
+      tree.upsert(
+        'm2',
+        { id: '2', content: 'asst v1' },
+        {
+          [HEADER_MSG_ID]: 'm2',
+          'x-ably-parent': 'm1',
+        },
+        'serial-2',
+      );
+      tree.upsert(
+        'm3',
+        { id: '3', content: 'asst v2' },
+        {
+          [HEADER_MSG_ID]: 'm3',
+          'x-ably-parent': 'm1',
+          'x-ably-fork-of': 'm2',
+        },
+        'serial-3',
+      );
 
       // View is showing m3 (latest sibling, index 1)
       forkView.select('m2', 1);
@@ -860,12 +1009,17 @@ describe('DefaultView', () => {
       expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
 
       // Server response arrives, creating a third sibling (stamped with the pending turn's ID)
-      tree.upsert('m4', { id: '4', content: 'asst v3' }, {
-        [HEADER_MSG_ID]: 'm4',
-        'x-ably-parent': 'm1',
-        'x-ably-fork-of': 'm2',
-        'x-ably-turn-id': 'turn-1',
-      }, 'serial-4');
+      tree.upsert(
+        'm4',
+        { id: '4', content: 'asst v3' },
+        {
+          [HEADER_MSG_ID]: 'm4',
+          'x-ably-parent': 'm1',
+          'x-ably-fork-of': 'm2',
+          'x-ably-turn-id': 'turn-1',
+        },
+        'serial-4',
+      );
 
       // forkView auto-selected the newest sibling (m4, index 2)
       expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm4']);
@@ -882,26 +1036,35 @@ describe('DefaultView', () => {
         Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-1', cancel: vi.fn(), optimisticMsgIds: [] }),
       );
 
-
       const forkView = new DefaultView<TestEvent, TestMessage>({
         tree,
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: noopDelegate,
-  
+
         logger: silentLogger,
       });
 
       tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert('m2', { id: '2', content: 'asst v1' }, {
-        [HEADER_MSG_ID]: 'm2',
-        'x-ably-parent': 'm1',
-      }, 'serial-2');
-      tree.upsert('m3', { id: '3', content: 'asst v2' }, {
-        [HEADER_MSG_ID]: 'm3',
-        'x-ably-parent': 'm1',
-        'x-ably-fork-of': 'm2',
-      }, 'serial-3');
+      tree.upsert(
+        'm2',
+        { id: '2', content: 'asst v1' },
+        {
+          [HEADER_MSG_ID]: 'm2',
+          'x-ably-parent': 'm1',
+        },
+        'serial-2',
+      );
+      tree.upsert(
+        'm3',
+        { id: '3', content: 'asst v2' },
+        {
+          [HEADER_MSG_ID]: 'm3',
+          'x-ably-parent': 'm1',
+          'x-ably-fork-of': 'm2',
+        },
+        'serial-3',
+      );
 
       // Navigate to original (m2) then back to m3
       forkView.select('m2', 0);
@@ -912,12 +1075,17 @@ describe('DefaultView', () => {
       await forkView.send([], { forkOf: 'm3', parent: 'm1' });
 
       // Server response creates a new sibling (forks from m2 via m3's group, stamped with pending turn)
-      tree.upsert('m4', { id: '4', content: 'asst v3' }, {
-        [HEADER_MSG_ID]: 'm4',
-        'x-ably-parent': 'm1',
-        'x-ably-fork-of': 'm3',
-        'x-ably-turn-id': 'turn-1',
-      }, 'serial-4');
+      tree.upsert(
+        'm4',
+        { id: '4', content: 'asst v3' },
+        {
+          [HEADER_MSG_ID]: 'm4',
+          'x-ably-parent': 'm1',
+          'x-ably-fork-of': 'm3',
+          'x-ably-turn-id': 'turn-1',
+        },
+        'serial-4',
+      );
 
       // Auto-selected the newest sibling
       expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm4']);
@@ -930,7 +1098,12 @@ describe('DefaultView', () => {
       // a fork (e.g. the turn ends without producing any messages for this group).
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
       const noopDelegate: SendDelegate<TestEvent, TestMessage> = vi.fn(() =>
-        Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-cleanup', cancel: vi.fn(), optimisticMsgIds: [] }),
+        Promise.resolve({
+          stream: new ReadableStream(),
+          turnId: 'turn-cleanup',
+          cancel: vi.fn(),
+          optimisticMsgIds: [],
+        }),
       );
 
       const forkView = new DefaultView<TestEvent, TestMessage>({
@@ -942,10 +1115,15 @@ describe('DefaultView', () => {
       });
 
       tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert('m2', { id: '2', content: 'asst' }, {
-        [HEADER_MSG_ID]: 'm2',
-        'x-ably-parent': 'm1',
-      }, 'serial-2');
+      tree.upsert(
+        'm2',
+        { id: '2', content: 'asst' },
+        {
+          [HEADER_MSG_ID]: 'm2',
+          'x-ably-parent': 'm1',
+        },
+        'serial-2',
+      );
 
       // Regenerate: deferred auto-select (pending)
       await forkView.send([], { forkOf: 'm2', parent: 'm1' });
@@ -954,11 +1132,16 @@ describe('DefaultView', () => {
       tree.emitTurn({ type: 'x-ably-turn-end', turnId: 'turn-cleanup', clientId: 'client-a', reason: 'complete' });
 
       // A later unrelated fork should NOT be auto-selected (pending was cleaned up)
-      tree.upsert('m3', { id: '3', content: 'external fork' }, {
-        [HEADER_MSG_ID]: 'm3',
-        'x-ably-parent': 'm1',
-        'x-ably-fork-of': 'm2',
-      }, 'serial-3');
+      tree.upsert(
+        'm3',
+        { id: '3', content: 'external fork' },
+        {
+          [HEADER_MSG_ID]: 'm3',
+          'x-ably-parent': 'm1',
+          'x-ably-fork-of': 'm2',
+        },
+        'serial-3',
+      );
 
       // View pins to m2 (external fork), does NOT jump to m3
       expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
@@ -974,7 +1157,7 @@ describe('DefaultView', () => {
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: createMockSendDelegate(),
-  
+
         logger: silentLogger,
       });
 
@@ -1002,19 +1185,29 @@ describe('DefaultView', () => {
         channel: createMockChannel(),
         codec: createMockCodec(),
         sendDelegate: mockDelegate,
-  
+
         logger: silentLogger,
       });
       // Seed a linear chain: m1 -> m2 -> m3
       tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert('m2', { id: '2', content: 'assistant' }, {
-        [HEADER_MSG_ID]: 'm2',
-        'x-ably-parent': 'm1',
-      }, 'serial-2');
-      tree.upsert('m3', { id: '3', content: 'follow-up' }, {
-        [HEADER_MSG_ID]: 'm3',
-        'x-ably-parent': 'm2',
-      }, 'serial-3');
+      tree.upsert(
+        'm2',
+        { id: '2', content: 'assistant' },
+        {
+          [HEADER_MSG_ID]: 'm2',
+          'x-ably-parent': 'm1',
+        },
+        'serial-2',
+      );
+      tree.upsert(
+        'm3',
+        { id: '3', content: 'follow-up' },
+        {
+          [HEADER_MSG_ID]: 'm3',
+          'x-ably-parent': 'm2',
+        },
+        'serial-3',
+      );
     });
 
     it('send passes pre-computed history to delegate', async () => {
@@ -1070,18 +1263,21 @@ describe('DefaultView', () => {
     });
 
     it('edit throws for unknown messageId', async () => {
-      await expect(view.edit('nonexistent', { id: 'x', content: 'y' })).rejects.toThrow(
-        'message not found in tree',
-      );
+      await expect(view.edit('nonexistent', { id: 'x', content: 'y' })).rejects.toThrow('message not found in tree');
     });
 
     it('send uses view-local branch selections for context', async () => {
       // Fork m2
-      tree.upsert('m4', { id: '4', content: 'v2' }, {
-        [HEADER_MSG_ID]: 'm4',
-        'x-ably-parent': 'm1',
-        'x-ably-fork-of': 'm2',
-      }, 'serial-4');
+      tree.upsert(
+        'm4',
+        { id: '4', content: 'v2' },
+        {
+          [HEADER_MSG_ID]: 'm4',
+          'x-ably-parent': 'm1',
+          'x-ably-fork-of': 'm2',
+        },
+        'serial-4',
+      );
 
       // Select original branch (m2, not m4)
       view.select('m2', 0);
@@ -1118,15 +1314,25 @@ describe('DefaultView', () => {
 
     it('clears selections on close', () => {
       tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert('m2', { id: '2', content: 'v1' }, {
-        [HEADER_MSG_ID]: 'm2',
-        'x-ably-parent': 'm1',
-      }, 'serial-2');
-      tree.upsert('m3', { id: '3', content: 'v2' }, {
-        [HEADER_MSG_ID]: 'm3',
-        'x-ably-parent': 'm1',
-        'x-ably-fork-of': 'm2',
-      }, 'serial-3');
+      tree.upsert(
+        'm2',
+        { id: '2', content: 'v1' },
+        {
+          [HEADER_MSG_ID]: 'm2',
+          'x-ably-parent': 'm1',
+        },
+        'serial-2',
+      );
+      tree.upsert(
+        'm3',
+        { id: '3', content: 'v2' },
+        {
+          [HEADER_MSG_ID]: 'm3',
+          'x-ably-parent': 'm1',
+          'x-ably-fork-of': 'm2',
+        },
+        'serial-3',
+      );
 
       view.select('m2', 0);
       expect(view.getSelectedIndex('m2')).toBe(0);
@@ -1159,7 +1365,9 @@ describe('DefaultView', () => {
 
     it('is idempotent — double close does not throw', () => {
       view.close();
-      expect(() => { view.close(); }).not.toThrow();
+      expect(() => {
+        view.close();
+      }).not.toThrow();
     });
 
     it('send rejects after close', async () => {

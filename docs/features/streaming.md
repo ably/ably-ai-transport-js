@@ -28,11 +28,11 @@ sequenceDiagram
 
 Each stream has a lifecycle tracked by the `x-ably-status` header:
 
-| Status | Meaning |
-|---|---|
+| Status      | Meaning                               |
+| ----------- | ------------------------------------- |
 | `streaming` | Stream is open, more appends expected |
-| `finished` | Stream completed normally |
-| `aborted` | Stream was cancelled or errored |
+| `finished`  | Stream completed normally             |
+| `aborted`   | Stream was cancelled or errored       |
 
 ## Server
 
@@ -69,7 +69,7 @@ const turn = await view.send(userMessage);
 
 // Subscribe to accumulated messages - updates on every token
 const unsubscribe = view.on('update', () => {
-  const messages = view.flattenNodes().map(n => n.message);
+  const messages = view.flattenNodes().map((n) => n.message);
   // the last assistant message grows as tokens arrive
 });
 ```
@@ -103,12 +103,12 @@ Late-joining clients receive the final message from channel history, which conta
 
 The transport streams whatever events the codec produces. For the Vercel AI SDK codec (`UIMessageCodec`), these are `UIMessageChunk` events:
 
-| Chunk type | Ably encoding |
-|---|---|
-| `text-delta` | Message append |
-| `reasoning-delta` | Message append (separate stream) |
-| `finish` | Discrete message (terminal - closes the stream) |
-| `error` | Discrete message (terminal - closes the stream with error) |
+| Chunk type        | Ably encoding                                              |
+| ----------------- | ---------------------------------------------------------- |
+| `text-delta`      | Message append                                             |
+| `reasoning-delta` | Message append (separate stream)                           |
+| `finish`          | Discrete message (terminal - closes the stream)            |
+| `error`           | Discrete message (terminal - closes the stream with error) |
 
 Multiple content streams can be active within a single turn (e.g., reasoning + text). Each gets its own message with its own stream ID.
 

@@ -121,16 +121,16 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
 
 ## Key differences from the useChat path
 
-| | useChat path | Generic hooks path |
-|---|---|---|
-| **Message state** | Managed by `useChat()` | Managed by `useView()` |
-| **Send** | `sendMessage({ text })` | `send([uiMessage])` - you construct the `UIMessage` |
-| **Regenerate** | `regenerate({ messageId })` | `regenerate(messageId)` |
-| **Edit** | Not built into `useChat()` | `edit(messageId, [newMessage])` |
-| **Branch navigation** | Not available | `view.getSiblings()`, `view.select()` via `useView()` |
-| **Stop** | `stop()` from `useChat()` | `transport.cancel({ own: true })` |
-| **Observer sync** | Requires `useMessageSync()` | Built-in - `useView()` includes all clients |
-| **Hooks needed** | `useChatTransport()` + `useMessageSync()` | Individual hooks per operation |
+|                       | useChat path                              | Generic hooks path                                    |
+| --------------------- | ----------------------------------------- | ----------------------------------------------------- |
+| **Message state**     | Managed by `useChat()`                    | Managed by `useView()`                                |
+| **Send**              | `sendMessage({ text })`                   | `send([uiMessage])` - you construct the `UIMessage`   |
+| **Regenerate**        | `regenerate({ messageId })`               | `regenerate(messageId)`                               |
+| **Edit**              | Not built into `useChat()`                | `edit(messageId, [newMessage])`                       |
+| **Branch navigation** | Not available                             | `view.getSiblings()`, `view.select()` via `useView()` |
+| **Stop**              | `stop()` from `useChat()`                 | `transport.cancel({ own: true })`                     |
+| **Observer sync**     | Requires `useMessageSync()`               | Built-in - `useView()` includes all clients           |
+| **Hooks needed**      | `useChatTransport()` + `useMessageSync()` | Individual hooks per operation                        |
 
 Use the **useChat path** when you want the simplest integration and Vercel's `useChat()` handles your needs. Use the **generic hooks path** when you need conversation branching UI, custom message construction, or tighter control over transport operations.
 

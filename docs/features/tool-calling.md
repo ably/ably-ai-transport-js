@@ -8,21 +8,21 @@ Without a durable transport layer, tool call sequences break on disconnection. A
 
 Tools are defined in the AI SDK's `tool()` format and passed to `streamText()`. AI Transport handles two execution models:
 
-| Model | Where it runs | How the result is published |
-|---|---|---|
-| **Server-executed** | Inside `streamText()` on the server | Automatically - the AI SDK calls `execute`, and the result streams through `turn.streamResponse()` |
-| **Client-executed** | In the browser (or any client) | The client sends the result via [`view.update()`](../reference/react-hooks.md#useview) which amends the assistant message and starts a continuation turn |
+| Model               | Where it runs                       | How the result is published                                                                                                                              |
+| ------------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Server-executed** | Inside `streamText()` on the server | Automatically - the AI SDK calls `execute`, and the result streams through `turn.streamResponse()`                                                       |
+| **Client-executed** | In the browser (or any client)      | The client sends the result via [`view.update()`](../reference/react-hooks.md#useview) which amends the assistant message and starts a continuation turn |
 
 Tool events flow through the codec like any other streaming content. The Vercel codec maps tool lifecycle to these wire events:
 
-| Event | Meaning | Ably encoding |
-|---|---|---|
-| `tool-input-start` | Model is calling a tool | Message create (streamed) |
-| `tool-input-delta` | Streaming JSON input fragment | Message append |
-| `tool-input-available` | Tool input complete, ready for execution | Message append (closing) |
-| `tool-output-available` | Tool execution succeeded with a result | Discrete message |
-| `tool-output-error` | Tool execution failed | Discrete message |
-| `tool-approval-request` | Tool requires user approval before execution | Discrete message |
+| Event                   | Meaning                                      | Ably encoding             |
+| ----------------------- | -------------------------------------------- | ------------------------- |
+| `tool-input-start`      | Model is calling a tool                      | Message create (streamed) |
+| `tool-input-delta`      | Streaming JSON input fragment                | Message append            |
+| `tool-input-available`  | Tool input complete, ready for execution     | Message append (closing)  |
+| `tool-output-available` | Tool execution succeeded with a result       | Discrete message          |
+| `tool-output-error`     | Tool execution failed                        | Discrete message          |
+| `tool-approval-request` | Tool requires user approval before execution | Discrete message          |
 
 ## Server-executed tools
 
@@ -96,29 +96,28 @@ Watch for tool parts in the `input-available` state, execute the browser API, th
 import type { EventsNode } from '@ably/ai-transport';
 
 // 1. Find the pending tool call in the assistant message
-const node = view.nodes.find(n =>
-  n.message.role === 'assistant' &&
-  n.message.parts.some(p =>
-    p.type === 'dynamic-tool' &&
-    p.toolName === 'getLocation' &&
-    p.state === 'input-available'
-  )
+const node = view.nodes.find(
+  (n) =>
+    n.message.role === 'assistant' &&
+    n.message.parts.some(
+      (p) => p.type === 'dynamic-tool' && p.toolName === 'getLocation' && p.state === 'input-available',
+    ),
 );
 
 // 2. Execute the browser API
-const position = await new Promise((resolve, reject) =>
-  navigator.geolocation.getCurrentPosition(resolve, reject)
-);
+const position = await new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject));
 
 // 3. Update the assistant message with the result and start a continuation turn
-await view.update(node.msgId, [{
-  type: 'tool-output-available',
-  toolCallId: toolPart.toolCallId,
-  output: {
-    latitude: position.coords.latitude,
-    longitude: position.coords.longitude,
+await view.update(node.msgId, [
+  {
+    type: 'tool-output-available',
+    toolCallId: toolPart.toolCallId,
+    output: {
+      latitude: position.coords.latitude,
+      longitude: position.coords.longitude,
+    },
   },
-}]);
+]);
 ```
 
 `update` updates the existing assistant message and starts a continuation [turn](../concepts/turns.md) in a single call. The tree updates optimistically, then the events are sent to the server in the POST body. The server publishes them to the channel (with `x-ably-amend` header targeting the assistant message's `x-ably-msg-id`) and calls `streamText()` again with the tool result in the conversation history. All clients see the tool part transition from `input-available` to `output-available`.
@@ -147,11 +146,13 @@ const turn = transport.newTurn({ turnId, clientId });
 await turn.start();
 
 // Publish the tool result targeting a message from a previous turn
-await turn.addEvents([{
-  kind: 'event',
-  msgId: previousAssistantMsgId,
-  events: [{ type: 'tool-output-available', toolCallId, output: result }],
-}]);
+await turn.addEvents([
+  {
+    kind: 'event',
+    msgId: previousAssistantMsgId,
+    events: [{ type: 'tool-output-available', toolCallId, output: result }],
+  },
+]);
 
 // Continue streaming with the tool result in history
 const response = streamText({ model, messages: updatedHistory, tools });
@@ -168,7 +169,7 @@ Cross-turn events (from `view.update()` or server-side `turn.addEvents()`) are s
 To avoid re-executing client tools after a page refresh, check whether the tool call already has a follow-up assistant message (which means the model already consumed the result):
 
 ```typescript
-const hasFollowUp = nodes.slice(i + 1).some(n => n.message.role === 'assistant');
+const hasFollowUp = nodes.slice(i + 1).some((n) => n.message.role === 'assistant');
 if (hasFollowUp) continue; // Already resolved in a previous session
 ```
 

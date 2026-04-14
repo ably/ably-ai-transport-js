@@ -39,13 +39,12 @@ ably-common/                          # Git submodule — shared protocol resour
 
 The SDK ships four entry points from a single package:
 
-| Export path | Contains | Purpose | External deps |
-|---|---|---|---|
-| `@ably/ai-transport` | Generic codec interfaces, `createClientTransport`, `createServerTransport`, shared utilities | Core primitives — codec-agnostic transport and encoding | `ably` (peer) |
-| `@ably/ai-transport/react` | `useClientTransport`, `useView`, `useTree`, `useSend`, `useRegenerate`, `useEdit`, `useActiveTurns`, `useAblyMessages` | Generic React hooks for any codec | `ably`, `react` (peers) |
-| `@ably/ai-transport/vercel` | `UIMessageCodec`, `createServerTransport`, `createClientTransport`, `createChatTransport`, Vercel-specific types | Drop-in Vercel AI SDK integration | `ably`, `ai` (peers) |
-| `@ably/ai-transport/vercel/react` | `useChatTransport`, `useMessageSync` | React hooks for Vercel's `useChat` | `ably`, `ai`, `react` (peers) |
-
+| Export path                       | Contains                                                                                                               | Purpose                                                 | External deps                 |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- | ----------------------------- |
+| `@ably/ai-transport`              | Generic codec interfaces, `createClientTransport`, `createServerTransport`, shared utilities                           | Core primitives — codec-agnostic transport and encoding | `ably` (peer)                 |
+| `@ably/ai-transport/react`        | `useClientTransport`, `useView`, `useTree`, `useSend`, `useRegenerate`, `useEdit`, `useActiveTurns`, `useAblyMessages` | Generic React hooks for any codec                       | `ably`, `react` (peers)       |
+| `@ably/ai-transport/vercel`       | `UIMessageCodec`, `createServerTransport`, `createClientTransport`, `createChatTransport`, Vercel-specific types       | Drop-in Vercel AI SDK integration                       | `ably`, `ai` (peers)          |
+| `@ably/ai-transport/vercel/react` | `useChatTransport`, `useMessageSync`                                                                                   | React hooks for Vercel's `useChat`                      | `ably`, `ai`, `react` (peers) |
 
 ## Two-Layer Architecture
 
@@ -67,11 +66,11 @@ Header/event/message-name constants and Ably message utilities used by both laye
 
 The client-side architecture separates three concerns:
 
-| Component | Owns | Events |
-|---|---|---|
-| **Tree** | Complete conversation state — every node from live messages and history. Turn tracking (active turn → clientId). | `update` (any structural change), `ably-message` (every raw message), `turn` (start/end) — unfiltered, fires for all changes |
-| **View** | Pagination window — which history-loaded nodes are visible vs withheld. | Same event names, but **scoped to the visible window** — only fires when the visible output changes |
-| **Transport** | Write path (send/regenerate/edit/cancel), channel subscription, stream routing, decode loop. | `error` only — all data events moved to Tree/View |
+| Component     | Owns                                                                                                             | Events                                                                                                                       |
+| ------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| **Tree**      | Complete conversation state — every node from live messages and history. Turn tracking (active turn → clientId). | `update` (any structural change), `ably-message` (every raw message), `turn` (start/end) — unfiltered, fires for all changes |
+| **View**      | Pagination window — which history-loaded nodes are visible vs withheld.                                          | Same event names, but **scoped to the visible window** — only fires when the visible output changes                          |
+| **Transport** | Write path (send/regenerate/edit/cancel), channel subscription, stream routing, decode loop.                     | `error` only — all data events moved to Tree/View                                                                            |
 
 The Tree is the source of truth. The View subscribes to Tree events and re-emits them filtered to what's visible. The Transport wires the channel to the Tree and exposes both as `transport.tree` and `transport.view`.
 
@@ -146,8 +145,8 @@ Public-facing entry points (e.g. `createClientTransport()`) are factory function
 
 1. **Two-layer split**: Generic transport/codec knows nothing about Vercel. Vercel layer implements the codec and provides convenience wrappers.
 2. **Codec-parameterized**: All generic components are parameterized by `<TEvent, TMessage>` via the `Codec` interface.
-4. **Constructor/option injection**: All dependencies passed explicitly — no singletons, no globals.
-3. **Composition, not inheritance**: Transports compose features; no class hierarchies.
+3. **Constructor/option injection**: All dependencies passed explicitly — no singletons, no globals.
+4. **Composition, not inheritance**: Transports compose features; no class hierarchies.
 5. **Interface-first**: Public contracts are TypeScript interfaces. Implementations are internal `Default*` classes, exposed to consumers via factory functions.
 6. **Header discipline**: Generic layer uses only `x-ably-*` headers. Domain-specific headers (e.g. `x-domain-*`) belong in the Vercel layer.
 7. **Explicit exports**: Only types and functions listed in `index.ts` files are public API.

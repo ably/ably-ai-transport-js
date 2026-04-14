@@ -26,8 +26,14 @@ import { ErrorCode } from '../../../src/errors.js';
 // Helpers
 // ---------------------------------------------------------------------------
 
-interface TestEvent { type: string; text?: string }
-interface TestMessage { id: string; content: string }
+interface TestEvent {
+  type: string;
+  text?: string;
+}
+interface TestMessage {
+  id: string;
+  content: string;
+}
 
 const makeNode = (message: TestMessage, overrides?: Partial<MessageNode<TestMessage>>): MessageNode<TestMessage> => ({
   kind: 'message',
@@ -106,11 +112,7 @@ const headersOf = (msg: Ably.Message): Record<string, string> =>
  * @param headers - Cancel headers to include.
  * @param clientId - Sender clientId.
  */
-const simulateCancel = (
-  channel: MockChannel,
-  headers: Record<string, string>,
-  clientId?: string,
-): void => {
+const simulateCancel = (channel: MockChannel, headers: Record<string, string>, clientId?: string): void => {
   const listeners = channel.listeners.get(EVENT_CANCEL) ?? [];
   const msg = {
     name: EVENT_CANCEL,
@@ -188,9 +190,9 @@ describe('ServerTransport', () => {
       const turn = transport.newTurn({ turnId: 'turn-1', clientId: 'user-a' });
       await turn.start();
 
-      const startMsg = channel.publishCalls.find(
-        (m) => !Array.isArray(m) && m.name === EVENT_TURN_START,
-      ) as Ably.Message | undefined;
+      const startMsg = channel.publishCalls.find((m) => !Array.isArray(m) && m.name === EVENT_TURN_START) as
+        | Ably.Message
+        | undefined;
       expect(startMsg).toBeDefined();
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- narrowed by expect(startMsg).toBeDefined() above
       expect(headersOf(startMsg!)[HEADER_TURN_ID]).toBe('turn-1');
@@ -201,9 +203,7 @@ describe('ServerTransport', () => {
       await turn.start();
       await turn.start();
 
-      const startMsgs = channel.publishCalls.filter(
-        (m) => !Array.isArray(m) && (m).name === EVENT_TURN_START,
-      );
+      const startMsgs = channel.publishCalls.filter((m) => !Array.isArray(m) && m.name === EVENT_TURN_START);
       expect(startMsgs).toHaveLength(1);
     });
 
@@ -212,9 +212,9 @@ describe('ServerTransport', () => {
       await turn.start();
       await turn.end('complete');
 
-      const endMsg = channel.publishCalls.find(
-        (m) => !Array.isArray(m) && m.name === EVENT_TURN_END,
-      ) as Ably.Message | undefined;
+      const endMsg = channel.publishCalls.find((m) => !Array.isArray(m) && m.name === EVENT_TURN_END) as
+        | Ably.Message
+        | undefined;
       expect(endMsg).toBeDefined();
     });
 
@@ -224,17 +224,15 @@ describe('ServerTransport', () => {
       await turn.end('complete');
       await turn.end('complete');
 
-      const endMsgs = channel.publishCalls.filter(
-        (m) => !Array.isArray(m) && (m).name === EVENT_TURN_END,
-      );
+      const endMsgs = channel.publishCalls.filter((m) => !Array.isArray(m) && m.name === EVENT_TURN_END);
       expect(endMsgs).toHaveLength(1);
     });
 
     it('addMessages throws if start() not called', async () => {
       const turn = transport.newTurn({ turnId: 'turn-1' });
-      await expect(
-        turn.addMessages([makeNode({ id: '1', content: 'hi' })]),
-      ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await expect(turn.addMessages([makeNode({ id: '1', content: 'hi' })])).rejects.toBeErrorInfoWithCode(
+        ErrorCode.InvalidArgument,
+      );
     });
 
     it('streamResponse throws if start() not called', async () => {
@@ -266,10 +264,7 @@ describe('ServerTransport', () => {
     it('creates one encoder per message for distinct headers', async () => {
       const turn = transport.newTurn({ turnId: 'turn-1' });
       await turn.start();
-      await turn.addMessages([
-        makeNode({ id: 'm1', content: 'a' }),
-        makeNode({ id: 'm2', content: 'b' }),
-      ]);
+      await turn.addMessages([makeNode({ id: 'm1', content: 'a' }), makeNode({ id: 'm2', content: 'b' })]);
 
       // Each message gets its own encoder (distinct x-ably-msg-id)
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
@@ -279,10 +274,15 @@ describe('ServerTransport', () => {
     it('per-message headers override transport defaults', async () => {
       const turn = transport.newTurn({ turnId: 'turn-1' });
       await turn.start();
-      await turn.addMessages([makeNode({ id: 'm1', content: 'hi' }, {
-        msgId: 'client-assigned-id',
-        headers: { [HEADER_MSG_ID]: 'client-assigned-id', 'x-domain-foo': 'bar' },
-      })]);
+      await turn.addMessages([
+        makeNode(
+          { id: 'm1', content: 'hi' },
+          {
+            msgId: 'client-assigned-id',
+            headers: { [HEADER_MSG_ID]: 'client-assigned-id', 'x-domain-foo': 'bar' },
+          },
+        ),
+      ]);
 
       const opts = lastEncoderOpts(codec);
       const headers = opts?.extras?.headers ?? {};
@@ -297,10 +297,15 @@ describe('ServerTransport', () => {
     it('uses node parentId and forkOf in transport headers', async () => {
       const turn = transport.newTurn({ turnId: 'turn-1' });
       await turn.start();
-      await turn.addMessages([makeNode({ id: 'm1', content: 'hi' }, {
-        parentId: 'parent-abc',
-        forkOf: 'fork-xyz',
-      })]);
+      await turn.addMessages([
+        makeNode(
+          { id: 'm1', content: 'hi' },
+          {
+            parentId: 'parent-abc',
+            forkOf: 'fork-xyz',
+          },
+        ),
+      ]);
 
       const opts = lastEncoderOpts(codec);
       const headers = opts?.extras?.headers ?? {};
@@ -339,11 +344,13 @@ describe('ServerTransport', () => {
     it('calls writeEvent per event in each node', async () => {
       const turn = transport.newTurn({ turnId: 'turn-1' });
       await turn.start();
-      await turn.addEvents([{
-        kind: 'event',
-        msgId: 'target-1',
-        events: [{ type: 'ev-a' }, { type: 'ev-b' }, { type: 'ev-c' }],
-      }]);
+      await turn.addEvents([
+        {
+          kind: 'event',
+          msgId: 'target-1',
+          events: [{ type: 'ev-a' }, { type: 'ev-b' }, { type: 'ev-c' }],
+        },
+      ]);
 
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
       const calls = vi.mocked(codec.createEncoder).mock.results;
@@ -558,7 +565,9 @@ describe('ServerTransport', () => {
         turnId: 'turn-1',
         clientId: 'user-a',
         // eslint-disable-next-line @typescript-eslint/require-await -- mock throws
-        onCancel: async () => { throw new Error('handler broke'); },
+        onCancel: async () => {
+          throw new Error('handler broke');
+        },
         onError,
       });
       const turn2 = transport.newTurn({ turnId: 'turn-2', clientId: 'user-a' });

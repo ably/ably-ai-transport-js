@@ -2,10 +2,10 @@
 
 ## Two tiers
 
-| Tier | Command | Runs against | What it proves |
-|---|---|---|---|
-| **Unit** | `npm test` | Mocks only | Every code path works correctly in isolation |
-| **Integration** | `npm run test:integration` | Real Ably channels | Happy path works end-to-end over real Ably |
+| Tier            | Command                    | Runs against       | What it proves                               |
+| --------------- | -------------------------- | ------------------ | -------------------------------------------- |
+| **Unit**        | `npm test`                 | Mocks only         | Every code path works correctly in isolation |
+| **Integration** | `npm run test:integration` | Real Ably channels | Happy path works end-to-end over real Ably   |
 
 Config: `vitest.config.ts` (unit, excludes `*.integration.test.ts`) and `vitest.config.integration.ts` (integration only).
 
@@ -49,11 +49,11 @@ By default, integration tests run against the **Ably sandbox**. The globalSetup 
 
 To run against a different environment, set `VITE_ABLY_ENV`:
 
-| `VITE_ABLY_ENV` | Behaviour | API key required? |
-|---|---|---|
-| *(unset)* / `sandbox` | Provisions a sandbox app automatically | No |
-| `local` | Connects to `local-rest.ably.io:8081` (no TLS) | Yes — set `VITE_ABLY_API_KEY` |
-| `production` | Connects to production Ably | Yes — set `VITE_ABLY_API_KEY` |
+| `VITE_ABLY_ENV`       | Behaviour                                      | API key required?             |
+| --------------------- | ---------------------------------------------- | ----------------------------- |
+| _(unset)_ / `sandbox` | Provisions a sandbox app automatically         | No                            |
+| `local`               | Connects to `local-rest.ably.io:8081` (no TLS) | Yes — set `VITE_ABLY_API_KEY` |
+| `production`          | Connects to production Ably                    | Yes — set `VITE_ABLY_API_KEY` |
 
 ### Conventions
 

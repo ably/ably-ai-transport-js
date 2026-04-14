@@ -21,6 +21,7 @@ If there are uncommitted changes, warn the user and stop — rebase
 requires a clean working tree.
 
 Determine the **target branch**:
+
 - If the user specified a branch (e.g. `/rebase main`), use that.
 - Otherwise, default to `main`.
 

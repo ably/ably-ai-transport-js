@@ -25,12 +25,12 @@ await transport.cancel({ all: true });
 
 The default when no filter is given is `{ own: true }` - cancel all turns started by this client.
 
-| Filter | Effect | Use case |
-|---|---|---|
-| `{ own: true }` (default) | Cancel all turns started by this client | Stop button |
-| `{ turnId: "abc" }` | Cancel one specific turn | Cancel a specific generation |
-| `{ clientId: "user-2" }` | Cancel all turns started by a specific client | Admin cancelling another user |
-| `{ all: true }` | Cancel every active turn on the channel | Emergency stop |
+| Filter                    | Effect                                        | Use case                      |
+| ------------------------- | --------------------------------------------- | ----------------------------- |
+| `{ own: true }` (default) | Cancel all turns started by this client       | Stop button                   |
+| `{ turnId: "abc" }`       | Cancel one specific turn                      | Cancel a specific generation  |
+| `{ clientId: "user-2" }`  | Cancel all turns started by a specific client | Admin cancelling another user |
+| `{ all: true }`           | Cancel every active turn on the channel       | Emergency stop                |
 
 In React, `useActiveTurns()` tells you whether turns are active:
 

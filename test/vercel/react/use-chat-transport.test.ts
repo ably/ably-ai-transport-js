@@ -60,13 +60,21 @@ const createFakeTransport = (): ClientTransport<AI.UIMessageChunk, AI.UIMessage>
     hasSiblings: vi.fn(() => false),
     getNode: vi.fn(),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-    send: vi.fn(() => Promise.resolve({ stream: new ReadableStream(), turnId: 't', cancel: vi.fn(), optimisticMsgIds: [] })),
+    send: vi.fn(() =>
+      Promise.resolve({ stream: new ReadableStream(), turnId: 't', cancel: vi.fn(), optimisticMsgIds: [] }),
+    ),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-    regenerate: vi.fn(() => Promise.resolve({ stream: new ReadableStream(), turnId: 't', cancel: vi.fn(), optimisticMsgIds: [] })),
+    regenerate: vi.fn(() =>
+      Promise.resolve({ stream: new ReadableStream(), turnId: 't', cancel: vi.fn(), optimisticMsgIds: [] }),
+    ),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-    edit: vi.fn(() => Promise.resolve({ stream: new ReadableStream(), turnId: 't', cancel: vi.fn(), optimisticMsgIds: [] })),
+    edit: vi.fn(() =>
+      Promise.resolve({ stream: new ReadableStream(), turnId: 't', cancel: vi.fn(), optimisticMsgIds: [] }),
+    ),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-    update: vi.fn(() => Promise.resolve({ stream: new ReadableStream(), turnId: 't', cancel: vi.fn(), optimisticMsgIds: [] })),
+    update: vi.fn(() =>
+      Promise.resolve({ stream: new ReadableStream(), turnId: 't', cancel: vi.fn(), optimisticMsgIds: [] }),
+    ),
     getActiveTurnIds: vi.fn(() => new Map()),
     on: vi.fn(() => noop),
     close: vi.fn(),

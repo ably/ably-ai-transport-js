@@ -83,19 +83,23 @@ direct, declarative statement. No preamble, no "In this guide, we'll..."
 
 ```markdown
 <!-- Good -->
+
 Cancellation in `@ably/ai` is a channel-level operation - the client publishes
 a cancel signal on the Ably channel, the server receives it and aborts the
 matching turns.
 
 <!-- Good -->
+
 Interruption is when a user sends a new message while the AI is still streaming
 a response.
 
 <!-- Bad -->
+
 In this guide, we'll explore how to cancel streaming responses in your
 AI application.
 
 <!-- Bad -->
+
 This page covers the cancellation feature of the AI Transport SDK.
 ```
 
@@ -109,7 +113,7 @@ This page covers the cancellation feature of the AI Transport SDK.
   "robust." The technical explanation IS the value proposition.
 - **No hedging.** Don't say "you may want to" or "consider using." Say
   "use X when Y."
-- **Use hyphens, not em-dashes.** Use ` - ` (space-hyphen-space) for
+- **Use hyphens, not em-dashes.** Use `-` (space-hyphen-space) for
   parenthetical asides, not `—`. This applies to prose, code comments,
   and table cells.
 
@@ -128,10 +132,12 @@ for plain-English concept names.
 
 ```markdown
 <!-- Good -->
+
 The message ID is available as `msg.id`. Call `transport.send()` to publish,
 which sets the `x-ably-msg-id` header.
 
 <!-- Bad: concept name backticked, function missing parens -->
+
 The `message ID` is available as `msg.id`. Call `transport.send` to publish.
 ```
 
@@ -217,8 +223,8 @@ Internals pages follow this flow:
    glossary, and the corresponding feature/concept pages
 
 Internals pages differ from concept pages: concept pages explain what
-developers need to know to *use* the SDK. Internals pages explain how the
-SDK works *internally* for contributors and curious engineers. Internals
+developers need to know to _use_ the SDK. Internals pages explain how the
+SDK works _internally_ for contributors and curious engineers. Internals
 pages can reference source file paths and internal class names.
 
 ### Tables
@@ -228,10 +234,10 @@ codes, phase behaviors. Tables are scannable and dense. Prefer a table over
 a bullet list when comparing properties across items.
 
 ```markdown
-| Filter | Effect | Use case |
-|---|---|---|
-| `{ own: true }` (default) | Cancel all turns started by this client | Stop button |
-| `{ turnId: "abc" }` | Cancel one specific turn | Cancel a specific generation |
+| Filter                    | Effect                                  | Use case                     |
+| ------------------------- | --------------------------------------- | ---------------------------- |
+| `{ own: true }` (default) | Cancel all turns started by this client | Stop button                  |
+| `{ turnId: "abc" }`       | Cancel one specific turn                | Cancel a specific generation |
 ```
 
 ### Diagrams
@@ -240,8 +246,8 @@ Use **Mermaid diagrams** (` ```mermaid `) for sequence diagrams, flowcharts,
 and any multi-column or multi-participant interactions. Mermaid is rendered
 by GitHub and most doc tooling, so alignment is never an issue.
 
-```markdown
-```mermaid
+`````markdown
+````mermaid
 sequenceDiagram
     participant C as Client
     participant Ch as Channel
@@ -251,7 +257,10 @@ sequenceDiagram
     Note left of C: close local stream(s)
     Ch->>S: deliver to cancel listener
 ```                                        (close the code fence)
-```
+````
+`````
+
+````
 
 **When to use Mermaid vs plain text:**
 
@@ -277,7 +286,7 @@ eliminates this class of bugs entirely.
   `turn.cancel()`, not pseudocode.
 - **Comments explain the non-obvious.** Don't comment `// cancel the turn`
   above `turn.cancel()`. Do comment `// fire-and-forget - POST doesn't block
-  the stream return`.
+the stream return`.
 - **TypeScript only** for now (the SDK is TypeScript).
 - **Both sides.** Feature pages show client and server code. Use section
   headers to separate them.
@@ -295,11 +304,13 @@ readers skim, and the link needs to be where the concept appears.
 
 ```markdown
 <!-- Good: inline link where the concept is mentioned -->
+
 The [decoder](decoder.md) accumulates deltas via string concatenation and
 uses [prefix-matching](decoder.md#known-serial-prefix-match) to detect
 whether an update is incremental or a replacement.
 
 <!-- Bad: concept mentioned without link, with "See also" at the bottom -->
+
 The decoder accumulates deltas via string concatenation and uses
 prefix-matching to detect whether an update is incremental or a replacement.
 ...
@@ -373,14 +384,14 @@ docs/
 
 **Page type by directory:**
 
-| Directory | Page type | Pattern |
-|---|---|---|
-| `concepts/` | Concept page | Definition → architecture → data flow → key details |
-| `get-started/` | Quickstart | Prerequisites → step-by-step → "what's happening" → next steps |
-| `frameworks/` | Framework guide | What the framework provides → what's missing → how AIT fills gaps → integration paths |
-| `features/` | Feature page | Definition → problem framing → mechanism → client code → server code → edge cases |
-| `reference/` | Reference page | One section per API item: signature, params table, return type, example |
-| `internals/` | Internals page | Definition → concepts → operations → algorithms → edge cases → cross-refs |
+| Directory      | Page type       | Pattern                                                                               |
+| -------------- | --------------- | ------------------------------------------------------------------------------------- |
+| `concepts/`    | Concept page    | Definition → architecture → data flow → key details                                   |
+| `get-started/` | Quickstart      | Prerequisites → step-by-step → "what's happening" → next steps                        |
+| `frameworks/`  | Framework guide | What the framework provides → what's missing → how AIT fills gaps → integration paths |
+| `features/`    | Feature page    | Definition → problem framing → mechanism → client code → server code → edge cases     |
+| `reference/`   | Reference page  | One section per API item: signature, params table, return type, example               |
+| `internals/`   | Internals page  | Definition → concepts → operations → algorithms → edge cases → cross-refs             |
 
 If a page doesn't fit these categories, discuss placement before writing.
 
@@ -439,3 +450,4 @@ After writing a doc page, verify:
       first-contact, optimistic reconciliation) is defined or linked at first mention
 - [ ] No concept is mentioned in passing without the reader being able to
       understand it from context, an inline definition, or a link
+````

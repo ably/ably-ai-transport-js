@@ -10,17 +10,15 @@ interface Codec<TEvent, TMessage> {
   createDecoder(): StreamDecoder<TEvent, TMessage>;
   createAccumulator(): MessageAccumulator<TEvent, TMessage>;
   isTerminal(event: TEvent): boolean;
-
 }
 ```
 
-| Method              | Purpose                                                                                                                                                           |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `createEncoder()`   | Creates a [streaming encoder](encoder.md) that maps domain events to Ably publish operations                                                                      |
-| `createDecoder()`   | Creates a [decoder](decoder.md) that converts inbound Ably messages to domain events/messages                                                                     |
-| `createAccumulator()` | Creates an accumulator that builds complete messages from streaming events                                                                                        |
-| `isTerminal()`      | Returns true if an event signals stream completion (finish, error, abort). Used by the [stream router](transport-components.md#terminal-detection) to auto-close streams |
-
+| Method                | Purpose                                                                                                                                                                  |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `createEncoder()`     | Creates a [streaming encoder](encoder.md) that maps domain events to Ably publish operations                                                                             |
+| `createDecoder()`     | Creates a [decoder](decoder.md) that converts inbound Ably messages to domain events/messages                                                                            |
+| `createAccumulator()` | Creates an accumulator that builds complete messages from streaming events                                                                                               |
+| `isTerminal()`        | Returns true if an event signals stream completion (finish, error, abort). Used by the [stream router](transport-components.md#terminal-detection) to auto-close streams |
 
 ## How the transport uses the codec
 
@@ -42,7 +40,6 @@ The client transport uses:
 - `createAccumulator()` - builds complete messages from events (for [observer turns](glossary.md#own-turn-vs-observer-turn) - other clients' streams)
 - `isTerminal()` - tells the [stream router](transport-components.md#terminal-detection) when to close a per-turn ReadableStream
 
-
 ## Encoder architecture
 
 A domain encoder composes the encoder core rather than extending it:
@@ -55,12 +52,12 @@ Domain Encoder (e.g. UIMessageEncoder)
 
 The domain encoder maps events to core operations:
 
-| Domain event (Vercel)            | Core operation                                         |
-| -------------------------------- | ------------------------------------------------------ |
-| `text-start`                     | `core.startStream(id, { name: 'text' })`               |
-| `text-delta`                     | `core.appendStream(id, delta)`                         |
-| `text-end`                       | `core.closeStream(id, payload)`                        |
-| `start`, `finish`, `error`, etc. | `core.publishDiscrete(payload)`                        |
+| Domain event (Vercel)            | Core operation                           |
+| -------------------------------- | ---------------------------------------- |
+| `text-start`                     | `core.startStream(id, { name: 'text' })` |
+| `text-delta`                     | `core.appendStream(id, delta)`           |
+| `text-end`                       | `core.closeStream(id, payload)`          |
+| `start`, `finish`, `error`, etc. | `core.publishDiscrete(payload)`          |
 
 The [encoder core](encoder.md) handles all Ably-specific concerns: serial tracking, append queuing, [flush/recovery](encoder.md#recovery-mechanism), [header persistence](encoder.md#closing-appends-repeat-all-headers).
 
@@ -141,13 +138,13 @@ The Vercel codec (`src/vercel/codec/`) is the concrete implementation for the Ve
 
 ### Event mapping
 
-| UIMessageChunk type                          | Wire representation                                      |
-| -------------------------------------------- | -------------------------------------------------------- |
-| `text-start`                                 | Streamed message create (name: `"text"`)                 |
-| `text-delta`                                 | Streamed message append                                  |
-| `text-end`                                   | Streamed message close (status: `"finished"`)            |
-| `start`, `finish`, `error`                   | Discrete message                                         |
-| `data-*`                                     | Discrete message                                         |
+| UIMessageChunk type        | Wire representation                           |
+| -------------------------- | --------------------------------------------- |
+| `text-start`               | Streamed message create (name: `"text"`)      |
+| `text-delta`               | Streamed message append                       |
+| `text-end`                 | Streamed message close (status: `"finished"`) |
+| `start`, `finish`, `error` | Discrete message                              |
+| `data-*`                   | Discrete message                              |
 
 ### Domain headers
 

@@ -75,7 +75,9 @@ const waitForMessages = async (
     }
     const timer = setTimeout(() => {
       unsub();
-      reject(new Error(`timed out waiting for ${String(expected)} messages (got ${String(ct.view.flattenNodes().length)})`));
+      reject(
+        new Error(`timed out waiting for ${String(expected)} messages (got ${String(ct.view.flattenNodes().length)})`),
+      );
     }, timeout);
     const unsub = ct.view.on('update', () => {
       if (ct.view.flattenNodes().length >= expected) {
@@ -94,7 +96,7 @@ const waitForMessages = async (
  * @param timeout - Max wait in ms (default 10000).
  * @returns The matching turn lifecycle event.
  */
- 
+
 const waitForTurnEvent = async (
   ct: ClientTransport<AI.UIMessageChunk, AI.UIMessage>,
   turnId: string,
@@ -496,15 +498,17 @@ describe('ClientTransport integration', () => {
     // Stream a complete turn first
     const turn = serverTransport.newTurn({ turnId: 'turn-hist-1', clientId: 'user-d' });
     await turn.start();
-    await turn.addMessages([{
-      kind: 'message',
-      message: { id: 'user-hist-1', role: 'user', parts: [{ type: 'text', text: 'History question' }] },
-      msgId: crypto.randomUUID(),
-      parentId: undefined,
-      forkOf: undefined,
-      headers: {},
-      serial: undefined,
-    }]);
+    await turn.addMessages([
+      {
+        kind: 'message',
+        message: { id: 'user-hist-1', role: 'user', parts: [{ type: 'text', text: 'History question' }] },
+        msgId: crypto.randomUUID(),
+        parentId: undefined,
+        forkOf: undefined,
+        headers: {},
+        serial: undefined,
+      },
+    ]);
     await turn.streamResponse(textResponseStream('asst-hist-1', 'text-hist-1', 'History answer'));
     await turn.end('complete');
 

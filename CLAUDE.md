@@ -23,15 +23,15 @@ npm run precommit         # format:check + lint + typecheck
 
 Detailed guidance lives in `.claude/rules/`:
 
-| Rule file | Covers |
-|---|---|
+| Rule file         | Covers                                                                                     |
+| ----------------- | ------------------------------------------------------------------------------------------ |
 | `ABSTRACTIONS.md` | Two-layer architecture, directory layout, class pattern, composition, dependency injection |
-| `ERRORS.md` | Error type (`Ably.ErrorInfo`), error codes, message format, wrapping, testing |
-| `LOGGING.md` | Logger interface, log levels, message format, context propagation |
-| `PROMISES.md` | async/await policy, exception handling |
-| `TYPES.md` | Type safety rules, import conventions, no `any`/`as`/`!` policy |
-| `TESTS.md` | Unit vs integration tests, mocking strategy, coverage expectations |
-| `AISDK.md` | Vercel AI SDK v6 specifics |
+| `ERRORS.md`       | Error type (`Ably.ErrorInfo`), error codes, message format, wrapping, testing              |
+| `LOGGING.md`      | Logger interface, log levels, message format, context propagation                          |
+| `PROMISES.md`     | async/await policy, exception handling                                                     |
+| `TYPES.md`        | Type safety rules, import conventions, no `any`/`as`/`!` policy                            |
+| `TESTS.md`        | Unit vs integration tests, mocking strategy, coverage expectations                         |
+| `AISDK.md`        | Vercel AI SDK v6 specifics                                                                 |
 
 Additional conventions not covered by rule files:
 

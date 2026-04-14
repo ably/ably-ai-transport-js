@@ -508,15 +508,17 @@ describe('ServerTransport integration', () => {
       role: 'user',
       parts: [{ type: 'text', text: 'What is the weather?' }],
     };
-    const { msgIds } = await turn.addMessages([{
-      kind: 'message',
-      message: userMessage,
-      msgId: crypto.randomUUID(),
-      parentId: undefined,
-      forkOf: undefined,
-      headers: {},
-      serial: undefined,
-    }]);
+    const { msgIds } = await turn.addMessages([
+      {
+        kind: 'message',
+        message: userMessage,
+        msgId: crypto.randomUUID(),
+        parentId: undefined,
+        forkOf: undefined,
+        headers: {},
+        serial: undefined,
+      },
+    ]);
 
     // Stream assistant response — pass parent explicitly from addMessages result
     await turn.streamResponse(textResponseStream('msg-reply-1', 'text-reply-1', 'Sunny!'), {

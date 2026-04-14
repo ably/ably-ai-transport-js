@@ -12,14 +12,14 @@ The encoder handles two distinct write paths:
 
 Each `UIMessageChunk` type maps to exactly one encoder core operation:
 
-| Chunk category | Examples | Core operation |
-|---|---|---|
-| Stream start | `text-start`, `reasoning-start` | `startStream()` - opens a message stream |
-| Stream delta | `text-delta`, `reasoning-delta` | `appendStream()` - appends text to in-flight message |
-| Stream end | `text-end`, `reasoning-end` | `closeStream()` - closes the stream |
-| Lifecycle | `start`, `start-step`, `finish-step`, `finish`, `error`, `abort` | `publishDiscrete()` - standalone message |
-| Content | `file`, `source-url`, `source-document`, `message-metadata` | `publishDiscrete()` |
-| Custom data | `data-*` | `publishDiscrete()` (with `ephemeral` flag for transient chunks) |
+| Chunk category | Examples                                                         | Core operation                                                   |
+| -------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------- |
+| Stream start   | `text-start`, `reasoning-start`                                  | `startStream()` - opens a message stream                         |
+| Stream delta   | `text-delta`, `reasoning-delta`                                  | `appendStream()` - appends text to in-flight message             |
+| Stream end     | `text-end`, `reasoning-end`                                      | `closeStream()` - closes the stream                              |
+| Lifecycle      | `start`, `start-step`, `finish-step`, `finish`, `error`, `abort` | `publishDiscrete()` - standalone message                         |
+| Content        | `file`, `source-url`, `source-document`, `message-metadata`      | `publishDiscrete()`                                              |
+| Custom data    | `data-*`                                                         | `publishDiscrete()` (with `ephemeral` flag for transient chunks) |
 
 [Domain headers](headers.md) are passed to every operation. For streamed messages, start headers become "persistent headers" that the core repeats on every append. Closing headers are merged on top, so changed values (e.g. updated `providerMetadata`) are picked up.
 
@@ -27,11 +27,11 @@ Each `UIMessageChunk` type maps to exactly one encoder core operation:
 
 `writeMessages()` encodes `UIMessage[]` for discrete publishing (e.g. user messages via `addMessages()`). Each message is split into per-part Ably messages with a shared `x-domain-messageId`:
 
-| Part type | Ably message name | Data |
-|---|---|---|
-| `text` | `text` | `part.text` |
-| `file` | `file` | `part.url` |
-| `data-*` | The part's type string | `part.data` |
+| Part type | Ably message name      | Data        |
+| --------- | ---------------------- | ----------- |
+| `text`    | `text`                 | `part.text` |
+| `file`    | `file`                 | `part.url`  |
+| `data-*`  | The part's type string | `part.data` |
 
 If a message has no encodable parts, a single `text` message with empty data is published as a placeholder.
 
@@ -63,16 +63,16 @@ Handles non-streamed messages. Two categories:
 
 **Lifecycle events** are dispatched by Ably message name:
 
-| Name | Produces | Notes |
-|---|---|---|
-| `start` | `start` chunk | Marks phase emitted on lifecycle tracker |
-| `start-step` | `start-step` chunk | Marks phase emitted |
-| `finish-step` | `finish-step` chunk | Resets `start-step` phase for next step |
-| `finish` | `finish` chunk | Clears lifecycle tracker scope |
-| `error` | `error` chunk | |
-| `abort` | `abort` chunk | Clears lifecycle tracker scope |
-| `file`, `source-url`, `source-document` | Corresponding chunks | |
-| `data-*` | `data-*` chunk | Custom data events |
+| Name                                    | Produces             | Notes                                    |
+| --------------------------------------- | -------------------- | ---------------------------------------- |
+| `start`                                 | `start` chunk        | Marks phase emitted on lifecycle tracker |
+| `start-step`                            | `start-step` chunk   | Marks phase emitted                      |
+| `finish-step`                           | `finish-step` chunk  | Resets `start-step` phase for next step  |
+| `finish`                                | `finish` chunk       | Clears lifecycle tracker scope           |
+| `error`                                 | `error` chunk        |                                          |
+| `abort`                                 | `abort` chunk        | Clears lifecycle tracker scope           |
+| `file`, `source-url`, `source-document` | Corresponding chunks |                                          |
+| `data-*`                                | `data-*` chunk       | Custom data events                       |
 
 ## Accumulator
 
@@ -89,24 +89,24 @@ Each active message tracks:
 
 ### Event processing
 
-| Event type | Accumulator action |
-|---|---|
-| `start` | Create or locate message, set `messageId` and `metadata` |
-| `start-step` | Push `step-start` part |
-| `text-start` / `reasoning-start` | Push empty text/reasoning part, register stream |
-| `text-delta` / `reasoning-delta` | Append to registered part's text |
-| `text-end` / `reasoning-end` | Mark stream finished |
-| `finish-step` | Reset text/reasoning stream trackers for next step |
-| `finish` | Set final metadata, remove from active messages |
-| `abort` | Mark all streaming parts as aborted, remove from active |
-| `message` (complete) | Push directly into message list |
+| Event type                       | Accumulator action                                       |
+| -------------------------------- | -------------------------------------------------------- |
+| `start`                          | Create or locate message, set `messageId` and `metadata` |
+| `start-step`                     | Push `step-start` part                                   |
+| `text-start` / `reasoning-start` | Push empty text/reasoning part, register stream          |
+| `text-delta` / `reasoning-delta` | Append to registered part's text                         |
+| `text-end` / `reasoning-end`     | Mark stream finished                                     |
+| `finish-step`                    | Reset text/reasoning stream trackers for next step       |
+| `finish`                         | Set final metadata, remove from active messages          |
+| `abort`                          | Mark all streaming parts as aborted, remove from active  |
+| `message` (complete)             | Push directly into message list                          |
 
 ### Accessors
 
-| Property | Returns |
-|---|---|
-| `messages` | All messages (active + completed) |
-| `completedMessages` | Only messages no longer being streamed |
-| `hasActiveStream` | Whether any stream is still in `streaming` status |
+| Property            | Returns                                           |
+| ------------------- | ------------------------------------------------- |
+| `messages`          | All messages (active + completed)                 |
+| `completedMessages` | Only messages no longer being streamed            |
+| `hasActiveStream`   | Whether any stream is still in `streaming` status |
 
 See [Codec interface](codec-interface.md) for how the encoder, decoder, and accumulator fit into the generic transport. See [Encoder core](encoder.md) and [Decoder core](decoder.md) for the generic machinery. See [Lifecycle tracker](lifecycle-tracker.md) for mid-stream join handling. See [Headers](headers.md) for the domain header reader/writer utilities.

@@ -11,7 +11,7 @@ Every error should either be handled internally with a clear recovery strategy, 
 - **Isolate handler callbacks**: When the SDK invokes developer-provided callbacks (event listeners, hooks), wrap each in try/catch. One bad handler shouldn't kill internal machinery or prevent other handlers from firing.
 - **Define recovery semantics explicitly**: For every internal operation that can fail, decide upfront: retry, degrade, or propagate. Document the choice.
 - **Preserve the original error**: When wrapping errors, always attach the original as `cause`. Developers debugging production issues need the full chain.
-- **Best-effort operations should be labeled**: If something is fire-and-forget (e.g. cleanup publish on close), comment it as such. Swallowing an error is only acceptable when failure is unrecoverable *and* non-impactful.
+- **Best-effort operations should be labeled**: If something is fire-and-forget (e.g. cleanup publish on close), comment it as such. Swallowing an error is only acceptable when failure is unrecoverable _and_ non-impactful.
 
 ### Surfacing errors to developers
 
@@ -86,9 +86,9 @@ throw new Ably.ErrorInfo('unable to send message; room is not attached', ErrorCo
 throw new Ably.ErrorInfo('unable to detach room; room is in failed state', ErrorCode.RoomInInvalidState, 400);
 
 // Wrong — do not use these prefixes
-"cannot send message"
-"failed to send message"
-"Could not send message"
+('cannot send message');
+('failed to send message');
+('Could not send message');
 ```
 
 Dynamic context is allowed in the message:
@@ -145,12 +145,12 @@ reject(
 
 Use the custom Vitest matchers in a test helper (`test/helper/expectations.ts`):
 
-| Matcher | Usage |
-|---|---|
-| `toBeErrorInfo({ code?, statusCode?, message?, cause? })` | Assert a value is an `Ably.ErrorInfo` matching the given fields |
-| `toThrowErrorInfo({ code?, statusCode?, message? })` | Assert a sync function throws a matching `Ably.ErrorInfo` |
-| `toBeErrorInfoWithCode(code)` | Shorthand — assert value is `Ably.ErrorInfo` with a specific code |
-| `toThrowErrorInfoWithCode(code)` | Shorthand — assert sync function throws with a specific code |
-| `toBeErrorInfoWithCauseCode(code)` | Assert value is `Ably.ErrorInfo` whose `.cause.code` matches |
+| Matcher                                                   | Usage                                                             |
+| --------------------------------------------------------- | ----------------------------------------------------------------- |
+| `toBeErrorInfo({ code?, statusCode?, message?, cause? })` | Assert a value is an `Ably.ErrorInfo` matching the given fields   |
+| `toThrowErrorInfo({ code?, statusCode?, message? })`      | Assert a sync function throws a matching `Ably.ErrorInfo`         |
+| `toBeErrorInfoWithCode(code)`                             | Shorthand — assert value is `Ably.ErrorInfo` with a specific code |
+| `toThrowErrorInfoWithCode(code)`                          | Shorthand — assert sync function throws with a specific code      |
+| `toBeErrorInfoWithCauseCode(code)`                        | Assert value is `Ably.ErrorInfo` whose `.cause.code` matches      |
 
 The matchers only check the fields you provide — omitted fields are not compared. The `cause` field is checked recursively.

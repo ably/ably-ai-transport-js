@@ -456,12 +456,8 @@ describe('Vercel UIMessageCodec integration', () => {
     expect(accumulator1.completedMessages).toHaveLength(1);
     expect(accumulator2.completedMessages).toHaveLength(1);
 
-    const text1 = accumulator1.completedMessages[0]?.parts.find(
-      (p): p is AI.TextUIPart => p.type === 'text',
-    );
-    const text2 = accumulator2.completedMessages[0]?.parts.find(
-      (p): p is AI.TextUIPart => p.type === 'text',
-    );
+    const text1 = accumulator1.completedMessages[0]?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
+    const text2 = accumulator2.completedMessages[0]?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
     expect(text1?.text).toBe('Sync test.');
     expect(text2?.text).toBe('Sync test.');
   });

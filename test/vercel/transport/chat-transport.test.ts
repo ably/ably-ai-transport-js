@@ -44,7 +44,9 @@ const createMockTurn = (): MockTurn => {
     turnId: 'turn-1',
     cancel,
     optimisticMsgIds: [],
-    close: () => { controller.close(); },
+    close: () => {
+      controller.close();
+    },
   };
 };
 
@@ -370,9 +372,30 @@ describe('createChatTransport', () => {
       const m2 = makeMessage('2');
       const m3 = makeMessage('3');
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
-        { message: m1, msgId: 'h1', parentId: undefined, forkOf: undefined, headers: { 'x-ably-msg-id': 'h1' }, serial: undefined },
-        { message: m2, msgId: 'h2', parentId: 'h1', forkOf: undefined, headers: { 'x-ably-msg-id': 'h2' }, serial: undefined },
-        { message: m3, msgId: 'h3', parentId: 'h2', forkOf: undefined, headers: { 'x-ably-msg-id': 'h3' }, serial: undefined },
+        {
+          message: m1,
+          msgId: 'h1',
+          parentId: undefined,
+          forkOf: undefined,
+          headers: { 'x-ably-msg-id': 'h1' },
+          serial: undefined,
+        },
+        {
+          message: m2,
+          msgId: 'h2',
+          parentId: 'h1',
+          forkOf: undefined,
+          headers: { 'x-ably-msg-id': 'h2' },
+          serial: undefined,
+        },
+        {
+          message: m3,
+          msgId: 'h3',
+          parentId: 'h2',
+          forkOf: undefined,
+          headers: { 'x-ably-msg-id': 'h3' },
+          serial: undefined,
+        },
       ]);
 
       const chat = createChatTransport(transport);

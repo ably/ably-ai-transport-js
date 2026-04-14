@@ -58,7 +58,7 @@ const createMockTransport = (): MockTransport => {
     cancel: vi.fn(),
     waitForTurn: vi.fn(),
     close: vi.fn(),
-  // CAST: mock object satisfies the subset of ClientTransport methods used by useMessageSync
+    // CAST: mock object satisfies the subset of ClientTransport methods used by useMessageSync
   } as unknown as ClientTransport<unknown, AI.UIMessage>;
 
   const emitView = (event: string): void => {
@@ -77,10 +77,21 @@ describe('useMessageSync', () => {
   it('calls setMessages when transport emits view update event', () => {
     const mock = createMockTransport();
     const msgs = [makeMessage('1')];
-    mock.viewFlattenNodes.mockReturnValue(msgs.map((m) => ({ message: m, msgId: m.id, parentId: undefined, forkOf: undefined, headers: {}, serial: undefined })));
+    mock.viewFlattenNodes.mockReturnValue(
+      msgs.map((m) => ({
+        message: m,
+        msgId: m.id,
+        parentId: undefined,
+        forkOf: undefined,
+        headers: {},
+        serial: undefined,
+      })),
+    );
 
     const setMessages = vi.fn();
-    renderHook(() => { useMessageSync(mock.transport, setMessages); });
+    renderHook(() => {
+      useMessageSync(mock.transport, setMessages);
+    });
 
     act(() => {
       mock.emitView('update');
@@ -94,14 +105,18 @@ describe('useMessageSync', () => {
 
   it('does not subscribe when transport is undefined', () => {
     const setMessages = vi.fn();
-    renderHook(() => { useMessageSync(undefined, setMessages); });
+    renderHook(() => {
+      useMessageSync(undefined, setMessages);
+    });
     // No crash, no subscription
   });
 
   it('unsubscribes on unmount', () => {
     const mock = createMockTransport();
     const setMessages = vi.fn();
-    const { unmount } = renderHook(() => { useMessageSync(mock.transport, setMessages); });
+    const { unmount } = renderHook(() => {
+      useMessageSync(mock.transport, setMessages);
+    });
 
     unmount();
 

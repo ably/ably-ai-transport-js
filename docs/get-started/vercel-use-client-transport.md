@@ -1,6 +1,6 @@
 # Get Started: Vercel AI SDK with generic hooks
 
-Build a streaming chat app using AI Transport's generic React hooks instead of Vercel's `useChat`. This path gives you direct access to the transport's conversation tree, individual send/regenerate/edit operations, and full control over message state.
+Build a streaming chat app using AI Transport's generic React hooks instead of Vercel's `useChat()`. This path gives you direct access to the transport's conversation tree, individual send/regenerate/edit operations, and full control over message state.
 
 The server code is identical to the [useChat quickstart](vercel-use-chat.md) - only the client differs.
 
@@ -10,7 +10,7 @@ Same as the [useChat quickstart](vercel-use-chat.md#prerequisites). Follow steps
 
 ## Create the chat component
 
-Instead of `useChat`, compose the generic hooks directly:
+Instead of `useChat()`, compose the generic hooks directly:
 
 ```typescript
 // app/chat.tsx
@@ -123,16 +123,16 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
 
 | | useChat path | Generic hooks path |
 |---|---|---|
-| **Message state** | Managed by `useChat` | Managed by `useView` |
+| **Message state** | Managed by `useChat()` | Managed by `useView()` |
 | **Send** | `sendMessage({ text })` | `send([uiMessage])` - you construct the `UIMessage` |
 | **Regenerate** | `regenerate({ messageId })` | `regenerate(messageId)` |
-| **Edit** | Not built into `useChat` | `edit(messageId, [newMessage])` |
-| **Branch navigation** | Not available | `view.getSiblings()`, `view.select()` via `useView` |
-| **Stop** | `stop()` from `useChat` | `transport.cancel({ own: true })` |
-| **Observer sync** | Requires `useMessageSync` | Built-in - `useView` includes all clients |
-| **Hooks needed** | `useChatTransport` + `useMessageSync` | Individual hooks per operation |
+| **Edit** | Not built into `useChat()` | `edit(messageId, [newMessage])` |
+| **Branch navigation** | Not available | `view.getSiblings()`, `view.select()` via `useView()` |
+| **Stop** | `stop()` from `useChat()` | `transport.cancel({ own: true })` |
+| **Observer sync** | Requires `useMessageSync()` | Built-in - `useView()` includes all clients |
+| **Hooks needed** | `useChatTransport()` + `useMessageSync()` | Individual hooks per operation |
 
-Use the **useChat path** when you want the simplest integration and Vercel's `useChat` handles your needs. Use the **generic hooks path** when you need conversation branching UI, custom message construction, or tighter control over transport operations.
+Use the **useChat path** when you want the simplest integration and Vercel's `useChat()` handles your needs. Use the **generic hooks path** when you need conversation branching UI, custom message construction, or tighter control over transport operations.
 
 ## Next steps
 

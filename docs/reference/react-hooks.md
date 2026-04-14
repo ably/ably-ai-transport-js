@@ -1,6 +1,6 @@
 # React hooks
 
-API reference for all React hooks in the SDK. Generic hooks work with any codec; Vercel hooks are specific to the `useChat` integration path.
+API reference for all React hooks in the SDK. Generic hooks work with any codec; Vercel hooks are specific to the `useChat()` integration path.
 
 ## Generic hooks
 
@@ -71,7 +71,7 @@ const view = useView<TEvent, TMessage>(
 | `edit(messageId, newMessages, options?)` | `(messageId: string, newMessages: TMessage \| TMessage[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>` | Fork a user message with replacement content |
 | `update(msgId, events, options?)` | `(msgId: string, events: TEvent[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>` | Update an existing message and start a continuation turn (e.g. [tool results](../features/tool-calling.md#client-executed-tools)) |
 
-Each view has independent branch selections and pagination state. When you pass a transport, the hook uses its default view. For [split-pane UIs](../features/branching.md#multiple-views) where each pane needs its own branch and message history, use [`useCreateView`](#usecreateview) to create independent views with the same API.
+Each view has independent branch selections and pagination state. When you pass a transport, the hook uses its default view. For [split-pane UIs](../features/branching.md#multiple-views) where each pane needs its own branch and message history, use [`useCreateView()`](#usecreateview) to create independent views with the same API.
 
 Write operations (`send`, `regenerate`, `edit`) automatically derive the parent message and conversation history from this view's selected branch.
 
@@ -81,7 +81,7 @@ Write operations (`send`, `regenerate`, `edit`) automatically derive the parent 
 
 ### useCreateView
 
-Create an independent view with the same API as [`useView`](#useview). The view is created via `transport.createView()` and closed automatically on unmount or when the transport changes.
+Create an independent view with the same API as [`useView()`](#useview). The view is created via `transport.createView()` and closed automatically on unmount or when the transport changes.
 
 ```typescript
 const handle = useCreateView<TEvent, TMessage>(
@@ -96,7 +96,7 @@ const handle = useCreateView<TEvent, TMessage>(
 | `options` | `UseViewOptions \| null?` | When provided, auto-loads first page on mount. Omit or pass null for manual load |
 | `options.limit` | `number?` | Max messages per page. Default: 100 |
 
-**Returns:** `ViewHandle<TEvent, TMessage>` - the same handle type as `useView`, with nodes, pagination, navigation, and write operations. Returns an empty handle (no nodes, no messages) when no transport is provided.
+**Returns:** `ViewHandle<TEvent, TMessage>` - the same handle type as `useView()`, with nodes, pagination, navigation, and write operations. Returns an empty handle (no nodes, no messages) when no transport is provided.
 
 ```typescript
 import { useView, useCreateView } from '@ably/ai-transport/react';
@@ -132,7 +132,7 @@ The returned function sends one or more messages in a new turn, using the view's
 - `turn.turnId` - the turn's unique ID
 - `turn.cancel()` - cancel this specific turn
 
-`ViewHandle` from `useView` already includes `send` - use `useSend` separately when you need a standalone stable callback without the full view subscription.
+`ViewHandle` from `useView()` already includes `send()` - use `useSend()` separately when you need a standalone stable callback without the full view subscription.
 
 ---
 
@@ -214,7 +214,7 @@ const tree = useTree<TEvent, TMessage>(transport: ClientTransport<TEvent, TMessa
 | `hasSiblings(msgId)` | `(msgId: string) => boolean` | Whether to show navigation arrows |
 | `getNode(msgId)` | `(msgId: string) => MessageNode<TMessage> \| undefined` | Look up a node by msgId |
 
-Branch navigation (`select`, `getSelectedIndex`) and write operations (`send`, `regenerate`, `edit`) are on `ViewHandle` from `useView`, not `TreeHandle`. The tree provides structural queries that are the same regardless of which branch is selected.
+Branch navigation (`select()`, `getSelectedIndex()`) and write operations (`send()`, `regenerate()`, `edit()`) are on `ViewHandle` from `useView()`, not `TreeHandle`. The tree provides structural queries that are the same regardless of which branch is selected.
 
 ---
 
@@ -242,7 +242,7 @@ Import from `@ably/ai-transport/vercel/react`.
 
 ### useChatTransport
 
-Create and memoize a `ChatTransport` for Vercel's `useChat` hook.
+Create and memoize a `ChatTransport` for Vercel's `useChat()` hook.
 
 ```typescript
 const chatTransport = useChatTransport(
@@ -256,7 +256,7 @@ const chatTransport = useChatTransport(
 | `transportOrOptions` | `ClientTransport \| VercelClientTransportOptions` | An existing transport, or options to create one |
 | `chatOptions` | `ChatTransportOptions?` | Optional hooks for customizing request construction |
 
-**Returns:** `ChatTransport` - compatible with `useChat`'s `transport` option.
+**Returns:** `ChatTransport` - compatible with `useChat()`'s `transport` option.
 
 Two usage patterns:
 1. **Wrap an existing transport** - pass a `ClientTransport` created by `useClientTransport`
@@ -277,7 +277,7 @@ const chatTransport = useChatTransport(transport, {
 
 ### useMessageSync
 
-Wire transport message updates into `useChat`'s `setMessages` updater.
+Wire transport message updates into `useChat()`'s `setMessages` updater.
 
 ```typescript
 useMessageSync(
@@ -289,10 +289,10 @@ useMessageSync(
 | Parameter | Type | Description |
 |---|---|---|
 | `transport` | `ClientTransport \| null \| undefined` | The transport to observe |
-| `setMessages` | `(updater: ...) => void` | The `setMessages` function from `useChat` |
+| `setMessages` | `(updater: ...) => void` | The `setMessages` function from `useChat()` |
 
 **Returns:** `void`
 
-Subscribes to the transport's view `'update'` event and replaces `useChat`'s message state with the transport's authoritative list on every update. This is how messages from other clients (observer messages) appear in `useChat`.
+Subscribes to the transport's view `'update'` event and replaces `useChat()`'s message state with the transport's authoritative list on every update. This is how messages from other clients (observer messages) appear in `useChat()`.
 
-Required when using the useChat path with multi-client sync. Without it, `useChat` only shows messages from its own sends.
+Required when using the useChat path with multi-client sync. Without it, `useChat()` only shows messages from its own sends.

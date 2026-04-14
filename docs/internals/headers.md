@@ -4,7 +4,7 @@ The SDK uses two distinct header namespaces on every Ably message: **transport h
 
 ## Transport headers
 
-Transport headers are built by [`buildTransportHeaders`](transport-components.md#buildtransportheaders) in `src/core/transport/headers.ts`. See [Wire protocol](wire-protocol.md#transport-headers-x-ably) for the full specification.
+Transport headers are built by [`buildTransportHeaders()`](transport-components.md#buildtransportheaders) in `src/core/transport/headers.ts`. See [Wire protocol](wire-protocol.md#transport-headers-x-ably) for the full specification.
 
 ## Domain header utilities
 

@@ -54,7 +54,7 @@ Publishes user messages to the channel through the codec encoder. Each message g
 - [Transport headers](wire-protocol.md#transport-headers-x-ably) via [buildTransportHeaders](transport-components.md#buildtransportheaders) (role, turn ID, parent, forkOf)
 - Per-message headers from the client override transport-generated defaults - this lets `x-ably-msg-id` from the client's optimistic insert pass through for [reconciliation](glossary.md#optimistic-reconciliation)
 
-Returns the effective msg-ids of all published messages.
+Returns the effective message IDs of all published messages.
 
 ### streamResponse
 
@@ -62,7 +62,7 @@ Pipes a `ReadableStream<TEvent>` through the codec encoder to the channel via [p
 
 Headers are built with `role: 'assistant'` and the turn's branching metadata (parent, forkOf). The abort signal from the TurnManager is passed to pipeStream, so cancel signals propagate through to stream termination.
 
-Returns `{ reason }` - `'complete'`, `'cancelled'`, or `'error'`. Does **not** call `end()` - the caller must do that after `streamResponse` returns.
+Returns `{ reason }` - `'complete'`, `'cancelled'`, or `'error'`. Does **not** call `end()` - the caller must do that after `streamResponse()` returns.
 
 ### end
 

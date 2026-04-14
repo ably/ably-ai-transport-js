@@ -16,10 +16,10 @@ interface Codec<TEvent, TMessage> {
 
 | Method              | Purpose                                                                                                                                                           |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `createEncoder`     | Creates a [streaming encoder](encoder.md) that maps domain events to Ably publish operations                                                                      |
-| `createDecoder`     | Creates a [decoder](decoder.md) that converts inbound Ably messages to domain events/messages                                                                     |
-| `createAccumulator` | Creates an accumulator that builds complete messages from streaming events                                                                                        |
-| `isTerminal`        | Returns true if an event signals stream completion (finish, error, abort). Used by the [stream router](transport-components.md#terminal-detection) to auto-close streams |
+| `createEncoder()`   | Creates a [streaming encoder](encoder.md) that maps domain events to Ably publish operations                                                                      |
+| `createDecoder()`   | Creates a [decoder](decoder.md) that converts inbound Ably messages to domain events/messages                                                                     |
+| `createAccumulator()` | Creates an accumulator that builds complete messages from streaming events                                                                                        |
+| `isTerminal()`      | Returns true if an event signals stream completion (finish, error, abort). Used by the [stream router](transport-components.md#terminal-detection) to auto-close streams |
 
 
 ## How the transport uses the codec
@@ -32,7 +32,7 @@ The server transport uses `createEncoder()` to get a `StreamEncoder`. For each t
 2. `appendEvent()` - streams LLM response events as message appends
 3. `close()` / `abort()` - finalizes the stream
 
-The encoder translates domain events into [encoder core](encoder.md#stream-lifecycle) operations (`startStream`, `appendStream`, `closeStream`). The encoder core handles Ably primitives.
+The encoder translates domain events into [encoder core](encoder.md#stream-lifecycle) operations (`startStream()`, `appendStream()`, `closeStream()`). The encoder core handles Ably primitives.
 
 ### Client transport
 
@@ -96,7 +96,7 @@ interface MessageAccumulator<TEvent, TMessage> {
 
 ### Why a list, not a single message
 
-A single turn can produce multiple domain messages. For example, a Vercel turn produces both the user message (via `writeMessages`, which emits a `kind: 'message'` output) and the assistant message (built from streaming `kind: 'event'` outputs). The accumulator tracks all messages within its scope.
+A single turn can produce multiple domain messages. For example, a Vercel turn produces both the user message (via `writeMessages()`, which emits a `kind: 'message'` output) and the assistant message (built from streaming `kind: 'event'` outputs). The accumulator tracks all messages within its scope.
 
 ### Two usage contexts
 

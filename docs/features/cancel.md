@@ -32,7 +32,7 @@ The default when no filter is given is `{ own: true }` - cancel all turns starte
 | `{ clientId: "user-2" }` | Cancel all turns started by a specific client | Admin cancelling another user |
 | `{ all: true }` | Cancel every active turn on the channel | Emergency stop |
 
-In React, `useActiveTurns` tells you whether turns are active:
+In React, `useActiveTurns()` tells you whether turns are active:
 
 ```typescript
 import { useActiveTurns } from '@ably/ai-transport/react';
@@ -114,4 +114,4 @@ await transport.close({ cancel: { own: true } });
 await transport.close();
 ```
 
-See [Interruption](interruption.md) for cancel-then-send patterns. See [Error codes](../reference/error-codes.md) for cancel-related error codes. See [React hooks reference](../reference/react-hooks.md) for the `useActiveTurns` API. For the internal cancel routing and filter resolution, see [Cancel routing](../internals/transport-components.md#cancel-routing-server-transport).
+See [Interruption](interruption.md) for cancel-then-send patterns. See [Error codes](../reference/error-codes.md) for cancel-related error codes. See [React hooks reference](../reference/react-hooks.md) for the `useActiveTurns()` API. For the internal cancel routing and filter resolution, see [Cancel routing](../internals/transport-components.md#cancel-routing-server-transport).

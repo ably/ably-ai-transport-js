@@ -19,8 +19,8 @@ Transport headers are set by the generic transport layer. They handle turn corre
 | `x-ably-msg-id` | string | [Message identity](#message-identity-x-ably-msg-id). One per domain message (user or assistant). Used for [optimistic reconciliation](#optimistic-reconciliation) |
 | `x-ably-turn-client-id` | string | ClientId of the user who initiated the turn |
 | `x-ably-role` | `"user"` / `"assistant"` | Message role |
-| `x-ably-parent` | msg-id | Preceding message in the branch (linear parent) |
-| `x-ably-fork-of` | msg-id | Message being replaced (creates a fork in the conversation tree) |
+| `x-ably-parent` | message ID | Preceding message in the branch (linear parent) |
+| `x-ably-fork-of` | message ID | Message being replaced (creates a fork in the conversation tree) |
 | `x-ably-cancel-turn-id` | string | Cancel a specific turn |
 | `x-ably-cancel-own` | `"true"` | Cancel all turns belonging to the sender |
 | `x-ably-cancel-client-id` | string | Cancel all turns belonging to a specific clientId |
@@ -169,25 +169,25 @@ Every domain message - user or assistant - gets a unique `x-ably-msg-id` (a `cry
 
 ### How it's stamped
 
-The msg-id flows through the header pipeline:
+The message ID flows through the header pipeline:
 
 1. The transport calls `buildTransportHeaders({ msgId, ... })` which sets `headers['x-ably-msg-id'] = msgId`.
 2. For **discrete messages** (user messages, lifecycle events), these headers are passed to the encoder via `WriteOptions.messageId`. The [encoder core's](encoder.md#header-merging) `_buildHeaders()` stamps it into the Ably message's `extras.headers`.
-3. For **streamed messages** (assistant text, reasoning), the msg-id is included in the persistent headers captured at `startStream()`. Every append - including the closing append - carries the same `x-ably-msg-id`, so the entire message append lifecycle shares one identity.
+3. For **streamed messages** (assistant text, reasoning), the message ID is included in the persistent headers captured at `startStream()`. Every append - including the closing append - carries the same `x-ably-msg-id`, so the entire message append lifecycle shares one identity.
 
 ### How it's consumed
 
-| Consumer | What it does with msg-id |
+| Consumer | What it does with the message ID |
 |---|---|
 | [Decoder core](decoder.md#message-id-tagging) | Reads `x-ably-msg-id` from inbound message headers and tags every emitted `DecoderOutput` event with it |
-| [Accumulator](codec-interface.md#accumulator) | Uses `output.messageId` to route decoded events to the correct in-progress domain message (e.g. the `UIMessage` being built). The msg-id becomes the `UIMessage.id` for assistant messages |
-| [Conversation tree](conversation-tree.md#data-structures) | Uses msg-id as the primary key (`_nodeIndex`). Branching headers (`x-ably-parent`, `x-ably-fork-of`) reference other messages by their msg-id |
+| [Accumulator](codec-interface.md#accumulator) | Uses `output.messageId` to route decoded events to the correct in-progress domain message (e.g. the `UIMessage` being built). The message ID becomes the `UIMessage.id` for assistant messages |
+| [Conversation tree](conversation-tree.md#data-structures) | Uses the message ID as the primary key (`_nodeIndex`). Branching headers (`x-ably-parent`, `x-ably-fork-of`) reference other messages by their message ID |
 | [Optimistic reconciliation](#optimistic-reconciliation) | Matches relayed messages to optimistic inserts (see below) |
-| `regenerate()` / `edit()` | Look up the target message in the tree by msg-id to compute `forkOf`, `parent`, and truncated history |
+| `regenerate()` / `edit()` | Look up the target message in the tree by message ID to compute `forkOf`, `parent`, and truncated history |
 
 ### Optimistic reconciliation
 
-When a client calls `send()`, it inserts an optimistic message into the conversation tree (with no serial) and records the msg-id in an internal set. The server then relays that message onto the channel. When the client receives the relayed message, it matches by `x-ably-msg-id` and reconciles the optimistic entry with the server-assigned serial - [serial promotion](conversation-tree.md#upsert-the-sole-mutation) - rather than creating a duplicate.
+When a client calls `send()`, it inserts an optimistic message into the conversation tree (with no serial) and records the message ID in an internal set. The server then relays that message onto the channel. When the client receives the relayed message, it matches by `x-ably-msg-id` and reconciles the optimistic entry with the server-assigned serial - [serial promotion](conversation-tree.md#upsert-the-sole-mutation) - rather than creating a duplicate.
 
 ## Branching headers
 

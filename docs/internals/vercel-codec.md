@@ -14,18 +14,18 @@ Each `UIMessageChunk` type maps to exactly one encoder core operation:
 
 | Chunk category | Examples | Core operation |
 |---|---|---|
-| Stream start | `text-start`, `reasoning-start` | `startStream` - opens a message stream |
-| Stream delta | `text-delta`, `reasoning-delta` | `appendStream` - appends text to in-flight message |
-| Stream end | `text-end`, `reasoning-end` | `closeStream` - closes the stream |
-| Lifecycle | `start`, `start-step`, `finish-step`, `finish`, `error`, `abort` | `publishDiscrete` - standalone message |
-| Content | `file`, `source-url`, `source-document`, `message-metadata` | `publishDiscrete` |
-| Custom data | `data-*` | `publishDiscrete` (with `ephemeral` flag for transient chunks) |
+| Stream start | `text-start`, `reasoning-start` | `startStream()` - opens a message stream |
+| Stream delta | `text-delta`, `reasoning-delta` | `appendStream()` - appends text to in-flight message |
+| Stream end | `text-end`, `reasoning-end` | `closeStream()` - closes the stream |
+| Lifecycle | `start`, `start-step`, `finish-step`, `finish`, `error`, `abort` | `publishDiscrete()` - standalone message |
+| Content | `file`, `source-url`, `source-document`, `message-metadata` | `publishDiscrete()` |
+| Custom data | `data-*` | `publishDiscrete()` (with `ephemeral` flag for transient chunks) |
 
 [Domain headers](headers.md) are passed to every operation. For streamed messages, start headers become "persistent headers" that the core repeats on every append. Closing headers are merged on top, so changed values (e.g. updated `providerMetadata`) are picked up.
 
 ### Complete messages (writeMessages)
 
-`writeMessages()` encodes `UIMessage[]` for discrete publishing (e.g. user messages via `addMessages`). Each message is split into per-part Ably messages with a shared `x-domain-messageId`:
+`writeMessages()` encodes `UIMessage[]` for discrete publishing (e.g. user messages via `addMessages()`). Each message is split into per-part Ably messages with a shared `x-domain-messageId`:
 
 | Part type | Ably message name | Data |
 |---|---|---|
@@ -37,7 +37,7 @@ If a message has no encodable parts, a single `text` message with empty data is 
 
 ### Abort handling
 
-On `abort` chunks, the encoder aborts all in-progress streams (via `abortAllStreams`), then publishes a discrete `abort` event with `x-ably-status: aborted`. The `_aborted` flag prevents double-abort.
+On `abort` chunks, the encoder aborts all in-progress streams (via `abortAllStreams()`), then publishes a discrete `abort` event with `x-ably-status: aborted`. The `_aborted` flag prevents double-abort.
 
 ## Decoder
 
@@ -53,13 +53,13 @@ These hooks reconstruct `UIMessageChunk` events from stream tracker state. The d
 - **Delta** → `text-delta` or `reasoning-delta`
 - **End** → `text-end` or `reasoning-end`
 
-Start hooks also call `ensurePhases` on the [lifecycle tracker](lifecycle-tracker.md) to synthesize missing `start` / `start-step` events for mid-stream joins.
+Start hooks also call `ensurePhases()` on the [lifecycle tracker](lifecycle-tracker.md) to synthesize missing `start` / `start-step` events for mid-stream joins.
 
 ### decodeDiscrete
 
 Handles non-streamed messages. Two categories:
 
-**Discrete message parts** (from `writeMessages`) are identified by the presence of `x-ably-role` in headers. These are reconstructed into single-part `UIMessage` objects - the [conversation tree](conversation-tree.md) merges parts sharing the same `x-ably-msg-id`.
+**Discrete message parts** (from `writeMessages()`) are identified by the presence of `x-ably-role` in headers. These are reconstructed into single-part `UIMessage` objects - the [conversation tree](conversation-tree.md) merges parts sharing the same `x-ably-msg-id`.
 
 **Lifecycle events** are dispatched by Ably message name:
 

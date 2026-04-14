@@ -24,7 +24,7 @@ The client transport subscribes to the Ably channel **before** attaching. When y
 
 ## React hook
 
-`useView` provides message state with integrated history loading:
+`useView()` provides message state with integrated history loading:
 
 ```typescript
 import { useView } from '@ably/ai-transport/react';
@@ -49,7 +49,7 @@ await loadOlder(30);
 
 ## Scroll-back pattern
 
-Combine `useView` with a scroll sentinel for infinite scroll:
+Combine `useView()` with a scroll sentinel for infinite scroll:
 
 ```typescript
 const { nodes, hasOlder, loading, loadOlder } = useView(transport, { limit: 30 });
@@ -66,7 +66,7 @@ const { nodes, hasOlder, loading, loadOlder } = useView(transport, { limit: 30 }
 
 History messages carry the same `x-ably-parent` and `x-ably-fork-of` headers as live messages. When loaded, they're inserted into the conversation tree with their full branch structure intact. A client loading history sees the same tree of branches and can navigate siblings just like a client that was present for the original conversation.
 
-Because the tree may contain multiple branches, the view's `flattenNodes()` returns only the messages along the currently selected path - not every message ever published. To see alternative branches, use `useView` or the view's `getSiblings()` / `select()` methods.
+Because the tree may contain multiple branches, the view's `flattenNodes()` returns only the messages along the currently selected path - not every message ever published. To see alternative branches, use `useView()` or the view's `getSiblings()` / `select()` methods.
 
 See [Conversation branching](branching.md) for the tree model.
 

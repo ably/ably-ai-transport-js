@@ -95,7 +95,7 @@ The public `Tree` interface exposes:
 |---|---|
 | `getSiblings(msgId)` | All messages in the sibling group containing `msgId` |
 | `hasSiblings(msgId)` | Whether the message has alternative versions |
-| `getNode(msgId)` | The `MessageNode` by msg-id |
+| `getNode(msgId)` | The `MessageNode` by message ID |
 | `getHeaders(msgId)` | Headers for a specific message |
 
 The following are on the `View`, not the public `Tree` interface:

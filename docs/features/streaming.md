@@ -36,7 +36,7 @@ Each stream has a lifecycle tracked by the `x-ably-status` header:
 
 ## Server
 
-Pipe any `ReadableStream` of codec events through the turn's `streamResponse`:
+Pipe any `ReadableStream` of codec events through the turn's `streamResponse()`:
 
 ```typescript
 import { streamText } from 'ai';
@@ -57,7 +57,7 @@ await turn.end(reason);
 transport.close();
 ```
 
-`streamResponse` reads events from the stream and routes them through the encoder. Text deltas become message appends; lifecycle events (finish, error) become discrete messages that close the stream.
+`streamResponse()` reads events from the stream and routes them through the encoder. Text deltas become message appends; lifecycle events (finish, error) become discrete messages that close the stream.
 
 ## Client
 
@@ -78,7 +78,7 @@ This is the primary consumption path. In React, the `useView()` hook handles the
 
 ### The event stream
 
-`send()` also returns a `ReadableStream<TEvent>` on the `ActiveTurn`. This exists as an integration seam for framework adapters - Vercel's `useChat` expects a `ReadableStream` as its transport contract. Most application code should use the view instead, since the accumulator provides the same per-token granularity.
+`send()` also returns a `ReadableStream<TEvent>` on the `ActiveTurn`. This exists as an integration seam for framework adapters - Vercel's `useChat()` expects a `ReadableStream` as its transport contract. Most application code should use the view instead, since the accumulator provides the same per-token granularity.
 
 ```typescript
 // Framework adapter usage - most apps won't consume this directly
@@ -112,4 +112,4 @@ The transport streams whatever events the codec produces. For the Vercel AI SDK 
 
 Multiple content streams can be active within a single turn (e.g., reasoning + text). Each gets its own message with its own stream ID.
 
-See [Tool calling](tool-calling.md) for how tool input deltas and results are streamed. See [React hooks reference](../reference/react-hooks.md) for the full `useView` and `useClientTransport` API. See [Cancel](cancel.md) for how streams are aborted. For the internal mechanics of message encoding, decoding, and recovery, see the [Encoder](../internals/encoder.md), [Decoder](../internals/decoder.md), and [Wire protocol](../internals/wire-protocol.md) internals pages.
+See [Tool calling](tool-calling.md) for how tool input deltas and results are streamed. See [React hooks reference](../reference/react-hooks.md) for the full `useView()` and `useClientTransport()` API. See [Cancel](cancel.md) for how streams are aborted. For the internal mechanics of message encoding, decoding, and recovery, see the [Encoder](../internals/encoder.md), [Decoder](../internals/decoder.md), and [Wire protocol](../internals/wire-protocol.md) internals pages.

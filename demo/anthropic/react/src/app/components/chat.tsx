@@ -1,16 +1,7 @@
 'use client';
 
 import { useState, useCallback } from 'react';
-import { useChannel } from 'ably/react';
-import {
-  useClientTransport,
-  useSend,
-  useActiveTurns,
-  useHistory,
-  useConversationTree,
-  useAblyMessages,
-} from '@ably/ai-transport/react';
-import { AgentCodec } from '@ably/ai-transport/anthropic';
+import { useClientTransport, useView, useActiveTurns, useAblyMessages } from '@ably/ai-transport/react';
 import type { AgentCodecEvent, AgentMessage } from '@ably/ai-transport/anthropic';
 
 import { userMessage } from '../helpers';
@@ -24,21 +15,12 @@ interface ChatProps {
 }
 
 export function Chat({ chatId, clientId, historyLimit }: ChatProps) {
-  const { channel } = useChannel({ channelName: chatId });
   const [input, setInput] = useState('');
 
-  const transport = useClientTransport<AgentCodecEvent, AgentMessage>({
-    channel,
-    codec: AgentCodec,
-    clientId,
-    body: () => ({ id: chatId }),
-  });
-
-  const tree = useConversationTree(transport);
-  const send = useSend(transport);
-  const activeTurns = useActiveTurns(transport);
-  const history = useHistory(transport, { limit: historyLimit ?? 30 });
-  const ablyMessages = useAblyMessages(transport);
+  const transport = useClientTransport<AgentCodecEvent, AgentMessage>({ channelName: chatId });
+  const view = useView<AgentCodecEvent, AgentMessage>({ transport, limit: historyLimit ?? 30 });
+  const activeTurns = useActiveTurns({ transport });
+  const ablyMessages = useAblyMessages({ transport });
 
   const hasOwnTurns = clientId ? activeTurns.has(clientId) : false;
 
@@ -46,8 +28,8 @@ export function Chat({ chatId, clientId, historyLimit }: ChatProps) {
     const text = input.trim();
     if (!text) return;
     setInput('');
-    send([userMessage(text)]);
-  }, [input, send]);
+    view.send([userMessage(text)]);
+  }, [input, view]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -67,12 +49,7 @@ export function Chat({ chatId, clientId, historyLimit }: ChatProps) {
         </header>
 
         {/* Messages */}
-        <MessageList
-          tree={tree}
-          hasNext={history.hasNext}
-          loading={history.loading}
-          onNext={() => history.next()}
-        />
+        <MessageList view={view} />
 
         {/* Input */}
         <div className="border-t border-zinc-800 px-4 py-3">
@@ -107,7 +84,7 @@ export function Chat({ chatId, clientId, historyLimit }: ChatProps) {
       </div>
 
       <DebugPane
-        messages={tree.messages}
+        messages={view.nodes.map((n) => n.message)}
         ablyMessages={ablyMessages}
         activeTurns={activeTurns}
       />

@@ -13,14 +13,14 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import Ably from 'ably';
 import { createServerTransport } from '@ably/ai-transport/anthropic';
 import type { AgentCodecEvent, AgentMessage } from '@ably/ai-transport/anthropic';
-import type { ConversationNode } from '@ably/ai-transport';
+import type { MessageNode } from '@ably/ai-transport';
 
 /** Shape of the POST body sent by the client transport. */
 interface ChatRequestBody {
   turnId: string;
   clientId: string;
-  messages: ConversationNode<AgentMessage>[];
-  history?: ConversationNode<AgentMessage>[];
+  messages: MessageNode<AgentMessage>[];
+  history?: MessageNode<AgentMessage>[];
   id: string;
   forkOf?: string;
   parent?: string | null;
@@ -50,7 +50,7 @@ function sdkMessageStream(queryResult: AsyncIterable<SDKMessage>): ReadableStrea
 }
 
 /** Extract the user's prompt text from the conversation messages. */
-function extractPrompt(messages: ConversationNode<AgentMessage>[], history: ConversationNode<AgentMessage>[]): string {
+function extractPrompt(messages: MessageNode<AgentMessage>[], history: MessageNode<AgentMessage>[]): string {
   // Get the latest user message text
   const allMsgs = [...history, ...messages];
   const lastUser = allMsgs.filter((m) => m.message.type === 'user').at(-1);
@@ -81,7 +81,7 @@ export async function POST(req: Request) {
   const channel = ably.channels.get(id);
 
   const transport = createServerTransport({ channel });
-  const turn = transport.newTurn({ turnId, clientId, parent, forkOf });
+  const turn = transport.newTurn({ turnId, clientId, parent: parent ?? undefined, forkOf });
 
   await turn.start();
 

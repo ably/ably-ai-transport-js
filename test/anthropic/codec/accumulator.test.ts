@@ -876,6 +876,151 @@ describe('Anthropic Agent SDK accumulator', () => {
     });
   });
 
+  // -- initMessage and completeMessage ----------------------------------------
+
+  describe('initMessage and completeMessage', () => {
+    it('creates active tracking for an existing completed message', () => {
+      const acc = createAccumulator();
+      const assistant = completeAssistantMessage('msg-a', [{ type: 'text', text: 'hello' }]);
+      acc.processOutputs([messageOutput(assistant)]);
+
+      // initMessage should re-activate it
+      acc.initMessage('msg-a', assistant);
+
+      // Message should still be in the list (not duplicated)
+      expect(acc.messages).toHaveLength(1);
+
+      // It's now active, so completedMessages excludes it
+      expect(acc.completedMessages).toHaveLength(0);
+
+      // completeMessage should mark it done
+      acc.completeMessage('msg-a');
+      expect(acc.completedMessages).toHaveLength(1);
+    });
+
+    it('syncs state when initMessage is called on an already-active message', () => {
+      const acc = createAccumulator();
+
+      // Start streaming
+      acc.processOutputs([
+        eventOutput(messageStartEvent('msg-a'), 'msg-a'),
+        eventOutput(textBlockStart(0), 'msg-a'),
+        eventOutput(textDelta(0, 'partial'), 'msg-a'),
+      ]);
+
+      // Create an externally updated version
+      const updated = completeAssistantMessage('msg-a', [{ type: 'text', text: 'externally updated' }]);
+
+      // initMessage syncs the active state
+      acc.initMessage('msg-a', updated);
+
+      // The message in the list should reflect the update
+      expect(acc.messages).toHaveLength(1);
+      const content = getContent(at(acc.messages, 0));
+      expect(content[0]).toEqual(expect.objectContaining({ type: 'text', text: 'externally updated' }));
+    });
+
+    it('adds message to list if not already present', () => {
+      const acc = createAccumulator();
+      const assistant = completeAssistantMessage('msg-new', [{ type: 'text', text: 'new' }]);
+
+      acc.initMessage('msg-new', assistant);
+
+      expect(acc.messages).toHaveLength(1);
+      const content = getContent(at(acc.messages, 0));
+      expect(content[0]).toEqual(expect.objectContaining({ type: 'text', text: 'new' }));
+    });
+
+    it('completeMessage is a no-op for unknown messageId', () => {
+      const acc = createAccumulator();
+      acc.completeMessage('nonexistent');
+      expect(acc.messages).toHaveLength(0);
+    });
+
+    it('handles initMessage for user messages', () => {
+      const acc = createAccumulator();
+      const user = userMessage('hello');
+      acc.processOutputs([messageOutput(user)]);
+
+      acc.initMessage('msg-u', user);
+
+      // User messages don't create active state (no streaming), but should be in list
+      expect(acc.messages).toHaveLength(1);
+    });
+
+    it('replaces in-place when message with same identity exists', () => {
+      const acc = createAccumulator();
+      const original = completeAssistantMessage('msg-a', [{ type: 'text', text: 'original' }]);
+      acc.processOutputs([messageOutput(original)]);
+
+      const replacement = completeAssistantMessage('msg-a', [{ type: 'text', text: 'replaced' }]);
+      acc.initMessage('msg-a', replacement);
+
+      expect(acc.messages).toHaveLength(1);
+      const content = getContent(at(acc.messages, 0));
+      expect(content[0]).toEqual(expect.objectContaining({ type: 'text', text: 'replaced' }));
+    });
+  });
+
+  // -- signature_delta handling -----------------------------------------------
+
+  describe('signature_delta handling', () => {
+    it('accumulates signature on thinking blocks', () => {
+      const acc = createAccumulator();
+      acc.processOutputs([
+        eventOutput(messageStartEvent()),
+        eventOutput(thinkingBlockStart(0)),
+        eventOutput(thinkingDelta(0, 'reasoning')),
+        eventOutput(
+          makeStreamEvent({
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'signature_delta', signature: 'sig-part-1' },
+          }),
+        ),
+        eventOutput(
+          makeStreamEvent({
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'signature_delta', signature: 'sig-part-2' },
+          }),
+        ),
+        eventOutput(contentBlockStop(0)),
+        eventOutput(messageStop()),
+      ]);
+
+      const content = getContent(at(acc.messages, 0));
+      expect(content[0]).toEqual(
+        expect.objectContaining({
+          type: 'thinking',
+          thinking: 'reasoning',
+          signature: 'sig-part-1sig-part-2',
+        }),
+      );
+    });
+
+    it('ignores signature_delta for non-thinking blocks', () => {
+      const acc = createAccumulator();
+      acc.processOutputs([
+        eventOutput(messageStartEvent()),
+        eventOutput(textBlockStart(0)),
+        eventOutput(
+          makeStreamEvent({
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'signature_delta', signature: 'should-be-ignored' },
+          }),
+        ),
+        eventOutput(contentBlockStop(0)),
+        eventOutput(messageStop()),
+      ]);
+
+      const content = getContent(at(acc.messages, 0));
+      // Text block has no signature field — delta should be a no-op
+      expect(content[0]).toEqual(expect.objectContaining({ type: 'text', text: '' }));
+    });
+  });
+
   // -- multiple concurrent messages -------------------------------------------
 
   describe('multiple concurrent messages', () => {

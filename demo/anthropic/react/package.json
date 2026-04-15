@@ -12,11 +12,15 @@
   "dependencies": {
     "@ably/ai-transport": "file:../../../",
     "@anthropic-ai/claude-agent-sdk": "^0.2.85",
+    "@anthropic-ai/sdk": "^0.80.0",
     "ably": "^2",
     "jsonwebtoken": "^9",
     "next": "^15",
     "react": "^19",
     "react-dom": "^19"
+  },
+  "overrides": {
+    "@anthropic-ai/sdk": "$@anthropic-ai/sdk"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

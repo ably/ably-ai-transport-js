@@ -1,7 +1,9 @@
 'use client';
 
 import { Providers, useAblyReady } from './providers';
-import { ChannelProvider } from 'ably/react';
+import { TransportProvider } from '@ably/ai-transport/react';
+import { AgentCodec } from '@ably/ai-transport/anthropic';
+import type { AgentCodecEvent, AgentMessage } from '@ably/ai-transport/anthropic';
 import { Chat } from './components/chat';
 import { useSearchParams } from 'next/navigation';
 import { Suspense } from 'react';
@@ -16,13 +18,18 @@ function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; 
   }
 
   return (
-    <ChannelProvider channelName={channelName}>
+    <TransportProvider<AgentCodecEvent, AgentMessage>
+      channelName={channelName}
+      codec={AgentCodec}
+      clientId={clientId}
+      body={() => ({ id: channelName })}
+    >
       <Chat
         chatId={channelName}
         clientId={clientId}
         historyLimit={limit}
       />
-    </ChannelProvider>
+    </TransportProvider>
   );
 }
 

@@ -61,6 +61,7 @@ interface OpenBlock {
 class DefaultAgentEncoder implements StreamEncoder<AgentCodecEvent, AgentMessage> {
   private readonly _core: EncoderCore;
   private readonly _openBlocks = new Map<number, OpenBlock>();
+  private readonly _streamedMessages = new Set<string>();
   private _aborted = false;
 
   constructor(writer: ChannelWriter, options: EncoderCoreOptions = {}) {
@@ -75,13 +76,14 @@ class DefaultAgentEncoder implements StreamEncoder<AgentCodecEvent, AgentMessage
         break;
       }
 
-      // -- Complete assistant message (non-streaming or post-stream).
-      // Publishes the full BetaMessage as data. For typical responses this is
-      // well under Ably's 64 KB message limit, but very large tool inputs or
-      // multi-block responses could approach it. Streaming mode avoids this
-      // because content arrives as small deltas instead.
+      // -- Complete assistant message (non-streaming only).
+      // The Agent SDK emits SDKAssistantMessage both after streaming completes
+      // and as the sole event in non-streaming mode. Skip the discrete publish
+      // when the message was already streamed — the content arrived as deltas.
       case 'assistant': {
         const messageId = event.message.id;
+        if (this._streamedMessages.has(messageId)) break;
+
         const h = headerWriter()
           .str('messageId', messageId)
           .str('uuid', event.uuid)
@@ -173,13 +175,11 @@ class DefaultAgentEncoder implements StreamEncoder<AgentCodecEvent, AgentMessage
 
     switch (eventType) {
       case 'message_start': {
-        // CAST: message_start carries .message; cast through unknown to Record.
-        const message = (streamEvent as unknown as Record<string, unknown>).message as Record<string, unknown>;
+        // CAST: message_start carries .message with id and model fields per the Anthropic wire protocol.
+        const message = (streamEvent as unknown as { message: { id: string; model: string } }).message;
 
-        const h = headerWriter()
-          .str('messageId', message.id as string)
-          .str('model', message.model as string)
-          .build();
+        this._streamedMessages.add(message.id);
+        const h = headerWriter().str('messageId', message.id).str('model', message.model).build();
         await this._core.publishDiscrete({ name: 'message-start', data: message, headers: h }, perWrite);
         break;
       }
@@ -310,6 +310,13 @@ class DefaultAgentEncoder implements StreamEncoder<AgentCodecEvent, AgentMessage
       case 'thinking_delta': {
         // CAST: thinking_delta carries a string `thinking` field per the Anthropic protocol.
         this._core.appendStream(block.streamId, delta.thinking as string);
+        break;
+      }
+
+      case 'signature_delta': {
+        // CAST: signature_delta carries a string `signature` field per the Anthropic protocol.
+        // Signatures are part of thinking blocks — stream through the same stream ID.
+        this._core.appendStream(block.streamId, delta.signature as string);
         break;
       }
 

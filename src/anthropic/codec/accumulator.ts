@@ -82,6 +82,66 @@ class DefaultAgentAccumulator implements MessageAccumulator<AgentCodecEvent, Age
     }
   }
 
+  initMessage(messageId: string, message: AgentMessage): void {
+    const existing = this._activeMessages.get(messageId);
+
+    if (existing) {
+      // Already active — sync with the externally updated message.
+      // Replace the message reference so the accumulator reflects updates
+      // (e.g. cross-turn amendments applied to the tree) that happened
+      // outside the streaming flow.
+      const cloned = structuredClone(message);
+      const listIdx = this._messageList.indexOf(existing.message);
+      if (cloned.type === 'assistant') {
+        existing.message = cloned;
+      }
+      if (listIdx !== -1) {
+        this._messageList[listIdx] = cloned;
+      }
+      return;
+    }
+
+    // Not active — create tracking state from the existing message.
+    const cloned = structuredClone(message);
+
+    if (cloned.type === 'assistant') {
+      const contentBlocks = new Map<number, ContentBlockState>();
+      const streamStatus = new Map<number, StreamStatus>();
+
+      for (let i = 0; i < cloned.message.content.length; i++) {
+        // CAST: Content blocks are a union of SDK types; cast through unknown
+        // to read the type discriminant.
+        const block = cloned.message.content[i] as unknown as Record<string, unknown>;
+        contentBlocks.set(i, { type: block.type as string, index: i });
+        streamStatus.set(i, 'finished');
+      }
+
+      const state: ActiveMessageState = {
+        message: cloned,
+        contentBlocks,
+        toolInputBuffers: new Map(),
+        streamStatus,
+      };
+
+      this._activeMessages.set(messageId, state);
+    }
+
+    // If this message is already in the list (completed previously),
+    // replace in-place. Otherwise push as a new entry.
+    const existingIdx = this._messageList.findIndex(
+      (m) => m === message || this._messageIdentityKey(m) === this._messageIdentityKey(cloned),
+    );
+    if (existingIdx === -1) {
+      this._messageList.push(cloned);
+    } else {
+      this._messageList[existingIdx] = cloned;
+    }
+  }
+
+  completeMessage(messageId: string): void {
+    this._activeMessages.delete(messageId);
+  }
+
   // Note: This method is not currently called by the core transport. The
   // identity key (uuid ?? session_id) is best-effort — SDKUserMessage.uuid
   // is optional and session_id can be empty. The object-identity check
@@ -361,6 +421,14 @@ class DefaultAgentAccumulator implements MessageAccumulator<AgentCodecEvent, Age
         break;
       }
 
+      case 'signature_delta': {
+        // Signatures are required on thinking blocks for multi-turn API continuity.
+        if (blockState.type === 'thinking' && typeof block.signature === 'string') {
+          block.signature += delta.signature as string;
+        }
+        break;
+      }
+
       // Other delta types (e.g. citations_delta): no-op
       default: {
         break;
@@ -444,6 +512,10 @@ class DefaultAgentAccumulator implements MessageAccumulator<AgentCodecEvent, Age
   // -------------------------------------------------------------------------
   // Shared helpers
   // -------------------------------------------------------------------------
+
+  private _messageIdentityKey(message: AgentMessage): string {
+    return message.uuid ?? message.session_id;
+  }
 
   private _ensureActiveMessage(messageId: string): ActiveMessageState {
     const existing = this._activeMessages.get(messageId);

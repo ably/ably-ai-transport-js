@@ -1,23 +1,20 @@
 'use client';
 
 import { useRef, useEffect } from 'react';
-import type { ConversationTreeHandle } from '@ably/ai-transport/react';
-import type { AgentMessage } from '@ably/ai-transport/anthropic';
+import type { ViewHandle } from '@ably/ai-transport/react';
+import type { AgentCodecEvent, AgentMessage } from '@ably/ai-transport/anthropic';
 import { MessageBubble } from './message-bubble';
 
 interface MessageListProps {
-  tree: ConversationTreeHandle<AgentMessage>;
-  hasNext: boolean;
-  loading: boolean;
-  onNext: () => void;
+  view: ViewHandle<AgentCodecEvent, AgentMessage>;
 }
 
-export function MessageList({ tree, hasNext, loading, onNext }: MessageListProps) {
+export function MessageList({ view }: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const prevCountRef = useRef(0);
 
-  const { nodes } = tree;
+  const { nodes, hasOlder, loading, loadOlder } = view;
 
   // Auto-scroll when new messages arrive
   useEffect(() => {
@@ -29,9 +26,9 @@ export function MessageList({ tree, hasNext, loading, onNext }: MessageListProps
 
   const handleScroll = () => {
     const el = scrollRef.current;
-    if (!el || !hasNext || loading) return;
+    if (!el || !hasOlder || loading) return;
     if (el.scrollTop < 60) {
-      onNext();
+      void loadOlder();
     }
   };
 
@@ -41,10 +38,10 @@ export function MessageList({ tree, hasNext, loading, onNext }: MessageListProps
       onScroll={handleScroll}
       className="flex-1 overflow-y-auto px-4 py-4 space-y-4"
     >
-      {hasNext && (
+      {hasOlder && (
         <div className="text-center">
           <button
-            onClick={onNext}
+            onClick={() => void loadOlder()}
             disabled={loading}
             className="text-xs text-zinc-500 hover:text-zinc-300 disabled:opacity-40 transition-colors"
           >

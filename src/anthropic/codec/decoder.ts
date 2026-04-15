@@ -16,7 +16,7 @@ import type { UUID } from 'node:crypto';
 import type * as Anthropic from '@anthropic-ai/claude-agent-sdk';
 import type * as Ably from 'ably';
 
-import { HEADER_ROLE, HEADER_TURN_ID } from '../../constants.js';
+import { HEADER_TURN_ID } from '../../constants.js';
 import type { DecoderCore, DecoderCoreHooks, DecoderCoreOptions } from '../../core/codec/decoder.js';
 import { createDecoderCore, eventOutput } from '../../core/codec/decoder.js';
 import type { LifecycleTracker } from '../../core/codec/lifecycle-tracker.js';
@@ -411,18 +411,6 @@ const decodeContentBlock = (input: MessagePayload): Out[] => {
 const decodeDiscretePayload = (input: MessagePayload, lifecycle: LifecycleTracker<AgentCodecEvent>): Out[] => {
   const h = input.headers ?? {};
   const turnId = h[HEADER_TURN_ID] ?? '';
-
-  // Discrete message parts from writeMessages: identified by x-ably-role header.
-  // Only applies to user-message and assistant-message names — other discrete
-  // events (message-start, message-delta, result, etc.) also carry x-ably-role
-  // but must be dispatched by name, not role.
-  if (HEADER_ROLE in h && (input.name === 'user-message' || input.name === 'assistant-message')) {
-    const role = h[HEADER_ROLE];
-    if (role === 'user') {
-      return decodeUserMessage(input);
-    }
-    return decodeAssistantMessage(input);
-  }
 
   switch (input.name) {
     case 'message-start': {

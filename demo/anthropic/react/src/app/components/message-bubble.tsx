@@ -46,24 +46,24 @@ function bubbleClasses(isUser: boolean, status: string | undefined): string {
 
 /** Extract displayable text from an assistant message's content blocks. */
 function renderAssistantContent(msg: SDKAssistantMessage) {
-  const message = msg.message as Record<string, unknown>;
-  const content = message.content;
+  const content = msg.message.content;
   if (!Array.isArray(content) || content.length === 0) {
-    // Fallback: show raw message for debugging
-    return <span className="text-zinc-500 text-xs">{JSON.stringify(message, null, 2)}</span>;
+    return <span className="text-zinc-500 text-xs">{JSON.stringify(msg.message, null, 2)}</span>;
   }
 
-  return content.map((block: Record<string, unknown>, i: number) => {
-    switch (block.type) {
+  return content.map((block, i: number) => {
+    // Cast through unknown to access discriminant fields across the content block union.
+    const b = block as unknown as Record<string, unknown>;
+    switch (b.type) {
       case 'text':
-        return <span key={i}>{String(block.text ?? '')}</span>;
+        return <span key={i}>{String(b.text ?? '')}</span>;
       case 'thinking':
         return (
           <div
             key={i}
             className="text-zinc-500 italic border-l-2 border-zinc-700 pl-2 my-1"
           >
-            {String(block.thinking ?? '')}
+            {String(b.thinking ?? '')}
           </div>
         );
       case 'tool_use':
@@ -72,9 +72,9 @@ function renderAssistantContent(msg: SDKAssistantMessage) {
             key={i}
             className="text-xs bg-zinc-800 rounded px-2 py-1 my-1 font-mono"
           >
-            <span className="text-blue-400">{String(block.name ?? 'tool')}</span>
+            <span className="text-blue-400">{String(b.name ?? 'tool')}</span>
             <span className="text-zinc-600">(</span>
-            <span className="text-zinc-400">{JSON.stringify(block.input ?? {})}</span>
+            <span className="text-zinc-400">{JSON.stringify(b.input ?? {})}</span>
             <span className="text-zinc-600">)</span>
           </div>
         );
@@ -90,8 +90,10 @@ function renderUserContent(msg: SDKUserMessage) {
   if (typeof content === 'string') return <span>{content}</span>;
 
   if (Array.isArray(content)) {
-    return content.map((block: Record<string, unknown>, i: number) => {
-      if (block.type === 'text') return <span key={i}>{String(block.text ?? '')}</span>;
+    return content.map((block, i: number) => {
+      // Cast through unknown to access discriminant fields across the content block param union.
+      const b = block as unknown as Record<string, unknown>;
+      if (b.type === 'text') return <span key={i}>{String(b.text ?? '')}</span>;
       return null;
     });
   }

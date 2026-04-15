@@ -591,6 +591,89 @@ describe('Anthropic encoder', () => {
     });
   });
 
+  // -- streaming guard: assistant after stream is skipped -------------------
+
+  describe('streaming guard', () => {
+    it('skips discrete assistant-message after message was already streamed', async () => {
+      const encoder = createEncoder(writer);
+
+      // Stream the message via message_start
+      await encoder.appendEvent(
+        makeStreamEvent({
+          type: 'message_start',
+          message: { id: 'msg-abc', model: 'claude-opus-4-20250514', role: 'assistant', content: [] },
+        }),
+      );
+
+      const publishCountAfterStream = writer.publishCalls.length;
+
+      // Now the SDK emits the complete assistant message — should be skipped
+      await encoder.appendEvent(makeAssistantMessage());
+
+      expect(writer.publishCalls.length).toBe(publishCountAfterStream);
+    });
+
+    it('publishes discrete assistant-message when message was not streamed', async () => {
+      const encoder = createEncoder(writer);
+
+      // Non-streaming mode: no prior stream_event, just the complete message
+      await encoder.appendEvent(makeAssistantMessage());
+
+      const msg = firstPublish(writer);
+      expect(msg.name).toBe('assistant-message');
+    });
+
+    it('tracks streamed messages independently by message ID', async () => {
+      const encoder = createEncoder(writer);
+
+      // Stream message A
+      await encoder.appendEvent(
+        makeStreamEvent({
+          type: 'message_start',
+          message: { id: 'msg-a', model: 'claude-opus-4-20250514', role: 'assistant', content: [] },
+        }),
+      );
+
+      const publishCountAfterStream = writer.publishCalls.length;
+
+      // Publish complete message B (not streamed) — should publish.
+      // CAST: Override message.id via spread; the rest of the BetaMessage shape
+      // comes from makeAssistantMessage's default.
+      const msgB = makeAssistantMessage();
+      (msgB.message as unknown as Record<string, unknown>).id = 'msg-b';
+      await encoder.appendEvent(msgB);
+
+      expect(writer.publishCalls.length).toBe(publishCountAfterStream + 1);
+      const msg = lastPublish(writer);
+      expect(msg.name).toBe('assistant-message');
+    });
+  });
+
+  // -- signature_delta streaming ----------------------------------------------
+
+  describe('signature_delta streaming', () => {
+    it('encodes signature_delta as an append on the thinking stream', async () => {
+      const encoder = createEncoder(writer);
+      await encoder.appendEvent(
+        makeStreamEvent({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'thinking', thinking: '' },
+        }),
+      );
+      await encoder.appendEvent(
+        makeStreamEvent({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'signature_delta', signature: 'sig-abc' },
+        }),
+      );
+
+      expect(writer.appendCalls).toHaveLength(1);
+      expect(writer.appendCalls[0]?.data).toBe('sig-abc');
+    });
+  });
+
   // -- unknown event types (no-op) ------------------------------------------
 
   describe('unknown event types', () => {

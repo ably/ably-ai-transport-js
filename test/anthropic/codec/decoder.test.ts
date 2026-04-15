@@ -585,7 +585,7 @@ describe('Anthropic decoder', () => {
       expect(msg.message).toBe(messageParam);
     });
 
-    it('decodes user-message with x-ably-role header via role dispatch', () => {
+    it('decodes user-message when x-ably-role header is present', () => {
       const decoder = createDecoder();
       const messageParam = { role: 'user', content: 'Hi' };
 
@@ -605,7 +605,7 @@ describe('Anthropic decoder', () => {
       expect((messages[0] as Anthropic.SDKUserMessage).type).toBe('user');
     });
 
-    it('decodes assistant role via x-ably-role header as Anthropic.SDKAssistantMessage', () => {
+    it('decodes assistant-message when x-ably-role header is present', () => {
       const decoder = createDecoder();
 
       const outputs = decoder.decode(

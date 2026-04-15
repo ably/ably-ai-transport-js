@@ -61,6 +61,7 @@ interface OpenBlock {
 class DefaultAgentEncoder implements StreamEncoder<AgentCodecEvent, AgentMessage> {
   private readonly _core: EncoderCore;
   private readonly _openBlocks = new Map<number, OpenBlock>();
+  private readonly _signatureBuffers = new Map<number, string>();
   private readonly _streamedMessages = new Set<string>();
   private _aborted = false;
 
@@ -315,8 +316,12 @@ class DefaultAgentEncoder implements StreamEncoder<AgentCodecEvent, AgentMessage
 
       case 'signature_delta': {
         // CAST: signature_delta carries a string `signature` field per the Anthropic protocol.
-        // Signatures are part of thinking blocks — stream through the same stream ID.
-        this._core.appendStream(block.streamId, delta.signature as string);
+        // Buffer signatures instead of streaming — the decoder cannot distinguish
+        // signature appends from thinking appends on the same stream. The buffered
+        // signature is included in the closeStream headers so the decoder can emit
+        // a proper signature_delta event on the receiving end.
+        const existing = this._signatureBuffers.get(index) ?? '';
+        this._signatureBuffers.set(index, existing + (delta.signature as string));
         break;
       }
 
@@ -331,7 +336,14 @@ class DefaultAgentEncoder implements StreamEncoder<AgentCodecEvent, AgentMessage
     const block = this._openBlocks.get(index);
     if (!block) return;
 
-    await this._core.closeStream(block.streamId, { name: block.name, data: '' });
+    // Include buffered signature in close headers so the decoder can emit
+    // a signature_delta event. Signatures arrive as deltas during streaming
+    // but cannot be distinguished from thinking text on the wire, so they
+    // are buffered and delivered as a closing header instead.
+    const signature = this._signatureBuffers.get(index);
+    const h = signature ? headerWriter().str('signature', signature).build() : {};
+    await this._core.closeStream(block.streamId, { name: block.name, data: '', headers: h });
+    this._signatureBuffers.delete(index);
     this._openBlocks.delete(index);
   }
 }

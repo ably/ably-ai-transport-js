@@ -375,6 +375,76 @@ describe('Anthropic decoder', () => {
 
       expect(streamEventTypesOf(outputs)).toContain('content_block_stop');
     });
+
+    it('emits signature_delta before content_block_stop when signature header is present', () => {
+      const decoder = createDecoder();
+      decoder.decode(
+        withHeaders(
+          { action: 'message.create', serial: 's1', name: 'thinking', data: '' },
+          {
+            [HEADER_STREAM]: 'true',
+            [HEADER_STATUS]: 'streaming',
+            [HEADER_STREAM_ID]: 'th-1',
+            [HEADER_TURN_ID]: 'turn-1',
+            [`${D}blockIndex`]: '0',
+          },
+        ),
+      );
+
+      const outputs = decoder.decode(
+        withHeaders(
+          { action: 'message.append', serial: 's1', name: 'thinking', data: '' },
+          {
+            [HEADER_STATUS]: 'finished',
+            [HEADER_TURN_ID]: 'turn-1',
+            [`${D}blockIndex`]: '0',
+            [`${D}signature`]: 'sig-from-close',
+          },
+        ),
+      );
+
+      const types = streamEventTypesOf(outputs);
+      // signature_delta must come before content_block_stop
+      const sigIdx = types.indexOf('content_block_delta');
+      const stopIdx = types.indexOf('content_block_stop');
+      expect(sigIdx).toBeGreaterThanOrEqual(0);
+      expect(stopIdx).toBeGreaterThan(sigIdx);
+
+      const sigEvent = streamEventsOf(outputs).find(
+        (e) => e.type === 'content_block_delta' && (e as unknown as Record<string, unknown>).delta !== undefined,
+      );
+      // CAST: Access delta fields through unknown since the union type doesn't narrow by .type alone.
+      const delta = (sigEvent as unknown as { delta: Record<string, unknown> }).delta;
+      expect(delta.type).toBe('signature_delta');
+      expect(delta.signature).toBe('sig-from-close');
+    });
+
+    it('does not emit signature_delta when signature header is absent', () => {
+      const decoder = createDecoder();
+      decoder.decode(
+        withHeaders(
+          { action: 'message.create', serial: 's1', name: 'thinking', data: '' },
+          {
+            [HEADER_STREAM]: 'true',
+            [HEADER_STATUS]: 'streaming',
+            [HEADER_STREAM_ID]: 'th-1',
+            [HEADER_TURN_ID]: 'turn-1',
+            [`${D}blockIndex`]: '0',
+          },
+        ),
+      );
+
+      const outputs = decoder.decode(
+        withHeaders(
+          { action: 'message.append', serial: 's1', name: 'thinking', data: '' },
+          { [HEADER_STATUS]: 'finished', [HEADER_TURN_ID]: 'turn-1', [`${D}blockIndex`]: '0' },
+        ),
+      );
+
+      // Only content_block_stop, no signature_delta
+      const types = streamEventTypesOf(outputs);
+      expect(types).toEqual(['content_block_stop']);
+    });
   });
 
   // -- discrete: message-start ----------------------------------------------

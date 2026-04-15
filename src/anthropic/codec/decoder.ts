@@ -237,17 +237,41 @@ const buildDeltaEvent = (tracker: StreamTrackerState, delta: string): AgentCodec
   }
 };
 
-const buildEndEvent = (tracker: StreamTrackerState, closingHeaders: Record<string, string>): AgentCodecEvent => {
+const buildCloseEvents = (tracker: StreamTrackerState, closingHeaders: Record<string, string>): AgentCodecEvent[] => {
   const r = headerReader(closingHeaders);
   const blockIndex = Number(r.strOr('blockIndex', headerReader(tracker.headers).strOr('blockIndex', '0')));
 
-  return wrapStreamEvent(
-    {
-      type: 'content_block_stop',
-      index: blockIndex,
-    } as StreamEvent,
-    closingHeaders,
+  const events: AgentCodecEvent[] = [];
+
+  // The encoder buffers signature_delta data and includes the accumulated
+  // signature as a closing header. Emit a synthetic signature_delta before
+  // content_block_stop so the accumulator can populate block.signature
+  // (required for multi-turn API continuity with thinking blocks).
+  const signature = r.str('signature');
+  if (signature && tracker.name === 'thinking') {
+    events.push(
+      wrapStreamEvent(
+        {
+          type: 'content_block_delta',
+          index: blockIndex,
+          delta: { type: 'signature_delta', signature },
+        } as StreamEvent,
+        closingHeaders,
+      ),
+    );
+  }
+
+  events.push(
+    wrapStreamEvent(
+      {
+        type: 'content_block_stop',
+        index: blockIndex,
+      } as StreamEvent,
+      closingHeaders,
+    ),
   );
+
+  return events;
 };
 
 // ---------------------------------------------------------------------------
@@ -466,7 +490,7 @@ const createHooks = (
   buildDeltaEvents: (tracker: StreamTrackerState, delta: string): Out[] => event(buildDeltaEvent(tracker, delta)),
 
   buildEndEvents: (tracker: StreamTrackerState, closingHeaders: Record<string, string>): Out[] =>
-    event(buildEndEvent(tracker, closingHeaders)),
+    buildCloseEvents(tracker, closingHeaders).flatMap((e) => event(e)),
 
   decodeDiscrete: (payload: MessagePayload): Out[] => decodeDiscretePayload(payload, lifecycle),
 });

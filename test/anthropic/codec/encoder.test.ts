@@ -649,10 +649,10 @@ describe('Anthropic encoder', () => {
     });
   });
 
-  // -- signature_delta streaming ----------------------------------------------
+  // -- signature_delta buffering ------------------------------------------------
 
-  describe('signature_delta streaming', () => {
-    it('encodes signature_delta as an append on the thinking stream', async () => {
+  describe('signature_delta buffering', () => {
+    it('buffers signature_delta and includes it in close headers', async () => {
       const encoder = createEncoder(writer);
       await encoder.appendEvent(
         makeStreamEvent({
@@ -669,8 +669,105 @@ describe('Anthropic encoder', () => {
         }),
       );
 
+      // signature_delta should NOT produce a stream append
+      expect(writer.appendCalls).toHaveLength(0);
+
+      await encoder.appendEvent(
+        makeStreamEvent({ type: 'content_block_stop', index: 0 }),
+      );
+
+      // Close should include buffered signature in domain headers
+      const closeMsg = lastAppend(writer);
+      expect(headersOf(closeMsg)[`${D}signature`]).toBe('sig-abc');
+    });
+
+    it('concatenates multiple signature_delta events into one header', async () => {
+      const encoder = createEncoder(writer);
+      await encoder.appendEvent(
+        makeStreamEvent({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'thinking', thinking: '' },
+        }),
+      );
+      await encoder.appendEvent(
+        makeStreamEvent({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'signature_delta', signature: 'part1' },
+        }),
+      );
+      await encoder.appendEvent(
+        makeStreamEvent({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'signature_delta', signature: 'part2' },
+        }),
+      );
+
+      // No stream appends for signature deltas
+      expect(writer.appendCalls).toHaveLength(0);
+
+      await encoder.appendEvent(
+        makeStreamEvent({ type: 'content_block_stop', index: 0 }),
+      );
+
+      const closeMsg = lastAppend(writer);
+      expect(headersOf(closeMsg)[`${D}signature`]).toBe('part1part2');
+    });
+
+    it('omits signature header when closing a block with no signature', async () => {
+      const encoder = createEncoder(writer);
+      await encoder.appendEvent(
+        makeStreamEvent({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        }),
+      );
+      await encoder.appendEvent(
+        makeStreamEvent({ type: 'content_block_stop', index: 0 }),
+      );
+
+      const closeMsg = lastAppend(writer);
+      expect(headersOf(closeMsg)[`${D}signature`]).toBeUndefined();
+    });
+
+    it('does not mix signature with thinking text appends', async () => {
+      const encoder = createEncoder(writer);
+      await encoder.appendEvent(
+        makeStreamEvent({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'thinking', thinking: '' },
+        }),
+      );
+      await encoder.appendEvent(
+        makeStreamEvent({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'thinking_delta', thinking: 'Let me think...' },
+        }),
+      );
+      await encoder.appendEvent(
+        makeStreamEvent({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'signature_delta', signature: 'sig-123' },
+        }),
+      );
+
+      // Only the thinking_delta should be a stream append
       expect(writer.appendCalls).toHaveLength(1);
-      expect(writer.appendCalls[0]?.data).toBe('sig-abc');
+      expect(writer.appendCalls[0]?.data).toBe('Let me think...');
+
+      await encoder.appendEvent(
+        makeStreamEvent({ type: 'content_block_stop', index: 0 }),
+      );
+
+      // Close carries the signature in headers, separate from stream data
+      const closeMsg = lastAppend(writer);
+      expect(headersOf(closeMsg)[`${D}signature`]).toBe('sig-123');
     });
   });
 

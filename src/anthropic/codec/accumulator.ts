@@ -87,13 +87,23 @@ class DefaultAgentAccumulator implements MessageAccumulator<AgentCodecEvent, Age
 
     if (existing) {
       // Already active — sync with the externally updated message.
-      // Replace the message reference so the accumulator reflects updates
-      // (e.g. cross-turn amendments applied to the tree) that happened
-      // outside the streaming flow.
+      // Replace the message and rebuild tracking maps so the accumulator
+      // reflects updates (e.g. cross-turn amendments applied to the tree)
+      // that happened outside the streaming flow.
       const cloned = structuredClone(message);
       const listIdx = this._messageList.indexOf(existing.message);
       if (cloned.type === 'assistant') {
         existing.message = cloned;
+        existing.contentBlocks.clear();
+        existing.toolInputBuffers.clear();
+        existing.streamStatus.clear();
+        for (let i = 0; i < cloned.message.content.length; i++) {
+          // CAST: Content blocks are a union of SDK types; cast through unknown
+          // to read the type discriminant.
+          const block = cloned.message.content[i] as unknown as Record<string, unknown>;
+          existing.contentBlocks.set(i, { type: block.type as string, index: i });
+          existing.streamStatus.set(i, 'finished');
+        }
       }
       if (listIdx !== -1) {
         this._messageList[listIdx] = cloned;
@@ -128,9 +138,17 @@ class DefaultAgentAccumulator implements MessageAccumulator<AgentCodecEvent, Age
 
     // If this message is already in the list (completed previously),
     // replace in-place. Otherwise push as a new entry.
-    const existingIdx = this._messageList.findIndex(
-      (m) => m === message || this._messageIdentityKey(m) === this._messageIdentityKey(cloned),
-    );
+    const existingIdx = this._messageList.findIndex((m) => {
+      if (m === message) return true;
+      // For assistant messages, the BetaMessage ID is a stable unique identifier.
+      if (m.type === 'assistant' && cloned.type === 'assistant') {
+        return m.message.id === cloned.message.id;
+      }
+      // For user messages, fall back to uuid (if present) or session_id.
+      const mKey = m.uuid ?? m.session_id;
+      const clonedKey = cloned.uuid ?? cloned.session_id;
+      return mKey === clonedKey;
+    });
     if (existingIdx === -1) {
       this._messageList.push(cloned);
     } else {
@@ -512,10 +530,6 @@ class DefaultAgentAccumulator implements MessageAccumulator<AgentCodecEvent, Age
   // -------------------------------------------------------------------------
   // Shared helpers
   // -------------------------------------------------------------------------
-
-  private _messageIdentityKey(message: AgentMessage): string {
-    return message.uuid ?? message.session_id;
-  }
 
   private _ensureActiveMessage(messageId: string): ActiveMessageState {
     const existing = this._activeMessages.get(messageId);

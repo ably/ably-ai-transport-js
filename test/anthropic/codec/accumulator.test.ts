@@ -960,6 +960,63 @@ describe('Anthropic Agent SDK accumulator', () => {
       const content = getContent(at(acc.messages, 0));
       expect(content[0]).toEqual(expect.objectContaining({ type: 'text', text: 'replaced' }));
     });
+
+    it('rebuilds content block tracking on already-active message', () => {
+      const acc = createAccumulator();
+
+      // Start streaming with one text block
+      acc.processOutputs([
+        eventOutput(messageStartEvent('msg-a'), 'msg-a'),
+        eventOutput(textBlockStart(0), 'msg-a'),
+        eventOutput(textDelta(0, 'streaming'), 'msg-a'),
+      ]);
+
+      expect(acc.hasActiveStream).toBe(true);
+
+      // Sync with an externally updated message that has two blocks
+      const updated = completeAssistantMessage('msg-a', [
+        { type: 'text', text: 'first block' },
+        { type: 'tool_use', id: 'tc-1', name: 'search', input: { q: 'test' } },
+      ]);
+      acc.initMessage('msg-a', updated);
+
+      // Tracking should reflect the updated content — both blocks marked finished
+      expect(acc.hasActiveStream).toBe(false);
+
+      // Content should reflect the synced message, not the old streaming state
+      const content = getContent(at(acc.messages, 0));
+      expect(content).toHaveLength(2);
+      expect(content[0]).toEqual(expect.objectContaining({ type: 'text', text: 'first block' }));
+      expect(content[1]).toEqual(expect.objectContaining({ type: 'tool_use', id: 'tc-1' }));
+    });
+
+    it('matches assistant messages by BetaMessage ID, not session_id', () => {
+      const acc = createAccumulator();
+
+      // Add two assistant messages with different IDs but same session_id
+      const msgA = completeAssistantMessage('msg-a', [{ type: 'text', text: 'A' }], {
+        sessionId: 'shared-session',
+      });
+      const msgB = completeAssistantMessage('msg-b', [{ type: 'text', text: 'B' }], {
+        sessionId: 'shared-session',
+      });
+      acc.processOutputs([messageOutput(msgA), messageOutput(msgB)]);
+
+      expect(acc.messages).toHaveLength(2);
+
+      // initMessage for msg-b should replace only msg-b, not msg-a
+      const updatedB = completeAssistantMessage('msg-b', [{ type: 'text', text: 'B updated' }], {
+        sessionId: 'shared-session',
+      });
+      acc.initMessage('msg-b', updatedB);
+
+      // Should still have exactly 2 messages
+      expect(acc.messages).toHaveLength(2);
+      const contentA = getContent(at(acc.messages, 0));
+      const contentB = getContent(at(acc.messages, 1));
+      expect(contentA[0]).toEqual(expect.objectContaining({ text: 'A' }));
+      expect(contentB[0]).toEqual(expect.objectContaining({ text: 'B updated' }));
+    });
   });
 
   // -- signature_delta handling -----------------------------------------------

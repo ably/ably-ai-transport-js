@@ -7,12 +7,9 @@
  * to get the stable channel reference and creates the transport once on
  * first render (via useRef).
  *
- * The transport is NOT closed when the provider unmounts. Channel lifecycle
- * is managed by ChannelProvider, which detaches the channel and clears all
- * subscriptions. Auto-closing would break React Strict Mode (double-mount
- * calls close() on the first cleanup, leaving a dead transport on the second
- * mount). Call transport.close() explicitly if you need to tear down the
- * transport independently of the channel lifecycle.
+ * The transport is closed synchronously when the provider unmounts (via
+ * useLayoutEffect) so that any in-progress operations are aborted before
+ * the channel is detached by ChannelProvider.
  *
  * Multiple TransportProviders can be nested using distinct channelNames.
  * Each provider merges its transport into the parent record, so descendants
@@ -20,7 +17,7 @@
  */
 
 import { ChannelProvider, useChannel } from 'ably/react';
-import { type PropsWithChildren, type ReactNode, useContext, useEffect, useMemo, useRef } from 'react';
+import { type PropsWithChildren, type ReactNode, useContext, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 
 import { createClientTransport } from '../../core/transport/client-transport.js';
 import type { ClientTransport, ClientTransportOptions } from '../../core/transport/types.js';
@@ -45,11 +42,11 @@ const TransportProviderInner = <TEvent, TMessage>({
   ...transportOptions
 }: TransportProviderProps<TEvent, TMessage>) => {
   const { channel } = useChannel({ channelName });
-  const transportRef = useRef<ClientTransport<TEvent, TMessage> | null>(null);
+  const transportRef = useRef<ClientTransport<TEvent, TMessage> | undefined>(undefined);
   const transportChannelRef = useRef<string>(channelName);
   const transportsToDisposeRef = useRef<ClientTransport<unknown, unknown>[]>([]);
 
-  if (transportRef.current === null || transportChannelRef.current !== channelName) {
+  if (!transportRef.current || transportChannelRef.current !== channelName) {
     transportChannelRef.current = channelName;
     if (transportRef.current) transportsToDisposeRef.current.push(transportRef.current);
     transportRef.current = createClientTransport({ ...transportOptions, channel });
@@ -74,9 +71,11 @@ const TransportProviderInner = <TEvent, TMessage>({
     [channelName],
   );
 
-  useEffect(
+  // Synchronously clear the ref on unmount so stale consumers can't call the closed transport.
+  useLayoutEffect(
     () => () => {
       void transportRef.current?.close();
+      transportRef.current = undefined;
     },
     [],
   );

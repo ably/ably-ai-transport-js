@@ -34,20 +34,27 @@
       "import": "./dist/vercel/react/ably-ai-transport-vercel-react.js",
       "require": "./dist/vercel/react/ably-ai-transport-vercel-react.umd.cjs"
     },
+    "./anthropic": {
+      "types": "./dist/anthropic/index.d.ts",
+      "react-native": "./dist/anthropic/ably-ai-transport-anthropic.umd.cjs",
+      "import": "./dist/anthropic/ably-ai-transport-anthropic.js",
+      "require": "./dist/anthropic/ably-ai-transport-anthropic.umd.cjs"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "npm run build:clean && npm run build:core && npm run build:react && npm run build:vercel && npm run build:vercel-react",
+    "build": "npm run build:clean && npm run build:core && npm run build:react && npm run build:vercel && npm run build:vercel-react && npm run build:anthropic",
     "build:clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "build:core": "vite build --config ./src/vite.config.ts",
     "build:react": "vite build --config ./src/react/vite.config.ts --emptyOutDir",
     "build:vercel": "vite build --config ./src/vercel/vite.config.ts --emptyOutDir",
     "build:vercel-react": "vite build --config ./src/vercel/react/vite.config.ts --emptyOutDir",
+    "build:anthropic": "vite build --config ./src/anthropic/vite.config.ts --emptyOutDir",
     "prepare": "npm run build",
     "lint": "eslint .",
     "lint:fix": "eslint --fix .; (npm run format > /dev/null)",
-    "format": "prettier --list-different --write .",
-    "format:check": "prettier --check .",
+    "format": "prettier --list-different --write src demo/vercel/react/*/src demo/anthropic/react/src",
+    "format:check": "prettier --check src demo/vercel/react/*/src demo/anthropic/react/src",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.config.integration.ts",
@@ -83,11 +90,19 @@
     "node": ">=20.0.0"
   },
   "peerDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.85",
+    "@anthropic-ai/sdk": "^0.80.0",
     "ably": "^2.21.0",
     "ai": "^6",
     "react": "^18.0.0 || ^19.0.0"
   },
   "peerDependenciesMeta": {
+    "@anthropic-ai/claude-agent-sdk": {
+      "optional": true
+    },
+    "@anthropic-ai/sdk": {
+      "optional": true
+    },
     "ai": {
       "optional": true
     },
@@ -97,13 +112,18 @@
   },
   "devDependencies": {
     "@ai-sdk/react": "^3.0.151",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.85",
+    "@anthropic-ai/sdk": "^0.80.0",
     "@eslint/compat": "^1.2.7",
     "@eslint/eslintrc": "^3.3.0",
     "@eslint/js": "^9.12.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@testing-library/react": "^16.3.2",
     "@types/react": "^19.2.14",
     "@typescript-eslint/eslint-plugin": "^8.26.1",
     "@typescript-eslint/parser": "^8.26.1",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.85",
+    "@anthropic-ai/sdk": "^0.80.0",
     "@vitest/coverage-v8": "^4.1.2",
     "ai": "^6.0.137",
     "eslint": "^9.31.0",

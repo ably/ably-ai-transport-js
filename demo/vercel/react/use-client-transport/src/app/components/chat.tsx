@@ -1,8 +1,6 @@
 'use client';
 
 import { useState, useCallback } from 'react';
-import type * as AI from 'ai';
-import { useClientTransport, useCreateView, useActiveTurns, useView, useAblyMessages } from '@ably/ai-transport/react';
 
 import { userMessage } from '../helpers';
 import { useClientTools } from '../hooks/use-client-tools';
@@ -13,6 +11,9 @@ import { MessageQueue } from './message-queue';
 import { InputBar } from './input-bar';
 import { DebugPane } from './debug-pane';
 import { ChatPane } from './chat-pane';
+import { TransportHooks } from '../providers';
+
+const { useClientTransport, useCreateView, useActiveTurns, useView, useAblyMessages } = TransportHooks;
 
 export interface ToolApproval {
   toolCallId: string;
@@ -28,19 +29,19 @@ interface ChatProps {
   historyLimit?: number;
 }
 
-export function Chat({ chatId, clientId, historyLimit }: ChatProps) {
+export function Chat({ clientId, historyLimit }: ChatProps) {
   // Transport is created by TransportProvider in page.tsx
-  const transport = useClientTransport<AI.UIMessageChunk, AI.UIMessage>({ channelName: chatId });
+  const transport = useClientTransport();
   const [split, setSplit] = useState(false);
 
   const limit = historyLimit ?? 30;
-  const view = useView({ transport, limit });
-  const splitView = useCreateView({ transport, limit, skip: !split });
+  const view = useView({ limit });
+  const splitView = useCreateView({ limit, skip: !split });
 
   useClientTools(view, clientId);
 
-  const activeTurns = useActiveTurns({ transport });
-  const ablyMessages = useAblyMessages({ transport });
+  const activeTurns = useActiveTurns();
+  const ablyMessages = useAblyMessages();
   const queue = useMessageQueue(transport, view.send);
 
   const handleToolApproved = useCallback(

@@ -19,11 +19,14 @@ export default defineConfig({
       formats: ['es', 'umd'],
     },
     rollupOptions: {
-      external: ['ably', 'react'],
+      external: ['ably', 'ably/react', 'react', 'react/jsx-runtime', 'react/jsx-dev-runtime'],
       output: {
         globals: {
           ably: 'Ably',
+          'ably/react': 'AblyReact',
           react: 'React',
+          'react/jsx-runtime': 'ReactJsxRuntime',
+          'react/jsx-dev-runtime': 'ReactJsxDevRuntime',
         },
       },
     },

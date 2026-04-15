@@ -1,11 +1,12 @@
 'use client';
 
-import { Providers, useAblyReady } from './providers';
-import { TransportProvider } from '@ably/ai-transport/react';
+import { Providers, useAblyReady, TransportHooks } from './providers';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import { Chat } from './components/chat';
 import { useSearchParams } from 'next/navigation';
 import { Suspense } from 'react';
+
+const { TransportProvider } = TransportHooks;
 
 const DEFAULT_CHANNEL = process.env.NEXT_PUBLIC_ABLY_CHANNEL ?? 'ai:demo';
 

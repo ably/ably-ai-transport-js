@@ -1,14 +1,15 @@
 'use client';
 
 import { useChat } from '@ai-sdk/react';
-import type * as AI from 'ai';
-import { useClientTransport, useActiveTurns, useView, useAblyMessages } from '@ably/ai-transport/react';
 import { useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
 import { useState, useEffect, useCallback } from 'react';
 import { MessageList } from './components/message-list';
 import { DebugPane } from './components/debug-pane';
 import type { CallbackLogEntry } from './components/debug-pane';
 import { useClientTools } from './hooks/use-client-tools';
+import { TransportHooks } from './providers';
+
+const { useClientTransport, useActiveTurns, useView, useAblyMessages } = TransportHooks;
 
 // ---------------------------------------------------------------------------
 // Chat component
@@ -16,7 +17,7 @@ import { useClientTools } from './hooks/use-client-tools';
 
 export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clientId?: string; historyLimit?: number }) {
   // Transport is created by TransportProvider in page.tsx
-  const transport = useClientTransport<AI.UIMessageChunk, AI.UIMessage>({ channelName: chatId });
+  const transport = useClientTransport();
   const chatTransport = useChatTransport(transport);
 
   // -- Callback & status logging for debug pane ----------------------------
@@ -67,15 +68,15 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
     setStatusLog((prev) => [...prev, { time: Date.now(), status }]);
   }, [status]);
 
-  const activeTurns = useActiveTurns({ transport });
+  const activeTurns = useActiveTurns();
   const hasAnyTurns = activeTurns.size > 0;
 
   // Auto-loads first page on mount
-  const { nodes, hasOlder, loading, loadOlder } = useView({ transport, limit: historyLimit ?? 30 });
+  const { nodes, hasOlder, loading, loadOlder } = useView({ limit: historyLimit ?? 30 });
 
   useClientTools(chatMessages, addToolResult, nodes, clientId);
 
-  const ablyMessages = useAblyMessages({ transport });
+  const ablyMessages = useAblyMessages();
 
   return (
     <div className="flex h-dvh">

@@ -17,7 +17,7 @@ const { useClientTransport, useActiveTurns, useView, useAblyMessages } = Transpo
 
 export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clientId?: string; historyLimit?: number }) {
   // Transport is created by TransportProvider in page.tsx
-  const transport = useClientTransport();
+  const { transport } = useClientTransport();
   const chatTransport = useChatTransport(transport);
 
   // -- Callback & status logging for debug pane ----------------------------

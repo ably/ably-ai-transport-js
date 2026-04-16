@@ -31,7 +31,7 @@ interface ChatProps {
 
 export function Chat({ clientId, historyLimit }: ChatProps) {
   // Transport is created by TransportProvider in page.tsx
-  const transport = useClientTransport();
+  const { transport } = useClientTransport();
   const [split, setSplit] = useState(false);
 
   const limit = historyLimit ?? 30;

@@ -44,11 +44,11 @@ export const useCreateView = <TEvent, TMessage>({
   /** When `true`, skip view creation and return an empty handle immediately. */
   skip?: boolean;
 } = {}): ViewHandle<TEvent, TMessage> => {
-  const nearestTransport = useContext(NearestTransportContext);
+  const nearestSlot = useContext(NearestTransportContext);
   // CAST: NearestTransportContext stores transport with erased generics; types fixed at call site.
   const resolved = skip
     ? undefined
-    : ((transport ?? nearestTransport) as ClientTransport<TEvent, TMessage> | null | undefined);
+    : ((transport ?? nearestSlot?.transport) as ClientTransport<TEvent, TMessage> | null | undefined);
 
   const [view, setView] = useState<View<TEvent, TMessage> | undefined>();
 

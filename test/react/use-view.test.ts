@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 
 import { act, renderHook } from '@testing-library/react';
+import * as Ably from 'ably';
 import { createElement, type ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ClientTransport } from '../../src/core/transport/types.js';
+import { ErrorCode } from '../../src/errors.js';
 import { NearestTransportContext } from '../../src/react/contexts/transport-context.js';
 import { useView } from '../../src/react/use-view.js';
 import { createMockTransport } from './helper/mock-transport.js';
@@ -171,7 +173,7 @@ describe('useView', () => {
     const wrapper = ({ children }: { children: ReactNode }): ReactNode =>
       createElement(
         NearestTransportContext.Provider,
-        { value: mock.transport as ClientTransport<unknown, unknown> },
+        { value: { transport: mock.transport as ClientTransport<unknown, unknown>, error: undefined } },
         children,
       );
 
@@ -211,5 +213,79 @@ describe('useView', () => {
     expect(result.current.messages[0]).toBe(msg1);
     // msg2's reference should be the new value
     expect(result.current.messages[1]).toBe(msg2Updated);
+  });
+
+  describe('error', () => {
+    it('error is undefined initially', () => {
+      const mock = createMockTransport();
+      const { result } = renderHook(() => useView({ transport: mock.transport }));
+      expect(result.current.loadError).toBeUndefined();
+    });
+
+    it('error is set when loadOlder rejects', async () => {
+      const mock = createMockTransport();
+      const loadError = new Ably.ErrorInfo('unable to load older messages; network error', ErrorCode.BadRequest, 400);
+      (mock.view.loadOlder as ReturnType<typeof vi.fn>).mockReturnValue(Promise.reject(loadError));
+
+      const { result } = renderHook(() => useView({ transport: mock.transport }));
+
+      await act(async () => {
+        await result.current.loadOlder();
+      });
+
+      expect(result.current.loadError).toBe(loadError);
+      expect(result.current.loading).toBe(false);
+    });
+
+    it('error is cleared on next successful loadOlder', async () => {
+      const mock = createMockTransport();
+      const loadError = new Ably.ErrorInfo('unable to load older messages; network error', ErrorCode.BadRequest, 400);
+
+      // First call fails
+      (mock.view.loadOlder as ReturnType<typeof vi.fn>).mockReturnValueOnce(Promise.reject(loadError));
+      // Second call succeeds
+      (mock.view.loadOlder as ReturnType<typeof vi.fn>).mockReturnValueOnce(Promise.resolve());
+
+      const { result } = renderHook(() => useView({ transport: mock.transport }));
+
+      await act(async () => {
+        await result.current.loadOlder();
+      });
+      expect(result.current.loadError).toBe(loadError);
+
+      await act(async () => {
+        await result.current.loadOlder();
+      });
+      expect(result.current.loadError).toBeUndefined();
+    });
+
+    it('clears loadError when the view changes', async () => {
+      const mockA = createMockTransport();
+      const loadError = new Ably.ErrorInfo('unable to load; network error', ErrorCode.BadRequest, 400);
+      (mockA.view.loadOlder as ReturnType<typeof vi.fn>).mockReturnValue(Promise.reject(loadError));
+
+      let currentView = mockA.view;
+      const { result, rerender } = renderHook(() => useView({ view: currentView }));
+
+      await act(async () => {
+        await result.current.loadOlder();
+      });
+      expect(result.current.loadError).toBe(loadError);
+
+      // Switch to a different view — loadError must be cleared.
+      const mockB = createMockTransport();
+      act(() => {
+        currentView = mockB.view;
+        rerender();
+      });
+
+      expect(result.current.loadError).toBeUndefined();
+    });
+
+    it('error is undefined when skip is true', () => {
+      const mock = createMockTransport();
+      const { result } = renderHook(() => useView({ transport: mock.transport, skip: true }));
+      expect(result.current.loadError).toBeUndefined();
+    });
   });
 });

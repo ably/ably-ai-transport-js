@@ -28,9 +28,9 @@ import { NearestTransportContext } from './contexts/transport-context.js';
 export const useActiveTurns = <TEvent, TMessage>({
   transport,
 }: { transport?: ClientTransport<TEvent, TMessage> | null } = {}): Map<string, Set<string>> => {
-  const nearestTransport = useContext(NearestTransportContext);
+  const nearestSlot = useContext(NearestTransportContext);
   // CAST: NearestTransportContext stores transport with erased generics; types fixed at call site.
-  const resolved = (transport ?? nearestTransport) as ClientTransport<TEvent, TMessage> | undefined;
+  const resolved = (transport ?? nearestSlot?.transport) as ClientTransport<TEvent, TMessage> | undefined;
 
   const [turns, setTurns] = useState<Map<string, Set<string>>>(() => new Map());
 

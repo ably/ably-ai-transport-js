@@ -36,7 +36,7 @@ import type * as AI from 'ai';
 </TransportProvider>;
 
 // Inside ChatInner:
-const transport = useClientTransport<AI.UIMessageChunk, AI.UIMessage>();
+const { transport } = useClientTransport<AI.UIMessageChunk, AI.UIMessage>();
 const chatTransport = useChatTransport(transport);
 
 const { messages, setMessages, sendMessage, stop } = useChat({
@@ -69,7 +69,7 @@ import type * as AI from 'ai';
 </TransportProvider>;
 
 // Inside ChatInner:
-const transport = useClientTransport<AI.UIMessageChunk, AI.UIMessage>();
+const { transport } = useClientTransport<AI.UIMessageChunk, AI.UIMessage>();
 const {
   nodes,
   hasOlder,

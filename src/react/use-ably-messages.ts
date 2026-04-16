@@ -27,11 +27,11 @@ export const useAblyMessages = <TEvent, TMessage>({
   transport,
   skip,
 }: { transport?: ClientTransport<TEvent, TMessage>; skip?: boolean } = {}): Ably.InboundMessage[] => {
-  const nearestTransport = useContext(NearestTransportContext);
+  const nearestSlot = useContext(NearestTransportContext);
   // CAST: NearestTransportContext stores transport with erased generics; types fixed at call site.
   const resolved = skip
     ? undefined
-    : ((transport ?? nearestTransport) as ClientTransport<TEvent, TMessage> | undefined);
+    : ((transport ?? nearestSlot?.transport) as ClientTransport<TEvent, TMessage> | undefined);
 
   const [messages, setMessages] = useState<Ably.InboundMessage[]>([]);
   const messagesRef = useRef<Ably.InboundMessage[]>([]);

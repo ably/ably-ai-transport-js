@@ -30,7 +30,7 @@ function ChatInner({ chatId }: { chatId: string }) {
   const [input, setInput] = useState('');
 
   // Read the transport created by TransportProvider
-  const transport = useClientTransport<AI.UIMessageChunk, AI.UIMessage>();
+  const { transport } = useClientTransport<AI.UIMessageChunk, AI.UIMessage>();
 
   // useView provides message state, navigation, and write operations
   const { nodes, hasOlder, loading, loadOlder, send, regenerate, hasSiblings, getSiblings, getSelectedIndex, select } = useView(transport, { limit: 30 });

@@ -4,6 +4,16 @@ import { act, renderHook } from '@testing-library/react';
 import { createElement, type ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+/** Flush microtasks (but NOT macrotasks) so deferred promises resolve. */
+const flushMicrotasks = async (): Promise<void> => {
+  await new Promise<void>((resolve) => {
+    queueMicrotask(resolve);
+  });
+  await new Promise<void>((resolve) => {
+    queueMicrotask(resolve);
+  });
+};
+
 import type { ClientTransport } from '../../../src/core/transport/types.js';
 import { TransportProvider } from '../../../src/react/contexts/transport-provider.js';
 import { useClientTransport } from '../../../src/react/use-client-transport.js';
@@ -111,6 +121,21 @@ describe('TransportProvider', () => {
     expect(outerResult.current).toBeDefined();
     expect(innerResult.current).toBeDefined();
     expect(outerResult.current).not.toBe(innerResult.current);
+  });
+
+  it('closes the transport when the provider unmounts', async () => {
+    const created: ReturnType<typeof createMockTransport>[] = [];
+    createClientTransportMock.mockImplementation(() => {
+      const mock = createMockTransport();
+      created.push(mock);
+      return mock.transport;
+    });
+
+    const { unmount } = renderHook(() => useClientTransport({ channelName: 'ai:test' }), { wrapper: wrapDefault });
+    unmount();
+    await flushMicrotasks();
+
+    expect(created[0]?.close).toHaveBeenCalledOnce();
   });
 
   it('forwards transport options to createClientTransport', () => {

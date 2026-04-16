@@ -7,9 +7,10 @@
  * to get the stable channel reference and creates the transport once on
  * first render (via useRef).
  *
- * The transport is closed synchronously when the provider unmounts (via
- * useLayoutEffect) so that any in-progress operations are aborted before
- * the channel is detached by ChannelProvider.
+ * The transport is closed when the provider truly unmounts. The close is
+ * scheduled as a microtask so that React Strict Mode's synchronous
+ * remount cycle (mount → fake-unmount → remount) can cancel it before it
+ * fires, avoiding unnecessary transport teardown in development.
  *
  * Multiple TransportProviders can be nested using distinct channelNames.
  * Each provider merges its transport into the parent record, so descendants
@@ -17,7 +18,7 @@
  */
 
 import { ChannelProvider, useChannel } from 'ably/react';
-import { type PropsWithChildren, type ReactNode, useContext, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { type PropsWithChildren, type ReactNode, useContext, useEffect, useMemo, useRef } from 'react';
 
 import { createClientTransport } from '../../core/transport/client-transport.js';
 import type { ClientTransport, ClientTransportOptions } from '../../core/transport/types.js';
@@ -45,6 +46,7 @@ const TransportProviderInner = <TEvent, TMessage>({
   const transportRef = useRef<ClientTransport<TEvent, TMessage> | undefined>(undefined);
   const transportChannelRef = useRef<string>(channelName);
   const transportsToDisposeRef = useRef<ClientTransport<unknown, unknown>[]>([]);
+  const pendingCloseRef = useRef(false);
 
   if (!transportRef.current || transportChannelRef.current !== channelName) {
     transportChannelRef.current = channelName;
@@ -71,14 +73,23 @@ const TransportProviderInner = <TEvent, TMessage>({
     [channelName],
   );
 
-  // Synchronously clear the ref on unmount so stale consumers can't call the closed transport.
-  useLayoutEffect(
-    () => () => {
-      void transportRef.current?.close();
-      transportRef.current = undefined;
-    },
-    [],
-  );
+  // Close the transport when the component truly unmounts. The close is
+  // scheduled as a microtask: in React Strict Mode (dev) the component
+  // remounts synchronously before any microtask can drain, so the remount's
+  // effect setup resets pendingCloseRef.current = false and cancels the
+  // close. On a real unmount no remount follows, the microtask fires, and
+  // the transport is closed.
+  useEffect(() => {
+    pendingCloseRef.current = false;
+    return () => {
+      pendingCloseRef.current = true;
+      void Promise.resolve().then(() => {
+        if (pendingCloseRef.current) {
+          void transportRef.current?.close();
+        }
+      });
+    };
+  }, []);
 
   return (
     <TransportContext.Provider value={contextValue}>

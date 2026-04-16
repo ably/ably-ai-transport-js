@@ -40,6 +40,14 @@ interface InternalNode<TMessage> {
 /** Internal tree surface used by View — not part of the public Tree API. */
 export interface TreeInternal<TMessage> extends Tree<TMessage> {
   /**
+   * Monotonic counter that increments on structural changes (node insert,
+   * delete, serial promotion/reorder) but NOT on content-only updates
+   * (existing node's message replaced). Allows the View to skip full
+   * tree walks when only message content changed.
+   */
+  readonly structuralVersion: number;
+
+  /**
    * Flatten the tree along selected branches into a linear node list.
    * The `selections` map provides the selected sibling's msgId at each
    * fork point, keyed by group root msgId. Fork points not present in
@@ -107,6 +115,13 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
 
   /** Monotonically increasing counter for insertion sequence. */
   private _seqCounter = 0;
+
+  /** Incremented on structural changes; unchanged on content-only updates. */
+  private _structuralVersion = 0;
+
+  get structuralVersion(): number {
+    return this._structuralVersion;
+  }
 
   constructor(logger: Logger) {
     this._logger = logger;
@@ -394,6 +409,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
         // Re-sort: remove from current position, re-insert at correct position.
         this._removeSorted(existing);
         this._insertSorted(existing);
+        this._structuralVersion++;
       }
       this._emitter.emit('update');
       return;
@@ -415,6 +431,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
     this._nodeIndex.set(msgId, internal);
     this._addToParentIndex(parentId, msgId);
     this._insertSorted(internal);
+    this._structuralVersion++;
     this._emitter.emit('update');
   }
 
@@ -437,6 +454,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
 
     // Children are NOT deleted — they become unreachable in flattenNodes()
     // because their parent is no longer on the active path.
+    this._structuralVersion++;
     this._emitter.emit('update');
   }
 

@@ -164,7 +164,7 @@ function ChatInner({ chatId }: { chatId: string }) {
   const [input, setInput] = useState('');
 
   // 1. Read the transport created by TransportProvider
-  const transport = useClientTransport<AI.UIMessageChunk, AI.UIMessage>();
+  const { transport } = useClientTransport<AI.UIMessageChunk, AI.UIMessage>();
 
   // 2. Wrap it for useChat compatibility
   const chatTransport = useChatTransport(transport);

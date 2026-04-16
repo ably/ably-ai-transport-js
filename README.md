@@ -154,7 +154,7 @@ const { TransportProvider, useClientTransport, useActiveTurns, useView } = creat
 >();
 
 function ChatInner({ chatId }: { chatId: string }) {
-  const transport = useClientTransport();
+  const { transport } = useClientTransport();
   const chatTransport = useChatTransport(transport);
 
   const { messages, setMessages, sendMessage, stop } = useChat({

@@ -29,6 +29,7 @@ import type { TransportProviderProps } from './contexts/transport-provider.js';
 import { TransportProvider as _TransportProvider } from './contexts/transport-provider.js';
 import { useAblyMessages as _useAblyMessages } from './use-ably-messages.js';
 import { useActiveTurns as _useActiveTurns } from './use-active-turns.js';
+import type { ClientTransportHandle } from './use-client-transport.js';
 import { useClientTransport as _useClientTransport } from './use-client-transport.js';
 import { useCreateView as _useCreateView } from './use-create-view.js';
 import type { TreeHandle } from './use-tree.js';
@@ -49,16 +50,23 @@ export interface TransportHooks<TEvent, TMessage> {
   TransportProvider: ComponentType<TransportProviderProps<TEvent, TMessage>>;
   /**
    * Read the transport from context. No type params needed.
-   * Omit `channelName` to use the nearest provider. Pass `skip: true` to return a stub
-   * that throws on any access — safe to hold before conditions are ready.
-   * @throws {Ably.ErrorInfo} if `skip` is falsy and no matching provider is found.
+   *
+   * Returns `{ transport, transportError }`. When no provider is found,
+   * `transportError` is set and `transport` is a stub that throws on access —
+   * the hook never throws during render.
+   *
+   * Pass `onError` to subscribe to post-construction transport errors
+   * (e.g. send failures, channel continuity loss) without wiring
+   * `transport.on('error', …)` manually.
    */
   useClientTransport: (props?: {
     /** Channel name to look up; omit to use the nearest {@link TransportProvider}. */
     channelName?: string;
     /** When `true`, return a stub transport that throws on any access. */
     skip?: boolean;
-  }) => ClientTransport<TEvent, TMessage>;
+    /** Called whenever the resolved transport emits an error event. */
+    onError?: (error: Ably.ErrorInfo) => void;
+  }) => ClientTransportHandle<TEvent, TMessage>;
   /**
    * Subscribe to the nearest transport's view and return the visible node list with pagination.
    * Pass `transport` to use a transport's default view, `view` to subscribe to a specific view

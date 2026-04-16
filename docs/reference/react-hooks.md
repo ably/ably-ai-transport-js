@@ -61,7 +61,7 @@ For multiple transports, nest providers with distinct `channelName` values:
 Access the `ClientTransport` from the nearest `TransportProvider`.
 
 ```typescript
-const transport = useClientTransport<TEvent, TMessage>({ channelName?, skip? } = {});
+const { transport } = useClientTransport<TEvent, TMessage>({ channelName?, skip? } = {});
 ```
 
 | Prop          | Type       | Description                                                                                               |
@@ -75,13 +75,13 @@ const transport = useClientTransport<TEvent, TMessage>({ channelName?, skip? } =
 
 ```typescript
 // Nearest provider (most common)
-const transport = useClientTransport<UIMessageChunk, UIMessage>();
+const { transport } = useClientTransport<UIMessageChunk, UIMessage>();
 
 // Specific channel
-const transport = useClientTransport<UIMessageChunk, UIMessage>({ channelName: 'ai:main' });
+const { transport } = useClientTransport<UIMessageChunk, UIMessage>({ channelName: 'ai:main' });
 
 // Deferred until auth resolves — stub throws on any access
-const transport = useClientTransport<UIMessageChunk, UIMessage>({ skip: !userId });
+const { transport } = useClientTransport<UIMessageChunk, UIMessage>({ skip: !userId });
 ```
 
 ---

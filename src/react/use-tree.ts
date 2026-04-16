@@ -35,9 +35,9 @@ export interface TreeHandle<TMessage> {
 export const useTree = <TEvent, TMessage>({
   transport,
 }: { transport?: ClientTransport<TEvent, TMessage> } = {}): TreeHandle<TMessage> => {
-  const nearestTransport = useContext(NearestTransportContext);
+  const nearestSlot = useContext(NearestTransportContext);
   // CAST: NearestTransportContext stores transport with erased generics; types fixed at call site.
-  const resolved = (transport ?? nearestTransport) as ClientTransport<TEvent, TMessage> | undefined;
+  const resolved = (transport ?? nearestSlot?.transport) as ClientTransport<TEvent, TMessage> | undefined;
 
   const getSiblings = useCallback((msgId: string) => resolved?.tree.getSiblings(msgId) ?? [], [resolved]);
 

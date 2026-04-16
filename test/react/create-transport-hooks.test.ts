@@ -49,17 +49,10 @@ describe('createTransportHooks', () => {
     expect(result.current).toBeDefined();
   });
 
-  it('useClientTransport throws when no TransportProvider is in the tree', () => {
+  it('useClientTransport sets transportError when no TransportProvider is in the tree', () => {
     const { useClientTransport } = createTransportHooks<unknown, unknown>();
 
-    const { result } = renderHook(() => {
-      try {
-        useClientTransport({ channelName: 'ai:test' });
-        // Return value is irrelevant — the throw above is what matters
-      } catch (error) {
-        return error;
-      }
-    });
-    expect(result.current).toMatchObject({ code: 40000 });
+    const { result } = renderHook(() => useClientTransport({ channelName: 'ai:test' }));
+    expect(result.current.transportError).toMatchObject({ code: 40000 });
   });
 });

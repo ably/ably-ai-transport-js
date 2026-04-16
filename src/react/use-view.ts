@@ -31,7 +31,16 @@ export interface ViewHandle<TEvent, TMessage> {
   hasOlder: boolean;
   /** Whether a page load is currently in progress. */
   loading: boolean;
-  /** Load older messages into the view. No-op if already loading. */
+  /**
+   * Set when the most recent `loadOlder` call failed.
+   * Cleared automatically on the next successful load.
+   * `undefined` when no error has occurred or when `skip` is `true`.
+   */
+  loadError: Ably.ErrorInfo | undefined;
+  /**
+   * Load older messages into the view. No-op if already loading.
+   * On failure, `error` is set; on success, `error` is cleared.
+   */
   loadOlder: () => Promise<void>;
   /** Select a sibling at a fork point by index. Triggers a view update with the new branch. */
   select: (msgId: string, index: number) => void;
@@ -81,16 +90,17 @@ export const useView = <TEvent, TMessage>({
   /** When `true`, skip all subscriptions and return an empty handle immediately. */
   skip?: boolean;
 } = {}): ViewHandle<TEvent, TMessage> => {
-  const nearestTransport = useContext(NearestTransportContext);
+  const nearestSlot = useContext(NearestTransportContext);
   // CAST: NearestTransportContext stores transport with erased generics; types fixed at call site.
   const resolvedTransport = skip
     ? undefined
-    : (transport ?? (nearestTransport as unknown as ClientTransport<TEvent, TMessage> | undefined));
+    : (transport ?? (nearestSlot?.transport as unknown as ClientTransport<TEvent, TMessage> | undefined));
   const resolvedView = skip ? undefined : (view ?? resolvedTransport?.view);
 
   const [nodes, setNodes] = useState<MessageNode<TMessage>[]>(() => resolvedView?.flattenNodes() ?? []);
   const [hasOlder, setHasOlder] = useState(() => resolvedView?.hasOlder() ?? false);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<Ably.ErrorInfo | undefined>();
   const loadingRef = useRef(false);
 
   // Auto-load first page on mount when limit is provided (SWR-style).
@@ -104,6 +114,7 @@ export const useView = <TEvent, TMessage>({
     if (!resolvedView) {
       setNodes([]);
       setHasOlder(false);
+      setLoadError(undefined);
       return;
     }
 
@@ -113,6 +124,7 @@ export const useView = <TEvent, TMessage>({
     // Sync initial state
     setNodes(resolvedView.flattenNodes());
     setHasOlder(resolvedView.hasOlder());
+    setLoadError(undefined);
 
     const unsub = resolvedView.on('update', () => {
       setNodes(resolvedView.flattenNodes());
@@ -127,6 +139,13 @@ export const useView = <TEvent, TMessage>({
     setLoading(true);
     try {
       await resolvedView.loadOlder(limit);
+      setLoadError(undefined);
+    } catch (error) {
+      if (error instanceof Ably.ErrorInfo) {
+        setLoadError(error);
+      } else {
+        setLoadError(new Ably.ErrorInfo('Unknown error loading older messages', ErrorCode.BadRequest, 400));
+      }
     } finally {
       loadingRef.current = false;
       setLoading(false);
@@ -199,6 +218,7 @@ export const useView = <TEvent, TMessage>({
     nodes,
     hasOlder,
     loading,
+    loadError,
     loadOlder,
     select,
     getSelectedIndex,

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, renderHook } from '@testing-library/react';
+import * as Ably from 'ably';
 import { createElement, type ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -86,16 +87,47 @@ describe('TransportProvider', () => {
     expect(result.current).toBeDefined();
   });
 
-  it('throws when no TransportProvider is in the tree', () => {
-    const { result } = renderHook(() => {
-      try {
-        useClientTransport({ channelName: 'ai:test' });
-        // Return value is irrelevant — the throw above is what matters
-      } catch (error) {
-        return error;
-      }
+  it('sets transportError when no TransportProvider is in the tree', () => {
+    const { result } = renderHook(() => useClientTransport({ channelName: 'ai:test' }));
+    expect(result.current.transportError).toMatchObject({ code: 40000 });
+  });
+
+  it('surfaces construction error as transportError when createClientTransport throws', () => {
+    const constructionError = new Ably.ErrorInfo('unable to create transport; codec is invalid', 40003, 400);
+    createClientTransportMock.mockImplementationOnce(() => {
+      throw constructionError;
     });
-    expect(result.current).toMatchObject({ code: 40000 });
+
+    const { result } = renderHook(() => useClientTransport({ channelName: 'ai:test' }), { wrapper: wrapDefault });
+
+    expect(result.current.transportError).toBe(constructionError);
+    // transport is a stub that throws on access
+    expect(() => result.current.transport.tree).toThrow();
+  });
+
+  it('does not retry transport creation on re-renders after a constructor error', () => {
+    const constructionError = new Ably.ErrorInfo('unable to create transport; codec is invalid', 40003, 400);
+    createClientTransportMock.mockImplementation(() => {
+      throw constructionError;
+    });
+
+    const { result, rerender } = renderHook(() => useClientTransport({ channelName: 'ai:test' }), {
+      wrapper: wrapDefault,
+    });
+
+    expect(createClientTransportMock).toHaveBeenCalledTimes(1);
+    expect(result.current.transportError).toBe(constructionError);
+
+    act(() => {
+      rerender();
+    });
+    act(() => {
+      rerender();
+    });
+
+    // No retry — createClientTransport still called exactly once.
+    expect(createClientTransportMock).toHaveBeenCalledTimes(1);
+    expect(result.current.transportError).toBe(constructionError);
   });
 
   it('creates the transport exactly once across re-renders', () => {

@@ -7,21 +7,28 @@
  * to get the stable channel reference and creates the transport once on
  * first render (via useRef).
  *
+ * If createClientTransport throws, the error is stored in the TransportSlot
+ * (alongside an undefined transport) so that useClientTransport can surface it
+ * as transportError without crashing the component tree.
+ *
  * The transport is closed when the provider truly unmounts. The close is
  * scheduled as a microtask so that React Strict Mode's synchronous
  * remount cycle (mount → fake-unmount → remount) can cancel it before it
  * fires, avoiding unnecessary transport teardown in development.
  *
  * Multiple TransportProviders can be nested using distinct channelNames.
- * Each provider merges its transport into the parent record, so descendants
+ * Each provider merges its slot into the parent record so descendants
  * can access all registered transports via useClientTransport(channelName).
  */
 
+import * as Ably from 'ably';
 import { ChannelProvider, useChannel } from 'ably/react';
 import { type PropsWithChildren, type ReactNode, useContext, useEffect, useMemo, useRef } from 'react';
 
 import { createClientTransport } from '../../core/transport/client-transport.js';
 import type { ClientTransport, ClientTransportOptions } from '../../core/transport/types.js';
+import { ErrorCode } from '../../errors.js';
+import type { TransportSlot } from '../contexts/transport-context.js';
 import { NearestTransportContext, TransportContext } from '../contexts/transport-context.js';
 
 /**
@@ -47,24 +54,39 @@ const TransportProviderInner = <TEvent, TMessage>({
   const transportChannelRef = useRef<string>(channelName);
   const transportsToDisposeRef = useRef<ClientTransport<unknown, unknown>[]>([]);
   const pendingCloseRef = useRef(false);
+  const constructionErrorRef = useRef<Ably.ErrorInfo | undefined>(undefined);
 
-  if (!transportRef.current || transportChannelRef.current !== channelName) {
+  const alreadyCreatedOrFailed = !!transportRef.current || !!constructionErrorRef.current;
+
+  if (!alreadyCreatedOrFailed || transportChannelRef.current !== channelName) {
     transportChannelRef.current = channelName;
     if (transportRef.current) transportsToDisposeRef.current.push(transportRef.current);
-    transportRef.current = createClientTransport({ ...transportOptions, channel });
+    try {
+      transportRef.current = createClientTransport({ ...transportOptions, channel });
+      constructionErrorRef.current = undefined;
+    } catch (error) {
+      transportRef.current = undefined;
+      constructionErrorRef.current =
+        error instanceof Ably.ErrorInfo
+          ? error
+          : new Ably.ErrorInfo('Unknown error while creating transport', ErrorCode.BadRequest, 400);
+    }
   }
 
   const parentMap = useContext(TransportContext);
 
-  const contextValue = useMemo(
-    () => ({
-      ...parentMap,
-      // CAST: TransportContext stores transports with erased generics.
-      // The generic types are fixed at the TransportProvider<TEvent, TMessage> boundary.
-      [channelName]: transportRef.current as ClientTransport<unknown, unknown>,
-    }),
-    [channelName, parentMap],
+  // Capture ref values as locals so useMemo deps track changes correctly.
+  // CAST: TransportContext stores transports with erased generics.
+  // The generic types are fixed at the TransportProvider<TEvent, TMessage> boundary.
+  const currentTransport = transportRef.current as ClientTransport<unknown, unknown> | undefined;
+  const currentError = constructionErrorRef.current;
+
+  const slot = useMemo<TransportSlot>(
+    () => ({ transport: currentTransport, error: currentError }),
+    [currentTransport, currentError],
   );
+
+  const contextValue = useMemo(() => ({ ...parentMap, [channelName]: slot }), [channelName, parentMap, slot]);
 
   useEffect(
     () => () => {
@@ -93,9 +115,7 @@ const TransportProviderInner = <TEvent, TMessage>({
 
   return (
     <TransportContext.Provider value={contextValue}>
-      <NearestTransportContext.Provider value={transportRef.current as ClientTransport<unknown, unknown>}>
-        {children}
-      </NearestTransportContext.Provider>
+      <NearestTransportContext.Provider value={slot}>{children}</NearestTransportContext.Provider>
     </TransportContext.Provider>
   );
 };
@@ -108,13 +128,17 @@ const TransportProviderInner = <TEvent, TMessage>({
  * in `TransportContext` under `channelName`. Descendants call
  * {@link useClientTransport} with the same `channelName` to access the transport.
  *
+ * If `createClientTransport` throws during construction, the error is surfaced
+ * through `useClientTransport` as `transportError` — the component tree does not
+ * crash and children are still rendered.
+ *
  * ```tsx
  * <TransportProvider channelName="ai:demo" codec={UIMessageCodec}>
  *   <Chat />
  * </TransportProvider>
  *
  * // Inside Chat:
- * const transport = useClientTransport({ channelName: 'ai:demo' });
+ * const { transport, transportError } = useClientTransport({ channelName: 'ai:demo' });
  * ```
  *
  * For multiple transports, nest providers with distinct channelNames:
@@ -127,8 +151,8 @@ const TransportProviderInner = <TEvent, TMessage>({
  * </TransportProvider>
  *
  * // Inside App:
- * const main = useClientTransport({ channelName: 'ai:main' });
- * const aux  = useClientTransport({ channelName: 'ai:aux' });
+ * const { transport: main } = useClientTransport({ channelName: 'ai:main' });
+ * const { transport: aux }  = useClientTransport({ channelName: 'ai:aux' });
  * ```
  * @param props - Provider configuration including `channelName`, `codec`, and all other {@link ClientTransportOptions}.
  * @returns A React element wrapping children with ChannelProvider and TransportContext.

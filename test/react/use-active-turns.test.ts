@@ -103,7 +103,7 @@ describe('useActiveTurns', () => {
     const wrapper = ({ children }: { children: ReactNode }): ReactNode =>
       createElement(
         NearestTransportContext.Provider,
-        { value: mock.transport as ClientTransport<unknown, unknown> },
+        { value: { transport: mock.transport as ClientTransport<unknown, unknown>, error: undefined } },
         children,
       );
 

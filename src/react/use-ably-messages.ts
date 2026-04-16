@@ -15,6 +15,14 @@ import { useEffect, useRef, useState } from 'react';
 import type { ClientTransport } from '../core/transport/types.js';
 import { useResolvedTransport } from './internal/use-resolved-transport.js';
 
+/** Options for {@link useAblyMessages}. */
+export interface UseAblyMessagesOptions<TEvent, TMessage> {
+  /** Transport to subscribe to; defaults to the nearest {@link TransportProvider}. */
+  transport?: ClientTransport<TEvent, TMessage>;
+  /** When `true`, skip all subscriptions and return an empty array. */
+  skip?: boolean;
+}
+
 /**
  * Subscribe to raw Ably message updates from a client transport's tree.
  * When `transport` is omitted, uses the nearest {@link TransportProvider}'s transport via context.
@@ -26,7 +34,7 @@ import { useResolvedTransport } from './internal/use-resolved-transport.js';
 export const useAblyMessages = <TEvent, TMessage>({
   transport,
   skip,
-}: { transport?: ClientTransport<TEvent, TMessage>; skip?: boolean } = {}): Ably.InboundMessage[] => {
+}: UseAblyMessagesOptions<TEvent, TMessage> = {}): Ably.InboundMessage[] => {
   const resolved = useResolvedTransport({ transport, skip });
 
   const [messages, setMessages] = useState<Ably.InboundMessage[]>([]);

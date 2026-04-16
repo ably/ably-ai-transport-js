@@ -20,6 +20,16 @@ import { useResolvedTransport } from './internal/use-resolved-transport.js';
 import type { ViewHandle } from './use-view.js';
 import { useView } from './use-view.js';
 
+/** Options for {@link useCreateView}. */
+export interface UseCreateViewOptions<TEvent, TMessage> {
+  /** Transport to create a view from; defaults to the nearest {@link TransportProvider}. */
+  transport?: ClientTransport<TEvent, TMessage> | null;
+  /** When provided, auto-loads the first page on mount. Omit for manual load. */
+  limit?: number;
+  /** When `true`, skip view creation and return an empty handle immediately. */
+  skip?: boolean;
+}
+
 /**
  * Create an independent {@link View} and subscribe to it.
  * Returns the same {@link ViewHandle} as {@link useView}, but backed by a
@@ -36,14 +46,7 @@ export const useCreateView = <TEvent, TMessage>({
   transport,
   limit,
   skip,
-}: {
-  /** The transport to create a view from, or null/undefined to use the nearest provider. */
-  transport?: ClientTransport<TEvent, TMessage> | null;
-  /** When provided, auto-loads the first page on mount. Omit for manual load. */
-  limit?: number;
-  /** When `true`, skip view creation and return an empty handle immediately. */
-  skip?: boolean;
-} = {}): ViewHandle<TEvent, TMessage> => {
+}: UseCreateViewOptions<TEvent, TMessage> = {}): ViewHandle<TEvent, TMessage> => {
   const resolved = useResolvedTransport({ transport, skip });
 
   const [view, setView] = useState<View<TEvent, TMessage> | undefined>();

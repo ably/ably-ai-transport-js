@@ -24,17 +24,19 @@
 import type * as Ably from 'ably';
 import type { ComponentType } from 'react';
 
-import type { ClientTransport, View } from '../core/transport/types.js';
 import type { TransportProviderProps } from './contexts/transport-provider.js';
 import { TransportProvider as _TransportProvider } from './contexts/transport-provider.js';
+import type { UseAblyMessagesOptions } from './use-ably-messages.js';
 import { useAblyMessages as _useAblyMessages } from './use-ably-messages.js';
+import type { UseActiveTurnsOptions } from './use-active-turns.js';
 import { useActiveTurns as _useActiveTurns } from './use-active-turns.js';
-import type { ClientTransportHandle } from './use-client-transport.js';
+import type { ClientTransportHandle, UseClientTransportOptions } from './use-client-transport.js';
 import { useClientTransport as _useClientTransport } from './use-client-transport.js';
+import type { UseCreateViewOptions } from './use-create-view.js';
 import { useCreateView as _useCreateView } from './use-create-view.js';
-import type { TreeHandle } from './use-tree.js';
+import type { TreeHandle, UseTreeOptions } from './use-tree.js';
 import { useTree as _useTree } from './use-tree.js';
-import type { ViewHandle } from './use-view.js';
+import type { UseViewOptions, ViewHandle } from './use-view.js';
 import { useView as _useView } from './use-view.js';
 
 /**
@@ -59,69 +61,35 @@ export interface TransportHooks<TEvent, TMessage> {
    * (e.g. send failures, channel continuity loss) without wiring
    * `transport.on('error', …)` manually.
    */
-  useClientTransport: (props?: {
-    /** Channel name to look up; omit to use the nearest {@link TransportProvider}. */
-    channelName?: string;
-    /** When `true`, return a stub transport that throws on any access. */
-    skip?: boolean;
-    /** Called whenever the resolved transport emits an error event. */
-    onError?: (error: Ably.ErrorInfo) => void;
-  }) => ClientTransportHandle<TEvent, TMessage>;
+  useClientTransport: (props?: UseClientTransportOptions) => ClientTransportHandle<TEvent, TMessage>;
   /**
    * Subscribe to the nearest transport's view and return the visible node list with pagination.
    * Pass `transport` to use a transport's default view, `view` to subscribe to a specific view
    * directly. Pass `limit` to auto-load on mount. Pass `skip: true` for an empty handle.
    */
-  useView: (props?: {
-    /** Client transport whose default view to subscribe to; defaults to the nearest {@link TransportProvider}. */
-    transport?: ClientTransport<TEvent, TMessage> | null;
-    /** A specific {@link View} to subscribe to directly. Takes priority over `transport`. */
-    view?: View<TEvent, TMessage> | null;
-    /** When provided, auto-loads the first page on mount. */
-    limit?: number;
-    /** When `true`, skip all subscriptions and return an empty handle. */
-    skip?: boolean;
-  }) => ViewHandle<TEvent, TMessage>;
+  useView: (props?: UseViewOptions<TEvent, TMessage>) => ViewHandle<TEvent, TMessage>;
   /**
    * Track active turns across all clients on the channel.
    * Pass `transport` to override; defaults to the nearest {@link TransportProvider}.
    */
-  useActiveTurns: (props?: {
-    /** Override transport; defaults to the nearest {@link TransportProvider}. */
-    transport?: ClientTransport<TEvent, TMessage> | null;
-  }) => Map<string, Set<string>>;
+  useActiveTurns: (props?: UseActiveTurnsOptions<TEvent, TMessage>) => Map<string, Set<string>>;
   /**
    * Navigate conversation branches in the transport tree.
    * Pass `transport` to override; defaults to the nearest {@link TransportProvider}.
    */
-  useTree: (props?: {
-    /** Override transport; defaults to the nearest {@link TransportProvider}. */
-    transport?: ClientTransport<TEvent, TMessage>;
-  }) => TreeHandle<TMessage>;
+  useTree: (props?: UseTreeOptions<TEvent, TMessage>) => TreeHandle<TMessage>;
   /**
    * Subscribe to raw Ably messages on the transport channel.
    * Pass `transport` to override; defaults to the nearest {@link TransportProvider}.
    * Pass `skip: true` to return an empty array without subscribing.
    */
-  useAblyMessages: (props?: {
-    /** Override transport; defaults to the nearest {@link TransportProvider}. */
-    transport?: ClientTransport<TEvent, TMessage>;
-    /** When `true`, skip all subscriptions and return an empty array. */
-    skip?: boolean;
-  }) => Ably.InboundMessage[];
+  useAblyMessages: (props?: UseAblyMessagesOptions<TEvent, TMessage>) => Ably.InboundMessage[];
   /**
    * Create an independent view over the same tree.
    * Pass `transport` to override; defaults to the nearest {@link TransportProvider}.
    * Pass `skip: true` to return an empty handle without creating a view.
    */
-  useCreateView: (props?: {
-    /** Override transport; defaults to the nearest {@link TransportProvider}. */
-    transport?: ClientTransport<TEvent, TMessage> | null;
-    /** When provided, auto-loads the first page on mount. */
-    limit?: number;
-    /** When `true`, skip view creation and return an empty handle. */
-    skip?: boolean;
-  }) => ViewHandle<TEvent, TMessage>;
+  useCreateView: (props?: UseCreateViewOptions<TEvent, TMessage>) => ViewHandle<TEvent, TMessage>;
 }
 
 /**

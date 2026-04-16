@@ -25,6 +25,12 @@ export interface TreeHandle<TMessage> {
   getNode: (msgId: string) => MessageNode<TMessage> | undefined;
 }
 
+/** Options for {@link useTree}. */
+export interface UseTreeOptions<TEvent, TMessage> {
+  /** Transport to read tree structure from; defaults to the nearest {@link TransportProvider}. */
+  transport?: ClientTransport<TEvent, TMessage>;
+}
+
 /**
  * Provide stable structural query callbacks backed by the transport's tree.
  * When `transport` is omitted, uses the nearest {@link TransportProvider}'s transport via context.
@@ -34,7 +40,7 @@ export interface TreeHandle<TMessage> {
  */
 export const useTree = <TEvent, TMessage>({
   transport,
-}: { transport?: ClientTransport<TEvent, TMessage> } = {}): TreeHandle<TMessage> => {
+}: UseTreeOptions<TEvent, TMessage> = {}): TreeHandle<TMessage> => {
   const resolved = useResolvedTransport({ transport });
 
   const getSiblings = useCallback((msgId: string) => resolved?.tree.getSiblings(msgId) ?? [], [resolved]);

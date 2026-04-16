@@ -56,6 +56,26 @@ const SKIPPED_TRANSPORT: ClientTransport<unknown, unknown> = {
   },
 };
 
+/** Options for {@link useClientTransport}. */
+export interface UseClientTransportOptions {
+  /**
+   * Channel name passed to the enclosing {@link TransportProvider}.
+   * Omit to use the nearest provider in the tree.
+   */
+  channelName?: string;
+  /**
+   * When `true`, skip context lookup and return a stub transport that throws on
+   * any access. Use when a condition (auth, feature flag) is not yet resolved.
+   */
+  skip?: boolean;
+  /**
+   * Called whenever the resolved transport emits an error event.
+   * The subscription is established once the transport resolves and
+   * automatically removed on unmount or when the transport changes.
+   */
+  onError?: (error: Ably.ErrorInfo) => void;
+}
+
 /**
  * Return value of {@link useClientTransport}.
  *
@@ -101,24 +121,7 @@ export const useClientTransport = <TEvent, TMessage>({
   channelName,
   skip,
   onError,
-}: {
-  /**
-   * Channel name passed to the enclosing {@link TransportProvider}.
-   * Omit to use the nearest provider in the tree.
-   */
-  channelName?: string;
-  /**
-   * When `true`, skip context lookup and return a stub transport that throws on
-   * any access. Use when a condition (auth, feature flag) is not yet resolved.
-   */
-  skip?: boolean;
-  /**
-   * Called whenever the resolved transport emits an error event.
-   * The subscription is established once the transport resolves and
-   * automatically removed on unmount or when the transport changes.
-   */
-  onError?: (error: Ably.ErrorInfo) => void;
-} = {}): ClientTransportHandle<TEvent, TMessage> => {
+}: UseClientTransportOptions = {}): ClientTransportHandle<TEvent, TMessage> => {
   const { nearest: nearestSlot, providers } = useContext(TransportContext);
   const errorCallbackRef = useRef(onError);
   errorCallbackRef.current = onError;

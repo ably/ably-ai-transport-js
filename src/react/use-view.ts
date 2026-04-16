@@ -15,10 +15,16 @@ import type { ActiveTurn, ClientTransport, MessageNode, SendOptions, View } from
 import { ErrorCode } from '../errors.js';
 import { useResolvedTransport } from './internal/use-resolved-transport.js';
 
-/** Options for configuring the view's initial load behavior. */
-export interface UseViewOptions {
-  /** Maximum number of older messages to load per page. Defaults to 100. */
+/** Options for {@link useView}. */
+export interface UseViewOptions<TEvent, TMessage> {
+  /** Client transport whose default view to subscribe to; defaults to the nearest provider when omitted. */
+  transport?: ClientTransport<TEvent, TMessage> | null;
+  /** A specific {@link View} to subscribe to directly. Takes priority over `transport`. */
+  view?: View<TEvent, TMessage> | null;
+  /** Maximum number of older messages to load per page. When provided, auto-loads on mount. */
   limit?: number;
+  /** When `true`, skip all subscriptions and return an empty handle immediately. */
+  skip?: boolean;
 }
 
 /** Handle for the paginated, branch-aware conversation view. */
@@ -80,16 +86,7 @@ export const useView = <TEvent, TMessage>({
   view,
   limit,
   skip,
-}: {
-  /** Client transport whose default view to subscribe to; defaults to the nearest provider when omitted. */
-  transport?: ClientTransport<TEvent, TMessage> | null;
-  /** A specific {@link View} to subscribe to directly. Takes priority over `transport`. */
-  view?: View<TEvent, TMessage> | null;
-  /** When provided, auto-loads the first page on mount. Omit for manual loading. */
-  limit?: number;
-  /** When `true`, skip all subscriptions and return an empty handle immediately. */
-  skip?: boolean;
-} = {}): ViewHandle<TEvent, TMessage> => {
+}: UseViewOptions<TEvent, TMessage> = {}): ViewHandle<TEvent, TMessage> => {
   const resolvedTransport = useResolvedTransport({ transport, skip });
   const resolvedView = skip ? undefined : (view ?? resolvedTransport?.view);
 

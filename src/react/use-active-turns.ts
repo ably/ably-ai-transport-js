@@ -17,6 +17,12 @@ import { EVENT_TURN_START } from '../constants.js';
 import type { ClientTransport, TurnLifecycleEvent } from '../core/transport/types.js';
 import { useResolvedTransport } from './internal/use-resolved-transport.js';
 
+/** Options for {@link useActiveTurns}. */
+export interface UseActiveTurnsOptions<TEvent, TMessage> {
+  /** Transport to track turns for; defaults to the nearest {@link TransportProvider}. */
+  transport?: ClientTransport<TEvent, TMessage> | null;
+}
+
 /**
  * Returns a reactive Map of all active turns on the channel, keyed by clientId.
  * Updates when turns start or end. When `transport` is omitted, uses the nearest
@@ -25,9 +31,10 @@ import { useResolvedTransport } from './internal/use-resolved-transport.js';
  * @param props.transport - Transport to track turns for; defaults to the nearest provider.
  * @returns A Map where keys are clientIds and values are Sets of active turnIds.
  */
-export const useActiveTurns = <TEvent, TMessage>({
-  transport,
-}: { transport?: ClientTransport<TEvent, TMessage> | null } = {}): Map<string, Set<string>> => {
+export const useActiveTurns = <TEvent, TMessage>({ transport }: UseActiveTurnsOptions<TEvent, TMessage> = {}): Map<
+  string,
+  Set<string>
+> => {
   const resolved = useResolvedTransport({ transport });
 
   const [turns, setTurns] = useState<Map<string, Set<string>>>(() => new Map());

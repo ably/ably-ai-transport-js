@@ -21,7 +21,7 @@ interface ChatRequestBody {
   clientId: string;
   messages: MessageNode<UIMessage>[];
   history?: MessageNode<UIMessage>[];
-  id: string;
+  chatId: string;
   forkOf?: string;
   parent?: string;
 }
@@ -30,8 +30,8 @@ interface ChatRequestBody {
 const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY! });
 
 export async function POST(req: Request) {
-  const { messages, history, id, turnId, clientId, forkOf, parent } = (await req.json()) as ChatRequestBody;
-  const channel = ably.channels.get(id);
+  const { messages, history, chatId, turnId, clientId, forkOf, parent } = (await req.json()) as ChatRequestBody;
+  const channel = ably.channels.get(chatId);
 
   const transport = createServerTransport({ channel });
   const turn = transport.newTurn({ turnId, clientId, parent, forkOf, signal: req.signal });

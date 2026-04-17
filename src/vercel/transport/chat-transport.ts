@@ -224,12 +224,36 @@ export const createChatTransport = (
 
   const sendMessages: ChatTransport['sendMessages'] = async (opts) => {
     const { messages, abortSignal, trigger, messageId } = opts;
+    const allNodes = transport.view.flattenNodes();
 
-    // Determine the history/messages split based on trigger.
+    // useChat calls sendMessages in three distinct modes. We disambiguate
+    // by (trigger, last-message role) so each mode dispatches correctly:
+    //
+    //   - 'regenerate-message'                          → fork an assistant
+    //   - 'submit-message' + last message is assistant  → continuation
+    //                                                     (auto-submit after
+    //                                                     addToolResult, or
+    //                                                     multi-step tool use)
+    //   - 'submit-message' + last message is user       → new user message
+    //                                                     (or edit if
+    //                                                     messageId is set)
+    //
+    // Continuation mode must NOT publish the assistant as a new message or
+    // treat messageId as a fork target — useChat v6's sendAutomaticallyWhen
+    // path always sets messageId to the last message id regardless.
+    //
+    // Client-side tool outputs are expected to be staged on the transport
+    // via transport.stageEvents() before this runs; the core transport
+    // flushes staged events into the POST body automatically.
+    const lastMessage = messages.at(-1);
+    const lastMessageNode = lastMessage ? allNodes.find((n) => n.message.id === lastMessage.id) : undefined;
+    const isContinuation = trigger === 'submit-message' && lastMessage?.role === 'assistant' && !!lastMessageNode;
+
+    // Determine the history/messages split based on mode.
     let newMessages: AI.UIMessage[];
     let history: AI.UIMessage[];
 
-    if (trigger === 'regenerate-message') {
+    if (trigger === 'regenerate-message' || isContinuation) {
       newMessages = [];
       history = messages;
     } else {
@@ -246,25 +270,27 @@ export const createChatTransport = (
       history = messages.slice(0, -1);
     }
 
-    // Compute fork metadata from the conversation tree.
-    // For regeneration: messageId is the assistant message being regenerated.
-    // For edit: messageId is the user message being replaced.
-    // In both cases: forkOf = the x-ably-msg-id of that message,
-    //   parent = the parent of that message in the tree.
+    // Compute fork metadata. Only set in regenerate or edit modes — in
+    // continuation mode we do NOT fork, we continue the branch.
     let forkOf: string | undefined;
     let parent: string | undefined;
 
-    if (messageId) {
+    if (messageId && !isContinuation) {
+      // Regeneration: messageId = assistant to regenerate.
+      // Edit (submit-message with user message and messageId): messageId = user being replaced.
+      // In both cases forkOf = the x-ably-msg-id, parent = that message's parent.
       forkOf = messageId;
-      // Look up the message in the tree to resolve x-ably-msg-id.
-      // messageId comes from useChat (UIMessage.id) — scan the flattened
-      // nodes to find the one whose domain message matches this ID.
-      // Uses the transport's default view — ChatTransport is single-view (one useChat per channel).
-      const node = transport.view.flattenNodes().find((n) => n.message.id === messageId);
+      const node = allNodes.find((n) => n.message.id === messageId);
       if (node) {
         forkOf = node.msgId;
         parent = node.parentId;
       }
+    } else if (isContinuation) {
+      // Continuation: the server's next assistant message is a child of the
+      // last assistant (no fork). Pass parent so the server places the new
+      // message correctly in the tree. isContinuation narrows lastMessageNode
+      // to defined.
+      parent = lastMessageNode.msgId;
     }
 
     let sendBody: Record<string, unknown>;
@@ -283,7 +309,6 @@ export const createChatTransport = (
       sendBody = prepared.body ?? {};
       sendHeaders = prepared.headers;
     } else {
-      const allNodes = transport.view.flattenNodes();
       const historyIds = new Set(history.map((m) => m.id));
       const historyNodes = allNodes.filter((n) => historyIds.has(n.message.id));
       sendBody = {
@@ -301,6 +326,9 @@ export const createChatTransport = (
     if (forkOf !== undefined) sendOpts.forkOf = forkOf;
     if (parent !== undefined) sendOpts.parent = parent;
 
+    // A single dispatch path: view.send with the (possibly empty)
+    // newMessages array. Any events staged via transport.stageEvents()
+    // flow automatically through _internalSend into the POST body.
     const turn = await transport.view.send(newMessages, sendOpts);
 
     if (abortSignal) {

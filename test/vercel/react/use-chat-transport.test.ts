@@ -82,6 +82,7 @@ const createFakeTransport = (): ClientTransport<AI.UIMessageChunk, AI.UIMessage>
   createView: vi.fn(),
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
   cancel: vi.fn(() => Promise.resolve()),
+  stageEvents: vi.fn(),
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
   waitForTurn: vi.fn(() => Promise.resolve()),
   on: vi.fn(() => noop),

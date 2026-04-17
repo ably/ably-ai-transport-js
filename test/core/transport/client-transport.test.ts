@@ -1712,6 +1712,98 @@ describe('ClientTransport', () => {
   });
 
   // -------------------------------------------------------------------------
+  // stageEvents()
+  // -------------------------------------------------------------------------
+
+  describe('stageEvents', () => {
+    it('applies events to the tree via the codec accumulator', () => {
+      transport.tree.upsert(
+        'msg-1',
+        { id: 'msg-1', content: 'original' },
+        { [HEADER_MSG_ID]: 'msg-1', [HEADER_ROLE]: 'assistant' },
+        'serial-1',
+      );
+
+      const mockAccum = createMockAccumulator();
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      vi.mocked(codec.createAccumulator).mockReturnValue(mockAccum);
+      Object.defineProperty(mockAccum, 'messages', {
+        get: () => [{ id: 'msg-1', content: 'staged' }],
+        configurable: true,
+      });
+
+      transport.stageEvents('msg-1', [{ type: 'tool-output' }]);
+
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      expect(mockAccum.initMessage).toHaveBeenCalledWith('msg-1', { id: 'msg-1', content: 'original' });
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      expect(mockAccum.processOutputs).toHaveBeenCalled();
+      expect(transport.tree.getNode('msg-1')?.message.content).toBe('staged');
+    });
+
+    it('queues events so the next send posts them in the events body field', async () => {
+      transport.tree.upsert(
+        'msg-1',
+        { id: 'msg-1', content: 'original' },
+        { [HEADER_MSG_ID]: 'msg-1', [HEADER_ROLE]: 'assistant' },
+        'serial-1',
+      );
+
+      transport.stageEvents('msg-1', [{ type: 'tool-output' }]);
+
+      await transport.view.send({ id: 'u1', content: 'hi' });
+      await mockFetch.waitForCalls(1);
+
+      const body = mockFetch.body(0);
+      expect(body.events).toEqual([
+        {
+          kind: 'event',
+          msgId: 'msg-1',
+          events: [{ type: 'tool-output' }],
+        },
+      ]);
+    });
+
+    it('clears the queue on flush — a second send without another stage ships no events', async () => {
+      transport.tree.upsert(
+        'msg-1',
+        { id: 'msg-1', content: 'original' },
+        { [HEADER_MSG_ID]: 'msg-1', [HEADER_ROLE]: 'assistant' },
+        'serial-1',
+      );
+
+      transport.stageEvents('msg-1', [{ type: 'tool-output' }]);
+
+      await transport.view.send({ id: 'u1', content: 'first' });
+      await mockFetch.waitForCalls(1);
+      expect(mockFetch.body(0).events).toBeDefined();
+
+      await transport.view.send({ id: 'u2', content: 'second' });
+      await mockFetch.waitForCalls(2);
+      expect(mockFetch.body(1).events).toBeUndefined();
+    });
+
+    it('is a no-op when msgId is not in the tree', () => {
+      // No node in the tree under 'unknown' — no throw, no queue entry.
+      transport.stageEvents('unknown', [{ type: 'tool-output' }]);
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      expect(codec.createAccumulator).not.toHaveBeenCalled();
+    });
+
+    it('is a no-op when events array is empty', () => {
+      transport.tree.upsert(
+        'msg-1',
+        { id: 'msg-1', content: 'original' },
+        { [HEADER_MSG_ID]: 'msg-1', [HEADER_ROLE]: 'assistant' },
+        'serial-1',
+      );
+      transport.stageEvents('msg-1', []);
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      expect(codec.createAccumulator).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // cancel()
   // -------------------------------------------------------------------------
 

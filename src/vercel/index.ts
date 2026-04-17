@@ -10,3 +10,6 @@ export type {
   VercelServerTransportOptions,
 } from './transport/index.js';
 export { createChatTransport, createClientTransport, createServerTransport } from './transport/index.js';
+
+// Server-side tool result merge helper
+export { applyToolEventsToHistory } from './tool-events.js';

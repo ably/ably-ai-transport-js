@@ -10,10 +10,10 @@
  * {@link TransportProvider}'s transport via context.
  */
 
-import { useCallback, useContext } from 'react';
+import { useCallback } from 'react';
 
 import type { ClientTransport, MessageNode } from '../core/transport/types.js';
-import { NearestTransportContext } from './contexts/transport-context.js';
+import { useResolvedTransport } from './internal/use-resolved-transport.js';
 
 /** Handle for querying the conversation tree structure. */
 export interface TreeHandle<TMessage> {
@@ -35,9 +35,7 @@ export interface TreeHandle<TMessage> {
 export const useTree = <TEvent, TMessage>({
   transport,
 }: { transport?: ClientTransport<TEvent, TMessage> } = {}): TreeHandle<TMessage> => {
-  const nearestSlot = useContext(NearestTransportContext);
-  // CAST: NearestTransportContext stores transport with erased generics; types fixed at call site.
-  const resolved = (transport ?? nearestSlot?.transport) as ClientTransport<TEvent, TMessage> | undefined;
+  const resolved = useResolvedTransport({ transport });
 
   const getSiblings = useCallback((msgId: string) => resolved?.tree.getSiblings(msgId) ?? [], [resolved]);
 

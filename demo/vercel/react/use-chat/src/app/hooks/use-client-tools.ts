@@ -5,11 +5,18 @@
  * Skips tool calls that already have a follow-up assistant message — those
  * were resolved in a previous session and don't need re-execution.
  * Only executes for turns initiated by this client (matches x-ably-turn-client-id).
+ *
+ * On resolution, stages the tool-output event on the transport before
+ * calling addToolResult. Staging applies the event to the conversation tree
+ * immediately so any subsequent useMessageSync overwrite (e.g. from an
+ * observer turn arriving on the channel) is idempotent — the tool result
+ * won't be wiped from useChat state during the window before
+ * sendAutomaticallyWhen fires.
  */
 
 import { useEffect, useRef } from 'react';
-import type { ChatAddToolOutputFunction, DynamicToolUIPart, UIMessage } from 'ai';
-import type { MessageNode } from '@ably/ai-transport';
+import type { ChatAddToolOutputFunction, DynamicToolUIPart, UIMessage, UIMessageChunk } from 'ai';
+import type { ClientTransport, MessageNode } from '@ably/ai-transport';
 
 type ClientToolExecutor = (input: unknown) => Promise<unknown>;
 
@@ -38,6 +45,7 @@ const clientTools: Record<string, ClientToolExecutor> = {
 };
 
 export function useClientTools(
+  transport: ClientTransport<UIMessageChunk, UIMessage>,
   messages: UIMessage[],
   addToolResult: ChatAddToolOutputFunction<UIMessage>,
   nodes: MessageNode<UIMessage>[],
@@ -68,10 +76,21 @@ export function useClientTools(
         if (toolPart.state !== 'input-available') continue;
         if (!clientTools[toolPart.toolName]) continue;
         if (handledRef.current.has(toolPart.toolCallId)) continue;
+        if (!node) continue;
 
         handledRef.current.add(toolPart.toolCallId);
 
+        const treeMsgId = node.msgId;
         void clientTools[toolPart.toolName](toolPart.input).then((output) => {
+          const chunk: UIMessageChunk = {
+            type: 'tool-output-available',
+            toolCallId: toolPart.toolCallId,
+            output,
+            dynamic: true,
+            providerExecuted: false,
+            preliminary: false,
+          };
+          transport.stageEvents(treeMsgId, [chunk]);
           addToolResult({
             tool: toolPart.toolName,
             toolCallId: toolPart.toolCallId,
@@ -80,5 +99,5 @@ export function useClientTools(
         });
       }
     }
-  }, [messages, addToolResult, nodes, clientId]);
+  }, [transport, messages, addToolResult, nodes, clientId]);
 }

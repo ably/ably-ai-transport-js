@@ -8,11 +8,11 @@
 
 import { after } from 'next/server';
 import { streamText, convertToModelMessages } from 'ai';
-import type { UIMessage } from 'ai';
+import type { UIMessage, UIMessageChunk } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
-import { createServerTransport } from '@ably/ai-transport/vercel';
-import type { MessageNode } from '@ably/ai-transport';
+import { applyToolEventsToHistory, createServerTransport } from '@ably/ai-transport/vercel';
+import type { EventsNode, MessageNode } from '@ably/ai-transport';
 import { tools } from './tools';
 
 /** Shape of the POST body sent by the client transport. */
@@ -21,6 +21,7 @@ interface ChatRequestBody {
   clientId: string;
   messages: MessageNode<UIMessage>[];
   history?: MessageNode<UIMessage>[];
+  events?: EventsNode<UIMessageChunk>[];
   chatId: string;
   forkOf?: string;
   parent?: string;
@@ -30,13 +31,21 @@ interface ChatRequestBody {
 const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY! });
 
 export async function POST(req: Request) {
-  const { messages, history, chatId, turnId, clientId, forkOf, parent } = (await req.json()) as ChatRequestBody;
+  const { messages, history, events, chatId, turnId, clientId, forkOf, parent } = (await req.json()) as ChatRequestBody;
   const channel = ably.channels.get(chatId);
 
   const transport = createServerTransport({ channel });
   const turn = transport.newTurn({ turnId, clientId, parent, forkOf, signal: req.signal });
 
   await turn.start();
+
+  // Apply any client-shipped events (e.g. tool outputs from addToolResult)
+  // to the channel BEFORE streaming the follow-up. This publishes them as
+  // message.update amendments so observers and the transport tree see the
+  // tool result.
+  if (events && events.length > 0) {
+    await turn.addEvents(events);
+  }
 
   // Publish user messages (if any). Fork metadata (parent/forkOf) is
   // configured at the turn level — addMessages picks it up automatically.
@@ -46,8 +55,11 @@ export async function POST(req: Request) {
     lastUserMsgId = msgIds.at(-1);
   }
 
-  // Reconstruct full conversation for the LLM
-  const historyMsgs = (history ?? []).map((h) => h.message);
+  // Reconstruct full conversation for the LLM. Merge tool-result events into
+  // history so convertToModelMessages sees the tool results this turn (the
+  // client ships them separately to keep history nodes intact).
+  const mergedHistory = applyToolEventsToHistory(events ?? [], history ?? []);
+  const historyMsgs = mergedHistory.map((h) => h.message);
   const newMsgs = (messages ?? []).map((m) => m.message);
   const allMessages = [...historyMsgs, ...newMsgs];
 

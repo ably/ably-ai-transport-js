@@ -3,12 +3,13 @@
 import { Providers, useAblyReady, TransportHooks } from './providers';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import { Chat } from './chat';
-import { useSearchParams } from 'next/navigation';
-import { Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { Suspense, useEffect, useState } from 'react';
+import { generateChannelSlug } from './lib/channel-name';
 
 const { TransportProvider } = TransportHooks;
 
-const DEFAULT_CHANNEL = process.env.NEXT_PUBLIC_ABLY_CHANNEL ?? 'ai:demo';
+const CHANNEL_NAMESPACE = process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE ?? 'ait:';
 
 function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; clientId?: string; limit?: number }) {
   const ready = useAblyReady();
@@ -33,10 +34,22 @@ function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; 
 }
 
 function ChatPage() {
+  const router = useRouter();
   const searchParams = useSearchParams();
-  const channelName = searchParams.get('channel') ?? DEFAULT_CHANNEL;
+  const paramChannel = searchParams.get('channel');
   const clientId = searchParams.get('clientId') ?? undefined;
   const limit = Number(searchParams.get('limit')) || undefined;
+
+  const [channelName] = useState(() => paramChannel ?? `${CHANNEL_NAMESPACE}${generateChannelSlug()}`);
+
+  useEffect(() => {
+    if (paramChannel) return;
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('channel', channelName);
+    // `:` is valid unencoded in a query string (RFC 3986); un-escape it so the
+    // address bar shows "ait:foo" instead of "ait%3Afoo".
+    router.replace(`?${params.toString().replaceAll('%3A', ':')}`);
+  }, [paramChannel, channelName, router, searchParams]);
 
   return (
     <Providers clientId={clientId}>

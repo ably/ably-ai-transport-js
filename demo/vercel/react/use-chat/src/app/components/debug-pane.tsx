@@ -240,7 +240,7 @@ export function DebugPane({
   statusLog,
   onClearLogs,
 }: DebugPaneProps) {
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(true);
   const [tab, setTab] = useState<Tab>('ably');
 
   return (
@@ -257,7 +257,7 @@ export function DebugPane({
 
       {isOpen && (
         <div className="w-[420px] flex-shrink-0 border-l border-zinc-800 flex flex-col bg-zinc-950">
-          <div className="flex items-center justify-between border-b border-zinc-800 px-3 py-2">
+          <div className="flex h-12 flex-shrink-0 items-center justify-between border-b border-zinc-800 px-3">
             <div className="flex items-center gap-1">
               <button
                 onClick={() => setTab('ably')}

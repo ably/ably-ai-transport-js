@@ -4,6 +4,7 @@ import { useRef, useEffect } from 'react';
 import type { UIMessage } from 'ai';
 import type { MessageNode } from '@ably/ai-transport';
 import { MessageBubble } from './message-bubble';
+import { IntroCard } from './intro-card';
 
 interface MessageListProps {
   nodes: MessageNode<UIMessage>[];
@@ -41,6 +42,7 @@ export function MessageList({ nodes, hasOlder, loading, onLoadOlder, onRegenerat
       onScroll={handleScroll}
       className="flex-1 overflow-y-auto px-4 py-4 space-y-4"
     >
+      <IntroCard />
       {hasOlder && (
         <div className="text-center">
           <button
@@ -53,9 +55,6 @@ export function MessageList({ nodes, hasOlder, loading, onLoadOlder, onRegenerat
         </div>
       )}
       {loading && <div className="text-center text-xs text-zinc-600 animate-pulse">Loading history...</div>}
-      {nodes.length === 0 && !loading && (
-        <p className="text-sm text-zinc-600 text-center mt-20">Send a message to start chatting.</p>
-      )}
       {nodes.map(({ message, headers }) => (
         <MessageBubble
           key={message.id}

@@ -2,24 +2,26 @@
 
 import { useChat } from '@ai-sdk/react';
 import { lastAssistantMessageIsCompleteWithApprovalResponses, lastAssistantMessageIsCompleteWithToolCalls } from 'ai';
-import { useChatTransport, useMessageSync, useStagedAddToolApprovalResponse } from '@ably/ai-transport/vercel/react';
+import {
+  useChatTransport,
+  useMessageSync,
+  useActiveTurns,
+  useView,
+  useAblyMessages,
+} from '@ably/ai-transport/vercel/react';
 import { useState, useEffect, useCallback } from 'react';
 import { MessageList } from './components/message-list';
 import { DebugPane } from './components/debug-pane';
 import type { CallbackLogEntry } from './components/debug-pane';
 import { useClientTools } from './hooks/use-client-tools';
-import { TransportHooks } from './providers';
-
-const { useClientTransport, useActiveTurns, useView, useAblyMessages } = TransportHooks;
 
 // ---------------------------------------------------------------------------
 // Chat component
 // ---------------------------------------------------------------------------
 
 export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clientId?: string; historyLimit?: number }) {
-  // Transport is created by TransportProvider in page.tsx
-  const { transport } = useClientTransport();
-  const chatTransport = useChatTransport(transport);
+  // Transport slot is created by ChatTransportProvider in page.tsx
+  const { chatTransport } = useChatTransport();
 
   // -- Callback & status logging for debug pane ----------------------------
   const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);
@@ -69,7 +71,7 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
     },
   });
 
-  useMessageSync(transport, setMessages, chatTransport);
+  useMessageSync({ setMessages });
 
   // Wrap addToolApprovalResponse so the approval response patches the
   // transport tree synchronously on click. Eliminates useChat↔tree

@@ -55,7 +55,7 @@ const createMockTransport = (): MockTransport => {
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     loadOlder: vi.fn(() => Promise.resolve()),
     getActiveTurnIds: vi.fn(() => new Map()),
-  };
+  } as unknown as ClientTransport<unknown, AI.UIMessage>['view'];
 
   const transport = {
     view,
@@ -135,7 +135,7 @@ describe('useMessageSync', () => {
 
     const setMessages = vi.fn();
     renderHook(() => {
-      useMessageSync(mock.transport, setMessages);
+      useMessageSync({ transport: mock.transport, setMessages });
     });
 
     // Called once on mount (immediate sync)
@@ -154,7 +154,16 @@ describe('useMessageSync', () => {
   it('does not subscribe when transport is undefined', () => {
     const setMessages = vi.fn();
     renderHook(() => {
-      useMessageSync(undefined, setMessages);
+      useMessageSync({ setMessages });
+    });
+    expect(setMessages).not.toHaveBeenCalled();
+  });
+
+  it('does not subscribe when transport is null', () => {
+    const setMessages = vi.fn();
+    renderHook(() => {
+      // eslint-disable-next-line unicorn/no-null -- testing explicit null opt-out behavior
+      useMessageSync({ transport: null, setMessages });
     });
     expect(setMessages).not.toHaveBeenCalled();
   });
@@ -163,7 +172,7 @@ describe('useMessageSync', () => {
     const mock = createMockTransport();
     const setMessages = vi.fn();
     const { unmount } = renderHook(() => {
-      useMessageSync(mock.transport, setMessages);
+      useMessageSync({ transport: mock.transport, setMessages });
     });
 
     setMessages.mockClear();
@@ -194,7 +203,7 @@ describe('useMessageSync', () => {
 
       const setMessages = vi.fn();
       renderHook(() => {
-        useMessageSync(mock.transport, setMessages, chatTransport);
+        useMessageSync({ transport: mock.transport, setMessages, chatTransport });
       });
 
       // Initial sync fires on mount (not yet streaming)
@@ -230,7 +239,7 @@ describe('useMessageSync', () => {
 
       const setMessages = vi.fn();
       renderHook(() => {
-        useMessageSync(mock.transport, setMessages, chatTransport);
+        useMessageSync({ transport: mock.transport, setMessages, chatTransport });
       });
       setMessages.mockClear();
 
@@ -252,7 +261,7 @@ describe('useMessageSync', () => {
       const mock = createMockTransport();
       const setMessages = vi.fn();
       renderHook(() => {
-        useMessageSync(mock.transport, setMessages);
+        useMessageSync({ transport: mock.transport, setMessages });
       });
 
       // Initial sync + view update both work
@@ -274,7 +283,7 @@ describe('useMessageSync', () => {
 
       const setMessages = vi.fn();
       renderHook(() => {
-        useMessageSync(mock.transport, setMessages, chatTransport);
+        useMessageSync({ transport: mock.transport, setMessages, chatTransport });
       });
 
       // Initial sync: just the user message
@@ -311,6 +320,19 @@ describe('useMessageSync', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // skip option
+  // ---------------------------------------------------------------------------
+
+  it('does not subscribe when skip is true', () => {
+    const mock = createMockTransport();
+    const setMessages = vi.fn();
+    renderHook(() => {
+      useMessageSync({ transport: mock.transport, setMessages, skip: true });
+    });
+    expect(setMessages).not.toHaveBeenCalled();
+  });
+
+  // ---------------------------------------------------------------------------
   // Reference stability during streaming
   // ---------------------------------------------------------------------------
 
@@ -323,7 +345,7 @@ describe('useMessageSync', () => {
 
     const setMessages = vi.fn();
     renderHook(() => {
-      useMessageSync(mock.transport, setMessages);
+      useMessageSync({ transport: mock.transport, setMessages });
     });
 
     // First update - populates messages

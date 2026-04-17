@@ -20,24 +20,19 @@ The Vercel AI SDK provides model abstraction, streaming primitives, and React ho
 Wrap the transport in a `ChatTransport` adapter and pass it to Vercel's `useChat()`. Message state is managed by `useChat()` - the transport delivers messages over Ably instead of HTTP.
 
 ```tsx
-import { TransportProvider, useClientTransport } from '@ably/ai-transport/react';
-import { useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
-import { UIMessageCodec } from '@ably/ai-transport/vercel';
+import { ChatTransportProvider, useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
 import { useChat } from '@ai-sdk/react';
-import type * as AI from 'ai';
 
-// Wrap your component tree with TransportProvider
-<TransportProvider
+// Wrap your component tree with ChatTransportProvider (no codec needed — UIMessageCodec is pre-bound)
+<ChatTransportProvider
   channelName={chatId}
-  codec={UIMessageCodec}
   clientId={clientId}
 >
   <ChatInner chatId={chatId} />
-</TransportProvider>;
+</ChatTransportProvider>;
 
 // Inside ChatInner:
-const { transport } = useClientTransport<AI.UIMessageChunk, AI.UIMessage>();
-const chatTransport = useChatTransport(transport);
+const { chatTransport } = useChatTransport();
 
 const { messages, setMessages, sendMessage, stop } = useChat({
   id: chatId,
@@ -45,10 +40,10 @@ const { messages, setMessages, sendMessage, stop } = useChat({
 });
 
 // Sync observer messages (from other clients) into useChat's state
-useMessageSync(transport, setMessages);
+useMessageSync({ setMessages });
 ```
 
-`TransportProvider` creates the transport and wraps children with `ChannelProvider` internally. `useClientTransport()` reads it from context. `useChatTransport()` wraps the core transport into the `ChatTransport` interface that `useChat()` expects. `useMessageSync()` pushes the transport's authoritative message list into `useChat()`'s state - this is how messages from other clients appear.
+`ChatTransportProvider` creates both a `ClientTransport` and a `ChatTransport` and makes them available in context. `useChatTransport()` reads both from context — `chatTransport` is passed to `useChat()`, and `transport` is used for `useMessageSync`, `useActiveTurns`, and `useView`. `useMessageSync()` pushes the transport's authoritative message list into `useChat()`'s state — this is how messages from other clients appear.
 
 ### Generic hooks path (more control)
 
@@ -102,8 +97,8 @@ This path gives you conversation branching UI (sibling navigation), write operat
 | Import                            | What you get                                                                                                                    |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | `@ably/ai-transport/vercel`       | `UIMessageCodec`, `createServerTransport()`, `createClientTransport()`, `createChatTransport()` - all pre-bound to Vercel types |
-| `@ably/ai-transport/vercel/react` | `useChatTransport()`, `useMessageSync()` - hooks for the useChat path                                                           |
-| `@ably/ai-transport/react`        | Generic hooks - work with any codec including `UIMessageCodec`                                                                  |
+| `@ably/ai-transport/vercel/react` | `ChatTransportProvider`, `useChatTransport()`, `useMessageSync()`, plus all generic hooks pre-bound to Vercel types             |
+| `@ably/ai-transport/react`        | Generic hooks (`useView`, `useActiveTurns`, `useClientTransport`, etc.) - work with any codec including `UIMessageCodec`        |
 
 The Vercel entry points are convenience wrappers. `createServerTransport()` from `/vercel` is the same as the core `createServerTransport()` with `UIMessageCodec` pre-bound - you don't pass a `codec` option.
 

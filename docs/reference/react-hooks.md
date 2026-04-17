@@ -288,38 +288,93 @@ Import from `@ably/ai-transport/vercel/react`.
 
 ---
 
-### useChatTransport
+### ChatTransportProvider
 
-Create and memoize a `ChatTransport` for Vercel's `useChat()` hook.
+Create a `ClientTransport` and `ChatTransport` and make both available to descendant components. A convenience wrapper around `TransportProvider` with `UIMessageCodec` pre-bound — no `codec` prop needed.
 
-```typescript
-const chatTransport = useChatTransport(
-  transportOrOptions: ClientTransport<UIMessageChunk, UIMessage> | VercelClientTransportOptions,
-  chatOptions?: ChatTransportOptions,
-);
+```tsx
+<ChatTransportProvider
+  channelName="ai:demo"
+  clientId={clientId}
+>
+  <Chat />
+</ChatTransportProvider>
 ```
 
-| Parameter            | Type                                              | Description                                         |
-| -------------------- | ------------------------------------------------- | --------------------------------------------------- |
-| `transportOrOptions` | `ClientTransport \| VercelClientTransportOptions` | An existing transport, or options to create one     |
-| `chatOptions`        | `ChatTransportOptions?`                           | Optional hooks for customizing request construction |
+| Prop          | Type                                                          | Description                                                   |
+| ------------- | ------------------------------------------------------------- | ------------------------------------------------------------- |
+| `channelName` | `string`                                                      | The Ably channel name. Also used as the context registry key  |
+| `clientId`    | `string?`                                                     | Client identity, sent to the server in POST body              |
+| `api`         | `string?`                                                     | Server endpoint URL. Default: `"/api/chat"`                   |
+| `headers`     | `Record<string, string> \| (() => Record<string, string>)?`   | HTTP POST headers. Function form for dynamic values           |
+| `body`        | `Record<string, unknown> \| (() => Record<string, unknown>)?` | Additional POST body fields. Function form for dynamic values |
+| `credentials` | `RequestCredentials?`                                         | Fetch credentials mode                                        |
+| `fetch`       | `typeof fetch?`                                               | Custom fetch implementation                                   |
+| `messages`    | `UIMessage[]?`                                                | Initial messages to seed the conversation tree                |
+| `logger`      | `Logger?`                                                     | Logger instance                                               |
+| `chatOptions` | `ChatTransportOptions?`                                       | Optional hooks for customizing chat request construction      |
+| `children`    | `ReactNode?`                                                  | Child components that will have access to both transports     |
 
-**Returns:** `ChatTransport` - compatible with `useChat()`'s `transport` option.
+Inside the subtree, `useChatTransport()` reads both transports and `useClientTransport()` reads the underlying `ClientTransport`. All generic hooks (`useView`, `useActiveTurns`, `useAblyMessages`) work without explicit transport arguments.
 
-Two usage patterns:
+For multiple providers, nest them with distinct `channelName` values:
 
-1. **Wrap an existing transport** - pass a `ClientTransport` created by `useClientTransport`
-2. **Create internally** - pass `VercelClientTransportOptions` and the hook creates the transport with `UIMessageCodec`
+```tsx
+<ChatTransportProvider channelName="ai:primary">
+  <ChatTransportProvider channelName="ai:secondary">
+    <App />
+  </ChatTransportProvider>
+</ChatTransportProvider>
+```
 
-`ChatTransportOptions.prepareSendMessagesRequest` lets you customize the HTTP POST body and headers:
+---
+
+### useChatTransport
+
+Read a `ChatTransport` and the underlying `ClientTransport` from the nearest `ChatTransportProvider`.
 
 ```typescript
-const chatTransport = useChatTransport(transport, {
-  prepareSendMessagesRequest: (context) => ({
-    body: { history: context.history, sessionId: mySessionId },
-    headers: { 'x-custom': 'value' },
-  }),
-});
+const { chatTransport, transport, transportError, chatTransportError } = useChatTransport({ channelName?, skip? } = {});
+```
+
+| Prop          | Type       | Description                                                                                             |
+| ------------- | ---------- | ------------------------------------------------------------------------------------------------------- |
+| `channelName` | `string?`  | Channel name to look up. Omit to use the nearest `ChatTransportProvider` in the tree                    |
+| `skip`        | `boolean?` | When `true`, return stub transports that throw on any access — safe to hold before conditions are ready |
+
+**Returns:** `ChatTransportHandle`
+
+| Field                | Type                                         | Description                                                                                                                                |
+| -------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `chatTransport`      | `ChatTransport`                              | The adapter for `useChat()`'s `transport` option                                                                                           |
+| `transport`          | `ClientTransport<UIMessageChunk, UIMessage>` | The underlying transport for `useMessageSync`, `useView`, `useActiveTurns`, etc.                                                           |
+| `chatTransportError` | `Ably.ErrorInfo?`                            | Set when no matching `ChatTransportProvider` was found, or when transport construction failed. `chatTransport` is a throwing stub when set |
+
+```typescript
+// Nearest provider (most common)
+const { chatTransport, transport } = useChatTransport();
+
+// Specific channel — useful when multiple providers are nested
+const { chatTransport, transport } = useChatTransport({ channelName: 'ai:secondary' });
+
+// Deferred until auth resolves — stubs throw on any access
+const { chatTransport, transport } = useChatTransport({ skip: !userId });
+```
+
+`ChatTransportOptions.prepareSendMessagesRequest` lets you customize the HTTP POST body and headers. Pass it to `ChatTransportProvider`:
+
+```typescript
+<ChatTransportProvider
+  channelName="ai:demo"
+  chatOptions={{
+    prepareSendMessagesRequest: (context) => ({
+      body: { history: context.history, sessionId: mySessionId },
+      headers: { 'x-custom': 'value' },
+    }),
+  }}
+>
+  <Chat />
+</ChatTransportProvider>
 ```
 
 ---
@@ -329,19 +384,34 @@ const chatTransport = useChatTransport(transport, {
 Wire transport message updates into `useChat()`'s `setMessages` updater.
 
 ```typescript
-useMessageSync(
-  transport: ClientTransport<unknown, UIMessage> | null | undefined,
-  setMessages: (updater: (prev: UIMessage[]) => UIMessage[]) => void,
-);
+useMessageSync(options: UseMessageSyncOptions): void;
 ```
 
-| Parameter     | Type                                   | Description                                 |
-| ------------- | -------------------------------------- | ------------------------------------------- |
-| `transport`   | `ClientTransport \| null \| undefined` | The transport to observe                    |
-| `setMessages` | `(updater: ...) => void`               | The `setMessages` function from `useChat()` |
+```typescript
+interface UseMessageSyncOptions {
+  setMessages: (updater: (prev: UIMessage[]) => UIMessage[]) => void; // required
+  transport?: ClientTransport<unknown, UIMessage> | null;
+  chatTransport?: ChatTransport | null;
+  skip?: boolean;
+}
+```
+
+| Option          | Type                                            | Default                         | Description                                                                                                 |
+| --------------- | ----------------------------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `setMessages`   | `(updater: ...) => void`                        | —                               | **Required.** The `setMessages` function from `useChat()`                                                   |
+| `transport`     | `ClientTransport \| null \| undefined`          | Nearest `ChatTransportProvider` | Transport whose `view` to observe. Pass `null` to opt out                                                   |
+| `chatTransport` | `ChatTransport \| null \| undefined`            | Nearest `ChatTransportProvider` | Used to gate `setMessages` during active own-turn streams, preventing ID mismatches. Pass `null` to disable |
+| `skip`          | `boolean`                                       | `false`                         | When `true`, skip all subscriptions. Use when dependencies are not yet resolved (e.g. auth pending)         |
 
 **Returns:** `void`
 
 Subscribes to the transport's view `'update'` event and replaces `useChat()`'s message state with the transport's authoritative list on every update. This is how messages from other clients (observer messages) appear in `useChat()`.
+
+When inside a `ChatTransportProvider`, all options except `setMessages` are resolved from context automatically:
+
+```typescript
+// Minimal usage inside ChatTransportProvider
+useMessageSync({ setMessages });
+```
 
 Required when using the useChat path with multi-client sync. Without it, `useChat()` only shows messages from its own sends.

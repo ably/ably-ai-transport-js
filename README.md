@@ -145,13 +145,8 @@ export async function POST(req: Request) {
 import { useChat } from '@ai-sdk/react';
 import type * as AI from 'ai';
 import { createTransportHooks } from '@ably/ai-transport/react';
-import { useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
+import { ChatTransportProvider, useChatTransport, useMessageSync, useClientTransport, useActiveTurns, useView } from '@ably/ai-transport/vercel/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
-
-const { TransportProvider, useClientTransport, useActiveTurns, useView } = createTransportHooks<
-  AI.UIMessageChunk,
-  AI.UIMessage
->();
 
 function ChatInner({ chatId }: { chatId: string }) {
   const { transport } = useClientTransport();
@@ -162,7 +157,7 @@ function ChatInner({ chatId }: { chatId: string }) {
     transport: chatTransport,
   });
 
-  useMessageSync(transport, setMessages);
+  useMessageSync({ setMessages });
 
   const activeTurns = useActiveTurns();
   useView({ limit: 30 });
@@ -195,13 +190,13 @@ function ChatInner({ chatId }: { chatId: string }) {
 
 function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
   return (
-    <TransportProvider
+    <ChatTransportProvider
       channelName={chatId}
       codec={UIMessageCodec}
       clientId={clientId}
     >
       <ChatInner chatId={chatId} />
-    </TransportProvider>
+    </ChatTransportProvider>
   );
 }
 ```

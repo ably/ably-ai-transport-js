@@ -39,6 +39,9 @@ const SKIPPED_TRANSPORT: ClientTransport<unknown, unknown> = {
   cancel: () => {
     throw new Ably.ErrorInfo('unable to cancel; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
+  stageEvents: () => {
+    throw new Ably.ErrorInfo('unable to stage events; hook is skipped', ErrorCode.InvalidArgument, 400);
+  },
   waitForTurn: () => {
     throw new Ably.ErrorInfo('unable to wait for turn; hook is skipped', ErrorCode.InvalidArgument, 400);
   },

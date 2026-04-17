@@ -141,6 +141,10 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
   private _hasAttachedOnce: boolean;
   private readonly _onChannelStateChange: Ably.channelEventCallback;
 
+  // Events staged locally via stageEvents(). Flushed into the eventNodes
+  // parameter of _internalSend on the next send operation.
+  private _pendingLocalEvents: EventsNode<TEvent>[] = [];
+
   constructor(options: ClientTransportOptions<TEvent, TMessage>) {
     this._channel = options.channel;
     this._codec = options.codec;
@@ -670,27 +674,21 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     this._ownTurnIds.add(turnId);
     this._tree.trackTurn(turnId, this._clientId ?? '');
 
-    // Optimistic tree updates for cross-turn events — must happen before
-    // capturing history so the POST body includes the updated message state.
-    if (eventNodes) {
-      for (const node of eventNodes) {
-        const existingNode = this._tree.getNode(node.msgId);
-        if (existingNode) {
-          const outputs = node.events.map((event) => ({
-            kind: 'event' as const,
-            event,
-            messageId: node.msgId,
-          }));
-          const accumulator = this._codec.createAccumulator();
-          accumulator.initMessage(node.msgId, existingNode.message);
-          accumulator.processOutputs(outputs);
-          const updatedMsg = accumulator.messages.at(-1);
-          if (updatedMsg) {
-            this._tree.upsert(node.msgId, updatedMsg, existingNode.headers, existingNode.serial);
-          }
-        }
-      }
+    // Flush any events staged via stageEvents() since the last send. They
+    // have already been applied to the tree, so merge them into the POST
+    // body without re-applying. External eventNodes (e.g. from view.update)
+    // have NOT been applied yet and need the optimistic tree update below.
+    const flushedStaged = this._pendingLocalEvents;
+    this._pendingLocalEvents = [];
+
+    // Optimistic tree updates for external cross-turn events — must happen
+    // before capturing history so the POST body includes the updated
+    // message state.
+    if (eventNodes && eventNodes.length > 0) {
+      this._applyEventsToTree(eventNodes);
     }
+
+    const allEventNodes: EventsNode<TEvent>[] = [...flushedStaged, ...(eventNodes ?? [])];
 
     const msgIds = new Set<string>();
     const postMessages: MessageNode<TMessage>[] = [];
@@ -768,7 +766,7 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
       messages: postMessages,
       ...(sendOptions?.forkOf !== undefined && { forkOf: sendOptions.forkOf }),
       ...(postParent !== undefined && { parent: postParent }),
-      ...(eventNodes && eventNodes.length > 0 && { events: eventNodes }),
+      ...(allEventNodes.length > 0 && { events: allEventNodes }),
     };
 
     const postHeaders: Record<string, string> = {
@@ -826,6 +824,47 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     this._logger.debug('ClientTransport.cancel();', { filter: resolved });
     await this._publishCancel(resolved);
     this._closeMatchingTurnStreams(resolved);
+  }
+
+  stageEvents(msgId: string, events: TEvent[]): void {
+    this._logger.trace('ClientTransport.stageEvents();', { msgId, eventCount: events.length });
+    if (this._state === ClientTransportState.CLOSED) {
+      this._logger.warn('ClientTransport.stageEvents(); transport is closed', { msgId });
+      return;
+    }
+    if (!this._tree.getNode(msgId)) {
+      this._logger.warn('ClientTransport.stageEvents(); msgId not found in tree', { msgId });
+      return;
+    }
+    if (events.length === 0) return;
+    const node: EventsNode<TEvent> = { kind: 'event', msgId, events };
+    // Apply immediately so any subsequent useMessageSync / tree observer
+    // sees the merged state — no window where the staged event can be
+    // clobbered by an interleaved observer turn update.
+    this._applyEventsToTree([node]);
+    this._pendingLocalEvents.push(node);
+  }
+
+  // Apply events to the tree using the codec's accumulator. Shared by
+  // stageEvents (local staging) and _internalSend (external eventNodes
+  // arriving via view.update).
+  private _applyEventsToTree(eventNodes: EventsNode<TEvent>[]): void {
+    for (const node of eventNodes) {
+      const existingNode = this._tree.getNode(node.msgId);
+      if (!existingNode) continue;
+      const outputs = node.events.map((event) => ({
+        kind: 'event' as const,
+        event,
+        messageId: node.msgId,
+      }));
+      const accumulator = this._codec.createAccumulator();
+      accumulator.initMessage(node.msgId, existingNode.message);
+      accumulator.processOutputs(outputs);
+      const updatedMsg = accumulator.messages.at(-1);
+      if (updatedMsg) {
+        this._tree.upsert(node.msgId, updatedMsg, existingNode.headers, existingNode.serial);
+      }
+    }
   }
 
   // Spec: AIT-CT18

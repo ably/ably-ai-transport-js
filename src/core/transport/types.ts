@@ -598,6 +598,28 @@ export interface ClientTransport<TEvent, TMessage> {
   cancel(filter?: CancelFilter): Promise<void>;
 
   /**
+   * Apply events to an existing tree message locally and queue them for
+   * delivery on the next send.
+   *
+   * Use for cross-turn updates where the event value is produced on the
+   * client (e.g. after `addToolResult` resolves a client-executed tool) and
+   * must appear in the tree immediately so downstream observers — such as a
+   * destructive `setMessages(...)` mirror — cannot wipe it before it lands
+   * on the wire.
+   *
+   * The events are applied to the tree via the codec's accumulator
+   * (tree `update` fires once with the merged message) and queued on the
+   * transport. The next send operation flushes the queue into the POST
+   * body's `events` field so the server can republish them over the channel.
+   *
+   * If `msgId` is not present in the tree, the call is a no-op and a
+   * warning is logged.
+   * @param msgId - The x-ably-msg-id of the existing message to amend.
+   * @param events - Events to apply and later ship.
+   */
+  stageEvents(msgId: string, events: TEvent[]): void;
+
+  /**
    * Returns a promise that resolves when all active turns matching the filter
    * have completed. Resolves immediately if no matching turns are active.
    * Defaults to `{ own: true }`.

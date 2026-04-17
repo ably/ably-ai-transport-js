@@ -295,9 +295,6 @@ transport.close();
 | -------------------- | --------------- | --------------------------------------------------- |
 | `useClientTransport` | `/react`        | Create and memoize a client transport instance      |
 | `useView`            | `/react`        | Subscribe to messages with history loading          |
-| `useSend`            | `/react`        | Stable send callback                                |
-| `useRegenerate`      | `/react`        | Regenerate a message (fork the conversation)        |
-| `useEdit`            | `/react`        | Edit a message and regenerate from that point       |
 | `useActiveTurns`     | `/react`        | Track active turns by client ID                     |
 | `useTree`            | `/react`        | Navigate branches in a forked conversation          |
 | `useAblyMessages`    | `/react`        | Access raw Ably messages                            |

@@ -211,31 +211,21 @@ export function MessageBubble({
                 if (part.type === 'text') return <span key={i}>{part.text}</span>;
                 if (part.type === 'dynamic-tool') {
                   const toolPart = part as DynamicToolUIPart;
+                  const noop = () => {};
+                  const msgId = headers?.['x-ably-msg-id'];
                   return (
                     <ToolInvocation
                       key={i}
                       part={toolPart}
                       onApprove={
-                        toolPart.state === 'approval-requested' && onToolApprove && headers?.['x-ably-msg-id']
-                          ? () =>
-                              onToolApprove(
-                                headers['x-ably-msg-id'],
-                                toolPart.toolCallId,
-                                toolPart.toolName,
-                                toolPart.input,
-                              )
-                          : undefined
+                        onToolApprove && msgId
+                          ? () => onToolApprove(msgId, toolPart.toolCallId, toolPart.toolName, toolPart.input)
+                          : noop
                       }
                       onDeny={
-                        toolPart.state === 'approval-requested' && onToolDeny && headers?.['x-ably-msg-id']
-                          ? () =>
-                              onToolDeny(
-                                headers['x-ably-msg-id'],
-                                toolPart.toolCallId,
-                                toolPart.toolName,
-                                toolPart.input,
-                              )
-                          : undefined
+                        onToolDeny && msgId
+                          ? () => onToolDeny(msgId, toolPart.toolCallId, toolPart.toolName, toolPart.input)
+                          : noop
                       }
                     />
                   );

@@ -154,8 +154,8 @@ function ToolApprovalCard({
   onDeny,
 }: {
   part: DynamicToolUIPart;
-  onApprove?: () => void;
-  onDeny?: () => void;
+  onApprove: () => void;
+  onDeny: () => void;
 }) {
   const inputObj = part.input as Record<string, unknown> | undefined;
   const inputSummary = inputObj ? Object.values(inputObj).join(', ') : JSON.stringify(part.input);
@@ -172,22 +172,20 @@ function ToolApprovalCard({
             {inputSummary && <span className="text-zinc-500"> &mdash; {inputSummary}</span>}
           </p>
         </div>
-        {onApprove && onDeny && (
-          <div className="flex shrink-0 gap-2">
-            <button
-              onClick={onApprove}
-              className="rounded-md bg-emerald-900/60 px-3 py-1.5 text-xs font-medium text-emerald-300 transition-colors hover:bg-emerald-900/80"
-            >
-              Approve
-            </button>
-            <button
-              onClick={onDeny}
-              className="rounded-md bg-red-900/60 px-3 py-1.5 text-xs font-medium text-red-300 transition-colors hover:bg-red-900/80"
-            >
-              Deny
-            </button>
-          </div>
-        )}
+        <div className="flex shrink-0 gap-2">
+          <button
+            onClick={onApprove}
+            className="rounded-md bg-emerald-900/60 px-3 py-1.5 text-xs font-medium text-emerald-300 transition-colors hover:bg-emerald-900/80"
+          >
+            Approve
+          </button>
+          <button
+            onClick={onDeny}
+            className="rounded-md bg-red-900/60 px-3 py-1.5 text-xs font-medium text-red-300 transition-colors hover:bg-red-900/80"
+          >
+            Deny
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -199,8 +197,8 @@ function ToolApprovalCard({
 
 interface ToolInvocationProps {
   part: DynamicToolUIPart;
-  onApprove?: () => void;
-  onDeny?: () => void;
+  onApprove: () => void;
+  onDeny: () => void;
 }
 
 export function ToolInvocation({ part, onApprove, onDeny }: ToolInvocationProps) {

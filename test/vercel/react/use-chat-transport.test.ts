@@ -21,8 +21,6 @@ const createFakeChatTransport = (): ChatTransport => ({
   sendMessages: () => Promise.resolve(new ReadableStream()),
   // eslint-disable-next-line @typescript-eslint/promise-function-async, unicorn/no-null -- mock; null required by ChatTransport contract
   reconnectToStream: () => Promise.resolve(null),
-  stageEvents: vi.fn(),
-  stageMessage: vi.fn(),
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
   close: () => Promise.resolve(),
   streaming: false,
@@ -82,7 +80,7 @@ describe('useChatTransport', () => {
     const { result } = renderHook(() => useChatTransport({ channelName: 'ai:test' }), {
       wrapper: withChatTransportContext({ 'ai:test': slot }),
     });
-    expect(result.current.chatTransportError).toBe(slot.transportError);
+    expect(result.current.transportError).toBe(slot.transportError);
   });
 
   it('sets chatTransportError with BadRequest when channelName given but no matching ChatTransportProvider', () => {

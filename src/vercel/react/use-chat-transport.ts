@@ -33,6 +33,12 @@ const SKIPPED_CLIENT_TRANSPORT: ClientTransport<AI.UIMessageChunk, AI.UIMessage>
   cancel: () => {
     throw new Ably.ErrorInfo('unable to cancel; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
+  stageEvents: () => {
+    throw new Ably.ErrorInfo('unable to stage events; hook is skipped', ErrorCode.InvalidArgument, 400);
+  },
+  stageMessage: () => {
+    throw new Ably.ErrorInfo('unable to stage message; hook is skipped', ErrorCode.InvalidArgument, 400);
+  },
   waitForTurn: () => {
     throw new Ably.ErrorInfo('unable to wait for turn; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
@@ -80,16 +86,35 @@ export interface UseChatTransportOptions {
  * adapter for Vercel's useChat hook.
  */
 export interface ChatTransportHandle {
-  /** The underlying client transport, also available via {@link useClientTransport}. */
+  /**
+   * The underlying client transport, also available via {@link useClientTransport}.
+   * A throwing stub when `skip` is `true`, when no matching {@link TransportProvider}
+   * was found in the tree, or when transport construction failed. Check `transportError` before use.
+   */
   transport: ClientTransport<AI.UIMessageChunk, AI.UIMessage>;
-  /** The chat transport adapter for use with Vercel's useChat hook. */
+
+  /**
+   * The chat transport adapter for use with Vercel's `useChat` hook.
+   *
+   * A throwing stub when `skip` is `true`, when no matching
+   * {@link ChatTransportProvider} was found in the tree, or when the underlying
+   * {@link ClientTransport} construction failed. Check both `chatTransportError`
+   * and `transportError` before use.
+   */
   chatTransport: ChatTransport;
+
+  /**
+   * Set when no matching {@link TransportProvider} was found, when transport
+   * construction failed, and `skip` is `false`.
+   * `undefined` when the transport resolved successfully or when `skip` is `true`.
+   */
+  transportError?: Ably.ErrorInfo | undefined;
   /**
    * Set when no matching {@link ChatTransportProvider} was found or when transport
    * construction failed, and `skip` is `false`.
    * `undefined` when the transport resolved successfully or when `skip` is `true`.
    */
-  chatTransportError?: Ably.ErrorInfo;
+  chatTransportError?: Ably.ErrorInfo | undefined;
 }
 
 /**
@@ -114,11 +139,16 @@ export const useChatTransport = ({ channelName, skip }: UseChatTransportOptions 
   if (channelName !== undefined) {
     const slot = providers[channelName];
     if (slot) {
-      return { transport: slot.transport, chatTransport: slot.chatTransport, chatTransportError: slot.transportError };
+      return { transport: slot.transport, chatTransport: slot.chatTransport, transportError: slot.transportError };
     }
     return {
       transport: SKIPPED_CLIENT_TRANSPORT,
       chatTransport: SKIPPED_CHAT_TRANSPORT,
+      transportError: new Ably.ErrorInfo(
+        `unable to use client transport; no TransportProvider found for channelName "${channelName}"`,
+        ErrorCode.BadRequest,
+        400,
+      ),
       chatTransportError: new Ably.ErrorInfo(
         `unable to use chat transport; no ChatTransportProvider found for channelName "${channelName}"`,
         ErrorCode.BadRequest,
@@ -131,13 +161,18 @@ export const useChatTransport = ({ channelName, skip }: UseChatTransportOptions 
     return {
       transport: nearest.transport,
       chatTransport: nearest.chatTransport,
-      chatTransportError: nearest.transportError,
+      transportError: nearest.transportError,
     };
   }
 
   return {
     transport: SKIPPED_CLIENT_TRANSPORT,
     chatTransport: SKIPPED_CHAT_TRANSPORT,
+    transportError: new Ably.ErrorInfo(
+      'unable to use transport; no TransportProvider found in the tree',
+      ErrorCode.BadRequest,
+      400,
+    ),
     chatTransportError: new Ably.ErrorInfo(
       'unable to use chat transport; no ChatTransportProvider found in the tree',
       ErrorCode.BadRequest,

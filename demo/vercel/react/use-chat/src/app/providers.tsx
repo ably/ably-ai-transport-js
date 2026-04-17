@@ -3,10 +3,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import * as Ably from 'ably';
 import { AblyProvider } from 'ably/react';
-import { createTransportHooks } from '@ably/ai-transport/react';
-import type * as AI from 'ai';
-
-export const TransportHooks = createTransportHooks<AI.UIMessageChunk, AI.UIMessage>();
 
 const AblyReadyContext = createContext(false);
 

@@ -24,7 +24,7 @@
 import * as Ably from 'ably';
 import type * as AI from 'ai';
 
-import type { ClientTransport, CloseOptions, SendOptions } from '../../core/transport/types.js';
+import type { ClientTransport, CloseOptions, MessageNode, SendOptions } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
 
 // ---------------------------------------------------------------------------
@@ -181,6 +181,70 @@ const wrapStreamWithDone = <T>(source: ReadableStream<T>): { stream: ReadableStr
 };
 
 // ---------------------------------------------------------------------------
+// Message / history split
+// ---------------------------------------------------------------------------
+
+/**
+ * Split useChat's messages array into new messages and history.
+ *
+ * The split depends on the trigger and the role of the last message:
+ * - `regenerate-message`: no new messages, entire array is history.
+ * - `submit-message` with last message `role: 'user'`: the last message
+ *   is the new user message, everything before it is history.
+ * - `submit-message` with last message `role: 'assistant'`: this is a
+ *   tool approval response (from `addToolApprovalResponse`). useChat
+ *   patched the assistant message to `approval-responded` and triggered
+ *   a send — there are no new messages to publish, the entire array
+ *   is history.
+ */
+const splitMessagesAndHistory = (
+  messages: AI.UIMessage[],
+  trigger: 'submit-message' | 'regenerate-message',
+): { newMessages: AI.UIMessage[]; history: AI.UIMessage[] } => {
+  if (trigger === 'regenerate-message') {
+    return { newMessages: [], history: messages };
+  }
+
+  if (messages.length === 0) {
+    throw new Ably.ErrorInfo(
+      'unable to send messages; messages array is empty for submit-message trigger',
+      ErrorCode.InvalidArgument,
+      400,
+    );
+  }
+
+  // CAST: length check above guarantees at least one element; .at(-1) cannot be undefined.
+  // eslint-disable-next-line @typescript-eslint/non-nullable-type-assertion-style -- prefer `as` over `!` per TYPES.md
+  const lastMessage = messages.at(-1) as AI.UIMessage;
+
+  if (lastMessage.role === 'assistant') {
+    return { newMessages: [], history: messages };
+  }
+
+  return { newMessages: [lastMessage], history: messages.slice(0, -1) };
+};
+
+/**
+ * Build history nodes by overlaying useChat's message content onto the
+ * transport's tree nodes. The tree provides structural metadata (msgId,
+ * parentId, headers, serial); the message content comes from useChat's
+ * state, which may have local patches (e.g. approval-responded) that
+ * the tree doesn't reflect yet.
+ */
+const buildHistoryNodes = (
+  history: AI.UIMessage[],
+  allNodes: MessageNode<AI.UIMessage>[],
+): MessageNode<AI.UIMessage>[] => {
+  const historyById = new Map(history.map((m) => [m.id, m]));
+  return allNodes
+    .filter((n) => historyById.has(n.message.id))
+    .map((n) => {
+      const chatMessage = historyById.get(n.message.id);
+      return chatMessage ? { ...n, message: chatMessage } : n;
+    });
+};
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -225,26 +289,7 @@ export const createChatTransport = (
   const sendMessages: ChatTransport['sendMessages'] = async (opts) => {
     const { messages, abortSignal, trigger, messageId } = opts;
 
-    // Determine the history/messages split based on trigger.
-    let newMessages: AI.UIMessage[];
-    let history: AI.UIMessage[];
-
-    if (trigger === 'regenerate-message') {
-      newMessages = [];
-      history = messages;
-    } else {
-      if (messages.length === 0) {
-        throw new Ably.ErrorInfo(
-          'unable to send messages; messages array is empty for submit-message trigger',
-          ErrorCode.InvalidArgument,
-          400,
-        );
-      }
-      // CAST: length check above guarantees at least one element; .at(-1) cannot be undefined.
-      // eslint-disable-next-line @typescript-eslint/non-nullable-type-assertion-style -- prefer `as` over `!` per TYPES.md
-      newMessages = [messages.at(-1) as AI.UIMessage];
-      history = messages.slice(0, -1);
-    }
+    const { newMessages, history } = splitMessagesAndHistory(messages, trigger);
 
     // Compute fork metadata from the conversation tree.
     // For regeneration: messageId is the assistant message being regenerated.
@@ -283,12 +328,15 @@ export const createChatTransport = (
       sendBody = prepared.body ?? {};
       sendHeaders = prepared.headers;
     } else {
-      const allNodes = transport.view.flattenNodes();
-      const historyIds = new Set(history.map((m) => m.id));
-      const historyNodes = allNodes.filter((n) => historyIds.has(n.message.id));
+      // Build history nodes from the transport's conversation tree, but use
+      // useChat's message content (not the tree's). useChat may have patched
+      // message parts locally (e.g. approval-requested → approval-responded)
+      // that the tree doesn't reflect yet. The tree provides structural
+      // metadata (msgId, parentId, headers); the message content comes from
+      // useChat's authoritative state.
       sendBody = {
-        history: historyNodes,
         chatId: opts.chatId,
+        history: buildHistoryNodes(history, transport.view.flattenNodes()),
         trigger,
         ...(messageId !== undefined && { messageId }),
         ...(forkOf !== undefined && { forkOf }),

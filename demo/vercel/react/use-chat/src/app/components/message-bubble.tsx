@@ -9,6 +9,8 @@ interface MessageBubbleProps {
   headers: Record<string, string> | undefined;
   onRegenerate?: () => void;
   onEdit?: (newText: string) => void;
+  onToolApprove?: (approvalId: string) => void;
+  onToolDeny?: (approvalId: string) => void;
 }
 
 function Badge({ label, value, color }: { label: string; value: string; color: string }) {
@@ -120,7 +122,14 @@ function EditForm({
   );
 }
 
-export function MessageBubble({ message, headers, onRegenerate, onEdit }: MessageBubbleProps) {
+export function MessageBubble({
+  message,
+  headers,
+  onRegenerate,
+  onEdit,
+  onToolApprove,
+  onToolDeny,
+}: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const [isEditing, setIsEditing] = useState(false);
 
@@ -148,13 +157,20 @@ export function MessageBubble({ message, headers, onRegenerate, onEdit }: Messag
             <div className={bubbleClasses(isUser, status)}>
               {message.parts.map((part, i) => {
                 if (part.type === 'text') return <span key={i}>{part.text}</span>;
-                if (part.type === 'dynamic-tool')
+                if (part.type === 'dynamic-tool') {
+                  const toolPart = part as DynamicToolUIPart;
+                  const noop = () => {};
                   return (
                     <ToolInvocation
                       key={i}
-                      part={part as DynamicToolUIPart}
+                      part={toolPart}
+                      onApprove={
+                        onToolApprove && toolPart.approval?.id ? () => onToolApprove(toolPart.approval!.id) : noop
+                      }
+                      onDeny={onToolDeny && toolPart.approval?.id ? () => onToolDeny(toolPart.approval!.id) : noop}
                     />
                   );
+                }
                 return null;
               })}
               {!isUser && status === 'streaming' && (

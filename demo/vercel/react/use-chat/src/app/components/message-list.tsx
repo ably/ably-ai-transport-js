@@ -12,9 +12,20 @@ interface MessageListProps {
   onLoadOlder: () => void;
   onRegenerate: (messageId: string) => void;
   onEdit: (messageId: string, newText: string) => void;
+  onToolApprove?: (approvalId: string) => void;
+  onToolDeny?: (approvalId: string) => void;
 }
 
-export function MessageList({ nodes, hasOlder, loading, onLoadOlder, onRegenerate, onEdit }: MessageListProps) {
+export function MessageList({
+  nodes,
+  hasOlder,
+  loading,
+  onLoadOlder,
+  onRegenerate,
+  onEdit,
+  onToolApprove,
+  onToolDeny,
+}: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const prevLastIdRef = useRef<string | undefined>(undefined);
@@ -63,6 +74,8 @@ export function MessageList({ nodes, hasOlder, loading, onLoadOlder, onRegenerat
           headers={headers}
           onRegenerate={message.role === 'assistant' ? () => onRegenerate(message.id) : undefined}
           onEdit={message.role === 'user' ? (text) => onEdit(message.id, text) : undefined}
+          onToolApprove={onToolApprove}
+          onToolDeny={onToolDeny}
         />
       ))}
       <div ref={endRef} />

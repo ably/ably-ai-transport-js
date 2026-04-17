@@ -1,6 +1,7 @@
 'use client';
 
 import { useChat } from '@ai-sdk/react';
+import { lastAssistantMessageIsCompleteWithApprovalResponses, lastAssistantMessageIsCompleteWithToolCalls } from 'ai';
 import { useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
 import { useState, useEffect, useCallback } from 'react';
 import { MessageList } from './components/message-list';
@@ -35,6 +36,7 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
     status,
     regenerate,
     addToolResult,
+    addToolApprovalResponse,
     messages: chatMessages,
   } = useChat({
     id: chatId,
@@ -59,6 +61,9 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
         },
       ]);
     },
+    sendAutomaticallyWhen: ({ messages: msgs }) =>
+      lastAssistantMessageIsCompleteWithToolCalls({ messages: msgs }) ||
+      lastAssistantMessageIsCompleteWithApprovalResponses({ messages: msgs }),
   });
 
   useMessageSync(transport, setMessages, chatTransport);
@@ -89,6 +94,10 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
           onLoadOlder={loadOlder}
           onRegenerate={(messageId) => regenerate({ messageId })}
           onEdit={(messageId, text) => sendMessage({ text, messageId })}
+          onToolApprove={(approvalId) => addToolApprovalResponse({ id: approvalId, approved: true })}
+          onToolDeny={(approvalId) =>
+            addToolApprovalResponse({ id: approvalId, approved: false, reason: 'User denied' })
+          }
         />
         <InputBar
           onSend={(text) => sendMessage({ text })}

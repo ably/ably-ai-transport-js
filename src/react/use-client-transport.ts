@@ -77,7 +77,7 @@ export interface ClientTransportHandle<TEvent, TMessage> {
    * construction failed, and `skip` is `false`.
    * `undefined` when the transport resolved successfully or when `skip` is `true`.
    */
-  transportError: Ably.ErrorInfo | undefined;
+  transportError?: Ably.ErrorInfo | undefined;
 }
 
 /**
@@ -143,7 +143,6 @@ export const useClientTransport = <TEvent, TMessage>({
   if (skip) {
     return {
       transport: SKIPPED_TRANSPORT as unknown as ClientTransport<TEvent, TMessage>,
-      transportError: undefined,
     };
   }
 
@@ -155,7 +154,6 @@ export const useClientTransport = <TEvent, TMessage>({
         // The caller is responsible for using type parameters matching those of the TransportProvider.
         return {
           transport: slot.transport as unknown as ClientTransport<TEvent, TMessage>,
-          transportError: undefined,
         };
       }
       // Provider exists but construction failed.
@@ -179,7 +177,6 @@ export const useClientTransport = <TEvent, TMessage>({
       // CAST: NearestTransportContext stores transport with erased generics; types fixed at call site.
       return {
         transport: nearestSlot.transport as unknown as ClientTransport<TEvent, TMessage>,
-        transportError: undefined,
       };
     }
     // Nearest provider exists but construction failed.

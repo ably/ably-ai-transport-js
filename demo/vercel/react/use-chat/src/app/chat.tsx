@@ -3,16 +3,17 @@
 import { useChat } from '@ai-sdk/react';
 import { lastAssistantMessageIsCompleteWithApprovalResponses, lastAssistantMessageIsCompleteWithToolCalls } from 'ai';
 import {
+  useAblyMessages,
+  useActiveTurns,
   useChatTransport,
   useMessageSync,
-  useActiveTurns,
   useView,
-  useAblyMessages,
+  useStagedAddToolApprovalResponse,
 } from '@ably/ai-transport/vercel/react';
-import { useState, useEffect, useCallback } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { MessageList } from './components/message-list';
-import { DebugPane } from './components/debug-pane';
 import type { CallbackLogEntry } from './components/debug-pane';
+import { DebugPane } from './components/debug-pane';
 import { useClientTools } from './hooks/use-client-tools';
 
 // ---------------------------------------------------------------------------
@@ -21,7 +22,7 @@ import { useClientTools } from './hooks/use-client-tools';
 
 export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clientId?: string; historyLimit?: number }) {
   // Transport slot is created by ChatTransportProvider in page.tsx
-  const { chatTransport } = useChatTransport();
+  const { chatTransport, transport } = useChatTransport();
 
   // -- Callback & status logging for debug pane ----------------------------
   const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);

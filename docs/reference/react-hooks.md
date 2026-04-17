@@ -390,28 +390,27 @@ useMessageSync(options: UseMessageSyncOptions): void;
 ```typescript
 interface UseMessageSyncOptions {
   setMessages: (updater: (prev: UIMessage[]) => UIMessage[]) => void; // required
-  transport?: ClientTransport<unknown, UIMessage> | null;
-  chatTransport?: ChatTransport | null;
+  channelName?: string;
   skip?: boolean;
 }
 ```
 
-| Option          | Type                                            | Default                         | Description                                                                                                 |
-| --------------- | ----------------------------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `setMessages`   | `(updater: ...) => void`                        | —                               | **Required.** The `setMessages` function from `useChat()`                                                   |
-| `transport`     | `ClientTransport \| null \| undefined`          | Nearest `ChatTransportProvider` | Transport whose `view` to observe. Pass `null` to opt out                                                   |
-| `chatTransport` | `ChatTransport \| null \| undefined`            | Nearest `ChatTransportProvider` | Used to gate `setMessages` during active own-turn streams, preventing ID mismatches. Pass `null` to disable |
-| `skip`          | `boolean`                                       | `false`                         | When `true`, skip all subscriptions. Use when dependencies are not yet resolved (e.g. auth pending)         |
+| Option        | Type                     | Default          | Description                                                                                         |
+| ------------- | ------------------------ | ---------------- | --------------------------------------------------------------------------------------------------- |
+| `setMessages` | `(updater: ...) => void` | —                | **Required.** The `setMessages` function from `useChat()`                                           |
+| `channelName` | `string?`                | nearest provider | Channel name of the `ChatTransportProvider` to observe. Omit to use the nearest in the tree         |
+| `skip`        | `boolean?`               | `false`          | When `true`, skip all subscriptions. Use when dependencies are not yet resolved (e.g. auth pending) |
 
 **Returns:** `void`
 
-Subscribes to the transport's view `'update'` event and replaces `useChat()`'s message state with the transport's authoritative list on every update. This is how messages from other clients (observer messages) appear in `useChat()`.
-
-When inside a `ChatTransportProvider`, all options except `setMessages` are resolved from context automatically:
+Subscribes to the provider's transport view `'update'` event and replaces `useChat()`'s message state with the transport's authoritative list on every update. Also gates `setMessages` during active own-turn streams to prevent ID mismatches. This is how messages from other clients (observer messages) appear in `useChat()`.
 
 ```typescript
-// Minimal usage inside ChatTransportProvider
+// Nearest provider (most common)
 useMessageSync({ setMessages });
+
+// Specific provider by channel name
+useMessageSync({ channelName: 'ai:main', setMessages });
 ```
 
 Required when using the useChat path with multi-client sync. Without it, `useChat()` only shows messages from its own sends.

@@ -4,14 +4,15 @@
  * Subscribes to the transport view's 'update' event and replaces messages state
  * with the view's authoritative message list.
  *
- * When a ChatTransport is provided (or resolved from the nearest ChatTransportProvider),
+ * When a ChatTransport is provided (resolved from the nearest ChatTransportProvider),
  * setMessages calls are gated during active own-turn streams. This prevents the
  * push/replace ID mismatch in useChat's write() function. When the stream finishes,
  * the gate opens and an immediate sync fires to pick up any observer messages that
  * arrived during the stream.
  *
- * All options except setMessages are resolved from the nearest ChatTransportProvider
- * via useChatTransport() when not explicitly provided.
+ * All dependencies are resolved from the nearest ChatTransportProvider via
+ * useChatTransport(). Pass channelName to select a specific provider; omit to use
+ * the nearest. Pass skip: true to pause all subscriptions.
  *
  * Returns the unsubscribe function in the useEffect cleanup so handlers
  * are removed on unmount or when dependencies change.
@@ -20,8 +21,6 @@
 import type * as AI from 'ai';
 import { useEffect, useState } from 'react';
 
-import type { ClientTransport } from '../../core/transport/types.js';
-import type { ChatTransport } from '../transport/chat-transport.js';
 import { useChatTransport } from './use-chat-transport.js';
 
 /** Options for {@link useMessageSync}. */
@@ -33,15 +32,10 @@ export interface UseMessageSyncOptions {
    */
   setMessages: (updater: (prev: AI.UIMessage[]) => AI.UIMessage[]) => void;
   /**
-   * The client transport to observe for message updates.
-   * Defaults to the transport from the nearest {@link ChatTransportProvider} via {@link useChatTransport}.
+   * Channel name of the {@link ChatTransportProvider} to observe.
+   * Omit to use the nearest provider in the tree.
    */
-  transport?: ClientTransport<unknown, AI.UIMessage> | null;
-  /**
-   * The chat transport used to gate `setMessages` during active own-turn streams.
-   * Defaults to the chatTransport from the nearest {@link ChatTransportProvider} via {@link useChatTransport}.
-   */
-  chatTransport?: ChatTransport | null;
+  channelName?: string;
   /**
    * When `true`, skip all subscriptions and do nothing.
    * Use when the hook's dependencies are not yet resolved (e.g. auth pending).
@@ -52,41 +46,21 @@ export interface UseMessageSyncOptions {
 /**
  * Wire transport message updates into `useChat()`'s `setMessages` updater.
  *
- * Subscribes to the nearest `ChatTransportProvider`'s transport view by default.
- * Override any dependency by passing it explicitly.
+ * Resolves both the transport view and the streaming gate from the nearest
+ * `ChatTransportProvider`. Pass `channelName` to target a specific provider.
  * Pass `skip: true` to pause all subscriptions.
  * @param options - Hook options.
  * @param options.setMessages - The `setMessages` function from `useChat()`. Required.
- * @param options.transport - Transport to observe; defaults to nearest `ChatTransportProvider`.
- * @param options.chatTransport - ChatTransport for streaming gate; defaults to nearest `ChatTransportProvider`.
+ * @param options.channelName - Channel name of the provider to observe; defaults to nearest.
  * @param options.skip - When `true`, skip all subscriptions.
  */
-export const useMessageSync = ({
-  setMessages,
-  transport: transportProp,
-  chatTransport: chatTransportProp,
-  skip,
-}: UseMessageSyncOptions): void => {
-  // Always read from context for defaults. When no ChatTransportProvider is present,
-  // chatTransportError is set and context values are stubs — we don't use them.
-  const chatTransportHandle = useChatTransport({ skip });
-  const {
-    chatTransport: contextChatTranport,
-    transport: contextTransport,
-  } = chatTransportHandle.chatTransportError ? {} : chatTransportHandle;
+export const useMessageSync = ({ setMessages, channelName, skip }: UseMessageSyncOptions): void => {
+  const { transport, chatTransport, chatTransportError } = useChatTransport({ channelName, skip });
 
-
-  // Explicit props take precedence
-  // When skip is true, always resolve to undefined so both effects are no-ops.
-  const transport = skip
-    ? undefined
-    : transportProp ?? contextTransport;
-
-  const chatTransport = skip
-    ? undefined
-    : chatTransportProp ?? contextChatTranport;
-
-  const view = skip ? undefined : transport?.view;
+  // Only use resolved values when a provider was found and skip is false.
+  const resolved = !skip && !chatTransportError;
+  const view = resolved ? transport.view : undefined;
+  const resolvedChatTransport = resolved ? chatTransport : undefined;
 
   const [gated, setGated] = useState(false);
 
@@ -94,13 +68,13 @@ export const useMessageSync = ({
   // Reset gated to the new instance's current state so a stale `true`
   // from a previous instance doesn't permanently suppress syncs.
   useEffect(() => {
-    if (!chatTransport) {
+    if (!resolvedChatTransport) {
       setGated(false);
       return;
     }
-    setGated(chatTransport.streaming);
-    return chatTransport.onStreamingChange(setGated);
-  }, [chatTransport]);
+    setGated(resolvedChatTransport.streaming);
+    return resolvedChatTransport.onStreamingChange(setGated);
+  }, [resolvedChatTransport]);
 
   // Subscribe to view updates and sync messages, unless gated.
   useEffect(() => {

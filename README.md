@@ -143,14 +143,16 @@ export async function POST(req: Request) {
 'use client';
 
 import { useChat } from '@ai-sdk/react';
-import type * as AI from 'ai';
-import { createTransportHooks } from '@ably/ai-transport/react';
-import { ChatTransportProvider, useChatTransport, useMessageSync, useClientTransport, useActiveTurns, useView } from '@ably/ai-transport/vercel/react';
-import { UIMessageCodec } from '@ably/ai-transport/vercel';
+import {
+  ChatTransportProvider,
+  useChatTransport,
+  useMessageSync,
+  useActiveTurns,
+  useView,
+} from '@ably/ai-transport/vercel/react';
 
 function ChatInner({ chatId }: { chatId: string }) {
-  const { transport } = useClientTransport();
-  const chatTransport = useChatTransport(transport);
+  const { chatTransport } = useChatTransport();
 
   const { messages, setMessages, sendMessage, stop } = useChat({
     id: chatId,
@@ -192,7 +194,6 @@ function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
   return (
     <ChatTransportProvider
       channelName={chatId}
-      codec={UIMessageCodec}
       clientId={clientId}
     >
       <ChatInner chatId={chatId} />

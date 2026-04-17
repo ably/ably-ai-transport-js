@@ -47,7 +47,11 @@ export interface ChatTransportProviderProps extends Omit<
   TransportProviderProps<AI.UIMessageChunk, AI.UIMessage>,
   'codec'
 > {
-  /** Optional hooks for customizing chat request construction (e.g. prepareSendMessagesRequest). */
+  /**
+   * Optional hooks for customizing chat request construction (e.g. prepareSendMessagesRequest).
+   * Must be stable across renders — wrap in `useMemo` or define outside the component.
+   * A new object reference triggers ChatTransport recreation.
+   */
   chatOptions?: ChatTransportOptions;
 }
 
@@ -94,7 +98,7 @@ const ChatTransportProviderInner = ({
  * const { transport } = useClientTransport(); // also available
  * ```
  * @param props - Provider configuration including `channelName`, optional `chatOptions`, and all other transport options.
- * @param props.chatOptions - Optional hooks for customizing chat request construction.
+ * @param props.chatOptions - Optional hooks for customizing chat request construction. Must be stable (memoized) — a new reference recreates the ChatTransport.
  * @param props.children - Descendant components that consume the transport via hooks.
  * @returns A React element wrapping children with ChannelProvider, TransportContext, and ChatTransportContext.
  */

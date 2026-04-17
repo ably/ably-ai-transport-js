@@ -1,6 +1,7 @@
 'use client';
 
 import { useChat } from '@ai-sdk/react';
+import { lastAssistantMessageIsCompleteWithToolCalls } from 'ai';
 import { useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
 import { useState, useEffect, useCallback } from 'react';
 import { MessageList } from './components/message-list';
@@ -39,6 +40,9 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
   } = useChat({
     id: chatId,
     transport: chatTransport,
+    // Auto-submit after addToolResult resolves all pending tool calls so the
+    // assistant can continue with the tool output.
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
     onToolCall: ({ toolCall }) => {
       setCallbackLog((prev) => [
         ...prev,
@@ -74,7 +78,7 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
   // Auto-loads first page on mount
   const { nodes, hasOlder, loading, loadOlder } = useView({ limit: historyLimit ?? 30 });
 
-  useClientTools(chatMessages, addToolResult, nodes, clientId);
+  useClientTools(transport, chatMessages, addToolResult, nodes, clientId);
 
   const ablyMessages = useAblyMessages();
 
@@ -115,10 +119,18 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
 
 function Header({ clientId }: { clientId?: string }) {
   return (
-    <header className="flex items-center gap-2 border-b border-zinc-800 px-4 py-3">
+    <header className="flex h-12 flex-shrink-0 items-center gap-2 border-b border-zinc-800 px-4">
       <div className="h-2 w-2 rounded-full bg-emerald-500" />
       <h1 className="text-sm font-medium text-zinc-300">Ably AI — Vercel UI SDK</h1>
-      {clientId && <span className="ml-auto text-xs text-zinc-600 font-mono">{clientId}</span>}
+      <button
+        type="button"
+        onClick={() => window.open(window.location.href, '_blank')}
+        className="ml-auto rounded-md border border-zinc-700 px-2 py-1 text-[10px] text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition-colors"
+        title="Open this channel in a new tab"
+      >
+        open in new tab
+      </button>
+      {clientId && <span className="text-xs text-zinc-600 font-mono">{clientId}</span>}
     </header>
   );
 }

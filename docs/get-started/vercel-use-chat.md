@@ -147,43 +147,38 @@ The `after()` call is a Next.js API that runs work after the HTTP response is se
 
 ## 4. Create the chat component
 
-Wire up `useChat()` with the AI Transport hooks. `TransportProvider` creates the transport and wraps children with Ably's `ChannelProvider` internally:
+Wire up `useChat()` with the AI Transport hooks. `ChatTransportProvider` creates both the `ClientTransport` and `ChatTransport` and wraps children with Ably's `ChannelProvider` internally:
 
 ```typescript
 // app/chat.tsx
 'use client';
 
 import { useChat } from '@ai-sdk/react';
-import type * as AI from 'ai';
-import { TransportProvider, useClientTransport, useActiveTurns, useView } from '@ably/ai-transport/react';
-import { useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
-import { UIMessageCodec } from '@ably/ai-transport/vercel';
+import { useActiveTurns, useView } from '@ably/ai-transport/react';
+import { ChatTransportProvider, useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
 import { useState } from 'react';
 
 function ChatInner({ chatId }: { chatId: string }) {
   const [input, setInput] = useState('');
 
-  // 1. Read the transport created by TransportProvider
-  const { transport } = useClientTransport<AI.UIMessageChunk, AI.UIMessage>();
+  // 1. Read both transports created by ChatTransportProvider
+  const { chatTransport, transport } = useChatTransport();
 
-  // 2. Wrap it for useChat compatibility
-  const chatTransport = useChatTransport(transport);
-
-  // 3. Use Vercel's useChat with the wrapped transport
+  // 2. Use Vercel's useChat with the chat transport adapter
   const { messages, setMessages, sendMessage, stop } = useChat({
     id: chatId,
     transport: chatTransport,
   });
 
-  // 4. Sync transport messages into useChat's state (for observer messages)
-  useMessageSync(transport, setMessages);
+  // 3. Sync transport messages into useChat's state (for observer messages)
+  useMessageSync({ setMessages });
 
-  // 5. Track active turns for loading state
-  const activeTurns = useActiveTurns(transport);
+  // 4. Track active turns for loading state
+  const activeTurns = useActiveTurns();
   const isStreaming = activeTurns.size > 0;
 
-  // 6. Load history on mount
-  useView(transport, { limit: 30 });
+  // 5. Load history on mount
+  useView({ limit: 30 });
 
   return (
     <div>
@@ -208,10 +203,11 @@ function ChatInner({ chatId }: { chatId: string }) {
 
 export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
   return (
-    // TransportProvider creates the ClientTransport and wraps children with ChannelProvider
-    <TransportProvider channelName={chatId} codec={UIMessageCodec} clientId={clientId}>
+    // ChatTransportProvider creates both ClientTransport and ChatTransport,
+    // and wraps children with ChannelProvider. No codec argument needed.
+    <ChatTransportProvider channelName={chatId} clientId={clientId}>
       <ChatInner chatId={chatId} />
-    </TransportProvider>
+    </ChatTransportProvider>
   );
 }
 ```
@@ -244,9 +240,9 @@ Open `http://localhost:3000`. Type a message - you'll see tokens stream in real 
 
 ## What's happening
 
-1. `TransportProvider` creates a `ClientTransport` that subscribes to the Ably channel before it attaches — no messages are lost. It also wraps children with Ably's `ChannelProvider`.
-2. `useClientTransport()` reads the transport from `TransportProvider`'s context — no options needed.
-3. `useChatTransport()` wraps the transport into Vercel's `ChatTransport` interface, which `useChat()` expects.
+1. `ChatTransportProvider` creates a `ClientTransport` (subscribed to the Ably channel before attach — no messages lost) and wraps it in a `ChatTransport`. Both are stored in `ChatTransportContext` for descendants.
+2. `useChatTransport()` reads both transports from `ChatTransportContext` — no arguments needed for the nearest provider.
+3. `chatTransport` satisfies Vercel's `ChatTransport` interface; `transport` is the underlying `ClientTransport` used for `useMessageSync`, `useActiveTurns`, and `useView`.
 4. When you send a message, `useChat()` calls the chat transport's `sendMessages`, which fires an HTTP POST to `/api/chat` and opens a stream on the Ably channel.
 5. The server creates a turn, publishes user messages, streams the LLM response through the encoder to the channel, and publishes a turn-end event.
 6. The client transport decodes incoming Ably messages through `UIMessageCodec` and routes them to the stream.

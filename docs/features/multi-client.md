@@ -84,7 +84,7 @@ When using the useChat path, `useMessageSync()` pushes observer messages into `u
 import { useMessageSync } from '@ably/ai-transport/vercel/react';
 
 const { messages, setMessages } = useChat({ id: chatId, transport: chatTransport });
-useMessageSync(transport, setMessages);
+useMessageSync({ setMessages });
 
 // messages now includes messages from all clients on the channel
 ```

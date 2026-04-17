@@ -1,13 +1,11 @@
 'use client';
 
-import { Providers, useAblyReady, TransportHooks } from './providers';
-import { UIMessageCodec } from '@ably/ai-transport/vercel';
+import { ChatTransportProvider } from '@ably/ai-transport/vercel/react';
 import { Chat } from './chat';
+import { Providers, useAblyReady } from './providers';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
 import { generateChannelSlug } from './lib/channel-name';
-
-const { TransportProvider } = TransportHooks;
 
 const CHANNEL_NAMESPACE = process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE ?? 'ai:';
 
@@ -19,9 +17,8 @@ function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; 
   }
 
   return (
-    <TransportProvider
+    <ChatTransportProvider
       channelName={channelName}
-      codec={UIMessageCodec}
       clientId={clientId}
     >
       <Chat
@@ -29,7 +26,7 @@ function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; 
         clientId={clientId}
         historyLimit={limit}
       />
-    </TransportProvider>
+    </ChatTransportProvider>
   );
 }
 

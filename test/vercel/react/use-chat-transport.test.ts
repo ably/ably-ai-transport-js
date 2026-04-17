@@ -1,124 +1,170 @@
 // @vitest-environment jsdom
 
 import { renderHook } from '@testing-library/react';
+import * as Ably from 'ably';
 import type * as AI from 'ai';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createElement, type ReactNode } from 'react';
+import { describe, expect, it } from 'vitest';
 
 import type { ClientTransport } from '../../../src/core/transport/types.js';
+import { ErrorCode } from '../../../src/errors.js';
+import type { ChatTransportSlot } from '../../../src/vercel/react/contexts/chat-transport-context.js';
+import { ChatTransportContext } from '../../../src/vercel/react/contexts/chat-transport-context.js';
 import { useChatTransport } from '../../../src/vercel/react/use-chat-transport.js';
-import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
-import { createClientTransport } from '../../../src/vercel/transport/index.js';
-
-// Mock the Vercel transport factories
-vi.mock('../../../src/vercel/transport/chat-transport.js', () => ({
-  createChatTransport: vi.fn(() => ({
-    sendMessages: vi.fn(),
-    reconnectToStream: vi.fn(),
-    close: vi.fn(),
-  })),
-}));
-
-vi.mock('../../../src/vercel/transport/index.js', () => ({
-  createClientTransport: vi.fn(() => ({
-    view: {},
-    tree: {},
-    on: vi.fn(() => vi.fn()),
-    close: vi.fn(),
-    createView: vi.fn(),
-  })),
-}));
+import type { ChatTransport } from '../../../src/vercel/transport/chat-transport.js';
 
 // eslint-disable-next-line @typescript-eslint/no-empty-function -- no-op stub
 const noop = (): void => {};
 
-/**
- * Build a minimal mock typed as ClientTransport. The type annotation ensures
- * the mock stays in sync with the real interface — if a property the type
- * guard relies on is renamed or removed, this will fail to compile.
- * @returns A mock ClientTransport instance.
- */
-const createFakeTransport = (): ClientTransport<AI.UIMessageChunk, AI.UIMessage> => ({
-  tree: {
-    getSiblings: vi.fn(() => []),
-    hasSiblings: vi.fn(() => false),
-    getNode: vi.fn(),
-    getHeaders: vi.fn(),
-    upsert: vi.fn(),
-    delete: vi.fn(),
-    getActiveTurnIds: vi.fn(() => new Map()),
-    on: vi.fn(() => noop),
-  },
-  view: {
-    getMessages: vi.fn(() => []),
-    flattenNodes: vi.fn(() => []),
-    hasOlder: vi.fn(() => false),
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-    loadOlder: vi.fn(() => Promise.resolve()),
-    select: vi.fn(),
-    getSelectedIndex: vi.fn(() => 0),
-    getSiblings: vi.fn(() => []),
-    hasSiblings: vi.fn(() => false),
-    getNode: vi.fn(),
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-    send: vi.fn(() =>
-      Promise.resolve({ stream: new ReadableStream(), turnId: 't', cancel: vi.fn(), optimisticMsgIds: [] }),
-    ),
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-    regenerate: vi.fn(() =>
-      Promise.resolve({ stream: new ReadableStream(), turnId: 't', cancel: vi.fn(), optimisticMsgIds: [] }),
-    ),
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-    edit: vi.fn(() =>
-      Promise.resolve({ stream: new ReadableStream(), turnId: 't', cancel: vi.fn(), optimisticMsgIds: [] }),
-    ),
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-    update: vi.fn(() =>
-      Promise.resolve({ stream: new ReadableStream(), turnId: 't', cancel: vi.fn(), optimisticMsgIds: [] }),
-    ),
-    getActiveTurnIds: vi.fn(() => new Map()),
-    on: vi.fn(() => noop),
-    close: vi.fn(),
-  },
-  createView: vi.fn(),
+const createFakeChatTransport = (): ChatTransport => ({
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-  cancel: vi.fn(() => Promise.resolve()),
+  sendMessages: () => Promise.resolve(new ReadableStream()),
+  // eslint-disable-next-line @typescript-eslint/promise-function-async, unicorn/no-null -- mock; null required by ChatTransport contract
+  reconnectToStream: () => Promise.resolve(null),
   stageEvents: vi.fn(),
   stageMessage: vi.fn(),
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-  waitForTurn: vi.fn(() => Promise.resolve()),
-  on: vi.fn(() => noop),
-  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-  close: vi.fn(() => Promise.resolve()),
+  close: () => Promise.resolve(),
+  streaming: false,
+  onStreamingChange: () => noop,
 });
 
-beforeEach(() => {
-  vi.clearAllMocks();
+// Test stub — identity comparison only, methods not exercised.
+// CAST: test stub satisfies ClientTransport structurally; methods are never called.
+const createFakeClientTransport = (): ClientTransport<AI.UIMessageChunk, AI.UIMessage> =>
+  ({}) as unknown as ClientTransport<AI.UIMessageChunk, AI.UIMessage>;
+
+const createFakeChatTransportSlot = (): ChatTransportSlot => ({
+  transport: createFakeClientTransport(),
+  transportError: undefined,
+  chatTransport: createFakeChatTransport(),
 });
+
+// Wrap renderHook with a ChatTransportContext providing the given registry and nearest slot.
+const withChatTransportContext =
+  (providers: Record<string, ChatTransportSlot>, nearest?: ChatTransportSlot) =>
+  ({ children }: { children: ReactNode }) =>
+    createElement(ChatTransportContext.Provider, { value: { nearest, providers } }, children);
 
 describe('useChatTransport', () => {
-  it('returns the same chat transport instance across re-renders', () => {
-    const options = { channel: {} as never };
-    const { result, rerender } = renderHook(() => useChatTransport(options));
-
-    const first = result.current;
-    rerender();
-    expect(result.current).toBe(first);
-    expect(createChatTransport).toHaveBeenCalledTimes(1);
+  it('returns the transport handle registered under the given channelName', () => {
+    const slot = createFakeChatTransportSlot();
+    const { result } = renderHook(() => useChatTransport({ channelName: 'ai:test' }), {
+      wrapper: withChatTransportContext({ 'ai:test': slot }),
+    });
+    expect(result.current.chatTransport).toBe(slot.chatTransport);
+    expect(result.current.transport).toBe(slot.transport);
   });
 
-  it('wraps an existing transport when passed one', () => {
-    const fakeTransport = createFakeTransport();
-    renderHook(() => useChatTransport(fakeTransport));
-
-    expect(createChatTransport).toHaveBeenCalledWith(fakeTransport, undefined);
-    // Should NOT create a new core transport
-    expect(createClientTransport).not.toHaveBeenCalled();
+  it('returns the transport handle registered under a different channelName', () => {
+    const slot = createFakeChatTransportSlot();
+    const { result } = renderHook(() => useChatTransport({ channelName: 'ai:secondary' }), {
+      wrapper: withChatTransportContext({ 'ai:secondary': slot }),
+    });
+    expect(result.current.chatTransport).toBe(slot.chatTransport);
+    expect(result.current.transport).toBe(slot.transport);
   });
 
-  it('creates a core transport when passed options', () => {
-    const options = { channel: {} as never };
-    renderHook(() => useChatTransport(options));
+  it('returns the nearest transport handle when no channelName is given', () => {
+    const slot = createFakeChatTransportSlot();
+    const { result } = renderHook(() => useChatTransport(), {
+      wrapper: withChatTransportContext({}, slot),
+    });
+    expect(result.current.chatTransport).toBe(slot.chatTransport);
+    expect(result.current.transport).toBe(slot.transport);
+  });
 
-    expect(createClientTransport).toHaveBeenCalledWith(options);
+  it('surfaces slot transportError via chatTransportError', () => {
+    const slot: ChatTransportSlot = {
+      ...createFakeChatTransportSlot(),
+      transportError: new Ably.ErrorInfo('construction failed', ErrorCode.BadRequest, 400),
+    };
+    const { result } = renderHook(() => useChatTransport({ channelName: 'ai:test' }), {
+      wrapper: withChatTransportContext({ 'ai:test': slot }),
+    });
+    expect(result.current.chatTransportError).toBe(slot.transportError);
+  });
+
+  it('sets chatTransportError with BadRequest when channelName given but no matching ChatTransportProvider', () => {
+    const { result } = renderHook(() => useChatTransport({ channelName: 'ai:test' }), {
+      wrapper: withChatTransportContext({}),
+    });
+    expect(result.current.chatTransportError).toMatchObject({ code: ErrorCode.BadRequest, statusCode: 400 });
+    expect(result.current.chatTransportError?.message).toContain('no ChatTransportProvider found');
+  });
+
+  it('includes the channelName in the error message', () => {
+    const { result } = renderHook(() => useChatTransport({ channelName: 'ai:primary' }), {
+      wrapper: withChatTransportContext({}),
+    });
+    expect(result.current.chatTransportError).toMatchObject({ code: ErrorCode.BadRequest });
+    expect(result.current.chatTransportError?.message).toContain('"ai:primary"');
+  });
+
+  it('sets chatTransportError with BadRequest when no channelName and no nearest provider', () => {
+    const { result } = renderHook(() => useChatTransport());
+    expect(result.current.chatTransportError).toMatchObject({ code: ErrorCode.BadRequest, statusCode: 400 });
+    expect(result.current.chatTransportError?.message).toContain('no ChatTransportProvider found');
+  });
+
+  describe('skip', () => {
+    it('returns a handle without throwing when skip is true', () => {
+      const { result } = renderHook(() => useChatTransport({ skip: true }));
+      expect(result.current).toBeDefined();
+      expect(result.current.chatTransport).toBeDefined();
+      expect(result.current.transport).toBeDefined();
+    });
+
+    it('stub sendMessages throws ErrorInfo with InvalidArgument', () => {
+      const { result } = renderHook(() => useChatTransport({ skip: true }));
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- stub throws synchronously; never returns a promise
+      expect(() => result.current.chatTransport.sendMessages({} as never)).toThrow(
+        expect.objectContaining({ code: ErrorCode.InvalidArgument, statusCode: 400 }),
+      );
+    });
+
+    it('stub reconnectToStream throws ErrorInfo with InvalidArgument', () => {
+      const { result } = renderHook(() => useChatTransport({ skip: true }));
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- stub throws synchronously; never returns a promise
+      expect(() => result.current.chatTransport.reconnectToStream({} as never)).toThrow(
+        expect.objectContaining({ code: ErrorCode.InvalidArgument, statusCode: 400 }),
+      );
+    });
+
+    it('stub chatTransport.close throws ErrorInfo with InvalidArgument', () => {
+      const { result } = renderHook(() => useChatTransport({ skip: true }));
+      expect(() => {
+        void result.current.chatTransport.close();
+      }).toThrow(expect.objectContaining({ code: ErrorCode.InvalidArgument, statusCode: 400 }));
+    });
+
+    it('stub streaming getter throws ErrorInfo with InvalidArgument', () => {
+      const { result } = renderHook(() => useChatTransport({ skip: true }));
+      expect(() => result.current.chatTransport.streaming).toThrow(
+        expect.objectContaining({ code: ErrorCode.InvalidArgument, statusCode: 400 }),
+      );
+    });
+
+    it('stub onStreamingChange throws ErrorInfo with InvalidArgument', () => {
+      const { result } = renderHook(() => useChatTransport({ skip: true }));
+      expect(() => result.current.chatTransport.onStreamingChange(noop)).toThrow(
+        expect.objectContaining({ code: ErrorCode.InvalidArgument, statusCode: 400 }),
+      );
+    });
+
+    it('stub error messages are descriptive', () => {
+      const { result } = renderHook(() => useChatTransport({ skip: true }));
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- stub throws synchronously; never returns a promise
+      expect(() => result.current.chatTransport.sendMessages({} as never)).toThrow(
+        expect.objectContaining({ message: 'unable to send messages; hook is skipped' }),
+      );
+    });
+
+    it('stub transport.tree getter throws ErrorInfo with InvalidArgument', () => {
+      const { result } = renderHook(() => useChatTransport({ skip: true }));
+      expect(() => result.current.transport.tree).toThrow(
+        expect.objectContaining({ code: ErrorCode.InvalidArgument, statusCode: 400 }),
+      );
+    });
   });
 });

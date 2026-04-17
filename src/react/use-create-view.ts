@@ -13,10 +13,10 @@
  * Pass `skip: true` to bypass all context reads and view creation entirely.
  */
 
-import { useContext, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import type { ClientTransport, View } from '../core/transport/types.js';
-import { NearestTransportContext } from './contexts/transport-context.js';
+import { useResolvedTransport } from './internal/use-resolved-transport.js';
 import type { ViewHandle } from './use-view.js';
 import { useView } from './use-view.js';
 
@@ -44,11 +44,7 @@ export const useCreateView = <TEvent, TMessage>({
   /** When `true`, skip view creation and return an empty handle immediately. */
   skip?: boolean;
 } = {}): ViewHandle<TEvent, TMessage> => {
-  const nearestSlot = useContext(NearestTransportContext);
-  // CAST: NearestTransportContext stores transport with erased generics; types fixed at call site.
-  const resolved = skip
-    ? undefined
-    : ((transport ?? nearestSlot?.transport) as ClientTransport<TEvent, TMessage> | null | undefined);
+  const resolved = useResolvedTransport({ transport, skip });
 
   const [view, setView] = useState<View<TEvent, TMessage> | undefined>();
 

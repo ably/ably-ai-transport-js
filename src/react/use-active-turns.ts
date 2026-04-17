@@ -11,11 +11,11 @@
  * Generic — works with any codec, not tied to Vercel types.
  */
 
-import { useContext, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { EVENT_TURN_START } from '../constants.js';
 import type { ClientTransport, TurnLifecycleEvent } from '../core/transport/types.js';
-import { NearestTransportContext } from './contexts/transport-context.js';
+import { useResolvedTransport } from './internal/use-resolved-transport.js';
 
 /**
  * Returns a reactive Map of all active turns on the channel, keyed by clientId.
@@ -28,9 +28,7 @@ import { NearestTransportContext } from './contexts/transport-context.js';
 export const useActiveTurns = <TEvent, TMessage>({
   transport,
 }: { transport?: ClientTransport<TEvent, TMessage> | null } = {}): Map<string, Set<string>> => {
-  const nearestSlot = useContext(NearestTransportContext);
-  // CAST: NearestTransportContext stores transport with erased generics; types fixed at call site.
-  const resolved = (transport ?? nearestSlot?.transport) as ClientTransport<TEvent, TMessage> | undefined;
+  const resolved = useResolvedTransport({ transport });
 
   const [turns, setTurns] = useState<Map<string, Set<string>>>(() => new Map());
 

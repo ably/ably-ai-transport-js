@@ -10,10 +10,10 @@
  */
 
 import type * as Ably from 'ably';
-import { useContext, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import type { ClientTransport } from '../core/transport/types.js';
-import { NearestTransportContext } from './contexts/transport-context.js';
+import { useResolvedTransport } from './internal/use-resolved-transport.js';
 
 /**
  * Subscribe to raw Ably message updates from a client transport's tree.
@@ -27,11 +27,7 @@ export const useAblyMessages = <TEvent, TMessage>({
   transport,
   skip,
 }: { transport?: ClientTransport<TEvent, TMessage>; skip?: boolean } = {}): Ably.InboundMessage[] => {
-  const nearestSlot = useContext(NearestTransportContext);
-  // CAST: NearestTransportContext stores transport with erased generics; types fixed at call site.
-  const resolved = skip
-    ? undefined
-    : ((transport ?? nearestSlot?.transport) as ClientTransport<TEvent, TMessage> | undefined);
+  const resolved = useResolvedTransport({ transport, skip });
 
   const [messages, setMessages] = useState<Ably.InboundMessage[]>([]);
   const messagesRef = useRef<Ably.InboundMessage[]>([]);

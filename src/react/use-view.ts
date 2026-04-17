@@ -9,11 +9,11 @@
  */
 
 import * as Ably from 'ably';
-import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { ActiveTurn, ClientTransport, MessageNode, SendOptions, View } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
-import { NearestTransportContext } from './contexts/transport-context.js';
+import { useResolvedTransport } from './internal/use-resolved-transport.js';
 
 /** Options for configuring the view's initial load behavior. */
 export interface UseViewOptions {
@@ -90,11 +90,7 @@ export const useView = <TEvent, TMessage>({
   /** When `true`, skip all subscriptions and return an empty handle immediately. */
   skip?: boolean;
 } = {}): ViewHandle<TEvent, TMessage> => {
-  const nearestSlot = useContext(NearestTransportContext);
-  // CAST: NearestTransportContext stores transport with erased generics; types fixed at call site.
-  const resolvedTransport = skip
-    ? undefined
-    : (transport ?? (nearestSlot?.transport as unknown as ClientTransport<TEvent, TMessage> | undefined));
+  const resolvedTransport = useResolvedTransport({ transport, skip });
   const resolvedView = skip ? undefined : (view ?? resolvedTransport?.view);
 
   const [nodes, setNodes] = useState<MessageNode<TMessage>[]>(() => resolvedView?.flattenNodes() ?? []);

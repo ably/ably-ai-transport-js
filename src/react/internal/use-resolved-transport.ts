@@ -1,7 +1,7 @@
 import { useContext } from 'react';
 
 import type { ClientTransport } from '../../core/transport/types.js';
-import { NearestTransportContext } from '../contexts/transport-context.js';
+import { TransportContext } from '../contexts/transport-context.js';
 
 /**
  * Resolve the active `ClientTransport` for a hook.
@@ -25,8 +25,7 @@ export const useResolvedTransport = <TEvent, TMessage>({
   /** When `true`, bypass context and return `undefined` immediately. */
   skip?: boolean;
 } = {}): ClientTransport<TEvent, TMessage> | undefined => {
-  const nearestSlot = useContext(NearestTransportContext);
-  return skip
-    ? undefined
-    : ((transport ?? nearestSlot?.transport) as unknown as ClientTransport<TEvent, TMessage> | undefined);
+  const { nearest } = useContext(TransportContext);
+  const nearestTransport = nearest?.transport as unknown as ClientTransport<TEvent, TMessage> | undefined;
+  return skip ? undefined : (transport ?? nearestTransport);
 };

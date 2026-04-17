@@ -17,21 +17,24 @@ export interface TransportSlot {
   error: Ably.ErrorInfo | undefined;
 }
 
-/** The shape of the TransportContext value — a record of channelName → slot. */
-export type TransportContextValue = Readonly<Record<string, TransportSlot>>;
+/**
+ * The shape of the {@link TransportContext} value.
+ *
+ * `nearest` is the slot from the innermost enclosing {@link TransportProvider}.
+ * `providers` is the full registry of all enclosing providers, keyed by channelName.
+ */
+export interface TransportContextValue {
+  /** The innermost {@link TransportProvider}'s slot. `undefined` when no provider is present. */
+  nearest: TransportSlot | undefined;
+  /** All registered transport slots from enclosing providers, keyed by channelName. */
+  providers: Readonly<Record<string, TransportSlot>>;
+}
 
 /**
- * Context that holds the registered {@link ClientTransport} slots, keyed by channelName.
- * Each slot contains the transport (or `undefined` on construction failure) and any error.
- * Populated by {@link TransportProvider}; read by {@link useClientTransport}.
+ * Unified transport context.
+ *
+ * Holds the nearest transport slot and the full registry of all registered
+ * slots keyed by channelName. Populated by {@link TransportProvider};
+ * read by {@link useClientTransport} and internal hooks.
  */
-export const TransportContext = createContext<TransportContextValue>({});
-
-/**
- * Context that holds the nearest (innermost) transport slot.
- * Each {@link TransportProvider} sets this to its own slot, so descendants
- * can access the nearest transport without knowing its channel name.
- * `undefined` when no provider is present.
- * Read by hooks whose `transport` argument is omitted.
- */
-export const NearestTransportContext = createContext<TransportSlot | undefined>(undefined);
+export const TransportContext = createContext<TransportContextValue>({ nearest: undefined, providers: {} });

@@ -5,7 +5,7 @@ import { createElement, type ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 
 import type { ClientTransport } from '../../../src/core/transport/types.js';
-import { NearestTransportContext } from '../../../src/react/contexts/transport-context.js';
+import { TransportContext } from '../../../src/react/contexts/transport-context.js';
 import { useResolvedTransport } from '../../../src/react/internal/use-resolved-transport.js';
 import { createMockTransport } from '../helper/mock-transport.js';
 
@@ -20,8 +20,13 @@ describe('useResolvedTransport', () => {
     const mock = createMockTransport();
     const wrapper = ({ children }: { children: ReactNode }): ReactNode =>
       createElement(
-        NearestTransportContext.Provider,
-        { value: { transport: mock.transport as ClientTransport<unknown, unknown>, error: undefined } },
+        TransportContext.Provider,
+        {
+          value: {
+            nearest: { transport: mock.transport as ClientTransport<unknown, unknown>, error: undefined },
+            providers: {},
+          },
+        },
         children,
       );
 
@@ -33,8 +38,13 @@ describe('useResolvedTransport', () => {
     const mock = createMockTransport();
     const wrapper = ({ children }: { children: ReactNode }): ReactNode =>
       createElement(
-        NearestTransportContext.Provider,
-        { value: { transport: mock.transport as ClientTransport<unknown, unknown>, error: undefined } },
+        TransportContext.Provider,
+        {
+          value: {
+            nearest: { transport: mock.transport as ClientTransport<unknown, unknown>, error: undefined },
+            providers: {},
+          },
+        },
         children,
       );
 
@@ -58,8 +68,13 @@ describe('useResolvedTransport', () => {
     const explicitMock = createMockTransport();
     const wrapper = ({ children }: { children: ReactNode }): ReactNode =>
       createElement(
-        NearestTransportContext.Provider,
-        { value: { transport: contextMock.transport as ClientTransport<unknown, unknown>, error: undefined } },
+        TransportContext.Provider,
+        {
+          value: {
+            nearest: { transport: contextMock.transport as ClientTransport<unknown, unknown>, error: undefined },
+            providers: {},
+          },
+        },
         children,
       );
 

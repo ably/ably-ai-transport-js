@@ -5,7 +5,7 @@ import { createElement, type ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ClientTransport } from '../../src/core/transport/types.js';
-import { NearestTransportContext } from '../../src/react/contexts/transport-context.js';
+import { TransportContext } from '../../src/react/contexts/transport-context.js';
 import { useActiveTurns } from '../../src/react/use-active-turns.js';
 import { createMockTransport, makeTurnEvent } from './helper/mock-transport.js';
 
@@ -102,8 +102,13 @@ describe('useActiveTurns', () => {
 
     const wrapper = ({ children }: { children: ReactNode }): ReactNode =>
       createElement(
-        NearestTransportContext.Provider,
-        { value: { transport: mock.transport as ClientTransport<unknown, unknown>, error: undefined } },
+        TransportContext.Provider,
+        {
+          value: {
+            nearest: { transport: mock.transport as ClientTransport<unknown, unknown>, error: undefined },
+            providers: {},
+          },
+        },
         children,
       );
 

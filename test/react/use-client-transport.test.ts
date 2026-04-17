@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ClientTransport } from '../../src/core/transport/types.js';
 import { ErrorCode } from '../../src/errors.js';
-import { NearestTransportContext, TransportContext } from '../../src/react/contexts/transport-context.js';
+import { TransportContext } from '../../src/react/contexts/transport-context.js';
 import { useClientTransport } from '../../src/react/use-client-transport.js';
 import { createMockTransport } from './helper/mock-transport.js';
 
@@ -15,17 +15,22 @@ import { createMockTransport } from './helper/mock-transport.js';
 const withTransportContext =
   (record: Record<string, ClientTransport<unknown, unknown>>) =>
   ({ children }: { children: ReactNode }) =>
-    createElement(
-      TransportContext.Provider,
-      { value: Object.fromEntries(Object.entries(record).map(([k, v]) => [k, { transport: v, error: undefined }])) },
+    createElement(TransportContext.Provider, {
+      value: {
+        nearest: undefined,
+        providers: Object.fromEntries(Object.entries(record).map(([k, v]) => [k, { transport: v, error: undefined }])),
+      },
       children,
-    );
+    });
 
-// Wrap renderHook with a NearestTransportContext providing the given transport.
+// Wrap renderHook with the nearest transport set in TransportContext.
 const withNearestTransport =
   (transport: ClientTransport<unknown, unknown>) =>
   ({ children }: { children: ReactNode }) =>
-    createElement(NearestTransportContext.Provider, { value: { transport, error: undefined } }, children);
+    createElement(TransportContext.Provider, {
+      value: { nearest: { transport, error: undefined }, providers: {} },
+      children,
+    });
 
 describe('useClientTransport', () => {
   it('returns the transport registered under the given channelName', () => {

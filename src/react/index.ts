@@ -1,6 +1,4 @@
 export type { EventsNode, MessageNode } from '../core/transport/types.js';
-export type { TransportSlot } from './contexts/transport-context.js';
-export { NearestTransportContext } from './contexts/transport-context.js';
 export type { TransportProviderProps } from './contexts/transport-provider.js';
 export { TransportProvider } from './contexts/transport-provider.js';
 export type { TransportHooks } from './create-transport-hooks.js';

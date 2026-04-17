@@ -29,7 +29,7 @@ import { createClientTransport } from '../../core/transport/client-transport.js'
 import type { ClientTransport, ClientTransportOptions } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
 import type { TransportSlot } from '../contexts/transport-context.js';
-import { NearestTransportContext, TransportContext } from '../contexts/transport-context.js';
+import { TransportContext } from '../contexts/transport-context.js';
 
 /**
  * Props for {@link TransportProvider}.
@@ -86,7 +86,10 @@ const TransportProviderInner = <TEvent, TMessage>({
     [currentTransport, currentError],
   );
 
-  const contextValue = useMemo(() => ({ ...parentMap, [channelName]: slot }), [channelName, parentMap, slot]);
+  const contextValue = useMemo(
+    () => ({ nearest: slot, providers: { ...parentMap.providers, [channelName]: slot } }),
+    [channelName, parentMap, slot],
+  );
 
   useEffect(
     () => () => {
@@ -113,11 +116,7 @@ const TransportProviderInner = <TEvent, TMessage>({
     };
   }, []);
 
-  return (
-    <TransportContext.Provider value={contextValue}>
-      <NearestTransportContext.Provider value={slot}>{children}</NearestTransportContext.Provider>
-    </TransportContext.Provider>
-  );
+  return <TransportContext.Provider value={contextValue}>{children}</TransportContext.Provider>;
 };
 
 /**

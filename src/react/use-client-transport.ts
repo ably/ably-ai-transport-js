@@ -24,7 +24,7 @@ import { useContext, useEffect, useRef } from 'react';
 
 import type { ClientTransport, Tree, View } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
-import { NearestTransportContext, TransportContext } from './contexts/transport-context.js';
+import { TransportContext } from './contexts/transport-context.js';
 
 const SKIPPED_TRANSPORT: ClientTransport<unknown, unknown> = {
   get tree(): Tree<unknown> {
@@ -119,8 +119,7 @@ export const useClientTransport = <TEvent, TMessage>({
    */
   onError?: (error: Ably.ErrorInfo) => void;
 } = {}): ClientTransportHandle<TEvent, TMessage> => {
-  const registry = useContext(TransportContext);
-  const nearestSlot = useContext(NearestTransportContext);
+  const { nearest: nearestSlot, providers } = useContext(TransportContext);
   const errorCallbackRef = useRef(onError);
   errorCallbackRef.current = onError;
 
@@ -131,7 +130,7 @@ export const useClientTransport = <TEvent, TMessage>({
     ? undefined
     : channelName === undefined
       ? nearestSlot?.transport
-      : registry[channelName]?.transport;
+      : providers[channelName]?.transport;
 
   useEffect(() => {
     if (!resolvedForEffect) return;
@@ -147,7 +146,7 @@ export const useClientTransport = <TEvent, TMessage>({
   }
 
   if (channelName !== undefined) {
-    const slot = registry[channelName];
+    const slot = providers[channelName];
     if (slot) {
       if (slot.transport) {
         // CAST: TransportContext stores transports with erased generics.

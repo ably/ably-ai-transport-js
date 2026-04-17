@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ClientTransport } from '../../src/core/transport/types.js';
 import { ErrorCode } from '../../src/errors.js';
-import { NearestTransportContext } from '../../src/react/contexts/transport-context.js';
+import { TransportContext } from '../../src/react/contexts/transport-context.js';
 import { useView } from '../../src/react/use-view.js';
 import { createMockTransport } from './helper/mock-transport.js';
 
@@ -172,8 +172,13 @@ describe('useView', () => {
     const mock = createMockTransport(['hello']);
     const wrapper = ({ children }: { children: ReactNode }): ReactNode =>
       createElement(
-        NearestTransportContext.Provider,
-        { value: { transport: mock.transport as ClientTransport<unknown, unknown>, error: undefined } },
+        TransportContext.Provider,
+        {
+          value: {
+            nearest: { transport: mock.transport as ClientTransport<unknown, unknown>, error: undefined },
+            providers: {},
+          },
+        },
         children,
       );
 

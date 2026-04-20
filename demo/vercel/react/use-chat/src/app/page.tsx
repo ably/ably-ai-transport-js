@@ -9,7 +9,7 @@ import { generateChannelSlug } from './lib/channel-name';
 
 const { TransportProvider } = TransportHooks;
 
-const CHANNEL_NAMESPACE = process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE ?? 'ait:';
+const CHANNEL_NAMESPACE = process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE ?? 'ai:';
 
 function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; clientId?: string; limit?: number }) {
   const ready = useAblyReady();
@@ -47,7 +47,7 @@ function ChatPage() {
     const params = new URLSearchParams(searchParams.toString());
     params.set('channel', channelName);
     // `:` is valid unencoded in a query string (RFC 3986); un-escape it so the
-    // address bar shows "ait:foo" instead of "ait%3Afoo".
+    // address bar shows "ai:foo" instead of "ai%3Afoo".
     router.replace(`?${params.toString().replaceAll('%3A', ':')}`);
   }, [paramChannel, channelName, router, searchParams]);
 

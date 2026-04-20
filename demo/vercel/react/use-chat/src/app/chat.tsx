@@ -1,8 +1,11 @@
 'use client';
 
 import { useChat } from '@ai-sdk/react';
-import { lastAssistantMessageIsCompleteWithToolCalls } from 'ai';
-import { useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
+import {
+  lastAssistantMessageIsCompleteWithApprovalResponses,
+  lastAssistantMessageIsCompleteWithToolCalls,
+} from 'ai';
+import { useChatTransport, useMessageSync, useStagedAddToolApprovalResponse } from '@ably/ai-transport/vercel/react';
 import { useState, useEffect, useCallback } from 'react';
 import { MessageList } from './components/message-list';
 import { DebugPane } from './components/debug-pane';
@@ -36,13 +39,17 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
     status,
     regenerate,
     addToolResult,
+    addToolApprovalResponse,
     messages: chatMessages,
   } = useChat({
     id: chatId,
     transport: chatTransport,
-    // Auto-submit after addToolResult resolves all pending tool calls so the
-    // assistant can continue with the tool output.
-    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
+    // Auto-submit after addToolResult resolves tool calls OR
+    // addToolApprovalResponse resolves approvals, so the assistant can
+    // continue with the tool output / approved execution.
+    sendAutomaticallyWhen: ({ messages: msgs }) =>
+      lastAssistantMessageIsCompleteWithToolCalls({ messages: msgs }) ||
+      lastAssistantMessageIsCompleteWithApprovalResponses({ messages: msgs }),
     onToolCall: ({ toolCall }) => {
       setCallbackLog((prev) => [
         ...prev,
@@ -67,6 +74,11 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
 
   useMessageSync(transport, setMessages, chatTransport);
 
+  // Wrap addToolApprovalResponse so the approval response patches the
+  // transport tree synchronously on click. Eliminates useChat↔tree
+  // divergence and closes the observer-turn race.
+  const stagedApproval = useStagedAddToolApprovalResponse(transport, addToolApprovalResponse);
+
   // Track status transitions
   useEffect(() => {
     setStatusLog((prev) => [...prev, { time: Date.now(), status }]);
@@ -76,7 +88,9 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
   const hasAnyTurns = activeTurns.size > 0;
 
   // Auto-loads first page on mount
-  const { nodes, hasOlder, loading, loadOlder } = useView({ limit: historyLimit ?? 30 });
+  const { nodes, hasOlder, loading, loadOlder, hasSiblings, getSiblings, getSelectedIndex, select } = useView({
+    limit: historyLimit ?? 30,
+  });
 
   useClientTools(transport, chatMessages, addToolResult, nodes, clientId);
 
@@ -90,9 +104,12 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
           nodes={nodes}
           hasOlder={hasOlder}
           loading={loading}
+          siblings={{ hasSiblings, getSiblings, getSelectedIndex, select }}
           onLoadOlder={loadOlder}
           onRegenerate={(messageId) => regenerate({ messageId })}
           onEdit={(messageId, text) => sendMessage({ text, messageId })}
+          onToolApprove={(approvalId) => stagedApproval({ id: approvalId, approved: true })}
+          onToolDeny={(approvalId) => stagedApproval({ id: approvalId, approved: false, reason: 'User denied' })}
         />
         <InputBar
           onSend={(text) => sendMessage({ text })}

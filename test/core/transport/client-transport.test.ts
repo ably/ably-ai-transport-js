@@ -1804,6 +1804,62 @@ describe('ClientTransport', () => {
   });
 
   // -------------------------------------------------------------------------
+  // stageMessage()
+  // -------------------------------------------------------------------------
+
+  describe('stageMessage', () => {
+    it('replaces the tree message via upsert, preserving headers and serial', () => {
+      const originalHeaders = { [HEADER_MSG_ID]: 'msg-1', [HEADER_ROLE]: 'assistant', custom: 'keep' };
+      transport.tree.upsert('msg-1', { id: 'msg-1', content: 'original' }, originalHeaders, 'serial-abc');
+
+      transport.stageMessage('msg-1', { id: 'msg-1', content: 'patched' });
+
+      const node = transport.tree.getNode('msg-1');
+      expect(node?.message).toEqual({ id: 'msg-1', content: 'patched' });
+      // Headers preserved by passing existingNode.headers through to upsert.
+      expect(node?.headers).toEqual(originalHeaders);
+      expect(node?.serial).toBe('serial-abc');
+    });
+
+    it('fires a tree update event', () => {
+      transport.tree.upsert(
+        'msg-1',
+        { id: 'msg-1', content: 'original' },
+        { [HEADER_MSG_ID]: 'msg-1', [HEADER_ROLE]: 'assistant' },
+        'serial-1',
+      );
+
+      const updateHandler = vi.fn();
+      transport.view.on('update', updateHandler);
+
+      transport.stageMessage('msg-1', { id: 'msg-1', content: 'patched' });
+
+      expect(updateHandler).toHaveBeenCalled();
+    });
+
+    it('is a no-op when msgId is not in the tree', () => {
+      // No exceptions. Tree stays empty.
+      transport.stageMessage('unknown', { id: 'unknown', content: 'whatever' });
+      expect(transport.tree.getNode('unknown')).toBeUndefined();
+    });
+
+    it('is a no-op after the transport is closed', async () => {
+      transport.tree.upsert(
+        'msg-1',
+        { id: 'msg-1', content: 'original' },
+        { [HEADER_MSG_ID]: 'msg-1', [HEADER_ROLE]: 'assistant' },
+        'serial-1',
+      );
+      await transport.close();
+
+      transport.stageMessage('msg-1', { id: 'msg-1', content: 'patched' });
+
+      // Message should be unchanged.
+      expect(transport.tree.getNode('msg-1')?.message.content).toBe('original');
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // cancel()
   // -------------------------------------------------------------------------
 

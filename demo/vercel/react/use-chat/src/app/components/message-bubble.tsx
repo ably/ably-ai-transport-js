@@ -7,8 +7,48 @@ import { ToolInvocation } from './tool-invocation';
 interface MessageBubbleProps {
   message: UIMessage;
   headers: Record<string, string> | undefined;
+  hasSiblings?: boolean;
+  siblingCount?: number;
+  selectedIndex?: number;
+  onSelectSibling?: (index: number) => void;
   onRegenerate?: () => void;
   onEdit?: (newText: string) => void;
+  onToolApprove?: (approvalId: string) => void;
+  onToolDeny?: (approvalId: string) => void;
+}
+
+function BranchNavigator({
+  current,
+  total,
+  onSelect,
+}: {
+  current: number;
+  total: number;
+  onSelect: (index: number) => void;
+}) {
+  return (
+    <div className="inline-flex items-center gap-1 rounded bg-zinc-800/60 px-1.5 py-0.5">
+      <button
+        onClick={() => onSelect(current - 1)}
+        disabled={current === 0}
+        className="text-[11px] text-zinc-400 hover:text-zinc-200 disabled:text-zinc-700 disabled:cursor-not-allowed transition-colors px-0.5"
+        title="Previous branch"
+      >
+        &lt;
+      </button>
+      <span className="text-[10px] text-zinc-500 tabular-nums min-w-[2.5rem] text-center">
+        {current + 1} / {total}
+      </span>
+      <button
+        onClick={() => onSelect(current + 1)}
+        disabled={current >= total - 1}
+        className="text-[11px] text-zinc-400 hover:text-zinc-200 disabled:text-zinc-700 disabled:cursor-not-allowed transition-colors px-0.5"
+        title="Next branch"
+      >
+        &gt;
+      </button>
+    </div>
+  );
 }
 
 function Badge({ label, value, color }: { label: string; value: string; color: string }) {
@@ -120,7 +160,18 @@ function EditForm({
   );
 }
 
-export function MessageBubble({ message, headers, onRegenerate, onEdit }: MessageBubbleProps) {
+export function MessageBubble({
+  message,
+  headers,
+  hasSiblings,
+  siblingCount,
+  selectedIndex,
+  onSelectSibling,
+  onRegenerate,
+  onEdit,
+  onToolApprove,
+  onToolDeny,
+}: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const [isEditing, setIsEditing] = useState(false);
 
@@ -148,13 +199,20 @@ export function MessageBubble({ message, headers, onRegenerate, onEdit }: Messag
             <div className={bubbleClasses(isUser, status)}>
               {message.parts.map((part, i) => {
                 if (part.type === 'text') return <span key={i}>{part.text}</span>;
-                if (part.type === 'dynamic-tool')
+                if (part.type === 'dynamic-tool') {
+                  const toolPart = part as DynamicToolUIPart;
+                  // eslint-disable-next-line @typescript-eslint/no-empty-function -- no-op fallback when no approval handler
+                  const noop = (): void => {};
+                  const approvalId = toolPart.approval?.id;
                   return (
                     <ToolInvocation
                       key={i}
-                      part={part as DynamicToolUIPart}
+                      part={toolPart}
+                      onApprove={onToolApprove && approvalId ? () => onToolApprove(approvalId) : noop}
+                      onDeny={onToolDeny && approvalId ? () => onToolDeny(approvalId) : noop}
                     />
                   );
+                }
                 return null;
               })}
               {!isUser && status === 'streaming' && (
@@ -162,6 +220,15 @@ export function MessageBubble({ message, headers, onRegenerate, onEdit }: Messag
               )}
             </div>
             <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+              {/* Branch navigator (when the message has siblings) */}
+              {hasSiblings && siblingCount !== undefined && selectedIndex !== undefined && onSelectSibling && (
+                <BranchNavigator
+                  current={selectedIndex}
+                  total={siblingCount}
+                  onSelect={onSelectSibling}
+                />
+              )}
+
               {/* Edit button (user messages) */}
               {onEdit && status !== 'streaming' && (
                 <button

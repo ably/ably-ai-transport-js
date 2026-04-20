@@ -6,16 +6,36 @@ import type { MessageNode } from '@ably/ai-transport';
 import { MessageBubble } from './message-bubble';
 import { IntroCard } from './intro-card';
 
+interface SiblingApi {
+  hasSiblings: (msgId: string) => boolean;
+  getSiblings: (msgId: string) => UIMessage[];
+  getSelectedIndex: (msgId: string) => number;
+  select: (msgId: string, index: number) => void;
+}
+
 interface MessageListProps {
   nodes: MessageNode<UIMessage>[];
   hasOlder: boolean;
   loading: boolean;
+  siblings: SiblingApi;
   onLoadOlder: () => void;
   onRegenerate: (messageId: string) => void;
   onEdit: (messageId: string, newText: string) => void;
+  onToolApprove?: (approvalId: string) => void;
+  onToolDeny?: (approvalId: string) => void;
 }
 
-export function MessageList({ nodes, hasOlder, loading, onLoadOlder, onRegenerate, onEdit }: MessageListProps) {
+export function MessageList({
+  nodes,
+  hasOlder,
+  loading,
+  siblings,
+  onLoadOlder,
+  onRegenerate,
+  onEdit,
+  onToolApprove,
+  onToolDeny,
+}: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const prevLastIdRef = useRef<string | undefined>(undefined);
@@ -55,15 +75,25 @@ export function MessageList({ nodes, hasOlder, loading, onLoadOlder, onRegenerat
         </div>
       )}
       {loading && <div className="text-center text-xs text-zinc-600 animate-pulse">Loading history...</div>}
-      {nodes.map(({ message, headers }) => (
-        <MessageBubble
-          key={message.id}
-          message={message}
-          headers={headers}
-          onRegenerate={message.role === 'assistant' ? () => onRegenerate(message.id) : undefined}
-          onEdit={message.role === 'user' ? (text) => onEdit(message.id, text) : undefined}
-        />
-      ))}
+      {nodes.map((node) => {
+        const { message, headers, msgId } = node;
+        const hasSiblings = siblings.hasSiblings(msgId);
+        return (
+          <MessageBubble
+            key={message.id}
+            message={message}
+            headers={headers}
+            hasSiblings={hasSiblings}
+            siblingCount={hasSiblings ? siblings.getSiblings(msgId).length : undefined}
+            selectedIndex={hasSiblings ? siblings.getSelectedIndex(msgId) : undefined}
+            onSelectSibling={hasSiblings ? (index) => siblings.select(msgId, index) : undefined}
+            onRegenerate={message.role === 'assistant' ? () => onRegenerate(message.id) : undefined}
+            onEdit={message.role === 'user' ? (text) => onEdit(message.id, text) : undefined}
+            onToolApprove={onToolApprove}
+            onToolDeny={onToolDeny}
+          />
+        );
+      })}
       <div ref={endRef} />
     </div>
   );

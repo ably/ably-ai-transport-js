@@ -243,6 +243,33 @@ const simulateServerTurn = (turn: MockTurn): void => {
   turn.close();
 };
 
+/**
+ * Enqueue a chunk sequence that leaves the tool in `approval-requested` state:
+ * start -> start-step -> tool-input-start -> tool-input-delta -> tool-input-available -> tool-approval-request -> finish -> close
+ * @param turn - The mock turn to enqueue chunks into.
+ */
+const simulateApprovalRequestTurn = (turn: MockTurn): void => {
+  turn.enqueue({ type: 'start', messageId: 'assistant-1' });
+  turn.enqueue({ type: 'start-step' });
+  turn.enqueue({
+    type: 'tool-input-start',
+    toolCallId: 'tool-1',
+    toolName: 'get_weather',
+    dynamic: true,
+  });
+  turn.enqueue({ type: 'tool-input-delta', toolCallId: 'tool-1', inputTextDelta: '{"city":"London"}' });
+  turn.enqueue({
+    type: 'tool-input-available',
+    toolCallId: 'tool-1',
+    toolName: 'get_weather',
+    input: { city: 'London' },
+    dynamic: true,
+  });
+  turn.enqueue({ type: 'tool-approval-request', approvalId: 'approval-1', toolCallId: 'tool-1' });
+  turn.enqueue({ type: 'finish', finishReason: 'tool-calls' });
+  turn.close();
+};
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -377,6 +404,192 @@ describe('ChatTransport useChat integration — features work with the real stre
 
       // sendAutomaticallyWhen is called after the stream closes.
       expect(sendAutomaticallyWhen).toHaveBeenCalled();
+    });
+
+    it('triggers automatic resubmission when it returns true', async () => {
+      const { transport, send, turnA, turnB } = createMultiTurnMockTransport();
+      const chatTransport = createChatTransport(transport);
+
+      // Returns true only on the first call so the resubmit loop does not run indefinitely.
+      const sendAutomaticallyWhen = vi.fn().mockReturnValueOnce(true);
+
+      const chat = new TestChat({
+        transport: chatTransport,
+        generateId: () => 'generated-id',
+        sendAutomaticallyWhen,
+      });
+
+      // sendMessage only resolves after both the original and auto-resubmit turns complete,
+      // so we must feed both turns before awaiting the promise.
+      const sendPromise = chat.sendMessage({ text: 'Call a tool' });
+      simulateServerTurn(turnA);
+
+      // Wait for shouldSendAutomatically() to resolve and makeRequest to fire the second send.
+      await vi.waitFor(() => {
+        expect(send).toHaveBeenCalledTimes(2);
+      });
+      expect(sendAutomaticallyWhen).toHaveBeenCalledOnce();
+
+      // Feed the second turn so sendPromise can resolve.
+      enqueueTextResponse(turnB, 'assistant-2', 'text-2', ['Auto-resubmit response.']);
+      await sendPromise;
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // addToolOutput
+  // -------------------------------------------------------------------------
+
+  describe('addToolOutput', () => {
+    it('calls sendAutomaticallyWhen after tool output is added', async () => {
+      const { transport, mockTurn } = createMockTransport();
+      const chatTransport = createChatTransport(transport);
+
+      const sendAutomaticallyWhen = vi.fn(() => false);
+
+      const chat = new TestChat({
+        transport: chatTransport,
+        generateId: () => 'generated-id',
+        sendAutomaticallyWhen,
+      });
+
+      const sendPromise = chat.sendMessage({ text: 'Call a tool' });
+      simulateServerTurn(mockTurn); // produces tool-1 in input-available state
+      await sendPromise;
+
+      sendAutomaticallyWhen.mockClear();
+
+      await chat.addToolOutput({ tool: 'get_weather', toolCallId: 'tool-1', output: { temperature: 22 } });
+
+      expect(sendAutomaticallyWhen).toHaveBeenCalled();
+    });
+
+    it('triggers automatic resubmission when sendAutomaticallyWhen returns true', async () => {
+      const { transport, send, turnA, turnB } = createMultiTurnMockTransport();
+      const chatTransport = createChatTransport(transport);
+
+      // Returns false after the initial stream close so only addToolOutput triggers resubmission.
+      const sendAutomaticallyWhen = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true);
+
+      const chat = new TestChat({
+        transport: chatTransport,
+        generateId: () => 'generated-id',
+        sendAutomaticallyWhen,
+      });
+
+      const sendPromise = chat.sendMessage({ text: 'Call a tool' });
+      simulateServerTurn(turnA);
+      await sendPromise;
+
+      expect(send).toHaveBeenCalledTimes(1);
+
+      await chat.addToolOutput({ tool: 'get_weather', toolCallId: 'tool-1', output: { temperature: 22 } });
+
+      // addToolOutput triggered sendAutomaticallyWhen → true → makeRequest → second send.
+      await vi.waitFor(() => {
+        expect(send).toHaveBeenCalledTimes(2);
+      });
+
+      enqueueTextResponse(turnB, 'assistant-2', 'text-2', ['The weather is 22°C.']);
+    });
+
+    it('does not resubmit when sendAutomaticallyWhen returns false', async () => {
+      const { transport, send, mockTurn } = createMockTransport();
+      const chatTransport = createChatTransport(transport);
+
+      const sendAutomaticallyWhen = vi.fn(() => false);
+
+      const chat = new TestChat({
+        transport: chatTransport,
+        generateId: () => 'generated-id',
+        sendAutomaticallyWhen,
+      });
+
+      const sendPromise = chat.sendMessage({ text: 'Call a tool' });
+      simulateServerTurn(mockTurn);
+      await sendPromise;
+
+      await chat.addToolOutput({ tool: 'get_weather', toolCallId: 'tool-1', output: { temperature: 22 } });
+
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // addToolApprovalResponse
+  // -------------------------------------------------------------------------
+
+  describe('addToolApprovalResponse', () => {
+    it('calls sendAutomaticallyWhen after approval response is added', async () => {
+      const { transport, mockTurn } = createMockTransport();
+      const chatTransport = createChatTransport(transport);
+
+      const sendAutomaticallyWhen = vi.fn(() => false);
+
+      const chat = new TestChat({
+        transport: chatTransport,
+        generateId: () => 'generated-id',
+        sendAutomaticallyWhen,
+      });
+
+      const sendPromise = chat.sendMessage({ text: 'Approve the tool' });
+      simulateApprovalRequestTurn(mockTurn);
+      await sendPromise;
+
+      sendAutomaticallyWhen.mockClear();
+
+      await chat.addToolApprovalResponse({ id: 'approval-1', approved: true });
+
+      expect(sendAutomaticallyWhen).toHaveBeenCalled();
+    });
+
+    it('triggers automatic resubmission when sendAutomaticallyWhen returns true', async () => {
+      const { transport, send, turnA, turnB } = createMultiTurnMockTransport();
+      const chatTransport = createChatTransport(transport);
+
+      const sendAutomaticallyWhen = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true);
+
+      const chat = new TestChat({
+        transport: chatTransport,
+        generateId: () => 'generated-id',
+        sendAutomaticallyWhen,
+      });
+
+      const sendPromise = chat.sendMessage({ text: 'Approve the tool' });
+      simulateApprovalRequestTurn(turnA);
+      await sendPromise;
+
+      expect(send).toHaveBeenCalledTimes(1);
+
+      await chat.addToolApprovalResponse({ id: 'approval-1', approved: true });
+
+      // addToolApprovalResponse triggered sendAutomaticallyWhen → true → makeRequest → second send.
+      await vi.waitFor(() => {
+        expect(send).toHaveBeenCalledTimes(2);
+      });
+
+      enqueueTextResponse(turnB, 'assistant-2', 'text-2', ['Tool approved and executed.']);
+    });
+
+    it('does not resubmit when sendAutomaticallyWhen returns false', async () => {
+      const { transport, send, mockTurn } = createMockTransport();
+      const chatTransport = createChatTransport(transport);
+
+      const sendAutomaticallyWhen = vi.fn(() => false);
+
+      const chat = new TestChat({
+        transport: chatTransport,
+        generateId: () => 'generated-id',
+        sendAutomaticallyWhen,
+      });
+
+      const sendPromise = chat.sendMessage({ text: 'Deny the tool' });
+      simulateApprovalRequestTurn(mockTurn);
+      await sendPromise;
+
+      await chat.addToolApprovalResponse({ id: 'approval-1', approved: false, reason: 'Not authorized' });
+
+      expect(send).toHaveBeenCalledTimes(1);
     });
   });
 

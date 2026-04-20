@@ -79,19 +79,25 @@ Key behaviors:
 - A throwing `onCancel` handler doesn't prevent other matched turns from being cancelled - each is isolated.
 - Cancel resolution uses the sender's `clientId` from the Ably message for `own` filter matching.
 
+## Channel continuity
+
+The server transport monitors the channel for continuity loss after the initial attach. Continuity is lost when the channel enters FAILED, SUSPENDED, or DETACHED, or re-attaches with `resumed: false`. On loss, the transport invokes the transport-level `onError` callback with `ChannelContinuityLost` (104006).
+
+Unlike the [client transport's handling](client-transport.md#stream-delivery-guarantee), the server does not abort in-flight turns or fan out to per-turn `onError`. The server only consumes cancel messages from the channel, so losing one is survivable; the signal is observability so developers can choose whether to terminate in-flight work themselves (e.g. by aborting their external signals). Per-turn `onError` remains scoped to that turn's own operations.
+
 ## Close
 
-`close()` unsubscribes from cancel messages, aborts all active turns (via their AbortControllers), and clears the registration map. After close, existing Turn objects can still call `end()` (to publish turn-end) but new turns cannot be created.
+`close()` unsubscribes from cancel messages, stops listening for channel state changes, aborts all active turns (via their AbortControllers), and clears the registration map. It is idempotent. After close, existing Turn objects can still call `end()` (to publish turn-end) but new turns cannot be created.
 
 ## Error handling
 
 Errors fall into two categories:
 
-| Scope           | Delivery                       | Examples                                          |
-| --------------- | ------------------------------ | ------------------------------------------------- |
-| Transport-level | `options.onError` callback     | Cancel subscription failure, channel attach error |
-| Turn-level      | `turnOptions.onError` callback | Turn-start publish failure, stream encoding error |
+| Scope           | Delivery                       | Examples                                                                                           |
+| --------------- | ------------------------------ | -------------------------------------------------------------------------------------------------- |
+| Transport-level | `options.onError` callback     | Cancel subscription failure, channel attach error, channel continuity loss (FAILED/SUSPENDED/etc.) |
+| Turn-level      | `turnOptions.onError` callback | Turn-start publish failure, stream encoding error                                                  |
 
-Turn-level errors fall back to the transport-level `onError` if no per-turn handler is provided.
+Turn-level errors fall back to the transport-level `onError` if no per-turn handler is provided. Channel-wide events (e.g. continuity loss) always go to the transport-level `onError` and are not replicated to per-turn handlers.
 
 See [Transport components](transport-components.md) for the TurnManager, pipeStream, and cancel routing internals. See [Client transport](client-transport.md) for the client-side counterpart. See [Wire protocol](wire-protocol.md) for the header and event specification.

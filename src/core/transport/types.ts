@@ -59,7 +59,9 @@ export interface ServerTransportOptions<TEvent, TMessage> {
   logger?: Logger;
   /**
    * Called with non-fatal transport-level errors not scoped to any turn.
-   * Examples: cancel listener subscription failure, channel attach errors.
+   * Examples: cancel listener subscription failure, channel attach errors,
+   * channel continuity loss (FAILED/SUSPENDED/DETACHED or re-attach with
+   * `resumed: false`).
    */
   onError?: (error: Ably.ErrorInfo) => void;
 }
@@ -176,6 +178,9 @@ export interface NewTurnOptions<TEvent> {
    * site. Turn errors never render the transport unusable, but the turn
    * may be in an inconsistent state; the caller should typically `end` it
    * with reason `'error'`.
+   *
+   * Channel-wide events (e.g. continuity loss) are delivered via the
+   * transport-level `onError` on {@link ServerTransportOptions}, not here.
    */
   onError?: (error: Ably.ErrorInfo) => void;
 

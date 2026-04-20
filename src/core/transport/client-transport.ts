@@ -845,6 +845,21 @@ class DefaultClientTransport<TEvent, TMessage> implements ClientTransport<TEvent
     this._pendingLocalEvents.push(node);
   }
 
+  stageMessage(msgId: string, message: TMessage): void {
+    this._logger.trace('ClientTransport.stageMessage();', { msgId });
+    if (this._state === ClientTransportState.CLOSED) {
+      this._logger.warn('ClientTransport.stageMessage(); transport is closed', { msgId });
+      return;
+    }
+    const existing = this._tree.getNode(msgId);
+    if (!existing) {
+      this._logger.warn('ClientTransport.stageMessage(); msgId not found in tree', { msgId });
+      return;
+    }
+    // Preserve structural metadata; only the message body changes.
+    this._tree.upsert(msgId, message, existing.headers, existing.serial);
+  }
+
   // Apply events to the tree using the codec's accumulator. Shared by
   // stageEvents (local staging) and _internalSend (external eventNodes
   // arriving via view.update).

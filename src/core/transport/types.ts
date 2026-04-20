@@ -620,6 +620,30 @@ export interface ClientTransport<TEvent, TMessage> {
   stageEvents(msgId: string, events: TEvent[]): void;
 
   /**
+   * Replace the tree's copy of an existing message with a caller-provided
+   * version, preserving headers and serial.
+   *
+   * Use for useChat-style state transitions the codec can't express as
+   * chunks — the canonical example is `addToolApprovalResponse`, which
+   * sets `state: 'approval-responded'` on a `dynamic-tool` part directly
+   * on the UIMessage and has no corresponding chunk variant.
+   *
+   * Unlike {@link stageEvents}, staged messages are NOT queued for the
+   * next send: the tree is authoritative for the POST body's history,
+   * so updating it is sufficient.
+   *
+   * Runs synchronously. Subsequent tree observers (e.g. useMessageSync)
+   * see the patched state on the next tick, so an interleaved
+   * observer-turn sync can't clobber it back.
+   *
+   * If `msgId` is not present in the tree, the call is a no-op and a
+   * warning is logged.
+   * @param msgId - The x-ably-msg-id of the existing message to replace.
+   * @param message - The patched message to store.
+   */
+  stageMessage(msgId: string, message: TMessage): void;
+
+  /**
    * Returns a promise that resolves when all active turns matching the filter
    * have completed. Resolves immediately if no matching turns are active.
    * Defaults to `{ own: true }`.

@@ -25,6 +25,17 @@ const STEPS: DemoStep[] = [
       'The assistant calls getLocation in your browser (you will see a permission prompt), then feeds the coords into getWeather.',
   },
   {
+    title: 'Approval-required tool call',
+    action: (
+      <>
+        Ask: <span className="font-medium text-zinc-100">&ldquo;what&rsquo;s the weather forecast for London?&rdquo;</span>, then
+        click <span className="font-medium text-zinc-100">Approve</span> on the card.
+      </>
+    ),
+    demonstrates:
+      'getWeatherForecast is gated behind addToolApprovalResponse. The assistant pauses with an Approve / Deny card; the tool only runs after you approve, and the result lands on the original message.',
+  },
+  {
     title: 'Multi-client sync',
     action: (
       <>

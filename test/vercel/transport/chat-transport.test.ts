@@ -22,6 +22,12 @@ const makeMessage = (id: string, role: AI.UIMessage['role'] = 'user'): AI.UIMess
   parts: [],
 });
 
+const makeAssistantWithToolPart = (id: string, part: AI.DynamicToolUIPart): AI.UIMessage => ({
+  id,
+  role: 'assistant',
+  parts: [{ type: 'text', text: 'intro' }, part],
+});
+
 interface MockTurn {
   stream: ReadableStream<AI.UIMessageChunk>;
   turnId: string;
@@ -705,6 +711,230 @@ describe('createChatTransport', () => {
       // occurred before wrapStreamWithDone was called
       expect(chat.streaming).toBe(false);
       expect(log).toEqual([]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Fork-on-unresolved-tool
+  // -------------------------------------------------------------------------
+
+  describe('sendMessages — fork on unresolved tool call', () => {
+    it('forks off the preceding assistant when it has approval-requested', async () => {
+      const { transport, send, view, mockTurn } = createMockTransport();
+
+      const user1 = makeMessage('u1');
+      const assistant = makeAssistantWithToolPart('a1', {
+        type: 'dynamic-tool',
+        toolName: 'getWeatherForecast',
+        toolCallId: 'tc1',
+        state: 'approval-requested',
+        input: { location: 'London' },
+        approval: { id: 'ap-1' },
+      });
+      const user2 = makeMessage('u2');
+
+      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
+        { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+        { message: assistant, msgId: 'wire-a1', parentId: 'wire-u1', forkOf: undefined, headers: {}, serial: undefined },
+      ]);
+
+      const chat = createChatTransport(transport);
+      const streamPromise = chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: [user1, assistant, user2],
+        abortSignal: undefined,
+      });
+      mockTurn.close();
+      await streamPromise;
+
+      const [msgs, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
+      expect(msgs).toEqual([user2]);
+      expect(opts.forkOf).toBe('wire-a1');
+      expect(opts.parent).toBe('wire-u1');
+      // History excludes the unresolved assistant — `[user1]` only.
+      // eslint-disable-next-line @typescript-eslint/non-nullable-type-assertion-style -- prefer `as` over `!` per TYPES.md
+      const body = opts.body as Record<string, unknown>;
+      const bodyHistory = body.history as { message: AI.UIMessage }[];
+      expect(bodyHistory).toHaveLength(1);
+      expect(bodyHistory[0]?.message).toEqual(user1);
+    });
+
+    it('forks when the preceding assistant has input-available (client tool pending)', async () => {
+      const { transport, send, view, mockTurn } = createMockTransport();
+
+      const user1 = makeMessage('u1');
+      const assistant = makeAssistantWithToolPart('a1', {
+        type: 'dynamic-tool',
+        toolName: 'getLocation',
+        toolCallId: 'tc1',
+        state: 'input-available',
+        input: { highAccuracy: false },
+      });
+      const user2 = makeMessage('u2');
+
+      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
+        { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+        { message: assistant, msgId: 'wire-a1', parentId: 'wire-u1', forkOf: undefined, headers: {}, serial: undefined },
+      ]);
+
+      const chat = createChatTransport(transport);
+      const streamPromise = chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: [user1, assistant, user2],
+        abortSignal: undefined,
+      });
+      mockTurn.close();
+      await streamPromise;
+
+      const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
+      expect(opts.forkOf).toBe('wire-a1');
+      expect(opts.parent).toBe('wire-u1');
+    });
+
+    it('forks when the preceding assistant has input-streaming', async () => {
+      const { transport, send, view, mockTurn } = createMockTransport();
+
+      const user1 = makeMessage('u1');
+      const assistant = makeAssistantWithToolPart('a1', {
+        type: 'dynamic-tool',
+        toolName: 'tX',
+        toolCallId: 'tc1',
+        state: 'input-streaming',
+        input: undefined,
+      });
+      const user2 = makeMessage('u2');
+
+      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
+        { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+        { message: assistant, msgId: 'wire-a1', parentId: 'wire-u1', forkOf: undefined, headers: {}, serial: undefined },
+      ]);
+
+      const chat = createChatTransport(transport);
+      const streamPromise = chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: [user1, assistant, user2],
+        abortSignal: undefined,
+      });
+      mockTurn.close();
+      await streamPromise;
+
+      const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
+      expect(opts.forkOf).toBe('wire-a1');
+      expect(opts.parent).toBe('wire-u1');
+    });
+
+    it('does NOT fork when the preceding assistant has output-available (resolved)', async () => {
+      const { transport, send, view, mockTurn } = createMockTransport();
+
+      const user1 = makeMessage('u1');
+      const assistant = makeAssistantWithToolPart('a1', {
+        type: 'dynamic-tool',
+        toolName: 'getWeather',
+        toolCallId: 'tc1',
+        state: 'output-available',
+        input: { location: 'London' },
+        output: { conditions: 'Sunny' },
+      });
+      const user2 = makeMessage('u2');
+
+      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
+        { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+        { message: assistant, msgId: 'wire-a1', parentId: 'wire-u1', forkOf: undefined, headers: {}, serial: undefined },
+      ]);
+
+      const chat = createChatTransport(transport);
+      const streamPromise = chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: [user1, assistant, user2],
+        abortSignal: undefined,
+      });
+      mockTurn.close();
+      await streamPromise;
+
+      const [msgs, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
+      expect(msgs).toEqual([user2]);
+      expect(opts.forkOf).toBeUndefined();
+      expect(opts.parent).toBeUndefined();
+    });
+
+    it('does NOT fork when the preceding assistant has approval-responded', async () => {
+      const { transport, send, view, mockTurn } = createMockTransport();
+
+      const user1 = makeMessage('u1');
+      const assistant = makeAssistantWithToolPart('a1', {
+        type: 'dynamic-tool',
+        toolName: 'getWeatherForecast',
+        toolCallId: 'tc1',
+        state: 'approval-responded',
+        input: { location: 'London' },
+        approval: { id: 'ap-1', approved: true },
+      });
+      const user2 = makeMessage('u2');
+
+      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
+        { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+        { message: assistant, msgId: 'wire-a1', parentId: 'wire-u1', forkOf: undefined, headers: {}, serial: undefined },
+      ]);
+
+      const chat = createChatTransport(transport);
+      const streamPromise = chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: [user1, assistant, user2],
+        abortSignal: undefined,
+      });
+      mockTurn.close();
+      await streamPromise;
+
+      const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
+      expect(opts.forkOf).toBeUndefined();
+      expect(opts.parent).toBeUndefined();
+    });
+
+    it('does NOT fork in edit mode (messageId takes priority over preceding unresolved tool)', async () => {
+      const { transport, send, view, mockTurn } = createMockTransport();
+
+      const user1 = makeMessage('u1');
+      const assistant = makeAssistantWithToolPart('a1', {
+        type: 'dynamic-tool',
+        toolName: 'getWeatherForecast',
+        toolCallId: 'tc1',
+        state: 'approval-requested',
+        input: {},
+        approval: { id: 'ap-1' },
+      });
+      const edited = makeMessage('u2');
+
+      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
+        { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+        { message: assistant, msgId: 'wire-a1', parentId: 'wire-u1', forkOf: undefined, headers: {}, serial: undefined },
+        { message: edited, msgId: 'wire-u2', parentId: 'wire-a1', forkOf: undefined, headers: {}, serial: undefined },
+      ]);
+
+      const chat = createChatTransport(transport);
+      const streamPromise = chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: 'u2',
+        messages: [user1, assistant, edited],
+        abortSignal: undefined,
+      });
+      mockTurn.close();
+      await streamPromise;
+
+      const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
+      // Edit path forks off the edited message, not the assistant.
+      expect(opts.forkOf).toBe('wire-u2');
+      expect(opts.parent).toBe('wire-a1');
     });
   });
 });

@@ -181,6 +181,30 @@ const wrapStreamWithDone = <T>(source: ReadableStream<T>): { stream: ReadableStr
 };
 
 // ---------------------------------------------------------------------------
+// Unresolved tool call detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether an assistant message has a `dynamic-tool` part that can't resolve
+ * without further user action. Matches:
+ * - `input-streaming` / `input-available` — tool call emitted, not yet run.
+ * - `approval-requested` — waiting for the user.
+ *
+ * Excludes `approval-responded` (streamText will run the tool this turn)
+ * and all terminal `output-*` states.
+ * @param msg - The UIMessage to inspect.
+ * @returns True when a fork-on-send is warranted to avoid shipping a
+ *   dangling tool call to the LLM.
+ */
+const hasUnresolvedToolCall = (msg: AI.UIMessage): boolean =>
+  msg.role === 'assistant' &&
+  msg.parts.some(
+    (p) =>
+      p.type === 'dynamic-tool' &&
+      (p.state === 'input-streaming' || p.state === 'input-available' || p.state === 'approval-requested'),
+  );
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -249,6 +273,21 @@ export const createChatTransport = (
     const lastMessageNode = lastMessage ? allNodes.find((n) => n.message.id === lastMessage.id) : undefined;
     const isContinuation = trigger === 'submit-message' && lastMessage?.role === 'assistant' && !!lastMessageNode;
 
+    // Fork-on-unresolved-tool: user sent a new message while the preceding
+    // assistant has an unresolved tool call (approval-requested, input-*).
+    // Fork the new message off the preceding assistant so the unresolved
+    // tool call stays dormant on a sibling branch. Inference this turn runs
+    // on the clean fork — the LLM never sees the dangling tool_use.
+    //
+    // Only applies to fresh user-message submits (not continuations, not
+    // regenerates, not edits-with-messageId).
+    const precedingMessage =
+      trigger === 'submit-message' && !messageId && lastMessage?.role === 'user' ? messages.at(-2) : undefined;
+    const forkSource =
+      precedingMessage && hasUnresolvedToolCall(precedingMessage)
+        ? allNodes.find((n) => n.message.id === precedingMessage.id)
+        : undefined;
+
     // Determine the history/messages split based on mode.
     let newMessages: AI.UIMessage[];
     let history: AI.UIMessage[];
@@ -267,7 +306,10 @@ export const createChatTransport = (
       // CAST: length check above guarantees at least one element; .at(-1) cannot be undefined.
       // eslint-disable-next-line @typescript-eslint/non-nullable-type-assertion-style -- prefer `as` over `!` per TYPES.md
       newMessages = [messages.at(-1) as AI.UIMessage];
-      history = messages.slice(0, -1);
+      // When forking off an unresolved tool call, drop the unresolved
+      // assistant from history too — it belongs on the sibling branch, not
+      // the ancestor chain of the new message.
+      history = forkSource ? messages.slice(0, -2) : messages.slice(0, -1);
     }
 
     // Compute fork metadata. Only set in regenerate or edit modes — in
@@ -291,6 +333,11 @@ export const createChatTransport = (
       // message correctly in the tree. isContinuation narrows lastMessageNode
       // to defined.
       parent = lastMessageNode.msgId;
+    } else if (forkSource) {
+      // Fork off the preceding assistant — the new user message becomes a
+      // sibling of the unresolved tool call assistant, rooted at its parent.
+      forkOf = forkSource.msgId;
+      parent = forkSource.parentId;
     }
 
     let sendBody: Record<string, unknown>;

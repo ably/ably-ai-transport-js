@@ -4,6 +4,10 @@
  * - getWeather: server-executed, returns mock weather data
  * - getLocation: client-executed, no execute function — the client
  *   runs browser geolocation and sends the result back via view.update()
+ * - getWeatherForecast: server-executed but gated on user approval
+ *   (needsApproval: true). The client sees an approval-requested tool
+ *   part; after addToolApprovalResponse, the server runs execute() and
+ *   the result is stitched back onto the original assistant message.
  */
 
 import type { Tool } from 'ai';
@@ -46,5 +50,28 @@ export const tools: Record<string, Tool> = {
     // No execute — client-side tool. The client runs navigator.geolocation
     // and sends the result via view.update().
     outputSchema: locationOutput,
+  },
+
+  getWeatherForecast: {
+    description:
+      'Get a 5-day weather forecast for a location. Requires user approval before executing. Use when the user asks about upcoming weather or a forecast.',
+    needsApproval: true as const,
+    inputSchema: z.object({
+      location: z.string().describe('The city and state or country, e.g. "London, UK"'),
+    }),
+    execute: async ({ location }: { location: string }) => {
+      await new Promise((r) => setTimeout(r, 500));
+      const conditions = ['Sunny', 'Partly Cloudy', 'Cloudy', 'Rainy', 'Thunderstorms'] as const;
+      const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+      return {
+        location,
+        forecast: days.map((day) => ({
+          day,
+          high: Math.round(55 + Math.random() * 35),
+          low: Math.round(35 + Math.random() * 25),
+          conditions: conditions[Math.floor(Math.random() * conditions.length)],
+        })),
+      };
+    },
   },
 };

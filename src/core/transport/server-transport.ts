@@ -57,8 +57,13 @@ interface RegisteredTurn {
 }
 
 // ---------------------------------------------------------------------------
-// Internal state machine
+// Internal state machines
 // ---------------------------------------------------------------------------
+
+enum ServerTransportState {
+  READY = 'ready',
+  CLOSED = 'closed',
+}
 
 enum TurnState {
   INITIALIZED = 'initialized',
@@ -80,6 +85,10 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
   private readonly _registeredTurns = new Map<string, RegisteredTurn>();
   private readonly _channelListener: (msg: Ably.InboundMessage) => void;
   private readonly _attachPromise: Promise<void>;
+
+  private _state = ServerTransportState.READY;
+  private _hasAttachedOnce: boolean;
+  private readonly _onChannelStateChange: Ably.channelEventCallback;
 
   constructor(options: ServerTransportOptions<TEvent, TMessage>) {
     this._channel = options.channel;
@@ -110,6 +119,19 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
       },
     );
 
+    // Spec: AIT-ST12, AIT-ST12a
+    // Listen for channel state changes that break message continuity. The
+    // server only consumes cancel messages from the channel, so losing one
+    // is survivable — but the developer needs to know so they can decide
+    // whether to abort in-flight work. _hasAttachedOnce is seeded from the
+    // channel's current state so pre-attached channels are handled correctly;
+    // it distinguishes the initial attach from a genuine discontinuity.
+    this._hasAttachedOnce = this._channel.state === 'attached';
+    this._onChannelStateChange = (stateChange: Ably.ChannelStateChange) => {
+      this._handleChannelStateChange(stateChange);
+    };
+    this._channel.on(this._onChannelStateChange);
+
     this._logger?.debug('DefaultServerTransport(); transport created');
   }
 
@@ -125,8 +147,11 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
 
   // Spec: AIT-ST11
   close(): void {
+    if (this._state === ServerTransportState.CLOSED) return;
+    this._state = ServerTransportState.CLOSED;
     this._logger?.trace('DefaultServerTransport.close();');
     this._channel.unsubscribe(EVENT_CANCEL, this._channelListener);
+    this._channel.off(this._onChannelStateChange);
     for (const reg of this._registeredTurns.values()) {
       reg.controller.abort();
     }
@@ -214,6 +239,50 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
         (reg.onError ?? this._onError)?.(errInfo);
       }
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Channel state change handler
+  // -------------------------------------------------------------------------
+
+  // Spec: AIT-ST12, AIT-ST12a
+  private _handleChannelStateChange(stateChange: Ably.ChannelStateChange): void {
+    if (this._state === ServerTransportState.CLOSED) return;
+
+    const { current, resumed } = stateChange;
+
+    // Track the initial attach so we don't treat it as a discontinuity
+    if (current === 'attached' && !this._hasAttachedOnce) {
+      this._hasAttachedOnce = true;
+      return;
+    }
+
+    // Continuity-breaking states:
+    // - FAILED, SUSPENDED, DETACHED: no more messages expected (or gap)
+    // - ATTACHED with resumed: false (UPDATE): messages were lost
+    const continuityLost =
+      current === 'failed' || current === 'suspended' || current === 'detached' || (current === 'attached' && !resumed);
+
+    if (!continuityLost) return;
+
+    this._logger?.error('DefaultServerTransport._handleChannelStateChange(); channel continuity lost', {
+      current,
+      resumed,
+      previous: stateChange.previous,
+    });
+
+    const err = new Ably.ErrorInfo(
+      `unable to deliver cancel messages; channel continuity lost (${current}${current === 'attached' ? ', resumed: false' : ''})`,
+      ErrorCode.ChannelContinuityLost,
+      500,
+      stateChange.reason,
+    );
+
+    // Transport-level notification only: continuity loss is not scoped to any
+    // turn. Per-turn onError handlers are reserved for errors from that turn's
+    // own operations (publish failures, encoder errors). Developers that need
+    // per-turn reaction can iterate active turns from the transport handler.
+    this._onError?.(err);
   }
 
   // -------------------------------------------------------------------------

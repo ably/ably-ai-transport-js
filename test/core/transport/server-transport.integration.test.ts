@@ -10,9 +10,11 @@
  * routing, and stream piping work end-to-end over real Ably infrastructure.
  */
 
+import '../../helper/expectations.js';
+
 import type * as Ably from 'ably';
 import type * as AI from 'ai';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   EVENT_CANCEL,
@@ -28,6 +30,7 @@ import {
 import type { DecoderOutput } from '../../../src/core/codec/types.js';
 import { createServerTransport } from '../../../src/core/transport/server-transport.js';
 import type { ServerTransport } from '../../../src/core/transport/types.js';
+import { ErrorCode } from '../../../src/errors.js';
 import { getHeaders } from '../../../src/utils.js';
 import { UIMessageCodec } from '../../../src/vercel/codec/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
@@ -549,5 +552,42 @@ describe('ServerTransport integration', () => {
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by expect above
     const assistantHeaders = getHeaders(assistantMsg!);
     expect(assistantHeaders[HEADER_PARENT]).toBe(userMsgId);
+  });
+
+  /**
+   * Scenario: Channel continuity loss is surfaced via onError (AIT-ST12).
+   *
+   * The transport is mid-turn when the channel is detached. The developer's
+   * onError callback must be invoked with a ChannelContinuityLost error so
+   * they can decide whether to abort in-flight work.
+   */
+  it('invokes onError with ChannelContinuityLost when the channel detaches', async () => {
+    const channelName = uniqueChannelName('st-continuity');
+    const serverClient = ablyRealtimeClient();
+    const serverChannel = serverClient.channels.get(channelName);
+
+    const errors: Ably.ErrorInfo[] = [];
+
+    transport = createServerTransport({
+      channel: serverChannel,
+      codec: UIMessageCodec,
+      onError: (err) => errors.push(err),
+    });
+
+    const turn = transport.newTurn({ turnId: 'turn-1', clientId: 'user-a' });
+    await turn.start();
+
+    // Channel is ATTACHED after start() — any subsequent transition that
+    // breaks continuity must surface via onError.
+    await serverChannel.detach();
+
+    await vi.waitFor(
+      () => {
+        expect(errors.length).toBeGreaterThan(0);
+      },
+      { timeout: 5_000 },
+    );
+
+    expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.ChannelContinuityLost);
   });
 });

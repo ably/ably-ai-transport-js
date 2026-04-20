@@ -50,14 +50,23 @@ interface MockChannel {
   publish: ReturnType<typeof vi.fn>;
   subscribe: ReturnType<typeof vi.fn>;
   unsubscribe: ReturnType<typeof vi.fn>;
+  on: ReturnType<typeof vi.fn>;
+  off: ReturnType<typeof vi.fn>;
+  state: Ably.ChannelState;
   publishCalls: (Ably.Message | Ably.Message[])[];
   listeners: Map<string, ((msg: Ably.InboundMessage) => void)[]>;
+  stateListeners: Set<Ably.channelEventCallback>;
 }
 
 const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
+  const stateListeners = new Set<Ably.channelEventCallback>();
   const mock: MockChannel = {
     publishCalls: [],
     listeners: new Map(),
+    stateListeners,
+    // Default to 'attached' — most tests don't care about state transitions
+    // and this lets existing publishes work without setup.
+    state: 'attached',
     // eslint-disable-next-line @typescript-eslint/require-await -- mock
     publish: vi.fn(async (msgOrMsgs: Ably.Message | Ably.Message[]) => {
       mock.publishCalls.push(msgOrMsgs);
@@ -76,9 +85,39 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
         arr.filter((l) => l !== listener),
       );
     }),
+    on: vi.fn((callback: Ably.channelEventCallback) => {
+      stateListeners.add(callback);
+    }),
+    off: vi.fn((callback: Ably.channelEventCallback) => {
+      stateListeners.delete(callback);
+    }),
   };
-  // CAST: Tests only use publish/subscribe/unsubscribe — other members are unused.
+  // CAST: Tests only use publish/subscribe/unsubscribe/on/off/state — other members are unused.
   return mock as unknown as MockChannel & Ably.RealtimeChannel;
+};
+
+/**
+ * Simulate a channel state change event.
+ * @param ch - The mock channel with state listeners.
+ * @param stateChange - The state change to emit.
+ */
+const simulateStateChange = (ch: MockChannel, stateChange: Ably.ChannelStateChange): void => {
+  for (const listener of ch.stateListeners) {
+    listener(stateChange);
+  }
+};
+
+/**
+ * Simulate the initial attach so the transport doesn't treat subsequent
+ * state changes as the first attach.
+ * @param ch - The mock channel to simulate initial attach on.
+ */
+const simulateInitialAttach = (ch: MockChannel): void => {
+  simulateStateChange(ch, {
+    current: 'attached',
+    previous: 'attaching',
+    resumed: false,
+  } as Ably.ChannelStateChange);
 };
 
 const mockPublishResult = { serials: ['serial-1'] } as unknown as Ably.PublishResult;
@@ -729,6 +768,191 @@ describe('ServerTransport', () => {
     it('unsubscribes from cancel messages', () => {
       transport.close();
       expect(channel.unsubscribe).toHaveBeenCalledWith(EVENT_CANCEL, expect.any(Function));
+    });
+
+    it('unsubscribes from channel state changes', () => {
+      transport.close();
+      expect(channel.off).toHaveBeenCalledWith(expect.any(Function));
+      expect(channel.stateListeners.size).toBe(0);
+    });
+
+    it('is idempotent', () => {
+      transport.close();
+      transport.close();
+      // Second close() must not attempt teardown again.
+      expect(channel.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(channel.off).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Channel continuity loss (AIT-ST12)
+  // -------------------------------------------------------------------------
+
+  describe('channel continuity', () => {
+    for (const state of ['failed', 'suspended', 'detached'] as const) {
+      it(`emits onError with ChannelContinuityLost when channel enters ${state}`, () => {
+        const onError = vi.fn();
+        const ch = createMockChannel();
+        ch.state = 'initialized';
+        createServerTransport({ channel: ch, codec: createMockCodec(), onError });
+        simulateInitialAttach(ch);
+
+        simulateStateChange(ch, {
+          current: state,
+          previous: 'attached',
+        } as Ably.ChannelStateChange);
+
+        expect(onError).toHaveBeenCalledTimes(1);
+        expect(onError).toHaveBeenCalledWith(
+          expect.toBeErrorInfo({ code: ErrorCode.ChannelContinuityLost, statusCode: 500 }),
+        );
+      });
+    }
+
+    // RTL12: already ATTACHED, receives ATTACHED ProtocolMessage with resumed: false
+    // → channel emits UPDATE (not a state change), previous === current === 'attached'
+    it('emits onError on UPDATE with resumed: false', () => {
+      const onError = vi.fn();
+      const ch = createMockChannel();
+      ch.state = 'initialized';
+      createServerTransport({ channel: ch, codec: createMockCodec(), onError });
+      simulateInitialAttach(ch);
+
+      simulateStateChange(ch, {
+        current: 'attached',
+        previous: 'attached',
+        resumed: false,
+      } as Ably.ChannelStateChange);
+
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError).toHaveBeenCalledWith(expect.toBeErrorInfoWithCode(ErrorCode.ChannelContinuityLost));
+    });
+
+    it('emits onError when re-attaching with resumed: false', () => {
+      const onError = vi.fn();
+      const ch = createMockChannel();
+      ch.state = 'initialized';
+      createServerTransport({ channel: ch, codec: createMockCodec(), onError });
+      simulateInitialAttach(ch);
+
+      // Simulate the channel losing connection and re-attaching without resume.
+      // ATTACHING is not a continuity-breaking state, so only the subsequent
+      // ATTACHED/resumed:false should fire.
+      simulateStateChange(ch, {
+        current: 'attaching',
+        previous: 'attached',
+      } as Ably.ChannelStateChange);
+      expect(onError).not.toHaveBeenCalled();
+
+      simulateStateChange(ch, {
+        current: 'attached',
+        previous: 'attaching',
+        resumed: false,
+      } as Ably.ChannelStateChange);
+
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError).toHaveBeenCalledWith(expect.toBeErrorInfoWithCode(ErrorCode.ChannelContinuityLost));
+    });
+
+    it('does not emit on the initial ATTACHING → ATTACHED transition', () => {
+      const onError = vi.fn();
+      const ch = createMockChannel();
+      ch.state = 'initialized';
+      createServerTransport({ channel: ch, codec: createMockCodec(), onError });
+
+      simulateStateChange(ch, {
+        current: 'attached',
+        previous: 'attaching',
+        resumed: false,
+      } as Ably.ChannelStateChange);
+
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it('does not emit on UPDATE with resumed: true', () => {
+      const onError = vi.fn();
+      const ch = createMockChannel();
+      ch.state = 'initialized';
+      createServerTransport({ channel: ch, codec: createMockCodec(), onError });
+      simulateInitialAttach(ch);
+
+      simulateStateChange(ch, {
+        current: 'attached',
+        previous: 'attached',
+        resumed: true,
+      } as Ably.ChannelStateChange);
+
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it('detects discontinuity on a pre-attached channel without an initial attach event', () => {
+      const onError = vi.fn();
+      const ch = createMockChannel();
+      ch.state = 'attached';
+      createServerTransport({ channel: ch, codec: createMockCodec(), onError });
+
+      // UPDATE with resumed: false — should be treated as a real discontinuity
+      // even though no initial ATTACHING → ATTACHED transition was observed.
+      simulateStateChange(ch, {
+        current: 'attached',
+        previous: 'attached',
+        resumed: false,
+      } as Ably.ChannelStateChange);
+
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError).toHaveBeenCalledWith(expect.toBeErrorInfoWithCode(ErrorCode.ChannelContinuityLost));
+    });
+
+    it('does not propagate channel-wide errors to per-turn onError', async () => {
+      const transportOnError = vi.fn();
+      const turnOnError = vi.fn();
+      const ch = createMockChannel();
+      ch.state = 'initialized';
+      const t = createServerTransport({ channel: ch, codec: createMockCodec(), onError: transportOnError });
+      simulateInitialAttach(ch);
+
+      const turn = t.newTurn({ turnId: 'turn-1', onError: turnOnError });
+      await turn.start();
+
+      simulateStateChange(ch, {
+        current: 'failed',
+        previous: 'attached',
+      } as Ably.ChannelStateChange);
+
+      expect(transportOnError).toHaveBeenCalledTimes(1);
+      expect(turnOnError).not.toHaveBeenCalled();
+    });
+
+    it('does not emit after close()', () => {
+      const onError = vi.fn();
+      const ch = createMockChannel();
+      ch.state = 'initialized';
+      const t = createServerTransport({ channel: ch, codec: createMockCodec(), onError });
+      simulateInitialAttach(ch);
+
+      t.close();
+
+      simulateStateChange(ch, {
+        current: 'failed',
+        previous: 'attached',
+      } as Ably.ChannelStateChange);
+
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it('does not crash when no onError callback is supplied', () => {
+      const ch = createMockChannel();
+      ch.state = 'initialized';
+      createServerTransport({ channel: ch, codec: createMockCodec() });
+      simulateInitialAttach(ch);
+
+      expect(() => {
+        simulateStateChange(ch, {
+          current: 'failed',
+          previous: 'attached',
+        } as Ably.ChannelStateChange);
+      }).not.toThrow();
     });
   });
 });

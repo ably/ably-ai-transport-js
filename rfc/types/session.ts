@@ -53,7 +53,7 @@ export interface ClientSession<TEvent, TMessage> {
   readonly sessionName: string;
 
   /** The unfiltered conversation tree. Available before connect(). */
-  readonly tree: Tree<TMessage, ClientRun<TMessage>>;
+  readonly tree: Tree<TMessage, ClientRun<TEvent, TMessage>>;
 
   /**
    * Create a projected view over the tree. Each view has independent branch

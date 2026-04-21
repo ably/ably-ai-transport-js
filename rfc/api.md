@@ -62,7 +62,7 @@ interface ClientSession<TEvent, TMessage> {
   readonly sessionName: string;
 
   /** The unfiltered conversation tree. Available before connect(). */
-  readonly tree: Tree<TMessage, ClientRun<TMessage>>;
+  readonly tree: Tree<TMessage, ClientRun<TEvent, TMessage>>;
 
   /**
    * Create a projected view over the tree. Each view has independent branch
@@ -153,7 +153,8 @@ interface SessionWriter<TEvent, TMessage> {
    *
    * Message IDs are supplied by the caller on each message (e.g. the Vercel
    * codec uses `UIMessage.id`). The writer does not assign IDs and does not
-   * return them; this matches `run.send()` so the send surface is uniform.
+   * return them; this matches `run.sendMessages()` so the send surface is
+   * uniform.
    */
   sendMessages(options: SendMessagesOptions<TMessage>): Promise<void>;
 
@@ -449,8 +450,8 @@ interface View<TMessage, TRun extends Run<TMessage> = Run<TMessage>> {
    * to a model.
    *
    * Each node's `run` is typed to the session's run variant, so per-message
-   * controls (e.g. `node.run?.abort()`, `node.run?.send(...)`) are directly
-   * callable from the rendered node.
+   * controls (e.g. `node.run?.abort()`, `node.run?.sendMessages(...)`) are
+   * directly callable from the rendered node.
    */
   readonly messages: ReadonlyArray<MessageNode<TMessage, TRun>>;
 
@@ -502,9 +503,9 @@ interface CreateForkOptions {
  * `AgentView` and for forward compatibility with future event-typed
  * client-side operations.
  */
-interface ClientView<TEvent, TMessage> extends View<TMessage, ClientRun<TMessage>> {
+interface ClientView<TEvent, TMessage> extends View<TMessage, ClientRun<TEvent, TMessage>> {
   /** Runs whose messages are visible in this view's projection. */
-  readonly runs: ReadonlyArray<ClientRun<TMessage>>;
+  readonly runs: ReadonlyArray<ClientRun<TEvent, TMessage>>;
 
   /** Whether more history is available to load. */
   readonly hasMore: boolean;
@@ -526,7 +527,7 @@ interface ClientView<TEvent, TMessage> extends View<TMessage, ClientRun<TMessage
    * Create a new run, positioned at the current branch tip. The run is not
    * yet live — call run.start() to publish `x-ably-run-start` to the channel.
    */
-  createRun(): ClientRun<TMessage>;
+  createRun(): ClientRun<TEvent, TMessage>;
 
   /**
    * Create a new run that forks the tree at the given message (regenerate).
@@ -535,7 +536,7 @@ interface ClientView<TEvent, TMessage> extends View<TMessage, ClientRun<TMessage
    * to leave selection untouched. The run is not yet live — call run.start()
    * to publish `x-ably-run-start`.
    */
-  createRegenerate(messageId: string, options?: CreateForkOptions): ClientRun<TMessage>;
+  createRegenerate(messageId: string, options?: CreateForkOptions): ClientRun<TEvent, TMessage>;
 
   /**
    * Create a new run that forks the tree at the given message (edit). The
@@ -544,7 +545,7 @@ interface ClientView<TEvent, TMessage> extends View<TMessage, ClientRun<TMessage
    * selection untouched. The run is not yet live — call run.start() to
    * publish `x-ably-run-start`.
    */
-  createEdit(messageId: string, options?: CreateForkOptions): ClientRun<TMessage>;
+  createEdit(messageId: string, options?: CreateForkOptions): ClientRun<TEvent, TMessage>;
 }
 
 /**
@@ -617,10 +618,11 @@ interface MessageNode<TMessage, TRun extends Run<TMessage> = Run<TMessage>> {
 
   /**
    * The run this message belongs to. Typed to the session's run variant:
-   * `ClientRun<TMessage>` when this node comes from a ClientSession's tree
-   * or view, `AgentRun<TMessage>` when it comes from an AgentSession. So
-   * `node.run?.abort()`, `node.run?.send(...)`, etc. are directly callable
-   * from the rendered node — no need to look up by ID through `view.runs`.
+   * `ClientRun<TEvent, TMessage>` when this node comes from a ClientSession's
+   * tree or view, `AgentRun<TMessage>` when it comes from an AgentSession. So
+   * `node.run?.abort()`, `node.run?.sendMessages(...)`, etc. are directly
+   * callable from the rendered node — no need to look up by ID through
+   * `view.runs`.
    *
    * Undefined only when the node represents a message published before any
    * run was observed (e.g. during mid-hydration).
@@ -649,7 +651,7 @@ The package exports pre-bound aliases for the common run-variant specialisations
 so callers rarely need to spell out the second generic by hand:
 
 ```ts
-type ClientMessageNode<TMessage> = MessageNode<TMessage, ClientRun<TMessage>>;
+type ClientMessageNode<TEvent, TMessage> = MessageNode<TMessage, ClientRun<TEvent, TMessage>>;
 type AgentMessageNode<TMessage> = MessageNode<TMessage, AgentRun<TMessage>>;
 ```
 
@@ -723,10 +725,17 @@ interface Run<TMessage> {
   toInvocation(): Invocation;
 }
 
-/** Run as seen from a ClientSession. Adds lifecycle and control methods. */
-interface ClientRun<TMessage> extends Run<TMessage> {
+/**
+ * Run as seen from a ClientSession. Adds lifecycle and control methods.
+ *
+ * The generic order `<TEvent, TMessage>` matches `ClientView` and
+ * `Codec<TEvent, TMessage>` so per-run publish methods for messages
+ * (`sendMessages`) and for discrete events (`sendEvents`) are typed uniformly
+ * across the send surface.
+ */
+interface ClientRun<TEvent, TMessage> extends Run<TMessage> {
   /** Messages belonging to this run, with node.run typed as ClientRun. */
-  readonly messages: ReadonlyArray<MessageNode<TMessage, ClientRun<TMessage>>>;
+  readonly messages: ReadonlyArray<MessageNode<TMessage, ClientRun<TEvent, TMessage>>>;
 
   // --- Lifecycle ---
 
@@ -743,14 +752,31 @@ interface ClientRun<TMessage> extends Run<TMessage> {
   // --- Content ---
 
   /**
-   * Send a message to this run. The caller owns the message ID — for the
-   * Vercel codec, `UIMessage.id` is required and is reused as the transport-
-   * level `x-ably-msg-id`; no ID is generated by the SDK. The message is
-   * published tagged with this run's ID. Used for the initial user message
-   * (after start) and for mid-run steering. Does not require an agent to be
-   * running — the message is durable.
+   * Publish one or more complete domain messages to this run. Encoded via
+   * the codec's writeMessages path. Use for the initial user message (after
+   * start), mid-run steering, and HITL tool-result re-entry.
+   *
+   * Message IDs are owned by the caller — for the Vercel codec, `UIMessage.id`
+   * is required and is reused as the transport-level `x-ably-msg-id`; no ID
+   * is generated by the SDK. Messages are tagged with this run's ID. Does
+   * not require an agent to be running — the message is durable.
+   *
+   * Accepts a single message or an array, matching `Step.sendMessages` and
+   * `SessionWriter.sendMessages` so the send surface is uniform.
    */
-  send(message: TMessage): Promise<void>;
+  sendMessages(messages: TMessage | TMessage[]): Promise<void>;
+
+  /**
+   * Publish one or more discrete domain events through the codec encoder.
+   * Encoded via the codec's writeEvent path. Use for standalone events like
+   * `data-*` that are not complete messages. Tagged to this run.
+   *
+   * Accepts a single event or an array, matching `Step.sendEvents` and
+   * `SessionWriter.sendEvents`. The run-scoped variant has no step
+   * attribution — events publish against the run itself rather than a step
+   * within it.
+   */
+  sendEvents(events: TEvent | TEvent[]): Promise<void>;
 
   // --- Control signals ---
 
@@ -1237,7 +1263,7 @@ const invokeAgent = async (data: InvocationData): Promise<void> => {
 const onSendClick = async (text: string): Promise<void> => {
   const run = view.createRun();
   await run.start();
-  await run.send({
+  await run.sendMessages({
     id: crypto.randomUUID(),
     role: 'user',
     parts: [{ type: 'text', text }],
@@ -1335,7 +1361,9 @@ const onStopClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>): P
 // Per-message variant — when the UI renders a stop button on a specific
 // response, the handler takes the node the user clicked and aborts THAT
 // node's run directly.
-const onStopNode = async (node: MessageNode<AI.UIMessage, ClientRun<AI.UIMessage>>): Promise<void> => {
+const onStopNode = async (
+  node: MessageNode<AI.UIMessage, ClientRun<AI.UIMessageChunk, AI.UIMessage>>,
+): Promise<void> => {
   if (node.run?.status !== 'active') return;
   const invocation = await node.run.abort();
   void fetch('/api/agent', {
@@ -1450,7 +1478,7 @@ const onSteerClick = async (
 ): Promise<void> => {
   const activeRun = view.runs.find((r) => r.status === 'active');
   if (!activeRun) return;
-  await activeRun.send({
+  await activeRun.sendMessages({
     id: crypto.randomUUID(),
     role: 'user',
     parts: [{ type: 'text', text }],
@@ -1460,11 +1488,11 @@ const onSteerClick = async (
 // Per-message variant — e.g. the UI shows a "reply here" affordance on a
 // specific assistant response. The handler targets THAT node's run.
 const onSteerAtNode = async (
-  node: MessageNode<AI.UIMessage, ClientRun<AI.UIMessage>>,
+  node: MessageNode<AI.UIMessage, ClientRun<AI.UIMessageChunk, AI.UIMessage>>,
   text: string,
 ): Promise<void> => {
   if (node.run?.status !== 'active') return;
-  await node.run.send({
+  await node.run.sendMessages({
     id: crypto.randomUUID(),
     role: 'user',
     parts: [{ type: 'text', text }],
@@ -1535,7 +1563,7 @@ import { pendingToolCalls } from '@ably/ai-transport/vercel';
 import type { ClientRun } from '@ably/ai-transport';
 
 const approveToolCall = async (
-  run: ClientRun<AI.UIMessage>,
+  run: ClientRun<AI.UIMessageChunk, AI.UIMessage>,
   toolCallId: string,
   output: unknown,
 ): Promise<void> => {
@@ -1543,7 +1571,7 @@ const approveToolCall = async (
   const pending = pendingToolCalls(run.messages).find((tc) => tc.toolCallId === toolCallId);
   if (!pending) return;
 
-  await run.send({
+  await run.sendMessages({
     id: crypto.randomUUID(),
     role: 'user',
     parts: [
@@ -1564,7 +1592,7 @@ const approveToolCall = async (
 };
 
 const denyToolCall = async (
-  run: ClientRun<AI.UIMessage>,
+  run: ClientRun<AI.UIMessageChunk, AI.UIMessage>,
   toolCallId: string,
   reason: string,
 ): Promise<void> => {
@@ -1572,7 +1600,7 @@ const denyToolCall = async (
   const pending = pendingToolCalls(run.messages).find((tc) => tc.toolCallId === toolCallId);
   if (!pending) return;
 
-  await run.send({
+  await run.sendMessages({
     id: crypto.randomUUID(),
     role: 'user',
     parts: [
@@ -1712,7 +1740,7 @@ const startFromPhone = async (text: string): Promise<void> => {
   const view = session.createView();
   const run = view.createRun();
   await run.start();
-  await run.send({
+  await run.sendMessages({
     id: crypto.randomUUID(),
     role: 'user',
     parts: [{ type: 'text', text }],
@@ -2132,7 +2160,9 @@ export const POST = async (req: Request): Promise<Response> => {
 
 **View as write-handle factory (composition over configuration)**: The view creates the write handle because it holds the branch context needed to position it. On the client, `view.createRun()` appends to the current branch tip and `view.createRegenerate()` forks at a node (auto-selecting the new branch by default); on the agent, `view.createStep()` produces a step that executes the view's run (multiple steps per view permitted — each publishes its own step-start/step-end pair).
 
-**Low-level verbs are safe without helpers**: `session.writer`, `view.createStep`, `run.start/end/send` cover every worked-example scenario. Only two helpers survived scrutiny — `run.when(statuses)` and control signals returning `Invocation` — because both collapse real multi-step orchestration into one call. Higher-level wrappers like `runStep`, `handleInvocation`, `view.send`, `view.continueRun`, `view.spawnChildRun`, and `view.activeRun` were considered and dropped for partial coverage.
+**Low-level verbs are safe without helpers**: `session.writer`, `view.createStep`, `run.start/sendMessages/sendEvents`, and agent `run.end/suspend` cover every worked-example scenario. Only two helpers survived scrutiny — `run.when(statuses)` and control signals returning `Invocation` — because both collapse real multi-step orchestration into one call. Higher-level wrappers like `runStep`, `handleInvocation`, `view.send`, `view.continueRun`, `view.spawnChildRun`, and `view.activeRun` were considered and dropped for partial coverage.
+
+**Uniform send surface**: Send methods are named identically wherever they appear — `Step.sendMessages` / `Step.sendEvents`, `SessionWriter.sendMessages` / `SessionWriter.sendEvents`, `ClientRun.sendMessages` / `ClientRun.sendEvents`. Each accepts a single value or an array, and each splits messages (codec `writeMessages`) from discrete events (codec `writeEvent`). `view.send*` is deliberately absent — views are read projections; write via `view.createRun()` → `run.sendMessages(...)`.
 
 **Explicit hydration via view.messages**: The agent gets the linear conversation through `view.messages.map(n => n.message)` — the projection is visible at the call site, not hidden behind a convenience property.
 

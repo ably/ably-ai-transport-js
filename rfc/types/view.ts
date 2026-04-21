@@ -40,8 +40,8 @@ export interface View<TMessage, TRun extends Run<TMessage> = Run<TMessage>> {
    * to a model.
    *
    * Each node's `run` is typed to the session's run variant, so per-message
-   * controls (e.g. `node.run?.abort()`, `node.run?.send(...)`) are directly
-   * callable from the rendered node.
+   * controls (e.g. `node.run?.abort()`, `node.run?.sendMessages(...)`) are
+   * directly callable from the rendered node.
    */
   readonly messages: readonly MessageNode<TMessage, TRun>[];
 
@@ -78,9 +78,9 @@ export interface View<TMessage, TRun extends Run<TMessage> = Run<TMessage>> {
  * {@link AgentView} and for forward compatibility with future event-typed
  * client-side operations.
  */
-export interface ClientView<TEvent, TMessage> extends View<TMessage, ClientRun<TMessage>> {
+export interface ClientView<TEvent, TMessage> extends View<TMessage, ClientRun<TEvent, TMessage>> {
   /** Runs whose messages are visible in this view's projection. */
-  readonly runs: readonly ClientRun<TMessage>[];
+  readonly runs: readonly ClientRun<TEvent, TMessage>[];
 
   /** Whether more history is available to load. */
   readonly hasMore: boolean;
@@ -103,7 +103,7 @@ export interface ClientView<TEvent, TMessage> extends View<TMessage, ClientRun<T
    * Create a new run, positioned at the current branch tip. The run is not
    * yet live — call run.start() to publish `x-ably-run-start` to the channel.
    */
-  createRun(): ClientRun<TMessage>;
+  createRun(): ClientRun<TEvent, TMessage>;
 
   /**
    * Create a new run that forks the tree at the given message (regenerate).
@@ -115,7 +115,7 @@ export interface ClientView<TEvent, TMessage> extends View<TMessage, ClientRun<T
    * @param messageId - The message the regenerate should fork from.
    * @param options - Optional fork behaviour; see {@link CreateForkOptions}.
    */
-  createRegenerate(messageId: string, options?: CreateForkOptions): ClientRun<TMessage>;
+  createRegenerate(messageId: string, options?: CreateForkOptions): ClientRun<TEvent, TMessage>;
 
   /**
    * Create a new run that forks the tree at the given message (edit).
@@ -127,7 +127,7 @@ export interface ClientView<TEvent, TMessage> extends View<TMessage, ClientRun<T
    * @param messageId - The message the edit should fork from.
    * @param options - Optional fork behaviour; see {@link CreateForkOptions}.
    */
-  createEdit(messageId: string, options?: CreateForkOptions): ClientRun<TMessage>;
+  createEdit(messageId: string, options?: CreateForkOptions): ClientRun<TEvent, TMessage>;
 }
 
 /**

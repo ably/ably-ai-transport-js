@@ -2,9 +2,9 @@
  * Steering — client side.
  *
  * A user types a follow-up while the previous response is still streaming.
- * `run.send()` publishes the new user message onto the same run — the
- * in-progress work is not cancelled, and the next iteration of the agent
- * loop picks the new input up from the updated view.
+ * `run.sendMessages()` publishes the new user message onto the same run —
+ * the in-progress work is not cancelled, and the next iteration of the
+ * agent loop picks the new input up from the updated view.
  */
 
 import type * as AI from 'ai';
@@ -17,13 +17,10 @@ import type { ClientRun, ClientView, MessageNode } from '../../../index.js';
  * @param text - The text the user typed into the follow-up composer.
  * @returns Resolves once the steering message has been published.
  */
-export const onSteerClick = async (
-  view: ClientView<AI.UIMessageChunk, AI.UIMessage>,
-  text: string,
-): Promise<void> => {
+export const onSteerClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>, text: string): Promise<void> => {
   const activeRun = view.runs.find((r) => r.status === 'active');
   if (!activeRun) return;
-  await activeRun.send({
+  await activeRun.sendMessages({
     id: crypto.randomUUID(),
     role: 'user',
     parts: [{ type: 'text', text }],
@@ -38,11 +35,11 @@ export const onSteerClick = async (
  * @returns Resolves once the steering message has been published.
  */
 export const onSteerAtNode = async (
-  node: MessageNode<AI.UIMessage, ClientRun<AI.UIMessage>>,
+  node: MessageNode<AI.UIMessage, ClientRun<AI.UIMessageChunk, AI.UIMessage>>,
   text: string,
 ): Promise<void> => {
   if (node.run?.status !== 'active') return;
-  await node.run.send({
+  await node.run.sendMessages({
     id: crypto.randomUUID(),
     role: 'user',
     parts: [{ type: 'text', text }],

@@ -32,7 +32,7 @@ declare const pendingToolCalls: (
  *   invocation POST has been dispatched.
  */
 export const approveToolCall = async (
-  run: ClientRun<AI.UIMessage>,
+  run: ClientRun<AI.UIMessageChunk, AI.UIMessage>,
   toolCallId: string,
   output: unknown,
 ): Promise<void> => {
@@ -40,7 +40,7 @@ export const approveToolCall = async (
   const pending = pendingToolCalls(run.messages).find((tc) => tc.toolCallId === toolCallId);
   if (!pending) return;
 
-  await run.send({
+  await run.sendMessages({
     id: crypto.randomUUID(),
     role: 'user',
     parts: [
@@ -70,7 +70,7 @@ export const approveToolCall = async (
  *   invocation POST has been dispatched.
  */
 export const denyToolCall = async (
-  run: ClientRun<AI.UIMessage>,
+  run: ClientRun<AI.UIMessageChunk, AI.UIMessage>,
   toolCallId: string,
   reason: string,
 ): Promise<void> => {
@@ -78,7 +78,7 @@ export const denyToolCall = async (
   const pending = pendingToolCalls(run.messages).find((tc) => tc.toolCallId === toolCallId);
   if (!pending) return;
 
-  await run.send({
+  await run.sendMessages({
     id: crypto.randomUUID(),
     role: 'user',
     parts: [

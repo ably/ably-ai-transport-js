@@ -214,8 +214,8 @@ export interface SessionWriter<TEvent, TMessage> {
    *
    * Message IDs are supplied by the caller on each message (e.g. the
    * Vercel codec uses `UIMessage.id`). The writer does not assign IDs
-   * and does not return them; this matches `run.send()` so the send
-   * surface is uniform.
+   * and does not return them; this matches `run.sendMessages()` so the
+   * send surface is uniform.
    */
   sendMessages(options: SendMessagesOptions<TMessage>): Promise<void>;
 

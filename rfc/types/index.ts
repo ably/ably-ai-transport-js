@@ -13,7 +13,7 @@ export type { InvocationConstructor, InvocationData } from './invocation.js';
 export type { MessageNode } from './message-node.js';
 
 /** Pre-bound {@link MessageNode} variant for {@link ClientRun} sessions. */
-export type ClientMessageNode<TMessage> = MessageNode<TMessage, ClientRun<TMessage>>;
+export type ClientMessageNode<TEvent, TMessage> = MessageNode<TMessage, ClientRun<TEvent, TMessage>>;
 
 /** Pre-bound {@link MessageNode} variant for {@link AgentRun} sessions. */
 export type AgentMessageNode<TMessage> = MessageNode<TMessage, AgentRun<TMessage>>;

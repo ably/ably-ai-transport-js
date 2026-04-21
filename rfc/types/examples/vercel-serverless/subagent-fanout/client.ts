@@ -29,13 +29,10 @@ const invokeParent = async (data: InvocationData): Promise<void> => {
  * @param text - The text the user typed into the composer.
  * @returns Resolves once the invocation has been dispatched.
  */
-export const onSendClick = async (
-  view: ClientView<AI.UIMessageChunk, AI.UIMessage>,
-  text: string,
-): Promise<void> => {
+export const onSendClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>, text: string): Promise<void> => {
   const run = view.createRun();
   await run.start();
-  await run.send({
+  await run.sendMessages({
     id: crypto.randomUUID(),
     role: 'user',
     parts: [{ type: 'text', text }],

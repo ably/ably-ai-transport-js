@@ -38,7 +38,9 @@ export const onStopClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessa
  * @param node - The node the user clicked the stop button on.
  * @returns Resolves once the abort signal has been published, if any.
  */
-export const onStopNode = async (node: MessageNode<AI.UIMessage, ClientRun<AI.UIMessage>>): Promise<void> => {
+export const onStopNode = async (
+  node: MessageNode<AI.UIMessage, ClientRun<AI.UIMessageChunk, AI.UIMessage>>,
+): Promise<void> => {
   if (node.run?.status !== 'active') return;
   const invocation = await node.run.abort();
   void fetch('/api/agent', {

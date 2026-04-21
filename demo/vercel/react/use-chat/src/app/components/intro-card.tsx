@@ -28,8 +28,9 @@ const STEPS: DemoStep[] = [
     title: 'Approval-required tool call',
     action: (
       <>
-        Ask: <span className="font-medium text-zinc-100">&ldquo;what&rsquo;s the weather forecast for London?&rdquo;</span>, then
-        click <span className="font-medium text-zinc-100">Approve</span> on the card.
+        Ask:{' '}
+        <span className="font-medium text-zinc-100">&ldquo;what&rsquo;s the weather forecast for London?&rdquo;</span>,
+        then click <span className="font-medium text-zinc-100">Approve</span> on the card.
       </>
     ),
     demonstrates:
@@ -39,8 +40,8 @@ const STEPS: DemoStep[] = [
     title: 'Multi-client sync',
     action: (
       <>
-        Click <span className="font-medium text-zinc-100">open in new tab</span> in the header, then send a message
-        from either tab.
+        Click <span className="font-medium text-zinc-100">open in new tab</span> in the header, then send a message from
+        either tab.
       </>
     ),
     demonstrates: 'Both tabs share the same Ably channel. Messages, streams, and turn state stay in sync.',
@@ -67,8 +68,8 @@ const STEPS: DemoStep[] = [
     title: 'Cancel mid-stream',
     action: (
       <>
-        Send a long prompt, then click <span className="font-medium text-zinc-100">Stop</span> while the assistant
-        is writing.
+        Send a long prompt, then click <span className="font-medium text-zinc-100">Stop</span> while the assistant is
+        writing.
       </>
     ),
     demonstrates: 'Cancel is published over Ably; the server aborts the stream and the client closes cleanly.',
@@ -80,7 +81,8 @@ const STEPS: DemoStep[] = [
         Open the <span className="font-medium text-zinc-100">Debug pane</span> on the right.
       </>
     ),
-    demonstrates: 'Three tabs: raw Ably messages on the wire, resolved UIMessage state, and transport lifecycle events.',
+    demonstrates:
+      'Three tabs: raw Ably messages on the wire, resolved UIMessage state, and transport lifecycle events.',
   },
 ];
 
@@ -90,8 +92,8 @@ export function IntroCard() {
       <header className="space-y-2">
         <h2 className="text-lg font-semibold text-zinc-100">useChat over Ably</h2>
         <p className="text-sm text-zinc-300">
-          A Vercel AI SDK chat wired to an Ably transport. Each item below exercises a specific feature of the SDK
-          — try them in order to see what it does.
+          A Vercel AI SDK chat wired to an Ably transport. Each item below exercises a specific feature of the SDK — try
+          them in order to see what it does.
         </p>
       </header>
 

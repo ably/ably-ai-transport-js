@@ -59,9 +59,7 @@ const stageApprovalResponseOnTree = (
 ): void => {
   const nodes = transport.view.flattenNodes();
   for (const node of nodes) {
-    const partIndex = node.message.parts.findIndex(
-      (p) => p.type === 'dynamic-tool' && p.approval?.id === opts.id,
-    );
+    const partIndex = node.message.parts.findIndex((p) => p.type === 'dynamic-tool' && p.approval?.id === opts.id);
     if (partIndex === -1) continue;
 
     // CAST: findIndex predicate above narrows this to a dynamic-tool part

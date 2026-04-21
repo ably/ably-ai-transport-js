@@ -56,8 +56,6 @@ export enum ErrorCode {
   InvocationPreconditionTimeout = 104301,
   /** `step.start()` was aborted by a caller-supplied `AbortSignal` before it resolved. */
   StepStartAborted = 104302,
-  /** `view.createStep()` was called twice on the same view; the step is a singleton. */
-  ViewStepAlreadyCreated = 104303,
 
   // --- View / invocation ---
 

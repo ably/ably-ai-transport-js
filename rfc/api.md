@@ -571,14 +571,17 @@ interface AgentView<TEvent, TMessage> extends View<TMessage, AgentRun<TMessage>>
   readonly run: AgentRun<TMessage>;
 
   /**
-   * Create the step that executes this view's run. The step is not yet
+   * Create a step that executes this view's run. The step is not yet
    * active — call step.start() to wait for the invocation's preconditions
    * and publish `x-ably-step-start`. The gap between createStep and start is
    * the setup window for registering signal handlers (e.g. step.on('pause', ...)).
    *
-   * Singleton per view — calling `createStep()` a second time throws an
-   * `Ably.ErrorInfo` with code `ErrorCode.ViewStepAlreadyCreated`. For
-   * multi-step flows, create a fresh view from a fresh session per hop.
+   * Each call returns a fresh {@link Step}; multiple steps per view are
+   * permitted. A run can span multiple steps, each publishing its own
+   * step-start/step-end pair. Precondition-wait is a view-level state, so
+   * in practice only the first step in a view blocks on it — once the view
+   * has materialised the invocation's preconditions, later steps see an
+   * already-satisfied condition and `start()` proceeds immediately.
    */
   createStep(): Step<TEvent, TMessage>;
 }
@@ -833,8 +836,15 @@ interface AgentRun<TMessage> extends Run<TMessage> {
 /** Terminal status for a step. */
 type StepEndStatus = 'complete' | 'failed' | 'aborted' | 'paused' | 'superseded';
 
-/** All possible step statuses including non-terminal states. */
-type StepStatus = StepEndStatus | 'active' | 'abandoned';
+/**
+ * All possible step statuses including non-terminal states.
+ *
+ * `'pending'` is the pre-start status of a local step handle — a step
+ * returned by `view.createStep()` before `start()` has resolved. It is
+ * only reachable through a live in-memory handle; `'pending'` is never
+ * materialised on the channel.
+ */
+type StepStatus = StepEndStatus | 'pending' | 'active' | 'abandoned';
 
 /** Readable step state in the materialised tree. */
 interface StepState {
@@ -881,7 +891,13 @@ interface Step<TEvent, TMessage> {
   /** The step's unique ID, generated when the step is created. */
   readonly id: string;
 
-  /** Current status of the step — mirrors {@link StepState.status}. */
+  /**
+   * Current status of the step — mirrors {@link StepState.status} once the
+   * step is materialised on the channel. A freshly created step handle is
+   * `'pending'` until {@link Step.start} resolves, at which point it
+   * transitions to `'active'`. If `start()` rejects, the handle remains
+   * `'pending'` and the disposer is a no-op.
+   */
   readonly status: StepStatus;
 
   /**
@@ -914,6 +930,10 @@ interface Step<TEvent, TMessage> {
    * registered later also receive the buffered signal on first subscription
    * (see {@link Step.on}).
    *
+   * On successful resolution the step transitions from `'pending'` to
+   * `'active'`. If `start()` rejects, the step remains `'pending'` — no
+   * `x-ably-step-start` reached the channel, and the disposer is a no-op.
+   *
    * @throws `Ably.ErrorInfo` with code:
    *   - `ErrorCode.StepSuperseded` — another `x-ably-step-start` with an
    *     earlier serial was observed for the same run (a sibling hop won).
@@ -937,21 +957,24 @@ interface Step<TEvent, TMessage> {
   end(status: StepEndStatus): Promise<void>;
 
   /**
-   * Symbol.asyncDispose — pessimistic safety net. If the step is still
-   * `'active'` at dispose time, the disposer publishes a terminal
-   * `x-ably-step-end` so the channel state does not leak a half-open step:
+   * Symbol.asyncDispose — pessimistic safety net. Behaviour depends on
+   * {@link Step.status} at dispose time:
    *
-   *   - `step.signal.aborted` is true → publishes `step.end('aborted')`.
-   *   - Otherwise → publishes `step.end('failed')` with cause
-   *     `ErrorCode.StepDisposedBeforeEnd` (`104021`).
+   *   - `'pending'` → no-op. `start()` never resolved, so the channel has
+   *     no record of this step; publishing `x-ably-step-end` without a
+   *     prior `x-ably-step-start` would put garbage on the wire.
+   *   - `'active'` → publishes a terminal `x-ably-step-end` so the channel
+   *     state does not leak a half-open step:
+   *     - `step.signal.aborted` is true → publishes `step.end('aborted')`.
+   *     - Otherwise → publishes `step.end('failed')` with cause
+   *       `ErrorCode.StepDisposedBeforeEnd` (`104021`).
+   *   - Terminal (any `StepEndStatus`) → pure cleanup, no publish. The
+   *     idempotent `end()` contract means an explicit earlier
+   *     `end('complete')` is not clobbered.
    *
-   * If the step has already reached a terminal status (including via an
-   * explicit `end()` call earlier in scope), disposal is pure cleanup —
-   * the idempotent `end()` contract means the disposer can invoke
-   * `end('failed')` or `end('aborted')` unconditionally without worrying
-   * about clobbering an earlier terminal. Callers still call
-   * `step.end('complete')` explicitly on the happy path; the disposer
-   * exists to close out runs that leave scope via a thrown error.
+   * Callers still call `step.end('complete')` explicitly on the happy path;
+   * the disposer exists to close out runs that leave scope via a thrown
+   * error.
    */
   [Symbol.asyncDispose](): Promise<void>;
 
@@ -1087,7 +1110,6 @@ enum ErrorCode {
   StepSuperseded = 104300,
   InvocationPreconditionTimeout = 104301,
   StepStartAborted = 104302,
-  ViewStepAlreadyCreated = 104303,
 
   // View / invocation
   ViewClosed = 104400,
@@ -1112,7 +1134,6 @@ enum ErrorCode {
 | `104300` | `StepSuperseded` | `step.start()` rejected because a later `x-ably-step-start` for the same run won arbitration. |
 | `104301` | `InvocationPreconditionTimeout` | `step.start()` timed out waiting for the invocation's preconditions to become visible. |
 | `104302` | `StepStartAborted` | `step.start()` was aborted by the caller-supplied `AbortSignal` before it resolved. |
-| `104303` | `ViewStepAlreadyCreated` | `view.createStep()` was called twice on the same view; the step is a singleton. |
 | `104400` | `ViewClosed` | The view has been closed; the requested operation is no longer valid. |
 | `104401` | `ViewNodeNotFound` | `view.select()` was called with a message ID that does not exist in the tree. |
 | `104402` | `InvocationInvalid` | `Invocation.fromJSON()` was called with data that does not describe a valid invocation. |
@@ -2109,7 +2130,7 @@ export const POST = async (req: Request): Promise<Response> => {
 
 **Symmetric session → view → write-handle hierarchy**: Both sides instantiate a session, derive a view from it, and create a write handle from the view. `session.createView()` mirrors `session.createView(invocation)`. `view.createRun()` mirrors `view.createStep()`. `run.start()` mirrors `step.start()`. A developer who learns one side already knows the shape of the other. The client's view has mutable branch selection because the user drives it; the agent's view is pinned because the invocation already named the branch — same abstraction, role-appropriate policy.
 
-**View as write-handle factory (composition over configuration)**: The view creates the write handle because it holds the branch context needed to position it. On the client, `view.createRun()` appends to the current branch tip and `view.createRegenerate()` forks at a node (auto-selecting the new branch by default); on the agent, `view.createStep()` produces the singleton step that executes the view's run.
+**View as write-handle factory (composition over configuration)**: The view creates the write handle because it holds the branch context needed to position it. On the client, `view.createRun()` appends to the current branch tip and `view.createRegenerate()` forks at a node (auto-selecting the new branch by default); on the agent, `view.createStep()` produces a step that executes the view's run (multiple steps per view permitted — each publishes its own step-start/step-end pair).
 
 **Low-level verbs are safe without helpers**: `session.writer`, `view.createStep`, `run.start/end/send` cover every worked-example scenario. Only two helpers survived scrutiny — `run.when(statuses)` and control signals returning `Invocation` — because both collapse real multi-step orchestration into one call. Higher-level wrappers like `runStep`, `handleInvocation`, `view.send`, `view.continueRun`, `view.spawnChildRun`, and `view.activeRun` were considered and dropped for partial coverage.
 
@@ -2119,7 +2140,7 @@ export const POST = async (req: Request): Promise<Response> => {
 
 **Signal fold — one abort observation point**: `step.signal` is aborted when an `x-ably-run-abort` lands on the channel OR when a caller-supplied signal fires (via `step.start({ signal })`). The agent wires a single `abortSignal: step.signal` into the model SDK; no `AbortSignal.any` boilerplate at the call site for the common case. The SDK never introspects `req.signal` or WDK signals — it composes only what the caller hands it.
 
-**Pessimistic step disposer — no silent success**: `Step[Symbol.asyncDispose]` publishes a terminal `x-ably-step-end` only when the step is still `'active'` — `'aborted'` if `step.signal.aborted`, otherwise `'failed'` with cause `ErrorCode.StepDisposedBeforeEnd` (`104021`). The disposer is a safety net for thrown errors, never a replacement for explicit `step.end('complete')`.
+**Pessimistic step disposer — no silent success, no fabricated channel state**: `Step[Symbol.asyncDispose]` publishes a terminal `x-ably-step-end` only when the step is `'active'` — `'aborted'` if `step.signal.aborted`, otherwise `'failed'` with cause `ErrorCode.StepDisposedBeforeEnd` (`104021`). A `'pending'` step (one where `start()` never resolved) disposes as a no-op so the channel never sees a step-end without its step-start. Terminal steps dispose as pure cleanup. The disposer is a safety net for thrown errors, never a replacement for explicit `step.end('complete')`.
 
 **Two subscription patterns (tree vs view)**: The tree uses `on`/`off` for granular, typed events because each event type has a distinct signature. The view uses `subscribe`/unsubscribe for state-oriented observation because the consumer doesn't need to know what changed, just that it did.
 

@@ -1,8 +1,17 @@
 /** Terminal status for a step. */
 export type StepEndStatus = 'complete' | 'failed' | 'aborted' | 'paused' | 'superseded';
 
-/** All possible step statuses including non-terminal states. */
-export type StepStatus = StepEndStatus | 'active' | 'abandoned';
+/**
+ * All possible step statuses including non-terminal states.
+ *
+ * `'pending'` is the pre-start status of a local step handle — a step
+ * returned by `view.createStep()` before `start()` has resolved. It is
+ * only reachable through a live in-memory handle; `'pending'` is never
+ * materialised on the channel (a pending step has not published
+ * `x-ably-step-start`), so it will not appear on `StepState.status` in
+ * the tree.
+ */
+export type StepStatus = StepEndStatus | 'pending' | 'active' | 'abandoned';
 
 /** Readable step state in the materialised tree. */
 export interface StepState {
@@ -54,7 +63,13 @@ export interface Step<TEvent, TMessage> {
   /** The step's unique ID, generated when the step is created. */
   readonly id: string;
 
-  /** Current status of the step — mirrors {@link StepState.status}. */
+  /**
+   * Current status of the step — mirrors {@link StepState.status} once the
+   * step is materialised on the channel. A freshly created step handle is
+   * `'pending'` until {@link Step.start} resolves, at which point it
+   * transitions to `'active'`. If `start()` rejects, the handle remains
+   * `'pending'` and the disposer is a no-op ({@link Step[Symbol.asyncDispose]}).
+   */
   readonly status: StepStatus;
 
   /**
@@ -87,6 +102,10 @@ export interface Step<TEvent, TMessage> {
    * registered later also receive the buffered signal on first subscription
    * (see {@link Step.on}).
    *
+   * On successful resolution the step transitions from `'pending'` to
+   * `'active'`. If `start()` rejects, the step remains `'pending'` — no
+   * `x-ably-step-start` reached the channel, and the disposer is a no-op.
+   *
    * @param options - Precondition-wait timeout and caller-folded abort
    *   signal; see {@link StepStartOptions}.
    * @throws An `Ably.ErrorInfo` with code:
@@ -113,21 +132,24 @@ export interface Step<TEvent, TMessage> {
   end(status: StepEndStatus): Promise<void>;
 
   /**
-   * Symbol.asyncDispose — pessimistic safety net. If the step is still
-   * `'active'` at dispose time, the disposer publishes a terminal
-   * `x-ably-step-end` so the channel state does not leak a half-open step:
+   * Symbol.asyncDispose — pessimistic safety net. Behaviour depends on
+   * {@link Step.status} at dispose time:
    *
-   *   - `step.signal.aborted` is true → publishes `step.end('aborted')`.
-   *   - Otherwise → publishes `step.end('failed')` with cause
-   *     {@link ErrorCode.StepDisposedBeforeEnd} (`104021`).
+   *   - `'pending'` → no-op. `start()` never resolved successfully, so the
+   *     channel has no record of this step; publishing a `step-end` for a
+   *     step it never saw a `step-start` for would emit garbage on the wire.
+   *   - `'active'` → publishes a terminal `x-ably-step-end` so the channel
+   *     state does not leak a half-open step:
+   *     - `step.signal.aborted` is true → publishes `step.end('aborted')`.
+   *     - Otherwise → publishes `step.end('failed')` with cause
+   *       {@link ErrorCode.StepDisposedBeforeEnd} (`104021`).
+   *   - Terminal (any {@link StepEndStatus}) → pure cleanup, no publish.
+   *     The idempotent `end()` contract means an explicit earlier
+   *     `end('complete')` is not clobbered.
    *
-   * If the step has already reached a terminal status (including via an
-   * explicit `end()` call earlier in scope), disposal is pure cleanup —
-   * the idempotent `end()` contract means the disposer can invoke
-   * `end('failed')` or `end('aborted')` unconditionally without worrying
-   * about clobbering an earlier terminal. Callers still call
-   * `step.end('complete')` explicitly on the happy path; the disposer
-   * exists to close out runs that leave scope via a thrown error.
+   * Callers still call `step.end('complete')` explicitly on the happy path;
+   * the disposer exists to close out runs that leave scope via a thrown
+   * error.
    */
   [Symbol.asyncDispose](): Promise<void>;
 

@@ -154,17 +154,17 @@ export interface AgentView<TEvent, TMessage> extends View<TMessage, AgentRun<TMe
   readonly run: AgentRun<TMessage>;
 
   /**
-   * Create the step that executes this view's run. The step is not yet
+   * Create a step that executes this view's run. The step is not yet
    * active — call step.start() to wait for the invocation's preconditions
    * and publish `x-ably-step-start`. The gap between createStep and start is
    * the setup window for registering signal handlers (e.g. step.on('pause', ...)).
    *
-   * Singleton per view — calling createStep() a second time throws an
-   * `Ably.ErrorInfo` with code {@link ErrorCode.ViewStepAlreadyCreated}. For
-   * multi-step flows, create a fresh view from a fresh session per hop.
-   *
-   * @throws An `Ably.ErrorInfo` with code
-   *   {@link ErrorCode.ViewStepAlreadyCreated} on the second call.
+   * Each call returns a fresh {@link Step}; multiple steps per view are
+   * permitted (a single run can span multiple steps, each publishing its
+   * own step-start/step-end pair). Precondition-wait is a view-level state,
+   * so in practice only the first step in a view blocks on it — once the
+   * view has materialised the invocation's preconditions, later steps see
+   * an already-satisfied condition and `start()` proceeds immediately.
    */
   createStep(): Step<TEvent, TMessage>;
 }

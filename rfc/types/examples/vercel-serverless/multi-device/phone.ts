@@ -19,7 +19,7 @@ declare const codec: Codec<AI.UIMessageChunk, AI.UIMessage>;
 
 /**
  * Deliver an invocation to the agent HTTP endpoint.
- * @param data - The {@link InvocationData} produced by `run.createInvocation().toJSON()`.
+ * @param data - The {@link InvocationData} produced by `run.toInvocation().toJSON()`.
  * @returns Resolves once the POST has been dispatched.
  */
 const invokeAgent = async (data: InvocationData): Promise<void> => {
@@ -35,7 +35,7 @@ const invokeAgent = async (data: InvocationData): Promise<void> => {
 export const startFromPhone = async (text: string): Promise<void> => {
   const session = createClientSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
-    name: 'session:abc123',
+    sessionName: 'session:abc123',
     codec,
   });
   await session.connect();
@@ -48,5 +48,5 @@ export const startFromPhone = async (text: string): Promise<void> => {
     role: 'user',
     parts: [{ type: 'text', text }],
   });
-  await invokeAgent(run.createInvocation().toJSON());
+  await invokeAgent(run.toInvocation().toJSON());
 };

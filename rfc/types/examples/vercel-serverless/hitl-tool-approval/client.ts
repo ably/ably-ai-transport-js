@@ -3,52 +3,97 @@
  *
  * When the UI renders a suspended assistant message containing a tool-call
  * part, it prompts the user to approve or deny. The approval is published
- * as a user message and the agent is invoked with `messageId` as
- * precondition — the agent waits for the approval to be visible before
- * starting, so the conversation it reads includes the approval.
+ * as a structured tool-output user message targeting the specific
+ * `toolCallId`, then the agent is re-invoked; the agent waits for the
+ * approval to be visible before starting, so the conversation it reads
+ * includes the approval.
+ *
+ * Targeting a specific tool call by `toolCallId` is type-enforced. The
+ * Vercel-layer `pendingToolCalls` helper locates the pending call from
+ * the run's messages.
  */
 
 import type * as AI from 'ai';
 
-import type { ClientRun, ClientSession, InvocationData, MessageNode } from '../../../index.js';
+import type { ClientRun, MessageNode } from '../../../index.js';
+
+// TODO: will move to src/vercel/pendingToolCalls.ts per plan §4.
+declare const pendingToolCalls: (
+  messages: readonly MessageNode<AI.UIMessage>[],
+) => { toolCallId: string; toolName: string; input: unknown; messageId: string }[];
 
 /**
- * Deliver an invocation to the agent HTTP endpoint.
- * @param data - The {@link InvocationData} identifying run and approval message.
- * @returns Resolves once the POST has been dispatched.
+ * Approve a pending tool call by publishing the structured tool output and
+ * re-invoking the agent.
+ * @param run - The suspended client run holding the tool call.
+ * @param toolCallId - The specific `toolCallId` the user approved.
+ * @param output - The tool's output value to attach.
+ * @returns Resolves once the approval has been published and the wake-up
+ *   invocation POST has been dispatched.
  */
-const invokeAgent = async (data: InvocationData): Promise<void> => {
-  await fetch('/api/agent', { method: 'POST', body: JSON.stringify(data) });
+export const approveToolCall = async (
+  run: ClientRun<AI.UIMessage>,
+  toolCallId: string,
+  output: unknown,
+): Promise<void> => {
+  if (run.status !== 'suspended') return;
+  const pending = pendingToolCalls(run.messages).find((tc) => tc.toolCallId === toolCallId);
+  if (!pending) return;
+
+  await run.send({
+    id: crypto.randomUUID(),
+    role: 'user',
+    parts: [
+      {
+        type: `tool-${pending.toolName}`,
+        toolCallId,
+        state: 'output-available',
+        input: pending.input,
+        output,
+      },
+    ],
+  });
+
+  await fetch('/api/agent', {
+    method: 'POST',
+    body: JSON.stringify(run.toInvocation().toJSON()),
+  });
 };
 
 /**
- * Approve or deny a pending tool call. The run must be suspended for the
- * approval to make sense; the node carries its run so no lookup is needed.
- * @param session - The client session backing the UI.
- * @param toolCallNode - The assistant node whose tool call is pending approval.
- * @param approved - True if the user clicked Approve, false if Deny.
- * @returns Resolves once the approval message has been published and the agent re-invoked.
+ * Deny a pending tool call by publishing a structured tool-error user
+ * message and re-invoking the agent so it can react to the denial.
+ * @param run - The suspended client run holding the tool call.
+ * @param toolCallId - The specific `toolCallId` the user denied.
+ * @param reason - Free-text reason surfaced as the tool error.
+ * @returns Resolves once the denial has been published and the wake-up
+ *   invocation POST has been dispatched.
  */
-export const onApprove = async (
-  session: ClientSession<AI.UIMessageChunk, AI.UIMessage>,
-  toolCallNode: MessageNode<AI.UIMessage, ClientRun<AI.UIMessage>>,
-  approved: boolean,
+export const denyToolCall = async (
+  run: ClientRun<AI.UIMessage>,
+  toolCallId: string,
+  reason: string,
 ): Promise<void> => {
-  const run = toolCallNode.run;
-  if (run?.status !== 'suspended') return;
+  if (run.status !== 'suspended') return;
+  const pending = pendingToolCalls(run.messages).find((tc) => tc.toolCallId === toolCallId);
+  if (!pending) return;
 
-  const approvalMessageId = crypto.randomUUID();
   await run.send({
-    id: approvalMessageId,
+    id: crypto.randomUUID(),
     role: 'user',
-    parts: [{ type: 'text', text: approved ? 'approved' : 'denied' }],
+    parts: [
+      {
+        type: `tool-${pending.toolName}`,
+        toolCallId,
+        state: 'output-error',
+        input: pending.input,
+        errorText: reason,
+      },
+    ],
   });
 
-  // Resume with the approval message as precondition so the agent reads
-  // a conversation that includes the user's decision.
-  await invokeAgent({
-    sessionName: session.name,
-    runId: run.id,
-    messageId: approvalMessageId,
+  await fetch('/api/agent', {
+    method: 'POST',
+    body: JSON.stringify(run.toInvocation().toJSON()),
   });
 };

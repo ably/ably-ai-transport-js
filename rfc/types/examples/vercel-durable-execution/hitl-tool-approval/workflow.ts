@@ -9,12 +9,12 @@
  * conversation — now including the approval — and continues.
  */
 
-import type * as Ably from 'ably';
+import * as Ably from 'ably';
 import type * as AI from 'ai';
 import { convertToModelMessages, streamText } from 'ai';
 
 import type { Codec, InvocationData, StorageReader } from '../../../index.js';
-import { createAgentSession, createInvocation } from '../../../index.js';
+import { createAgentSession, ErrorCode, Invocation } from '../../../index.js';
 
 declare const ably: Ably.Realtime;
 declare const codec: Codec<AI.UIMessageChunk, AI.UIMessage>;
@@ -28,21 +28,29 @@ type HopOutcome = 'awaiting-input' | 'complete';
 /** Upper bound on agent hops across all workflow runs combined. */
 const MAX_STEPS = 20;
 
+/** Narrow a caught value to an {@link Ably.ErrorInfo} with the given code. */
+const isErrorInfoWithCode = (value: unknown, code: ErrorCode): boolean =>
+  value instanceof Ably.ErrorInfo && value.code === code;
+
 /**
  * One hop of the agent. If the model proposes a tool call, returns
  * `'awaiting-input'`; otherwise returns `'complete'` once the final
  * response has been produced.
  * @param invocationData - The serialized {@link InvocationData} identifying the run.
+ * @param options - WDK step context, providing the durable `abortSignal`.
  * @returns Whether the hop needs HITL input or has finished the run.
  */
-export const runAgentHop = async (invocationData: InvocationData): Promise<HopOutcome> => {
+export const runAgentHop = async (
+  invocationData: InvocationData,
+  { abortSignal: wdkSignal }: { abortSignal: AbortSignal },
+): Promise<HopOutcome> => {
   'use step';
 
-  const invocation = createInvocation(invocationData);
+  const invocation = Invocation.fromJSON(invocationData);
 
   await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
-    name: invocation.sessionName,
+    sessionName: invocation.sessionName,
     codec,
     storageReader: workflowStateReader(invocation.runId),
   });
@@ -50,7 +58,13 @@ export const runAgentHop = async (invocationData: InvocationData): Promise<HopOu
 
   const view = session.createView(invocation);
   await using step = view.createStep();
-  await step.start();
+
+  try {
+    await step.start({ signal: wdkSignal, timeoutMs: 60_000 });
+  } catch (e) {
+    if (isErrorInfoWithCode(e, ErrorCode.StepSuperseded)) return 'complete';
+    throw e;
+  }
 
   const result = streamText({
     model: openai('gpt-4o'),
@@ -61,48 +75,43 @@ export const runAgentHop = async (invocationData: InvocationData): Promise<HopOu
   await step.pipe(result.toUIMessageStream());
   await step.end('complete');
 
-  const last = view.messages.at(-1);
+  const last = view.messages.findLast((n) => n.message.role === 'assistant');
   const proposedTool = last?.message.parts.find((p) => p.type.startsWith('tool-'));
   return proposedTool ? 'awaiting-input' : 'complete';
 };
 
 /**
- * Suspend the run as `awaiting-input`. Durable publish keeps the
- * suspension observable to every participant.
+ * Suspend the run as `awaiting-input`. Writer-only durable publish
+ * (plan §5.7).
  * @param invocationData - The serialized {@link InvocationData} identifying the run.
  */
 export const suspendAwaitingInput = async (invocationData: InvocationData): Promise<void> => {
   'use step';
 
-  const invocation = createInvocation(invocationData);
-  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+  const session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
-    name: invocation.sessionName,
+    sessionName: invocationData.sessionName,
     codec,
-    storageReader: workflowStateReader(invocation.runId),
   });
-  await session.connect();
-  const view = session.createView(invocation);
-  await view.run.suspend('awaiting-input');
+  await session.writer.suspendRun({ runId: invocationData.runId, reason: 'awaiting-input' });
+  await session.close();
 };
 
 /**
- * Close the run once the agent has produced the final response.
+ * Close the run once the agent has produced the final response. Writer-
+ * only durable publish (plan §5.7).
  * @param invocationData - The serialized {@link InvocationData} identifying the run.
  */
 export const endRun = async (invocationData: InvocationData): Promise<void> => {
   'use step';
 
-  const invocation = createInvocation(invocationData);
-  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+  const session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
-    name: invocation.sessionName,
+    sessionName: invocationData.sessionName,
     codec,
-    storageReader: workflowStateReader(invocation.runId),
   });
-  await session.connect();
-  const view = session.createView(invocation);
-  await view.run.end('complete');
+  await session.writer.endRun({ runId: invocationData.runId, status: 'complete' });
+  await session.close();
 };
 
 /**
@@ -115,7 +124,7 @@ export const hitlWorkflow = async (invocationData: InvocationData): Promise<void
   'use workflow';
 
   for (let i = 0; i < MAX_STEPS; i++) {
-    const outcome = await runAgentHop(invocationData);
+    const outcome = await runAgentHop(invocationData, { abortSignal: new AbortController().signal });
     if (outcome === 'awaiting-input') {
       await suspendAwaitingInput(invocationData);
       return;

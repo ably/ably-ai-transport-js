@@ -15,6 +15,30 @@ export interface StepState {
 }
 
 /**
+ * Options accepted by {@link Step.start}.
+ */
+export interface StepStartOptions {
+  /**
+   * Abort the precondition wait after this many milliseconds. Defaults to
+   * `60_000` when neither `timeoutMs` nor `signal` is supplied — prevents
+   * a hop from hanging forever waiting for an invocation message that
+   * never arrives.
+   */
+  timeoutMs?: number;
+
+  /**
+   * Caller-supplied abort signal folded into {@link Step.signal}. After
+   * `start()` resolves, `step.signal.aborted` becomes true whenever this
+   * signal fires OR when an `x-ably-run-abort` control signal is observed
+   * on the channel. Callers wire runtime-owned cancellation in here
+   * (`req.signal` in serverless handlers, a WDK `abortSignal` in durable
+   * execution) — the SDK does not introspect the runtime and composes
+   * only what the caller hands it.
+   */
+  signal?: AbortSignal;
+}
+
+/**
  * The agent's active write handle for one continuous execution within a run.
  * Created from an AgentView via view.createStep(). The view carries the
  * invocation and exposes the conversation to pass to the model; the step is
@@ -30,14 +54,24 @@ export interface Step<TEvent, TMessage> {
   /** The step's unique ID, generated when the step is created. */
   readonly id: string;
 
+  /** Current status of the step — mirrors {@link StepState.status}. */
+  readonly status: StepStatus;
+
   /**
-   * AbortSignal that fires when an abort control signal is observed for
-   * this step's run. Wire this into model SDKs, fetch calls, and streams
-   * that accept AbortSignal.
+   * Aborts when any of the following happens:
+   *   - An `x-ably-run-abort` control signal is observed on the channel
+   *     (the durable "run aborted" fact).
+   *   - A signal passed to {@link Step.start} via `start({ signal })` fires
+   *     (the caller folds in runtime-owned cancellation: `req.signal` in
+   *     serverless handlers, a WDK `abortSignal` in durable execution).
+   *
+   * Wire into your model call as `abortSignal: step.signal`. No explicit
+   * composition at call sites for the common case.
    *
    * If the run was aborted before this step started (e.g. during the gap
    * between a crash and a retry), the signal is already aborted when
-   * start() resolves. Always check signal.aborted after start() returns.
+   * {@link Step.start} resolves. Always check `signal.aborted` after
+   * `start()` returns.
    */
   readonly signal: AbortSignal;
 
@@ -47,32 +81,67 @@ export interface Step<TEvent, TMessage> {
    * Resolves when the step is active and the view's messages are complete.
    *
    * If a pre-existing abort signal is found in the session (published while
-   * no agent was running), signal.aborted will be true after start() resolves.
-   * If a pre-existing pause signal is found, the 'pause' handler fires
-   * immediately after start() resolves.
+   * no agent was running), `signal.aborted` will be true after `start()`
+   * resolves. If a pre-existing pause signal is found, any `'pause'` handler
+   * already registered fires immediately after `start()` resolves; handlers
+   * registered later also receive the buffered signal on first subscription
+   * (see {@link Step.on}).
    *
-   * Rejects if the step is superseded (another `x-ably-step-start` with an
-   * earlier serial was observed for the same run). The rejection is an
-   * Ably.ErrorInfo with a distinguishable error code.
+   * @param options - Precondition-wait timeout and caller-folded abort
+   *   signal; see {@link StepStartOptions}.
+   * @throws An `Ably.ErrorInfo` with code:
+   *   - {@link ErrorCode.StepSuperseded} — another `x-ably-step-start`
+   *     with an earlier serial was observed for the same run (a sibling
+   *     hop won).
+   *   - {@link ErrorCode.InvocationPreconditionTimeout} — the precondition
+   *     wait exceeded `timeoutMs`.
+   *   - {@link ErrorCode.StepStartAborted} — the caller-supplied
+   *     `options.signal` fired before preconditions were met.
    */
-  start(): Promise<void>;
+  start(options?: StepStartOptions): Promise<void>;
 
   /**
    * Publish `x-ably-step-end` with the given status and release step
    * resources (signal listeners, stream references).
+   *
+   * Idempotent on a step that has already reached a terminal status —
+   * publishes nothing and resolves `void`. Useful for the
+   * retry-after-failure pattern where a caller unconditionally calls
+   * `step.end('failed')` in a catch block even though `step.start()` may
+   * have already left the step terminal via `StepSuperseded`.
    */
   end(status: StepEndStatus): Promise<void>;
 
-  /** Symbol.asyncDispose — equivalent to end('complete') if the step has not already ended. */
+  /**
+   * Symbol.asyncDispose — pessimistic safety net. If the step is still
+   * `'active'` at dispose time, the disposer publishes a terminal
+   * `x-ably-step-end` so the channel state does not leak a half-open step:
+   *
+   *   - `step.signal.aborted` is true → publishes `step.end('aborted')`.
+   *   - Otherwise → publishes `step.end('failed')` with cause
+   *     {@link ErrorCode.StepDisposedBeforeEnd} (`104021`).
+   *
+   * If the step has already reached a terminal status (including via an
+   * explicit `end()` call earlier in scope), disposal is pure cleanup —
+   * the idempotent `end()` contract means the disposer can invoke
+   * `end('failed')` or `end('aborted')` unconditionally without worrying
+   * about clobbering an earlier terminal. Callers still call
+   * `step.end('complete')` explicitly on the happy path; the disposer
+   * exists to close out runs that leave scope via a thrown error.
+   */
   [Symbol.asyncDispose](): Promise<void>;
 
   /**
-   * Register a handler for a pause signal observed on the channel.
-   * The agent can checkpoint state and end the step with 'paused', or
-   * let the current work complete and end with 'complete'.
+   * Register a handler for a pause signal observed on the channel. The
+   * agent can checkpoint state and end the step with `'paused'`, or let the
+   * current work complete and end with `'complete'`.
    *
-   * If a pause signal was already published before this step started,
-   * the handler fires immediately after start() resolves.
+   * Pause signals are buffered: any pause observed before a handler is
+   * registered (including signals materialised during `start()`) is
+   * delivered synchronously to the handler on first subscription. This
+   * removes the order-sensitive "register before `start()`" footgun —
+   * handlers can be registered at any point and will still see prior
+   * pauses.
    */
   on(event: 'pause', handler: () => void): void;
 

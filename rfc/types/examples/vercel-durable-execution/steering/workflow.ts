@@ -12,12 +12,12 @@
  */
 
 import { DurableAgent } from '@workflow/ai/agent';
-import type * as Ably from 'ably';
+import * as Ably from 'ably';
 import type * as AI from 'ai';
 import { convertToModelMessages, stepCountIs } from 'ai';
 
 import type { Codec, InvocationData, StorageReader } from '../../../index.js';
-import { createAgentSession, createInvocation } from '../../../index.js';
+import { createAgentSession, ErrorCode, Invocation } from '../../../index.js';
 
 declare const ably: Ably.Realtime;
 declare const codec: Codec<AI.UIMessageChunk, AI.UIMessage>;
@@ -40,20 +40,28 @@ interface HopResult {
 /** Upper bound on agent hops — guards against runaway loops. */
 const MAX_STEPS = 40;
 
+/** Narrow a caught value to an {@link Ably.ErrorInfo} with the given code. */
+const isErrorInfoWithCode = (value: unknown, code: ErrorCode): boolean =>
+  value instanceof Ably.ErrorInfo && value.code === code;
+
 /**
  * One hop. Returns the finishReason plus the latest user-message ID seen
  * at hop start so the workflow can decide whether to loop again.
  * @param invocationData - The serialized {@link InvocationData} identifying the run.
+ * @param options - WDK step context, providing the durable `abortSignal`.
  * @returns The hop's finishReason and the latest user-message ID at hop start.
  */
-export const runAgentHop = async (invocationData: InvocationData): Promise<HopResult> => {
+export const runAgentHop = async (
+  invocationData: InvocationData,
+  { abortSignal: wdkSignal }: { abortSignal: AbortSignal },
+): Promise<HopResult> => {
   'use step';
 
-  const invocation = createInvocation(invocationData);
+  const invocation = Invocation.fromJSON(invocationData);
 
   await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
-    name: invocation.sessionName,
+    sessionName: invocation.sessionName,
     codec,
     storageReader: workflowStateReader(invocation.runId),
   });
@@ -61,7 +69,15 @@ export const runAgentHop = async (invocationData: InvocationData): Promise<HopRe
 
   const view = session.createView(invocation);
   await using step = view.createStep();
-  await step.start();
+
+  try {
+    await step.start({ signal: wdkSignal, timeoutMs: 60_000 });
+  } catch (e) {
+    if (isErrorInfoWithCode(e, ErrorCode.StepSuperseded)) {
+      return { finishReason: 'stop', latestUserMessageId: undefined };
+    }
+    throw e;
+  }
 
   const latestUserMessageId = view.messages.findLast((n) => n.message.role === 'user')?.id;
 
@@ -86,21 +102,19 @@ export const runAgentHop = async (invocationData: InvocationData): Promise<HopRe
 
 /**
  * Close the run once the agent and any pending steering input are done.
+ * Writer-only hop per plan §5.7.
  * @param invocationData - The serialized {@link InvocationData} identifying the run.
  */
 export const endRun = async (invocationData: InvocationData): Promise<void> => {
   'use step';
 
-  const invocation = createInvocation(invocationData);
-  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+  const session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
-    name: invocation.sessionName,
+    sessionName: invocationData.sessionName,
     codec,
-    storageReader: workflowStateReader(invocation.runId),
   });
-  await session.connect();
-  const view = session.createView(invocation);
-  await view.run.end('complete');
+  await session.writer.endRun({ runId: invocationData.runId, status: 'complete' });
+  await session.close();
 };
 
 /**
@@ -115,7 +129,7 @@ export const agentWorkflow = async (invocationData: InvocationData): Promise<voi
   let lastSeenUserId: string | undefined;
 
   for (let i = 0; i < MAX_STEPS; i++) {
-    const hop = await runAgentHop(invocationData);
+    const hop = await runAgentHop(invocationData, { abortSignal: new AbortController().signal });
 
     if (hop.finishReason === 'tool-calls') {
       lastSeenUserId = hop.latestUserMessageId;

@@ -21,11 +21,13 @@ export interface SessionOptions<TEvent, TMessage> {
   client: Ably.Realtime;
 
   /**
-   * The session name. Today this is used as the name of the single channel
-   * backing the session; in future a session may span multiple channels and
-   * the SDK will derive those channel names from this value.
+   * The session name. Matches {@link InvocationData.sessionName} so the value
+   * that names the session on both ends of an HTTP hop is identically typed.
+   * Today this is used as the name of the single channel backing the session;
+   * in future a session may span multiple channels and the SDK will derive
+   * those channel names from this value.
    */
-  name: string;
+  sessionName: string;
 
   /** Codec that translates between domain events and channel operations. */
   codec: Codec<TEvent, TMessage>;
@@ -48,31 +50,40 @@ export interface SessionOptions<TEvent, TMessage> {
  */
 export interface ClientSession<TEvent, TMessage> {
   /** The session name, as passed to createClientSession. */
-  readonly name: string;
+  readonly sessionName: string;
 
   /** The unfiltered conversation tree. Available before connect(). */
   readonly tree: Tree<TMessage, ClientRun<TMessage>>;
 
   /**
    * Create a projected view over the tree. Each view has independent branch
-   * selection and pagination. Views can be created before or after connect().
+   * selection and pagination. Views can be created before connect() — the
+   * view pends hydration and fills in as the session materialises the channel.
    * Call view.close() to release a view when it's no longer needed.
    */
-  createView(options?: CreateViewOptions): ClientView<TMessage>;
+  createView(options?: CreateViewOptions): ClientView<TEvent, TMessage>;
 
   /**
    * Hydrate from the storage reader (if provided) and subscribe to the channel
    * for live events. Resolves when hydration is complete and the live
    * subscription is active.
+   *
+   * Idempotent: calling connect() a second time is a no-op and resolves
+   * immediately so that workflow retries are not hostile.
    */
   connect(): Promise<void>;
 
   /**
    * Unsubscribe from the channel and tear down the tree and all views.
+   * Idempotent and never rejects — callers can safely call close() in
+   * error-handling paths without wrapping it in try/catch.
    */
   close(): Promise<void>;
 
-  /** Symbol.asyncDispose — equivalent to close() if the session has not already been closed. */
+  /**
+   * Symbol.asyncDispose — equivalent to {@link close}. Closes subscriptions
+   * and releases views; no publish side effects.
+   */
   [Symbol.asyncDispose](): Promise<void>;
 
   /**
@@ -86,10 +97,14 @@ export interface ClientSession<TEvent, TMessage> {
   /**
    * Low-level write surface for publishing lifecycle events, messages, and
    * signals directly to the channel. Views and runs delegate to this
-   * internally. Exposed for server-side validation handlers, orchestrators,
-   * and advanced patterns that need explicit control.
+   * internally. Exposed at the top level (not demoted behind an `.advanced`
+   * namespace) so server-side validation handlers and orchestrators can
+   * reach it directly.
    *
-   * Can be used without connect() — publishes directly to the channel.
+   * A session created without calling {@link connect} can be used
+   * writer-only — the writer publishes directly to the channel without
+   * hydrating the tree or subscribing. This is the "lifecycle-only"
+   * durable-execution pattern (see plan §5.7).
    */
   readonly writer: SessionWriter<TEvent, TMessage>;
 }
@@ -102,7 +117,7 @@ export interface ClientSession<TEvent, TMessage> {
  */
 export interface AgentSession<TEvent, TMessage> {
   /** The session name, as passed to createAgentSession. */
-  readonly name: string;
+  readonly sessionName: string;
 
   /**
    * The unfiltered conversation tree. Available as an escape hatch for
@@ -114,8 +129,9 @@ export interface AgentSession<TEvent, TMessage> {
    * Create a view scoped to the run an invocation names. The view's branch
    * selection is pinned by the invocation's run ID — it shows the linear
    * conversation the run sits on (ancestry from root plus the run's own
-   * messages). Call view.createStep() to produce the step that executes
-   * the run.
+   * messages). Views can be created before connect() — the view pends
+   * hydration and fills in as the session materialises the channel. Call
+   * view.createStep() to produce the step that executes the run.
    */
   createView(invocation: Invocation): AgentView<TEvent, TMessage>;
 
@@ -123,15 +139,23 @@ export interface AgentSession<TEvent, TMessage> {
    * Hydrate from the storage reader (if provided) and subscribe to the channel
    * for live events. Resolves when hydration is complete and the live
    * subscription is active.
+   *
+   * Idempotent: calling connect() a second time is a no-op and resolves
+   * immediately so that workflow retries are not hostile.
    */
   connect(): Promise<void>;
 
   /**
    * Unsubscribe from the channel and tear down the session.
+   * Idempotent and never rejects — callers can safely call close() in
+   * error-handling paths without wrapping it in try/catch.
    */
   close(): Promise<void>;
 
-  /** Symbol.asyncDispose — equivalent to close() if the session has not already been closed. */
+  /**
+   * Symbol.asyncDispose — equivalent to {@link close}. Closes subscriptions
+   * and releases views; no publish side effects.
+   */
   [Symbol.asyncDispose](): Promise<void>;
 
   /**
@@ -143,8 +167,14 @@ export interface AgentSession<TEvent, TMessage> {
   off(event: 'error', handler: (error: Ably.ErrorInfo) => void): void;
 
   /**
-   * Low-level write surface. Steps delegate to this internally. Exposed for
-   * orchestrators and advanced patterns (e.g. subagent fan-out).
+   * Low-level write surface. Steps delegate to this internally. Exposed at
+   * the top level for orchestrators and advanced patterns (e.g. subagent
+   * fan-out, lifecycle-only hops).
+   *
+   * A session created without calling {@link connect} can be used
+   * writer-only — the writer publishes directly to the channel without
+   * hydrating the tree or subscribing. This is the "lifecycle-only"
+   * durable-execution pattern (see plan §5.7).
    */
   readonly writer: SessionWriter<TEvent, TMessage>;
 }

@@ -23,13 +23,13 @@
  */
 
 import { DurableAgent } from '@workflow/ai/agent';
-import type * as Ably from 'ably';
+import * as Ably from 'ably';
 import type * as AI from 'ai';
 import { convertToModelMessages, stepCountIs } from 'ai';
 import { getWritable } from 'workflow';
 
 import type { Codec, InvocationData, StorageReader } from '../../../index.js';
-import { createAgentSession, createInvocation } from '../../../index.js';
+import { createAgentSession, ErrorCode, Invocation } from '../../../index.js';
 
 declare const ably: Ably.Realtime;
 declare const codec: Codec<AI.UIMessageChunk, AI.UIMessage>;
@@ -49,19 +49,31 @@ const agent = new DurableAgent({
 const MAX_STEPS = 20;
 
 /**
+ * Narrow an unknown caught value to an {@link Ably.ErrorInfo} with the
+ * given code. Stands in for a future shared helper; inlined here so
+ * examples remain self-contained without new source modules.
+ */
+const isErrorInfoWithCode = (value: unknown, code: ErrorCode): boolean =>
+  value instanceof Ably.ErrorInfo && value.code === code;
+
+/**
  * One hop of the agent loop, wrapped in a WDK step and an AIT transport
  * step. Runs exactly one LLM call via `stopWhen: stepCountIs(1)`.
  * @param invocationData - The serialized {@link InvocationData} the client posted.
+ * @param options - WDK step context, providing the durable `abortSignal`.
  * @returns The `finishReason` from the LLM hop so the workflow can decide whether to continue.
  */
-export const runAgentHop = async (invocationData: InvocationData): Promise<AI.FinishReason> => {
+export const runAgentHop = async (
+  invocationData: InvocationData,
+  { abortSignal: wdkSignal }: { abortSignal: AbortSignal },
+): Promise<AI.FinishReason> => {
   'use step';
 
-  const invocation = createInvocation(invocationData);
+  const invocation = Invocation.fromJSON(invocationData);
 
   await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
-    name: invocation.sessionName,
+    sessionName: invocation.sessionName,
     codec,
     storageReader: workflowStateReader(invocation.runId),
   });
@@ -69,47 +81,54 @@ export const runAgentHop = async (invocationData: InvocationData): Promise<AI.Fi
 
   const view = session.createView(invocation);
   await using step = view.createStep();
-  await step.start();
 
-  const bridge = new TransformStream<AI.UIMessageChunk, AI.UIMessageChunk>();
-  const readable: ReadableStream<AI.UIMessageChunk> = bridge.readable;
-  const [, result] = await Promise.all([
-    step.pipe(readable),
-    agent.stream({
-      messages: await convertToModelMessages(view.messages.map((n) => n.message)),
-      writable: bridge.writable,
-      stopWhen: stepCountIs(1),
-      abortSignal: step.signal,
-    }),
-  ]);
+  try {
+    await step.start({ signal: wdkSignal, timeoutMs: 60_000 });
+  } catch (e) {
+    if (isErrorInfoWithCode(e, ErrorCode.StepSuperseded)) return 'stop';
+    throw e;
+  }
 
-  await step.end('complete');
+  try {
+    const bridge = new TransformStream<AI.UIMessageChunk, AI.UIMessageChunk>();
+    const readable: ReadableStream<AI.UIMessageChunk> = bridge.readable;
+    const [, result] = await Promise.all([
+      step.pipe(readable),
+      agent.stream({
+        messages: await convertToModelMessages(view.messages.map((n) => n.message)),
+        writable: bridge.writable,
+        stopWhen: stepCountIs(1),
+        abortSignal: step.signal,
+      }),
+    ]);
 
-  const lastStep = result.steps.at(-1);
-  return lastStep?.finishReason ?? 'stop';
+    await step.end('complete');
+
+    const lastStep = result.steps.at(-1);
+    return lastStep?.finishReason ?? 'stop';
+  } catch (err) {
+    await view.run.end(step.signal.aborted ? 'aborted' : 'failed');
+    throw err;
+  }
 };
 
 /**
- * Close the run once the agent has produced a terminal response. Owns
- * its own AIT session purely to publish `x-ably-run-end`, keeping the
- * write durable under `"use step"`.
+ * Close the run once the agent has produced a terminal response. Runs as
+ * a writer-only hop: no `connect()`, no tree hydration — the writer
+ * publishes `x-ably-run-end` directly (plan §5.7).
  * @param invocationData - The serialized {@link InvocationData} identifying the run to close.
  */
 export const endRun = async (invocationData: InvocationData): Promise<void> => {
   'use step';
 
-  const invocation = createInvocation(invocationData);
-
-  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+  const session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
-    name: invocation.sessionName,
+    sessionName: invocationData.sessionName,
     codec,
-    storageReader: workflowStateReader(invocation.runId),
   });
-  await session.connect();
-
-  const view = session.createView(invocation);
-  await view.run.end('complete');
+  // No connect() — writer publishes directly to the channel.
+  await session.writer.endRun({ runId: invocationData.runId, status: 'complete' });
+  await session.close();
 };
 
 /**
@@ -126,7 +145,7 @@ export const agentWorkflow = async (invocationData: InvocationData): Promise<voi
   getWritable<AI.UIMessageChunk>();
 
   for (let i = 0; i < MAX_STEPS; i++) {
-    const finishReason = await runAgentHop(invocationData);
+    const finishReason = await runAgentHop(invocationData, { abortSignal: new AbortController().signal });
     if (finishReason !== 'tool-calls') {
       await endRun(invocationData);
       return;

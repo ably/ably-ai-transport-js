@@ -41,22 +41,23 @@ export const POST = async (req: Request): Promise<Response> => {
   const userClientId = getAuthenticatedUserClientId(req);
   const session = createClientSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
-    name: sessionName,
+    sessionName,
     codec,
   });
 
   const { runId } = await session.writer.startRun({ clientId: userClientId });
-  const { messageIds } = await session.writer.sendMessages({
+  const messageId = crypto.randomUUID();
+  await session.writer.sendMessages({
     runId,
     clientId: userClientId,
     messages: {
-      id: crypto.randomUUID(),
+      id: messageId,
       role: 'user',
       parts: [{ type: 'text', text }],
     },
   });
 
-  const data: InvocationData = { sessionName, runId, messageId: messageIds[0] };
+  const data: InvocationData = { sessionName, runId, messageId };
   await fetch('/api/workflow/start', { method: 'POST', body: JSON.stringify(data) });
 
   return new Response(undefined, { status: 202 });

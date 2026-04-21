@@ -18,7 +18,7 @@ declare const codec: Codec<AI.UIMessageChunk, AI.UIMessage>;
 
 /**
  * Deliver an invocation to the workflow HTTP trigger.
- * @param data - The {@link InvocationData} produced by `run.createInvocation().toJSON()`.
+ * @param data - The {@link InvocationData} produced by `run.toInvocation().toJSON()`.
  * @returns Resolves once the POST has been dispatched.
  */
 const invokeWorkflow = async (data: InvocationData): Promise<void> => {
@@ -31,11 +31,11 @@ const invokeWorkflow = async (data: InvocationData): Promise<void> => {
  */
 export const bootstrap = async (): Promise<{
   session: ClientSession<AI.UIMessageChunk, AI.UIMessage>;
-  view: ClientView<AI.UIMessage>;
+  view: ClientView<AI.UIMessageChunk, AI.UIMessage>;
 }> => {
   const session = createClientSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
-    name: 'session:abc123',
+    sessionName: 'session:abc123',
     codec,
   });
   await session.connect();
@@ -55,7 +55,10 @@ export const bootstrap = async (): Promise<{
  * @param text - The text the user typed into the composer.
  * @returns Resolves once the invocation has been dispatched.
  */
-export const onSendClick = async (view: ClientView<AI.UIMessage>, text: string): Promise<void> => {
+export const onSendClick = async (
+  view: ClientView<AI.UIMessageChunk, AI.UIMessage>,
+  text: string,
+): Promise<void> => {
   const run = view.createRun();
   await run.start();
   await run.send({
@@ -63,5 +66,5 @@ export const onSendClick = async (view: ClientView<AI.UIMessage>, text: string):
     role: 'user',
     parts: [{ type: 'text', text }],
   });
-  await invokeWorkflow(run.createInvocation().toJSON());
+  await invokeWorkflow(run.toInvocation().toJSON());
 };

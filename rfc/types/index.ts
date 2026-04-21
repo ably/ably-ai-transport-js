@@ -1,16 +1,36 @@
+import type { MessageNode } from './message-node.js';
+import type { AgentRun, ClientRun } from './run.js';
+
 export type { Accumulator, Codec, DecodedEvent, Decoder, Encoder } from './codec.js';
-export type { Invocation, InvocationData } from './invocation.js';
-export { createInvocation } from './invocation.js';
+export { ErrorCode } from './errors.js';
+// `Invocation` is a merged symbol — a `const` (the `InvocationConstructor`
+// static namespace exposing `Invocation.fromJSON`) and an `interface` of the
+// same name (the instance shape). A single value re-export carries both
+// sides through to consumers, who can use `Invocation` in type position and
+// call `Invocation.fromJSON(data)` in value position.
+export { Invocation } from './invocation.js';
+export type { InvocationConstructor, InvocationData } from './invocation.js';
 export type { MessageNode } from './message-node.js';
+
+/** Pre-bound {@link MessageNode} variant for {@link ClientRun} sessions. */
+export type ClientMessageNode<TMessage> = MessageNode<TMessage, ClientRun<TMessage>>;
+
+/** Pre-bound {@link MessageNode} variant for {@link AgentRun} sessions. */
+export type AgentMessageNode<TMessage> = MessageNode<TMessage, AgentRun<TMessage>>;
+
 export type { AgentRun, ClientRun, Run, RunEndStatus, RunStatus, SuspendReason } from './run.js';
 export type { AgentSession, ClientSession, SessionOptions } from './session.js';
 export { createAgentSession, createClientSession } from './session.js';
-export type { Step, StepEndStatus, StepState, StepStatus } from './step.js';
+export type { Step, StepEndStatus, StepStartOptions, StepState, StepStatus } from './step.js';
 export type { StorageReader, StorageWriter } from './storage.js';
 export type { Tree } from './tree.js';
-export type { AgentView, ClientView, CreateViewOptions, View } from './view.js';
+export type { AgentView, ClientView, CreateForkOptions, CreateViewOptions, View } from './view.js';
 export type {
   AbortOptions,
+  ClientRunAbortOptions,
+  ClientRunPauseOptions,
+  ClientRunResumeOptions,
+  ClientRunRetryOptions,
   EndRunOptions,
   EndStepOptions,
   PauseOptions,
@@ -18,7 +38,6 @@ export type {
   RetryOptions,
   SendEventsOptions,
   SendMessagesOptions,
-  SendResult,
   SessionWriter,
   StartRunOptions,
   StartRunResult,

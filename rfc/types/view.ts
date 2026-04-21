@@ -12,6 +12,21 @@ export interface CreateViewOptions {
 }
 
 /**
+ * Optional behaviour for {@link ClientView.createRegenerate} and
+ * {@link ClientView.createEdit}.
+ */
+export interface CreateForkOptions {
+  /**
+   * Whether the view should switch selection to the new branch as soon as
+   * the fork is created. Defaults to `true` — the common UI pattern where
+   * regenerating or editing a message should immediately display the new
+   * branch. Pass `{ autoSelect: false }` to leave the current selection
+   * untouched (e.g. when forking multiple branches for later navigation).
+   */
+  autoSelect?: boolean;
+}
+
+/**
  * Base read projection over a session's tree. A view holds a linear sequence
  * of messages — one selected sibling at each branch point, ordered from root
  * to leaf — and a state-oriented subscription for observing changes to that
@@ -47,6 +62,8 @@ export interface View<TMessage, TRun extends Run<TMessage> = Run<TMessage>> {
    * Release this view's subscriptions and resources. After close(), the view
    * no longer updates and should not be read. Session.close() closes all
    * views automatically.
+   *
+   * Idempotent — calling close() a second time is a no-op.
    */
   close(): void;
 }
@@ -56,8 +73,12 @@ export interface View<TMessage, TRun extends Run<TMessage> = Run<TMessage>> {
  * mutable — the user drives it via select() and loadMore(). Factory for new
  * runs: createRun, createRegenerate, and createEdit all produce a ClientRun
  * positioned by the view's current branch state.
+ *
+ * The generic carries `TEvent` as well as `TMessage` for symmetry with
+ * {@link AgentView} and for forward compatibility with future event-typed
+ * client-side operations.
  */
-export interface ClientView<TMessage> extends View<TMessage, ClientRun<TMessage>> {
+export interface ClientView<TEvent, TMessage> extends View<TMessage, ClientRun<TMessage>> {
   /** Runs whose messages are visible in this view's projection. */
   readonly runs: readonly ClientRun<TMessage>[];
 
@@ -69,7 +90,10 @@ export interface ClientView<TMessage> extends View<TMessage, ClientRun<TMessage>
 
   /**
    * Select a sibling at a branch point, switching which branch this view shows.
-   * The messageId must identify an existing node in the tree.
+   *
+   * @param messageId - The ID of a node in the tree to select.
+   * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.ViewNodeNotFound}
+   *   when `messageId` does not identify any node in the tree.
    */
   select(messageId: string): void;
 
@@ -83,17 +107,27 @@ export interface ClientView<TMessage> extends View<TMessage, ClientRun<TMessage>
 
   /**
    * Create a new run that forks the tree at the given message (regenerate).
-   * The original response is preserved alongside the new branch. The run is
-   * not yet live — call run.start() to publish `x-ably-run-start`.
+   * The original response is preserved alongside the new branch. By default
+   * the view selects the new branch immediately; pass `{ autoSelect: false }`
+   * to leave selection untouched. The run is not yet live — call run.start()
+   * to publish `x-ably-run-start`.
+   *
+   * @param messageId - The message the regenerate should fork from.
+   * @param options - Optional fork behaviour; see {@link CreateForkOptions}.
    */
-  createRegenerate(messageId: string): ClientRun<TMessage>;
+  createRegenerate(messageId: string, options?: CreateForkOptions): ClientRun<TMessage>;
 
   /**
    * Create a new run that forks the tree at the given message (edit).
-   * The conversation branches from the edit point. The run is not yet live —
-   * call run.start() to publish `x-ably-run-start`.
+   * The conversation branches from the edit point. By default the view
+   * selects the new branch immediately; pass `{ autoSelect: false }` to
+   * leave selection untouched. The run is not yet live — call run.start()
+   * to publish `x-ably-run-start`.
+   *
+   * @param messageId - The message the edit should fork from.
+   * @param options - Optional fork behaviour; see {@link CreateForkOptions}.
    */
-  createEdit(messageId: string): ClientRun<TMessage>;
+  createEdit(messageId: string, options?: CreateForkOptions): ClientRun<TMessage>;
 }
 
 /**
@@ -124,6 +158,13 @@ export interface AgentView<TEvent, TMessage> extends View<TMessage, AgentRun<TMe
    * active — call step.start() to wait for the invocation's preconditions
    * and publish `x-ably-step-start`. The gap between createStep and start is
    * the setup window for registering signal handlers (e.g. step.on('pause', ...)).
+   *
+   * Singleton per view — calling createStep() a second time throws an
+   * `Ably.ErrorInfo` with code {@link ErrorCode.ViewStepAlreadyCreated}. For
+   * multi-step flows, create a fresh view from a fresh session per hop.
+   *
+   * @throws An `Ably.ErrorInfo` with code
+   *   {@link ErrorCode.ViewStepAlreadyCreated} on the second call.
    */
   createStep(): Step<TEvent, TMessage>;
 }

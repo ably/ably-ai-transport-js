@@ -34,7 +34,7 @@ export const onSendClick = async (
 ): Promise<{ ok: boolean; reason?: string }> => {
   const res = await fetch('/api/validate-and-send', {
     method: 'POST',
-    body: JSON.stringify({ sessionName: session.name, text }),
+    body: JSON.stringify({ sessionName: session.sessionName, text }),
     // The request is authenticated however the app authenticates users
     // (cookies, bearer tokens, etc.); the backend uses that identity to
     // set x-ably-client-id on the publish.

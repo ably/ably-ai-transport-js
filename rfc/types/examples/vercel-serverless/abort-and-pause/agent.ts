@@ -16,7 +16,7 @@ import type * as AI from 'ai';
 import { convertToModelMessages, stepCountIs, ToolLoopAgent } from 'ai';
 
 import type { Codec, InvocationData } from '../../../index.js';
-import { createAgentSession, createInvocation } from '../../../index.js';
+import { createAgentSession, Invocation } from '../../../index.js';
 
 declare const ably: Ably.Realtime;
 declare const codec: Codec<AI.UIMessageChunk, AI.UIMessage>;
@@ -36,11 +36,11 @@ const agent = new ToolLoopAgent({
  */
 export const POST = async (req: Request): Promise<Response> => {
   const data = (await req.json()) as InvocationData;
-  const invocation = createInvocation(data);
+  const invocation = Invocation.fromJSON(data);
 
   await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
-    name: invocation.sessionName,
+    sessionName: invocation.sessionName,
     codec,
   });
   await session.connect();
@@ -57,7 +57,7 @@ export const POST = async (req: Request): Promise<Response> => {
     pauseCtrl.abort();
   });
 
-  await step.start();
+  await step.start({ signal: req.signal, timeoutMs: 60_000 });
 
   // A prior abort already on the channel leaves step.signal aborted.
   if (step.signal.aborted) {
@@ -66,23 +66,28 @@ export const POST = async (req: Request): Promise<Response> => {
     return new Response(undefined, { status: 202 });
   }
 
-  const result = await agent.stream({
-    messages: await convertToModelMessages(view.messages.map((n) => n.message)),
-    abortSignal: AbortSignal.any([step.signal, pauseCtrl.signal]),
-  });
-
   try {
+    const result = await agent.stream({
+      messages: await convertToModelMessages(view.messages.map((n) => n.message)),
+      abortSignal: AbortSignal.any([step.signal, pauseCtrl.signal]),
+    });
     await step.pipe(result.toUIMessageStream());
-    await step.end('complete');
-    await view.run.end('complete');
-  } catch {
+
     if (paused) {
       await step.end('paused');
       await view.run.suspend('paused');
     } else {
-      await step.end('aborted');
-      await view.run.end('aborted');
+      await step.end('complete');
+      await view.run.end('complete');
     }
+  } catch (err) {
+    if (paused) {
+      await step.end('paused');
+      await view.run.suspend('paused');
+    } else {
+      await view.run.end(step.signal.aborted ? 'aborted' : 'failed');
+    }
+    throw err;
   }
 
   return new Response(undefined, { status: 202 });

@@ -12,21 +12,12 @@
 
 import type * as AI from 'ai';
 
-import type { ClientSession, InvocationData } from '../../../index.js';
-
-/**
- * Deliver an invocation to the workflow HTTP trigger.
- * @param data - The {@link InvocationData} identifying the run to retry.
- * @returns Resolves once the POST has been dispatched.
- */
-const invokeWorkflow = async (data: InvocationData): Promise<void> => {
-  await fetch('/api/workflow/start', { method: 'POST', body: JSON.stringify(data) });
-};
+import type { ClientSession } from '../../../index.js';
 
 /**
  * Retry a run that the workflow ended as `failed`. Publishes
- * `x-ably-retry` targeting the run and starts a fresh workflow run whose
- * preconditions wait for the retry signal to be visible.
+ * `x-ably-retry` targeting the run and POSTs the returned invocation to
+ * the workflow endpoint.
  * @param session - The client session backing the UI.
  * @param runId - The failed run to retry.
  * @returns Resolves once the retry has been published and the workflow invoked.
@@ -37,7 +28,9 @@ export const onTryAgainClick = async (
 ): Promise<void> => {
   const run = session.tree.getRun(runId);
   if (run?.status !== 'failed') return;
-  await run.retry();
-  const data: InvocationData = { sessionName: session.name, runId };
-  await invokeWorkflow(data);
+  const invocation = await run.retry();
+  await fetch('/api/workflow/start', {
+    method: 'POST',
+    body: JSON.stringify(invocation.toJSON()),
+  });
 };

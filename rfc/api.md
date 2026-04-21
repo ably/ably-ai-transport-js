@@ -12,9 +12,11 @@ function createClientSession<TEvent, TMessage>(
 function createAgentSession<TEvent, TMessage>(
   options: SessionOptions<TEvent, TMessage>,
 ): AgentSession<TEvent, TMessage>;
-
-function createInvocation(data: InvocationData): Invocation;
 ```
+
+An `Invocation` is rehydrated from a wire payload via the static
+`Invocation.fromJSON(data)` factory on the merged `Invocation` namespace (see
+[Invocation](#invocation)). There is no bare `createInvocation` function.
 
 ## Session options
 
@@ -30,11 +32,13 @@ interface SessionOptions<TEvent, TMessage> {
   client: Ably.Realtime;
 
   /**
-   * The session name. Today this is used as the name of the single channel
-   * backing the session; in future a session may span multiple channels and
-   * the SDK will derive those channel names from this value.
+   * The session name. Matches `InvocationData.sessionName` so the value that
+   * names the session on both ends of an HTTP hop is identically typed.
+   * Today this is used as the name of the single channel backing the session;
+   * in future a session may span multiple channels and the SDK will derive
+   * those channel names from this value.
    */
-  name: string;
+  sessionName: string;
 
   /** Codec that translates between domain events and channel operations. */
   codec: Codec<TEvent, TMessage>;
@@ -55,30 +59,40 @@ interface SessionOptions<TEvent, TMessage> {
 ```ts
 interface ClientSession<TEvent, TMessage> {
   /** The session name, as passed to createClientSession. */
-  readonly name: string;
+  readonly sessionName: string;
 
   /** The unfiltered conversation tree. Available before connect(). */
   readonly tree: Tree<TMessage, ClientRun<TMessage>>;
 
   /**
    * Create a projected view over the tree. Each view has independent branch
-   * selection and pagination. Views can be created before or after connect().
-   * Call view.close() to release a view when it's no longer needed.
+   * selection and pagination. Views can be created before connect() — the
+   * view pends hydration and fills in as the session materialises the
+   * channel. Call view.close() to release a view when it's no longer needed.
    */
-  createView(options?: CreateViewOptions): ClientView<TMessage>;
+  createView(options?: CreateViewOptions): ClientView<TEvent, TMessage>;
 
   /**
    * Hydrate from the storage reader (if provided) and subscribe to the channel
    * for live events. Resolves when hydration is complete and the live
    * subscription is active.
+   *
+   * Idempotent: calling connect() a second time is a no-op and resolves
+   * immediately so that workflow retries are not hostile.
    */
   connect(): Promise<void>;
 
   /**
    * Unsubscribe from the channel and tear down the tree and all views.
+   * Idempotent and never rejects — callers can safely call close() in
+   * error-handling paths without wrapping it in try/catch.
    */
   close(): Promise<void>;
 
+  /**
+   * Symbol.asyncDispose — equivalent to `close()`. Closes subscriptions and
+   * releases views; no publish side effects.
+   */
   [Symbol.asyncDispose](): Promise<void>;
 
   /**
@@ -91,10 +105,13 @@ interface ClientSession<TEvent, TMessage> {
   /**
    * Low-level write surface for publishing lifecycle events, messages, and
    * signals directly to the channel. Views and runs delegate to this
-   * internally. Exposed for server-side validation handlers, orchestrators,
-   * and advanced patterns that need explicit control.
+   * internally. Exposed at the top level (not demoted behind `.advanced`) so
+   * server-side validation handlers and orchestrators can reach it directly.
    *
-   * Can be used without connect() — publishes directly to the channel.
+   * A session created without calling `connect()` can be used writer-only —
+   * the writer publishes directly to the channel without hydrating the tree
+   * or subscribing. This is the "lifecycle-only" idiom used by the server-
+   * side validation and durable-execution `endRun` hop examples.
    */
   readonly writer: SessionWriter<TEvent, TMessage>;
 }
@@ -130,18 +147,25 @@ interface SessionWriter<TEvent, TMessage> {
   // --- Content ---
 
   /**
-   * Publish one or more complete domain messages to the channel.
-   * Encoded via the codec's writeMessages path. Use for user messages,
-   * tool results, and other discrete complete messages.
+   * Publish one or more complete domain messages to the channel. Encoded via
+   * the codec's writeMessages path. Use for user messages, tool results, and
+   * other discrete complete messages.
+   *
+   * Message IDs are supplied by the caller on each message (e.g. the Vercel
+   * codec uses `UIMessage.id`). The writer does not assign IDs and does not
+   * return them; this matches `run.send()` so the send surface is uniform.
    */
-  sendMessages(options: SendMessagesOptions<TMessage>): Promise<SendResult>;
+  sendMessages(options: SendMessagesOptions<TMessage>): Promise<void>;
 
   /**
-   * Publish one or more discrete domain events to the channel.
-   * Encoded via the codec's writeEvent path. Use for standalone events
-   * like data-* that are not complete messages.
+   * Publish one or more discrete domain events to the channel. Encoded via
+   * the codec's writeEvent path. Use for standalone events like `data-*`
+   * that are not complete messages.
+   *
+   * Event IDs, where the domain events carry them, are supplied by the
+   * caller. The writer does not assign IDs and does not return them.
    */
-  sendEvents(options: SendEventsOptions<TEvent>): Promise<SendResult>;
+  sendEvents(options: SendEventsOptions<TEvent>): Promise<void>;
 
   // --- Control signals ---
 
@@ -190,16 +214,21 @@ interface StartRunResult {
 }
 
 interface SuspendRunOptions {
+  /** The run to suspend. */
   runId: string;
+  /** Why the run is being suspended. */
   reason: SuspendReason;
 }
 
 interface EndRunOptions {
+  /** The run to end. */
   runId: string;
+  /** Terminal status to record on `x-ably-run-end`. */
   status: RunEndStatus;
 }
 
 interface StartStepOptions {
+  /** The run the new step belongs to. */
   runId: string;
 }
 
@@ -209,31 +238,52 @@ interface StartStepResult {
 }
 
 interface EndStepOptions {
+  /** The run the step belongs to. */
   runId: string;
+  /** The step to end. */
   stepId: string;
+  /** Terminal status to record on `x-ably-step-end`. */
   status: StepEndStatus;
 }
 
 interface AbortOptions {
+  /** The run to abort. */
   runId: string;
+  /**
+   * Override the attribution clientId sent as `x-ably-client-id`. Use this
+   * in backend orchestrators publishing abort on behalf of an end-user
+   * (the control signal is observable on the channel, so attribution still
+   * matters for audit and UI display). When omitted, the publishing
+   * connection's clientId is used.
+   */
+  clientId?: string;
 }
 
 interface PauseOptions {
+  /** The run to pause. */
   runId: string;
+  /** Override the attribution clientId. See AbortOptions.clientId. */
+  clientId?: string;
 }
 
 interface ResumeOptions {
+  /** The run to resume. */
   runId: string;
   /** Target a specific step for checkpoint-based resumption. */
   stepId?: string;
   /** Message the agent must observe before starting (e.g. HITL approval). */
   messageId?: string;
+  /** Override the attribution clientId. See AbortOptions.clientId. */
+  clientId?: string;
 }
 
 interface RetryOptions {
+  /** The run to retry. */
   runId: string;
   /** Target a specific step for step-level retry. */
   stepId?: string;
+  /** Override the attribution clientId. See AbortOptions.clientId. */
+  clientId?: string;
 }
 
 interface SendMessagesOptions<TMessage> {
@@ -267,11 +317,18 @@ interface SendEventsOptions<TEvent> {
    */
   clientId?: string;
 }
+```
 
-interface SendResult {
-  /** The IDs assigned to the published messages, in order. */
-  messageIds: string[];
-}
+Run-scoped callers (on `ClientRun`) already carry the run as the receiver, so
+the writer's option types are also exported with the redundant `runId`
+stripped. These aliases are derived via `Omit` so any future additions to the
+writer's option types flow through automatically:
+
+```ts
+type ClientRunAbortOptions = Omit<AbortOptions, 'runId'>;
+type ClientRunPauseOptions = Omit<PauseOptions, 'runId'>;
+type ClientRunResumeOptions = Omit<ResumeOptions, 'runId'>;
+type ClientRunRetryOptions = Omit<RetryOptions, 'runId'>;
 ```
 
 ## AgentSession
@@ -279,7 +336,7 @@ interface SendResult {
 ```ts
 interface AgentSession<TEvent, TMessage> {
   /** The session name, as passed to createAgentSession. */
-  readonly name: string;
+  readonly sessionName: string;
 
   /**
    * The unfiltered conversation tree. Available as an escape hatch for
@@ -291,8 +348,9 @@ interface AgentSession<TEvent, TMessage> {
    * Create a view scoped to the run an invocation names. The view's branch
    * selection is pinned by the invocation's run ID — it shows the linear
    * conversation the run sits on (ancestry from root plus the run's own
-   * messages). Call view.createStep() to produce the step that executes
-   * the run.
+   * messages). Views can be created before connect() — the view pends
+   * hydration and fills in as the session materialises the channel. Call
+   * view.createStep() to produce the step that executes the run.
    */
   createView(invocation: Invocation): AgentView<TEvent, TMessage>;
 
@@ -300,14 +358,23 @@ interface AgentSession<TEvent, TMessage> {
    * Hydrate from the storage reader (if provided) and subscribe to the channel
    * for live events. Resolves when hydration is complete and the live
    * subscription is active.
+   *
+   * Idempotent: calling connect() a second time is a no-op and resolves
+   * immediately so that workflow retries are not hostile.
    */
   connect(): Promise<void>;
 
   /**
    * Unsubscribe from the channel and tear down the session.
+   * Idempotent and never rejects — callers can safely call close() in
+   * error-handling paths without wrapping it in try/catch.
    */
   close(): Promise<void>;
 
+  /**
+   * Symbol.asyncDispose — equivalent to `close()`. Closes subscriptions and
+   * releases views; no publish side effects.
+   */
   [Symbol.asyncDispose](): Promise<void>;
 
   /**
@@ -318,8 +385,14 @@ interface AgentSession<TEvent, TMessage> {
   off(event: 'error', handler: (error: Ably.ErrorInfo) => void): void;
 
   /**
-   * Low-level write surface. Steps delegate to this internally. Exposed for
-   * orchestrators and advanced patterns (e.g. subagent fan-out).
+   * Low-level write surface. Steps delegate to this internally. Exposed at
+   * the top level for orchestrators and advanced patterns (e.g. subagent
+   * fan-out, lifecycle-only hops).
+   *
+   * A session created without calling `connect()` can be used writer-only —
+   * the writer publishes directly to the channel without hydrating the tree
+   * or subscribing. This is the "lifecycle-only" durable-execution pattern
+   * (see plan §5.7).
    */
   readonly writer: SessionWriter<TEvent, TMessage>;
 }
@@ -343,23 +416,13 @@ interface Tree<TMessage, TRun extends Run<TMessage> = Run<TMessage>> {
 
   // --- Granular events ---
 
-  on(event: 'message-added', handler: (node: MessageNode<TMessage, TRun>) => void): void;
-  on(event: 'message-updated', handler: (node: MessageNode<TMessage, TRun>) => void): void;
-  on(event: 'run-started', handler: (run: TRun) => void): void;
-  on(event: 'run-updated', handler: (run: TRun) => void): void;
-  on(event: 'run-ended', handler: (run: TRun) => void): void;
-  on(event: 'step-started', handler: (step: StepState, run: TRun) => void): void;
-  on(event: 'step-updated', handler: (step: StepState, run: TRun) => void): void;
-  on(event: 'step-ended', handler: (step: StepState, run: TRun) => void): void;
+  on(event: 'message-added' | 'message-updated', handler: (node: MessageNode<TMessage, TRun>) => void): void;
+  on(event: 'run-started' | 'run-updated' | 'run-ended', handler: (run: TRun) => void): void;
+  on(event: 'step-started' | 'step-updated' | 'step-ended', handler: (step: StepState, run: TRun) => void): void;
 
-  off(event: 'message-added', handler: (node: MessageNode<TMessage, TRun>) => void): void;
-  off(event: 'message-updated', handler: (node: MessageNode<TMessage, TRun>) => void): void;
-  off(event: 'run-started', handler: (run: TRun) => void): void;
-  off(event: 'run-updated', handler: (run: TRun) => void): void;
-  off(event: 'run-ended', handler: (run: TRun) => void): void;
-  off(event: 'step-started', handler: (step: StepState, run: TRun) => void): void;
-  off(event: 'step-updated', handler: (step: StepState, run: TRun) => void): void;
-  off(event: 'step-ended', handler: (step: StepState, run: TRun) => void): void;
+  off(event: 'message-added' | 'message-updated', handler: (node: MessageNode<TMessage, TRun>) => void): void;
+  off(event: 'run-started' | 'run-updated' | 'run-ended', handler: (run: TRun) => void): void;
+  off(event: 'step-started' | 'step-updated' | 'step-ended', handler: (step: StepState, run: TRun) => void): void;
 }
 ```
 
@@ -408,8 +471,25 @@ interface View<TMessage, TRun extends Run<TMessage> = Run<TMessage>> {
    * Release this view's subscriptions and resources. After close(), the view
    * no longer updates and should not be read. Session.close() closes all
    * views automatically.
+   *
+   * Idempotent — calling close() a second time is a no-op.
    */
   close(): void;
+}
+
+/**
+ * Optional behaviour for {@link ClientView.createRegenerate} and
+ * {@link ClientView.createEdit}.
+ */
+interface CreateForkOptions {
+  /**
+   * Whether the view should switch selection to the new branch as soon as
+   * the fork is created. Defaults to `true` — the common UI pattern where
+   * regenerating or editing a message should immediately display the new
+   * branch. Pass `{ autoSelect: false }` to leave the current selection
+   * untouched (e.g. when forking multiple branches for later navigation).
+   */
+  autoSelect?: boolean;
 }
 
 /**
@@ -417,8 +497,12 @@ interface View<TMessage, TRun extends Run<TMessage> = Run<TMessage>> {
  * mutable — the user drives it via select() and loadMore(). Factory for new
  * runs: createRun, createRegenerate, and createEdit all produce a ClientRun
  * positioned by the view's current branch state.
+ *
+ * The generic carries `TEvent` as well as `TMessage` for symmetry with
+ * `AgentView` and for forward compatibility with future event-typed
+ * client-side operations.
  */
-interface ClientView<TMessage> extends View<TMessage, ClientRun<TMessage>> {
+interface ClientView<TEvent, TMessage> extends View<TMessage, ClientRun<TMessage>> {
   /** Runs whose messages are visible in this view's projection. */
   readonly runs: ReadonlyArray<ClientRun<TMessage>>;
 
@@ -430,7 +514,9 @@ interface ClientView<TMessage> extends View<TMessage, ClientRun<TMessage>> {
 
   /**
    * Select a sibling at a branch point, switching which branch this view shows.
-   * The messageId must identify an existing node in the tree.
+   *
+   * @throws `Ably.ErrorInfo` with code `ErrorCode.ViewNodeNotFound` when
+   *   `messageId` does not identify any node in the tree.
    */
   select(messageId: string): void;
 
@@ -444,17 +530,21 @@ interface ClientView<TMessage> extends View<TMessage, ClientRun<TMessage>> {
 
   /**
    * Create a new run that forks the tree at the given message (regenerate).
-   * The original response is preserved alongside the new branch. The run is
-   * not yet live — call run.start() to publish `x-ably-run-start`.
+   * The original response is preserved alongside the new branch. By default
+   * the view selects the new branch immediately; pass `{ autoSelect: false }`
+   * to leave selection untouched. The run is not yet live — call run.start()
+   * to publish `x-ably-run-start`.
    */
-  createRegenerate(messageId: string): ClientRun<TMessage>;
+  createRegenerate(messageId: string, options?: CreateForkOptions): ClientRun<TMessage>;
 
   /**
-   * Create a new run that forks the tree at the given message (edit).
-   * The conversation branches from the edit point. The run is not yet live —
-   * call run.start() to publish `x-ably-run-start`.
+   * Create a new run that forks the tree at the given message (edit). The
+   * conversation branches from the edit point. By default the view selects
+   * the new branch immediately; pass `{ autoSelect: false }` to leave
+   * selection untouched. The run is not yet live — call run.start() to
+   * publish `x-ably-run-start`.
    */
-  createEdit(messageId: string): ClientRun<TMessage>;
+  createEdit(messageId: string, options?: CreateForkOptions): ClientRun<TMessage>;
 }
 
 /**
@@ -485,6 +575,10 @@ interface AgentView<TEvent, TMessage> extends View<TMessage, AgentRun<TMessage>>
    * active — call step.start() to wait for the invocation's preconditions
    * and publish `x-ably-step-start`. The gap between createStep and start is
    * the setup window for registering signal handlers (e.g. step.on('pause', ...)).
+   *
+   * Singleton per view — calling `createStep()` a second time throws an
+   * `Ably.ErrorInfo` with code `ErrorCode.ViewStepAlreadyCreated`. For
+   * multi-step flows, create a fresh view from a fresh session per hop.
    */
   createStep(): Step<TEvent, TMessage>;
 }
@@ -548,6 +642,14 @@ interface MessageNode<TMessage, TRun extends Run<TMessage> = Run<TMessage>> {
 }
 ```
 
+The package exports pre-bound aliases for the common run-variant specialisations
+so callers rarely need to spell out the second generic by hand:
+
+```ts
+type ClientMessageNode<TMessage> = MessageNode<TMessage, ClientRun<TMessage>>;
+type AgentMessageNode<TMessage> = MessageNode<TMessage, AgentRun<TMessage>>;
+```
+
 ## Runs
 
 ```ts
@@ -584,6 +686,38 @@ interface Run<TMessage> {
    * session's run variant (specialised in ClientRun / AgentRun).
    */
   readonly messages: ReadonlyArray<MessageNode<TMessage>>;
+
+  /**
+   * Resolve when the run's status enters any of the targeted states.
+   * Replaces hand-rolled `waitForRunEnd` patterns and closes the
+   * subscribe-after-fetch race in fan-out orchestration.
+   *
+   * Pass exactly the statuses the caller cares about — no preset strings
+   * like `'terminal'` or `'settled'`, because those vocabularies introduce
+   * a second state namespace without adding information the caller doesn't
+   * already have.
+   *
+   * @example
+   * await run.when(['complete', 'failed', 'aborted']);              // former "terminal"
+   * await run.when(['complete', 'failed', 'aborted', 'suspended']); // former "settled"
+   *
+   * @throws `Ably.ErrorInfo` with code `ErrorCode.RunClosed` when the
+   *   session closes before the run reaches one of the targeted states.
+   */
+  when(statuses: RunStatus[]): Promise<RunStatus>;
+
+  /**
+   * Snapshot the run's current state into an {@link Invocation} the caller
+   * can serialize and POST to an agent endpoint. Carries the session name,
+   * this run's ID, and — when present — the message ID of the last message
+   * sent into the run, so the agent can wait for that message to be visible
+   * before starting its step.
+   *
+   * Exposed on the base `Run` interface so both client and agent code can
+   * construct invocations; the agent uses it when fanning out to subagents
+   * that own child runs it created via `session.writer.startRun(...)`.
+   */
+  toInvocation(): Invocation;
 }
 
 /** Run as seen from a ClientSession. Adds lifecycle and control methods. */
@@ -596,57 +730,67 @@ interface ClientRun<TMessage> extends Run<TMessage> {
   /**
    * Publish `x-ably-run-start` to the channel. Call after creating the run
    * via view.createRun/createRegenerate/createEdit and before sending content.
+   *
+   * @throws `Ably.ErrorInfo` with code `ErrorCode.RunAlreadyStarted` when
+   *   called twice on the same run. Lifecycle calls are orchestrator-
+   *   authored; programming errors should be loud.
    */
   start(): Promise<void>;
 
   // --- Content ---
 
   /**
-   * Send a message to this run. The message is published to the channel
-   * tagged with this run's ID. Used for the initial user message (after
-   * start) and for mid-run steering.
-   * Does not require an agent to be running — the message is durable.
+   * Send a message to this run. The caller owns the message ID — for the
+   * Vercel codec, `UIMessage.id` is required and is reused as the transport-
+   * level `x-ably-msg-id`; no ID is generated by the SDK. The message is
+   * published tagged with this run's ID. Used for the initial user message
+   * (after start) and for mid-run steering. Does not require an agent to be
+   * running — the message is durable.
    */
   send(message: TMessage): Promise<void>;
 
   // --- Control signals ---
 
   /**
-   * Abort this run. Publishes an abort control signal to the channel.
-   * The agent observes it and closes the run terminally.
-   * Does not require an agent to be running — the signal is durable.
-   */
-  abort(): Promise<void>;
-
-  /**
-   * Pause this run. Publishes a pause control signal to the channel.
-   * The agent finishes or interrupts its current step and suspends the run.
-   */
-  pause(): Promise<void>;
-
-  /**
-   * Resume this suspended run. Publishes a resume control signal.
-   * Optionally targets a specific step for checkpoint-based resumption.
-   */
-  resume(options?: { stepId?: string }): Promise<void>;
-
-  /**
-   * Retry this failed or abandoned run. Publishes a retry control signal.
-   * Optionally targets a specific step for step-level retry.
-   */
-  retry(options?: { stepId?: string }): Promise<void>;
-
-  // --- Invocation ---
-
-  /**
-   * Create an invocation from this run's current state. The invocation
-   * carries the session name, run ID, and the message ID of the last
-   * message sent via run.send() as a precondition.
+   * Abort this run. Publishes an abort control signal to the channel so a
+   * running agent can observe it and close the run terminally.
    *
-   * Call after start() and send() to create the invocation the developer
-   * delivers to an agent endpoint.
+   * Returns the {@link Invocation} targeting this run; the caller POSTs it
+   * to an agent endpoint when no agent is currently running (the channel
+   * signal alone is only effective if an agent is listening; otherwise the
+   * caller must wake one via the invocation). Returning the invocation
+   * uniformly across all four control methods lets every control-signal
+   * call site follow the same two-step "publish, then optionally POST"
+   * pattern.
+   *
+   * Silent no-op when the run has already reached a terminal status —
+   * multi-device races are idempotent by default.
    */
-  createInvocation(): Invocation;
+  abort(): Promise<Invocation>;
+
+  /**
+   * Pause this run. Publishes a pause control signal so the agent finishes
+   * or interrupts its current step and suspends the run. See
+   * {@link ClientRun.abort} for the `Invocation` return rationale. Silent
+   * no-op when the run has already reached a terminal status.
+   */
+  pause(): Promise<Invocation>;
+
+  /**
+   * Resume this suspended run. Publishes a resume control signal, optionally
+   * targeting a specific step for checkpoint-based resumption. See
+   * {@link ClientRun.abort} for the `Invocation` return rationale. Silent
+   * no-op when the run has already reached a terminal status.
+   */
+  resume(options?: { stepId?: string }): Promise<Invocation>;
+
+  /**
+   * Retry this failed or abandoned run. Publishes a retry control signal,
+   * optionally targeting a specific step for step-level retry. See
+   * {@link ClientRun.abort} for the `Invocation` return rationale. Silent
+   * no-op when the run has already reached a terminal status.
+   */
+  retry(options?: { stepId?: string }): Promise<Invocation>;
 }
 
 /** Run as seen from an AgentSession. Adds agent lifecycle methods. */
@@ -658,12 +802,26 @@ interface AgentRun<TMessage> extends Run<TMessage> {
    * Suspend this run without closing it. Published by the agent when the
    * current step's work requires external input before continuing, or in
    * response to a pause signal.
+   *
+   * Idempotent on a run that is already suspended — publishes nothing and
+   * resolves `void`. Durable retries and multi-replica races fold into
+   * one effective transition without a guard.
+   *
+   * @throws `Ably.ErrorInfo` with code `ErrorCode.RunAlreadyTerminal` when
+   *   called on a run that has already reached a terminal status. A
+   *   suspend is forward motion, so suspending a terminal run is
+   *   impossible and remains a loud programming error.
    */
   suspend(reason: SuspendReason): Promise<void>;
 
   /**
    * Close this run terminally. Published by the agent when the task
    * completes, is aborted, or fails beyond recovery.
+   *
+   * Idempotent on a run that has already reached a terminal status —
+   * publishes nothing and resolves `void`. Re-publishing a terminal is
+   * redundant, not a programming error; durable retries and the step
+   * disposer both rely on this.
    */
   end(status: RunEndStatus): Promise<void>;
 }
@@ -685,6 +843,28 @@ interface StepState {
   readonly status: StepStatus;
 }
 
+/** Options accepted by {@link Step.start}. */
+interface StepStartOptions {
+  /**
+   * Abort the precondition wait after this many milliseconds. Defaults to
+   * `60_000` when neither `timeoutMs` nor `signal` is supplied — prevents
+   * a hop from hanging forever waiting for an invocation message that
+   * never arrives.
+   */
+  timeoutMs?: number;
+
+  /**
+   * Caller-supplied abort signal folded into {@link Step.signal}. After
+   * `start()` resolves, `step.signal.aborted` becomes true whenever this
+   * signal fires OR when an `x-ably-run-abort` control signal is observed
+   * on the channel. Callers wire runtime-owned cancellation in here
+   * (`req.signal` in serverless handlers, a WDK `abortSignal` in durable
+   * execution) — the SDK does not introspect the runtime and composes
+   * only what the caller hands it.
+   */
+  signal?: AbortSignal;
+}
+
 /**
  * The agent's active write handle for one continuous execution within a run.
  * Created from an AgentView via view.createStep(). The view carries the
@@ -701,14 +881,24 @@ interface Step<TEvent, TMessage> {
   /** The step's unique ID, generated when the step is created. */
   readonly id: string;
 
+  /** Current status of the step — mirrors {@link StepState.status}. */
+  readonly status: StepStatus;
+
   /**
-   * AbortSignal that fires when an abort control signal is observed for
-   * this step's run. Wire this into model SDKs, fetch calls, and streams
-   * that accept AbortSignal.
+   * Aborts when any of the following happens:
+   *   - An `x-ably-run-abort` control signal is observed on the channel
+   *     (the durable "run aborted" fact).
+   *   - A signal passed to {@link Step.start} via `start({ signal })` fires
+   *     (the caller folds in runtime-owned cancellation: `req.signal` in
+   *     serverless handlers, a WDK `abortSignal` in durable execution).
+   *
+   * Wire into your model call as `abortSignal: step.signal`. No explicit
+   * composition at call sites for the common case.
    *
    * If the run was aborted before this step started (e.g. during the gap
    * between a crash and a retry), the signal is already aborted when
-   * start() resolves. Always check signal.aborted after start() returns.
+   * {@link Step.start} resolves. Always check `signal.aborted` after
+   * `start()` returns.
    */
   readonly signal: AbortSignal;
 
@@ -718,41 +908,74 @@ interface Step<TEvent, TMessage> {
    * Resolves when the step is active and the view's messages are complete.
    *
    * If a pre-existing abort signal is found in the session (published while
-   * no agent was running), signal.aborted will be true after start() resolves.
-   * If a pre-existing pause signal is found, the 'pause' handler fires
-   * immediately after start() resolves.
+   * no agent was running), `signal.aborted` will be true after `start()`
+   * resolves. If a pre-existing pause signal is found, any `'pause'` handler
+   * already registered fires immediately after `start()` resolves; handlers
+   * registered later also receive the buffered signal on first subscription
+   * (see {@link Step.on}).
    *
-   * Rejects if the step is superseded (another `x-ably-step-start` with an
-   * earlier serial was observed for the same run). The rejection is an
-   * Ably.ErrorInfo with a distinguishable error code.
+   * @throws `Ably.ErrorInfo` with code:
+   *   - `ErrorCode.StepSuperseded` — another `x-ably-step-start` with an
+   *     earlier serial was observed for the same run (a sibling hop won).
+   *   - `ErrorCode.InvocationPreconditionTimeout` — the precondition wait
+   *     exceeded `timeoutMs`.
+   *   - `ErrorCode.StepStartAborted` — the caller-supplied `options.signal`
+   *     fired before preconditions were met.
    */
-  start(): Promise<void>;
+  start(options?: StepStartOptions): Promise<void>;
 
   /**
    * Publish `x-ably-step-end` with the given status and release step
    * resources (signal listeners, stream references).
+   *
+   * Idempotent on a step that has already reached a terminal status —
+   * publishes nothing and resolves `void`. Supports the
+   * retry-after-failure pattern where `step.end('failed')` is called
+   * unconditionally in a catch block even though `step.start()` may
+   * have already left the step terminal via `StepSuperseded`.
    */
   end(status: StepEndStatus): Promise<void>;
 
+  /**
+   * Symbol.asyncDispose — pessimistic safety net. If the step is still
+   * `'active'` at dispose time, the disposer publishes a terminal
+   * `x-ably-step-end` so the channel state does not leak a half-open step:
+   *
+   *   - `step.signal.aborted` is true → publishes `step.end('aborted')`.
+   *   - Otherwise → publishes `step.end('failed')` with cause
+   *     `ErrorCode.StepDisposedBeforeEnd` (`104021`).
+   *
+   * If the step has already reached a terminal status (including via an
+   * explicit `end()` call earlier in scope), disposal is pure cleanup —
+   * the idempotent `end()` contract means the disposer can invoke
+   * `end('failed')` or `end('aborted')` unconditionally without worrying
+   * about clobbering an earlier terminal. Callers still call
+   * `step.end('complete')` explicitly on the happy path; the disposer
+   * exists to close out runs that leave scope via a thrown error.
+   */
   [Symbol.asyncDispose](): Promise<void>;
 
   /**
-   * Register a handler for a pause signal observed on the channel.
-   * The agent can checkpoint state and end the step with 'paused', or
-   * let the current work complete and end with 'complete'.
+   * Register a handler for a pause signal observed on the channel. The
+   * agent can checkpoint state and end the step with `'paused'`, or let the
+   * current work complete and end with `'complete'`.
    *
-   * If a pause signal was already published before this step started,
-   * the handler fires immediately after start() resolves.
+   * Pause signals are buffered: any pause observed before a handler is
+   * registered (including signals materialised during `start()`) is
+   * delivered synchronously to the handler on first subscription. This
+   * removes the order-sensitive "register before `start()`" footgun —
+   * handlers can be registered at any point and will still see prior
+   * pauses.
    */
   on(event: 'pause', handler: () => void): void;
 
   off(event: 'pause', handler: () => void): void;
 
   /**
-   * Pipe a readable stream through the codec encoder to the channel.
-   * Each chunk is encoded and published as it arrives. The step's abort
-   * signal is wired in automatically — if the run is aborted mid-pipe,
-   * the stream is cancelled.
+   * Pipe a readable stream through the codec encoder to the channel. Each
+   * chunk is encoded and published as it arrives. The step's abort signal
+   * is wired in automatically — if the run is aborted mid-pipe, the stream
+   * is cancelled.
    */
   pipe(stream: ReadableStream<TEvent>): Promise<void>;
 
@@ -765,8 +988,8 @@ interface Step<TEvent, TMessage> {
 
   /**
    * Publish one or more discrete domain events through the codec encoder.
-   * Encoded via the codec's writeEvent path. Use for standalone events
-   * like data-* that are not complete messages.
+   * Encoded via the codec's writeEvent path. Use for standalone events like
+   * `data-*` that are not complete messages.
    */
   sendEvents(events: TEvent | TEvent[]): Promise<void>;
 }
@@ -779,6 +1002,10 @@ interface Step<TEvent, TMessage> {
  * A typed data structure carrying preconditions for an agent invocation.
  * Produced by client-side operations that need an agent to act. The developer
  * owns the HTTP transport; the SDK defines the contract on both sides.
+ *
+ * Construct one from a wire payload via Invocation.fromJSON; construct one
+ * from a live run via `run.toInvocation()` (see
+ * {@link Run.toInvocation}).
  */
 interface Invocation {
   /** The session name the agent should open. */
@@ -805,6 +1032,91 @@ interface InvocationData {
   messageId?: string;
 }
 ```
+
+### Invocation.fromJSON
+
+`Invocation` is both a type and a value — TypeScript declaration merging binds
+the interface above to a `const` of the same name that exposes the static
+construction path. Agent entry points use `Invocation.fromJSON(data)` to
+rehydrate the typed handle from an incoming HTTP body.
+
+```ts
+interface InvocationConstructor {
+  /**
+   * Rehydrate an {@link Invocation} from its serialized form.
+   *
+   * @throws `Ably.ErrorInfo` with code `ErrorCode.InvocationInvalid` when
+   *   `data` does not describe a valid invocation (e.g. missing
+   *   `sessionName` or `runId`).
+   */
+  fromJSON(data: InvocationData): Invocation;
+}
+
+declare const Invocation: InvocationConstructor;
+```
+
+See [Runs](#runs) for `run.toInvocation()`, the instance-method counterpart
+available on both `ClientRun` and `AgentRun`.
+
+## Error codes
+
+All SDK-specific error codes live in the reserved `104xxx` range per
+[.claude/rules/ERRORS.md](../.claude/rules/ERRORS.md). HTTP `statusCode`
+values on each `Ably.ErrorInfo` are derived case-by-case rather than by
+slicing the numeric code.
+
+```ts
+enum ErrorCode {
+  // Transport
+  TransportSendFailed = 104000,
+  TransportSubscriptionError = 104001,
+
+  // Step disposer safety net
+  StepDisposedBeforeEnd = 104021,
+
+  // Session lifecycle
+  SessionClosed = 104100,
+  HydrationFailed = 104101,
+
+  // Run lifecycle
+  RunAlreadyStarted = 104199,
+  RunAlreadyTerminal = 104200,
+  RunClosed = 104201,
+
+  // Step lifecycle
+  StepSuperseded = 104300,
+  InvocationPreconditionTimeout = 104301,
+  StepStartAborted = 104302,
+  ViewStepAlreadyCreated = 104303,
+
+  // View / invocation
+  ViewClosed = 104400,
+  ViewNodeNotFound = 104401,
+  InvocationInvalid = 104402,
+
+  // Storage
+  StorageWriteFailed = 104500,
+}
+```
+
+| Code | Name | Meaning |
+| --- | --- | --- |
+| `104000` | `TransportSendFailed` | Publishing a message or event through the transport failed. |
+| `104001` | `TransportSubscriptionError` | The underlying Ably channel subscription failed. |
+| `104021` | `StepDisposedBeforeEnd` | `Step[Symbol.asyncDispose]` fired while the step was still active with no explicit `end()`; attached as `cause` on the disposer's `step.end('failed')` publish. |
+| `104100` | `SessionClosed` | The session has been closed; the requested operation is no longer valid. |
+| `104101` | `HydrationFailed` | Hydration from the configured `StorageReader` failed. |
+| `104199` | `RunAlreadyStarted` | `run.start()` was called on a run that has already been started. |
+| `104200` | `RunAlreadyTerminal` | `AgentRun.suspend()` was called on a run that is terminal — a forward-motion transition that is impossible. (`end()` and `suspend()` on already-satisfied states are idempotent and do not raise this code.) |
+| `104201` | `RunClosed` | `run.when()` rejected because the session closed before the targeted status was reached. |
+| `104300` | `StepSuperseded` | `step.start()` rejected because a later `x-ably-step-start` for the same run won arbitration. |
+| `104301` | `InvocationPreconditionTimeout` | `step.start()` timed out waiting for the invocation's preconditions to become visible. |
+| `104302` | `StepStartAborted` | `step.start()` was aborted by the caller-supplied `AbortSignal` before it resolved. |
+| `104303` | `ViewStepAlreadyCreated` | `view.createStep()` was called twice on the same view; the step is a singleton. |
+| `104400` | `ViewClosed` | The view has been closed; the requested operation is no longer valid. |
+| `104401` | `ViewNodeNotFound` | `view.select()` was called with a message ID that does not exist in the tree. |
+| `104402` | `InvocationInvalid` | `Invocation.fromJSON()` was called with data that does not describe a valid invocation. |
+| `104500` | `StorageWriteFailed` | The configured `StorageWriter` exhausted its retry budget; surfaced via `session.on('error')`. |
 
 ## StorageReader and StorageWriter
 
@@ -869,22 +1181,25 @@ interface Codec<TEvent, TMessage> {
 
 ## Example 1: Basic chat
 
-Minimal send/stream/receive across a durable session. Shows the full lifecycle: session setup, view creation, run start, sending the user message, invoking the agent, and piping the model stream through a step. This is the baseline; later examples elide setup back to this.
+Minimal send/stream/receive across a durable session. Shows the full lifecycle:
+session setup, view creation, run start, sending the user message, invoking
+the agent, and piping the model stream through a step. This is the baseline;
+later examples elide setup back to this.
 
 ```ts
 // --- client ---
 import * as Ably from 'ably';
-import { createClientSession, createInvocation } from '@ably/ai-transport';
-import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import type * as AI from 'ai';
+import { createClientSession } from '@ably/ai-transport';
 import type { InvocationData } from '@ably/ai-transport';
+import { UIMessageCodec } from '@ably/ai-transport/vercel';
 
 const ably = new Ably.Realtime({ authUrl: '/api/ably-token' });
 const codec = new UIMessageCodec();
 
 const session = createClientSession<AI.UIMessageChunk, AI.UIMessage>({
   client: ably,
-  name: 'session:abc123',
+  sessionName: 'session:abc123',
   codec,
 });
 await session.connect();
@@ -894,132 +1209,224 @@ view.subscribe(() => {
   // UI reads view.messages and renders them
 });
 
-async function invokeAgent(data: InvocationData) {
+const invokeAgent = async (data: InvocationData): Promise<void> => {
   await fetch('/api/agent', { method: 'POST', body: JSON.stringify(data) });
-}
+};
 
-async function onSendClick(text: string) {
+const onSendClick = async (text: string): Promise<void> => {
   const run = view.createRun();
   await run.start();
-  await run.send({ id: crypto.randomUUID(), role: 'user', parts: [{ type: 'text', text }] });
-  await invokeAgent(run.createInvocation().toJSON());
-}
+  await run.send({
+    id: crypto.randomUUID(),
+    role: 'user',
+    parts: [{ type: 'text', text }],
+  });
+  await invokeAgent(run.toInvocation().toJSON());
+};
 ```
+
+Four low-level calls on the client. The SDK does not generate message IDs —
+the caller owns `UIMessage.id`.
 
 ```ts
 // --- agent ---
-import * as Ably from 'ably';
-import { createAgentSession, createInvocation } from '@ably/ai-transport';
-import { UIMessageCodec } from '@ably/ai-transport/vercel';
-import { streamText } from 'ai';
-import { openai } from '@ai-sdk/openai';
-import type { InvocationData } from '@ably/ai-transport';
+import type * as Ably from 'ably';
+import type * as AI from 'ai';
+import { convertToModelMessages, stepCountIs, ToolLoopAgent } from 'ai';
 
-export async function POST(req: Request) {
+import { createAgentSession, Invocation } from '@ably/ai-transport';
+import type { Codec, InvocationData } from '@ably/ai-transport';
+
+declare const ably: Ably.Realtime;
+declare const codec: Codec<AI.UIMessageChunk, AI.UIMessage>;
+declare const openai: (model: string) => AI.LanguageModel;
+declare const tools: AI.ToolSet;
+
+const agent = new ToolLoopAgent({
+  model: openai('gpt-4o'),
+  tools,
+  stopWhen: stepCountIs(20),
+});
+
+export const POST = async (req: Request): Promise<Response> => {
   const data = (await req.json()) as InvocationData;
-  const invocation = createInvocation(data);
-
-  const ably = new Ably.Realtime({ key: process.env.ABLY_KEY! });
+  const invocation = Invocation.fromJSON(data);
 
   await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
-    name: invocation.sessionName,
-    codec: new UIMessageCodec(),
+    sessionName: invocation.sessionName,
+    codec,
   });
   await session.connect();
 
   const view = session.createView(invocation);
   await using step = view.createStep();
-  await step.start();
+  await step.start({ signal: req.signal, timeoutMs: 60_000 });
 
-  const result = streamText({
-    model: openai('gpt-4o'),
-    messages: view.messages.map((n) => n.message),
-    abortSignal: step.signal,
-  });
-  await step.pipe(result.toUIMessageStream());
+  try {
+    const result = await agent.stream({
+      messages: await convertToModelMessages(view.messages.map((n) => n.message)),
+      abortSignal: step.signal,
+    });
+    await step.pipe(result.toUIMessageStream());
+    await step.end('complete');
+    await view.run.end('complete');
+  } catch (err) {
+    await view.run.end(step.signal.aborted ? 'aborted' : 'failed');
+    throw err;
+  }
 
-  await step.end('complete');
-  await view.run.end('complete');
-  return new Response(null, { status: 202 });
-}
+  return new Response(undefined, { status: 202 });
+};
 ```
+
+`req.signal` is folded into `step.signal` via `start({ signal })`. The model
+call wires a single `abortSignal: step.signal`. The catch branch uses
+`step.signal.aborted` to pick terminal status; the step disposer publishes
+`x-ably-step-end` automatically if the `try` body throws before `step.end`.
 
 ## Example 2: Aborting a response
 
-Abort is durable state on the session: the client publishes an abort signal, and the agent's `step.signal` fires whether the agent was live or not. Solves **aborts don't work when a task outlives a single continuous agent execution** — the signal sits on the channel until a step observes it.
+Abort is durable state on the session: the client publishes an abort signal,
+and the agent's `step.signal` fires whether the agent was live or not. Per
+plan §5.3, control signals on `ClientRun` return an `Invocation` the caller
+POSTs to the agent endpoint to guarantee the lifecycle state lands when no
+agent is currently running.
 
 ```ts
 // --- client ---
-// ...session and view setup as in Example 1
-import type { MessageNode } from '@ably/ai-transport';
+import type * as AI from 'ai';
+import type { ClientRun, ClientView, MessageNode } from '@ably/ai-transport';
 
-// Global stop button — aborts the currently active run in a single-conversation UI.
-async function onStopClick() {
+// Global stop button — aborts the currently active run in a single-
+// conversation UI. Fire-and-forget the wake-up POST: we only care that the
+// signal is on the channel.
+const onStopClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
   const activeRun = view.runs.find((r) => r.status === 'active');
-  if (activeRun) await activeRun.abort();
-}
+  if (!activeRun) return;
+  const invocation = await activeRun.abort();
+  void fetch('/api/agent', {
+    method: 'POST',
+    body: JSON.stringify(invocation.toJSON()),
+  });
+};
 
-// Per-message variant — when the UI renders a stop button on a specific response,
-// the handler takes the node the user clicked and aborts THAT node's run directly.
-// Use this for multi-run sessions, or when the UI shows distinct conversations side by side.
-async function onStopNode(node: MessageNode<AI.UIMessage>) {
-  if (node.run?.status === 'active') await node.run.abort();
-}
+// Per-message variant — when the UI renders a stop button on a specific
+// response, the handler takes the node the user clicked and aborts THAT
+// node's run directly.
+const onStopNode = async (node: MessageNode<AI.UIMessage, ClientRun<AI.UIMessage>>): Promise<void> => {
+  if (node.run?.status !== 'active') return;
+  const invocation = await node.run.abort();
+  void fetch('/api/agent', {
+    method: 'POST',
+    body: JSON.stringify(invocation.toJSON()),
+  });
+};
+
+// Pause follows the same pattern.
+const onPauseClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
+  const activeRun = view.runs.find((r) => r.status === 'active');
+  if (!activeRun) return;
+  const invocation = await activeRun.pause();
+  void fetch('/api/agent', {
+    method: 'POST',
+    body: JSON.stringify(invocation.toJSON()),
+  });
+};
+
+// Resume the suspended run. Awaits the POST so the UI learns the agent
+// endpoint accepted the wake-up.
+const onResumeClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
+  const suspendedRun = view.runs.find((r) => r.status === 'suspended');
+  if (!suspendedRun) return;
+  const invocation = await suspendedRun.resume();
+  await fetch('/api/agent', {
+    method: 'POST',
+    body: JSON.stringify(invocation.toJSON()),
+  });
+};
 ```
+
+On the agent, abort and pause produce different terminal states, so the
+handler composes `step.signal` with a local pause controller:
 
 ```ts
 // --- agent ---
-// ...agent POST handler as in Example 1, with this body:
-await using step = view.createStep();
-await step.start();
+export const POST = async (req: Request): Promise<Response> => {
+  const data = (await req.json()) as InvocationData;
+  const invocation = Invocation.fromJSON(data);
 
-// If a prior abort was already on the channel, step.signal is already aborted.
-if (step.signal.aborted) {
-  await step.end('aborted');
-  await view.run.end('aborted');
-  return new Response(null, { status: 202 });
-}
+  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+    client: ably,
+    sessionName: invocation.sessionName,
+    codec,
+  });
+  await session.connect();
 
-const result = streamText({
-  model: openai('gpt-4o'),
-  messages: view.messages.map((n) => n.message),
-  abortSignal: step.signal, // wires abort directly into the model SDK
-});
+  const view = session.createView(invocation);
+  await using step = view.createStep();
 
-try {
-  await step.pipe(result.toUIMessageStream());
-  await step.end('complete');
-  await view.run.end('complete');
-} catch {
-  await step.end('aborted');
-  await view.run.end('aborted');
-}
-```
+  const pauseCtrl = new AbortController();
+  let paused = false;
+  step.on('pause', () => {
+    paused = true;
+    pauseCtrl.abort();
+  });
 
-Pause follows the same durable-state pattern. On the client, `activeRun.pause()` publishes a pause signal. On the agent, the step exposes it as an event:
+  await step.start({ signal: req.signal, timeoutMs: 60_000 });
 
-```ts
-// --- agent, inside the POST handler after createStep() ---
-step.on('pause', async () => {
-  // Interrupt now, or let the current stream finish and end 'complete' naturally.
-  await step.end('paused');
-  await view.run.suspend('paused');
-});
+  // A prior abort already on the channel leaves step.signal aborted.
+  if (step.signal.aborted) {
+    await step.end('aborted');
+    await view.run.end('aborted');
+    return new Response(undefined, { status: 202 });
+  }
+
+  try {
+    const result = await agent.stream({
+      messages: await convertToModelMessages(view.messages.map((n) => n.message)),
+      abortSignal: AbortSignal.any([step.signal, pauseCtrl.signal]),
+    });
+    await step.pipe(result.toUIMessageStream());
+
+    if (paused) {
+      await step.end('paused');
+      await view.run.suspend('paused');
+    } else {
+      await step.end('complete');
+      await view.run.end('complete');
+    }
+  } catch (err) {
+    if (paused) {
+      await step.end('paused');
+      await view.run.suspend('paused');
+    } else {
+      await view.run.end(step.signal.aborted ? 'aborted' : 'failed');
+    }
+    throw err;
+  }
+
+  return new Response(undefined, { status: 202 });
+};
 ```
 
 ## Example 3: Steering a running agent
 
-A user sends a follow-up while the agent is still responding. The agent's `view.messages` updates live because the view subscribes to the tree, so the next iteration of the agent loop sees the new input. Solves **no live control of a running agent** — no cancel-and-restart, the in-progress work survives.
+A user sends a follow-up while the agent is still responding. The agent's
+`view.messages` updates live because the view subscribes to the tree, so the
+next iteration of the agent loop sees the new input. Solves **no live control
+of a running agent** — no cancel-and-restart, the in-progress work survives.
 
 ```ts
 // --- client ---
-// ...session and view setup as in Example 1
-import type { MessageNode } from '@ably/ai-transport';
+import type * as AI from 'ai';
+import type { ClientRun, ClientView, MessageNode } from '@ably/ai-transport';
 
-// User types a follow-up while the previous response is still streaming.
 // Single-conversation UI: steer the one active run.
-async function onSteerClick(text: string) {
+const onSteerClick = async (
+  view: ClientView<AI.UIMessageChunk, AI.UIMessage>,
+  text: string,
+): Promise<void> => {
   const activeRun = view.runs.find((r) => r.status === 'active');
   if (!activeRun) return;
   await activeRun.send({
@@ -1027,135 +1434,235 @@ async function onSteerClick(text: string) {
     role: 'user',
     parts: [{ type: 'text', text }],
   });
-}
+};
 
-// Per-message variant — e.g. the UI shows a "reply here" affordance on a specific
-// assistant response. The handler targets THAT node's run.
-async function onSteerAtNode(node: MessageNode<AI.UIMessage>, text: string) {
+// Per-message variant — e.g. the UI shows a "reply here" affordance on a
+// specific assistant response. The handler targets THAT node's run.
+const onSteerAtNode = async (
+  node: MessageNode<AI.UIMessage, ClientRun<AI.UIMessage>>,
+  text: string,
+): Promise<void> => {
   if (node.run?.status !== 'active') return;
   await node.run.send({
     id: crypto.randomUUID(),
     role: 'user',
     parts: [{ type: 'text', text }],
   });
-}
+};
 ```
 
 ```ts
 // --- agent ---
-// ...agent setup as in Example 1
+export const POST = async (req: Request): Promise<Response> => {
+  const data = (await req.json()) as InvocationData;
+  const invocation = Invocation.fromJSON(data);
 
-await using step = view.createStep();
-await step.start();
-
-// Loop until no new user input arrives between iterations.
-// Track the tail user message id — robust to the agent's own messages being appended during pipe.
-const latestUserId = () => view.messages.findLast((n) => n.message.role === 'user')?.id;
-let lastUserId = latestUserId();
-while (!step.signal.aborted) {
-  const result = streamText({
-    model: openai('gpt-4o'),
-    messages: view.messages.map((n) => n.message),
-    abortSignal: step.signal,
+  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+    client: ably,
+    sessionName: invocation.sessionName,
+    codec,
   });
-  await step.pipe(result.toUIMessageStream());
+  await session.connect();
 
-  const currentUserId = latestUserId();
-  if (currentUserId === lastUserId) break;
-  lastUserId = currentUserId;
-}
+  const view = session.createView(invocation);
+  await using step = view.createStep();
+  await step.start({ signal: req.signal, timeoutMs: 60_000 });
 
-await step.end('complete');
-await view.run.end('complete');
+  // Track the tail user message id — robust to the agent's own messages
+  // being appended during pipe.
+  const latestUserId = (): string | undefined =>
+    view.messages.findLast((n) => n.message.role === 'user')?.id;
+  let lastUserId = latestUserId();
+
+  try {
+    while (!step.signal.aborted) {
+      const result = await agent.stream({
+        messages: await convertToModelMessages(view.messages.map((n) => n.message)),
+        abortSignal: step.signal,
+      });
+      await step.pipe(result.toUIMessageStream());
+
+      const currentUserId = latestUserId();
+      if (currentUserId === lastUserId) break;
+      lastUserId = currentUserId;
+    }
+
+    await step.end('complete');
+    await view.run.end('complete');
+  } catch (err) {
+    await view.run.end(step.signal.aborted ? 'aborted' : 'failed');
+    throw err;
+  }
+
+  return new Response(undefined, { status: 202 });
+};
 ```
 
 ## Example 4: HITL tool approval
 
-The agent proposes a tool call, suspends the run pending approval, and a later invocation (with a `messageId` precondition) picks up after the client publishes the approval. Solves **turns can't be suspended** — a run spans multiple agent executions separated by `x-ably-run-suspend`.
+The agent proposes a tool call, suspends the run pending approval, and a later
+invocation (with a `messageId` precondition) picks up after the client
+publishes the approval. The approval targets a specific `toolCallId` via the
+Vercel-layer `pendingToolCalls` helper (plan §4) — a pure function over
+`run.messages` that surfaces every `input-available` tool part on the last
+assistant message.
 
 ```ts
 // --- client ---
-// ...session and view setup as in Example 1
-import type { MessageNode } from '@ably/ai-transport';
+import type * as AI from 'ai';
+import { pendingToolCalls } from '@ably/ai-transport/vercel';
+import type { ClientRun } from '@ably/ai-transport';
 
-// UI renders view.messages. When a node's domain message contains a tool-call
-// part on a suspended run, the UI renders an approve/deny prompt for that
-// specific node and passes it to the handler. The run is read straight off
-// the node — no lookup by ID.
-async function onApprove(toolCallNode: MessageNode<AI.UIMessage>, approved: boolean) {
-  const run = toolCallNode.run;
-  if (!run || run.status !== 'suspended') return;
+const approveToolCall = async (
+  run: ClientRun<AI.UIMessage>,
+  toolCallId: string,
+  output: unknown,
+): Promise<void> => {
+  if (run.status !== 'suspended') return;
+  const pending = pendingToolCalls(run.messages).find((tc) => tc.toolCallId === toolCallId);
+  if (!pending) return;
 
-  const approvalMessageId = crypto.randomUUID();
   await run.send({
-    id: approvalMessageId,
+    id: crypto.randomUUID(),
     role: 'user',
-    parts: [{ type: 'text', text: approved ? 'approved' : 'denied' }],
+    parts: [
+      {
+        type: `tool-${pending.toolName}`,
+        toolCallId,
+        state: 'output-available',
+        input: pending.input,
+        output,
+      },
+    ],
   });
-  // Resume with the approval message as precondition — the agent waits for it
-  // to be visible before starting, so the conversation it reads includes the approval.
-  await invokeAgent({
-    sessionName: session.name,
-    runId: run.id,
-    messageId: approvalMessageId,
+
+  await fetch('/api/agent', {
+    method: 'POST',
+    body: JSON.stringify(run.toInvocation().toJSON()),
   });
-}
+};
+
+const denyToolCall = async (
+  run: ClientRun<AI.UIMessage>,
+  toolCallId: string,
+  reason: string,
+): Promise<void> => {
+  if (run.status !== 'suspended') return;
+  const pending = pendingToolCalls(run.messages).find((tc) => tc.toolCallId === toolCallId);
+  if (!pending) return;
+
+  await run.send({
+    id: crypto.randomUUID(),
+    role: 'user',
+    parts: [
+      {
+        type: `tool-${pending.toolName}`,
+        toolCallId,
+        state: 'output-error',
+        input: pending.input,
+        errorText: reason,
+      },
+    ],
+  });
+
+  await fetch('/api/agent', {
+    method: 'POST',
+    body: JSON.stringify(run.toInvocation().toJSON()),
+  });
+};
 ```
 
 ```ts
 // --- agent ---
-// ...agent setup as in Example 1
+export const POST = async (req: Request): Promise<Response> => {
+  const data = (await req.json()) as InvocationData;
+  const invocation = Invocation.fromJSON(data);
 
-await using step = view.createStep();
-await step.start();
+  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+    client: ably,
+    sessionName: invocation.sessionName,
+    codec,
+  });
+  await session.connect();
 
-const result = streamText({
-  model: openai('gpt-4o'),
-  messages: view.messages.map((n) => n.message),
-  tools: {
-    deleteFile: {
-      /* ... */
-    },
-  },
-  abortSignal: step.signal,
-});
-await step.pipe(result.toUIMessageStream());
-await step.end('complete');
+  const view = session.createView(invocation);
+  await using step = view.createStep();
+  await step.start({ signal: req.signal, timeoutMs: 60_000 });
 
-// Did the model request a tool? Suspend the run until the user approves.
-const last = view.messages[view.messages.length - 1].message;
-const proposedTool = last.parts.find((p) => p.type.startsWith('tool-'));
-if (proposedTool) {
-  await view.run.suspend('awaiting-input');
-} else {
-  await view.run.end('complete');
-}
-return new Response(null, { status: 202 });
+  try {
+    const result = streamText({
+      model: openai('gpt-4o'),
+      messages: await convertToModelMessages(view.messages.map((n) => n.message)),
+      tools,
+      abortSignal: step.signal,
+    });
+    await step.pipe(result.toUIMessageStream());
+    await step.end('complete');
+
+    // Did the model request a tool? Suspend the run until the user approves.
+    const last = view.messages.findLast((n) => n.message.role === 'assistant');
+    const proposedTool = last?.message.parts.find((p) => p.type.startsWith('tool-'));
+    await (proposedTool ? view.run.suspend('awaiting-input') : view.run.end('complete'));
+  } catch (err) {
+    await view.run.end(step.signal.aborted ? 'aborted' : 'failed');
+    throw err;
+  }
+
+  return new Response(undefined, { status: 202 });
+};
 ```
 
 ## Example 5: Regenerating a response
 
-`view.createRegenerate(messageId)` forks the tree. The original response is preserved alongside the new branch; `view.select` switches which sibling is shown. Solves the **conversation branching** side of the tree abstraction — multiple runs coexist on the same parent.
+`view.createRegenerate(messageId)` forks the tree. The original response is
+preserved alongside the new branch; by default the view auto-selects the new
+branch (pass `{ autoSelect: false }` to leave selection untouched). Solves the
+**conversation branching** side of the tree abstraction — multiple runs
+coexist on the same parent.
 
 ```ts
 // --- client ---
-// ...session and view setup as in Example 1
+import type * as AI from 'ai';
+import type { ClientSession, ClientView, InvocationData } from '@ably/ai-transport';
 
-async function onRegenerateClick(assistantMessageId: string) {
+const invokeAgent = async (data: InvocationData): Promise<void> => {
+  await fetch('/api/agent', { method: 'POST', body: JSON.stringify(data) });
+};
+
+// Fork at the response the user wants redone. The view auto-selects the new
+// branch — no explicit view.select() needed.
+const onRegenerateClick = async (
+  view: ClientView<AI.UIMessageChunk, AI.UIMessage>,
+  assistantMessageId: string,
+): Promise<void> => {
   const run = view.createRegenerate(assistantMessageId);
   await run.start();
-  await invokeAgent(run.createInvocation().toJSON());
-}
+  await invokeAgent(run.toInvocation().toJSON());
+};
 
-async function onSelectBranchClick(messageId: string) {
-  view.select(messageId); // view.messages now reflects the selected sibling
-}
+// Branch switcher UI.
+const onSelectBranchClick = (
+  view: ClientView<AI.UIMessageChunk, AI.UIMessage>,
+  messageId: string,
+): void => {
+  view.select(messageId);
+};
 
 // UI reads view.messages; for each node, parentId + session.tree.getMessage(parentId).children.length
 // tells it whether siblings exist so it can show branch-switcher controls.
-view.subscribe(() => {
-  // UI reads view.messages and sibling counts via session.tree
-});
+const wireBranchSwitcher = (
+  session: ClientSession<AI.UIMessageChunk, AI.UIMessage>,
+  view: ClientView<AI.UIMessageChunk, AI.UIMessage>,
+): (() => void) =>
+  view.subscribe(() => {
+    for (const node of view.messages) {
+      if (!node.parentId) continue;
+      const parent = session.tree.getMessage(node.parentId);
+      if (parent && parent.children.length > 1) {
+        // UI renders a branch-switcher for this node using parent.children.
+      }
+    }
+  });
 ```
 
 ```ts
@@ -1166,93 +1673,148 @@ view.subscribe(() => {
 
 ## Example 6: Multi-device continuity
 
-Two clients open the same session (same session name). Both hydrate from channel history, see identical state, and either device can abort a running run. Solves **multi-device continuity** — the session follows the user, not the connection.
+Two clients open the same session (same session name). Both hydrate from
+channel history, see identical state, and either device can abort a running
+run. Solves **multi-device continuity** — the session follows the user, not
+the connection.
 
 ```ts
 // --- phone ---
-// ...session setup as in Example 1, using session name 'session:abc123'
+const startFromPhone = async (text: string): Promise<void> => {
+  const session = createClientSession<AI.UIMessageChunk, AI.UIMessage>({
+    client: ably,
+    sessionName: 'session:abc123',
+    codec,
+  });
+  await session.connect();
 
-// User starts a long-running research task, then puts the phone down.
-const run = view.createRun();
-await run.start();
-await run.send({ id: crypto.randomUUID(), role: 'user', parts: [{ type: 'text', text: '...' }] });
-await invokeAgent(run.createInvocation().toJSON());
+  const view = session.createView();
+  const run = view.createRun();
+  await run.start();
+  await run.send({
+    id: crypto.randomUUID(),
+    role: 'user',
+    parts: [{ type: 'text', text }],
+  });
+  await invokeAgent(run.toInvocation().toJSON());
+};
 ```
 
 ```ts
 // --- laptop (opened minutes later, same session:abc123) ---
-const session = createClientSession<AI.UIMessageChunk, AI.UIMessage>({
-  client: ably,
-  name: 'session:abc123',
-  codec,
-});
-await session.connect(); // Hydrates from channel history
+const resumeFromLaptop = async (): Promise<ClientView<AI.UIMessageChunk, AI.UIMessage>> => {
+  const session = createClientSession<AI.UIMessageChunk, AI.UIMessage>({
+    client: ably,
+    sessionName: 'session:abc123',
+    codec,
+  });
+  await session.connect(); // hydrates from channel history
 
-const view = session.createView();
-view.subscribe(() => {
-  // UI reads view.messages and view.runs
-});
+  const view = session.createView();
+  view.subscribe(() => {
+    // UI reads view.messages and view.runs
+  });
+  return view;
+};
 
 // The in-flight run is visible in view.runs. The user can abort from here —
 // either globally (pattern below) or by rendering a stop button on a specific
-// message and calling node.run?.abort() directly, as in Example 2's
-// per-message variant.
-async function onStopClick() {
+// message and calling node.run?.abort() directly, as in Example 2.
+const onStopClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
   const active = view.runs.find((r) => r.status === 'active');
-  if (active) await active.abort();
-}
+  if (!active) return;
+  const invocation = await active.abort();
+  void fetch('/api/agent', {
+    method: 'POST',
+    body: JSON.stringify(invocation.toJSON()),
+  });
+};
 ```
 
 ## Example 7: Retry after failure
 
-A step ends `failed`. The client observes it and calls `run.retry()`; a fresh invocation starts a new step with a new step ID. Total order by serial resolves any race. Solves **retrying an agent produces competing outputs with no canonical winner** — steps are ID'd per attempt, non-complete output is identifiable.
+A step ends `failed`. The client observes it, publishes a retry control signal
+targeting that step, and POSTs the returned invocation; a fresh invocation
+starts a new step with a new step ID, and the total order by serial resolves
+any race.
 
 ```ts
 // --- client ---
-// ...session and view setup as in Example 1
+import type { ClientSession } from '@ably/ai-transport';
 
-session.tree.on('step-ended', async (step, run) => {
-  if (step.status !== 'failed') return;
-  await run.retry({ stepId: step.id });
-  await invokeAgent({ sessionName: session.name, runId: run.id, stepId: step.id });
-});
+const wireRetryOnFailure = (session: ClientSession<AI.UIMessageChunk, AI.UIMessage>): void => {
+  session.tree.on('step-ended', (step, run) => {
+    if (step.status !== 'failed') return;
+    void (async (): Promise<void> => {
+      const invocation = await run.retry({ stepId: step.id });
+      await fetch('/api/agent', {
+        method: 'POST',
+        body: JSON.stringify(invocation.toJSON()),
+      });
+    })();
+  });
+};
 ```
 
 ```ts
 // --- agent ---
-// ...agent setup as in Example 1
+export const POST = async (req: Request): Promise<Response> => {
+  const data = (await req.json()) as InvocationData;
+  const invocation = Invocation.fromJSON(data);
 
-await using step = view.createStep();
-try {
-  await step.start();
-  const result = streamText({
-    model: openai('gpt-4o'),
-    messages: view.messages.map((n) => n.message),
-    abortSignal: step.signal,
+  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+    client: ably,
+    sessionName: invocation.sessionName,
+    codec,
   });
-  await step.pipe(result.toUIMessageStream());
-  await step.end('complete');
-  await view.run.end('complete');
-} catch (err) {
-  // If step.start() rejected because a winning concurrent step exists,
-  // the step was already marked superseded. Otherwise: mark the attempt
-  // as failed so the retry signal has something to target.
-  await step.end('failed');
-}
+  await session.connect();
+
+  const view = session.createView(invocation);
+  await using step = view.createStep();
+
+  try {
+    await step.start({ signal: req.signal, timeoutMs: 60_000 });
+    const result = await agent.stream({
+      messages: await convertToModelMessages(view.messages.map((n) => n.message)),
+      abortSignal: step.signal,
+    });
+    await step.pipe(result.toUIMessageStream());
+    await step.end('complete');
+    await view.run.end('complete');
+  } catch {
+    // If step.start() rejected with StepSuperseded, the step is already
+    // terminal; end('failed') is a no-op in that case. Otherwise mark the
+    // attempt failed so the retry signal has something to target.
+    await step.end('failed');
+  }
+
+  return new Response(undefined, { status: 202 });
+};
 ```
 
 ## Example 8: Server-side input validation
 
-The client POSTs the user's input to the backend instead of publishing directly. The route validates, then uses `session.writer` (without `connect()`) to publish `x-ably-run-start` and the user message on the client's behalf. Solves **the user's message is published by the server, not the client** by making server-side publish an explicit, deliberate pattern rather than the default, and **hydration is available only to the client, and only from the channel** by giving the server the same session primitives.
+The client POSTs the user's input to the backend instead of publishing
+directly. The route validates, then uses `session.writer` (without calling
+`connect()`) to publish `x-ably-run-start` and the user message on the
+client's behalf. The caller owns the message ID — the writer does not return
+IDs.
 
 ```ts
 // --- client ---
-// ...session and view setup as in Example 1
+import type { ClientSession, InvocationData } from '@ably/ai-transport';
 
-async function onSendClick(text: string): Promise<{ ok: boolean; reason?: string }> {
+const invokeAgent = async (data: InvocationData): Promise<void> => {
+  await fetch('/api/agent', { method: 'POST', body: JSON.stringify(data) });
+};
+
+const onSendClick = async (
+  session: ClientSession<AI.UIMessageChunk, AI.UIMessage>,
+  text: string,
+): Promise<{ ok: boolean; reason?: string }> => {
   const res = await fetch('/api/validate-and-send', {
     method: 'POST',
-    body: JSON.stringify({ sessionName: session.name, text }),
+    body: JSON.stringify({ sessionName: session.sessionName, text }),
     // The request is authenticated however the app authenticates users
     // (cookies, bearer tokens, etc.); the backend uses that identity to set
     // x-ably-client-id on the publish.
@@ -1261,137 +1823,271 @@ async function onSendClick(text: string): Promise<{ ok: boolean; reason?: string
   const invocationData = (await res.json()) as InvocationData;
   await invokeAgent(invocationData);
   return { ok: true };
-}
+};
 ```
 
 ```ts
 // --- server route (validation + publish on behalf of client) ---
-export async function POST(req: Request): Promise<Response> {
-  const { sessionName, text } = (await req.json()) as { sessionName: string; text: string };
+interface ValidateAndSendBody {
+  sessionName: string;
+  text: string;
+}
+
+export const POST = async (req: Request): Promise<Response> => {
+  const { sessionName, text } = (await req.json()) as ValidateAndSendBody;
   if (!passesModeration(text)) return new Response('rejected', { status: 400 });
 
   const userClientId = getAuthenticatedUserClientId(req); // app-specific auth
-  const ably = new Ably.Realtime({ key: process.env.ABLY_KEY! });
   const session = createClientSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
-    name: sessionName,
-    codec: new UIMessageCodec(),
+    sessionName,
+    codec,
   });
   // Note: no connect() — writer publishes directly to the channel.
 
   // Pass clientId so x-ably-client-id on x-ably-run-start and the user
   // message attributes both to the end-user rather than to this backend
-  // connection.
+  // connection. The caller owns the message ID so the invocation can
+  // reference it without reading anything back from the writer.
   const { runId } = await session.writer.startRun({ clientId: userClientId });
-  const { messageIds } = await session.writer.sendMessages({
+  const messageId = crypto.randomUUID();
+  await session.writer.sendMessages({
     runId,
     clientId: userClientId,
-    messages: { id: crypto.randomUUID(), role: 'user', parts: [{ type: 'text', text }] },
+    messages: {
+      id: messageId,
+      role: 'user',
+      parts: [{ type: 'text', text }],
+    },
   });
 
-  const data: InvocationData = { sessionName, runId, messageId: messageIds[0] };
+  const data: InvocationData = { sessionName, runId, messageId };
   return Response.json(data);
-}
+};
 ```
 
 ## Example 9: Durable execution (Vercel Workflow DevKit)
 
-One run spans multiple durable-execution stages, each one a distinct step. The framework re-drives a failed stage; each retry opens a new `x-ably-step-start`, and prior attempts are marked superseded or abandoned — no phantom output. Solves **durable-execution workflows fragment into disconnected turns** and the **hydration from external state** gap: a `storageReader` backed by the workflow's framework state materialises the session on each stage boundary.
+One run spans multiple durable-execution stages, each one a distinct step. The
+framework re-drives a failed stage; each retry opens a new `x-ably-step-start`,
+and losing attempts reject `step.start()` with `ErrorCode.StepSuperseded`. A
+`storageReader` backed by the workflow's framework state materialises the
+session on each stage boundary.
+
+The run's closing publish runs as its own writer-only hop (plan §5.7): no
+`connect()`, no tree hydration — `session.writer.endRun` publishes
+`x-ably-run-end` directly, then the session is closed.
 
 ```ts
-// --- durable workflow (one run, one step per stage) ---
-import { createWorkflow, step as workflowStep } from '@vercel/workflow';
-import { streamText } from 'ai';
-import type { Step, AgentView, Invocation } from '@ably/ai-transport';
+// --- durable workflow (one run, one step per hop) ---
+import * as Ably from 'ably';
+import type * as AI from 'ai';
+import { convertToModelMessages, stepCountIs } from 'ai';
+import { DurableAgent } from '@workflow/ai/agent';
+import { getWritable } from 'workflow';
 
-async function runStep<T>(
-  invocation: Invocation,
-  fn: (step: Step<AI.UIMessageChunk, AI.UIMessage>, view: AgentView<AI.UIMessageChunk, AI.UIMessage>) => Promise<T>,
-): Promise<T> {
+import { createAgentSession, ErrorCode, Invocation } from '@ably/ai-transport';
+import type { Codec, InvocationData, StorageReader } from '@ably/ai-transport';
+
+declare const ably: Ably.Realtime;
+declare const codec: Codec<AI.UIMessageChunk, AI.UIMessage>;
+declare const tools: AI.ToolSet;
+declare const workflowStateReader: (runId: string) => StorageReader;
+
+const agent = new DurableAgent({ model: 'openai/gpt-4o', tools });
+
+const MAX_STEPS = 20;
+
+const isErrorInfoWithCode = (value: unknown, code: ErrorCode): boolean =>
+  value instanceof Ably.ErrorInfo && value.code === code;
+
+export const runAgentHop = async (
+  invocationData: InvocationData,
+  { abortSignal: wdkSignal }: { abortSignal: AbortSignal },
+): Promise<AI.FinishReason> => {
+  'use step';
+
+  const invocation = Invocation.fromJSON(invocationData);
+
   await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
-    name: invocation.sessionName,
-    codec: new UIMessageCodec(),
-    storageReader: workflowStateReader(invocation.runId), // hydrate from framework state, not channel history
+    sessionName: invocation.sessionName,
+    codec,
+    storageReader: workflowStateReader(invocation.runId),
   });
   await session.connect();
+
   const view = session.createView(invocation);
   await using step = view.createStep();
-  await step.start();
-  return fn(step, view);
-}
 
-export const researchWorkflow = createWorkflow(async (invocation: InvocationData) => {
-  const inv = createInvocation(invocation);
+  try {
+    await step.start({ signal: wdkSignal, timeoutMs: 60_000 });
+  } catch (e) {
+    // Losing hop: a later x-ably-step-start for the same run won arbitration.
+    // Exit cleanly and let the winner publish the terminal state.
+    if (isErrorInfoWithCode(e, ErrorCode.StepSuperseded)) return 'stop';
+    throw e;
+  }
 
-  // Stage 1: plan. Fails -> framework retries this stage; a new x-ably-step-start supersedes the old.
-  const plan = await workflowStep.do('plan', () =>
-    runStep(inv, async (step, view) => {
-      const result = streamText({
-        model: openai('gpt-4o'),
-        messages: view.messages.map((n) => n.message),
+  try {
+    const bridge = new TransformStream<AI.UIMessageChunk, AI.UIMessageChunk>();
+    const readable: ReadableStream<AI.UIMessageChunk> = bridge.readable;
+    const [, result] = await Promise.all([
+      step.pipe(readable),
+      agent.stream({
+        messages: await convertToModelMessages(view.messages.map((n) => n.message)),
+        writable: bridge.writable,
+        stopWhen: stepCountIs(1),
         abortSignal: step.signal,
-      });
-      await step.pipe(result.toUIMessageStream());
-      await step.end('complete');
-      return extractPlan(view.messages);
-    }),
-  );
+      }),
+    ]);
 
-  // Stage 2: execute. A fresh step within the same run, reading the plan from the session.
-  await workflowStep.do('execute', () =>
-    runStep(inv, async (step, view) => {
-      const result = streamText({
-        model: openai('gpt-4o'),
-        messages: view.messages.map((n) => n.message),
-        abortSignal: step.signal,
-      });
-      await step.pipe(result.toUIMessageStream());
-      await step.end('complete');
-      await view.run.end('complete');
-    }),
-  );
-});
+    await step.end('complete');
+
+    const lastStep = result.steps.at(-1);
+    return lastStep?.finishReason ?? 'stop';
+  } catch (err) {
+    await view.run.end(step.signal.aborted ? 'aborted' : 'failed');
+    throw err;
+  }
+};
+
+// Lifecycle-only hop: no connect(), no tree hydration — the writer publishes
+// x-ably-run-end directly to the channel (plan §5.7).
+export const endRun = async (invocationData: InvocationData): Promise<void> => {
+  'use step';
+
+  const session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+    client: ably,
+    sessionName: invocationData.sessionName,
+    codec,
+  });
+  await session.writer.endRun({ runId: invocationData.runId, status: 'complete' });
+  await session.close();
+};
+
+export const agentWorkflow = async (invocationData: InvocationData): Promise<void> => {
+  'use workflow';
+
+  getWritable<AI.UIMessageChunk>();
+
+  for (let i = 0; i < MAX_STEPS; i++) {
+    const finishReason = await runAgentHop(invocationData, {
+      abortSignal: new AbortController().signal,
+    });
+    if (finishReason !== 'tool-calls') {
+      await endRun(invocationData);
+      return;
+    }
+  }
+};
 ```
+
+Whether the caller passes `wdkSignal` to `step.start` controls the durable-
+cancel story: passing it folds WDK cancellation into the step's abort path;
+omitting it treats WDK retries as invisible to the agent.
 
 ## Example 10: Subagent fan-out
 
-A parent agent spawns concurrent child runs by opening new runs via `session.writer.startRun` and POSTing to the subagent endpoint. When the parent's step is aborted, `step.signal` cascades via `session.writer.abort` to each child run. Solves the **unit of concurrency within a session** shortfall — multiple runs coexist, and parent-child abort cascade is explicit.
+A parent agent spawns concurrent child runs by opening new runs via
+`session.writer.startRun` and POSTing to the subagent endpoint. When the
+parent's step is aborted, `step.signal` cascades via `session.writer.abort`
+to each child run — listeners are attached per-child so late-spawned children
+still receive the cascade. `run.when(['complete', 'failed', 'aborted'])`
+closes the subscribe-after-fetch race by registering before the fetch and
+awaiting after it.
 
 ```ts
 // --- parent agent ---
-// ...agent setup as in Example 1
+import type * as Ably from 'ably';
+import type * as AI from 'ai';
+import { convertToModelMessages, jsonSchema, stepCountIs, tool, ToolLoopAgent } from 'ai';
 
-await using step = view.createStep();
-await step.start();
+import { createAgentSession, Invocation } from '@ably/ai-transport';
+import type { Codec, InvocationData } from '@ably/ai-transport';
 
-// Plan subtasks from the user's input, then fan out one run per subtask.
-const subtasks = planSubtasks(view.messages.map((n) => n.message));
-const childRunIds: string[] = [];
+declare const ably: Ably.Realtime;
+declare const codec: Codec<AI.UIMessageChunk, AI.UIMessage>;
+declare const openai: (model: string) => AI.LanguageModel;
 
-for (const subtask of subtasks) {
-  const { runId } = await session.writer.startRun({});
-  await session.writer.sendMessages({
-    runId,
-    messages: { id: crypto.randomUUID(), role: 'user', parts: [{ type: 'text', text: subtask }] },
+export const POST = async (req: Request): Promise<Response> => {
+  const data = (await req.json()) as InvocationData;
+  const invocation = Invocation.fromJSON(data);
+
+  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+    client: ably,
+    sessionName: invocation.sessionName,
+    codec,
   });
-  childRunIds.push(runId);
-  // Fire-and-forget: subagents run in parallel. Errors surface on the channel as x-ably-run-end with status: failed.
-  void fetch('/api/subagent', {
-    method: 'POST',
-    body: JSON.stringify({ sessionName: session.name, runId }),
+  await session.connect();
+
+  const view = session.createView(invocation);
+  await using step = view.createStep();
+  await step.start({ signal: req.signal, timeoutMs: 60_000 });
+
+  const spawnSubagent = tool({
+    description: 'Delegate a subtask to a fresh subagent. Returns the subagent\u2019s final text once the run completes.',
+    inputSchema: jsonSchema<{ task: string }>({
+      type: 'object',
+      properties: { task: { type: 'string' } },
+      required: ['task'],
+    }),
+    execute: async ({ task }) => {
+      const { runId } = await session.writer.startRun({});
+      await session.writer.sendMessages({
+        runId,
+        messages: {
+          id: crypto.randomUUID(),
+          role: 'user',
+          parts: [{ type: 'text', text: task }],
+        },
+      });
+
+      const childRun = session.tree.getRun(runId);
+      if (!childRun) throw new Error('unreachable');
+
+      await fetch('/api/subagent', {
+        method: 'POST',
+        body: JSON.stringify(childRun.toInvocation().toJSON()),
+      });
+
+      // Per-child abort cascade, registered after the child exists so
+      // late-spawned children still receive the parent's abort.
+      const offCascade = (): void => void session.writer.abort({ runId });
+      step.signal.addEventListener('abort', offCascade);
+
+      const finalStatus = await childRun.when(['complete', 'failed', 'aborted']);
+      step.signal.removeEventListener('abort', offCascade);
+
+      const finalMessage = childRun.messages.findLast((n) => n.message.role === 'assistant');
+      const text = finalMessage?.message.parts.map((p) => (p.type === 'text' ? p.text : '')).join('') ?? '';
+      return { runId, status: finalStatus, text };
+    },
   });
-}
 
-// Cascade abort: parent aborted -> abort every child run too.
-step.signal.addEventListener('abort', () => {
-  for (const runId of childRunIds) void session.writer.abort({ runId });
-});
+  const orchestrator = new ToolLoopAgent({
+    model: openai('gpt-4o'),
+    tools: { spawnSubagent },
+    stopWhen: stepCountIs(20),
+  });
 
-// Wait for every child run to terminate, then summarise and close.
-await Promise.all(childRunIds.map((id) => waitForRunEnd(session, id)));
-await step.end(step.signal.aborted ? 'aborted' : 'complete');
-await view.run.end(step.signal.aborted ? 'aborted' : 'complete');
+  try {
+    const result = await orchestrator.stream({
+      messages: await convertToModelMessages(view.messages.map((n) => n.message)),
+      abortSignal: step.signal,
+    });
+    await step.pipe(result.toUIMessageStream());
+
+    const outcome = step.signal.aborted ? 'aborted' : 'complete';
+    await step.end(outcome);
+    await view.run.end(outcome);
+  } catch (err) {
+    await view.run.end(step.signal.aborted ? 'aborted' : 'failed');
+    throw err;
+  }
+
+  return new Response(undefined, { status: 202 });
+};
 ```
 
 ```ts
@@ -1413,15 +2109,19 @@ await view.run.end(step.signal.aborted ? 'aborted' : 'complete');
 
 **Symmetric session → view → write-handle hierarchy**: Both sides instantiate a session, derive a view from it, and create a write handle from the view. `session.createView()` mirrors `session.createView(invocation)`. `view.createRun()` mirrors `view.createStep()`. `run.start()` mirrors `step.start()`. A developer who learns one side already knows the shape of the other. The client's view has mutable branch selection because the user drives it; the agent's view is pinned because the invocation already named the branch — same abstraction, role-appropriate policy.
 
-**View as write-handle factory (composition over configuration)**: The view creates the write handle because it holds the branch context needed to position it. On the client, `view.createRun()` appends to the current branch tip and `view.createRegenerate()` forks at a node; on the agent, `view.createStep()` produces the step that executes the view's run. The returned handle is the developer's primary interface for doing work on that run. For reconnection and multi-device, `ClientView.runs` provides discovery of existing runs; on the agent, `AgentView.run` exposes the single run the invocation named.
+**View as write-handle factory (composition over configuration)**: The view creates the write handle because it holds the branch context needed to position it. On the client, `view.createRun()` appends to the current branch tip and `view.createRegenerate()` forks at a node (auto-selecting the new branch by default); on the agent, `view.createStep()` produces the singleton step that executes the view's run.
 
-**Explicit hydration via view.messages**: The agent gets the linear conversation through `view.messages.map(n => n.message)` — the projection is visible at the call site, not hidden behind a convenience property. This makes "where does the conversation come from?" answerable from the code itself: the view is scoped by the invocation, it projects the tree along the run's ancestry, and the developer passes the result to the model. No "scoped to the run" ambiguity.
+**Low-level verbs are safe without helpers**: `session.writer`, `view.createStep`, `run.start/end/send` cover every worked-example scenario. Only two helpers survived scrutiny — `run.when(statuses)` and control signals returning `Invocation` — because both collapse real multi-step orchestration into one call. Higher-level wrappers like `runStep`, `handleInvocation`, `view.send`, `view.continueRun`, `view.spawnChildRun`, and `view.activeRun` were considered and dropped for partial coverage.
 
-**Invocation as primitive (one obvious way to do each thing)**: Every operation that needs an agent returns an invocation. Every agent entry point consumes one. There's one bridge between client and agent, and it's typed.
+**Explicit hydration via view.messages**: The agent gets the linear conversation through `view.messages.map(n => n.message)` — the projection is visible at the call site, not hidden behind a convenience property.
 
-**AbortSignal (composition over configuration)**: The platform primitive composes with every model SDK, fetch call, and stream. No custom cancellation API to learn. Pre-existing signals (abort published while no agent was running) are reflected in the signal's state after `start()`, so the same check (`signal.aborted`) works for both live and historical abort.
+**Invocation as primitive (one obvious way to do each thing)**: Every operation that needs an agent produces an invocation. Construct one from wire data via `Invocation.fromJSON(data)`; snapshot one from a live run via `run.toInvocation()`. Control signals (`abort`, `pause`, `resume`, `retry`) return the `Invocation` targeting the run so every call site follows the same two-step "publish, then optionally POST" pattern.
 
-**Two subscription patterns (tree vs view)**: The tree uses `on`/`off` for granular, typed events because each event type has a distinct signature. The view uses `subscribe`/unsubscribe for state-oriented observation because the consumer doesn't need to know what changed, just that it did. These serve different purposes — tree events are for event processing (debug panels, telemetry), view subscriptions are for re-rendering (UI, React hooks).
+**Signal fold — one abort observation point**: `step.signal` is aborted when an `x-ably-run-abort` lands on the channel OR when a caller-supplied signal fires (via `step.start({ signal })`). The agent wires a single `abortSignal: step.signal` into the model SDK; no `AbortSignal.any` boilerplate at the call site for the common case. The SDK never introspects `req.signal` or WDK signals — it composes only what the caller hands it.
+
+**Pessimistic step disposer — no silent success**: `Step[Symbol.asyncDispose]` publishes a terminal `x-ably-step-end` only when the step is still `'active'` — `'aborted'` if `step.signal.aborted`, otherwise `'failed'` with cause `ErrorCode.StepDisposedBeforeEnd` (`104021`). The disposer is a safety net for thrown errors, never a replacement for explicit `step.end('complete')`.
+
+**Two subscription patterns (tree vs view)**: The tree uses `on`/`off` for granular, typed events because each event type has a distinct signature. The view uses `subscribe`/unsubscribe for state-oriented observation because the consumer doesn't need to know what changed, just that it did.
 
 ## Trade-offs accepted
 
@@ -1429,12 +2129,12 @@ await view.run.end(step.signal.aborted ? 'aborted' : 'complete');
 
 **Views must be explicitly created**: No default view means one extra call for the common case. Accepted because implicit defaults create "is it special?" questions and lifecycle ambiguity.
 
-**Raw session methods alongside view methods**: The session exposes granular write methods that most developers never call directly. These exist for server-side validation, subagent fan-out, and advanced orchestration. They are the primitives that view methods compose — not an alternative path. Documented as low-level.
+**Raw session methods alongside view methods**: The session exposes granular write methods that most developers never call directly. These exist for server-side validation, subagent fan-out, and advanced orchestration. They are the primitives that view methods compose — not an alternative path.
 
-**No automatic non-complete step filtering**: Developers must check `node.step.status` themselves. Accepted because automatic filtering hides information and makes debugging harder. The rendering code is straightforward.
+**No automatic non-complete step filtering**: Developers must check `node.step.status` themselves. Accepted because automatic filtering hides information and makes debugging harder.
 
-**Agent lifecycle is manual**: The agent must call `step.end()` then `view.run.end()` in sequence. Missing either leaves state on the channel. Accepted because the agent controls the semantics (a step can end `complete` while the run stays open for a next step). The `Disposable` protocol on `Step` and a `runStep` helper pattern (shown in the durable-execution example) reduce the risk of resource leaks.
+**Agent lifecycle is manual**: The agent must call `step.end()` then `view.run.end()` in sequence. Missing either leaves state on the channel. Accepted because the agent controls the semantics (a step can end `complete` while the run stays open for a next step); the pessimistic step disposer catches thrown errors.
 
-**Extra object on the agent side**: The agent creates both a view and a step rather than a single `createStep(invocation)` object. Two-line overhead versus one. Accepted because the extra line buys structural symmetry with the client and makes the hydration mechanism (`view.messages.map(n => n.message)`) legible at the call site — which is the concern that surfaced the asymmetry in the first place.
+**Extra object on the agent side**: The agent creates both a view and a step rather than a single `createStep(invocation)` object. Two-line overhead versus one. Accepted because the extra line buys structural symmetry with the client and makes the hydration mechanism (`view.messages.map(n => n.message)`) legible at the call site.
 
-**Abort cascade is the invoker's responsibility**: The SDK does not track parent-child run relationships. The invoker must cascade abort to child runs manually. Accepted per the RFC design — the SDK provides the primitives (run.end, step.signal), the orchestrator composes them.
+**Abort cascade is the invoker's responsibility**: The SDK does not track parent-child run relationships. The invoker must cascade abort to child runs manually. Accepted per the RFC design — the SDK provides the primitives (run.end, step.signal, session.writer.abort), the orchestrator composes them.

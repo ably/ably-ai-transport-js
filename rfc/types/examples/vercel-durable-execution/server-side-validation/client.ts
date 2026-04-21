@@ -23,7 +23,7 @@ export const onSendClick = async (
 ): Promise<{ ok: boolean; reason?: string }> => {
   const res = await fetch('/api/validate-and-send', {
     method: 'POST',
-    body: JSON.stringify({ sessionName: session.name, text }),
+    body: JSON.stringify({ sessionName: session.sessionName, text }),
   });
   if (!res.ok) return { ok: false, reason: 'input rejected' };
   return { ok: true };

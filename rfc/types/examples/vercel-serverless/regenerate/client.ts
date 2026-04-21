@@ -2,9 +2,9 @@
  * Regenerate — client side.
  *
  * `view.createRegenerate(messageId)` forks the tree. The original response
- * is preserved alongside the new branch, and `view.select()` switches
- * which sibling is rendered. The UI reads sibling counts via `session.tree`
- * to decide whether to show branch-switcher controls.
+ * is preserved alongside the new branch, and by default the view selects
+ * the new branch automatically. The UI reads sibling counts via
+ * `session.tree` to decide whether to show branch-switcher controls.
  */
 
 import type * as AI from 'ai';
@@ -13,7 +13,7 @@ import type { ClientSession, ClientView, InvocationData } from '../../../index.j
 
 /**
  * Deliver an invocation to the agent HTTP endpoint.
- * @param data - The {@link InvocationData} produced by `run.createInvocation().toJSON()`.
+ * @param data - The {@link InvocationData} produced by `run.toInvocation().toJSON()`.
  * @returns Resolves once the POST has been dispatched.
  */
 const invokeAgent = async (data: InvocationData): Promise<void> => {
@@ -22,15 +22,19 @@ const invokeAgent = async (data: InvocationData): Promise<void> => {
 
 /**
  * Regenerate an assistant response. Forks the tree at the response the
- * user wants redone and invokes the agent on the new branch.
+ * user wants redone and invokes the agent on the new branch. The view
+ * auto-selects the new branch per {@link ClientView.createRegenerate}.
  * @param view - The client view positioned on the conversation being regenerated.
  * @param assistantMessageId - The ID of the assistant message to regenerate.
  * @returns Resolves once the invocation has been dispatched.
  */
-export const onRegenerateClick = async (view: ClientView<AI.UIMessage>, assistantMessageId: string): Promise<void> => {
+export const onRegenerateClick = async (
+  view: ClientView<AI.UIMessageChunk, AI.UIMessage>,
+  assistantMessageId: string,
+): Promise<void> => {
   const run = view.createRegenerate(assistantMessageId);
   await run.start();
-  await invokeAgent(run.createInvocation().toJSON());
+  await invokeAgent(run.toInvocation().toJSON());
 };
 
 /**
@@ -39,7 +43,10 @@ export const onRegenerateClick = async (view: ClientView<AI.UIMessage>, assistan
  * @param view - The view whose projection should change.
  * @param messageId - The sibling to surface — must identify an existing node.
  */
-export const onSelectBranchClick = (view: ClientView<AI.UIMessage>, messageId: string): void => {
+export const onSelectBranchClick = (
+  view: ClientView<AI.UIMessageChunk, AI.UIMessage>,
+  messageId: string,
+): void => {
   view.select(messageId);
 };
 
@@ -53,7 +60,7 @@ export const onSelectBranchClick = (view: ClientView<AI.UIMessage>, messageId: s
  */
 export const wireBranchSwitcher = (
   session: ClientSession<AI.UIMessageChunk, AI.UIMessage>,
-  view: ClientView<AI.UIMessage>,
+  view: ClientView<AI.UIMessageChunk, AI.UIMessage>,
 ): (() => void) =>
   view.subscribe(() => {
     for (const node of view.messages) {

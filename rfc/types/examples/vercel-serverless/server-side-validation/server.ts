@@ -39,24 +39,27 @@ export const POST = async (req: Request): Promise<Response> => {
   const userClientId = getAuthenticatedUserClientId(req);
   const session = createClientSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
-    name: sessionName,
+    sessionName,
     codec,
   });
   // Note: no connect() — writer publishes directly to the channel.
 
   // Pass clientId so x-ably-client-id attributes both publishes to the
-  // end-user rather than to this backend connection.
+  // end-user rather than to this backend connection. The caller owns the
+  // message ID so the invocation can reference it without reading anything
+  // back from the writer.
   const { runId } = await session.writer.startRun({ clientId: userClientId });
-  const { messageIds } = await session.writer.sendMessages({
+  const messageId = crypto.randomUUID();
+  await session.writer.sendMessages({
     runId,
     clientId: userClientId,
     messages: {
-      id: crypto.randomUUID(),
+      id: messageId,
       role: 'user',
       parts: [{ type: 'text', text }],
     },
   });
 
-  const data: InvocationData = { sessionName, runId, messageId: messageIds[0] };
+  const data: InvocationData = { sessionName, runId, messageId };
   return Response.json(data);
 };

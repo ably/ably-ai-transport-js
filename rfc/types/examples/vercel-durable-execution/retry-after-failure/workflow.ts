@@ -15,12 +15,12 @@
  */
 
 import { DurableAgent } from '@workflow/ai/agent';
-import type * as Ably from 'ably';
+import * as Ably from 'ably';
 import type * as AI from 'ai';
 import { convertToModelMessages, stepCountIs } from 'ai';
 
 import type { Codec, InvocationData, StorageReader } from '../../../index.js';
-import { createAgentSession, createInvocation } from '../../../index.js';
+import { createAgentSession, ErrorCode, Invocation } from '../../../index.js';
 
 declare const ably: Ably.Realtime;
 declare const codec: Codec<AI.UIMessageChunk, AI.UIMessage>;
@@ -35,6 +35,10 @@ const agent = new DurableAgent({
 /** Upper bound on agent hops — guards against runaway loops. */
 const MAX_STEPS = 20;
 
+/** Narrow a caught value to an {@link Ably.ErrorInfo} with the given code. */
+const isErrorInfoWithCode = (value: unknown, code: ErrorCode): boolean =>
+  value instanceof Ably.ErrorInfo && value.code === code;
+
 /**
  * One hop. If the hop throws, the AIT step is ended as `'failed'` before
  * the error propagates so there is a durable record of the failed
@@ -42,16 +46,20 @@ const MAX_STEPS = 20;
  * producing a fresh AIT step whose `x-ably-step-start` supersedes the
  * failed one.
  * @param invocationData - The serialized {@link InvocationData} identifying the run.
+ * @param options - WDK step context, providing the durable `abortSignal`.
  * @returns The hop's `finishReason`.
  */
-export const runAgentHop = async (invocationData: InvocationData): Promise<AI.FinishReason> => {
+export const runAgentHop = async (
+  invocationData: InvocationData,
+  { abortSignal: wdkSignal }: { abortSignal: AbortSignal },
+): Promise<AI.FinishReason> => {
   'use step';
 
-  const invocation = createInvocation(invocationData);
+  const invocation = Invocation.fromJSON(invocationData);
 
   await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
-    name: invocation.sessionName,
+    sessionName: invocation.sessionName,
     codec,
     storageReader: workflowStateReader(invocation.runId),
   });
@@ -61,8 +69,13 @@ export const runAgentHop = async (invocationData: InvocationData): Promise<AI.Fi
   await using step = view.createStep();
 
   try {
-    await step.start();
+    await step.start({ signal: wdkSignal, timeoutMs: 60_000 });
+  } catch (e) {
+    if (isErrorInfoWithCode(e, ErrorCode.StepSuperseded)) return 'stop';
+    throw e;
+  }
 
+  try {
     const bridge = new TransformStream<AI.UIMessageChunk, AI.UIMessageChunk>();
     const readable: ReadableStream<AI.UIMessageChunk> = bridge.readable;
     const [, result] = await Promise.all([
@@ -85,23 +98,21 @@ export const runAgentHop = async (invocationData: InvocationData): Promise<AI.Fi
 };
 
 /**
- * Close the run with the given terminal status.
+ * Close the run with the given terminal status. Writer-only hop per
+ * plan §5.7.
  * @param invocationData - The serialized {@link InvocationData} identifying the run.
  * @param status - Terminal status for the run.
  */
 export const endRun = async (invocationData: InvocationData, status: 'complete' | 'failed'): Promise<void> => {
   'use step';
 
-  const invocation = createInvocation(invocationData);
-  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+  const session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
-    name: invocation.sessionName,
+    sessionName: invocationData.sessionName,
     codec,
-    storageReader: workflowStateReader(invocation.runId),
   });
-  await session.connect();
-  const view = session.createView(invocation);
-  await view.run.end(status);
+  await session.writer.endRun({ runId: invocationData.runId, status });
+  await session.close();
 };
 
 /**
@@ -115,7 +126,7 @@ export const resilientWorkflow = async (invocationData: InvocationData): Promise
 
   try {
     for (let i = 0; i < MAX_STEPS; i++) {
-      const finishReason = await runAgentHop(invocationData);
+      const finishReason = await runAgentHop(invocationData, { abortSignal: new AbortController().signal });
       if (finishReason !== 'tool-calls') {
         await endRun(invocationData, 'complete');
         return;

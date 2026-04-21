@@ -21,10 +21,10 @@ declare const codec: Codec<AI.UIMessageChunk, AI.UIMessage>;
  * Resume the same session from the laptop and subscribe to view changes.
  * @returns The laptop's live view of the shared session.
  */
-export const resumeFromLaptop = async (): Promise<ClientView<AI.UIMessage>> => {
+export const resumeFromLaptop = async (): Promise<ClientView<AI.UIMessageChunk, AI.UIMessage>> => {
   const session = createClientSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
-    name: 'session:abc123',
+    sessionName: 'session:abc123',
     codec,
   });
   await session.connect(); // hydrates from channel history
@@ -38,11 +38,18 @@ export const resumeFromLaptop = async (): Promise<ClientView<AI.UIMessage>> => {
 
 /**
  * Global stop from the laptop. Durable abort — the next workflow hop
- * observes it through its AIT step.
+ * observes it through its AIT step. The returned invocation is POSTed
+ * to the workflow endpoint so a hop runs to publish the terminal state.
  * @param view - The laptop's view of the session.
- * @returns Resolves once the abort signal has been published, if any.
+ * @returns Resolves once the abort signal has been published and the
+ *   wake-up workflow invocation POST has been dispatched, if any.
  */
-export const onStopClick = async (view: ClientView<AI.UIMessage>): Promise<void> => {
+export const onStopClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
   const active = view.runs.find((r) => r.status === 'active');
-  if (active) await active.abort();
+  if (!active) return;
+  const invocation = await active.abort();
+  void fetch('/api/workflow/start', {
+    method: 'POST',
+    body: JSON.stringify(invocation.toJSON()),
+  });
 };

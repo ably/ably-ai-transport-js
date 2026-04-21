@@ -2,6 +2,10 @@
  * A typed data structure carrying preconditions for an agent invocation.
  * Produced by client-side operations that need an agent to act. The developer
  * owns the HTTP transport; the SDK defines the contract on both sides.
+ *
+ * Construct one from a wire payload via {@link Invocation.fromJSON}; construct
+ * one from a live run via `run.toInvocation()` (see
+ * {@link Run.toInvocation}).
  */
 export interface Invocation {
   /** The session name the agent should open. */
@@ -33,9 +37,31 @@ export interface InvocationData {
 }
 
 /**
- * Rehydrate an {@link Invocation} from its serialized form. Used by agent
- * entry points to reconstruct the typed handle from an incoming HTTP body.
- * @param data - The plain object produced by {@link Invocation.toJSON}, typically read from an HTTP request body.
- * @returns An {@link Invocation} carrying the same preconditions.
+ * Static surface on the {@link Invocation} value namespace. Keeps the
+ * construction path on the same identifier callers read the type from, so
+ * invocation-related code clusters under `Invocation.*` rather than a mix
+ * of interface references and loose functions.
  */
-export declare function createInvocation(data: InvocationData): Invocation;
+export interface InvocationConstructor {
+  /**
+   * Rehydrate an {@link Invocation} from its serialized form. Used by agent
+   * entry points to reconstruct the typed handle from an incoming HTTP
+   * request body.
+   *
+   * @param data - The plain object produced by {@link Invocation.toJSON},
+   *   typically read from an HTTP request body.
+   * @returns An {@link Invocation} carrying the same preconditions.
+   * @throws An `Ably.ErrorInfo` with code
+   *   {@link ErrorCode.InvocationInvalid} when `data` does not describe a
+   *   valid invocation (e.g. missing `sessionName` or `runId`).
+   */
+  fromJSON(data: InvocationData): Invocation;
+}
+
+/**
+ * Value binding for the {@link Invocation} namespace. TypeScript merges this
+ * `const` with the interface of the same name, so callers can write
+ * `Invocation.fromJSON(data)` while continuing to reference `Invocation` as
+ * a type. No bare `createInvocation` function is exported.
+ */
+export declare const Invocation: InvocationConstructor;

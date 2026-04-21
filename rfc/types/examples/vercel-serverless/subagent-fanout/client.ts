@@ -14,7 +14,7 @@ import type { ClientView, InvocationData } from '../../../index.js';
 
 /**
  * Deliver an invocation to the parent agent HTTP endpoint.
- * @param data - The {@link InvocationData} produced by `run.createInvocation().toJSON()`.
+ * @param data - The {@link InvocationData} produced by `run.toInvocation().toJSON()`.
  * @returns Resolves once the POST has been dispatched.
  */
 const invokeParent = async (data: InvocationData): Promise<void> => {
@@ -29,7 +29,10 @@ const invokeParent = async (data: InvocationData): Promise<void> => {
  * @param text - The text the user typed into the composer.
  * @returns Resolves once the invocation has been dispatched.
  */
-export const onSendClick = async (view: ClientView<AI.UIMessage>, text: string): Promise<void> => {
+export const onSendClick = async (
+  view: ClientView<AI.UIMessageChunk, AI.UIMessage>,
+  text: string,
+): Promise<void> => {
   const run = view.createRun();
   await run.start();
   await run.send({
@@ -37,5 +40,5 @@ export const onSendClick = async (view: ClientView<AI.UIMessage>, text: string):
     role: 'user',
     parts: [{ type: 'text', text }],
   });
-  await invokeParent(run.createInvocation().toJSON());
+  await invokeParent(run.toInvocation().toJSON());
 };

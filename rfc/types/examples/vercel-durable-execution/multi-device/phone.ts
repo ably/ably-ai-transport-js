@@ -19,7 +19,7 @@ declare const codec: Codec<AI.UIMessageChunk, AI.UIMessage>;
 
 /**
  * Deliver an invocation to the workflow HTTP trigger.
- * @param data - The {@link InvocationData} produced by `run.createInvocation().toJSON()`.
+ * @param data - The {@link InvocationData} produced by `run.toInvocation().toJSON()`.
  * @returns Resolves once the POST has been dispatched.
  */
 const invokeWorkflow = async (data: InvocationData): Promise<void> => {
@@ -36,7 +36,7 @@ const invokeWorkflow = async (data: InvocationData): Promise<void> => {
 export const startFromPhone = async (text: string): Promise<void> => {
   const session = createClientSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
-    name: 'session:abc123',
+    sessionName: 'session:abc123',
     codec,
   });
   await session.connect();
@@ -49,5 +49,5 @@ export const startFromPhone = async (text: string): Promise<void> => {
     role: 'user',
     parts: [{ type: 'text', text }],
   });
-  await invokeWorkflow(run.createInvocation().toJSON());
+  await invokeWorkflow(run.toInvocation().toJSON());
 };

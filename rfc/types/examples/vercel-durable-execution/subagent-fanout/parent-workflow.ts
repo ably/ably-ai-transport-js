@@ -11,16 +11,18 @@
  * is just another run on the session. Any client observing the session
  * sees both the parent's streamed reasoning and every child run's output
  * side by side. If the parent is aborted, `step.signal` cascades via
- * `session.writer.abort` to every child run the parent spawned.
+ * `session.writer.abort` to every child run the parent spawned —
+ * listeners are attached per-child so late-spawned children also
+ * receive the cascade (plan §5.8).
  */
 
 import { DurableAgent } from '@workflow/ai/agent';
-import type * as Ably from 'ably';
+import * as Ably from 'ably';
 import type * as AI from 'ai';
 import { convertToModelMessages, jsonSchema, stepCountIs, tool } from 'ai';
 
-import type { AgentRun, AgentSession, Codec, InvocationData, StorageReader } from '../../../index.js';
-import { createAgentSession, createInvocation } from '../../../index.js';
+import type { Codec, InvocationData, StorageReader } from '../../../index.js';
+import { createAgentSession, ErrorCode, Invocation } from '../../../index.js';
 
 declare const ably: Ably.Realtime;
 declare const codec: Codec<AI.UIMessageChunk, AI.UIMessage>;
@@ -29,40 +31,29 @@ declare const workflowStateReader: (runId: string) => StorageReader;
 /** Upper bound on orchestrator hops — guards against runaway loops. */
 const MAX_STEPS = 40;
 
-/**
- * Resolve when the given child run reaches a terminal status.
- * @param session - The agent session whose tree is observed.
- * @param runId - The child run to wait for.
- * @returns The child run once it has ended.
- */
-const waitForRunEnd = async (
-  session: AgentSession<AI.UIMessageChunk, AI.UIMessage>,
-  runId: string,
-): Promise<AgentRun<AI.UIMessage>> =>
-  new Promise<AgentRun<AI.UIMessage>>((resolve) => {
-    const onRunEnded = (run: AgentRun<AI.UIMessage>): void => {
-      if (run.id !== runId) return;
-      session.tree.off('run-ended', onRunEnded);
-      resolve(run);
-    };
-    session.tree.on('run-ended', onRunEnded);
-  });
+/** Narrow a caught value to an {@link Ably.ErrorInfo} with the given code. */
+const isErrorInfoWithCode = (value: unknown, code: ErrorCode): boolean =>
+  value instanceof Ably.ErrorInfo && value.code === code;
 
 /**
  * One hop of the orchestrator. The tool set includes a `spawnSubagent`
  * tool that opens a child run on this session and invokes a child
  * workflow to run it.
  * @param invocationData - The serialized {@link InvocationData} identifying the orchestrator run.
+ * @param options - WDK step context, providing the durable `abortSignal`.
  * @returns The hop's `finishReason`.
  */
-export const runOrchestratorHop = async (invocationData: InvocationData): Promise<AI.FinishReason> => {
+export const runOrchestratorHop = async (
+  invocationData: InvocationData,
+  { abortSignal: wdkSignal }: { abortSignal: AbortSignal },
+): Promise<AI.FinishReason> => {
   'use step';
 
-  const invocation = createInvocation(invocationData);
+  const invocation = Invocation.fromJSON(invocationData);
 
   await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
-    name: invocation.sessionName,
+    sessionName: invocation.sessionName,
     codec,
     storageReader: workflowStateReader(invocation.runId),
   });
@@ -70,9 +61,13 @@ export const runOrchestratorHop = async (invocationData: InvocationData): Promis
 
   const view = session.createView(invocation);
   await using step = view.createStep();
-  await step.start();
 
-  const spawnedChildRunIds: string[] = [];
+  try {
+    await step.start({ signal: wdkSignal, timeoutMs: 60_000 });
+  } catch (e) {
+    if (isErrorInfoWithCode(e, ErrorCode.StepSuperseded)) return 'stop';
+    throw e;
+  }
 
   const spawnSubagent = tool({
     description: 'Delegate a subtask to a fresh subagent. Returns the subagent’s final text once the run completes.',
@@ -96,22 +91,25 @@ export const runOrchestratorHop = async (invocationData: InvocationData): Promis
           parts: [{ type: 'text', text: task }],
         },
       });
-      spawnedChildRunIds.push(runId);
+
+      const childRun = session.tree.getRun(runId);
+      if (!childRun) throw new Error('unreachable');
 
       await fetch('/api/subagent-workflow/start', {
         method: 'POST',
-        body: JSON.stringify({ sessionName: session.name, runId }),
+        body: JSON.stringify(childRun.toInvocation().toJSON()),
       });
 
-      const child = await waitForRunEnd(session, runId);
-      const finalMessage = child.messages.at(-1)?.message;
-      const text = finalMessage?.parts.map((p) => (p.type === 'text' ? p.text : '')).join('') ?? '';
-      return { runId, status: child.status, text };
-    },
-  });
+      const offCascade = (): void => void session.writer.abort({ runId });
+      step.signal.addEventListener('abort', offCascade);
 
-  step.signal.addEventListener('abort', () => {
-    for (const runId of spawnedChildRunIds) void session.writer.abort({ runId });
+      const finalStatus = await childRun.when(['complete', 'failed', 'aborted']);
+      step.signal.removeEventListener('abort', offCascade);
+
+      const finalMessage = childRun.messages.findLast((n) => n.message.role === 'assistant');
+      const text = finalMessage?.message.parts.map((p) => (p.type === 'text' ? p.text : '')).join('') ?? '';
+      return { runId, status: finalStatus, text };
+    },
   });
 
   const orchestrator = new DurableAgent({
@@ -136,22 +134,20 @@ export const runOrchestratorHop = async (invocationData: InvocationData): Promis
 };
 
 /**
- * Close the parent run once the orchestrator has synthesised the final answer.
+ * Close the parent run once the orchestrator has synthesised the final
+ * answer. Writer-only hop per plan §5.7.
  * @param invocationData - The serialized {@link InvocationData} identifying the parent run.
  */
 export const endRun = async (invocationData: InvocationData): Promise<void> => {
   'use step';
 
-  const invocation = createInvocation(invocationData);
-  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+  const session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
-    name: invocation.sessionName,
+    sessionName: invocationData.sessionName,
     codec,
-    storageReader: workflowStateReader(invocation.runId),
   });
-  await session.connect();
-  const view = session.createView(invocation);
-  await view.run.end('complete');
+  await session.writer.endRun({ runId: invocationData.runId, status: 'complete' });
+  await session.close();
 };
 
 /**
@@ -164,7 +160,7 @@ export const parentWorkflow = async (invocationData: InvocationData): Promise<vo
   'use workflow';
 
   for (let i = 0; i < MAX_STEPS; i++) {
-    const finishReason = await runOrchestratorHop(invocationData);
+    const finishReason = await runOrchestratorHop(invocationData, { abortSignal: new AbortController().signal });
     if (finishReason !== 'tool-calls') {
       await endRun(invocationData);
       return;

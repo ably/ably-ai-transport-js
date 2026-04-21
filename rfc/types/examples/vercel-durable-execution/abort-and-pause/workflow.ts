@@ -14,12 +14,12 @@
  */
 
 import { DurableAgent } from '@workflow/ai/agent';
-import type * as Ably from 'ably';
+import * as Ably from 'ably';
 import type * as AI from 'ai';
 import { convertToModelMessages, stepCountIs } from 'ai';
 
 import type { Codec, InvocationData, StorageReader } from '../../../index.js';
-import { createAgentSession, createInvocation } from '../../../index.js';
+import { createAgentSession, ErrorCode, Invocation } from '../../../index.js';
 
 declare const ably: Ably.Realtime;
 declare const codec: Codec<AI.UIMessageChunk, AI.UIMessage>;
@@ -40,21 +40,29 @@ type HopOutcome =
 /** Upper bound on agent hops — guards against runaway loops. */
 const MAX_STEPS = 20;
 
+/** Narrow a caught value to an {@link Ably.ErrorInfo} with the given code. */
+const isErrorInfoWithCode = (value: unknown, code: ErrorCode): boolean =>
+  value instanceof Ably.ErrorInfo && value.code === code;
+
 /**
  * One hop of the agent loop. Surfaces abort and pause as structured
  * outcomes so the workflow can close or suspend the run without needing
  * to replay hop bodies.
  * @param invocationData - The serialized {@link InvocationData} identifying the run.
+ * @param options - WDK step context, providing the durable `abortSignal`.
  * @returns The hop's outcome.
  */
-export const runAgentHop = async (invocationData: InvocationData): Promise<HopOutcome> => {
+export const runAgentHop = async (
+  invocationData: InvocationData,
+  { abortSignal: wdkSignal }: { abortSignal: AbortSignal },
+): Promise<HopOutcome> => {
   'use step';
 
-  const invocation = createInvocation(invocationData);
+  const invocation = Invocation.fromJSON(invocationData);
 
   await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
-    name: invocation.sessionName,
+    sessionName: invocation.sessionName,
     codec,
     storageReader: workflowStateReader(invocation.runId),
   });
@@ -70,7 +78,12 @@ export const runAgentHop = async (invocationData: InvocationData): Promise<HopOu
     pauseCtrl.abort();
   });
 
-  await step.start();
+  try {
+    await step.start({ signal: wdkSignal, timeoutMs: 60_000 });
+  } catch (e) {
+    if (isErrorInfoWithCode(e, ErrorCode.StepSuperseded)) return { kind: 'continue', finishReason: 'stop' };
+    throw e;
+  }
 
   // Pre-existing abort was already on the channel.
   if (step.signal.aborted) {
@@ -104,45 +117,40 @@ export const runAgentHop = async (invocationData: InvocationData): Promise<HopOu
 };
 
 /**
- * Close the run with the given terminal status. A short `"use step"`
- * wrapper so the publish is durable even if the workflow is interrupted
- * after the final hop.
+ * Close the run with the given terminal status. A short writer-only
+ * `"use step"` wrapper so the publish is durable even if the workflow is
+ * interrupted after the final hop (plan §5.7).
  * @param invocationData - The serialized {@link InvocationData} identifying the run.
  * @param status - Terminal status for the run.
  */
 export const endRun = async (invocationData: InvocationData, status: 'complete' | 'aborted'): Promise<void> => {
   'use step';
 
-  const invocation = createInvocation(invocationData);
-  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+  const session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
-    name: invocation.sessionName,
+    sessionName: invocationData.sessionName,
     codec,
-    storageReader: workflowStateReader(invocation.runId),
   });
-  await session.connect();
-  const view = session.createView(invocation);
-  await view.run.end(status);
+  await session.writer.endRun({ runId: invocationData.runId, status });
+  await session.close();
 };
 
 /**
- * Suspend the run with `paused`. Separate `"use step"` so the suspend
- * publish is durable even if the workflow process is then terminated.
+ * Suspend the run with `paused`. Separate writer-only `"use step"` so
+ * the suspend publish is durable even if the workflow process is then
+ * terminated.
  * @param invocationData - The serialized {@link InvocationData} identifying the run.
  */
 export const suspendRun = async (invocationData: InvocationData): Promise<void> => {
   'use step';
 
-  const invocation = createInvocation(invocationData);
-  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+  const session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
-    name: invocation.sessionName,
+    sessionName: invocationData.sessionName,
     codec,
-    storageReader: workflowStateReader(invocation.runId),
   });
-  await session.connect();
-  const view = session.createView(invocation);
-  await view.run.suspend('paused');
+  await session.writer.suspendRun({ runId: invocationData.runId, reason: 'paused' });
+  await session.close();
 };
 
 /**
@@ -156,7 +164,7 @@ export const agentWorkflow = async (invocationData: InvocationData): Promise<voi
   'use workflow';
 
   for (let i = 0; i < MAX_STEPS; i++) {
-    const outcome = await runAgentHop(invocationData);
+    const outcome = await runAgentHop(invocationData, { abortSignal: new AbortController().signal });
     if (outcome.kind === 'aborted') {
       await endRun(invocationData, 'aborted');
       return;

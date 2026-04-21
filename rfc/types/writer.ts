@@ -94,22 +94,31 @@ export interface SendEventsOptions<TEvent> {
   clientId?: string;
 }
 
-/** Result of {@link SessionWriter.sendMessages} or {@link SessionWriter.sendEvents}. */
-export interface SendResult {
-  /** The IDs assigned to the published messages, in order. */
-  messageIds: string[];
-}
-
 /** Options for {@link SessionWriter.abort}. */
 export interface AbortOptions {
   /** The run to abort. */
   runId: string;
+
+  /**
+   * Override the attribution clientId sent as `x-ably-client-id`. Use this
+   * in backend orchestrators publishing abort on behalf of an end-user
+   * (the control signal is observable on the channel, so attribution still
+   * matters for audit and UI display). When omitted, the publishing
+   * connection's clientId is used.
+   */
+  clientId?: string;
 }
 
 /** Options for {@link SessionWriter.pause}. */
 export interface PauseOptions {
   /** The run to pause. */
   runId: string;
+
+  /**
+   * Override the attribution clientId sent as `x-ably-client-id`. See
+   * {@link AbortOptions.clientId}.
+   */
+  clientId?: string;
 }
 
 /** Options for {@link SessionWriter.resume}. */
@@ -120,6 +129,12 @@ export interface ResumeOptions {
   stepId?: string;
   /** Message the agent must observe before starting (e.g. HITL approval). */
   messageId?: string;
+
+  /**
+   * Override the attribution clientId sent as `x-ably-client-id`. See
+   * {@link AbortOptions.clientId}.
+   */
+  clientId?: string;
 }
 
 /** Options for {@link SessionWriter.retry}. */
@@ -128,7 +143,40 @@ export interface RetryOptions {
   runId: string;
   /** Target a specific step for step-level retry. */
   stepId?: string;
+
+  /**
+   * Override the attribution clientId sent as `x-ably-client-id`. See
+   * {@link AbortOptions.clientId}.
+   */
+  clientId?: string;
 }
+
+/**
+ * Run-scoped shape of {@link RetryOptions} — the same options without the
+ * redundant `runId`, for callers that already hold the run as a receiver
+ * (e.g. run-level retry helpers layered on top of the writer). Derived
+ * via `Omit` so any future additions to {@link RetryOptions} flow through
+ * automatically.
+ */
+export type ClientRunRetryOptions = Omit<RetryOptions, 'runId'>;
+
+/**
+ * Run-scoped shape of {@link ResumeOptions} — the same options without the
+ * redundant `runId`. Derived via `Omit` for drift prevention.
+ */
+export type ClientRunResumeOptions = Omit<ResumeOptions, 'runId'>;
+
+/**
+ * Run-scoped shape of {@link AbortOptions} — the same options without the
+ * redundant `runId`. Derived via `Omit` for drift prevention.
+ */
+export type ClientRunAbortOptions = Omit<AbortOptions, 'runId'>;
+
+/**
+ * Run-scoped shape of {@link PauseOptions} — the same options without the
+ * redundant `runId`. Derived via `Omit` for drift prevention.
+ */
+export type ClientRunPauseOptions = Omit<PauseOptions, 'runId'>;
 
 /**
  * The low-level write surface shared by both session types. Every
@@ -160,18 +208,26 @@ export interface SessionWriter<TEvent, TMessage> {
   // --- Content ---
 
   /**
-   * Publish one or more complete domain messages to the channel.
-   * Encoded via the codec's writeMessages path. Use for user messages,
-   * tool results, and other discrete complete messages.
+   * Publish one or more complete domain messages to the channel. Encoded
+   * via the codec's writeMessages path. Use for user messages, tool
+   * results, and other discrete complete messages.
+   *
+   * Message IDs are supplied by the caller on each message (e.g. the
+   * Vercel codec uses `UIMessage.id`). The writer does not assign IDs
+   * and does not return them; this matches `run.send()` so the send
+   * surface is uniform.
    */
-  sendMessages(options: SendMessagesOptions<TMessage>): Promise<SendResult>;
+  sendMessages(options: SendMessagesOptions<TMessage>): Promise<void>;
 
   /**
-   * Publish one or more discrete domain events to the channel.
-   * Encoded via the codec's writeEvent path. Use for standalone events
-   * like data-* that are not complete messages.
+   * Publish one or more discrete domain events to the channel. Encoded
+   * via the codec's writeEvent path. Use for standalone events like
+   * `data-*` that are not complete messages.
+   *
+   * Event IDs, where the domain events carry them, are supplied by the
+   * caller. The writer does not assign IDs and does not return them.
    */
-  sendEvents(options: SendEventsOptions<TEvent>): Promise<SendResult>;
+  sendEvents(options: SendEventsOptions<TEvent>): Promise<void>;
 
   // --- Control signals ---
 

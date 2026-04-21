@@ -486,4 +486,75 @@ describe('decodeHistory', () => {
     expect(page.items).toHaveLength(3);
     expect(page.hasNext()).toBe(false);
   });
+
+  // -------------------------------------------------------------------------
+  // Efficiency tests — bound the number of decoder instantiations to guard
+  // against re-introducing redundant decode passes. Each decodeAll call
+  // creates a fresh decoder, so `codec.createDecoder` invocation count is a
+  // direct proxy for how many full decodes ran.
+  // -------------------------------------------------------------------------
+
+  it('does not decode twice when buildResult follows fetchUntilLimit on unchanged state', async () => {
+    // Single page, fits under limit. fetchUntilLimit decodes once to check
+    // the count; buildResult must reuse that result, not re-decode.
+    const m3 = discreteMsg('u3', 'c');
+    const m2 = discreteMsg('u2', 'b');
+    const m1 = discreteMsg('u1', 'a');
+    const channel = createMockChannel([[m3, m2, m1]]);
+    const codec = createMockCodec();
+
+    await decodeHistory(channel, codec, { limit: 10 }, silentLogger);
+
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked takes a method reference
+    expect(vi.mocked(codec.createDecoder).mock.calls.length).toBe(1);
+  });
+
+  it('serves buffered next() without re-decoding', async () => {
+    // Single Ably page with 4 completes; limit=2 forces paginated result.
+    // The second page (served from buffer) must not trigger a fresh decode.
+    const m4 = discreteMsg('u4', 'd');
+    const m3 = discreteMsg('u3', 'c');
+    const m2 = discreteMsg('u2', 'b');
+    const m1 = discreteMsg('u1', 'a');
+    const channel = createMockChannel([[m4, m3, m2, m1]]);
+    const codec = createMockCodec();
+
+    const first = await decodeHistory(channel, codec, { limit: 2 }, silentLogger);
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked takes a method reference
+    const callsAfterFirst = vi.mocked(codec.createDecoder).mock.calls.length;
+
+    await first.next();
+
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked takes a method reference
+    expect(vi.mocked(codec.createDecoder).mock.calls.length).toBe(callsAfterFirst);
+  });
+
+  it('decodes exactly once per Ably page fetched across decodeHistory() + next()', async () => {
+    // Two Ably pages, 1 complete each, limit=1. First decodeHistory() fetches
+    // page 1 (1 decode); next() fetches page 2 (1 more decode). Anything
+    // higher means either buildResult is re-decoding unchanged state, or
+    // fetchUntilLimit is decoding more than once per added page.
+    const channel = createMockChannel([[discreteMsg('u2', 'b')], [discreteMsg('u1', 'a')]]);
+    const codec = createMockCodec();
+
+    const first = await decodeHistory(channel, codec, { limit: 1 }, silentLogger);
+    await first.next();
+
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked takes a method reference
+    expect(vi.mocked(codec.createDecoder).mock.calls.length).toBe(2);
+  });
+
+  it('returns correct data when next() fetches a new Ably page (cache invalidation)', async () => {
+    // A broken cache that failed to invalidate on new pages would return
+    // stale page-1 data here. This is the correctness counterpart to the
+    // decoder-count assertion above.
+    const channel = createMockChannel([[discreteMsg('u2', 'b')], [discreteMsg('u1', 'a')]]);
+    const codec = createMockCodec();
+
+    const first = await decodeHistory(channel, codec, { limit: 1 }, silentLogger);
+    expect(first.items.map((i) => i.message.id)).toEqual(['u2']);
+
+    const second = await first.next();
+    expect(second?.items.map((i) => i.message.id)).toEqual(['u1']);
+  });
 });

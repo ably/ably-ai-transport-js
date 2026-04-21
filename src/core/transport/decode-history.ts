@@ -42,6 +42,15 @@ interface HistoryState<TEvent, TMessage> {
   returnedRawCount: number;
   /** The last Ably page cursor for continued pagination. */
   lastAblyPage: Ably.PaginatedResult<Ably.InboundMessage> | undefined;
+  /**
+   * Cached result of the last {@link decodeAll} call, reused while
+   * `rawMessages` is unchanged. Invalidated implicitly by comparing
+   * {@link cachedAtRawLength} against `rawMessages.length`; `rawMessages`
+   * is append-only within a traversal so length is a sufficient key.
+   */
+  cachedDecode: DecodedItem<TMessage>[] | undefined;
+  /** `rawMessages.length` at the time {@link cachedDecode} was produced. */
+  cachedAtRawLength: number;
   logger: Logger;
 }
 
@@ -213,6 +222,24 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
   return completed.toReversed();
 };
 
+/**
+ * Cached wrapper around {@link decodeAll}. Returns the previous result when
+ * `rawMessages` hasn't changed since the last decode; otherwise re-decodes
+ * and updates the cache. The cache key is `rawMessages.length` because
+ * `rawMessages` is append-only within a traversal.
+ * @param state - The shared history traversal state.
+ * @returns Completed messages in newest-first order.
+ */
+const decodeAllCached = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): DecodedItem<TMessage>[] => {
+  if (state.cachedDecode && state.cachedAtRawLength === state.rawMessages.length) {
+    return state.cachedDecode;
+  }
+  const result = decodeAll(state);
+  state.cachedDecode = result;
+  state.cachedAtRawLength = state.rawMessages.length;
+  return result;
+};
+
 // ---------------------------------------------------------------------------
 // Fetch Ably pages until we have enough completed messages
 // ---------------------------------------------------------------------------
@@ -231,7 +258,7 @@ const fetchUntilLimit = async <TEvent, TMessage>(
   state.rawMessages.push(...ablyPage.items);
   state.lastAblyPage = ablyPage;
 
-  let decodedCount = decodeAll(state).length;
+  let decodedCount = decodeAllCached(state).length;
   while (decodedCount < state.returnedCount + limit && ablyPage.hasNext()) {
     state.logger.debug('decodeHistory.fetchUntilLimit(); fetching next page', {
       collected: state.rawMessages.length,
@@ -242,7 +269,7 @@ const fetchUntilLimit = async <TEvent, TMessage>(
     ablyPage = nextPage;
     state.rawMessages.push(...nextPage.items);
     state.lastAblyPage = nextPage;
-    decodedCount = decodeAll(state).length;
+    decodedCount = decodeAllCached(state).length;
   }
 };
 
@@ -259,7 +286,7 @@ const fetchUntilLimit = async <TEvent, TMessage>(
 const buildResult = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>, limit: number): HistoryPage<TMessage> => {
   // allCompleted is newest-first. Slice from returnedCount for this page,
   // then reverse to chronological for display.
-  const allCompleted = decodeAll(state);
+  const allCompleted = decodeAllCached(state);
 
   const pageSlice = allCompleted.slice(state.returnedCount, state.returnedCount + limit);
   const chronSlice = [...pageSlice].toReversed();
@@ -323,6 +350,8 @@ export const decodeHistory = async <TEvent, TMessage>(
     returnedCount: 0,
     returnedRawCount: 0,
     lastAblyPage: undefined,
+    cachedDecode: undefined,
+    cachedAtRawLength: 0,
     logger,
   };
 

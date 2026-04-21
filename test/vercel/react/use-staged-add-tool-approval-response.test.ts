@@ -11,11 +11,7 @@ import { useStagedAddToolApprovalResponse } from '../../../src/vercel/react/use-
 // Helpers
 // ---------------------------------------------------------------------------
 
-const makeAssistantWithApprovalRequest = (
-  uiMsgId: string,
-  toolCallId: string,
-  approvalId: string,
-): AI.UIMessage => ({
+const makeAssistantWithApprovalRequest = (uiMsgId: string, toolCallId: string, approvalId: string): AI.UIMessage => ({
   id: uiMsgId,
   role: 'assistant',
   parts: [

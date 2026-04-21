@@ -1,10 +1,7 @@
 'use client';
 
 import { useChat } from '@ai-sdk/react';
-import {
-  lastAssistantMessageIsCompleteWithApprovalResponses,
-  lastAssistantMessageIsCompleteWithToolCalls,
-} from 'ai';
+import { lastAssistantMessageIsCompleteWithApprovalResponses, lastAssistantMessageIsCompleteWithToolCalls } from 'ai';
 import { useChatTransport, useMessageSync, useStagedAddToolApprovalResponse } from '@ably/ai-transport/vercel/react';
 import { useState, useEffect, useCallback } from 'react';
 import { MessageList } from './components/message-list';

@@ -735,7 +735,14 @@ describe('createChatTransport', () => {
 
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
         { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
-        { message: assistant, msgId: 'wire-a1', parentId: 'wire-u1', forkOf: undefined, headers: {}, serial: undefined },
+        {
+          message: assistant,
+          msgId: 'wire-a1',
+          parentId: 'wire-u1',
+          forkOf: undefined,
+          headers: {},
+          serial: undefined,
+        },
       ]);
 
       const chat = createChatTransport(transport);
@@ -776,7 +783,14 @@ describe('createChatTransport', () => {
 
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
         { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
-        { message: assistant, msgId: 'wire-a1', parentId: 'wire-u1', forkOf: undefined, headers: {}, serial: undefined },
+        {
+          message: assistant,
+          msgId: 'wire-a1',
+          parentId: 'wire-u1',
+          forkOf: undefined,
+          headers: {},
+          serial: undefined,
+        },
       ]);
 
       const chat = createChatTransport(transport);
@@ -810,7 +824,14 @@ describe('createChatTransport', () => {
 
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
         { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
-        { message: assistant, msgId: 'wire-a1', parentId: 'wire-u1', forkOf: undefined, headers: {}, serial: undefined },
+        {
+          message: assistant,
+          msgId: 'wire-a1',
+          parentId: 'wire-u1',
+          forkOf: undefined,
+          headers: {},
+          serial: undefined,
+        },
       ]);
 
       const chat = createChatTransport(transport);
@@ -845,7 +866,14 @@ describe('createChatTransport', () => {
 
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
         { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
-        { message: assistant, msgId: 'wire-a1', parentId: 'wire-u1', forkOf: undefined, headers: {}, serial: undefined },
+        {
+          message: assistant,
+          msgId: 'wire-a1',
+          parentId: 'wire-u1',
+          forkOf: undefined,
+          headers: {},
+          serial: undefined,
+        },
       ]);
 
       const chat = createChatTransport(transport);
@@ -881,7 +909,14 @@ describe('createChatTransport', () => {
 
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
         { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
-        { message: assistant, msgId: 'wire-a1', parentId: 'wire-u1', forkOf: undefined, headers: {}, serial: undefined },
+        {
+          message: assistant,
+          msgId: 'wire-a1',
+          parentId: 'wire-u1',
+          forkOf: undefined,
+          headers: {},
+          serial: undefined,
+        },
       ]);
 
       const chat = createChatTransport(transport);
@@ -916,7 +951,14 @@ describe('createChatTransport', () => {
 
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
         { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
-        { message: assistant, msgId: 'wire-a1', parentId: 'wire-u1', forkOf: undefined, headers: {}, serial: undefined },
+        {
+          message: assistant,
+          msgId: 'wire-a1',
+          parentId: 'wire-u1',
+          forkOf: undefined,
+          headers: {},
+          serial: undefined,
+        },
         { message: edited, msgId: 'wire-u2', parentId: 'wire-a1', forkOf: undefined, headers: {}, serial: undefined },
       ]);
 

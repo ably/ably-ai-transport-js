@@ -65,5 +65,5 @@ npm run precommit      # Run all checks (format, lint, typecheck)
    - Tag: use the version without a `v` prefix (e.g., `0.0.1`).
    - Release title: use a `v` prefix (e.g., `v0.0.1`).
    - Use the "Generate release notes" button to populate the description and edit as needed.
-7. Verify the npm publish workflow (`release.yml`) completes successfully.
+7. Verify the npm publish workflow (`release.yml`) and the CDN publish workflow (`publish.cdn.yml`) both complete successfully.
 8. Update the [Ably Changelog](https://changelog.ably.com/) (via [Headway](https://headwayapp.co/)) with the release notes.

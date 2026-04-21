@@ -47,7 +47,21 @@ npm run typecheck      # Type check
 npm run precommit      # Run all checks (format, lint, typecheck)
 ```
 
-## Release process
+## Release process (Claude Code)
+
+1. Ensure tests pass in CI on `main` and all work intended for this release has landed.
+2. Run `/release patch|minor|major` in Claude Code. This creates the release branch, bumps the `version` field in `package.json`, refreshes the root and demo lockfiles, and invokes the `/changelog` skill to populate `CHANGELOG.md` with merged PRs since the last tag.
+3. Review the `### What's Changed` entries in [CHANGELOG.md](./CHANGELOG.md) and adjust if needed.
+4. Commit the staged changes with `/commit` (the release skill stages but does not commit).
+5. Open a PR for the release branch, get it reviewed, and merge to `main`.
+6. Create a [GitHub release](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository#creating-a-release):
+   - Tag: use the version without a `v` prefix (e.g., `0.0.1`).
+   - Release title: use a `v` prefix (e.g., `v0.0.1`).
+   - Use the "Generate release notes" button to populate the description and edit as needed.
+7. Verify the npm publish workflow (`release.yml`) and the CDN publish workflow (`publish.cdn.yml`) both complete successfully.
+8. Update the [Ably Changelog](https://changelog.ably.com/) (via [Headway](https://headwayapp.co/)) with the release notes.
+
+## Release process (manual)
 
 1. Ensure tests pass in CI on `main`.
 2. Create a new branch for the release (e.g., `release/0.0.1`).

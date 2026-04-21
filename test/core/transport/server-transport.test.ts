@@ -528,7 +528,7 @@ describe('ServerTransport', () => {
   });
 
   describe('error handling', () => {
-    it('start() calls onError and throws on publish failure', async () => {
+    it('start() throws on publish failure without invoking onError', async () => {
       const failChannel = createMockChannel();
       vi.mocked(failChannel.publish).mockRejectedValue(new Error('publish failed'));
       const onError = vi.fn();
@@ -544,19 +544,92 @@ describe('ServerTransport', () => {
       });
 
       await expect(turn.start()).rejects.toBeErrorInfoWithCode(ErrorCode.TurnLifecycleError);
-      expect(onError).toHaveBeenCalled();
+      expect(onError).not.toHaveBeenCalled();
 
       failTransport.close();
     });
 
-    it('end() calls onError and throws on publish failure', async () => {
-      const turn = transport.newTurn({ turnId: 'turn-1', onError: vi.fn() });
+    it('end() throws on publish failure without invoking onError', async () => {
+      const onError = vi.fn();
+      const turn = transport.newTurn({ turnId: 'turn-1', onError });
       await turn.start();
 
       // Make the next publish fail (for turn-end)
       vi.mocked(channel.publish).mockRejectedValueOnce(new Error('publish failed'));
 
       await expect(turn.end('complete')).rejects.toBeErrorInfoWithCode(ErrorCode.TurnLifecycleError);
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it('addMessages() throws on publish failure without invoking onError', async () => {
+      const onError = vi.fn();
+      const failCodec = createMockCodec();
+      const failEncoder = createMockEncoder();
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      vi.mocked(failEncoder.writeMessages).mockRejectedValue(new Error('publish failed'));
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      vi.mocked(failCodec.createEncoder).mockReturnValue(failEncoder);
+
+      const failTransport = createServerTransport({ channel, codec: failCodec });
+      const turn = failTransport.newTurn({ turnId: 'turn-1', onError });
+      await turn.start();
+
+      await expect(turn.addMessages([makeNode({ id: 'm1', content: 'hello' })])).rejects.toBeErrorInfoWithCode(
+        ErrorCode.TurnLifecycleError,
+      );
+      expect(onError).not.toHaveBeenCalled();
+
+      failTransport.close();
+    });
+
+    it('addEvents() throws on publish failure without invoking onError', async () => {
+      const onError = vi.fn();
+      const failCodec = createMockCodec();
+      const failEncoder = createMockEncoder();
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      vi.mocked(failEncoder.writeEvent).mockRejectedValue(new Error('publish failed'));
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      vi.mocked(failCodec.createEncoder).mockReturnValue(failEncoder);
+
+      const failTransport = createServerTransport({ channel, codec: failCodec });
+      const turn = failTransport.newTurn({ turnId: 'turn-1', onError });
+      await turn.start();
+
+      await expect(
+        turn.addEvents([{ kind: 'event', msgId: 'target-1', events: [{ type: 'ev' }] }]),
+      ).rejects.toBeErrorInfoWithCode(ErrorCode.TurnLifecycleError);
+      expect(onError).not.toHaveBeenCalled();
+
+      failTransport.close();
+    });
+
+    it('streamResponse() calls onError when stream errors', async () => {
+      const onError = vi.fn();
+      const turn = transport.newTurn({ turnId: 'turn-1', onError });
+      await turn.start();
+
+      const stream = new ReadableStream<TestEvent>({
+        start: (controller) => {
+          controller.enqueue({ type: 'text', text: 'partial' });
+          controller.error(new Error('model rate limit exceeded'));
+        },
+      });
+
+      const result = await turn.streamResponse(stream);
+      expect(result.reason).toBe('error');
+      expect(result.error).toBeInstanceOf(Error);
+      expect(onError).toHaveBeenCalledWith(expect.toBeErrorInfo({ code: ErrorCode.StreamError, statusCode: 500 }));
+    });
+
+    it('streamResponse() does not call onError when stream completes', async () => {
+      const onError = vi.fn();
+      const turn = transport.newTurn({ turnId: 'turn-1', onError });
+      await turn.start();
+
+      const result = await turn.streamResponse(streamOf({ type: 'text', text: 'done' }));
+      expect(result.reason).toBe('complete');
+      expect(result.error).toBeUndefined();
+      expect(onError).not.toHaveBeenCalled();
     });
 
     it('onCancel handler error calls onError and does not prevent other turns', async () => {

@@ -109,6 +109,14 @@ export interface StreamResponseOptions {
 export interface StreamResult {
   /** Why the stream ended. */
   reason: TurnEndReason;
+  /**
+   * The error that caused the stream to fail, present when `reason` is
+   * `'error'`. This is the original error (e.g. from the LLM provider)
+   * preserved so the caller can inspect provider-specific fields. The
+   * turn's `onError` callback also fires with a wrapped `Ably.ErrorInfo`
+   * (code `StreamError`) for standardized observability.
+   */
+  error?: Error;
 }
 
 /** Options passed to newTurn for configuring the turn lifecycle. */
@@ -154,8 +162,20 @@ export interface NewTurnOptions<TEvent> {
   onCancel?: (request: CancelRequest) => Promise<boolean>;
 
   /**
-   * Called with non-fatal errors scoped to this turn. Examples: turn-start
-   * publish failure, encoder recovery failure, stream encoding errors.
+   * Called with non-fatal turn-scoped errors that have no other delivery
+   * path. Fires in two scenarios:
+   * - Stream failures in `streamResponse` — the underlying error is also
+   *   returned on `StreamResult.error`, but this callback delivers it
+   *   wrapped as an `Ably.ErrorInfo` (code `StreamError`) for standardized
+   *   observability.
+   * - Failures in the `onCancel` handler.
+   *
+   * Publish failures in `start`, `addMessages`, `addEvents`, and `end`
+   * are not delivered here — those methods reject their returned promise
+   * with an `Ably.ErrorInfo`, and the caller should handle it at the await
+   * site. Turn errors never render the transport unusable, but the turn
+   * may be in an inconsistent state; the caller should typically `end` it
+   * with reason `'error'`.
    */
   onError?: (error: Ably.ErrorInfo) => void;
 

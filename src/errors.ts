@@ -33,7 +33,7 @@ export enum ErrorCode {
   CancelListenerError = 104002,
 
   /**
-   * A turn lifecycle event (turn-start or turn-end) failed to publish.
+   * A publish within a turn failed (lifecycle event, message, or event).
    */
   TurnLifecycleError = 104003,
 
@@ -59,6 +59,13 @@ export enum ErrorCode {
    * (not ATTACHED or ATTACHING).
    */
   ChannelNotReady = 104007,
+
+  /**
+   * An error occurred while piping a response stream to the channel — either
+   * the source event stream threw (e.g. LLM provider rate limit, model error,
+   * network failure) or an underlying publish failed mid-stream.
+   */
+  StreamError = 104008,
 }
 
 /**

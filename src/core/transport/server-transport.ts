@@ -328,14 +328,13 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
             error instanceof Ably.ErrorInfo ? error : undefined,
           );
           logger?.error('Turn.start(); failed to publish turn-start', { turnId });
-          turnOnError?.(errInfo);
           throw errInfo;
         }
 
         logger?.debug('Turn.start(); turn started', { turnId });
       },
 
-      // Spec: AIT-ST5, AIT-ST5a, AIT-ST5b
+      // Spec: AIT-ST5, AIT-ST5a, AIT-ST5b, AIT-ST5c
       addMessages: async (nodes: MessageNode<TMessage>[], opts?: AddMessageOptions): Promise<AddMessagesResult> => {
         logger?.trace('Turn.addMessages();', { turnId, count: nodes.length });
 
@@ -350,35 +349,47 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
 
         const msgIds: string[] = [];
 
-        for (const node of nodes) {
-          // Build transport headers from the node's typed fields, then merge
-          // any extra headers from the node (e.g. domain-specific headers).
-          const headers = mergeHeaders(
-            buildTransportHeaders({
-              role: 'user',
-              turnId,
-              msgId: node.msgId,
-              turnClientId: opts?.clientId,
-              parent: node.parentId ?? turnParent,
-              forkOf: node.forkOf ?? turnForkOf,
-            }),
-            node.headers,
+        try {
+          for (const node of nodes) {
+            // Build transport headers from the node's typed fields, then merge
+            // any extra headers from the node (e.g. domain-specific headers).
+            const headers = mergeHeaders(
+              buildTransportHeaders({
+                role: 'user',
+                turnId,
+                msgId: node.msgId,
+                turnClientId: opts?.clientId,
+                parent: node.parentId ?? turnParent,
+                forkOf: node.forkOf ?? turnForkOf,
+              }),
+              node.headers,
+            );
+
+            const encoder = codec.createEncoder(channel, {
+              extras: { headers },
+              onMessage,
+            });
+
+            await encoder.writeMessages([node.message], opts?.clientId ? { clientId: opts.clientId } : undefined);
+
+            msgIds.push(node.msgId);
+          }
+        } catch (error) {
+          const errInfo = new Ably.ErrorInfo(
+            `unable to publish messages for turn ${turnId}; ${error instanceof Error ? error.message : String(error)}`,
+            ErrorCode.TurnLifecycleError,
+            500,
+            error instanceof Ably.ErrorInfo ? error : undefined,
           );
-
-          const encoder = codec.createEncoder(channel, {
-            extras: { headers },
-            onMessage,
-          });
-
-          await encoder.writeMessages([node.message], opts?.clientId ? { clientId: opts.clientId } : undefined);
-
-          msgIds.push(node.msgId);
+          logger?.error('Turn.addMessages(); publish failed', { turnId });
+          throw errInfo;
         }
 
         logger?.debug('Turn.addMessages(); messages published', { turnId, count: nodes.length });
         return { msgIds };
       },
 
+      // Spec: AIT-ST5c
       addEvents: async (nodes: EventsNode<TEvent>[]): Promise<void> => {
         logger?.trace('Turn.addEvents();', { turnId, count: nodes.length });
 
@@ -393,31 +404,42 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
 
         const turnOwnerClientId = turnManager.getClientId(turnId);
 
-        for (const node of nodes) {
-          const headers = buildTransportHeaders({
-            role: 'assistant',
-            turnId,
-            msgId: node.msgId,
-            turnClientId: turnOwnerClientId,
-            amend: node.msgId,
-          });
+        try {
+          for (const node of nodes) {
+            const headers = buildTransportHeaders({
+              role: 'assistant',
+              turnId,
+              msgId: node.msgId,
+              turnClientId: turnOwnerClientId,
+              amend: node.msgId,
+            });
 
-          const encoder = codec.createEncoder(channel, {
-            extras: { headers },
-            onMessage,
-          });
+            const encoder = codec.createEncoder(channel, {
+              extras: { headers },
+              onMessage,
+            });
 
-          for (const event of node.events) {
-            await encoder.writeEvent(event);
+            for (const event of node.events) {
+              await encoder.writeEvent(event);
+            }
+
+            await encoder.close();
           }
-
-          await encoder.close();
+        } catch (error) {
+          const errInfo = new Ably.ErrorInfo(
+            `unable to publish events for turn ${turnId}; ${error instanceof Error ? error.message : String(error)}`,
+            ErrorCode.TurnLifecycleError,
+            500,
+            error instanceof Ably.ErrorInfo ? error : undefined,
+          );
+          logger?.error('Turn.addEvents(); publish failed', { turnId });
+          throw errInfo;
         }
 
         logger?.debug('Turn.addEvents(); events published', { turnId, count: nodes.length });
       },
 
-      // Spec: AIT-ST6, AIT-ST6a, AIT-ST6b, AIT-ST6b1, AIT-ST6b2, AIT-ST6b3, AIT-ST6c
+      // Spec: AIT-ST6, AIT-ST6a, AIT-ST6b, AIT-ST6b1, AIT-ST6b2, AIT-ST6b3, AIT-ST6b4, AIT-ST6c
       streamResponse: async (
         stream: ReadableStream<TEvent>,
         streamOpts?: StreamResponseOptions,
@@ -455,11 +477,22 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
 
         const result = await pipeStream(stream, encoder, signal, onAbort, logger);
 
+        if (result.error) {
+          const errInfo = new Ably.ErrorInfo(
+            `unable to stream response for turn ${turnId}; ${result.error.message}`,
+            ErrorCode.StreamError,
+            500,
+            result.error instanceof Ably.ErrorInfo ? result.error : undefined,
+          );
+          logger?.error('Turn.streamResponse(); stream error', { turnId });
+          turnOnError?.(errInfo);
+        }
+
         logger?.debug('Turn.streamResponse(); stream finished', { turnId, reason: result.reason });
         return result;
       },
 
-      // Spec: AIT-ST7, AIT-ST7a
+      // Spec: AIT-ST7, AIT-ST7a, AIT-ST7b
       end: async (reason: TurnEndReason): Promise<void> => {
         logger?.trace('Turn.end();', { turnId, reason });
 
@@ -483,7 +516,6 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
             error instanceof Ably.ErrorInfo ? error : undefined,
           );
           logger?.error('Turn.end(); failed to publish turn-end', { turnId });
-          turnOnError?.(errInfo);
           throw errInfo;
         } finally {
           registeredTurns.delete(turnId);

@@ -258,5 +258,57 @@ describe('pipeStream', () => {
       const result = await pipeStream(stream, encoder, noSignal);
       expect(result.reason).toBe('error');
     });
+
+    it('includes the caught error in StreamResult', async () => {
+      const originalError = new Error('model rate limit exceeded');
+      const stream = errorStream([], originalError);
+
+      const result = await pipeStream(stream, encoder, noSignal);
+
+      expect(result.reason).toBe('error');
+      expect(result.error).toBe(originalError);
+    });
+
+    it('wraps non-Error throws as Error in StreamResult', async () => {
+      // A stream that throws a non-Error value
+      const stream = new ReadableStream<TestEvent>({
+        start: (controller) => {
+          controller.error('string error');
+        },
+      });
+
+      const result = await pipeStream(stream, encoder, noSignal);
+
+      expect(result.reason).toBe('error');
+      expect(result.error).toBeInstanceOf(Error);
+      expect(result.error?.message).toBe('string error');
+    });
+  });
+
+  describe('StreamResult.error absence', () => {
+    it('is undefined when stream completes', async () => {
+      const stream = streamOf({ type: 'text', text: 'done' });
+
+      const result = await pipeStream(stream, encoder, noSignal);
+
+      expect(result.reason).toBe('complete');
+      expect(result.error).toBeUndefined();
+    });
+
+    it('is undefined when stream is cancelled', async () => {
+      const controller = new AbortController();
+      controller.abort();
+
+      const stream = new ReadableStream<TestEvent>({
+        start: () => {
+          /* paused */
+        },
+      });
+
+      const result = await pipeStream(stream, encoder, controller.signal);
+
+      expect(result.reason).toBe('cancelled');
+      expect(result.error).toBeUndefined();
+    });
   });
 });

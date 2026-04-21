@@ -48,6 +48,7 @@ export const pipeStream = async <TEvent, TMessage>(
       new Promise<void>(() => {});
 
   let reason: StreamResult['reason'] = 'complete';
+  let caughtError: Error | undefined;
 
   try {
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- intentional infinite loop broken by return/break
@@ -77,8 +78,8 @@ export const pipeStream = async <TEvent, TMessage>(
     }
   } catch (error) {
     reason = 'error';
-    const errorText = error instanceof Error ? error.message : String(error);
-    logger?.error('pipeStream(); stream error', { error: errorText });
+    caughtError = error instanceof Error ? error : new Error(String(error));
+    logger?.error('pipeStream(); stream error', { error: caughtError.message });
     try {
       await encoder.close();
     } catch {
@@ -91,5 +92,5 @@ export const pipeStream = async <TEvent, TMessage>(
     reader.releaseLock();
   }
 
-  return { reason };
+  return { reason, error: caughtError };
 };

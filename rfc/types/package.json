@@ -1,0 +1,13 @@
+{
+  "name": "@ably/ai-transport-rfc-types",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Type-only RFC prototype for the durable sessions API (rfc/api.md).",
+  "type": "module",
+  "main": "index.ts",
+  "types": "index.ts",
+  "dependencies": {
+    "ably": "^2.21.0",
+    "ai": "^6.0.137"
+  }
+}

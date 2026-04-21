@@ -288,4 +288,111 @@ describe('useView', () => {
       expect(result.current.loadError).toBeUndefined();
     });
   });
+
+  describe('send', () => {
+    it('delegates to view.send', async () => {
+      const mock = createMockTransport();
+      const { result } = renderHook(() => useView({ transport: mock.transport }));
+
+      await act(async () => {
+        await result.current.send(['hello'], { body: { extra: true } });
+      });
+
+      expect(mock.send).toHaveBeenCalledWith(['hello'], { body: { extra: true } });
+    });
+
+    it('returns a stable reference across rerenders', () => {
+      const mock = createMockTransport();
+      const { result, rerender } = renderHook(() => useView({ transport: mock.transport }));
+      const first = result.current.send;
+      rerender();
+      expect(result.current.send).toBe(first);
+    });
+
+    it('throws when no view is available', async () => {
+      const { result } = renderHook(() => useView());
+
+      await act(async () => {
+        await expect(result.current.send(['hello'])).rejects.toMatchObject({
+          code: ErrorCode.InvalidArgument,
+          statusCode: 400,
+        });
+      });
+    });
+  });
+
+  describe('regenerate', () => {
+    it('delegates to view.regenerate', async () => {
+      const mock = createMockTransport();
+      const { result } = renderHook(() => useView({ transport: mock.transport }));
+
+      await act(async () => {
+        await result.current.regenerate('msg-1', { body: { extra: true } });
+      });
+
+      expect(mock.regenerate).toHaveBeenCalledWith('msg-1', { body: { extra: true } });
+    });
+
+    it('returns a stable reference across rerenders', () => {
+      const mock = createMockTransport();
+      const { result, rerender } = renderHook(() => useView({ transport: mock.transport }));
+      const first = result.current.regenerate;
+      rerender();
+      expect(result.current.regenerate).toBe(first);
+    });
+
+    it('throws when no view is available', async () => {
+      const { result } = renderHook(() => useView());
+
+      await act(async () => {
+        await expect(result.current.regenerate('msg-1')).rejects.toMatchObject({
+          code: ErrorCode.InvalidArgument,
+          statusCode: 400,
+        });
+      });
+    });
+  });
+
+  describe('edit', () => {
+    it('delegates to view.edit with a messages array', async () => {
+      const mock = createMockTransport();
+      const { result } = renderHook(() => useView({ transport: mock.transport }));
+
+      await act(async () => {
+        await result.current.edit('msg-1', ['replacement'], { body: { extra: true } });
+      });
+
+      expect(mock.edit).toHaveBeenCalledWith('msg-1', ['replacement'], { body: { extra: true } });
+    });
+
+    it('delegates to view.edit with a single message', async () => {
+      const mock = createMockTransport();
+      const { result } = renderHook(() => useView({ transport: mock.transport }));
+
+      await act(async () => {
+        await result.current.edit('msg-1', 'single-replacement');
+      });
+
+      expect(mock.edit).toHaveBeenCalledWith('msg-1', 'single-replacement', undefined);
+    });
+
+    it('returns a stable reference across rerenders', () => {
+      const mock = createMockTransport();
+      const { result, rerender } = renderHook(() => useView({ transport: mock.transport }));
+      const first = result.current.edit;
+      rerender();
+      expect(result.current.edit).toBe(first);
+    });
+
+    it('throws when no view is available', async () => {
+      const { result } = renderHook(() => useView());
+
+      await act(async () => {
+        await expect(result.current.edit('msg-1', 'replacement')).rejects.toMatchObject({
+          code: ErrorCode.InvalidArgument,
+          statusCode: 400,
+        });
+      });
+    });
+  });
 });

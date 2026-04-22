@@ -26,7 +26,34 @@ import { convertToModelMessages } from 'ai';
 
 import { HEADER_AMEND } from '../constants.js';
 import type { MessageNode, StreamResponseOptions, StreamResult, Turn } from '../core/transport/types.js';
-import { applyApprovalDeniedToPart, applyApprovalResponseToPart } from './codec/tool-transitions.js';
+import { stripUndefined } from '../utils.js';
+import { toolBase } from './codec/tool-transitions.js';
+
+// ---------------------------------------------------------------------------
+// Tool-part transition helpers (private — only used by applyToolApprovalsToHistory)
+// ---------------------------------------------------------------------------
+
+// Build the `approval-responded` variant of a DynamicToolUIPart. Pure.
+const applyApprovalResponseToPart = (
+  part: AI.DynamicToolUIPart,
+  approvalId: string,
+  approved: boolean,
+  reason: string | undefined,
+): AI.DynamicToolUIPart =>
+  stripUndefined({
+    ...toolBase(part),
+    state: 'approval-responded' as const,
+    input: part.input,
+    approval: stripUndefined({ id: approvalId, approved, reason }),
+  });
+
+// Build the `output-denied` variant of a DynamicToolUIPart. Pure.
+const applyApprovalDeniedToPart = (part: AI.DynamicToolUIPart, approvalId: string): AI.DynamicToolUIPart => ({
+  ...toolBase(part),
+  state: 'output-denied',
+  input: part.input,
+  approval: { id: approvalId, approved: false as const },
+});
 
 // ---------------------------------------------------------------------------
 // Wire type
@@ -100,11 +127,7 @@ export const applyToolApprovalsToHistory = (
       // a new id so the emitted tool-approval-response has a stable handle.
       const approvalId = part.approval?.id ?? crypto.randomUUID();
       const replacement = decision.approved
-        ? applyApprovalResponseToPart(part, {
-            id: approvalId,
-            approved: true,
-            reason: decision.reason,
-          })
+        ? applyApprovalResponseToPart(part, approvalId, true, decision.reason)
         : applyApprovalDeniedToPart(part, approvalId);
 
       patchedParts ??= [...msg.parts];
@@ -249,26 +272,30 @@ export interface StreamResponseWithApprovalRedirectOptions extends StreamRespons
  * message produced this turn — leaving the original message stuck in
  * `approval-responded` state. The redirect uses a per-event
  * {@link StreamResponseOptions.resolveWriteOptions} hook: when a matching
- * chunk flows through, the encoder publishes it with the target's `msgId`
- * and an `x-ably-amend` header, so the client merges the output onto the
- * original message instead of the current-turn one. No filtering, buffering,
- * or separate publish pass is needed — the amendment rides inside the same
- * stream as a single discrete publish with different headers.
+ * chunk reaches the encoder, it is published with the target's `msgId`
+ * and an `x-ably-amend` header so the client merges the output onto the
+ * original message instead of the current-turn one.
  *
- * Cancellation: each amendment is a single discrete publish, so amendments
- * that reached the wire before the turn aborted are committed; an in-flight
- * publish may reject (and surface through `reason: 'error'`). Amendments
- * published before cancel stay on the original message — treat the user's
- * approval as the commit point.
+ * To preserve "no amendments on cancel" semantics — a partial turn must
+ * not leave torn-off tool outputs on the original message — redirect-
+ * target chunks are held in a small TransformStream buffer and only
+ * released to the encoder when the source stream closes normally. If the
+ * turn's `abortSignal` fires before the flush, the buffer is discarded.
+ * Non-redirect chunks are enqueued inline and are unaffected by the buffer.
  * @param turn - The active server turn.
  * @param stream - The UIMessage chunk stream to pipe through the encoder.
  * @param options - Stream options plus the approval decisions to redirect.
  * @returns The underlying `streamResponse` result.
  */
-export const streamResponseWithApprovalRedirect = async (
+// The redirect-eligible subset of UIMessageChunk — narrow enough for the type
+// guard below to tell TypeScript that `event.toolCallId` is defined.
+type RedirectTargetChunk = Extract<AI.UIMessageChunk, { type: 'tool-output-available' | 'tool-output-error' }>;
+
+export const streamResponseWithApprovalRedirect = (
   turn: Turn<AI.UIMessageChunk, AI.UIMessage>,
   stream: ReadableStream<AI.UIMessageChunk>,
   options: StreamResponseWithApprovalRedirectOptions,
+  // eslint-disable-next-line @typescript-eslint/promise-function-async -- body only returns other promises; an async wrapper would add a pointless microtask hop
 ): Promise<StreamResult> => {
   const { decisions, ...streamOptions } = options;
 
@@ -279,10 +306,30 @@ export const streamResponseWithApprovalRedirect = async (
 
   if (targets.size === 0) return turn.streamResponse(stream, streamOptions);
 
-  return turn.streamResponse(stream, {
+  const isRedirectTarget = (event: AI.UIMessageChunk): event is RedirectTargetChunk =>
+    (event.type === 'tool-output-available' || event.type === 'tool-output-error') && targets.has(event.toolCallId);
+
+  const buffer: AI.UIMessageChunk[] = [];
+  const guarded = stream.pipeThrough(
+    new TransformStream<AI.UIMessageChunk, AI.UIMessageChunk>({
+      transform: (chunk, controller) => {
+        if (isRedirectTarget(chunk)) {
+          buffer.push(chunk);
+          return;
+        }
+        controller.enqueue(chunk);
+      },
+      flush: (controller) => {
+        if (turn.abortSignal.aborted) return;
+        for (const chunk of buffer) controller.enqueue(chunk);
+      },
+    }),
+  );
+
+  return turn.streamResponse(guarded, {
     ...streamOptions,
     resolveWriteOptions: (event) => {
-      if (event.type !== 'tool-output-available' && event.type !== 'tool-output-error') return;
+      if (!isRedirectTarget(event)) return;
       const target = targets.get(event.toolCallId);
       if (target === undefined) return;
       return { messageId: target, extras: { headers: { [HEADER_AMEND]: target } } };

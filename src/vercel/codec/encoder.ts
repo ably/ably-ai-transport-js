@@ -117,20 +117,16 @@ class DefaultUIMessageEncoder implements StreamEncoder<AI.UIMessageChunk, AI.UIM
   async appendEvent(chunk: AI.UIMessageChunk, perWrite?: WriteOptions): Promise<void> {
     switch (chunk.type) {
       // -- Stream start: open a message stream with persistent headers -------
-      // Per AIT-ST6d: per-event WriteOptions must not be applied to stream
-      // operations — stream state (trackers, append ordering) is anchored to
-      // the stream's default identity and overriding it mid-stream would
-      // desynchronise subsequent appends.
 
       case 'text-start': {
         const h = headerWriter().str('id', chunk.id).json('providerMetadata', chunk.providerMetadata).build();
-        await this._core.startStream(chunk.id, { name: 'text', data: '', headers: h });
+        await this._core.startStream(chunk.id, { name: 'text', data: '', headers: h }, perWrite);
         break;
       }
 
       case 'reasoning-start': {
         const h = headerWriter().str('id', chunk.id).json('providerMetadata', chunk.providerMetadata).build();
-        await this._core.startStream(chunk.id, { name: 'reasoning', data: '', headers: h });
+        await this._core.startStream(chunk.id, { name: 'reasoning', data: '', headers: h }, perWrite);
         break;
       }
 
@@ -143,7 +139,7 @@ class DefaultUIMessageEncoder implements StreamEncoder<AI.UIMessageChunk, AI.UIM
           .bool('providerExecuted', chunk.providerExecuted)
           .json('providerMetadata', chunk.providerMetadata)
           .build();
-        await this._core.startStream(chunk.toolCallId, { name: 'tool-input', data: '', headers: h });
+        await this._core.startStream(chunk.toolCallId, { name: 'tool-input', data: '', headers: h }, perWrite);
         break;
       }
 
@@ -243,9 +239,7 @@ class DefaultUIMessageEncoder implements StreamEncoder<AI.UIMessageChunk, AI.UIM
 
       case 'abort': {
         this._aborted = true;
-        // AIT-ST6d: abortAllStreams operates on tracked stream state — do not
-        // apply per-event overrides. The subsequent discrete publish may.
-        await this._core.abortAllStreams();
+        await this._core.abortAllStreams(perWrite);
         await this._core.publishDiscrete(
           { name: 'abort', data: chunk.reason ?? '', headers: { [HEADER_STATUS]: 'aborted' } },
           perWrite,

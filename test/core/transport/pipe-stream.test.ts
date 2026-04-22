@@ -1,7 +1,7 @@
 import type * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { StreamEncoder } from '../../../src/core/codec/types.js';
+import type { StreamEncoder, WriteOptions } from '../../../src/core/codec/types.js';
 import { pipeStream } from '../../../src/core/transport/pipe-stream.js';
 
 // ---------------------------------------------------------------------------
@@ -19,6 +19,7 @@ interface TestMessage {
 
 interface MockEncoder extends StreamEncoder<TestEvent, TestMessage> {
   appendedEvents: TestEvent[];
+  appendedOpts: (WriteOptions | undefined)[];
   closed: boolean;
   abortedReason: string | undefined;
 }
@@ -28,11 +29,13 @@ const emptyPublishResult = { serials: [] } as unknown as Ably.PublishResult;
 const createMockEncoder = (): MockEncoder => {
   const mock: MockEncoder = {
     appendedEvents: [],
+    appendedOpts: [],
     closed: false,
     abortedReason: undefined,
     // eslint-disable-next-line @typescript-eslint/require-await -- mock
-    appendEvent: vi.fn(async (event: TestEvent) => {
+    appendEvent: vi.fn(async (event: TestEvent, opts?: WriteOptions) => {
       mock.appendedEvents.push(event);
+      mock.appendedOpts.push(opts);
     }),
     // eslint-disable-next-line @typescript-eslint/require-await -- mock
     abort: vi.fn(async (reason?: string) => {
@@ -309,6 +312,38 @@ describe('pipeStream', () => {
 
       expect(result.reason).toBe('cancelled');
       expect(result.error).toBeUndefined();
+    });
+  });
+
+  describe('resolveWriteOptions hook', () => {
+    it('invokes the hook for each event and forwards the result to appendEvent', async () => {
+      const events: TestEvent[] = [
+        { type: 'text', text: 'a' },
+        { type: 'text', text: 'b' },
+      ];
+      const resolveWriteOptions = vi.fn((event: TestEvent): WriteOptions | undefined =>
+        event.text === 'b' ? { messageId: 'override-b' } : undefined,
+      );
+
+      await pipeStream(streamOf(...events), encoder, noSignal, undefined, resolveWriteOptions);
+
+      expect(resolveWriteOptions).toHaveBeenCalledTimes(2);
+      expect(encoder.appendedEvents).toEqual(events);
+      expect(encoder.appendedOpts).toEqual([undefined, { messageId: 'override-b' }]);
+    });
+
+    it('passes no options to appendEvent when the hook is not provided', async () => {
+      await pipeStream(streamOf({ type: 'text', text: 'x' }), encoder, noSignal);
+
+      expect(encoder.appendedOpts).toEqual([undefined]);
+    });
+
+    it('passes no options when the hook returns undefined', async () => {
+      const resolveWriteOptions = vi.fn((): WriteOptions | undefined => undefined);
+
+      await pipeStream(streamOf({ type: 'text', text: 'x' }), encoder, noSignal, undefined, resolveWriteOptions);
+
+      expect(encoder.appendedOpts).toEqual([undefined]);
     });
   });
 });

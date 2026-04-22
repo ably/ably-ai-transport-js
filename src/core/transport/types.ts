@@ -8,7 +8,7 @@
 import type * as Ably from 'ably';
 
 import type { Logger } from '../../logger.js';
-import type { Codec } from '../codec/types.js';
+import type { Codec, WriteOptions } from '../codec/types.js';
 
 // ---------------------------------------------------------------------------
 // Shared types
@@ -99,12 +99,32 @@ export interface EventsNode<TEvent> {
 /** @deprecated Use {@link EventsNode} instead. */
 export type EventNode<TEvent> = EventsNode<TEvent>;
 
-/** Options for streamResponse — per-operation overrides for the assistant message. */
-export interface StreamResponseOptions {
+/**
+ * Options for streamResponse — per-operation overrides for the assistant message.
+ * @template TEvent - The codec event type carried by the stream; used by the `resolveWriteOptions` hook.
+ */
+export interface StreamResponseOptions<TEvent> {
   /** The msg-id of the immediately preceding message in this branch. */
   parent?: string;
   /** The msg-id of the message this response replaces (for regeneration). */
   forkOf?: string;
+  /**
+   * Optional per-event hook invoked before each event is encoded. The
+   * returned {@link WriteOptions} (if any) override the stream's default
+   * headers and `msgId` for that one encode call only; return `undefined`
+   * to use the stream defaults.
+   *
+   * Used to carry a subset of events within the stream to a different
+   * message (e.g. `tool-output-available` chunks that belong on a prior
+   * assistant message, stamped with `x-ably-amend`). Must not be used
+   * for events that participate in the encoder's stream-append pipeline
+   * — streaming state (stream tracker, append ordering) is anchored to
+   * the stream's default identity and is not affected by per-event
+   * overrides.
+   * @param event - The event about to be encoded.
+   * @returns Per-write overrides for this event, or undefined.
+   */
+  resolveWriteOptions?: (event: TEvent) => WriteOptions | undefined;
 }
 
 /** The result of streaming a response through the encoder. */
@@ -222,7 +242,7 @@ export interface Turn<TEvent, TMessage> {
    * Returns when the stream completes, is cancelled, or errors.
    * Does NOT call end() — the caller must call end() after streamResponse returns.
    */
-  streamResponse(stream: ReadableStream<TEvent>, options?: StreamResponseOptions): Promise<StreamResult>;
+  streamResponse(stream: ReadableStream<TEvent>, options?: StreamResponseOptions<TEvent>): Promise<StreamResult>;
 
   /**
    * Publish events targeting existing messages in the tree. Each node

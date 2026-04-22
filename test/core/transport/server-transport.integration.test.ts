@@ -20,6 +20,7 @@ import {
   EVENT_CANCEL,
   EVENT_TURN_END,
   EVENT_TURN_START,
+  HEADER_AMEND,
   HEADER_CANCEL_TURN_ID,
   HEADER_MSG_ID,
   HEADER_PARENT,
@@ -589,5 +590,84 @@ describe('ServerTransport integration', () => {
     );
 
     expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.ChannelContinuityLost);
+  });
+
+  /**
+   * Scenario: Per-event WriteOptions override via resolveWriteOptions.
+   *
+   * Streams a mix of text and tool-output chunks. The resolveWriteOptions
+   * hook rewrites the tool-output-available chunk's `msgId` to a target
+   * and attaches `x-ably-amend`. Verifies the received Ably messages
+   * carry the expected headers: the text-start chunk uses the stream's
+   * default `msgId`; the tool-output-available chunk uses the override
+   * and carries `x-ably-amend`.
+   */
+  it('stamps per-event WriteOptions overrides on discrete publishes', async () => {
+    const channelName = uniqueChannelName('st-resolve-write-options');
+    const serverClient = ablyRealtimeClient();
+    const subClient = ablyRealtimeClient();
+
+    const serverChannel = serverClient.channels.get(channelName);
+    const subChannel = subClient.channels.get(channelName);
+
+    transport = createServerTransport({
+      channel: serverChannel,
+      codec: UIMessageCodec,
+    });
+
+    const rawMessages: Ably.InboundMessage[] = [];
+    let resolve: () => void;
+    const done = new Promise<void>((r) => {
+      resolve = r;
+    });
+    await subChannel.subscribe((msg) => {
+      rawMessages.push(msg);
+      if (msg.name === 'tool-output-available') resolve();
+    });
+
+    const turn = transport.newTurn({ turnId: 'turn-rwo', clientId: 'user-a' });
+    await turn.start();
+
+    const stream = new ReadableStream<AI.UIMessageChunk>({
+      start: (controller) => {
+        controller.enqueue({ type: 'text-start', id: 'txt-1' });
+        controller.enqueue({
+          type: 'tool-output-available',
+          toolCallId: 't1',
+          output: { result: 'ok' },
+          dynamic: true,
+          providerExecuted: false,
+          preliminary: false,
+        });
+        controller.close();
+      },
+    });
+
+    await turn.streamResponse(stream, {
+      resolveWriteOptions: (event) =>
+        event.type === 'tool-output-available'
+          ? { messageId: 'target-msg-id', extras: { headers: { [HEADER_AMEND]: 'target-msg-id' } } }
+          : undefined,
+    });
+
+    await done;
+
+    const textStartMsg = rawMessages.find((m) => m.name === 'text');
+    expect(textStartMsg).toBeDefined();
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by expect above
+    const textHeaders = getHeaders(textStartMsg!);
+    // Stream operation: hook was ignored, default msg-id applies, no amend.
+    expect(textHeaders[HEADER_MSG_ID]).not.toBe('target-msg-id');
+    expect(textHeaders[HEADER_AMEND]).toBeUndefined();
+
+    const toolMsg = rawMessages.find((m) => m.name === 'tool-output-available');
+    expect(toolMsg).toBeDefined();
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by expect above
+    const toolHeaders = getHeaders(toolMsg!);
+    // Discrete publish: hook overrode msg-id and added amend header.
+    expect(toolHeaders[HEADER_MSG_ID]).toBe('target-msg-id');
+    expect(toolHeaders[HEADER_AMEND]).toBe('target-msg-id');
+
+    await turn.end('complete');
   });
 });

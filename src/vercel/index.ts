@@ -13,3 +13,17 @@ export { createChatTransport, createClientTransport, createServerTransport } fro
 
 // Server-side tool result merge helper
 export { applyToolEventsToHistory } from './tool-events.js';
+
+// Server-side tool approval helpers
+export type {
+  PrepareApprovalTurnOptions,
+  PrepareApprovalTurnResult,
+  StreamResponseWithApprovalRedirectOptions,
+  ToolApprovalDecision,
+} from './tool-approvals.js';
+export {
+  applyToolApprovalsToHistory,
+  extractApprovalDecisionsFromHistory,
+  prepareApprovalTurn,
+  streamResponseWithApprovalRedirect,
+} from './tool-approvals.js';

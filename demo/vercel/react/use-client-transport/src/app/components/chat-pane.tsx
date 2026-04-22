@@ -5,6 +5,7 @@ import type * as Ably from 'ably';
 import type { UIMessage, UIMessageChunk } from 'ai';
 import type { ViewHandle } from '@ably/ai-transport/react';
 import type { ClientTransport } from '@ably/ai-transport';
+import type { ToolApprovalDecision } from '@ably/ai-transport/vercel';
 import { MessageList } from './message-list';
 import { InputBar } from './input-bar';
 import { MessageQueue } from './message-queue';
@@ -12,7 +13,6 @@ import { DebugPane } from './debug-pane';
 import { useClientTools } from '../hooks/use-client-tools';
 import { useMessageQueue } from '../hooks/use-message-queue';
 import { userMessage } from '../helpers';
-import type { ToolApproval } from './chat';
 
 interface ChatPaneProps {
   label: string;
@@ -30,24 +30,24 @@ export function ChatPane({ label, transport, view, ablyMessages, activeTurns, cl
   const queue = useMessageQueue(transport, view.send);
 
   const handleToolApprove = useCallback(
-    (msgId: string, toolCallId: string, toolName: string, input: unknown) => {
+    (msgId: string, toolCallId: string, _toolName: string, input: unknown) => {
       const inputObj = input as Record<string, string> | undefined;
-      const label = inputObj?.location ?? toolName;
-      const approval: ToolApproval = { toolCallId, toolName, input, approved: true, targetMsgId: msgId };
+      const label = inputObj?.location ?? toolCallId;
+      const decision: ToolApprovalDecision = { toolCallId, approved: true, targetMsgId: msgId };
       view.send([userMessage(`Approved: ${label}`)], {
-        body: { toolApprovals: [approval] },
+        body: { toolApprovals: [decision] },
       });
     },
     [view],
   );
 
   const handleToolDeny = useCallback(
-    (msgId: string, toolCallId: string, toolName: string, input: unknown) => {
+    (msgId: string, toolCallId: string, _toolName: string, input: unknown) => {
       const inputObj = input as Record<string, string> | undefined;
-      const label = inputObj?.location ?? toolName;
-      const approval: ToolApproval = { toolCallId, toolName, input, approved: false, targetMsgId: msgId };
+      const label = inputObj?.location ?? toolCallId;
+      const decision: ToolApprovalDecision = { toolCallId, approved: false, targetMsgId: msgId };
       view.send([userMessage(`Denied: ${label}`)], {
-        body: { toolApprovals: [approval] },
+        body: { toolApprovals: [decision] },
       });
     },
     [view],

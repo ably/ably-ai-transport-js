@@ -6,7 +6,7 @@
  */
 
 import type { Logger } from '../../logger.js';
-import type { StreamEncoder } from '../codec/types.js';
+import type { StreamEncoder, WriteOptions } from '../codec/types.js';
 import type { StreamResult } from './types.js';
 
 /**
@@ -18,6 +18,7 @@ import type { StreamResult } from './types.js';
  * @param encoder - The streaming encoder to write events through.
  * @param signal - Abort signal to monitor for cancellation.
  * @param onAbort - Optional callback invoked when the stream is cancelled, before the stream ends.
+ * @param resolveWriteOptions - Optional per-event hook returning {@link WriteOptions} overrides to pass to `encoder.appendEvent`.
  * @param logger - Optional logger for diagnostic output.
  * @returns The reason the pipe ended.
  */
@@ -26,6 +27,7 @@ export const pipeStream = async <TEvent, TMessage>(
   encoder: StreamEncoder<TEvent, TMessage>,
   signal: AbortSignal | undefined,
   onAbort?: (write: (event: TEvent) => Promise<void>) => void | Promise<void>,
+  resolveWriteOptions?: (event: TEvent) => WriteOptions | undefined,
   logger?: Logger,
 ): Promise<StreamResult> => {
   logger?.trace('pipeStream();');
@@ -74,7 +76,7 @@ export const pipeStream = async <TEvent, TMessage>(
         break;
       }
 
-      await encoder.appendEvent(value);
+      await encoder.appendEvent(value, resolveWriteOptions?.(value));
     }
   } catch (error) {
     reason = 'error';

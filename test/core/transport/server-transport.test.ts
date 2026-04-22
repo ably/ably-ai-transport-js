@@ -466,6 +466,30 @@ describe('ServerTransport', () => {
       const assistantParent = streamOpts?.extras?.headers?.[HEADER_PARENT];
       expect(assistantParent).toBe(msgIds[0]);
     });
+
+    it('forwards resolveWriteOptions per-event overrides to encoder.appendEvent', async () => {
+      const turn = transport.newTurn({ turnId: 'turn-1' });
+      await turn.start();
+
+      const events: TestEvent[] = [
+        { type: 'text', text: 'a' },
+        { type: 'text', text: 'b' },
+      ];
+
+      await turn.streamResponse(streamOf(...events), {
+        resolveWriteOptions: (event) => (event.text === 'b' ? { messageId: 'override-b' } : undefined),
+      });
+
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- mock accessor
+      const createEncoderCalls = vi.mocked(codec.createEncoder).mock.results;
+      const encoder = createEncoderCalls.at(-1)?.value as StreamEncoder<TestEvent, TestMessage>;
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- mock accessor
+      const appendCalls = vi.mocked(encoder.appendEvent).mock.calls;
+
+      expect(appendCalls).toHaveLength(2);
+      expect(appendCalls[0]).toEqual([events[0], undefined]);
+      expect(appendCalls[1]).toEqual([events[1], { messageId: 'override-b' }]);
+    });
   });
 
   describe('cancel routing', () => {

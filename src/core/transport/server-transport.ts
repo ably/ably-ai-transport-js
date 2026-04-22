@@ -511,7 +511,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
       // Spec: AIT-ST6, AIT-ST6a, AIT-ST6b, AIT-ST6b1, AIT-ST6b2, AIT-ST6b3, AIT-ST6b4, AIT-ST6c
       streamResponse: async (
         stream: ReadableStream<TEvent>,
-        streamOpts?: StreamResponseOptions,
+        streamOpts?: StreamResponseOptions<TEvent>,
       ): Promise<StreamResult> => {
         logger?.trace('Turn.streamResponse();', { turnId });
 
@@ -544,7 +544,7 @@ class DefaultServerTransport<TEvent, TMessage> implements ServerTransport<TEvent
           messageId: msgId,
         });
 
-        const result = await pipeStream(stream, encoder, signal, onAbort, logger);
+        const result = await pipeStream(stream, encoder, signal, onAbort, streamOpts?.resolveWriteOptions, logger);
 
         if (result.error) {
           const errInfo = new Ably.ErrorInfo(

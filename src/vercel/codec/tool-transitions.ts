@@ -120,3 +120,55 @@ export const transitionToolPart = (part: AI.DynamicToolUIPart, chunk: ToolOutput
     }
   }
 };
+
+// ---------------------------------------------------------------------------
+// Approval response transition (server-side, not a wire chunk)
+// ---------------------------------------------------------------------------
+
+/**
+ * Describes a user's response to a tool approval request. Not a wire chunk —
+ * `approval-responded` is a UIMessage state that the Vercel AI SDK's
+ * `convertToModelMessages` understands directly.
+ */
+export interface ApprovalResponse {
+  /** Stable approval identifier, preserved across the request/response cycle. */
+  id: string;
+  /** Whether the user approved or denied. */
+  approved: boolean;
+  /** Optional reason accompanying the response. */
+  reason?: string;
+}
+
+/**
+ * Build the `approval-responded` variant of a DynamicToolUIPart. Pure.
+ *
+ * The union discriminator rejects a `...part` spread when moving between
+ * state variants with different approval/output shapes, so the variant is
+ * constructed from the extracted base fields plus the new approval record.
+ * @param part - The existing tool part whose identity fields to preserve.
+ * @param response - The approval response to apply.
+ * @returns A new DynamicToolUIPart in state `approval-responded`.
+ */
+export const applyApprovalResponseToPart = (
+  part: AI.DynamicToolUIPart,
+  response: ApprovalResponse,
+): AI.DynamicToolUIPart =>
+  stripUndefined({
+    ...toolBase(part),
+    state: 'approval-responded' as const,
+    input: part.input,
+    approval: stripUndefined({ id: response.id, approved: response.approved, reason: response.reason }),
+  });
+
+/**
+ * Build the `output-denied` variant of a DynamicToolUIPart. Pure.
+ * @param part - The existing tool part whose identity fields to preserve.
+ * @param approvalId - The approval id to record on the denied part.
+ * @returns A new DynamicToolUIPart in state `output-denied`.
+ */
+export const applyApprovalDeniedToPart = (part: AI.DynamicToolUIPart, approvalId: string): AI.DynamicToolUIPart => ({
+  ...toolBase(part),
+  state: 'output-denied',
+  input: part.input,
+  approval: { id: approvalId, approved: false as const },
+});

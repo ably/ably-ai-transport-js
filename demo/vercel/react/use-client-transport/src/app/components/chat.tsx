@@ -38,7 +38,7 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
   const queue = useMessageQueue(transport, view.send);
 
   const handleToolApproved = useCallback(
-    (msgId: string, toolCallId: string, _toolName: string, input: unknown) => {
+    (msgId: string, toolCallId: string, input: unknown) => {
       const inputObj = input as Record<string, string> | undefined;
       const label = inputObj?.location ?? toolCallId;
       const decision: ToolApprovalDecision = { toolCallId, approved: true, targetMsgId: msgId };
@@ -50,7 +50,7 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
   );
 
   const handleToolDeny = useCallback(
-    (msgId: string, toolCallId: string, _toolName: string, input: unknown) => {
+    (msgId: string, toolCallId: string, input: unknown) => {
       const inputObj = input as Record<string, string> | undefined;
       const label = inputObj?.location ?? toolCallId;
       const decision: ToolApprovalDecision = { toolCallId, approved: false, targetMsgId: msgId };

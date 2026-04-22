@@ -13,8 +13,8 @@ interface MessageBubbleProps {
   onSelectSibling: (index: number) => void;
   onRegenerate?: () => void;
   onEdit?: (newText: string) => void;
-  onToolApprove?: (msgId: string, toolCallId: string, toolName: string, input: unknown) => void;
-  onToolDeny?: (msgId: string, toolCallId: string, toolName: string, input: unknown) => void;
+  onToolApprove?: (msgId: string, toolCallId: string, input: unknown) => void;
+  onToolDeny?: (msgId: string, toolCallId: string, input: unknown) => void;
 }
 
 function Badge({ label, value, color }: { label: string; value: string; color: string }) {
@@ -217,24 +217,12 @@ export function MessageBubble({
                       part={toolPart}
                       onApprove={
                         toolPart.state === 'approval-requested' && onToolApprove && headers?.['x-ably-msg-id']
-                          ? () =>
-                              onToolApprove(
-                                headers['x-ably-msg-id'],
-                                toolPart.toolCallId,
-                                toolPart.toolName,
-                                toolPart.input,
-                              )
+                          ? () => onToolApprove(headers['x-ably-msg-id'], toolPart.toolCallId, toolPart.input)
                           : undefined
                       }
                       onDeny={
                         toolPart.state === 'approval-requested' && onToolDeny && headers?.['x-ably-msg-id']
-                          ? () =>
-                              onToolDeny(
-                                headers['x-ably-msg-id'],
-                                toolPart.toolCallId,
-                                toolPart.toolName,
-                                toolPart.input,
-                              )
+                          ? () => onToolDeny(headers['x-ably-msg-id'], toolPart.toolCallId, toolPart.input)
                           : undefined
                       }
                     />

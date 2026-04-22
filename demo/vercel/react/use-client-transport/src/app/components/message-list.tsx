@@ -9,8 +9,8 @@ interface MessageListProps {
   view: ViewHandle<UIMessageChunk, UIMessage>;
   onRegenerate: (messageId: string) => void;
   onEdit: (messageId: string, newText: string) => void;
-  onToolApprove?: (msgId: string, toolCallId: string, toolName: string, input: unknown) => void;
-  onToolDeny?: (msgId: string, toolCallId: string, toolName: string, input: unknown) => void;
+  onToolApprove?: (msgId: string, toolCallId: string, input: unknown) => void;
+  onToolDeny?: (msgId: string, toolCallId: string, input: unknown) => void;
 }
 
 export function MessageList({ view, onRegenerate, onEdit, onToolApprove, onToolDeny }: MessageListProps) {

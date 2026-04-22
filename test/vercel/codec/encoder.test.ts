@@ -258,23 +258,17 @@ describe('Vercel encoder', () => {
       expect(headersOf(msg)[`${D}messageId`]).toBe('chunk-id');
     });
 
-    it('stamps x-ably-msg-id from WriteOptions on discrete publishes but not on stream operations', async () => {
-      // Spec: AIT-ST6d — per-event WriteOptions apply only to discrete publishes.
-      // Stream operations (startStream/appendStream/closeStream/abortStream) use
-      // the stream's default identity so the tracker and subsequent appends stay
-      // consistent.
+    it('stamps x-ably-msg-id from WriteOptions on all publishes', async () => {
       const encoder = createEncoder(writer);
       const perWrite = { messageId: 'msg-1' };
       await encoder.appendEvent({ type: 'start', messageId: 'msg-1' }, perWrite);
       await encoder.appendEvent({ type: 'text-start', id: 'txt-1' }, perWrite);
 
-      // Discrete: honours the override.
       const startMsg = firstPublish(writer);
       expect(headersOf(startMsg)[HEADER_MSG_ID]).toBe('msg-1');
 
-      // Stream start: override ignored — no x-ably-msg-id stamped (no default set on this encoder).
       const textMsg = writer.publishCalls[1] as Ably.Message;
-      expect(headersOf(textMsg)[HEADER_MSG_ID]).toBeUndefined();
+      expect(headersOf(textMsg)[HEADER_MSG_ID]).toBe('msg-1');
     });
 
     it('encodes finish-step', async () => {

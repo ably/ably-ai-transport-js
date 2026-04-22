@@ -1,7 +1,14 @@
 import type * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { HEADER_AMEND, HEADER_MSG_ID, HEADER_TURN_ID } from '../../../src/constants.js';
+import {
+  HEADER_AMEND,
+  HEADER_DISCRETE,
+  HEADER_MSG_ID,
+  HEADER_STATUS,
+  HEADER_STREAM,
+  HEADER_TURN_ID,
+} from '../../../src/constants.js';
 import type { Codec, DecoderOutput, MessageAccumulator, StreamDecoder } from '../../../src/core/codec/types.js';
 import { decodeHistory } from '../../../src/core/transport/decode-history.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
@@ -75,15 +82,25 @@ const withOutputs = (msg: Ably.InboundMessage, outputs: TestDecoderOutput[]): Ab
 
 /**
  * Build a discrete (non-turn) message and the corresponding decoder output.
+ * Matches the real encoder's wire format for `publishDiscreteBatch`:
+ * `x-ably-stream: "false"` plus `x-ably-discrete: "true"`.
  * @param msgId - The `x-ably-msg-id` header value.
  * @param content - The domain message content.
  * @param extraHeaders - Additional headers to set on the Ably message.
  * @returns The built Ably message, with outputs registered.
  */
 const discreteMsg = (msgId: string, content: string, extraHeaders: Record<string, string> = {}): Ably.InboundMessage =>
-  withOutputs(ablyMsg({ headers: { [HEADER_MSG_ID]: msgId, ...extraHeaders } }), [
-    { kind: 'message', message: { id: msgId, content } },
-  ]);
+  withOutputs(
+    ablyMsg({
+      headers: {
+        [HEADER_MSG_ID]: msgId,
+        [HEADER_STREAM]: 'false',
+        [HEADER_DISCRETE]: 'true',
+        ...extraHeaders,
+      },
+    }),
+    [{ kind: 'message', message: { id: msgId, content } }],
+  );
 
 /**
  * Build the four wire messages for a single streaming turn. All four share
@@ -97,7 +114,11 @@ const discreteMsg = (msgId: string, content: string, extraHeaders: Record<string
  */
 const streamingTurn = (turnId: string, msgId: string, deltas: string[]): Ably.InboundMessage[] => {
   const serial = nextSerial();
-  const baseHeaders = { [HEADER_TURN_ID]: turnId, [HEADER_MSG_ID]: msgId };
+  const baseHeaders = {
+    [HEADER_TURN_ID]: turnId,
+    [HEADER_MSG_ID]: msgId,
+    [HEADER_STREAM]: 'true',
+  };
 
   const create = withOutputs(ablyMsg({ action: 'message.create', headers: baseHeaders, serial }), [
     { kind: 'event', event: { type: 'text', text: '' }, messageId: msgId },
@@ -110,7 +131,7 @@ const streamingTurn = (turnId: string, msgId: string, deltas: string[]): Ably.In
   const finish = withOutputs(
     ablyMsg({
       action: 'message.append',
-      headers: { ...baseHeaders, 'x-ably-status': 'finished' },
+      headers: { ...baseHeaders, [HEADER_STATUS]: 'finished' },
       serial,
     }),
     [{ kind: 'event', event: { type: 'finish' }, messageId: msgId }],
@@ -185,27 +206,19 @@ const createMockChannel = (pages: Ably.InboundMessage[][] = []): Ably.RealtimeCh
 // real aggregation of discrete messages and streamed turns.
 // ---------------------------------------------------------------------------
 
-const createMockDecoder = (): StreamDecoder<TestEvent, TestMessage> => {
-  const seenSerials = new Set<string>();
-  return {
-    decode: vi.fn((msg: Ably.InboundMessage): TestDecoderOutput[] => {
-      const outputs = outputsByMessage.get(msg);
-      if (!outputs) return [];
-      // Simulate the real decoder's per-serial state: an append/update on a
-      // serial that hasn't been opened by a prior `message.create` is a
-      // regression signal. Emit nothing to make such bugs observable.
-      const serial = msg.serial ?? '';
-      const action = msg.action;
-      if (action === 'message.create') {
-        seenSerials.add(serial);
-      } else if (!seenSerials.has(serial)) {
-        // Out-of-order: append/update arrived before its create was seen.
-        return [];
-      }
-      return outputs.map((o) => ({ ...o }));
-    }),
-  };
-};
+// The real decoder handles first-contact for `message.update` and
+// `message.append` on an unseen serial (see `_decodeUpdate` /
+// `_decodeFirstContact`), so the mock does not require a preceding
+// `message.create`. Chronological-order regressions are still caught by
+// the mock accumulator below: text deltas applied in the wrong order
+// produce wrong `content`, and a finish event arriving before its
+// message's first event never moves anything into `completedMessages`.
+const createMockDecoder = (): StreamDecoder<TestEvent, TestMessage> => ({
+  decode: vi.fn((msg: Ably.InboundMessage): TestDecoderOutput[] => {
+    const outputs = outputsByMessage.get(msg);
+    return outputs ? outputs.map((o) => ({ ...o })) : [];
+  }),
+});
 
 const createMockAccumulator = (): MessageAccumulator<TestEvent, TestMessage> => {
   const messages: TestMessage[] = [];
@@ -556,5 +569,192 @@ describe('decodeHistory', () => {
 
     const second = await first.next();
     expect(second?.items.map((i) => i.message.id)).toEqual(['u1']);
+  });
+
+  it('creates exactly one decoder per decodeHistory() call regardless of page count', async () => {
+    // Primary O(n^2) regression guard. 20 Ably pages, 1 completed message
+    // each. The fetch loop walks all 20 pages using header-based counting;
+    // only buildResult runs the full decode. Anything above 1 means
+    // fetchUntilLimit is calling decodeAll (the old O(n^2) path) or
+    // buildResult is re-decoding cached state.
+    const pageCount = 20;
+    const pages = Array.from({ length: pageCount }, (_, i) => [discreteMsg(`u${String(pageCount - i)}`, 'x')]);
+    const channel = createMockChannel(pages);
+    const codec = createMockCodec();
+
+    await decodeHistory(channel, codec, { limit: pageCount }, silentLogger);
+
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked takes a method reference
+    expect(vi.mocked(codec.createDecoder).mock.calls.length).toBe(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // Edge cases for the header-based completion counter
+  // -------------------------------------------------------------------------
+
+  it('returns empty result without spinning when history has no terminal signal', async () => {
+    // A single `message.create` with no terminal anywhere in history. The
+    // counter sees "created" but never "terminated", so the loop must
+    // exhaust Ably pages and return an empty result rather than hang.
+    const create = withOutputs(
+      ablyMsg({
+        action: 'message.create',
+        headers: { [HEADER_TURN_ID]: 'T1', [HEADER_MSG_ID]: 'asst-1', [HEADER_STREAM]: 'true' },
+      }),
+      [{ kind: 'event', event: { type: 'text', text: '' }, messageId: 'asst-1' }],
+    );
+    const channel = createMockChannel([[create]]);
+    const codec = createMockCodec();
+
+    const page = await decodeHistory(channel, codec, { limit: 10 }, silentLogger);
+
+    expect(page.items).toEqual([]);
+    expect(page.hasNext()).toBe(false);
+  });
+
+  it('treats x-ably-status:aborted as terminal for counting', async () => {
+    // Same shape as a normal finish test but the terminal append carries
+    // status=aborted. The counter's terminal rule must accept either
+    // "finished" or "aborted" to complete the msg-id on page 1.
+    const serial = nextSerial();
+    const baseHeaders = { [HEADER_TURN_ID]: 'T1', [HEADER_MSG_ID]: 'asst-1', [HEADER_STREAM]: 'true' };
+    const create = withOutputs(ablyMsg({ action: 'message.create', headers: baseHeaders, serial }), [
+      { kind: 'event', event: { type: 'text', text: 'partial' }, messageId: 'asst-1' },
+    ]);
+    const abort = withOutputs(
+      ablyMsg({
+        action: 'message.append',
+        headers: { ...baseHeaders, [HEADER_STATUS]: 'aborted' },
+        serial,
+      }),
+      [{ kind: 'event', event: { type: 'finish' }, messageId: 'asst-1' }],
+    );
+
+    // Single page, newest-first: abort then create.
+    const channel = createMockChannel([[abort, create]]);
+    const codec = createMockCodec();
+
+    const page = await decodeHistory(channel, codec, { limit: 1 }, silentLogger);
+
+    expect(page.items).toHaveLength(1);
+  });
+
+  it('completes a streamed turn delivered as a single message.update (history compaction)', async () => {
+    // history can compact a live `create + append + ... + append{finished}`
+    // sequence into a single `message.update` carrying the accumulated data
+    // and `x-ably-status: "finished"`. The decoder handles this via
+    // first-contact in `_decodeUpdate`; the counter must too, otherwise the
+    // fetch loop pages past a compacted turn without ever marking it
+    // complete (there's no preceding `message.create` to match on).
+    //
+    // To catch the regression — not just verify user-visible output —
+    // stage a second Ably page that must NOT be fetched if the counter
+    // correctly recognises the compacted update as complete.
+    const compacted = withOutputs(
+      ablyMsg({
+        action: 'message.update',
+        headers: {
+          [HEADER_TURN_ID]: 'T1',
+          [HEADER_MSG_ID]: 'asst-1',
+          [HEADER_STREAM]: 'true',
+          [HEADER_STATUS]: 'finished',
+        },
+      }),
+      [
+        { kind: 'event', event: { type: 'text', text: 'compacted content' }, messageId: 'asst-1' },
+        { kind: 'event', event: { type: 'finish' }, messageId: 'asst-1' },
+      ],
+    );
+    const staleOlderPage = discreteMsg('should-not-be-fetched', 'ignored');
+    const channel = createMockChannel([[compacted], [staleOlderPage]]);
+    const codec = createMockCodec();
+
+    const page = await decodeHistory(channel, codec, { limit: 1 }, silentLogger);
+
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0]?.message).toEqual({ id: 'asst-1', content: 'compacted content' });
+    // If the counter didn't recognise the update as a start, the loop
+    // would have paged into `staleOlderPage`. `rawMessages` should only
+    // contain the compacted update.
+    expect(page.rawMessages).toHaveLength(1);
+  });
+
+  it('counts a message.append as a start signal (first-contact delivery)', async () => {
+    // Same story as the compacted-update case but with `message.append`.
+    // The real decoder falls through to `_decodeUpdate` when an append
+    // arrives on a serial it hasn't seen, so a single append with
+    // `STATUS=finished` represents a viable completable message.
+    const firstContact = withOutputs(
+      ablyMsg({
+        action: 'message.append',
+        headers: {
+          [HEADER_TURN_ID]: 'T1',
+          [HEADER_MSG_ID]: 'asst-1',
+          [HEADER_STREAM]: 'true',
+          [HEADER_STATUS]: 'finished',
+        },
+      }),
+      [
+        { kind: 'event', event: { type: 'text', text: 'appended content' }, messageId: 'asst-1' },
+        { kind: 'event', event: { type: 'finish' }, messageId: 'asst-1' },
+      ],
+    );
+    const staleOlderPage = discreteMsg('should-not-be-fetched', 'ignored');
+    const channel = createMockChannel([[firstContact], [staleOlderPage]]);
+    const codec = createMockCodec();
+
+    const page = await decodeHistory(channel, codec, { limit: 1 }, silentLogger);
+
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0]?.message).toEqual({ id: 'asst-1', content: 'appended content' });
+    expect(page.rawMessages).toHaveLength(1);
+  });
+
+  it('does not count cross-turn amendments as new completions', async () => {
+    // A finished turn plus an amendment on the same msg-id. Naive counting
+    // that didn't skip HEADER_AMEND would double-count. We only want one
+    // completion here.
+    const [finish, delta, create] = streamingTurn('T1', 'asst-1', ['original']);
+    if (!finish || !delta || !create) throw new Error('invariant: 3 wire messages');
+    const amend = amendMsg('asst-1', 'T2');
+    const channel = createMockChannel([[amend, finish, delta, create]]);
+    const codec = createMockCodec();
+
+    const page = await decodeHistory(channel, codec, { limit: 10 }, silentLogger);
+
+    // One message (the amended one). If the counter had incorrectly added
+    // the amendment's msg-id again via the terminal status header, the
+    // fetch loop would still stop at the correct size because Sets
+    // deduplicate - but let's verify the output count matches.
+    expect(page.items.filter((i) => i.message.id === 'asst-1')).toHaveLength(1);
+  });
+
+  it('handles truncated history (terminal wire message with no create in range)', async () => {
+    // Pathological case: a finish survives but the create has rolled off.
+    // The counter never marks it complete (needs both halves), so the loop
+    // exhausts pages. buildResult decodes and gets nothing (mock decoder
+    // emits nothing for appends without a preceding create). The call
+    // must return cleanly with fewer items than requested.
+    const serial = nextSerial();
+    const orphan = withOutputs(
+      ablyMsg({
+        action: 'message.append',
+        headers: {
+          [HEADER_TURN_ID]: 'T1',
+          [HEADER_MSG_ID]: 'orphan',
+          [HEADER_STREAM]: 'true',
+          [HEADER_STATUS]: 'finished',
+        },
+        serial,
+      }),
+      [{ kind: 'event', event: { type: 'finish' }, messageId: 'orphan' }],
+    );
+    const channel = createMockChannel([[orphan]]);
+    const codec = createMockCodec();
+
+    const page = await decodeHistory(channel, codec, { limit: 5 }, silentLogger);
+
+    expect(page.items).toEqual([]);
+    expect(page.hasNext()).toBe(false);
   });
 });

@@ -141,8 +141,10 @@ export interface ClientRun<TEvent, TMessage> extends Run<TMessage> {
    * call site follow the same two-step "publish, then optionally POST"
    * pattern (see plan §3.2).
    *
-   * Silent no-op when the run has already reached a terminal status — multi-
-   * device races are idempotent by default.
+   * Silent no-op when the signal would have no effect — i.e. when the run
+   * is already in a terminal status (`'complete' | 'aborted' | 'failed'`).
+   * Valid on `'active'` and `'suspended'` runs. Multi-device races are
+   * idempotent by default.
    */
   abort(): Promise<Invocation>;
 
@@ -154,7 +156,9 @@ export interface ClientRun<TEvent, TMessage> extends Run<TMessage> {
    * to an agent endpoint when no agent is currently running. See
    * {@link ClientRun.abort} for rationale.
    *
-   * Silent no-op when the run has already reached a terminal status.
+   * Silent no-op when the signal would have no effect — i.e. when the run
+   * is already `'suspended'` or has reached a terminal status. Valid only
+   * on `'active'` runs.
    */
   pause(): Promise<Invocation>;
 
@@ -166,7 +170,9 @@ export interface ClientRun<TEvent, TMessage> extends Run<TMessage> {
    * to an agent endpoint when no agent is currently running. See
    * {@link ClientRun.abort} for rationale.
    *
-   * Silent no-op when the run has already reached a terminal status.
+   * Silent no-op when the signal would have no effect — i.e. when the run
+   * is `'active'` or has reached a terminal status. Valid only on
+   * `'suspended'` runs.
    */
   resume(options?: { stepId?: string }): Promise<Invocation>;
 
@@ -178,7 +184,9 @@ export interface ClientRun<TEvent, TMessage> extends Run<TMessage> {
    * to an agent endpoint when no agent is currently running. See
    * {@link ClientRun.abort} for rationale.
    *
-   * Silent no-op when the run has already reached a terminal status.
+   * Silent no-op when the signal would have no effect — i.e. when the run
+   * is still `'active'` or `'suspended'` (nothing to retry). Valid on
+   * terminal runs (`'complete' | 'aborted' | 'failed'`).
    */
   retry(options?: { stepId?: string }): Promise<Invocation>;
 }

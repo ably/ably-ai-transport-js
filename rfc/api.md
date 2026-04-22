@@ -792,8 +792,10 @@ interface ClientRun<TEvent, TMessage> extends Run<TMessage> {
    * call site follow the same two-step "publish, then optionally POST"
    * pattern.
    *
-   * Silent no-op when the run has already reached a terminal status —
-   * multi-device races are idempotent by default.
+   * Silent no-op when the signal would have no effect — i.e. when the run
+   * is already in a terminal status (`'complete' | 'aborted' | 'failed'`).
+   * Valid on `'active'` and `'suspended'` runs. Multi-device races are
+   * idempotent by default.
    */
   abort(): Promise<Invocation>;
 
@@ -801,7 +803,9 @@ interface ClientRun<TEvent, TMessage> extends Run<TMessage> {
    * Pause this run. Publishes a pause control signal so the agent finishes
    * or interrupts its current step and suspends the run. See
    * {@link ClientRun.abort} for the `Invocation` return rationale. Silent
-   * no-op when the run has already reached a terminal status.
+   * no-op when the signal would have no effect — i.e. when the run is
+   * already `'suspended'` or has reached a terminal status. Valid only on
+   * `'active'` runs.
    */
   pause(): Promise<Invocation>;
 
@@ -809,7 +813,9 @@ interface ClientRun<TEvent, TMessage> extends Run<TMessage> {
    * Resume this suspended run. Publishes a resume control signal, optionally
    * targeting a specific step for checkpoint-based resumption. See
    * {@link ClientRun.abort} for the `Invocation` return rationale. Silent
-   * no-op when the run has already reached a terminal status.
+   * no-op when the signal would have no effect — i.e. when the run is
+   * `'active'` or has reached a terminal status. Valid only on `'suspended'`
+   * runs.
    */
   resume(options?: { stepId?: string }): Promise<Invocation>;
 
@@ -817,7 +823,9 @@ interface ClientRun<TEvent, TMessage> extends Run<TMessage> {
    * Retry this failed or abandoned run. Publishes a retry control signal,
    * optionally targeting a specific step for step-level retry. See
    * {@link ClientRun.abort} for the `Invocation` return rationale. Silent
-   * no-op when the run has already reached a terminal status.
+   * no-op when the signal would have no effect — i.e. when the run is
+   * still `'active'` or `'suspended'` (nothing to retry). Valid on
+   * terminal runs (`'complete' | 'aborted' | 'failed'`).
    */
   retry(options?: { stepId?: string }): Promise<Invocation>;
 }
@@ -1147,23 +1155,23 @@ enum ErrorCode {
 }
 ```
 
-| Code | Name | Meaning |
-| --- | --- | --- |
-| `104000` | `TransportSendFailed` | Publishing a message or event through the transport failed. |
-| `104001` | `TransportSubscriptionError` | The underlying Ably channel subscription failed. |
-| `104021` | `StepDisposedBeforeEnd` | `Step[Symbol.asyncDispose]` fired while the step was still active with no explicit `end()`; attached as `cause` on the disposer's `step.end('failed')` publish. |
-| `104100` | `SessionClosed` | The session has been closed; the requested operation is no longer valid. |
-| `104101` | `HydrationFailed` | Hydration from the configured `StorageReader` failed. |
-| `104199` | `RunAlreadyStarted` | `run.start()` was called on a run that has already been started. |
-| `104200` | `RunAlreadyTerminal` | `AgentRun.suspend()` was called on a run that is terminal — a forward-motion transition that is impossible. (`end()` and `suspend()` on already-satisfied states are idempotent and do not raise this code.) |
-| `104201` | `RunClosed` | `run.when()` rejected because the session closed before the targeted status was reached. |
-| `104300` | `StepSuperseded` | `step.start()` rejected because a later `x-ably-step-start` for the same run won arbitration. |
-| `104301` | `InvocationPreconditionTimeout` | `step.start()` timed out waiting for the invocation's preconditions to become visible. |
-| `104302` | `StepStartAborted` | `step.start()` was aborted by the caller-supplied `AbortSignal` before it resolved. |
-| `104400` | `ViewClosed` | The view has been closed; the requested operation is no longer valid. |
-| `104401` | `ViewNodeNotFound` | `view.select()` was called with a message ID that does not exist in the tree. |
-| `104402` | `InvocationInvalid` | `Invocation.fromJSON()` was called with data that does not describe a valid invocation. |
-| `104500` | `StorageWriteFailed` | The configured `StorageWriter` exhausted its retry budget; surfaced via `session.on('error')`. |
+| Code     | Name                            | Meaning                                                                                                                                                                                                      |
+| -------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `104000` | `TransportSendFailed`           | Publishing a message or event through the transport failed.                                                                                                                                                  |
+| `104001` | `TransportSubscriptionError`    | The underlying Ably channel subscription failed.                                                                                                                                                             |
+| `104021` | `StepDisposedBeforeEnd`         | `Step[Symbol.asyncDispose]` fired while the step was still active with no explicit `end()`; attached as `cause` on the disposer's `step.end('failed')` publish.                                              |
+| `104100` | `SessionClosed`                 | The session has been closed; the requested operation is no longer valid.                                                                                                                                     |
+| `104101` | `HydrationFailed`               | Hydration from the configured `StorageReader` failed.                                                                                                                                                        |
+| `104199` | `RunAlreadyStarted`             | `run.start()` was called on a run that has already been started.                                                                                                                                             |
+| `104200` | `RunAlreadyTerminal`            | `AgentRun.suspend()` was called on a run that is terminal — a forward-motion transition that is impossible. (`end()` and `suspend()` on already-satisfied states are idempotent and do not raise this code.) |
+| `104201` | `RunClosed`                     | `run.when()` rejected because the session closed before the targeted status was reached.                                                                                                                     |
+| `104300` | `StepSuperseded`                | `step.start()` rejected because a later `x-ably-step-start` for the same run won arbitration.                                                                                                                |
+| `104301` | `InvocationPreconditionTimeout` | `step.start()` timed out waiting for the invocation's preconditions to become visible.                                                                                                                       |
+| `104302` | `StepStartAborted`              | `step.start()` was aborted by the caller-supplied `AbortSignal` before it resolved.                                                                                                                          |
+| `104400` | `ViewClosed`                    | The view has been closed; the requested operation is no longer valid.                                                                                                                                        |
+| `104401` | `ViewNodeNotFound`              | `view.select()` was called with a message ID that does not exist in the tree.                                                                                                                                |
+| `104402` | `InvocationInvalid`             | `Invocation.fromJSON()` was called with data that does not describe a valid invocation.                                                                                                                      |
+| `104500` | `StorageWriteFailed`            | The configured `StorageWriter` exhausted its retry budget; surfaced via `session.on('error')`.                                                                                                               |
 
 ## StorageReader and StorageWriter
 
@@ -1338,57 +1346,52 @@ Abort is durable state on the session: the client publishes an abort signal,
 and the agent's `step.signal` fires whether the agent was live or not. Per
 plan §5.3, control signals on `ClientRun` return an `Invocation` the caller
 POSTs to the agent endpoint to guarantee the lifecycle state lands when no
-agent is currently running.
+agent is currently running. Each control signal is a silent no-op when the
+signal would have no effect (e.g. `pause()` on a run that's already
+suspended), so call sites don't need status guards.
 
 ```ts
 // --- client ---
 import type * as AI from 'ai';
-import type { ClientRun, ClientView, MessageNode } from '@ably/ai-transport';
+import type { ClientRun, ClientView } from '@ably/ai-transport';
 
-// Global stop button — aborts the currently active run in a single-
-// conversation UI. Fire-and-forget the wake-up POST: we only care that the
-// signal is on the channel.
-const onStopClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
-  const activeRun = view.runs.find((r) => r.status === 'active');
-  if (!activeRun) return;
-  const invocation = await activeRun.abort();
+// View-wide stop — aborts every cancellable run. `abort()` is a no-op on
+// terminal runs, so filter out the already-done ones to avoid redundant
+// wake-up POSTs.
+const onStopAllClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
+  const cancellable = view.runs.filter((r) => r.status === 'active' || r.status === 'suspended');
+  const invocations = await Promise.all(cancellable.map(async (r) => r.abort()));
+  for (const invocation of invocations) {
+    void fetch('/api/agent', {
+      method: 'POST',
+      body: JSON.stringify(invocation.toJSON()),
+    });
+  }
+};
+
+// Stop a specific run — called from a run-scoped UI control (e.g. a
+// stop button rendered inside a specific conversation thread).
+const onStopRun = async (run: ClientRun<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
+  const invocation = await run.abort();
   void fetch('/api/agent', {
     method: 'POST',
     body: JSON.stringify(invocation.toJSON()),
   });
 };
 
-// Per-message variant — when the UI renders a stop button on a specific
-// response, the handler takes the node the user clicked and aborts THAT
-// node's run directly.
-const onStopNode = async (
-  node: MessageNode<AI.UIMessage, ClientRun<AI.UIMessageChunk, AI.UIMessage>>,
-): Promise<void> => {
-  if (node.run?.status !== 'active') return;
-  const invocation = await node.run.abort();
+// Pause a specific run.
+const onPauseRun = async (run: ClientRun<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
+  const invocation = await run.pause();
   void fetch('/api/agent', {
     method: 'POST',
     body: JSON.stringify(invocation.toJSON()),
   });
 };
 
-// Pause follows the same pattern.
-const onPauseClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
-  const activeRun = view.runs.find((r) => r.status === 'active');
-  if (!activeRun) return;
-  const invocation = await activeRun.pause();
-  void fetch('/api/agent', {
-    method: 'POST',
-    body: JSON.stringify(invocation.toJSON()),
-  });
-};
-
-// Resume the suspended run. Awaits the POST so the UI learns the agent
-// endpoint accepted the wake-up.
-const onResumeClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
-  const suspendedRun = view.runs.find((r) => r.status === 'suspended');
-  if (!suspendedRun) return;
-  const invocation = await suspendedRun.resume();
+// Resume a specific suspended run. Awaits the POST so the UI learns the
+// agent endpoint accepted the wake-up.
+const onResumeRun = async (run: ClientRun<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
+  const invocation = await run.resume();
   await fetch('/api/agent', {
     method: 'POST',
     body: JSON.stringify(invocation.toJSON()),
@@ -1472,10 +1475,7 @@ import type * as AI from 'ai';
 import type { ClientRun, ClientView, MessageNode } from '@ably/ai-transport';
 
 // Single-conversation UI: steer the one active run.
-const onSteerClick = async (
-  view: ClientView<AI.UIMessageChunk, AI.UIMessage>,
-  text: string,
-): Promise<void> => {
+const onSteerClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>, text: string): Promise<void> => {
   const activeRun = view.runs.find((r) => r.status === 'active');
   if (!activeRun) return;
   await activeRun.sendMessages({
@@ -1519,8 +1519,7 @@ export const POST = async (req: Request): Promise<Response> => {
 
   // Track the tail user message id — robust to the agent's own messages
   // being appended during pipe.
-  const latestUserId = (): string | undefined =>
-    view.messages.findLast((n) => n.message.role === 'user')?.id;
+  const latestUserId = (): string | undefined => view.messages.findLast((n) => n.message.role === 'user')?.id;
   let lastUserId = latestUserId();
 
   try {
@@ -1690,10 +1689,7 @@ const onRegenerateClick = async (
 };
 
 // Branch switcher UI.
-const onSelectBranchClick = (
-  view: ClientView<AI.UIMessageChunk, AI.UIMessage>,
-  messageId: string,
-): void => {
+const onSelectBranchClick = (view: ClientView<AI.UIMessageChunk, AI.UIMessage>, messageId: string): void => {
   view.select(messageId);
 };
 
@@ -2075,7 +2071,8 @@ export const POST = async (req: Request): Promise<Response> => {
   await step.start({ signal: req.signal, timeoutMs: 60_000 });
 
   const spawnSubagent = tool({
-    description: 'Delegate a subtask to a fresh subagent. Returns the subagent\u2019s final text once the run completes.',
+    description:
+      'Delegate a subtask to a fresh subagent. Returns the subagent\u2019s final text once the run completes.',
     inputSchema: jsonSchema<{ task: string }>({
       type: 'object',
       properties: { task: { type: 'string' } },

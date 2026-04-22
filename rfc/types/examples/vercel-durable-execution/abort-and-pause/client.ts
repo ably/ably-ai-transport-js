@@ -1,26 +1,47 @@
 /**
  * Abort and pause — client side (durable execution).
  *
- * Identical to the serverless variant. The client publishes the abort or
- * pause signal to the channel; the next workflow hop picks it up through
- * its AIT step. For pause, the run ends `suspended` and the client POSTs
- * the returned resume invocation to wake a new workflow run.
+ * Same shape as the serverless variant. The client publishes the
+ * abort, pause, or resume signal to the channel; the next workflow
+ * hop picks it up through its AIT step. For pause, the run ends
+ * `suspended` and the client POSTs the returned resume invocation to
+ * wake a new workflow run.
  */
 
 import type * as AI from 'ai';
 
-import type { ClientRun, ClientSession, ClientView, MessageNode } from '../../../index.js';
+import type { ClientRun, ClientView } from '../../../index.js';
 
 /**
- * Global stop button. Aborts the single active run in the current view.
+ * View-wide stop button. Aborts every run that is currently active in
+ * the view — concurrent runs (subagent fan-out, multi-panel chat) are
+ * cancelled by one click. Each abort publishes its own signal and
+ * returns an {@link Invocation}; the handler fires off one wake-up
+ * POST per run so stalled workflows get resumed regardless of which
+ * run they were processing.
  * @param view - The client view being rendered.
- * @returns Resolves once the abort signal has been published and the
- *   wake-up invocation POST has been dispatched.
+ * @returns Resolves once every active run has had its abort signal
+ *   published and wake-up POSTs have been dispatched.
  */
-export const onStopClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
-  const activeRun = view.runs.find((r) => r.status === 'active');
-  if (!activeRun) return;
-  const invocation = await activeRun.abort();
+export const onStopAllClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
+  const activeRuns = view.runs.filter((r) => r.status === 'active');
+  const invocations = await Promise.all(activeRuns.map(async (r) => r.abort()));
+  for (const invocation of invocations) {
+    void fetch('/api/workflow/start', {
+      method: 'POST',
+      body: JSON.stringify(invocation.toJSON()),
+    });
+  }
+};
+
+/**
+ * Stop a specific run. Called from a run-scoped UI control.
+ * @param run - The run to abort.
+ * @returns Resolves once the abort signal has been published.
+ */
+export const onStopRun = async (run: ClientRun<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
+  if (run.status !== 'active') return;
+  const invocation = await run.abort();
   void fetch('/api/workflow/start', {
     method: 'POST',
     body: JSON.stringify(invocation.toJSON()),
@@ -28,33 +49,15 @@ export const onStopClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessa
 };
 
 /**
- * Per-message stop — the UI renders a stop button next to a specific
- * response and targets THAT node's run.
- * @param node - The node the user clicked the stop button on.
- * @returns Resolves once the abort signal has been published, if any.
- */
-export const onStopNode = async (
-  node: MessageNode<AI.UIMessage, ClientRun<AI.UIMessageChunk, AI.UIMessage>>,
-): Promise<void> => {
-  if (node.run?.status !== 'active') return;
-  const invocation = await node.run.abort();
-  void fetch('/api/workflow/start', {
-    method: 'POST',
-    body: JSON.stringify(invocation.toJSON()),
-  });
-};
-
-/**
- * Global pause. Durable signal — picked up by the next hop via its
- * AIT step whether or not a hop is currently executing.
- * @param view - The client view being rendered.
+ * Pause a specific run. Durable signal — picked up by the next hop
+ * via its AIT step whether or not a hop is currently executing.
+ * @param run - The run to pause.
  * @returns Resolves once the pause signal has been published and the
  *   wake-up invocation POST has been dispatched.
  */
-export const onPauseClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
-  const activeRun = view.runs.find((r) => r.status === 'active');
-  if (!activeRun) return;
-  const invocation = await activeRun.pause();
+export const onPauseRun = async (run: ClientRun<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
+  if (run.status !== 'active') return;
+  const invocation = await run.pause();
   void fetch('/api/workflow/start', {
     method: 'POST',
     body: JSON.stringify(invocation.toJSON()),
@@ -62,19 +65,15 @@ export const onPauseClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMess
 };
 
 /**
- * Resume a paused run by publishing `x-ably-resume` and invoking the
- * workflow endpoint to start a fresh workflow run.
- * @param session - The client session backing the UI.
- * @param runId - The ID of the paused run to resume.
+ * Resume a specific suspended run. Awaits the POST so the UI can
+ * enable progress indicators only once the workflow endpoint has
+ * accepted the wake-up.
+ * @param run - The suspended run to resume.
  * @returns Resolves once the resume signal has been published and the
  *   workflow invocation POST has completed.
  */
-export const onResumeClick = async (
-  session: ClientSession<AI.UIMessageChunk, AI.UIMessage>,
-  runId: string,
-): Promise<void> => {
-  const run = session.tree.getRun(runId);
-  if (run?.status !== 'suspended') return;
+export const onResumeRun = async (run: ClientRun<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
+  if (run.status !== 'suspended') return;
   const invocation = await run.resume();
   await fetch('/api/workflow/start', {
     method: 'POST',

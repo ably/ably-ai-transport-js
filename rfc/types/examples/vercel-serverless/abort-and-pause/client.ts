@@ -3,8 +3,9 @@
  *
  * Abort and pause are durable state on the session: the client publishes
  * the signal, and the agent reacts to it whether or not it was live when
- * the signal hit the channel. Shows both the single-conversation "stop"
- * button and a per-message variant that targets a specific run.
+ * the signal hit the channel. The surface splits into a view-wide
+ * "cancel everything" handler and three run-specific handlers for stop,
+ * pause, and resume.
  *
  * Per plan §5.3, control signals return an {@link Invocation} the caller
  * POSTs to the agent endpoint when no agent is currently running. The
@@ -14,18 +15,39 @@
 
 import type * as AI from 'ai';
 
-import type { ClientRun, ClientView, MessageNode } from '../../../index.js';
+import type { ClientRun, ClientView } from '../../../index.js';
 
 /**
- * Global stop button. Aborts the single active run in the current view.
+ * View-wide stop button. Aborts every run that is currently active in
+ * the view — concurrent runs (subagent fan-out, multi-panel chat) are
+ * cancelled by one click. Each abort publishes its own signal and
+ * returns an {@link Invocation}; the handler fires off one wake-up
+ * POST per run so stalled agents get woken regardless of which run
+ * they were processing.
  * @param view - The client view being rendered.
- * @returns Resolves once the abort signal has been published and the
- *   wake-up invocation POST has been dispatched.
+ * @returns Resolves once every active run has had its abort signal
+ *   published and wake-up POSTs have been dispatched.
  */
-export const onStopClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
-  const activeRun = view.runs.find((r) => r.status === 'active');
-  if (!activeRun) return;
-  const invocation = await activeRun.abort();
+export const onStopAllClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
+  const activeRuns = view.runs.filter((r) => r.status === 'active');
+  const invocations = await Promise.all(activeRuns.map(async (r) => r.abort()));
+  for (const invocation of invocations) {
+    void fetch('/api/agent', {
+      method: 'POST',
+      body: JSON.stringify(invocation.toJSON()),
+    });
+  }
+};
+
+/**
+ * Stop a specific run. Called from a run-scoped UI control (e.g. a
+ * stop button rendered inside a specific conversation thread).
+ * @param run - The run to abort.
+ * @returns Resolves once the abort signal has been published.
+ */
+export const onStopRun = async (run: ClientRun<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
+  if (run.status !== 'active') return;
+  const invocation = await run.abort();
   void fetch('/api/agent', {
     method: 'POST',
     body: JSON.stringify(invocation.toJSON()),
@@ -33,33 +55,16 @@ export const onStopClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessa
 };
 
 /**
- * Per-message stop — the UI renders a stop button next to a specific
- * response and targets THAT node's run.
- * @param node - The node the user clicked the stop button on.
- * @returns Resolves once the abort signal has been published, if any.
- */
-export const onStopNode = async (
-  node: MessageNode<AI.UIMessage, ClientRun<AI.UIMessageChunk, AI.UIMessage>>,
-): Promise<void> => {
-  if (node.run?.status !== 'active') return;
-  const invocation = await node.run.abort();
-  void fetch('/api/agent', {
-    method: 'POST',
-    body: JSON.stringify(invocation.toJSON()),
-  });
-};
-
-/**
- * Global pause. Follows the same durable-state pattern as abort — the
- * signal lands on the channel regardless of whether an agent is live.
- * @param view - The client view being rendered.
+ * Pause a specific run. Follows the same durable-signal pattern as
+ * abort — the pause lands on the channel regardless of whether an
+ * agent is live to observe it.
+ * @param run - The run to pause.
  * @returns Resolves once the pause signal has been published and the
  *   wake-up invocation POST has been dispatched.
  */
-export const onPauseClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
-  const activeRun = view.runs.find((r) => r.status === 'active');
-  if (!activeRun) return;
-  const invocation = await activeRun.pause();
+export const onPauseRun = async (run: ClientRun<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
+  if (run.status !== 'active') return;
+  const invocation = await run.pause();
   void fetch('/api/agent', {
     method: 'POST',
     body: JSON.stringify(invocation.toJSON()),
@@ -67,17 +72,17 @@ export const onPauseClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMess
 };
 
 /**
- * Resume a suspended run. Awaits the POST so the caller learns the agent
- * endpoint accepted the wake-up — useful when the UI wants to enable
- * progress indicators only once the server has accepted the resume.
- * @param view - The client view being rendered.
+ * Resume a specific suspended run. Awaits the POST so the caller
+ * learns the agent endpoint accepted the wake-up — useful when the UI
+ * wants to enable progress indicators only once the server has
+ * accepted the resume.
+ * @param run - The suspended run to resume.
  * @returns Resolves once the resume signal has been published and the
  *   wake-up POST has completed.
  */
-export const onResumeClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
-  const suspendedRun = view.runs.find((r) => r.status === 'suspended');
-  if (!suspendedRun) return;
-  const invocation = await suspendedRun.resume();
+export const onResumeRun = async (run: ClientRun<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
+  if (run.status !== 'suspended') return;
+  const invocation = await run.resume();
   await fetch('/api/agent', {
     method: 'POST',
     body: JSON.stringify(invocation.toJSON()),

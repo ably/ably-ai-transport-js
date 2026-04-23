@@ -41,7 +41,7 @@ export interface StepStartOptions {
   /**
    * Caller-supplied abort signal folded into {@link Step.signal}. After
    * `start()` resolves, `step.signal.aborted` becomes true whenever this
-   * signal fires OR when an `x-ably-run-abort` control signal is observed
+   * signal fires OR when an `x-ably-abort` control signal is observed
    * on the channel. Callers wire runtime-owned cancellation in here
    * (`req.signal` in serverless handlers, a WDK `abortSignal` in durable
    * execution) — the SDK does not introspect the runtime and composes
@@ -81,7 +81,7 @@ export interface Step<C extends AnyCodec> {
 
   /**
    * Aborts when any of the following happens:
-   *   - An `x-ably-run-abort` control signal is observed on the channel
+   *   - An `x-ably-abort` control signal is observed on the channel
    *     (the durable "run aborted" fact).
    *   - A signal passed to {@link Step.start} via `start({ signal })` fires
    *     (the caller folds in runtime-owned cancellation: `req.signal` in

@@ -1,3 +1,4 @@
+import type { AnyCodec, CodecEvent, CodecMessage, CodecPart } from './codec.js';
 import type { SendEventsTarget } from './run.js';
 
 /** Terminal status for a step. */
@@ -61,11 +62,11 @@ export interface StepStartOptions {
  *
  *   await using step = view.createStep();
  *
- * The generic order `<TPart, TMessage, TEvent>` matches {@link Codec} and
- * {@link ClientRun}. `TEvent` defaults to `never` for codecs that don't
- * declare an event vocabulary.
+ * Parameterised by the session's codec — `C extends Codec<TPart, TMessage,
+ * TEvent>` — matching {@link ClientRun} so callers name the variant with a
+ * single type argument.
  */
-export interface Step<TPart, TMessage, TEvent = never> {
+export interface Step<C extends AnyCodec> {
   /** The step's unique ID, generated when the step is created. */
   readonly id: string;
 
@@ -195,7 +196,7 @@ export interface Step<TPart, TMessage, TEvent = never> {
    * signal is wired in automatically — if the run is aborted mid-pipe,
    * the stream is cancelled.
    */
-  pipe(stream: ReadableStream<TPart>): Promise<void>;
+  pipe(stream: ReadableStream<CodecPart<C>>): Promise<void>;
 
   /**
    * Publish one or more complete domain messages through the codec encoder.
@@ -212,28 +213,30 @@ export interface Step<TPart, TMessage, TEvent = never> {
    *
    * Tree nodes from a step publish are always recorded with protocol role
    * `'assistant'` ({@link MessageNode.role}); the domain-level role inside
-   * `TMessage` is opaque to the transport.
+   * the codec's `TMessage` is opaque to the transport.
    */
-  sendMessages(messages: TMessage | TMessage[]): Promise<void>;
+  sendMessages(messages: CodecMessage<C> | CodecMessage<C>[]): Promise<void>;
 
   /**
    * Publish one or more discrete domain parts through the codec encoder.
    * Encoded via the codec's writePart path. Use for standalone parts
    * like data-* that are not complete messages.
    */
-  sendParts(parts: TPart | TPart[]): Promise<void>;
+  sendParts(parts: CodecPart<C> | CodecPart<C>[]): Promise<void>;
 
   /**
    * Publish one or more codec events through the codec encoder. Symmetric
    * with {@link ClientRun.sendEvents} but published from the agent side —
    * lets the agent emit codec-defined operations that neither stream as
-   * chunks nor are complete messages. The shape of `TEvent` is whatever the
-   * codec declares; the transport treats it opaquely.
+   * chunks nor are complete messages. The shape of the codec's `TEvent` is
+   * whatever the codec declares; the transport treats it opaquely.
    *
    * When `target.messageId` is supplied the transport tags the wire message
    * with `x-ably-msg-id` so the codec's accumulator can locate and mutate
    * the composed state of the target message. When omitted the event is
-   * free-floating and its semantics are codec-specific.
+   * free-floating and its semantics are codec-specific. If the codec does
+   * not declare a `TEvent` (i.e. defaults to `never`), this method is
+   * uncallable.
    */
-  sendEvents(events: TEvent | TEvent[], target?: SendEventsTarget): Promise<void>;
+  sendEvents(events: CodecEvent<C> | CodecEvent<C>[], target?: SendEventsTarget): Promise<void>;
 }

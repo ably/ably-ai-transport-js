@@ -37,7 +37,7 @@ export const POST = async (req: Request): Promise<Response> => {
   const data = (await req.json()) as InvocationData;
   const invocation = Invocation.fromJSON(data);
 
-  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+  await using session = createAgentSession({
     client: ably,
     sessionName: invocation.sessionName,
     codec,

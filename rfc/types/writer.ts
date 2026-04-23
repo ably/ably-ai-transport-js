@@ -1,3 +1,4 @@
+import type { AnyCodec, CodecEvent, CodecMessage, CodecPart } from './codec.js';
 import type { RunEndStatus, SuspendReason } from './run.js';
 import type { StepEndStatus } from './step.js';
 
@@ -207,11 +208,10 @@ export type ClientRunPauseOptions = Omit<PauseOptions, 'runId'>;
  * handlers, orchestrators, and advanced patterns that need explicit
  * control.
  *
- * The generic order `<TPart, TMessage, TEvent>` matches {@link Codec}.
- * `TEvent` defaults to `never` for codecs that don't declare an event
- * vocabulary.
+ * Parameterised by the session's codec — `C extends Codec<TPart, TMessage,
+ * TEvent>` — so callers name the variant with a single type argument.
  */
-export interface SessionWriter<TPart, TMessage, TEvent = never> {
+export interface SessionWriter<C extends AnyCodec> {
   // --- Run lifecycle ---
 
   /** Publish x-ably-run-start. Returns the generated run ID. */
@@ -257,7 +257,7 @@ export interface SessionWriter<TPart, TMessage, TEvent = never> {
    * the domain-level role inside `TMessage` is opaque to the transport and
    * may differ.
    */
-  sendMessages(options: SendMessagesOptions<TMessage>): Promise<void>;
+  sendMessages(options: SendMessagesOptions<CodecMessage<C>>): Promise<void>;
 
   /**
    * Publish one or more discrete domain parts to the channel. Encoded via
@@ -267,7 +267,7 @@ export interface SessionWriter<TPart, TMessage, TEvent = never> {
    * Part IDs, where the domain parts carry them, are supplied by the
    * caller. The writer does not assign IDs and does not return them.
    */
-  sendParts(options: SendPartsOptions<TPart>): Promise<void>;
+  sendParts(options: SendPartsOptions<CodecPart<C>>): Promise<void>;
 
   /**
    * Publish one or more codec events to the channel. Encoded via the
@@ -284,7 +284,7 @@ export interface SessionWriter<TPart, TMessage, TEvent = never> {
    * `'message-updated'`. When omitted the event is free-floating and its
    * semantics are codec-specific.
    */
-  sendEvents(options: SendEventsOptions<TEvent>): Promise<void>;
+  sendEvents(options: SendEventsOptions<CodecEvent<C>>): Promise<void>;
 
   // --- Control signals ---
 

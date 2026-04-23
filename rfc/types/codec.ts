@@ -38,6 +38,29 @@ export interface Codec<TPart, TMessage, TEvent = never> {
 }
 
 /**
+ * Loose constraint used by types that are generic over a codec. Lets
+ * `ClientRun<C>`, `Step<C>`, `SessionWriter<C>`, and the session types
+ * accept any concrete {@link Codec} while still constraining `C` to the
+ * codec shape.
+ */
+export type AnyCodec = Codec<any, any, any>;
+
+/**
+ * Extract the streaming-part type (`TPart`) from a codec type. Used by
+ * codec-parameterised interfaces (`ClientRun<C>`, `Step<C>`, etc.) so
+ * consumers can name the session variant with a single type argument — the
+ * codec — rather than enumerating TPart/TMessage/TEvent at every call
+ * site.
+ */
+export type CodecPart<C> = C extends Codec<infer P, any, any> ? P : never;
+
+/** Extract the composed-message type (`TMessage`) from a codec type. */
+export type CodecMessage<C> = C extends Codec<any, infer M, any> ? M : never;
+
+/** Extract the auxiliary-event type (`TEvent`) from a codec type. */
+export type CodecEvent<C> = C extends Codec<any, any, infer E> ? E : never;
+
+/**
  * Output of a decoder: a domain part or event carrying the optional message
  * ID the accumulator uses to route the value to the correct in-progress or
  * existing message.

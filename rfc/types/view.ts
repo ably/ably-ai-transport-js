@@ -1,3 +1,4 @@
+import type { AnyCodec, CodecMessage } from './codec.js';
 import type { MessageNode } from './message-node.js';
 import type { AgentRun, ClientRun, Run } from './run.js';
 import type { Step } from './step.js';
@@ -74,14 +75,12 @@ export interface View<TMessage, TRun extends Run<TMessage> = Run<TMessage>> {
  * runs: createRun, createRegenerate, and createEdit all produce a ClientRun
  * positioned by the view's current branch state.
  *
- * The generic carries `TPart` and `TEvent` as well as `TMessage` for
- * symmetry with {@link AgentView} and for forward compatibility with
- * part-typed and event-typed client-side operations.
+ * Parameterised by the session's codec — `C extends Codec<TPart, TMessage,
+ * TEvent>` — so callers name the variant with a single type argument.
  */
-export interface ClientView<TPart, TMessage, TEvent = never>
-  extends View<TMessage, ClientRun<TPart, TMessage, TEvent>> {
+export interface ClientView<C extends AnyCodec> extends View<CodecMessage<C>, ClientRun<C>> {
   /** Runs whose messages are visible in this view's projection. */
-  readonly runs: readonly ClientRun<TPart, TMessage, TEvent>[];
+  readonly runs: readonly ClientRun<C>[];
 
   /** Whether more history is available to load. */
   readonly hasMore: boolean;
@@ -104,7 +103,7 @@ export interface ClientView<TPart, TMessage, TEvent = never>
    * Create a new run, positioned at the current branch tip. The run is not
    * yet live — call run.start() to publish `x-ably-run-start` to the channel.
    */
-  createRun(): ClientRun<TPart, TMessage, TEvent>;
+  createRun(): ClientRun<C>;
 
   /**
    * Create a new run that forks the tree at the given message (regenerate).
@@ -116,7 +115,7 @@ export interface ClientView<TPart, TMessage, TEvent = never>
    * @param messageId - The message the regenerate should fork from.
    * @param options - Optional fork behaviour; see {@link CreateForkOptions}.
    */
-  createRegenerate(messageId: string, options?: CreateForkOptions): ClientRun<TPart, TMessage, TEvent>;
+  createRegenerate(messageId: string, options?: CreateForkOptions): ClientRun<C>;
 
   /**
    * Create a new run that forks the tree at the given message (edit).
@@ -128,7 +127,7 @@ export interface ClientView<TPart, TMessage, TEvent = never>
    * @param messageId - The message the edit should fork from.
    * @param options - Optional fork behaviour; see {@link CreateForkOptions}.
    */
-  createEdit(messageId: string, options?: CreateForkOptions): ClientRun<TPart, TMessage, TEvent>;
+  createEdit(messageId: string, options?: CreateForkOptions): ClientRun<C>;
 }
 
 /**
@@ -146,13 +145,13 @@ export interface ClientView<TPart, TMessage, TEvent = never>
  * already determined the branch, and the agent needs the full ancestry
  * to pass to the model.
  */
-export interface AgentView<TPart, TMessage, TEvent = never> extends View<TMessage, AgentRun<TMessage>> {
+export interface AgentView<C extends AnyCodec> extends View<CodecMessage<C>, AgentRun<CodecMessage<C>>> {
   /**
    * The run this view is scoped to. The step created from this view
    * executes work against this run. Use view.run.end() / view.run.suspend()
    * to manage run lifecycle.
    */
-  readonly run: AgentRun<TMessage>;
+  readonly run: AgentRun<CodecMessage<C>>;
 
   /**
    * Create a step that executes this view's run. The step is not yet
@@ -167,5 +166,5 @@ export interface AgentView<TPart, TMessage, TEvent = never> extends View<TMessag
    * view has materialised the invocation's preconditions, later steps see
    * an already-satisfied condition and `start()` proceeds immediately.
    */
-  createStep(): Step<TPart, TMessage, TEvent>;
+  createStep(): Step<C>;
 }

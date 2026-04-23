@@ -21,8 +21,8 @@ declare const codec: Codec<AI.UIMessageChunk, AI.UIMessage>;
  * Resume the same session from the laptop and subscribe to view changes.
  * @returns The laptop's live view of the shared session.
  */
-export const resumeFromLaptop = async (): Promise<ClientView<AI.UIMessageChunk, AI.UIMessage>> => {
-  const session = createClientSession<AI.UIMessageChunk, AI.UIMessage>({
+export const resumeFromLaptop = async (): Promise<ClientView<Codec<AI.UIMessageChunk, AI.UIMessage>>> => {
+  const session = createClientSession({
     client: ably,
     sessionName: 'session:abc123',
     codec,
@@ -44,7 +44,7 @@ export const resumeFromLaptop = async (): Promise<ClientView<AI.UIMessageChunk, 
  * @returns Resolves once the abort signal has been published and the
  *   wake-up invocation POST has been dispatched, if any.
  */
-export const onStopClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
+export const onStopClick = async (view: ClientView<Codec<AI.UIMessageChunk, AI.UIMessage>>): Promise<void> => {
   const active = view.runs.find((r) => r.status === 'active');
   if (!active) return;
   const invocation = await active.abort();

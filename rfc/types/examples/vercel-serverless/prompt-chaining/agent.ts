@@ -47,7 +47,7 @@ export const POST = async (req: Request): Promise<Response> => {
   const data = (await req.json()) as InvocationData;
   const invocation = Invocation.fromJSON(data);
 
-  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+  await using session = createAgentSession({
     client: ably,
     sessionName: invocation.sessionName,
     codec,
@@ -76,7 +76,7 @@ export const POST = async (req: Request): Promise<Response> => {
  * @param view - The agent view for this run.
  * @param reqSignal - The request signal, folded into step.signal via start().
  */
-const planStep = async (view: AgentView<AI.UIMessageChunk, AI.UIMessage>, reqSignal: AbortSignal): Promise<void> => {
+const planStep = async (view: AgentView<Codec<AI.UIMessageChunk, AI.UIMessage>>, reqSignal: AbortSignal): Promise<void> => {
   await using step = view.createStep();
   await step.start({ signal: reqSignal, timeoutMs: 60_000 });
 
@@ -108,7 +108,7 @@ const planStep = async (view: AgentView<AI.UIMessageChunk, AI.UIMessage>, reqSig
  * @param view - The agent view for this run.
  * @param reqSignal - The request signal, folded into step.signal via start().
  */
-const draftStep = async (view: AgentView<AI.UIMessageChunk, AI.UIMessage>, reqSignal: AbortSignal): Promise<void> => {
+const draftStep = async (view: AgentView<Codec<AI.UIMessageChunk, AI.UIMessage>>, reqSignal: AbortSignal): Promise<void> => {
   await using step = view.createStep();
   await step.start({ signal: reqSignal, timeoutMs: 60_000 });
 

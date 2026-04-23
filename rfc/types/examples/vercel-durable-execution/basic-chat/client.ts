@@ -30,10 +30,10 @@ const invokeWorkflow = async (data: InvocationData): Promise<void> => {
  * @returns The connected session and its view, ready for UI use.
  */
 export const bootstrap = async (): Promise<{
-  session: ClientSession<AI.UIMessageChunk, AI.UIMessage>;
-  view: ClientView<AI.UIMessageChunk, AI.UIMessage>;
+  session: ClientSession<Codec<AI.UIMessageChunk, AI.UIMessage>>;
+  view: ClientView<Codec<AI.UIMessageChunk, AI.UIMessage>>;
 }> => {
-  const session = createClientSession<AI.UIMessageChunk, AI.UIMessage>({
+  const session = createClientSession({
     client: ably,
     sessionName: 'session:abc123',
     codec,
@@ -55,7 +55,7 @@ export const bootstrap = async (): Promise<{
  * @param text - The text the user typed into the composer.
  * @returns Resolves once the invocation has been dispatched.
  */
-export const onSendClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>, text: string): Promise<void> => {
+export const onSendClick = async (view: ClientView<Codec<AI.UIMessageChunk, AI.UIMessage>>, text: string): Promise<void> => {
   const run = view.createRun();
   await run.start();
   await run.sendMessages({

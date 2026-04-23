@@ -9,7 +9,7 @@
 
 import type * as AI from 'ai';
 
-import type { ClientSession } from '../../../index.js';
+import type { Codec, ClientSession } from '../../../index.js';
 
 /**
  * Attach a retry-on-failure listener to a session's tree. The step-level
@@ -17,7 +17,7 @@ import type { ClientSession } from '../../../index.js';
  * so there's no phantom output.
  * @param session - The client session to observe.
  */
-export const wireRetryOnFailure = (session: ClientSession<AI.UIMessageChunk, AI.UIMessage>): void => {
+export const wireRetryOnFailure = (session: ClientSession<Codec<AI.UIMessageChunk, AI.UIMessage>>): void => {
   session.tree.on('step-ended', (step, run) => {
     if (step.status !== 'failed') return;
     // Fire-and-forget: the tree event handler isn't awaiting us, but we

@@ -12,7 +12,7 @@
 
 import type * as AI from 'ai';
 
-import type { ClientSession } from '../../../index.js';
+import type { Codec, ClientSession } from '../../../index.js';
 
 /**
  * Retry a run that the workflow ended as `failed`. Publishes
@@ -23,7 +23,7 @@ import type { ClientSession } from '../../../index.js';
  * @returns Resolves once the retry has been published and the workflow invoked.
  */
 export const onTryAgainClick = async (
-  session: ClientSession<AI.UIMessageChunk, AI.UIMessage>,
+  session: ClientSession<Codec<AI.UIMessageChunk, AI.UIMessage>>,
   runId: string,
 ): Promise<void> => {
   const run = session.tree.getRun(runId);

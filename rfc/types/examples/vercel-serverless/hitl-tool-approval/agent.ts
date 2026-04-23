@@ -34,7 +34,7 @@ declare const tools: AI.ToolSet; // one or more have `needsApproval: true`
 export const POST = async (req: Request): Promise<Response> => {
   const invocation = Invocation.fromJSON((await req.json()) as InvocationData);
 
-  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>({
+  await using session = createAgentSession({
     client: ably,
     sessionName: invocation.sessionName,
     codec,

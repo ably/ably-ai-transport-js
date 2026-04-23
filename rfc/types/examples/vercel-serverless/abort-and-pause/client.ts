@@ -15,7 +15,7 @@
 
 import type * as AI from 'ai';
 
-import type { ClientRun, ClientView } from '../../../index.js';
+import type { Codec, ClientRun, ClientView } from '../../../index.js';
 
 /**
  * View-wide stop button. Aborts every cancellable run in the view —
@@ -27,7 +27,7 @@ import type { ClientRun, ClientView } from '../../../index.js';
  * @returns Resolves once every cancellable run has had its abort
  *   signal published and wake-up POSTs have been dispatched.
  */
-export const onStopAllClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
+export const onStopAllClick = async (view: ClientView<Codec<AI.UIMessageChunk, AI.UIMessage>>): Promise<void> => {
   const cancellable = view.runs.filter((r) => r.status === 'active' || r.status === 'suspended');
   const invocations = await Promise.all(cancellable.map(async (r) => r.abort()));
   for (const invocation of invocations) {
@@ -45,7 +45,7 @@ export const onStopAllClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMe
  * @param run - The run to abort.
  * @returns Resolves once the abort signal has been published.
  */
-export const onStopRun = async (run: ClientRun<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
+export const onStopRun = async (run: ClientRun<Codec<AI.UIMessageChunk, AI.UIMessage>>): Promise<void> => {
   const invocation = await run.abort();
   void fetch('/api/agent', {
     method: 'POST',
@@ -62,7 +62,7 @@ export const onStopRun = async (run: ClientRun<AI.UIMessageChunk, AI.UIMessage>)
  * @returns Resolves once the pause signal has been published and the
  *   wake-up invocation POST has been dispatched.
  */
-export const onPauseRun = async (run: ClientRun<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
+export const onPauseRun = async (run: ClientRun<Codec<AI.UIMessageChunk, AI.UIMessage>>): Promise<void> => {
   const invocation = await run.pause();
   void fetch('/api/agent', {
     method: 'POST',
@@ -80,7 +80,7 @@ export const onPauseRun = async (run: ClientRun<AI.UIMessageChunk, AI.UIMessage>
  * @returns Resolves once the resume signal has been published and the
  *   wake-up POST has completed.
  */
-export const onResumeRun = async (run: ClientRun<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
+export const onResumeRun = async (run: ClientRun<Codec<AI.UIMessageChunk, AI.UIMessage>>): Promise<void> => {
   const invocation = await run.resume();
   await fetch('/api/agent', {
     method: 'POST',

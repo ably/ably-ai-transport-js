@@ -8,7 +8,7 @@
 
 import type * as AI from 'ai';
 
-import type { ClientSession, ClientView, InvocationData } from '../../../index.js';
+import type { Codec, ClientSession, ClientView, InvocationData } from '../../../index.js';
 
 /**
  * Deliver an invocation to the workflow HTTP trigger.
@@ -28,7 +28,7 @@ const invokeWorkflow = async (data: InvocationData): Promise<void> => {
  * @returns Resolves once the invocation has been dispatched.
  */
 export const onRegenerateClick = async (
-  view: ClientView<AI.UIMessageChunk, AI.UIMessage>,
+  view: ClientView<Codec<AI.UIMessageChunk, AI.UIMessage>>,
   assistantMessageId: string,
 ): Promise<void> => {
   const run = view.createRegenerate(assistantMessageId);
@@ -42,7 +42,7 @@ export const onRegenerateClick = async (
  * @param messageId - The sibling to surface — must identify an existing node.
  */
 export const onSelectBranchClick = (
-  view: ClientView<AI.UIMessageChunk, AI.UIMessage>,
+  view: ClientView<Codec<AI.UIMessageChunk, AI.UIMessage>>,
   messageId: string,
 ): void => {
   view.select(messageId);
@@ -57,8 +57,8 @@ export const onSelectBranchClick = (
  * @returns Unsubscribe function to detach the re-render on unmount.
  */
 export const wireBranchSwitcher = (
-  session: ClientSession<AI.UIMessageChunk, AI.UIMessage>,
-  view: ClientView<AI.UIMessageChunk, AI.UIMessage>,
+  session: ClientSession<Codec<AI.UIMessageChunk, AI.UIMessage>>,
+  view: ClientView<Codec<AI.UIMessageChunk, AI.UIMessage>>,
 ): (() => void) =>
   view.subscribe(() => {
     for (const node of view.messages) {

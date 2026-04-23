@@ -1,3 +1,4 @@
+import type { AnyCodec, CodecEvent, CodecMessage, CodecPart } from './codec.js';
 import type { Invocation } from './invocation.js';
 import type { MessageNode } from './message-node.js';
 import type { StepState } from './step.js';
@@ -88,15 +89,16 @@ export interface SendEventsTarget {
 /**
  * Run as seen from a ClientSession. Adds lifecycle and control methods.
  *
- * The generic order `<TPart, TMessage, TEvent>` matches {@link ClientView}
- * and `Codec<TPart, TMessage, TEvent>` so per-run publish methods for
- * messages (`sendMessages`), discrete parts (`sendParts`), and codec events
- * (`sendEvents`) are typed uniformly across the send surface. `TEvent`
- * defaults to `never` for codecs that don't declare an event vocabulary.
+ * Parameterised by the session's codec — `C extends Codec<TPart, TMessage,
+ * TEvent>` — so callers name the variant with a single type argument.
+ * Per-run publish methods for messages (`sendMessages`), discrete parts
+ * (`sendParts`), and codec events (`sendEvents`) read their element types
+ * off the codec via {@link CodecMessage}, {@link CodecPart}, and
+ * {@link CodecEvent}.
  */
-export interface ClientRun<TPart, TMessage, TEvent = never> extends Run<TMessage> {
+export interface ClientRun<C extends AnyCodec> extends Run<CodecMessage<C>> {
   /** Messages belonging to this run, with node.run typed as ClientRun. */
-  readonly messages: readonly MessageNode<TMessage, ClientRun<TPart, TMessage, TEvent>>[];
+  readonly messages: readonly MessageNode<CodecMessage<C>, ClientRun<C>>[];
 
   // --- Lifecycle ---
 
@@ -141,7 +143,7 @@ export interface ClientRun<TPart, TMessage, TEvent = never> extends Run<TMessage
    * Accepts a single message or an array, matching {@link Step.sendMessages}
    * and {@link SessionWriter.sendMessages} so the send surface is uniform.
    */
-  sendMessages(messages: TMessage | TMessage[]): Promise<void>;
+  sendMessages(messages: CodecMessage<C> | CodecMessage<C>[]): Promise<void>;
 
   /**
    * Publish one or more discrete domain parts through the codec encoder.
@@ -153,7 +155,7 @@ export interface ClientRun<TPart, TMessage, TEvent = never> extends Run<TMessage
    * attribution — parts publish against the run itself rather than a step
    * within it.
    */
-  sendParts(parts: TPart | TPart[]): Promise<void>;
+  sendParts(parts: CodecPart<C> | CodecPart<C>[]): Promise<void>;
 
   /**
    * Publish one or more codec events through the codec encoder. Encoded via
@@ -169,8 +171,8 @@ export interface ClientRun<TPart, TMessage, TEvent = never> extends Run<TMessage
    * `'message-updated'`. When omitted the event is free-floating and its
    * semantics are codec-specific.
    *
-   * For the Vercel codec, `TEvent = AI.ToolModelMessage` and a HITL
-   * approval looks like:
+   * For the Vercel codec, the codec's `TEvent = AI.ToolModelMessage` and a
+   * HITL approval looks like:
    *
    * ```ts
    * await run.sendEvents(
@@ -181,8 +183,10 @@ export interface ClientRun<TPart, TMessage, TEvent = never> extends Run<TMessage
    *
    * Accepts a single event or an array, matching {@link Step.sendEvents}
    * and {@link SessionWriter.sendEvents} so the send surface is uniform.
+   * If the codec does not declare a `TEvent` (i.e. defaults to `never`),
+   * this method is uncallable — the compiler rejects any argument.
    */
-  sendEvents(events: TEvent | TEvent[], target?: SendEventsTarget): Promise<void>;
+  sendEvents(events: CodecEvent<C> | CodecEvent<C>[], target?: SendEventsTarget): Promise<void>;
 
   // --- Control signals ---
 

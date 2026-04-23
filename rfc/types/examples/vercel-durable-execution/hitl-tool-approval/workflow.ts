@@ -57,7 +57,7 @@ export const runAgentHop = async (
 
   const invocation = Invocation.fromJSON(invocationData);
 
-  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>({
+  await using session = createAgentSession({
     client: ably,
     sessionName: invocation.sessionName,
     codec,
@@ -97,7 +97,7 @@ export const runAgentHop = async (
 export const suspendAwaitingInput = async (invocationData: InvocationData): Promise<void> => {
   'use step';
 
-  const session = createAgentSession<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>({
+  const session = createAgentSession({
     client: ably,
     sessionName: invocationData.sessionName,
     codec,
@@ -114,7 +114,7 @@ export const suspendAwaitingInput = async (invocationData: InvocationData): Prom
 export const endRun = async (invocationData: InvocationData): Promise<void> => {
   'use step';
 
-  const session = createAgentSession<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>({
+  const session = createAgentSession({
     client: ably,
     sessionName: invocationData.sessionName,
     codec,

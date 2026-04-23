@@ -39,7 +39,7 @@ export const POST = async (req: Request): Promise<Response> => {
   if (!passesModeration(text)) return new Response('rejected', { status: 400 });
 
   const userClientId = getAuthenticatedUserClientId(req);
-  const session = createClientSession<AI.UIMessageChunk, AI.UIMessage>({
+  const session = createClientSession({
     client: ably,
     sessionName,
     codec,

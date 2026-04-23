@@ -34,7 +34,7 @@ const invokeWorkflow = async (data: InvocationData): Promise<void> => {
  * @returns Resolves once the invocation has been dispatched.
  */
 export const startFromPhone = async (text: string): Promise<void> => {
-  const session = createClientSession<AI.UIMessageChunk, AI.UIMessage>({
+  const session = createClientSession({
     client: ably,
     sessionName: 'session:abc123',
     codec,

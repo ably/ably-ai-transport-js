@@ -10,7 +10,7 @@
 
 import type * as AI from 'ai';
 
-import type { ClientSession, InvocationData } from '../../../index.js';
+import type { Codec, ClientSession, InvocationData } from '../../../index.js';
 
 /**
  * Deliver an invocation to the agent HTTP endpoint.
@@ -29,7 +29,7 @@ const invokeAgent = async (data: InvocationData): Promise<void> => {
  * @returns Whether the request was accepted; populates `reason` when rejected.
  */
 export const onSendClick = async (
-  session: ClientSession<AI.UIMessageChunk, AI.UIMessage>,
+  session: ClientSession<Codec<AI.UIMessageChunk, AI.UIMessage>>,
   text: string,
 ): Promise<{ ok: boolean; reason?: string }> => {
   const res = await fetch('/api/validate-and-send', {

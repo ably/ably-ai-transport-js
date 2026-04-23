@@ -5,13 +5,16 @@ API surface for the durable sessions design described in [AIT012](./AIT012.md). 
 ## Entry points
 
 ```ts
-function createClientSession<TPart, TMessage>(
-  options: SessionOptions<TPart, TMessage>,
-): ClientSession<TPart, TMessage>;
+function createClientSession<C extends AnyCodec>(options: SessionOptions<C>): ClientSession<C>;
 
-function createAgentSession<TPart, TMessage>(
-  options: SessionOptions<TPart, TMessage>,
-): AgentSession<TPart, TMessage>;
+function createAgentSession<C extends AnyCodec>(options: SessionOptions<C>): AgentSession<C>;
+```
+
+`C` is the session's codec type — `Codec<TPart, TMessage, TEvent>`. It's inferred from `options.codec`, so call sites rarely need to name it explicitly:
+
+```ts
+const session = createClientSession({ client, sessionName, codec });
+//     ^? ClientSession<typeof codec>
 ```
 
 An `Invocation` is rehydrated from a wire payload via the static
@@ -21,7 +24,7 @@ An `Invocation` is rehydrated from a wire payload via the static
 ## Session options
 
 ```ts
-interface SessionOptions<TPart, TMessage> {
+interface SessionOptions<C extends AnyCodec> {
   /**
    * The Ably Realtime client. The SDK derives the channel(s) it needs from
    * the session name. Taking a client (rather than a pre-constructed channel)
@@ -41,7 +44,7 @@ interface SessionOptions<TPart, TMessage> {
   sessionName: string;
 
   /** Codec that translates between domain parts and channel operations. */
-  codec: Codec<TPart, TMessage>;
+  codec: C;
 
   /** Loads historical state into the session during connect(). Omit for a fresh session. */
   storageReader?: StorageReader;
@@ -57,12 +60,12 @@ interface SessionOptions<TPart, TMessage> {
 ## ClientSession
 
 ```ts
-interface ClientSession<TPart, TMessage> {
+interface ClientSession<C extends AnyCodec> {
   /** The session name, as passed to createClientSession. */
   readonly sessionName: string;
 
   /** The unfiltered conversation tree. Available before connect(). */
-  readonly tree: Tree<TMessage, ClientRun<TPart, TMessage>>;
+  readonly tree: Tree<CodecMessage<C>, ClientRun<C>>;
 
   /**
    * Create a projected view over the tree. Each view has independent branch
@@ -70,7 +73,7 @@ interface ClientSession<TPart, TMessage> {
    * view pends hydration and fills in as the session materialises the
    * channel. Call view.close() to release a view when it's no longer needed.
    */
-  createView(options?: CreateViewOptions): ClientView<TPart, TMessage>;
+  createView(options?: CreateViewOptions): ClientView<C>;
 
   /**
    * Hydrate from the storage reader (if provided) and subscribe to the channel
@@ -113,7 +116,7 @@ interface ClientSession<TPart, TMessage> {
    * or subscribing. This is the "lifecycle-only" idiom used by the server-
    * side validation and durable-execution `endRun` hop examples.
    */
-  readonly writer: SessionWriter<TPart, TMessage>;
+  readonly writer: SessionWriter<C>;
 }
 ```
 
@@ -123,8 +126,10 @@ The low-level write surface shared by both session types. Every publishable
 event type has its own method. Views, runs, and steps delegate to this
 internally.
 
+The writer is parameterised by the session's codec, `C`, so callers name the variant with a single type argument. The send surfaces (`sendMessages`, `sendParts`, `sendEvents`) extract their element types from the codec via `CodecMessage<C>` / `CodecPart<C>` / `CodecEvent<C>`.
+
 ```ts
-interface SessionWriter<TPart, TMessage> {
+interface SessionWriter<C extends AnyCodec> {
   // --- Run lifecycle ---
 
   /** Publish x-ably-run-start. Returns the generated run ID. */
@@ -169,7 +174,7 @@ interface SessionWriter<TPart, TMessage> {
    * the domain-level role inside `TMessage` is opaque to the transport and
    * may differ.
    */
-  sendMessages(options: SendMessagesOptions<TMessage>): Promise<void>;
+  sendMessages(options: SendMessagesOptions<CodecMessage<C>>): Promise<void>;
 
   /**
    * Publish one or more discrete domain parts to the channel. Encoded via
@@ -179,7 +184,7 @@ interface SessionWriter<TPart, TMessage> {
    * Part IDs, where the domain parts carry them, are supplied by the
    * caller. The writer does not assign IDs and does not return them.
    */
-  sendParts(options: SendPartsOptions<TPart>): Promise<void>;
+  sendParts(options: SendPartsOptions<CodecPart<C>>): Promise<void>;
 
   /**
    * Publish one or more codec events to the channel. Encoded via the
@@ -196,7 +201,7 @@ interface SessionWriter<TPart, TMessage> {
    * `'message-updated'`. When omitted the event is free-floating and its
    * semantics are codec-specific.
    */
-  sendEvents(options: SendEventsOptions<TEvent>): Promise<void>;
+  sendEvents(options: SendEventsOptions<CodecEvent<C>>): Promise<void>;
 
   // --- Control signals ---
 
@@ -383,7 +388,7 @@ type ClientRunRetryOptions = Omit<RetryOptions, 'runId'>;
 ## AgentSession
 
 ```ts
-interface AgentSession<TPart, TMessage> {
+interface AgentSession<C extends AnyCodec> {
   /** The session name, as passed to createAgentSession. */
   readonly sessionName: string;
 
@@ -391,7 +396,7 @@ interface AgentSession<TPart, TMessage> {
    * The unfiltered conversation tree. Available as an escape hatch for
    * advanced cases. Most agents read the conversation through the step.
    */
-  readonly tree: Tree<TMessage, AgentRun<TMessage>>;
+  readonly tree: Tree<CodecMessage<C>, AgentRun<CodecMessage<C>>>;
 
   /**
    * Create a view scoped to the run an invocation names. The view's branch
@@ -401,7 +406,7 @@ interface AgentSession<TPart, TMessage> {
    * hydration and fills in as the session materialises the channel. Call
    * view.createStep() to produce the step that executes the run.
    */
-  createView(invocation: Invocation): AgentView<TPart, TMessage>;
+  createView(invocation: Invocation): AgentView<C>;
 
   /**
    * Hydrate from the storage reader (if provided) and subscribe to the channel
@@ -443,7 +448,7 @@ interface AgentSession<TPart, TMessage> {
    * or subscribing. This is the "lifecycle-only" durable-execution pattern
    * (see plan §5.7).
    */
-  readonly writer: SessionWriter<TPart, TMessage>;
+  readonly writer: SessionWriter<C>;
 }
 ```
 
@@ -602,9 +607,9 @@ interface CreateForkOptions {
  * `AgentView` and for forward compatibility with future part-typed
  * client-side operations.
  */
-interface ClientView<TPart, TMessage> extends View<TMessage, ClientRun<TPart, TMessage>> {
+interface ClientView<C extends AnyCodec> extends View<CodecMessage<C>, ClientRun<C>> {
   /** Runs whose messages are visible in this view's projection. */
-  readonly runs: ReadonlyArray<ClientRun<TPart, TMessage>>;
+  readonly runs: ReadonlyArray<ClientRun<C>>;
 
   /** Whether more history is available to load. */
   readonly hasMore: boolean;
@@ -626,7 +631,7 @@ interface ClientView<TPart, TMessage> extends View<TMessage, ClientRun<TPart, TM
    * Create a new run, positioned at the current branch tip. The run is not
    * yet live — call run.start() to publish `x-ably-run-start` to the channel.
    */
-  createRun(): ClientRun<TPart, TMessage>;
+  createRun(): ClientRun<C>;
 
   /**
    * Create a new run that forks the tree at the given message (regenerate).
@@ -635,7 +640,7 @@ interface ClientView<TPart, TMessage> extends View<TMessage, ClientRun<TPart, TM
    * to leave selection untouched. The run is not yet live — call run.start()
    * to publish `x-ably-run-start`.
    */
-  createRegenerate(messageId: string, options?: CreateForkOptions): ClientRun<TPart, TMessage>;
+  createRegenerate(messageId: string, options?: CreateForkOptions): ClientRun<C>;
 
   /**
    * Create a new run that forks the tree at the given message (edit). The
@@ -644,7 +649,7 @@ interface ClientView<TPart, TMessage> extends View<TMessage, ClientRun<TPart, TM
    * selection untouched. The run is not yet live — call run.start() to
    * publish `x-ably-run-start`.
    */
-  createEdit(messageId: string, options?: CreateForkOptions): ClientRun<TPart, TMessage>;
+  createEdit(messageId: string, options?: CreateForkOptions): ClientRun<C>;
 }
 
 /**
@@ -662,13 +667,13 @@ interface ClientView<TPart, TMessage> extends View<TMessage, ClientRun<TPart, TM
  * already determined the branch, and the agent needs the full ancestry
  * to pass to the model.
  */
-interface AgentView<TPart, TMessage> extends View<TMessage, AgentRun<TMessage>> {
+interface AgentView<C extends AnyCodec> extends View<CodecMessage<C>, AgentRun<CodecMessage<C>>> {
   /**
    * The run this view is scoped to. The step created from this view
    * executes work against this run. Use view.run.end() / view.run.suspend()
    * to manage run lifecycle.
    */
-  readonly run: AgentRun<TMessage>;
+  readonly run: AgentRun<CodecMessage<C>>;
 
   /**
    * Create a step that executes this view's run. The step is not yet
@@ -683,7 +688,7 @@ interface AgentView<TPart, TMessage> extends View<TMessage, AgentRun<TMessage>> 
    * has materialised the invocation's preconditions, later steps see an
    * already-satisfied condition and `start()` proceeds immediately.
    */
-  createStep(): Step<TPart, TMessage>;
+  createStep(): Step<C>;
 }
 ```
 
@@ -717,8 +722,8 @@ interface MessageNode<TMessage, TRun extends Run<TMessage> = Run<TMessage>> {
 
   /**
    * The run this message belongs to. Typed to the session's run variant:
-   * `ClientRun<TPart, TMessage>` when this node comes from a ClientSession's
-   * tree or view, `AgentRun<TMessage>` when it comes from an AgentSession. So
+   * `ClientRun<C>` when this node comes from a ClientSession's tree or view,
+   * `AgentRun<TMessage>` when it comes from an AgentSession. So
    * `node.run?.abort()`, `node.run?.sendMessages(...)`, etc. are directly
    * callable from the rendered node — no need to look up by ID through
    * `view.runs`.
@@ -750,7 +755,7 @@ The package exports pre-bound aliases for the common run-variant specialisations
 so callers rarely need to spell out the second generic by hand:
 
 ```ts
-type ClientMessageNode<TPart, TMessage> = MessageNode<TMessage, ClientRun<TPart, TMessage>>;
+type ClientMessageNode<C extends AnyCodec> = MessageNode<CodecMessage<C>, ClientRun<C>>;
 type AgentMessageNode<TMessage> = MessageNode<TMessage, AgentRun<TMessage>>;
 ```
 
@@ -827,14 +832,14 @@ interface Run<TMessage> {
 /**
  * Run as seen from a ClientSession. Adds lifecycle and control methods.
  *
- * The generic order `<TPart, TMessage>` matches `ClientView` and
- * `Codec<TPart, TMessage>` so per-run publish methods for messages
- * (`sendMessages`) and for discrete parts (`sendParts`) are typed uniformly
- * across the send surface.
+ * Parameterised by the session's codec — `C extends Codec<TPart, TMessage,
+ * TEvent>` — so callers name the variant with a single type argument. Per-run
+ * publish methods read their element types off the codec via
+ * `CodecMessage<C>`, `CodecPart<C>`, and `CodecEvent<C>`.
  */
-interface ClientRun<TPart, TMessage> extends Run<TMessage> {
+interface ClientRun<C extends AnyCodec> extends Run<CodecMessage<C>> {
   /** Messages belonging to this run, with node.run typed as ClientRun. */
-  readonly messages: ReadonlyArray<MessageNode<TMessage, ClientRun<TPart, TMessage>>>;
+  readonly messages: ReadonlyArray<MessageNode<CodecMessage<C>, ClientRun<C>>>;
 
   // --- Lifecycle ---
 
@@ -878,7 +883,7 @@ interface ClientRun<TPart, TMessage> extends Run<TMessage> {
    * Accepts a single message or an array, matching `Step.sendMessages` and
    * `SessionWriter.sendMessages` so the send surface is uniform.
    */
-  sendMessages(messages: TMessage | TMessage[]): Promise<void>;
+  sendMessages(messages: CodecMessage<C> | CodecMessage<C>[]): Promise<void>;
 
   /**
    * Publish one or more discrete domain parts through the codec encoder.
@@ -890,7 +895,7 @@ interface ClientRun<TPart, TMessage> extends Run<TMessage> {
    * attribution — parts publish against the run itself rather than a step
    * within it.
    */
-  sendParts(parts: TPart | TPart[]): Promise<void>;
+  sendParts(parts: CodecPart<C> | CodecPart<C>[]): Promise<void>;
 
   /**
    * Publish one or more codec events through the codec encoder. Encoded via
@@ -906,8 +911,8 @@ interface ClientRun<TPart, TMessage> extends Run<TMessage> {
    * `'message-updated'`. When omitted the event is free-floating and its
    * semantics are codec-specific.
    *
-   * For the Vercel codec, `TEvent = AI.ToolModelMessage` and a HITL
-   * approval looks like:
+   * For the Vercel codec the codec's `TEvent = AI.ToolModelMessage` and a
+   * HITL approval looks like:
    *
    * ```ts
    * await run.sendEvents(
@@ -917,9 +922,11 @@ interface ClientRun<TPart, TMessage> extends Run<TMessage> {
    * ```
    *
    * Accepts a single event or an array, matching `Step.sendEvents` and
-   * `SessionWriter.sendEvents` so the send surface is uniform.
+   * `SessionWriter.sendEvents` so the send surface is uniform. If the codec
+   * does not declare a `TEvent` (i.e. defaults to `never`), this method is
+   * uncallable.
    */
-  sendEvents(events: TEvent | TEvent[], target?: SendEventsTarget): Promise<void>;
+  sendEvents(events: CodecEvent<C> | CodecEvent<C>[], target?: SendEventsTarget): Promise<void>;
 
   // --- Control signals ---
 
@@ -1057,15 +1064,18 @@ interface StepStartOptions {
  * Created from an AgentView via view.createStep(). The view carries the
  * invocation and exposes the conversation to pass to the model; the step is
  * the execution surface — it owns the abort signal, the pause handler, and
- * the write methods (pipe, sendMessages, sendParts).
-
+ * the write methods (pipe, sendMessages, sendParts, sendEvents).
  *
  * Both Session and Step implement AsyncDisposable for scope-based cleanup
  * in serverless functions:
  *
  *   await using step = view.createStep();
+ *
+ * Parameterised by the session's codec — `C extends Codec<TPart, TMessage,
+ * TEvent>` — matching `ClientRun` so callers name the variant with a single
+ * type argument.
  */
-interface Step<TPart, TMessage> {
+interface Step<C extends AnyCodec> {
   /** The step's unique ID, generated when the step is created. */
   readonly id: string;
 
@@ -1189,7 +1199,7 @@ interface Step<TPart, TMessage> {
    * is wired in automatically — if the run is aborted mid-pipe, the stream
    * is cancelled.
    */
-  pipe(stream: ReadableStream<TPart>): Promise<void>;
+  pipe(stream: ReadableStream<CodecPart<C>>): Promise<void>;
 
   /**
    * Publish one or more complete domain messages through the codec encoder.
@@ -1204,26 +1214,26 @@ interface Step<TPart, TMessage> {
    * an existing message rather than a full-message republish.
    *
    * Tree nodes from a step publish are always recorded with protocol role
-   * `'assistant'` (`MessageNode.role`); the domain-level role inside
-   * `TMessage` is opaque to the transport.
+   * `'assistant'` (`MessageNode.role`); the domain-level role inside the
+   * codec's `TMessage` is opaque to the transport.
    */
-  sendMessages(messages: TMessage | TMessage[]): Promise<void>;
+  sendMessages(messages: CodecMessage<C> | CodecMessage<C>[]): Promise<void>;
 
   /**
    * Publish one or more discrete domain parts through the codec encoder.
    * Encoded via the codec's writePart path. Use for standalone parts like
    * `data-*` that are not complete messages.
    */
-  sendParts(parts: TPart | TPart[]): Promise<void>;
+  sendParts(parts: CodecPart<C> | CodecPart<C>[]): Promise<void>;
 
   /**
    * Publish one or more codec events through the codec encoder. Symmetric
    * with {@link ClientRun.sendEvents} but published from the agent side —
    * lets the agent emit codec-defined operations that are neither streaming
-   * chunks nor complete messages. The shape of `TEvent` is whatever the
-   * codec declares; the transport treats it opaquely.
+   * chunks nor complete messages. The shape of the codec's `TEvent` is
+   * whatever the codec declares; the transport treats it opaquely.
    */
-  sendEvents(events: TEvent | TEvent[], target?: SendEventsTarget): Promise<void>;
+  sendEvents(events: CodecEvent<C> | CodecEvent<C>[], target?: SendEventsTarget): Promise<void>;
 }
 ```
 
@@ -1402,17 +1412,33 @@ interface StorageWriter {
  * the decoder is called, and a codec implementor does not need to guard
  * against seeing them.
  */
-interface Codec<TPart, TMessage> {
+interface Codec<TPart, TMessage, TEvent = never> {
   /** Creates an encoder for producing channel messages from domain parts. */
-  createEncoder(): Encoder<TPart>;
+  createEncoder(): Encoder<TPart, TEvent>;
 
   /** Creates a decoder for consuming channel messages into domain parts. */
-  createDecoder(): Decoder<TPart>;
+  createDecoder(): Decoder<TPart, TEvent>;
 
   /** Creates an accumulator for assembling parts into messages. */
-  createAccumulator(): Accumulator<TPart, TMessage>;
+  createAccumulator(): Accumulator<TPart, TMessage, TEvent>;
 }
+
+/** Loose constraint used by types generic over a codec. */
+type AnyCodec = Codec<any, any, any>;
+
+/** Extract `TPart` from a codec type. */
+type CodecPart<C> = C extends Codec<infer P, any, any> ? P : never;
+
+/** Extract `TMessage` from a codec type. */
+type CodecMessage<C> = C extends Codec<any, infer M, any> ? M : never;
+
+/** Extract `TEvent` from a codec type. */
+type CodecEvent<C> = C extends Codec<any, any, infer E> ? E : never;
 ```
+
+`TEvent` is the codec-defined shape of auxiliary operations that are neither streaming chunks nor complete messages — state transitions applied to an existing message, client-authored tool results, approval responses, and similar side-channel operations. It defaults to `never` for codecs that have no use for it. For the Vercel codec, `TEvent = AI.ToolModelMessage` covers both `addToolApprovalResponse` (via `ToolApprovalResponse` entries) and `addToolOutput` (via `ToolResultPart` entries) in one native AI SDK shape.
+
+The `CodecPart<C>` / `CodecMessage<C>` / `CodecEvent<C>` helpers are how codec-parameterised types (`ClientRun<C>`, `Step<C>`, `SessionWriter<C>`, sessions and views) read their element types — callers never have to enumerate the three generics at call sites.
 
 ---
 
@@ -1436,7 +1462,7 @@ import { UIMessageCodec } from '@ably/ai-transport/vercel';
 const ably = new Ably.Realtime({ authUrl: '/api/ably-token' });
 const codec = new UIMessageCodec();
 
-const session = createClientSession<AI.UIMessageChunk, AI.UIMessage>({
+const session = createClientSession({
   client: ably,
   sessionName: 'session:abc123',
   codec,
@@ -1491,7 +1517,7 @@ export const POST = async (req: Request): Promise<Response> => {
   const data = (await req.json()) as InvocationData;
   const invocation = Invocation.fromJSON(data);
 
-  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+  await using session = createAgentSession({
     client: ably,
     sessionName: invocation.sessionName,
     codec,
@@ -1542,7 +1568,7 @@ import type { ClientRun, ClientView } from '@ably/ai-transport';
 // View-wide stop — aborts every cancellable run. `abort()` is a no-op on
 // terminal runs, so filter out the already-done ones to avoid redundant
 // wake-up POSTs.
-const onStopAllClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
+const onStopAllClick = async (view: ClientView<Codec<AI.UIMessageChunk, AI.UIMessage>>): Promise<void> => {
   const cancellable = view.runs.filter((r) => r.status === 'active' || r.status === 'suspended');
   const invocations = await Promise.all(cancellable.map(async (r) => r.abort()));
   for (const invocation of invocations) {
@@ -1555,7 +1581,7 @@ const onStopAllClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>)
 
 // Stop a specific run — called from a run-scoped UI control (e.g. a
 // stop button rendered inside a specific conversation thread).
-const onStopRun = async (run: ClientRun<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
+const onStopRun = async (run: ClientRun<Codec<AI.UIMessageChunk, AI.UIMessage>>): Promise<void> => {
   const invocation = await run.abort();
   void fetch('/api/agent', {
     method: 'POST',
@@ -1564,7 +1590,7 @@ const onStopRun = async (run: ClientRun<AI.UIMessageChunk, AI.UIMessage>): Promi
 };
 
 // Pause a specific run.
-const onPauseRun = async (run: ClientRun<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
+const onPauseRun = async (run: ClientRun<Codec<AI.UIMessageChunk, AI.UIMessage>>): Promise<void> => {
   const invocation = await run.pause();
   void fetch('/api/agent', {
     method: 'POST',
@@ -1574,7 +1600,7 @@ const onPauseRun = async (run: ClientRun<AI.UIMessageChunk, AI.UIMessage>): Prom
 
 // Resume a specific suspended run. Awaits the POST so the UI learns the
 // agent endpoint accepted the wake-up.
-const onResumeRun = async (run: ClientRun<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
+const onResumeRun = async (run: ClientRun<Codec<AI.UIMessageChunk, AI.UIMessage>>): Promise<void> => {
   const invocation = await run.resume();
   await fetch('/api/agent', {
     method: 'POST',
@@ -1592,7 +1618,7 @@ export const POST = async (req: Request): Promise<Response> => {
   const data = (await req.json()) as InvocationData;
   const invocation = Invocation.fromJSON(data);
 
-  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+  await using session = createAgentSession({
     client: ably,
     sessionName: invocation.sessionName,
     codec,
@@ -1659,7 +1685,7 @@ import type * as AI from 'ai';
 import type { ClientRun, ClientView, MessageNode } from '@ably/ai-transport';
 
 // Single-conversation UI: steer the one active run.
-const onSteerClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>, text: string): Promise<void> => {
+const onSteerClick = async (view: ClientView<Codec<AI.UIMessageChunk, AI.UIMessage>>, text: string): Promise<void> => {
   const activeRun = view.runs.find((r) => r.status === 'active');
   if (!activeRun) return;
   await activeRun.sendMessages({
@@ -1672,7 +1698,7 @@ const onSteerClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>, t
 // Per-message variant — e.g. the UI shows a "reply here" affordance on a
 // specific assistant response. The handler targets THAT node's run.
 const onSteerAtNode = async (
-  node: MessageNode<AI.UIMessage, ClientRun<AI.UIMessageChunk, AI.UIMessage>>,
+  node: MessageNode<AI.UIMessage, ClientRun<Codec<AI.UIMessageChunk, AI.UIMessage>>>,
   text: string,
 ): Promise<void> => {
   if (node.run?.status !== 'active') return;
@@ -1690,7 +1716,7 @@ export const POST = async (req: Request): Promise<Response> => {
   const data = (await req.json()) as InvocationData;
   const invocation = Invocation.fromJSON(data);
 
-  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+  await using session = createAgentSession({
     client: ably,
     sessionName: invocation.sessionName,
     codec,
@@ -1750,7 +1776,7 @@ import type { ClientRun } from '@ably/ai-transport';
 
 /** Locate the outstanding approval on the latest assistant message, if any. */
 const findPending = (
-  run: ClientRun<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>,
+  run: ClientRun<Codec<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>>,
 ): { approvalId: string; toolCallId: string; assistantMessageId: string } | undefined => {
   const last = run.messages.findLast((n) => n.message.role === 'assistant');
   if (!last) return undefined;
@@ -1767,7 +1793,7 @@ const findPending = (
 };
 
 const respond = async (
-  run: ClientRun<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>,
+  run: ClientRun<Codec<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>>,
   approved: boolean,
   reason?: string,
 ): Promise<void> => {
@@ -1806,7 +1832,7 @@ export const POST = async (req: Request): Promise<Response> => {
   const data = (await req.json()) as InvocationData;
   const invocation = Invocation.fromJSON(data);
 
-  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>({
+  await using session = createAgentSession({
     client: ably,
     sessionName: invocation.sessionName,
     codec,
@@ -1861,7 +1887,7 @@ const invokeAgent = async (data: InvocationData): Promise<void> => {
 // Fork at the response the user wants redone. The view auto-selects the new
 // branch — no explicit view.select() needed.
 const onRegenerateClick = async (
-  view: ClientView<AI.UIMessageChunk, AI.UIMessage>,
+  view: ClientView<Codec<AI.UIMessageChunk, AI.UIMessage>>,
   assistantMessageId: string,
 ): Promise<void> => {
   const run = view.createRegenerate(assistantMessageId);
@@ -1870,15 +1896,15 @@ const onRegenerateClick = async (
 };
 
 // Branch switcher UI.
-const onSelectBranchClick = (view: ClientView<AI.UIMessageChunk, AI.UIMessage>, messageId: string): void => {
+const onSelectBranchClick = (view: ClientView<Codec<AI.UIMessageChunk, AI.UIMessage>>, messageId: string): void => {
   view.select(messageId);
 };
 
 // UI reads view.messages; for each node, parentId + session.tree.getMessage(parentId).children.length
 // tells it whether siblings exist so it can show branch-switcher controls.
 const wireBranchSwitcher = (
-  session: ClientSession<AI.UIMessageChunk, AI.UIMessage>,
-  view: ClientView<AI.UIMessageChunk, AI.UIMessage>,
+  session: ClientSession<Codec<AI.UIMessageChunk, AI.UIMessage>>,
+  view: ClientView<Codec<AI.UIMessageChunk, AI.UIMessage>>,
 ): (() => void) =>
   view.subscribe(() => {
     for (const node of view.messages) {
@@ -1907,7 +1933,7 @@ the connection.
 ```ts
 // --- phone ---
 const startFromPhone = async (text: string): Promise<void> => {
-  const session = createClientSession<AI.UIMessageChunk, AI.UIMessage>({
+  const session = createClientSession({
     client: ably,
     sessionName: 'session:abc123',
     codec,
@@ -1928,8 +1954,8 @@ const startFromPhone = async (text: string): Promise<void> => {
 
 ```ts
 // --- laptop (opened minutes later, same session:abc123) ---
-const resumeFromLaptop = async (): Promise<ClientView<AI.UIMessageChunk, AI.UIMessage>> => {
-  const session = createClientSession<AI.UIMessageChunk, AI.UIMessage>({
+const resumeFromLaptop = async (): Promise<ClientView<Codec<AI.UIMessageChunk, AI.UIMessage>>> => {
+  const session = createClientSession({
     client: ably,
     sessionName: 'session:abc123',
     codec,
@@ -1946,7 +1972,7 @@ const resumeFromLaptop = async (): Promise<ClientView<AI.UIMessageChunk, AI.UIMe
 // The in-flight run is visible in view.runs. The user can abort from here —
 // either globally (pattern below) or by rendering a stop button on a specific
 // message and calling node.run?.abort() directly, as in Example 2.
-const onStopClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>): Promise<void> => {
+const onStopClick = async (view: ClientView<Codec<AI.UIMessageChunk, AI.UIMessage>>): Promise<void> => {
   const active = view.runs.find((r) => r.status === 'active');
   if (!active) return;
   const invocation = await active.abort();
@@ -1968,7 +1994,7 @@ any race.
 // --- client ---
 import type { ClientSession } from '@ably/ai-transport';
 
-const wireRetryOnFailure = (session: ClientSession<AI.UIMessageChunk, AI.UIMessage>): void => {
+const wireRetryOnFailure = (session: ClientSession<Codec<AI.UIMessageChunk, AI.UIMessage>>): void => {
   session.tree.on('step-ended', (step, run) => {
     if (step.status !== 'failed') return;
     void (async (): Promise<void> => {
@@ -1988,7 +2014,7 @@ export const POST = async (req: Request): Promise<Response> => {
   const data = (await req.json()) as InvocationData;
   const invocation = Invocation.fromJSON(data);
 
-  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+  await using session = createAgentSession({
     client: ably,
     sessionName: invocation.sessionName,
     codec,
@@ -2035,7 +2061,7 @@ const invokeAgent = async (data: InvocationData): Promise<void> => {
 };
 
 const onSendClick = async (
-  session: ClientSession<AI.UIMessageChunk, AI.UIMessage>,
+  session: ClientSession<Codec<AI.UIMessageChunk, AI.UIMessage>>,
   text: string,
 ): Promise<{ ok: boolean; reason?: string }> => {
   const res = await fetch('/api/validate-and-send', {
@@ -2064,7 +2090,7 @@ export const POST = async (req: Request): Promise<Response> => {
   if (!passesModeration(text)) return new Response('rejected', { status: 400 });
 
   const userClientId = getAuthenticatedUserClientId(req); // app-specific auth
-  const session = createClientSession<AI.UIMessageChunk, AI.UIMessage>({
+  const session = createClientSession({
     client: ably,
     sessionName,
     codec,
@@ -2135,7 +2161,7 @@ export const runAgentHop = async (
 
   const invocation = Invocation.fromJSON(invocationData);
 
-  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+  await using session = createAgentSession({
     client: ably,
     sessionName: invocation.sessionName,
     codec,
@@ -2183,7 +2209,7 @@ export const runAgentHop = async (
 export const endRun = async (invocationData: InvocationData): Promise<void> => {
   'use step';
 
-  const session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+  const session = createAgentSession({
     client: ably,
     sessionName: invocationData.sessionName,
     codec,
@@ -2240,7 +2266,7 @@ export const POST = async (req: Request): Promise<Response> => {
   const data = (await req.json()) as InvocationData;
   const invocation = Invocation.fromJSON(data);
 
-  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+  await using session = createAgentSession({
     client: ably,
     sessionName: invocation.sessionName,
     codec,

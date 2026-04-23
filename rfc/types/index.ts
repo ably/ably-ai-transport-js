@@ -1,9 +1,14 @@
+import type { AnyCodec, CodecMessage } from './codec.js';
 import type { MessageNode } from './message-node.js';
 import type { AgentRun, ClientRun } from './run.js';
 
 export type {
   Accumulator,
+  AnyCodec,
   Codec,
+  CodecEvent,
+  CodecMessage,
+  CodecPart,
   DecodedPart,
   DecodedValue,
   Decoder,
@@ -22,10 +27,7 @@ export type { InvocationConstructor, InvocationData } from './invocation.js';
 export type { MessageNode } from './message-node.js';
 
 /** Pre-bound {@link MessageNode} variant for {@link ClientRun} sessions. */
-export type ClientMessageNode<TPart, TMessage, TEvent = never> = MessageNode<
-  TMessage,
-  ClientRun<TPart, TMessage, TEvent>
->;
+export type ClientMessageNode<C extends AnyCodec> = MessageNode<CodecMessage<C>, ClientRun<C>>;
 
 /** Pre-bound {@link MessageNode} variant for {@link AgentRun} sessions. */
 export type AgentMessageNode<TMessage> = MessageNode<TMessage, AgentRun<TMessage>>;

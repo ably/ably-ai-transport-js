@@ -16,7 +16,13 @@
 import type * as AI from 'ai';
 import { getToolName, isToolUIPart } from 'ai';
 
-import type { ClientRun, ClientView } from '../../../index.js';
+import type { ClientRun, ClientView, Codec } from '../../../index.js';
+
+/**
+ * Alias the codec variant once; the session, view, and run types all follow
+ * from it.
+ */
+type VercelApprovalCodec = Codec<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>;
 
 /**
  * Scan the view for the outstanding tool approval on the last assistant
@@ -25,7 +31,7 @@ import type { ClientRun, ClientView } from '../../../index.js';
  * @returns The pending approval metadata, or `undefined` if none is outstanding.
  */
 const findPending = (
-  view: ClientView<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>,
+  view: ClientView<VercelApprovalCodec>,
 ): { approvalId: string; toolName: string; input: unknown; assistantMessageId: string } | undefined => {
   const last = view.messages.findLast((n) => n.message.role === 'assistant');
   if (!last) return undefined;
@@ -42,7 +48,7 @@ const findPending = (
   return undefined;
 };
 
-declare const view: ClientView<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>;
+declare const view: ClientView<VercelApprovalCodec>;
 declare const renderApprovalPrompt: (pending: ReturnType<typeof findPending>) => void;
 
 view.subscribe(() => {
@@ -62,7 +68,7 @@ view.subscribe(() => {
  * @param reason - Optional free-text justification surfaced to the model.
  */
 export const respond = async (
-  run: ClientRun<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>,
+  run: ClientRun<VercelApprovalCodec>,
   approvalId: string,
   assistantMessageId: string,
   approved: boolean,

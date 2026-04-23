@@ -8,7 +8,7 @@
 
 import type * as AI from 'ai';
 
-import type { ClientRun, ClientView, MessageNode } from '../../../index.js';
+import type { Codec, ClientRun, ClientView, MessageNode } from '../../../index.js';
 
 /**
  * Send a follow-up on the view's single active run.
@@ -16,7 +16,7 @@ import type { ClientRun, ClientView, MessageNode } from '../../../index.js';
  * @param text - The text the user typed into the follow-up composer.
  * @returns Resolves once the steering message has been published.
  */
-export const onSteerClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMessage>, text: string): Promise<void> => {
+export const onSteerClick = async (view: ClientView<Codec<AI.UIMessageChunk, AI.UIMessage>>, text: string): Promise<void> => {
   const activeRun = view.runs.find((r) => r.status === 'active');
   if (!activeRun) return;
   await activeRun.sendMessages({
@@ -33,7 +33,7 @@ export const onSteerClick = async (view: ClientView<AI.UIMessageChunk, AI.UIMess
  * @returns Resolves once the steering message has been published.
  */
 export const onSteerAtNode = async (
-  node: MessageNode<AI.UIMessage, ClientRun<AI.UIMessageChunk, AI.UIMessage>>,
+  node: MessageNode<AI.UIMessage, ClientRun<Codec<AI.UIMessageChunk, AI.UIMessage>>>,
   text: string,
 ): Promise<void> => {
   if (node.run?.status !== 'active') return;

@@ -1,15 +1,19 @@
 /**
  * HITL tool approval — serverless agent side.
  *
- * The agent streams the model's response. If the model proposed a tool
- * call, the run is suspended with `awaiting-input` rather than terminated,
- * and a later invocation paired with the user's approval drives the next
- * step on the same run.
+ * The agent streams the model's response. If a tool has `needsApproval: true`
+ * and the model wants to call it, AI SDK v6 surfaces the call as a
+ * `tool-${name}` part in state `'approval-requested'` (with an
+ * `approval: { id }`) instead of executing it. The agent suspends the run
+ * with `awaiting-input`; a later invocation paired with the client's
+ * `approval-responded` mutation drives the next step, at which point AI SDK
+ * v6 re-invokes the model (which now sees `tool-approval-response` in the
+ * model-messages produced by `convertToModelMessages`) and executes the tool.
  */
 
 import type * as Ably from 'ably';
 import type * as AI from 'ai';
-import { convertToModelMessages, streamText } from 'ai';
+import { convertToModelMessages, isToolUIPart, streamText } from 'ai';
 
 import type { Codec, InvocationData } from '../../../index.js';
 import { createAgentSession, Invocation } from '../../../index.js';
@@ -17,16 +21,16 @@ import { createAgentSession, Invocation } from '../../../index.js';
 declare const ably: Ably.Realtime;
 declare const codec: Codec<AI.UIMessageChunk, AI.UIMessage>;
 declare const openai: (model: string) => AI.LanguageModel;
-declare const tools: AI.ToolSet;
+declare const tools: AI.ToolSet; // one or more have `needsApproval: true`
 
 /**
- * Agent HTTP handler that suspends the run on a proposed tool call.
+ * Agent HTTP handler. Suspends the run when the final assistant message has
+ * any tool part still in state `'approval-requested'`; otherwise closes.
  * @param req - The incoming HTTP request whose body is an {@link InvocationData}.
  * @returns A 202 response once the step has ended and the run has either suspended or closed.
  */
 export const POST = async (req: Request): Promise<Response> => {
-  const data = (await req.json()) as InvocationData;
-  const invocation = Invocation.fromJSON(data);
+  const invocation = Invocation.fromJSON((await req.json()) as InvocationData);
 
   await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
     client: ably,
@@ -49,10 +53,15 @@ export const POST = async (req: Request): Promise<Response> => {
     await step.pipe(result.toUIMessageStream());
     await step.end('complete');
 
-    // Did the model request a tool? Suspend the run until the user approves.
+    // AI SDK v6 represents a pending approval as a `tool-${name}` part whose
+    // `state` is `'approval-requested'` on the final assistant message. Scan
+    // that message's tool parts; if any are still awaiting a response,
+    // suspend the run rather than closing it.
     const last = view.messages.findLast((n) => n.message.role === 'assistant');
-    const proposedTool = last?.message.parts.find((p) => p.type.startsWith('tool-'));
-    await (proposedTool ? view.run.suspend('awaiting-input') : view.run.end('complete'));
+    const pending =
+      last?.message.parts.filter(isToolUIPart).some((part) => part.state === 'approval-requested') ?? false;
+
+    await (pending ? view.run.suspend('awaiting-input') : view.run.end('complete'));
   } catch (err) {
     await view.run.end(step.signal.aborted ? 'aborted' : 'failed');
     throw err;

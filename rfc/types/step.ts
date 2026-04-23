@@ -188,6 +188,16 @@ export interface Step<TEvent, TMessage> {
    * Publish one or more complete domain messages through the codec encoder.
    * Encoded via the codec's writeMessages path. Use for complete messages
    * like tool results or structured responses.
+   *
+   * **Same-ID republish is an in-place update.** When a message is published
+   * whose ID already identifies a node in the session, the transport routes
+   * it through {@link Accumulator.setMessage} and the tree fires
+   * `'message-updated'` (not `'message-added'`). Publishing a message with a
+   * fresh ID appends a new node.
+   *
+   * Tree nodes from a step publish are always recorded with protocol role
+   * `'assistant'` ({@link MessageNode.role}); the domain-level role inside
+   * `TMessage` is opaque to the transport.
    */
   sendMessages(messages: TMessage | TMessage[]): Promise<void>;
 

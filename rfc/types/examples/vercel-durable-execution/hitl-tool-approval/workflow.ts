@@ -1,17 +1,20 @@
 /**
  * HITL tool approval — durable-execution workflow.
  *
- * The first workflow run streams the model's response inside a
- * `"use step"` boundary. If the model proposed a tool call, the hop ends
- * `complete`, the workflow suspends the run with `awaiting-input`, and
- * exits. A later client-driven invocation (paired with the user's
- * approval message) starts a fresh workflow run that reads the
- * conversation — now including the approval — and continues.
+ * Same shape as the serverless variant, wrapped in `'use step'`/
+ * `'use workflow'` boundaries. The first hop streams the model's response;
+ * if a tool has `needsApproval: true` and the model wants to call it, AI
+ * SDK v6 surfaces the call as a `tool-${name}` part in state
+ * `'approval-requested'` rather than executing. The hop returns
+ * `'awaiting-input'`, the workflow suspends the run, and exits. A later
+ * client invocation (paired with the `approval-responded` mutation) starts
+ * a fresh workflow run that reads the conversation — now including the
+ * approval — and continues.
  */
 
 import * as Ably from 'ably';
 import type * as AI from 'ai';
-import { convertToModelMessages, streamText } from 'ai';
+import { convertToModelMessages, isToolUIPart, streamText } from 'ai';
 
 import type { Codec, InvocationData, StorageReader } from '../../../index.js';
 import { createAgentSession, ErrorCode, Invocation } from '../../../index.js';
@@ -19,7 +22,7 @@ import { createAgentSession, ErrorCode, Invocation } from '../../../index.js';
 declare const ably: Ably.Realtime;
 declare const codec: Codec<AI.UIMessageChunk, AI.UIMessage>;
 declare const openai: (model: string) => AI.LanguageModel;
-declare const tools: AI.ToolSet;
+declare const tools: AI.ToolSet; // one or more have `needsApproval: true`
 declare const workflowStateReader: (runId: string) => StorageReader;
 
 /** Outcome of one hop. */
@@ -28,14 +31,19 @@ type HopOutcome = 'awaiting-input' | 'complete';
 /** Upper bound on agent hops across all workflow runs combined. */
 const MAX_STEPS = 20;
 
-/** Narrow a caught value to an {@link Ably.ErrorInfo} with the given code. */
+/**
+ * Narrow a caught value to an {@link Ably.ErrorInfo} with the given code.
+ * @param value - The value caught.
+ * @param code - The error code to check for.
+ * @returns Whether the value is an `Ably.ErrorInfo` with a matching `code`.
+ */
 const isErrorInfoWithCode = (value: unknown, code: ErrorCode): boolean =>
   value instanceof Ably.ErrorInfo && value.code === code;
 
 /**
- * One hop of the agent. If the model proposes a tool call, returns
- * `'awaiting-input'`; otherwise returns `'complete'` once the final
- * response has been produced.
+ * One hop of the agent. Returns `'awaiting-input'` if the final assistant
+ * message has any tool part still in state `'approval-requested'`;
+ * otherwise returns `'complete'` once the response has been produced.
  * @param invocationData - The serialized {@link InvocationData} identifying the run.
  * @param options - WDK step context, providing the durable `abortSignal`.
  * @returns Whether the hop needs HITL input or has finished the run.
@@ -76,8 +84,8 @@ export const runAgentHop = async (
   await step.end('complete');
 
   const last = view.messages.findLast((n) => n.message.role === 'assistant');
-  const proposedTool = last?.message.parts.find((p) => p.type.startsWith('tool-'));
-  return proposedTool ? 'awaiting-input' : 'complete';
+  const pending = last?.message.parts.filter(isToolUIPart).some((part) => part.state === 'approval-requested') ?? false;
+  return pending ? 'awaiting-input' : 'complete';
 };
 
 /**

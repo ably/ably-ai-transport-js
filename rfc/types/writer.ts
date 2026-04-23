@@ -210,12 +210,23 @@ export interface SessionWriter<TEvent, TMessage> {
   /**
    * Publish one or more complete domain messages to the channel. Encoded
    * via the codec's writeMessages path. Use for user messages, tool
-   * results, and other discrete complete messages.
+   * results, HITL approval responses, and other discrete complete messages.
    *
    * Message IDs are supplied by the caller on each message (e.g. the
    * Vercel codec uses `UIMessage.id`). The writer does not assign IDs
    * and does not return them; this matches `run.sendMessages()` so the
    * send surface is uniform.
+   *
+   * **Same-ID republish is an in-place update.** When a message is published
+   * whose ID already identifies a node in the session, the transport routes
+   * it through {@link Accumulator.setMessage} and the tree fires
+   * `'message-updated'` (not `'message-added'`). Publishing a message with
+   * a fresh ID appends a new node.
+   *
+   * The protocol-level role recorded on the resulting tree node is derived
+   * from the publishing connection (or an explicit `clientId` override);
+   * the domain-level role inside `TMessage` is opaque to the transport and
+   * may differ.
    */
   sendMessages(options: SendMessagesOptions<TMessage>): Promise<void>;
 

@@ -90,8 +90,12 @@ export interface Accumulator<TEvent, TMessage> {
   getMessage(messageId: string): TMessage | undefined;
 
   /**
-   * Replace the assembled state of a message. Used by external updates
-   * (for example, a cross-step amendment or a correction from storage).
+   * Replace the assembled state of a message. Called by the transport
+   * whenever a published message ID already identifies an assembled
+   * message — the same-ID republish path used by HITL tool-approval
+   * responses and other in-place mutation patterns (see
+   * {@link ClientRun.sendMessages}) — and by external update paths such
+   * as cross-step amendments or corrections from storage.
    */
   setMessage(messageId: string, message: TMessage): void;
 

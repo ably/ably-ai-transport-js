@@ -10,7 +10,7 @@ import type { AgentView, ClientView, CreateViewOptions } from './view.js';
 import type { SessionWriter } from './writer.js';
 
 /** Options shared by {@link createClientSession} and {@link createAgentSession}. */
-export interface SessionOptions<TPart, TMessage> {
+export interface SessionOptions<TPart, TMessage, TEvent = never> {
   /**
    * The Ably Realtime client. The SDK derives the channel(s) it needs from
    * the session name. Taking a client (rather than a pre-constructed channel)
@@ -30,7 +30,7 @@ export interface SessionOptions<TPart, TMessage> {
   sessionName: string;
 
   /** Codec that translates between domain parts and channel operations. */
-  codec: Codec<TPart, TMessage>;
+  codec: Codec<TPart, TMessage, TEvent>;
 
   /** Loads historical state into the session during connect(). Omit for a fresh session. */
   storageReader?: StorageReader;
@@ -48,12 +48,12 @@ export interface SessionOptions<TPart, TMessage> {
  * rendering, and carries the low-level writer for advanced publish
  * patterns (server-side validation, orchestration).
  */
-export interface ClientSession<TPart, TMessage> {
+export interface ClientSession<TPart, TMessage, TEvent = never> {
   /** The session name, as passed to createClientSession. */
   readonly sessionName: string;
 
   /** The unfiltered conversation tree. Available before connect(). */
-  readonly tree: Tree<TMessage, ClientRun<TPart, TMessage>>;
+  readonly tree: Tree<TMessage, ClientRun<TPart, TMessage, TEvent>>;
 
   /**
    * Create a projected view over the tree. Each view has independent branch
@@ -61,7 +61,7 @@ export interface ClientSession<TPart, TMessage> {
    * view pends hydration and fills in as the session materialises the channel.
    * Call view.close() to release a view when it's no longer needed.
    */
-  createView(options?: CreateViewOptions): ClientView<TPart, TMessage>;
+  createView(options?: CreateViewOptions): ClientView<TPart, TMessage, TEvent>;
 
   /**
    * Hydrate from the storage reader (if provided) and subscribe to the channel
@@ -106,7 +106,7 @@ export interface ClientSession<TPart, TMessage> {
    * hydrating the tree or subscribing. This is the "lifecycle-only"
    * durable-execution pattern (see plan §5.7).
    */
-  readonly writer: SessionWriter<TPart, TMessage>;
+  readonly writer: SessionWriter<TPart, TMessage, TEvent>;
 }
 
 /**
@@ -115,7 +115,7 @@ export interface ClientSession<TPart, TMessage> {
  * {@link Invocation}; the tree is available as an escape hatch and the
  * writer is exposed for orchestration patterns.
  */
-export interface AgentSession<TPart, TMessage> {
+export interface AgentSession<TPart, TMessage, TEvent = never> {
   /** The session name, as passed to createAgentSession. */
   readonly sessionName: string;
 
@@ -133,7 +133,7 @@ export interface AgentSession<TPart, TMessage> {
    * hydration and fills in as the session materialises the channel. Call
    * view.createStep() to produce the step that executes the run.
    */
-  createView(invocation: Invocation): AgentView<TPart, TMessage>;
+  createView(invocation: Invocation): AgentView<TPart, TMessage, TEvent>;
 
   /**
    * Hydrate from the storage reader (if provided) and subscribe to the channel
@@ -176,7 +176,7 @@ export interface AgentSession<TPart, TMessage> {
    * hydrating the tree or subscribing. This is the "lifecycle-only"
    * durable-execution pattern (see plan §5.7).
    */
-  readonly writer: SessionWriter<TPart, TMessage>;
+  readonly writer: SessionWriter<TPart, TMessage, TEvent>;
 }
 
 /**
@@ -186,9 +186,9 @@ export interface AgentSession<TPart, TMessage> {
  * @param options - Shared {@link SessionOptions} wiring client, session name, codec, and optional storage.
  * @returns A not-yet-connected {@link ClientSession}.
  */
-export declare function createClientSession<TPart, TMessage>(
-  options: SessionOptions<TPart, TMessage>,
-): ClientSession<TPart, TMessage>;
+export declare function createClientSession<TPart, TMessage, TEvent = never>(
+  options: SessionOptions<TPart, TMessage, TEvent>,
+): ClientSession<TPart, TMessage, TEvent>;
 
 /**
  * Create a new {@link AgentSession}. The returned session is not yet live —
@@ -197,6 +197,6 @@ export declare function createClientSession<TPart, TMessage>(
  * @param options - Shared {@link SessionOptions} wiring client, session name, codec, and optional storage.
  * @returns A not-yet-connected {@link AgentSession}.
  */
-export declare function createAgentSession<TPart, TMessage>(
-  options: SessionOptions<TPart, TMessage>,
-): AgentSession<TPart, TMessage>;
+export declare function createAgentSession<TPart, TMessage, TEvent = never>(
+  options: SessionOptions<TPart, TMessage, TEvent>,
+): AgentSession<TPart, TMessage, TEvent>;

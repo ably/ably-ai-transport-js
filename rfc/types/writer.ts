@@ -94,6 +94,28 @@ export interface SendPartsOptions<TPart> {
   clientId?: string;
 }
 
+/** Options for publishing one or more codec events via {@link SessionWriter.sendEvents}. */
+export interface SendEventsOptions<TEvent> {
+  /** One or more codec events to encode and publish. */
+  events: TEvent | TEvent[];
+  /** The run these events belong to. */
+  runId: string;
+
+  /**
+   * Target message ID the events bind to. Transport tags the wire message
+   * with `x-ably-msg-id` so the codec's accumulator can route the event to
+   * the existing message. Omit for free-floating events that don't bind to
+   * a specific message.
+   */
+  messageId?: string;
+
+  /**
+   * Override the attribution clientId sent as `x-ably-client-id`. See
+   * SendMessagesOptions.clientId.
+   */
+  clientId?: string;
+}
+
 /** Options for {@link SessionWriter.abort}. */
 export interface AbortOptions {
   /** The run to abort. */
@@ -184,8 +206,12 @@ export type ClientRunPauseOptions = Omit<PauseOptions, 'runId'>;
  * delegate to this internally. Exposed for server-side validation
  * handlers, orchestrators, and advanced patterns that need explicit
  * control.
+ *
+ * The generic order `<TPart, TMessage, TEvent>` matches {@link Codec}.
+ * `TEvent` defaults to `never` for codecs that don't declare an event
+ * vocabulary.
  */
-export interface SessionWriter<TPart, TMessage> {
+export interface SessionWriter<TPart, TMessage, TEvent = never> {
   // --- Run lifecycle ---
 
   /** Publish x-ably-run-start. Returns the generated run ID. */
@@ -209,8 +235,8 @@ export interface SessionWriter<TPart, TMessage> {
 
   /**
    * Publish one or more complete domain messages to the channel. Encoded
-   * via the codec's writeMessages path. Use for user messages, tool
-   * results, HITL approval responses, and other discrete complete messages.
+   * via the codec's writeMessages path. Use for user messages, structured
+   * responses, and other discrete complete messages.
    *
    * Message IDs are supplied by the caller on each message (e.g. the
    * Vercel codec uses `UIMessage.id`). The writer does not assign IDs
@@ -221,7 +247,10 @@ export interface SessionWriter<TPart, TMessage> {
    * whose ID already identifies a node in the session, the transport routes
    * it through {@link Accumulator.setMessage} and the tree fires
    * `'message-updated'` (not `'message-added'`). Publishing a message with
-   * a fresh ID appends a new node.
+   * a fresh ID appends a new node. Use {@link SessionWriter.sendEvents} for
+   * additive state transitions on an existing message (HITL tool-approval
+   * responses, client-authored tool outputs) rather than a full-message
+   * republish.
    *
    * The protocol-level role recorded on the resulting tree node is derived
    * from the publishing connection (or an explicit `clientId` override);
@@ -239,6 +268,23 @@ export interface SessionWriter<TPart, TMessage> {
    * caller. The writer does not assign IDs and does not return them.
    */
   sendParts(options: SendPartsOptions<TPart>): Promise<void>;
+
+  /**
+   * Publish one or more codec events to the channel. Encoded via the
+   * codec's writeEvent path. Use for codec-defined operations that are
+   * neither streaming chunks nor complete messages — typical examples are
+   * client-authored state transitions on an existing message: HITL
+   * tool-approval responses (as `AI.ToolModelMessage` for the Vercel
+   * codec), tool outputs returned from a client-executed tool, or any
+   * codec-specific side-channel.
+   *
+   * When `options.messageId` is supplied the transport tags the wire
+   * message with `x-ably-msg-id` so the codec's accumulator can locate and
+   * mutate the composed state of the target message; the tree then fires
+   * `'message-updated'`. When omitted the event is free-floating and its
+   * semantics are codec-specific.
+   */
+  sendEvents(options: SendEventsOptions<TEvent>): Promise<void>;
 
   // --- Control signals ---
 

@@ -2,12 +2,15 @@
  * HITL tool approval — client side (durable execution).
  *
  * Identical to the serverless variant in shape. In AI SDK v6 the user's
- * decision on a pending approval is recorded by mutating the assistant
- * message's `tool-${name}` part from state `'approval-requested'` to
- * `'approval-responded'`; `convertToModelMessages` on the server synthesises
- * the `tool-approval-response` that `streamText` reads. Publish the mutated
- * assistant message via `run.sendMessages`, then POST `run.toInvocation()`
- * to wake a fresh workflow run.
+ * decision on a pending approval is recorded by publishing a
+ * `AI.ToolModelMessage` event (via `run.sendEvents`) containing a
+ * `tool-approval-response` part. The Vercel codec's accumulator applies
+ * the event to the target assistant message, transitioning its
+ * `tool-${name}` part from `'approval-requested'` to
+ * `'approval-responded'`. `convertToModelMessages` on the server then sees
+ * the composed `UIMessage` and synthesises the `tool-approval-response`
+ * that `streamText` reads. Publish the event via `run.sendEvents`, then
+ * POST `run.toInvocation()` to wake a fresh workflow run.
  */
 
 import type * as AI from 'ai';
@@ -22,7 +25,7 @@ import type { ClientRun, ClientView } from '../../../index.js';
  * @returns The pending approval metadata, or `undefined` if none is outstanding.
  */
 const findPending = (
-  view: ClientView<AI.UIMessageChunk, AI.UIMessage>,
+  view: ClientView<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>,
 ): { approvalId: string; toolName: string; input: unknown; assistantMessageId: string } | undefined => {
   const last = view.messages.findLast((n) => n.message.role === 'assistant');
   if (!last) return undefined;
@@ -39,7 +42,7 @@ const findPending = (
   return undefined;
 };
 
-declare const view: ClientView<AI.UIMessageChunk, AI.UIMessage>;
+declare const view: ClientView<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>;
 declare const renderApprovalPrompt: (pending: ReturnType<typeof findPending>) => void;
 
 view.subscribe(() => {
@@ -48,42 +51,37 @@ view.subscribe(() => {
 
 /**
  * Record the user's decision on a pending approval and wake the workflow.
+ * Publishes a `AI.ToolModelMessage` carrying a single
+ * `tool-approval-response` content part, targeting the assistant message
+ * that holds the `approval-requested` tool part.
+ *
  * @param run - The suspended client run holding the approval.
  * @param approvalId - The `approval.id` of the `approval-requested` tool part.
+ * @param assistantMessageId - The ID of the assistant message to target.
  * @param approved - Whether the user approved or denied the tool call.
  * @param reason - Optional free-text justification surfaced to the model.
  */
 export const respond = async (
-  run: ClientRun<AI.UIMessageChunk, AI.UIMessage>,
+  run: ClientRun<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>,
   approvalId: string,
+  assistantMessageId: string,
   approved: boolean,
   reason?: string,
 ): Promise<void> => {
-  // Find the assistant message carrying the approval-requested part, and
-  // rebuild it with that part flipped to approval-responded. Every other
-  // part is copied through unchanged.
-  const target = run.messages.find(
-    (n) =>
-      n.message.role === 'assistant' &&
-      n.message.parts.some((p) => isToolUIPart(p) && p.state === 'approval-requested' && p.approval.id === approvalId),
+  await run.sendEvents(
+    {
+      role: 'tool',
+      content: [
+        {
+          type: 'tool-approval-response',
+          approvalId,
+          approved,
+          ...(reason === undefined ? {} : { reason }),
+        },
+      ],
+    },
+    { messageId: assistantMessageId },
   );
-  if (!target) return;
-
-  const mutated: AI.UIMessage = {
-    ...target.message,
-    parts: target.message.parts.map((part) => {
-      if (isToolUIPart(part) && part.state === 'approval-requested' && part.approval.id === approvalId) {
-        return {
-          ...part,
-          state: 'approval-responded',
-          approval: { id: approvalId, approved, ...(reason === undefined ? {} : { reason }) },
-        };
-      }
-      return part;
-    }),
-  };
-
-  await run.sendMessages(mutated);
 
   await fetch('/api/workflow/start', {
     method: 'POST',

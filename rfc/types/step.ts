@@ -1,3 +1,5 @@
+import type { SendEventsTarget } from './run.js';
+
 /** Terminal status for a step. */
 export type StepEndStatus = 'complete' | 'failed' | 'aborted' | 'paused' | 'superseded';
 
@@ -52,14 +54,18 @@ export interface StepStartOptions {
  * Created from an AgentView via view.createStep(). The view carries the
  * invocation and exposes the conversation to pass to the model; the step is
  * the execution surface — it owns the abort signal, the pause handler, and
- * the write methods (pipe, sendMessages, sendParts).
+ * the write methods (pipe, sendMessages, sendParts, sendEvents).
  *
  * Both Session and Step implement AsyncDisposable for scope-based cleanup
  * in serverless functions:
  *
  *   await using step = view.createStep();
+ *
+ * The generic order `<TPart, TMessage, TEvent>` matches {@link Codec} and
+ * {@link ClientRun}. `TEvent` defaults to `never` for codecs that don't
+ * declare an event vocabulary.
  */
-export interface Step<TPart, TMessage> {
+export interface Step<TPart, TMessage, TEvent = never> {
   /** The step's unique ID, generated when the step is created. */
   readonly id: string;
 
@@ -194,13 +200,15 @@ export interface Step<TPart, TMessage> {
   /**
    * Publish one or more complete domain messages through the codec encoder.
    * Encoded via the codec's writeMessages path. Use for complete messages
-   * like tool results or structured responses.
+   * like structured responses.
    *
    * **Same-ID republish is an in-place update.** When a message is published
    * whose ID already identifies a node in the session, the transport routes
    * it through {@link Accumulator.setMessage} and the tree fires
    * `'message-updated'` (not `'message-added'`). Publishing a message with a
-   * fresh ID appends a new node.
+   * fresh ID appends a new node. Use {@link Step.sendEvents} for additive
+   * state transitions on an existing message rather than a full-message
+   * republish.
    *
    * Tree nodes from a step publish are always recorded with protocol role
    * `'assistant'` ({@link MessageNode.role}); the domain-level role inside
@@ -214,4 +222,18 @@ export interface Step<TPart, TMessage> {
    * like data-* that are not complete messages.
    */
   sendParts(parts: TPart | TPart[]): Promise<void>;
+
+  /**
+   * Publish one or more codec events through the codec encoder. Symmetric
+   * with {@link ClientRun.sendEvents} but published from the agent side —
+   * lets the agent emit codec-defined operations that neither stream as
+   * chunks nor are complete messages. The shape of `TEvent` is whatever the
+   * codec declares; the transport treats it opaquely.
+   *
+   * When `target.messageId` is supplied the transport tags the wire message
+   * with `x-ably-msg-id` so the codec's accumulator can locate and mutate
+   * the composed state of the target message. When omitted the event is
+   * free-floating and its semantics are codec-specific.
+   */
+  sendEvents(events: TEvent | TEvent[], target?: SendEventsTarget): Promise<void>;
 }

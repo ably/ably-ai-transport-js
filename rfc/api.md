@@ -148,8 +148,8 @@ interface SessionWriter<TPart, TMessage> {
 
   /**
    * Publish one or more complete domain messages to the channel. Encoded via
-   * the codec's writeMessages path. Use for user messages, tool results, HITL
-   * approval responses, and other discrete complete messages.
+   * the codec's writeMessages path. Use for user messages, structured
+   * responses, and other discrete complete messages.
    *
    * Message IDs are supplied by the caller on each message (e.g. the Vercel
    * codec uses `UIMessage.id`). The writer does not assign IDs and does not
@@ -160,10 +160,14 @@ interface SessionWriter<TPart, TMessage> {
    * whose ID already identifies a node in the session, the transport routes
    * it through `Accumulator.setMessage` and the tree fires `'message-updated'`
    * (not `'message-added'`). Publishing a message with a fresh ID appends a
-   * new node. The protocol-level role recorded on the resulting tree node is
-   * derived from the publishing connection (or an explicit `clientId`
-   * override); the domain-level role inside `TMessage` is opaque to the
-   * transport and may differ.
+   * new node. Use `sendEvents` (below) for additive state transitions on an
+   * existing message (HITL tool-approval responses, client-authored tool
+   * outputs) rather than a full-message republish.
+   *
+   * The protocol-level role recorded on the resulting tree node is derived
+   * from the publishing connection (or an explicit `clientId` override);
+   * the domain-level role inside `TMessage` is opaque to the transport and
+   * may differ.
    */
   sendMessages(options: SendMessagesOptions<TMessage>): Promise<void>;
 
@@ -176,6 +180,23 @@ interface SessionWriter<TPart, TMessage> {
    * caller. The writer does not assign IDs and does not return them.
    */
   sendParts(options: SendPartsOptions<TPart>): Promise<void>;
+
+  /**
+   * Publish one or more codec events to the channel. Encoded via the
+   * codec's writeEvent path. Use for codec-defined operations that are
+   * neither streaming chunks nor complete messages — typical examples are
+   * client-authored state transitions on an existing message: HITL
+   * tool-approval responses (as `AI.ToolModelMessage` for the Vercel
+   * codec), tool outputs returned from a client-executed tool, or any
+   * codec-specific side-channel.
+   *
+   * When `options.messageId` is supplied the transport tags the wire
+   * message with `x-ably-msg-id` so the codec's accumulator can locate and
+   * mutate the composed state of the target message; the tree then fires
+   * `'message-updated'`. When omitted the event is free-floating and its
+   * semantics are codec-specific.
+   */
+  sendEvents(options: SendEventsOptions<TEvent>): Promise<void>;
 
   // --- Control signals ---
 
@@ -325,6 +346,24 @@ interface SendPartsOptions<TPart> {
    * Override the attribution clientId sent as `x-ably-client-id`. See
    * SendMessagesOptions.clientId.
    */
+  clientId?: string;
+}
+
+interface SendEventsOptions<TEvent> {
+  /** One or more codec events to encode and publish. */
+  events: TEvent | TEvent[];
+  /** The run these events belong to. */
+  runId: string;
+
+  /**
+   * Target message ID the events bind to. Transport tags the wire message
+   * with `x-ably-msg-id` so the codec's accumulator can route the event to
+   * the existing message. Omit for free-floating events that don't bind to
+   * a specific message.
+   */
+  messageId?: string;
+
+  /** Override the attribution clientId. See SendMessagesOptions.clientId. */
   clientId?: string;
 }
 ```
@@ -814,8 +853,7 @@ interface ClientRun<TPart, TMessage> extends Run<TMessage> {
   /**
    * Publish one or more complete domain messages to this run. Encoded via
    * the codec's writeMessages path. Use for the initial user message (after
-   * start), mid-run steering, and HITL re-entry (e.g. a tool-approval
-   * decision).
+   * start) and mid-run steering.
    *
    * Message IDs are owned by the caller — for the Vercel codec, `UIMessage.id`
    * is required and is reused as the transport-level `x-ably-msg-id`; no ID
@@ -825,19 +863,17 @@ interface ClientRun<TPart, TMessage> extends Run<TMessage> {
    * **Same-ID republish is an in-place update.** When a message is published
    * whose ID already identifies a node in the session, the transport routes
    * it through `Accumulator.setMessage` and the tree fires `'message-updated'`
-   * (not `'message-added'`). This is the path that carries HITL tool-approval
-   * responses in the Vercel codec — the client republishes the existing
-   * assistant message with the tool part's state mutated to
-   * `'approval-responded'`. Publishing a message with a fresh ID appends a
-   * new node.
+   * (not `'message-added'`). Publishing a message with a fresh ID appends a
+   * new node. This primitive is for full-message corrections and cross-step
+   * amendments; additive state transitions (HITL tool-approval responses,
+   * client-authored tool outputs) go through {@link ClientRun.sendEvents} as
+   * codec events rather than a full-message republish.
    *
    * The protocol-level role recorded on the resulting tree node
    * (`MessageNode.role`) reflects the publishing participant: a
    * `ClientRun.sendMessages(...)` call is always recorded as `'user'`. The
    * domain-level role inside `TMessage` is opaque to the transport and may
-   * differ from the protocol role. HITL approval relies on this divergence:
-   * the client republishes an `'assistant'`-role `UIMessage` (domain role)
-   * over a user connection (protocol role `'user'`).
+   * differ from the protocol role.
    *
    * Accepts a single message or an array, matching `Step.sendMessages` and
    * `SessionWriter.sendMessages` so the send surface is uniform.
@@ -855,6 +891,35 @@ interface ClientRun<TPart, TMessage> extends Run<TMessage> {
    * within it.
    */
   sendParts(parts: TPart | TPart[]): Promise<void>;
+
+  /**
+   * Publish one or more codec events through the codec encoder. Encoded via
+   * the codec's writeEvent path. Use for codec-defined operations that are
+   * neither streaming chunks nor complete messages — typical examples are
+   * client-authored state transitions on an existing message: HITL
+   * tool-approval responses, tool outputs returned from a client-executed
+   * tool.
+   *
+   * When `target.messageId` is supplied the transport tags the wire message
+   * with `x-ably-msg-id` so the codec's accumulator can locate and mutate
+   * the composed state of the target message; the tree then fires
+   * `'message-updated'`. When omitted the event is free-floating and its
+   * semantics are codec-specific.
+   *
+   * For the Vercel codec, `TEvent = AI.ToolModelMessage` and a HITL
+   * approval looks like:
+   *
+   * ```ts
+   * await run.sendEvents(
+   *   { role: 'tool', content: [{ type: 'tool-approval-response', approvalId, approved, reason }] },
+   *   { messageId: assistantMessageId },
+   * );
+   * ```
+   *
+   * Accepts a single event or an array, matching `Step.sendEvents` and
+   * `SessionWriter.sendEvents` so the send surface is uniform.
+   */
+  sendEvents(events: TEvent | TEvent[], target?: SendEventsTarget): Promise<void>;
 
   // --- Control signals ---
 
@@ -1129,15 +1194,18 @@ interface Step<TPart, TMessage> {
   /**
    * Publish one or more complete domain messages through the codec encoder.
    * Encoded via the codec's writeMessages path. Use for complete messages
-   * like tool results or structured responses.
+   * like structured responses.
    *
    * **Same-ID republish is an in-place update.** When a message is published
    * whose ID already identifies a node in the session, the transport routes
    * it through `Accumulator.setMessage` and the tree fires `'message-updated'`
    * (not `'message-added'`). Publishing a message with a fresh ID appends a
-   * new node. Tree nodes from a step publish are always recorded with
-   * protocol role `'assistant'` (`MessageNode.role`); the domain-level role
-   * inside `TMessage` is opaque to the transport.
+   * new node. Use {@link Step.sendEvents} for additive state transitions on
+   * an existing message rather than a full-message republish.
+   *
+   * Tree nodes from a step publish are always recorded with protocol role
+   * `'assistant'` (`MessageNode.role`); the domain-level role inside
+   * `TMessage` is opaque to the transport.
    */
   sendMessages(messages: TMessage | TMessage[]): Promise<void>;
 
@@ -1147,6 +1215,15 @@ interface Step<TPart, TMessage> {
    * `data-*` that are not complete messages.
    */
   sendParts(parts: TPart | TPart[]): Promise<void>;
+
+  /**
+   * Publish one or more codec events through the codec encoder. Symmetric
+   * with {@link ClientRun.sendEvents} but published from the agent side —
+   * lets the agent emit codec-defined operations that are neither streaming
+   * chunks nor complete messages. The shape of `TEvent` is whatever the
+   * codec declares; the transport treats it opaquely.
+   */
+  sendEvents(events: TEvent | TEvent[], target?: SendEventsTarget): Promise<void>;
 }
 ```
 
@@ -1656,69 +1733,62 @@ export const POST = async (req: Request): Promise<Response> => {
 ## Example 4: HITL tool approval
 
 The agent proposes a tool call, suspends the run pending approval, and a later
-invocation (with a `messageId` precondition) picks up after the client
-publishes the approval. The approval targets a specific `toolCallId` via the
-Vercel-layer `pendingToolCalls` helper (plan §4) — a pure function over
-`run.messages` that surfaces every `input-available` tool part on the last
-assistant message.
+invocation picks up after the client publishes the approval. AI SDK v6
+surfaces a pending approval as a `tool-${name}` part in state
+`'approval-requested'` on the assistant message; the user's decision is
+published as an `AI.ToolModelMessage` through `run.sendEvents`, targeting the
+assistant message. The Vercel codec's accumulator transitions the tool part
+to `'approval-responded'` in place, and `convertToModelMessages` on the agent
+side sees the composed `UIMessage` and synthesises the `tool-approval-response`
+that `streamText` consumes.
 
 ```ts
 // --- client ---
 import type * as AI from 'ai';
-import { pendingToolCalls } from '@ably/ai-transport/vercel';
+import { getToolName, isToolUIPart } from 'ai';
 import type { ClientRun } from '@ably/ai-transport';
 
-const approveToolCall = async (
-  run: ClientRun<AI.UIMessageChunk, AI.UIMessage>,
-  toolCallId: string,
-  output: unknown,
-): Promise<void> => {
-  if (run.status !== 'suspended') return;
-  const pending = pendingToolCalls(run.messages).find((tc) => tc.toolCallId === toolCallId);
-  if (!pending) return;
-
-  await run.sendMessages({
-    id: crypto.randomUUID(),
-    role: 'user',
-    parts: [
-      {
-        type: `tool-${pending.toolName}`,
-        toolCallId,
-        state: 'output-available',
-        input: pending.input,
-        output,
-      },
-    ],
-  });
-
-  await fetch('/api/agent', {
-    method: 'POST',
-    body: JSON.stringify(run.toInvocation().toJSON()),
-  });
+/** Locate the outstanding approval on the latest assistant message, if any. */
+const findPending = (
+  run: ClientRun<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>,
+): { approvalId: string; toolCallId: string; assistantMessageId: string } | undefined => {
+  const last = run.messages.findLast((n) => n.message.role === 'assistant');
+  if (!last) return undefined;
+  for (const part of last.message.parts) {
+    if (isToolUIPart(part) && part.state === 'approval-requested') {
+      return {
+        approvalId: part.approval.id,
+        toolCallId: part.toolCallId,
+        assistantMessageId: last.id,
+      };
+    }
+  }
+  return undefined;
 };
 
-const denyToolCall = async (
-  run: ClientRun<AI.UIMessageChunk, AI.UIMessage>,
-  toolCallId: string,
-  reason: string,
+const respond = async (
+  run: ClientRun<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>,
+  approved: boolean,
+  reason?: string,
 ): Promise<void> => {
   if (run.status !== 'suspended') return;
-  const pending = pendingToolCalls(run.messages).find((tc) => tc.toolCallId === toolCallId);
+  const pending = findPending(run);
   if (!pending) return;
 
-  await run.sendMessages({
-    id: crypto.randomUUID(),
-    role: 'user',
-    parts: [
-      {
-        type: `tool-${pending.toolName}`,
-        toolCallId,
-        state: 'output-error',
-        input: pending.input,
-        errorText: reason,
-      },
-    ],
-  });
+  await run.sendEvents(
+    {
+      role: 'tool',
+      content: [
+        {
+          type: 'tool-approval-response',
+          approvalId: pending.approvalId,
+          approved,
+          ...(reason === undefined ? {} : { reason }),
+        },
+      ],
+    },
+    { messageId: pending.assistantMessageId },
+  );
 
   await fetch('/api/agent', {
     method: 'POST',
@@ -1727,13 +1797,16 @@ const denyToolCall = async (
 };
 ```
 
+`addToolOutput` (the client-executed tool result path) uses the same
+primitive: `run.sendEvents({ role: 'tool', content: [{ type: 'tool-result', toolCallId, toolName, output }] }, { messageId })`.
+
 ```ts
 // --- agent ---
 export const POST = async (req: Request): Promise<Response> => {
   const data = (await req.json()) as InvocationData;
   const invocation = Invocation.fromJSON(data);
 
-  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>({
     client: ably,
     sessionName: invocation.sessionName,
     codec,
@@ -1754,10 +1827,11 @@ export const POST = async (req: Request): Promise<Response> => {
     await step.pipe(result.toUIMessageStream());
     await step.end('complete');
 
-    // Did the model request a tool? Suspend the run until the user approves.
+    // Did the model propose a tool that still needs approval? Suspend.
     const last = view.messages.findLast((n) => n.message.role === 'assistant');
-    const proposedTool = last?.message.parts.find((p) => p.type.startsWith('tool-'));
-    await (proposedTool ? view.run.suspend('awaiting-input') : view.run.end('complete'));
+    const pending =
+      last?.message.parts.filter(isToolUIPart).some((part) => part.state === 'approval-requested') ?? false;
+    await (pending ? view.run.suspend('awaiting-input') : view.run.end('complete'));
   } catch (err) {
     await view.run.end(step.signal.aborted ? 'aborted' : 'failed');
     throw err;

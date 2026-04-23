@@ -74,17 +74,29 @@ export interface Run<TMessage> {
   toInvocation(): Invocation;
 }
 
+/** Options accepted by {@link ClientRun.sendEvents} and {@link Step.sendEvents}. */
+export interface SendEventsTarget {
+  /**
+   * Target message ID the events should bind to. Transport tags the wire
+   * message with `x-ably-msg-id` so the codec's accumulator can locate and
+   * mutate the target message's composed state. Omit for events that don't
+   * bind to a specific message.
+   */
+  messageId?: string;
+}
+
 /**
  * Run as seen from a ClientSession. Adds lifecycle and control methods.
  *
- * The generic order `<TPart, TMessage>` matches {@link ClientView} and
- * `Codec<TPart, TMessage>` so per-run publish methods for messages
- * (`sendMessages`) and for discrete parts (`sendParts`) are typed uniformly
- * across the send surface.
+ * The generic order `<TPart, TMessage, TEvent>` matches {@link ClientView}
+ * and `Codec<TPart, TMessage, TEvent>` so per-run publish methods for
+ * messages (`sendMessages`), discrete parts (`sendParts`), and codec events
+ * (`sendEvents`) are typed uniformly across the send surface. `TEvent`
+ * defaults to `never` for codecs that don't declare an event vocabulary.
  */
-export interface ClientRun<TPart, TMessage> extends Run<TMessage> {
+export interface ClientRun<TPart, TMessage, TEvent = never> extends Run<TMessage> {
   /** Messages belonging to this run, with node.run typed as ClientRun. */
-  readonly messages: readonly MessageNode<TMessage, ClientRun<TPart, TMessage>>[];
+  readonly messages: readonly MessageNode<TMessage, ClientRun<TPart, TMessage, TEvent>>[];
 
   // --- Lifecycle ---
 
@@ -103,8 +115,7 @@ export interface ClientRun<TPart, TMessage> extends Run<TMessage> {
   /**
    * Publish one or more complete domain messages to this run. Encoded via
    * the codec's writeMessages path. Use for the initial user message (after
-   * start), mid-run steering, and HITL re-entry (e.g. a tool-approval
-   * decision).
+   * start) and mid-run steering.
    *
    * Message IDs are owned by the caller — for the Vercel codec, `UIMessage.id`
    * is required and is reused as the transport-level `x-ably-msg-id`; no ID
@@ -114,19 +125,18 @@ export interface ClientRun<TPart, TMessage> extends Run<TMessage> {
    * **Same-ID republish is an in-place update.** When a message is published
    * whose ID already identifies a node in the session, the transport routes
    * it through {@link Accumulator.setMessage} and the tree fires
-   * `'message-updated'` (not `'message-added'`). This is the path that
-   * carries HITL tool-approval responses in the Vercel codec — the client
-   * republishes the existing assistant message with the tool part's state
-   * mutated to `'approval-responded'`. Publishing a message with a fresh ID
-   * appends a new node.
+   * `'message-updated'` (not `'message-added'`). Publishing a message with a
+   * fresh ID appends a new node. This primitive is for full-message
+   * corrections and cross-step amendments; additive state transitions (HITL
+   * tool-approval responses, client-authored tool outputs) go through
+   * {@link ClientRun.sendEvents} as codec events rather than a full-message
+   * republish.
    *
    * The protocol-level role recorded on the resulting tree node
    * ({@link MessageNode.role}) reflects the publishing participant: a
    * `ClientRun.sendMessages(...)` call is always recorded as `'user'`. The
    * domain-level role inside `TMessage` is opaque to the transport and may
-   * differ from the protocol role. HITL approval relies on this divergence:
-   * the client republishes an `'assistant'`-role `UIMessage` (domain role)
-   * over a user connection (protocol role `'user'`).
+   * differ from the protocol role.
    *
    * Accepts a single message or an array, matching {@link Step.sendMessages}
    * and {@link SessionWriter.sendMessages} so the send surface is uniform.
@@ -144,6 +154,35 @@ export interface ClientRun<TPart, TMessage> extends Run<TMessage> {
    * within it.
    */
   sendParts(parts: TPart | TPart[]): Promise<void>;
+
+  /**
+   * Publish one or more codec events through the codec encoder. Encoded via
+   * the codec's writeEvent path. Use for codec-defined operations that
+   * neither stream as chunks nor are complete messages — typical examples
+   * are client-authored state transitions on an existing message: HITL
+   * tool-approval responses, tool outputs returned from a client-executed
+   * tool.
+   *
+   * When `target.messageId` is supplied the transport tags the wire message
+   * with `x-ably-msg-id` so the codec's accumulator can locate and mutate
+   * the composed state of the target message; the tree then fires
+   * `'message-updated'`. When omitted the event is free-floating and its
+   * semantics are codec-specific.
+   *
+   * For the Vercel codec, `TEvent = AI.ToolModelMessage` and a HITL
+   * approval looks like:
+   *
+   * ```ts
+   * await run.sendEvents(
+   *   { role: 'tool', content: [{ type: 'tool-approval-response', approvalId, approved, reason }] },
+   *   { messageId: assistantMessageId },
+   * );
+   * ```
+   *
+   * Accepts a single event or an array, matching {@link Step.sendEvents}
+   * and {@link SessionWriter.sendEvents} so the send surface is uniform.
+   */
+  sendEvents(events: TEvent | TEvent[], target?: SendEventsTarget): Promise<void>;
 
   // --- Control signals ---
 

@@ -6,9 +6,11 @@
  * `tool-${name}` part in state `'approval-requested'` (with an
  * `approval: { id }`) instead of executing it. The agent suspends the run
  * with `awaiting-input`; a later invocation paired with the client's
- * `approval-responded` mutation drives the next step, at which point AI SDK
- * v6 re-invokes the model (which now sees `tool-approval-response` in the
- * model-messages produced by `convertToModelMessages`) and executes the tool.
+ * `tool-approval-response` event drives the next step. The Vercel codec's
+ * accumulator has already transitioned the tool part to
+ * `'approval-responded'` by the time `convertToModelMessages` runs, so
+ * `streamText` sees the `tool-approval-response` in the model-messages it
+ * consumes and executes the tool.
  */
 
 import type * as Ably from 'ably';
@@ -19,7 +21,7 @@ import type { Codec, InvocationData } from '../../../index.js';
 import { createAgentSession, Invocation } from '../../../index.js';
 
 declare const ably: Ably.Realtime;
-declare const codec: Codec<AI.UIMessageChunk, AI.UIMessage>;
+declare const codec: Codec<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>;
 declare const openai: (model: string) => AI.LanguageModel;
 declare const tools: AI.ToolSet; // one or more have `needsApproval: true`
 
@@ -32,7 +34,7 @@ declare const tools: AI.ToolSet; // one or more have `needsApproval: true`
 export const POST = async (req: Request): Promise<Response> => {
   const invocation = Invocation.fromJSON((await req.json()) as InvocationData);
 
-  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>({
     client: ably,
     sessionName: invocation.sessionName,
     codec,

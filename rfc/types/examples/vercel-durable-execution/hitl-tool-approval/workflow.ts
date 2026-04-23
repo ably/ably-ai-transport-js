@@ -7,9 +7,10 @@
  * SDK v6 surfaces the call as a `tool-${name}` part in state
  * `'approval-requested'` rather than executing. The hop returns
  * `'awaiting-input'`, the workflow suspends the run, and exits. A later
- * client invocation (paired with the `approval-responded` mutation) starts
- * a fresh workflow run that reads the conversation — now including the
- * approval — and continues.
+ * client invocation (paired with a `tool-approval-response` event published
+ * via `run.sendEvents`) starts a fresh workflow run that reads the
+ * conversation — with the tool part now in `'approval-responded'` after the
+ * codec's accumulator has applied the event — and continues.
  */
 
 import * as Ably from 'ably';
@@ -20,7 +21,7 @@ import type { Codec, InvocationData, StorageReader } from '../../../index.js';
 import { createAgentSession, ErrorCode, Invocation } from '../../../index.js';
 
 declare const ably: Ably.Realtime;
-declare const codec: Codec<AI.UIMessageChunk, AI.UIMessage>;
+declare const codec: Codec<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>;
 declare const openai: (model: string) => AI.LanguageModel;
 declare const tools: AI.ToolSet; // one or more have `needsApproval: true`
 declare const workflowStateReader: (runId: string) => StorageReader;
@@ -56,7 +57,7 @@ export const runAgentHop = async (
 
   const invocation = Invocation.fromJSON(invocationData);
 
-  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+  await using session = createAgentSession<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>({
     client: ably,
     sessionName: invocation.sessionName,
     codec,
@@ -96,7 +97,7 @@ export const runAgentHop = async (
 export const suspendAwaitingInput = async (invocationData: InvocationData): Promise<void> => {
   'use step';
 
-  const session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+  const session = createAgentSession<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>({
     client: ably,
     sessionName: invocationData.sessionName,
     codec,
@@ -113,7 +114,7 @@ export const suspendAwaitingInput = async (invocationData: InvocationData): Prom
 export const endRun = async (invocationData: InvocationData): Promise<void> => {
   'use step';
 
-  const session = createAgentSession<AI.UIMessageChunk, AI.UIMessage>({
+  const session = createAgentSession<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>({
     client: ably,
     sessionName: invocationData.sessionName,
     codec,

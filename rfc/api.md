@@ -421,9 +421,60 @@ interface Tree<TMessage, TRun extends Run<TMessage> = Run<TMessage>> {
   on(event: 'run-started' | 'run-updated' | 'run-ended', handler: (run: TRun) => void): void;
   on(event: 'step-started' | 'step-updated' | 'step-ended', handler: (step: StepState, run: TRun) => void): void;
 
+  /**
+   * Control signals observed on the channel (live and during hydration).
+   * SDK-owned and codec-independent — see {@link ControlSignal}. For the
+   * common step-scoped pause case, prefer `Step.on('pause', ...)` — it
+   * fires on the same underlying signal but is scoped to a live step.
+   */
+  on(event: 'control-signal', handler: (signal: ControlSignal, run: TRun) => void): void;
+
   off(event: 'message-added' | 'message-updated', handler: (node: MessageNode<TMessage, TRun>) => void): void;
   off(event: 'run-started' | 'run-updated' | 'run-ended', handler: (run: TRun) => void): void;
   off(event: 'step-started' | 'step-updated' | 'step-ended', handler: (step: StepState, run: TRun) => void): void;
+  off(event: 'control-signal', handler: (signal: ControlSignal, run: TRun) => void): void;
+}
+```
+
+## Control signals
+
+Control signals are SDK-owned: abort, pause, resume, and retry each have a
+fixed wire shape (`x-ably-abort`, `x-ably-pause`, `x-ably-resume`,
+`x-ably-retry`) that does not depend on the codec. The write surface lives on
+`ClientRun` and `SessionWriter` (`abort()`, `pause()`, `resume()`, `retry()`),
+and the read surface is the `Tree`'s `'control-signal'` event above. For the
+common step-scoped pause case, `Step.on('pause', ...)` remains the ergonomic
+shortcut.
+
+```ts
+type ControlSignalType = 'abort' | 'pause' | 'resume' | 'retry';
+
+interface ControlSignal {
+  /** Which signal this is. */
+  readonly type: ControlSignalType;
+
+  /** The run the signal targets. From `x-ably-run-id`. */
+  readonly runId: string;
+
+  /**
+   * The step the signal targets, when present. Only meaningful on
+   * `'resume'` and `'retry'`; `'abort'` and `'pause'` never carry one.
+   */
+  readonly stepId?: string;
+
+  /**
+   * The channel message ID of the signal itself. Pair this with an
+   * {@link Invocation}'s `messageId` precondition when waking an agent
+   * in response to the signal.
+   */
+  readonly messageId: string;
+
+  /**
+   * Attribution clientId. From `x-ably-client-id` when the signal was
+   * published on behalf of an end-user, otherwise from the publishing
+   * connection's `message.clientId`.
+   */
+  readonly clientId: string;
 }
 ```
 
@@ -1217,6 +1268,13 @@ interface StorageWriter {
  *
  * TEvent is the granular domain event type (e.g., a UIMessageChunk).
  * TMessage is the assembled domain message type (e.g., a UIMessage).
+ *
+ * The codec handles **content messages only**. Lifecycle events
+ * (`x-ably-run-*`, `x-ably-step-*`) and control signals (see
+ * {@link ControlSignal} — `x-ably-abort`, `x-ably-pause`, `x-ably-resume`,
+ * `x-ably-retry`) are SDK-owned: the transport layer filters them out before
+ * the decoder is called, and a codec implementor does not need to guard
+ * against seeing them.
  */
 interface Codec<TEvent, TMessage> {
   /** Creates an encoder for producing channel messages from domain events. */

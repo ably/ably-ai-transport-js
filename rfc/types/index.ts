@@ -2,6 +2,7 @@ import type { MessageNode } from './message-node.js';
 import type { AgentRun, ClientRun } from './run.js';
 
 export type { Accumulator, Codec, DecodedEvent, Decoder, Encoder } from './codec.js';
+export type { ControlSignal, ControlSignalType } from './control-signal.js';
 export { ErrorCode } from './errors.js';
 // `Invocation` is a merged symbol — a `const` (the `InvocationConstructor`
 // static namespace exposing `Invocation.fromJSON`) and an `interface` of the

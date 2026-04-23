@@ -7,6 +7,13 @@ import type * as Ably from 'ably';
  *
  * TEvent is the granular domain event type (e.g., a UIMessageChunk).
  * TMessage is the assembled domain message type (e.g., a UIMessage).
+ *
+ * The codec handles **content messages only**. Lifecycle events
+ * (`x-ably-run-*`, `x-ably-step-*`) and control signals (see
+ * {@link ControlSignal} — `x-ably-abort`, `x-ably-pause`, `x-ably-resume`,
+ * `x-ably-retry`) are SDK-owned: the transport layer filters them out before
+ * the decoder is called, and a codec implementor does not need to guard
+ * against seeing them.
  */
 export interface Codec<TEvent, TMessage> {
   /** Creates an encoder for producing channel messages from domain events. */
@@ -51,9 +58,12 @@ export interface Encoder<TEvent> {
 }
 
 /**
- * Consumes channel messages and yields decoded domain events. Stateful —
- * tracks in-flight streams across appends so partial payloads resolve
- * into the same event sequence the encoder produced.
+ * Consumes content channel messages and yields decoded domain events.
+ * Stateful — tracks in-flight streams across appends so partial payloads
+ * resolve into the same event sequence the encoder produced.
+ *
+ * The decoder sees only content messages; lifecycle events and control
+ * signals are handled by the SDK before this method is called.
  */
 export interface Decoder<TEvent> {
   /**

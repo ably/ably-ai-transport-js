@@ -158,6 +158,12 @@ export interface Step<TEvent, TMessage> {
    * agent can checkpoint state and end the step with `'paused'`, or let the
    * current work complete and end with `'complete'`.
    *
+   * Fires on the same underlying `ControlSignal` (type `'pause'`) that
+   * `Tree.on('control-signal', ...)` delivers; this is the step-scoped
+   * ergonomic shortcut. Reach for the tree event when the full signal
+   * object is needed (telemetry, debug, observing signals for runs other
+   * than this step's).
+   *
    * Pause signals are buffered: any pause observed before a handler is
    * registered (including signals materialised during `start()`) is
    * delivered synchronously to the handler on first subscription. This

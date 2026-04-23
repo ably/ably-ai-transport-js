@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "prebuild": "cd ../../../.. && npm install && npm run build",
     "build": "tsc --noEmit && next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
@@ -18,7 +19,8 @@
     "jsonwebtoken": "^9",
     "next": "^16",
     "react": "^19",
-    "react-dom": "^19"
+    "react-dom": "^19",
+    "vercel": "^52.0.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

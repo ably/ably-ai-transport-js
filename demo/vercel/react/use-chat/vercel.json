@@ -1,0 +1,6 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "installCommand": "cd ../../../.. && npm install && npm install --prefix demo/vercel/react/use-chat",
+  "buildCommand": "npx tsc --noEmit && npx next build"
+}

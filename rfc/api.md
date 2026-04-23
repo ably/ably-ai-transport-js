@@ -5,13 +5,13 @@ API surface for the durable sessions design described in [AIT012](./AIT012.md). 
 ## Entry points
 
 ```ts
-function createClientSession<TEvent, TMessage>(
-  options: SessionOptions<TEvent, TMessage>,
-): ClientSession<TEvent, TMessage>;
+function createClientSession<TPart, TMessage>(
+  options: SessionOptions<TPart, TMessage>,
+): ClientSession<TPart, TMessage>;
 
-function createAgentSession<TEvent, TMessage>(
-  options: SessionOptions<TEvent, TMessage>,
-): AgentSession<TEvent, TMessage>;
+function createAgentSession<TPart, TMessage>(
+  options: SessionOptions<TPart, TMessage>,
+): AgentSession<TPart, TMessage>;
 ```
 
 An `Invocation` is rehydrated from a wire payload via the static
@@ -21,7 +21,7 @@ An `Invocation` is rehydrated from a wire payload via the static
 ## Session options
 
 ```ts
-interface SessionOptions<TEvent, TMessage> {
+interface SessionOptions<TPart, TMessage> {
   /**
    * The Ably Realtime client. The SDK derives the channel(s) it needs from
    * the session name. Taking a client (rather than a pre-constructed channel)
@@ -40,8 +40,8 @@ interface SessionOptions<TEvent, TMessage> {
    */
   sessionName: string;
 
-  /** Codec that translates between domain events and channel operations. */
-  codec: Codec<TEvent, TMessage>;
+  /** Codec that translates between domain parts and channel operations. */
+  codec: Codec<TPart, TMessage>;
 
   /** Loads historical state into the session during connect(). Omit for a fresh session. */
   storageReader?: StorageReader;
@@ -57,12 +57,12 @@ interface SessionOptions<TEvent, TMessage> {
 ## ClientSession
 
 ```ts
-interface ClientSession<TEvent, TMessage> {
+interface ClientSession<TPart, TMessage> {
   /** The session name, as passed to createClientSession. */
   readonly sessionName: string;
 
   /** The unfiltered conversation tree. Available before connect(). */
-  readonly tree: Tree<TMessage, ClientRun<TEvent, TMessage>>;
+  readonly tree: Tree<TMessage, ClientRun<TPart, TMessage>>;
 
   /**
    * Create a projected view over the tree. Each view has independent branch
@@ -70,7 +70,7 @@ interface ClientSession<TEvent, TMessage> {
    * view pends hydration and fills in as the session materialises the
    * channel. Call view.close() to release a view when it's no longer needed.
    */
-  createView(options?: CreateViewOptions): ClientView<TEvent, TMessage>;
+  createView(options?: CreateViewOptions): ClientView<TPart, TMessage>;
 
   /**
    * Hydrate from the storage reader (if provided) and subscribe to the channel
@@ -113,7 +113,7 @@ interface ClientSession<TEvent, TMessage> {
    * or subscribing. This is the "lifecycle-only" idiom used by the server-
    * side validation and durable-execution `endRun` hop examples.
    */
-  readonly writer: SessionWriter<TEvent, TMessage>;
+  readonly writer: SessionWriter<TPart, TMessage>;
 }
 ```
 
@@ -124,7 +124,7 @@ event type has its own method. Views, runs, and steps delegate to this
 internally.
 
 ```ts
-interface SessionWriter<TEvent, TMessage> {
+interface SessionWriter<TPart, TMessage> {
   // --- Run lifecycle ---
 
   /** Publish x-ably-run-start. Returns the generated run ID. */
@@ -168,14 +168,14 @@ interface SessionWriter<TEvent, TMessage> {
   sendMessages(options: SendMessagesOptions<TMessage>): Promise<void>;
 
   /**
-   * Publish one or more discrete domain events to the channel. Encoded via
-   * the codec's writeEvent path. Use for standalone events like `data-*`
+   * Publish one or more discrete domain parts to the channel. Encoded via
+   * the codec's writePart path. Use for standalone parts like `data-*`
    * that are not complete messages.
    *
-   * Event IDs, where the domain events carry them, are supplied by the
+   * Part IDs, where the domain parts carry them, are supplied by the
    * caller. The writer does not assign IDs and does not return them.
    */
-  sendEvents(options: SendEventsOptions<TEvent>): Promise<void>;
+  sendParts(options: SendPartsOptions<TPart>): Promise<void>;
 
   // --- Control signals ---
 
@@ -313,10 +313,10 @@ interface SendMessagesOptions<TMessage> {
   clientId?: string;
 }
 
-interface SendEventsOptions<TEvent> {
-  /** One or more domain events to encode and publish. */
-  events: TEvent | TEvent[];
-  /** The run these events belong to. */
+interface SendPartsOptions<TPart> {
+  /** One or more domain parts to encode and publish. */
+  parts: TPart | TPart[];
+  /** The run these parts belong to. */
   runId: string;
   /** Parent message ID for tree positioning. */
   parentId?: string;
@@ -344,7 +344,7 @@ type ClientRunRetryOptions = Omit<RetryOptions, 'runId'>;
 ## AgentSession
 
 ```ts
-interface AgentSession<TEvent, TMessage> {
+interface AgentSession<TPart, TMessage> {
   /** The session name, as passed to createAgentSession. */
   readonly sessionName: string;
 
@@ -362,7 +362,7 @@ interface AgentSession<TEvent, TMessage> {
    * hydration and fills in as the session materialises the channel. Call
    * view.createStep() to produce the step that executes the run.
    */
-  createView(invocation: Invocation): AgentView<TEvent, TMessage>;
+  createView(invocation: Invocation): AgentView<TPart, TMessage>;
 
   /**
    * Hydrate from the storage reader (if provided) and subscribe to the channel
@@ -404,7 +404,7 @@ interface AgentSession<TEvent, TMessage> {
    * or subscribing. This is the "lifecycle-only" durable-execution pattern
    * (see plan §5.7).
    */
-  readonly writer: SessionWriter<TEvent, TMessage>;
+  readonly writer: SessionWriter<TPart, TMessage>;
 }
 ```
 
@@ -559,13 +559,13 @@ interface CreateForkOptions {
  * runs: createRun, createRegenerate, and createEdit all produce a ClientRun
  * positioned by the view's current branch state.
  *
- * The generic carries `TEvent` as well as `TMessage` for symmetry with
- * `AgentView` and for forward compatibility with future event-typed
+ * The generic carries `TPart` as well as `TMessage` for symmetry with
+ * `AgentView` and for forward compatibility with future part-typed
  * client-side operations.
  */
-interface ClientView<TEvent, TMessage> extends View<TMessage, ClientRun<TEvent, TMessage>> {
+interface ClientView<TPart, TMessage> extends View<TMessage, ClientRun<TPart, TMessage>> {
   /** Runs whose messages are visible in this view's projection. */
-  readonly runs: ReadonlyArray<ClientRun<TEvent, TMessage>>;
+  readonly runs: ReadonlyArray<ClientRun<TPart, TMessage>>;
 
   /** Whether more history is available to load. */
   readonly hasMore: boolean;
@@ -587,7 +587,7 @@ interface ClientView<TEvent, TMessage> extends View<TMessage, ClientRun<TEvent, 
    * Create a new run, positioned at the current branch tip. The run is not
    * yet live — call run.start() to publish `x-ably-run-start` to the channel.
    */
-  createRun(): ClientRun<TEvent, TMessage>;
+  createRun(): ClientRun<TPart, TMessage>;
 
   /**
    * Create a new run that forks the tree at the given message (regenerate).
@@ -596,7 +596,7 @@ interface ClientView<TEvent, TMessage> extends View<TMessage, ClientRun<TEvent, 
    * to leave selection untouched. The run is not yet live — call run.start()
    * to publish `x-ably-run-start`.
    */
-  createRegenerate(messageId: string, options?: CreateForkOptions): ClientRun<TEvent, TMessage>;
+  createRegenerate(messageId: string, options?: CreateForkOptions): ClientRun<TPart, TMessage>;
 
   /**
    * Create a new run that forks the tree at the given message (edit). The
@@ -605,7 +605,7 @@ interface ClientView<TEvent, TMessage> extends View<TMessage, ClientRun<TEvent, 
    * selection untouched. The run is not yet live — call run.start() to
    * publish `x-ably-run-start`.
    */
-  createEdit(messageId: string, options?: CreateForkOptions): ClientRun<TEvent, TMessage>;
+  createEdit(messageId: string, options?: CreateForkOptions): ClientRun<TPart, TMessage>;
 }
 
 /**
@@ -623,7 +623,7 @@ interface ClientView<TEvent, TMessage> extends View<TMessage, ClientRun<TEvent, 
  * already determined the branch, and the agent needs the full ancestry
  * to pass to the model.
  */
-interface AgentView<TEvent, TMessage> extends View<TMessage, AgentRun<TMessage>> {
+interface AgentView<TPart, TMessage> extends View<TMessage, AgentRun<TMessage>> {
   /**
    * The run this view is scoped to. The step created from this view
    * executes work against this run. Use view.run.end() / view.run.suspend()
@@ -644,7 +644,7 @@ interface AgentView<TEvent, TMessage> extends View<TMessage, AgentRun<TMessage>>
    * has materialised the invocation's preconditions, later steps see an
    * already-satisfied condition and `start()` proceeds immediately.
    */
-  createStep(): Step<TEvent, TMessage>;
+  createStep(): Step<TPart, TMessage>;
 }
 ```
 
@@ -678,7 +678,7 @@ interface MessageNode<TMessage, TRun extends Run<TMessage> = Run<TMessage>> {
 
   /**
    * The run this message belongs to. Typed to the session's run variant:
-   * `ClientRun<TEvent, TMessage>` when this node comes from a ClientSession's
+   * `ClientRun<TPart, TMessage>` when this node comes from a ClientSession's
    * tree or view, `AgentRun<TMessage>` when it comes from an AgentSession. So
    * `node.run?.abort()`, `node.run?.sendMessages(...)`, etc. are directly
    * callable from the rendered node — no need to look up by ID through
@@ -711,7 +711,7 @@ The package exports pre-bound aliases for the common run-variant specialisations
 so callers rarely need to spell out the second generic by hand:
 
 ```ts
-type ClientMessageNode<TEvent, TMessage> = MessageNode<TMessage, ClientRun<TEvent, TMessage>>;
+type ClientMessageNode<TPart, TMessage> = MessageNode<TMessage, ClientRun<TPart, TMessage>>;
 type AgentMessageNode<TMessage> = MessageNode<TMessage, AgentRun<TMessage>>;
 ```
 
@@ -788,14 +788,14 @@ interface Run<TMessage> {
 /**
  * Run as seen from a ClientSession. Adds lifecycle and control methods.
  *
- * The generic order `<TEvent, TMessage>` matches `ClientView` and
- * `Codec<TEvent, TMessage>` so per-run publish methods for messages
- * (`sendMessages`) and for discrete events (`sendEvents`) are typed uniformly
+ * The generic order `<TPart, TMessage>` matches `ClientView` and
+ * `Codec<TPart, TMessage>` so per-run publish methods for messages
+ * (`sendMessages`) and for discrete parts (`sendParts`) are typed uniformly
  * across the send surface.
  */
-interface ClientRun<TEvent, TMessage> extends Run<TMessage> {
+interface ClientRun<TPart, TMessage> extends Run<TMessage> {
   /** Messages belonging to this run, with node.run typed as ClientRun. */
-  readonly messages: ReadonlyArray<MessageNode<TMessage, ClientRun<TEvent, TMessage>>>;
+  readonly messages: ReadonlyArray<MessageNode<TMessage, ClientRun<TPart, TMessage>>>;
 
   // --- Lifecycle ---
 
@@ -845,16 +845,16 @@ interface ClientRun<TEvent, TMessage> extends Run<TMessage> {
   sendMessages(messages: TMessage | TMessage[]): Promise<void>;
 
   /**
-   * Publish one or more discrete domain events through the codec encoder.
-   * Encoded via the codec's writeEvent path. Use for standalone events like
+   * Publish one or more discrete domain parts through the codec encoder.
+   * Encoded via the codec's writePart path. Use for standalone parts like
    * `data-*` that are not complete messages. Tagged to this run.
    *
-   * Accepts a single event or an array, matching `Step.sendEvents` and
-   * `SessionWriter.sendEvents`. The run-scoped variant has no step
-   * attribution — events publish against the run itself rather than a step
+   * Accepts a single part or an array, matching `Step.sendParts` and
+   * `SessionWriter.sendParts`. The run-scoped variant has no step
+   * attribution — parts publish against the run itself rather than a step
    * within it.
    */
-  sendEvents(events: TEvent | TEvent[]): Promise<void>;
+  sendParts(parts: TPart | TPart[]): Promise<void>;
 
   // --- Control signals ---
 
@@ -992,14 +992,15 @@ interface StepStartOptions {
  * Created from an AgentView via view.createStep(). The view carries the
  * invocation and exposes the conversation to pass to the model; the step is
  * the execution surface — it owns the abort signal, the pause handler, and
- * the write methods (pipe, sendMessages, sendEvents).
+ * the write methods (pipe, sendMessages, sendParts).
+
  *
  * Both Session and Step implement AsyncDisposable for scope-based cleanup
  * in serverless functions:
  *
  *   await using step = view.createStep();
  */
-interface Step<TEvent, TMessage> {
+interface Step<TPart, TMessage> {
   /** The step's unique ID, generated when the step is created. */
   readonly id: string;
 
@@ -1045,6 +1046,12 @@ interface Step<TEvent, TMessage> {
    * On successful resolution the step transitions from `'pending'` to
    * `'active'`. If `start()` rejects, the step remains `'pending'` — no
    * `x-ably-step-start` reached the channel, and the disposer is a no-op.
+   *
+   * If the targeted run is `'suspended'` when `start()` is called, a
+   * successful `x-ably-step-start` publish implicitly transitions the run
+   * to `'active'`. Publishing `x-ably-resume` is not required to ungate
+   * `start()`; the resume control signal exists to *wake* an agent (drive
+   * a new step-start externally) rather than to gate step-start itself.
    *
    * @throws `Ably.ErrorInfo` with code:
    *   - `ErrorCode.StepSuperseded` — another `x-ably-step-start` with an
@@ -1095,6 +1102,11 @@ interface Step<TEvent, TMessage> {
    * agent can checkpoint state and end the step with `'paused'`, or let the
    * current work complete and end with `'complete'`.
    *
+   * Fires on the same underlying `ControlSignal` (type `'pause'`) that
+   * `Tree.on('control-signal', ...)` delivers; this is the step-scoped
+   * ergonomic shortcut. Reach for the tree event when the full signal
+   * object is needed (telemetry, debug, observing signals for other runs).
+   *
    * Pause signals are buffered: any pause observed before a handler is
    * registered (including signals materialised during `start()`) is
    * delivered synchronously to the handler on first subscription. This
@@ -1108,11 +1120,11 @@ interface Step<TEvent, TMessage> {
 
   /**
    * Pipe a readable stream through the codec encoder to the channel. Each
-   * chunk is encoded and published as it arrives. The step's abort signal
+   * part is encoded and published as it arrives. The step's abort signal
    * is wired in automatically — if the run is aborted mid-pipe, the stream
    * is cancelled.
    */
-  pipe(stream: ReadableStream<TEvent>): Promise<void>;
+  pipe(stream: ReadableStream<TPart>): Promise<void>;
 
   /**
    * Publish one or more complete domain messages through the codec encoder.
@@ -1130,11 +1142,11 @@ interface Step<TEvent, TMessage> {
   sendMessages(messages: TMessage | TMessage[]): Promise<void>;
 
   /**
-   * Publish one or more discrete domain events through the codec encoder.
-   * Encoded via the codec's writeEvent path. Use for standalone events like
+   * Publish one or more discrete domain parts through the codec encoder.
+   * Encoded via the codec's writePart path. Use for standalone parts like
    * `data-*` that are not complete messages.
    */
-  sendEvents(events: TEvent | TEvent[]): Promise<void>;
+  sendParts(parts: TPart | TPart[]): Promise<void>;
 }
 ```
 
@@ -1297,12 +1309,14 @@ interface StorageWriter {
 
 ```ts
 /**
- * Translation layer between domain events and channel operations. The codec
+ * Translation layer between domain parts and channel operations. The codec
  * is an interface — the session and transport depend on the codec contract
  * and know nothing about the domain model.
  *
- * TEvent is the granular domain event type (e.g., a UIMessageChunk).
- * TMessage is the assembled domain message type (e.g., a UIMessage).
+ * `TPart` is the granular domain delta type — the smallest unit that arrives
+ * on the wire when a message streams in (e.g. Vercel's `UIMessageChunk`,
+ * Anthropic's `content_block_delta`, OpenAI Responses' `response.*.delta`).
+ * Multiple `TPart`s accumulate into one `TMessage`.
  *
  * The codec handles **content messages only**. Lifecycle events
  * (`x-ably-run-*`, `x-ably-step-*`) and control signals (see
@@ -1311,15 +1325,15 @@ interface StorageWriter {
  * the decoder is called, and a codec implementor does not need to guard
  * against seeing them.
  */
-interface Codec<TEvent, TMessage> {
-  /** Creates an encoder for producing channel messages from domain events. */
-  createEncoder(): Encoder<TEvent>;
+interface Codec<TPart, TMessage> {
+  /** Creates an encoder for producing channel messages from domain parts. */
+  createEncoder(): Encoder<TPart>;
 
-  /** Creates a decoder for consuming channel messages into domain events. */
-  createDecoder(): Decoder<TEvent>;
+  /** Creates a decoder for consuming channel messages into domain parts. */
+  createDecoder(): Decoder<TPart>;
 
-  /** Creates an accumulator for assembling events into messages. */
-  createAccumulator(): Accumulator<TEvent, TMessage>;
+  /** Creates an accumulator for assembling parts into messages. */
+  createAccumulator(): Accumulator<TPart, TMessage>;
 }
 ```
 
@@ -2250,9 +2264,9 @@ export const POST = async (req: Request): Promise<Response> => {
 
 **View as write-handle factory (composition over configuration)**: The view creates the write handle because it holds the branch context needed to position it. On the client, `view.createRun()` appends to the current branch tip and `view.createRegenerate()` forks at a node (auto-selecting the new branch by default); on the agent, `view.createStep()` produces a step that executes the view's run (multiple steps per view permitted — each publishes its own step-start/step-end pair).
 
-**Low-level verbs are safe without helpers**: `session.writer`, `view.createStep`, `run.start/sendMessages/sendEvents`, and agent `run.end/suspend` cover every worked-example scenario. Only two helpers survived scrutiny — `run.when(statuses)` and control signals returning `Invocation` — because both collapse real multi-step orchestration into one call. Higher-level wrappers like `runStep`, `handleInvocation`, `view.send`, `view.continueRun`, `view.spawnChildRun`, and `view.activeRun` were considered and dropped for partial coverage.
+**Low-level verbs are safe without helpers**: `session.writer`, `view.createStep`, `run.start/sendMessages/sendParts`, and agent `run.end/suspend` cover every worked-example scenario. Only two helpers survived scrutiny — `run.when(statuses)` and control signals returning `Invocation` — because both collapse real multi-step orchestration into one call. Higher-level wrappers like `runStep`, `handleInvocation`, `view.send`, `view.continueRun`, `view.spawnChildRun`, and `view.activeRun` were considered and dropped for partial coverage.
 
-**Uniform send surface**: Send methods are named identically wherever they appear — `Step.sendMessages` / `Step.sendEvents`, `SessionWriter.sendMessages` / `SessionWriter.sendEvents`, `ClientRun.sendMessages` / `ClientRun.sendEvents`. Each accepts a single value or an array, and each splits messages (codec `writeMessages`) from discrete events (codec `writeEvent`). `view.send*` is deliberately absent — views are read projections; write via `view.createRun()` → `run.sendMessages(...)`.
+**Uniform send surface**: Send methods are named identically wherever they appear — `Step.sendMessages` / `Step.sendParts`, `SessionWriter.sendMessages` / `SessionWriter.sendParts`, `ClientRun.sendMessages` / `ClientRun.sendParts`. Each accepts a single value or an array, and each splits messages (codec `writeMessages`) from discrete parts (codec `writePart`). `view.send*` is deliberately absent — views are read projections; write via `view.createRun()` → `run.sendMessages(...)`.
 
 **Explicit hydration via view.messages**: The agent gets the linear conversation through `view.messages.map(n => n.message)` — the projection is visible at the call site, not hidden behind a convenience property.
 

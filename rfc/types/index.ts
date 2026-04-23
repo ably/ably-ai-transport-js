@@ -1,7 +1,7 @@
 import type { MessageNode } from './message-node.js';
 import type { AgentRun, ClientRun } from './run.js';
 
-export type { Accumulator, Codec, DecodedEvent, Decoder, Encoder } from './codec.js';
+export type { Accumulator, Codec, DecodedPart, Decoder, Encoder } from './codec.js';
 export type { ControlSignal, ControlSignalType } from './control-signal.js';
 export { ErrorCode } from './errors.js';
 // `Invocation` is a merged symbol — a `const` (the `InvocationConstructor`
@@ -14,7 +14,7 @@ export type { InvocationConstructor, InvocationData } from './invocation.js';
 export type { MessageNode } from './message-node.js';
 
 /** Pre-bound {@link MessageNode} variant for {@link ClientRun} sessions. */
-export type ClientMessageNode<TEvent, TMessage> = MessageNode<TMessage, ClientRun<TEvent, TMessage>>;
+export type ClientMessageNode<TPart, TMessage> = MessageNode<TMessage, ClientRun<TPart, TMessage>>;
 
 /** Pre-bound {@link MessageNode} variant for {@link AgentRun} sessions. */
 export type AgentMessageNode<TMessage> = MessageNode<TMessage, AgentRun<TMessage>>;
@@ -37,8 +37,8 @@ export type {
   PauseOptions,
   ResumeOptions,
   RetryOptions,
-  SendEventsOptions,
   SendMessagesOptions,
+  SendPartsOptions,
   SessionWriter,
   StartRunOptions,
   StartRunResult,

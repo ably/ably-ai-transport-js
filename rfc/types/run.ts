@@ -77,14 +77,14 @@ export interface Run<TMessage> {
 /**
  * Run as seen from a ClientSession. Adds lifecycle and control methods.
  *
- * The generic order `<TEvent, TMessage>` matches {@link ClientView} and
- * `Codec<TEvent, TMessage>` so per-run publish methods for messages
- * (`sendMessages`) and for discrete events (`sendEvents`) are typed uniformly
+ * The generic order `<TPart, TMessage>` matches {@link ClientView} and
+ * `Codec<TPart, TMessage>` so per-run publish methods for messages
+ * (`sendMessages`) and for discrete parts (`sendParts`) are typed uniformly
  * across the send surface.
  */
-export interface ClientRun<TEvent, TMessage> extends Run<TMessage> {
+export interface ClientRun<TPart, TMessage> extends Run<TMessage> {
   /** Messages belonging to this run, with node.run typed as ClientRun. */
-  readonly messages: readonly MessageNode<TMessage, ClientRun<TEvent, TMessage>>[];
+  readonly messages: readonly MessageNode<TMessage, ClientRun<TPart, TMessage>>[];
 
   // --- Lifecycle ---
 
@@ -134,16 +134,16 @@ export interface ClientRun<TEvent, TMessage> extends Run<TMessage> {
   sendMessages(messages: TMessage | TMessage[]): Promise<void>;
 
   /**
-   * Publish one or more discrete domain events through the codec encoder.
-   * Encoded via the codec's writeEvent path. Use for standalone events like
+   * Publish one or more discrete domain parts through the codec encoder.
+   * Encoded via the codec's writePart path. Use for standalone parts like
    * `data-*` that are not complete messages. Tagged to this run.
    *
-   * Accepts a single event or an array, matching {@link Step.sendEvents} and
-   * {@link SessionWriter.sendEvents}. The run-scoped variant has no step
-   * attribution — events publish against the run itself rather than a step
+   * Accepts a single part or an array, matching {@link Step.sendParts} and
+   * {@link SessionWriter.sendParts}. The run-scoped variant has no step
+   * attribution — parts publish against the run itself rather than a step
    * within it.
    */
-  sendEvents(events: TEvent | TEvent[]): Promise<void>;
+  sendParts(parts: TPart | TPart[]): Promise<void>;
 
   // --- Control signals ---
 

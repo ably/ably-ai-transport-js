@@ -52,14 +52,14 @@ export interface StepStartOptions {
  * Created from an AgentView via view.createStep(). The view carries the
  * invocation and exposes the conversation to pass to the model; the step is
  * the execution surface — it owns the abort signal, the pause handler, and
- * the write methods (pipe, sendMessages, sendEvents).
+ * the write methods (pipe, sendMessages, sendParts).
  *
  * Both Session and Step implement AsyncDisposable for scope-based cleanup
  * in serverless functions:
  *
  *   await using step = view.createStep();
  */
-export interface Step<TEvent, TMessage> {
+export interface Step<TPart, TMessage> {
   /** The step's unique ID, generated when the step is created. */
   readonly id: string;
 
@@ -185,11 +185,11 @@ export interface Step<TEvent, TMessage> {
 
   /**
    * Pipe a readable stream through the codec encoder to the channel.
-   * Each chunk is encoded and published as it arrives. The step's abort
+   * Each part is encoded and published as it arrives. The step's abort
    * signal is wired in automatically — if the run is aborted mid-pipe,
    * the stream is cancelled.
    */
-  pipe(stream: ReadableStream<TEvent>): Promise<void>;
+  pipe(stream: ReadableStream<TPart>): Promise<void>;
 
   /**
    * Publish one or more complete domain messages through the codec encoder.
@@ -209,9 +209,9 @@ export interface Step<TEvent, TMessage> {
   sendMessages(messages: TMessage | TMessage[]): Promise<void>;
 
   /**
-   * Publish one or more discrete domain events through the codec encoder.
-   * Encoded via the codec's writeEvent path. Use for standalone events
+   * Publish one or more discrete domain parts through the codec encoder.
+   * Encoded via the codec's writePart path. Use for standalone parts
    * like data-* that are not complete messages.
    */
-  sendEvents(events: TEvent | TEvent[]): Promise<void>;
+  sendParts(parts: TPart | TPart[]): Promise<void>;
 }

@@ -78,11 +78,11 @@ export interface SendMessagesOptions<TMessage> {
   clientId?: string;
 }
 
-/** Options for publishing one or more discrete domain events via {@link SessionWriter.sendEvents}. */
-export interface SendEventsOptions<TEvent> {
-  /** One or more domain events to encode and publish. */
-  events: TEvent | TEvent[];
-  /** The run these events belong to. */
+/** Options for publishing one or more discrete domain parts via {@link SessionWriter.sendParts}. */
+export interface SendPartsOptions<TPart> {
+  /** One or more domain parts to encode and publish. */
+  parts: TPart | TPart[];
+  /** The run these parts belong to. */
   runId: string;
   /** Parent message ID for tree positioning. */
   parentId?: string;
@@ -185,7 +185,7 @@ export type ClientRunPauseOptions = Omit<PauseOptions, 'runId'>;
  * handlers, orchestrators, and advanced patterns that need explicit
  * control.
  */
-export interface SessionWriter<TEvent, TMessage> {
+export interface SessionWriter<TPart, TMessage> {
   // --- Run lifecycle ---
 
   /** Publish x-ably-run-start. Returns the generated run ID. */
@@ -231,14 +231,14 @@ export interface SessionWriter<TEvent, TMessage> {
   sendMessages(options: SendMessagesOptions<TMessage>): Promise<void>;
 
   /**
-   * Publish one or more discrete domain events to the channel. Encoded
-   * via the codec's writeEvent path. Use for standalone events like
-   * `data-*` that are not complete messages.
+   * Publish one or more discrete domain parts to the channel. Encoded via
+   * the codec's writePart path. Use for standalone parts like `data-*`
+   * that are not complete messages.
    *
-   * Event IDs, where the domain events carry them, are supplied by the
+   * Part IDs, where the domain parts carry them, are supplied by the
    * caller. The writer does not assign IDs and does not return them.
    */
-  sendEvents(options: SendEventsOptions<TEvent>): Promise<void>;
+  sendParts(options: SendPartsOptions<TPart>): Promise<void>;
 
   // --- Control signals ---
 

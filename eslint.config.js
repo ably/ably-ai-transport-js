@@ -175,4 +175,13 @@ export default [
       ],
     },
   },
+  {
+    // Codec generic helpers use `any` intentionally as bivariant constraint
+    // placeholders — replacing with `unknown` would over-constrain contravariant
+    // positions (Encoder.encodePart(part: TPart), Accumulator.applyEvent).
+    files: ['rfc/types/codec.ts'],
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off',
+    },
+  },
 ];

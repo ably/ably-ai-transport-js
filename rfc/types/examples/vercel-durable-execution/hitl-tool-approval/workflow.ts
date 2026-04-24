@@ -65,8 +65,8 @@ export const runAgentHop = async (
   });
   await session.connect();
 
-  const view = session.createView(invocation);
-  await using step = view.createStep();
+  await using run = session.createRun(invocation);
+  await using step = run.createStep();
 
   try {
     await step.start({ signal: wdkSignal, timeoutMs: 60_000 });
@@ -77,14 +77,14 @@ export const runAgentHop = async (
 
   const result = streamText({
     model: openai('gpt-4o'),
-    messages: await convertToModelMessages(view.messages.map((n) => n.message)),
+    messages: await convertToModelMessages(run.view.messages.map((n) => n.message)),
     tools,
     abortSignal: step.signal,
   });
   await step.pipe(result.toUIMessageStream());
   await step.end('complete');
 
-  const last = view.messages.findLast((n) => n.message.role === 'assistant');
+  const last = run.view.messages.findLast((n) => n.message.role === 'assistant');
   const pending = last?.message.parts.filter(isToolUIPart).some((part) => part.state === 'approval-requested') ?? false;
   return pending ? 'awaiting-input' : 'complete';
 };

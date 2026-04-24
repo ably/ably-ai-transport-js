@@ -59,8 +59,8 @@ export const runOrchestratorHop = async (
   });
   await session.connect();
 
-  const view = session.createView(invocation);
-  await using step = view.createStep();
+  await using run = session.createRun(invocation);
+  await using step = run.createStep();
 
   try {
     await step.start({ signal: wdkSignal, timeoutMs: 60_000 });
@@ -122,7 +122,7 @@ export const runOrchestratorHop = async (
   const [, result] = await Promise.all([
     step.pipe(readable),
     orchestrator.stream({
-      messages: await convertToModelMessages(view.messages.map((n) => n.message)),
+      messages: await convertToModelMessages(run.view.messages.map((n) => n.message)),
       writable: bridge.writable,
       stopWhen: stepCountIs(1),
       abortSignal: step.signal,

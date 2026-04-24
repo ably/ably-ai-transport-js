@@ -34,11 +34,10 @@ export interface MessageNode<TMessage, TRun extends Run<TMessage> = Run<TMessage
 
   /**
    * The run this message belongs to. Typed to the session's run variant:
-   * `ClientRun<TPart, TMessage>` when this node comes from a ClientSession's
-   * tree or view, `AgentRun<TMessage>` when it comes from an AgentSession. So
-   * `node.run?.abort()`, `node.run?.sendMessages(...)`, etc. are directly
-   * callable from the rendered node — no need to look up by ID through
-   * `view.runs`.
+   * `ClientRun<C>` when this node comes from a ClientSession's tree or view,
+   * `AgentRun<C>` when it comes from an AgentSession. So `node.run?.abort()`,
+   * `node.run?.sendMessages(...)`, etc. are directly callable from the
+   * rendered node — no need to look up by ID through `view.runs`.
    *
    * Undefined only when the node represents a message published before any
    * run was observed (e.g. during mid-hydration).

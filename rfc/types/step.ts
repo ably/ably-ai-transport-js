@@ -8,7 +8,7 @@ export type StepEndStatus = 'complete' | 'failed' | 'aborted' | 'paused' | 'supe
  * All possible step statuses including non-terminal states.
  *
  * `'pending'` is the pre-start status of a local step handle — a step
- * returned by `view.createStep()` before `start()` has resolved. It is
+ * returned by `run.createStep()` before `start()` has resolved. It is
  * only reachable through a live in-memory handle; `'pending'` is never
  * materialised on the channel (a pending step has not published
  * `x-ably-step-start`), so it will not appear on `StepState.status` in
@@ -52,15 +52,16 @@ export interface StepStartOptions {
 
 /**
  * The agent's active write handle for one continuous execution within a run.
- * Created from an AgentView via view.createStep(). The view carries the
- * invocation and exposes the conversation to pass to the model; the step is
- * the execution surface — it owns the abort signal, the pause handler, and
- * the write methods (pipe, sendMessages, sendParts, sendEvents).
+ * Created from an {@link AgentRun} via run.createStep(). The run carries the
+ * invocation and exposes the conversation to pass to the model (via
+ * `run.view.messages`); the step is the execution surface — it owns the
+ * abort signal, the pause handler, and the write methods (pipe,
+ * sendMessages, sendParts, sendEvents).
  *
  * Both Session and Step implement AsyncDisposable for scope-based cleanup
  * in serverless functions:
  *
- *   await using step = view.createStep();
+ *   await using step = run.createStep();
  *
  * Parameterised by the session's codec — `C extends Codec<TPart, TMessage,
  * TEvent>` — matching {@link ClientRun} so callers name the variant with a

@@ -2,9 +2,9 @@
  * Steering — serverless agent side.
  *
  * The agent loops until no new user input has arrived between iterations.
- * `view.messages` updates live as the client publishes steering messages
- * during a running generation, so each iteration's request includes every
- * follow-up the user has typed so far.
+ * `run.view.messages` updates live as the client publishes steering
+ * messages during a running generation, so each iteration's request
+ * includes every follow-up the user has typed so far.
  */
 
 import type * as Ably from 'ably';
@@ -41,17 +41,17 @@ export const POST = async (req: Request): Promise<Response> => {
   });
   await session.connect();
 
-  const view = session.createView(invocation);
-  await using step = view.createStep();
+  await using run = session.createRun(invocation);
+  await using step = run.createStep();
   await step.start({ signal: req.signal, timeoutMs: 60_000 });
 
-  const latestUserId = (): string | undefined => view.messages.findLast((n) => n.message.role === 'user')?.id;
+  const latestUserId = (): string | undefined => run.view.messages.findLast((n) => n.message.role === 'user')?.id;
   let lastUserId = latestUserId();
 
   try {
     while (!step.signal.aborted) {
       const result = await agent.stream({
-        messages: await convertToModelMessages(view.messages.map((n) => n.message)),
+        messages: await convertToModelMessages(run.view.messages.map((n) => n.message)),
         abortSignal: step.signal,
       });
       await step.pipe(result.toUIMessageStream());
@@ -62,9 +62,9 @@ export const POST = async (req: Request): Promise<Response> => {
     }
 
     await step.end('complete');
-    await view.run.end('complete');
+    await run.end('complete');
   } catch (err) {
-    await view.run.end(step.signal.aborted ? 'aborted' : 'failed');
+    await run.end(step.signal.aborted ? 'aborted' : 'failed');
     throw err;
   }
 

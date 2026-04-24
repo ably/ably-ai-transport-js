@@ -6,7 +6,7 @@
  *
  *   - one LLM hop of the agent loop,
  *   - one WDK durable boundary (the `"use step"` function), and
- *   - one AIT transport step (`view.createStep()` / `step.end()`).
+ *   - one AIT transport step (`run.createStep()` / `step.end()`).
  *
  * Each hop is driven by `agent.stream(...)` with `stopWhen: stepCountIs(1)`
  * so the agent yields control back after one LLM call (plus the tools
@@ -79,8 +79,8 @@ export const runAgentHop = async (
   });
   await session.connect();
 
-  const view = session.createView(invocation);
-  await using step = view.createStep();
+  await using run = session.createRun(invocation);
+  await using step = run.createStep();
 
   try {
     await step.start({ signal: wdkSignal, timeoutMs: 60_000 });
@@ -95,7 +95,7 @@ export const runAgentHop = async (
     const [, result] = await Promise.all([
       step.pipe(readable),
       agent.stream({
-        messages: await convertToModelMessages(view.messages.map((n) => n.message)),
+        messages: await convertToModelMessages(run.view.messages.map((n) => n.message)),
         writable: bridge.writable,
         stopWhen: stepCountIs(1),
         abortSignal: step.signal,
@@ -107,7 +107,7 @@ export const runAgentHop = async (
     const lastStep = result.steps.at(-1);
     return lastStep?.finishReason ?? 'stop';
   } catch (err) {
-    await view.run.end(step.signal.aborted ? 'aborted' : 'failed');
+    await run.end(step.signal.aborted ? 'aborted' : 'failed');
     throw err;
   }
 };

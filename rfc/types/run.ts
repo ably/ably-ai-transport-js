@@ -1,7 +1,8 @@
 import type { AnyCodec, CodecEvent, CodecMessage, CodecPart } from './codec.js';
 import type { Invocation } from './invocation.js';
 import type { MessageNode } from './message-node.js';
-import type { StepState } from './step.js';
+import type { Step, StepState } from './step.js';
+import type { AgentView } from './view.js';
 
 /** Run status. */
 export type RunStatus = 'active' | 'suspended' | 'complete' | 'aborted' | 'failed';
@@ -35,8 +36,20 @@ export interface Run<TMessage> {
   readonly steps: readonly StepState[];
 
   /**
-   * Messages belonging to this run. Each node's `run` is typed to the
-   * session's run variant (specialised in ClientRun / AgentRun).
+   * Messages published **within this run** — the user message (or messages)
+   * that opened it plus anything its steps produced. Scoped to the run; does
+   * not include ancestry from earlier runs on the same branch.
+   *
+   * For the full conversation the model needs (ancestry from root down to
+   * this run's parent, then the run's own messages), use `run.view.messages`
+   * on an {@link AgentRun}, or project from an {@link ClientView}. Reach for
+   * `run.messages` when you want *just this run* — e.g. "the final assistant
+   * message this run produced" in an orchestration handler (see the
+   * subagent-fanout examples).
+   *
+   * Each node's `run` is typed to the session's run variant (specialised in
+   * {@link ClientRun} and {@link AgentRun}) so `node.run?.abort()` etc. are
+   * callable directly from a rendered node.
    */
   readonly messages: readonly MessageNode<TMessage>[];
 
@@ -97,7 +110,15 @@ export interface SendEventsTarget {
  * {@link CodecEvent}.
  */
 export interface ClientRun<C extends AnyCodec> extends Run<CodecMessage<C>> {
-  /** Messages belonging to this run, with node.run typed as ClientRun. */
+  /**
+   * Messages published within this run (see {@link Run.messages}). For the
+   * full conversation that includes ancestry from earlier runs on the same
+   * branch, project from a {@link ClientView} instead.
+   *
+   * Narrowed from the base so `node.run` is typed as `ClientRun<C>`,
+   * making per-message controls (`node.run?.abort()`, etc.) callable
+   * directly from a rendered node.
+   */
   readonly messages: readonly MessageNode<CodecMessage<C>, ClientRun<C>>[];
 
   // --- Lifecycle ---
@@ -252,10 +273,66 @@ export interface ClientRun<C extends AnyCodec> extends Run<CodecMessage<C>> {
   retry(options?: { stepId?: string }): Promise<Invocation>;
 }
 
-/** Run as seen from an AgentSession. Adds agent lifecycle methods. */
-export interface AgentRun<TMessage> extends Run<TMessage> {
-  /** Messages belonging to this run, with node.run typed as AgentRun. */
-  readonly messages: readonly MessageNode<TMessage, AgentRun<TMessage>>[];
+/**
+ * Run as seen from an AgentSession. Primary handle the agent holds: created
+ * by {@link AgentSession.createRun} from an invocation, then used to access
+ * the read projection (`run.view`), create the executing step
+ * (`run.createStep()`), and publish lifecycle transitions (`run.suspend()`,
+ * `run.end()`).
+ *
+ * Parameterised by the session's codec — `C extends Codec<TPart, TMessage,
+ * TEvent>` — matching {@link ClientRun} so callers name the variant with a
+ * single type argument. Messages on the run, on its view, and on tree nodes
+ * reached via `node.run` all share this codec binding.
+ */
+export interface AgentRun<C extends AnyCodec> extends Run<CodecMessage<C>> {
+  /**
+   * Messages published within this run (see {@link Run.messages}) — the
+   * initial user message plus anything this run's steps have produced so
+   * far. Scoped to the run; does not include ancestry from earlier runs
+   * on the same branch.
+   *
+   * For the full conversation to pass to the model, use `run.view.messages`
+   * instead — that includes ancestry from root down to this run's parent,
+   * then the run's own messages. Reach for `run.messages` when you want
+   * *just this run's output* (e.g. `run.messages.findLast(n =>
+   * n.message.role === 'assistant')` to grab the agent's final reply).
+   *
+   * Narrowed from the base so `node.run` is typed as `AgentRun<C>`,
+   * making per-message controls (`node.run?.end(...)`, etc.) callable
+   * directly from a rendered node.
+   */
+  readonly messages: readonly MessageNode<CodecMessage<C>, AgentRun<C>>[];
+
+  /**
+   * The linear read projection for this run: ancestry from root down to the
+   * run's parent, then every message published within the run. Begins empty
+   * and fills in as the session materialises the channel; complete once a
+   * `step.start()` created from this run has resolved.
+   *
+   * This is the conversation the agent passes to the model — typically
+   * `convertToModelMessages(run.view.messages.map((n) => n.message))`.
+   * Subscribe via `run.view.subscribe(...)` to observe ancestry fill-in
+   * during hydration or steering messages that arrive mid-execution.
+   */
+  readonly view: AgentView<C>;
+
+  /**
+   * Create a step that executes this run. The step is not yet active —
+   * call step.start() to wait for the invocation's preconditions and
+   * publish `x-ably-step-start`. The gap between createStep and start is
+   * the setup window for registering signal handlers (e.g.
+   * step.on('pause', ...)).
+   *
+   * Each call returns a fresh {@link Step}; multiple steps per run are
+   * permitted (a single run can span multiple steps, each publishing its
+   * own step-start/step-end pair). Precondition-wait is a session-level
+   * state, so in practice only the first step on a given run blocks on
+   * it — once the session has materialised the invocation's preconditions,
+   * later steps see an already-satisfied condition and `start()` proceeds
+   * immediately.
+   */
+  createStep(): Step<C>;
 
   /**
    * Suspend this run without closing it. Published by the agent when the
@@ -285,4 +362,20 @@ export interface AgentRun<TMessage> extends Run<TMessage> {
    * From `suspended`, `end()` publishes the forward transition normally.
    */
   end(status: RunEndStatus): Promise<void>;
+
+  /**
+   * Symbol.asyncDispose — releases the local handle's subscriptions
+   * (closes the underlying {@link AgentView}). Enables scope-based cleanup
+   * in serverless handlers:
+   *
+   *   await using run = session.createRun(invocation);
+   *
+   * **Does not publish `x-ably-run-end` and does not affect run status on
+   * the channel.** Run status is a durable protocol fact; disposing a local
+   * handle is a local resource concern. To end the run, call
+   * `run.end(status)` explicitly — ideally before scope exit so both the
+   * channel state and the local handle are released together. The disposer
+   * exists so an unhandled throw does not leak subscriptions.
+   */
+  [Symbol.asyncDispose](): Promise<void>;
 }

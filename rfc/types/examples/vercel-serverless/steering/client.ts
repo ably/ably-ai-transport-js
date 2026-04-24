@@ -17,7 +17,10 @@ import type { Codec, ClientRun, ClientView, MessageNode } from '../../../index.j
  * @param text - The text the user typed into the follow-up composer.
  * @returns Resolves once the steering message has been published.
  */
-export const onSteerClick = async (view: ClientView<Codec<AI.UIMessageChunk, AI.UIMessage>>, text: string): Promise<void> => {
+export const onSteerClick = async (
+  view: ClientView<Codec<AI.UIMessageChunk, AI.UIMessage>>,
+  text: string,
+): Promise<void> => {
   const activeRun = view.runs.find((r) => r.status === 'active');
   if (!activeRun) return;
   await activeRun.sendMessages({

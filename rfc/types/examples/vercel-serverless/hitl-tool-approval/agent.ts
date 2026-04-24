@@ -41,14 +41,14 @@ export const POST = async (req: Request): Promise<Response> => {
   });
   await session.connect();
 
-  const view = session.createView(invocation);
-  await using step = view.createStep();
+  await using run = session.createRun(invocation);
+  await using step = run.createStep();
   await step.start({ signal: req.signal, timeoutMs: 60_000 });
 
   try {
     const result = streamText({
       model: openai('gpt-4o'),
-      messages: await convertToModelMessages(view.messages.map((n) => n.message)),
+      messages: await convertToModelMessages(run.view.messages.map((n) => n.message)),
       tools,
       abortSignal: step.signal,
     });
@@ -59,13 +59,13 @@ export const POST = async (req: Request): Promise<Response> => {
     // `state` is `'approval-requested'` on the final assistant message. Scan
     // that message's tool parts; if any are still awaiting a response,
     // suspend the run rather than closing it.
-    const last = view.messages.findLast((n) => n.message.role === 'assistant');
+    const last = run.view.messages.findLast((n) => n.message.role === 'assistant');
     const pending =
       last?.message.parts.filter(isToolUIPart).some((part) => part.state === 'approval-requested') ?? false;
 
-    await (pending ? view.run.suspend('awaiting-input') : view.run.end('complete'));
+    await (pending ? run.suspend('awaiting-input') : run.end('complete'));
   } catch (err) {
-    await view.run.end(step.signal.aborted ? 'aborted' : 'failed');
+    await run.end(step.signal.aborted ? 'aborted' : 'failed');
     throw err;
   }
 

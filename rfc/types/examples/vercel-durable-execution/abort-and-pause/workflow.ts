@@ -32,10 +32,7 @@ const agent = new DurableAgent({
 });
 
 /** Outcome of one hop — tells the workflow whether to continue, stop, or suspend. */
-type HopOutcome =
-  | { kind: 'continue'; finishReason: AI.FinishReason }
-  | { kind: 'aborted' }
-  | { kind: 'paused' };
+type HopOutcome = { kind: 'continue'; finishReason: AI.FinishReason } | { kind: 'aborted' } | { kind: 'paused' };
 
 /** Upper bound on agent hops — guards against runaway loops. */
 const MAX_STEPS = 20;
@@ -68,8 +65,8 @@ export const runAgentHop = async (
   });
   await session.connect();
 
-  const view = session.createView(invocation);
-  await using step = view.createStep();
+  await using run = session.createRun(invocation);
+  await using step = run.createStep();
 
   const pauseCtrl = new AbortController();
   let paused = false;
@@ -98,7 +95,7 @@ export const runAgentHop = async (
     const [, result] = await Promise.all([
       step.pipe(readable),
       agent.stream({
-        messages: await convertToModelMessages(view.messages.map((n) => n.message)),
+        messages: await convertToModelMessages(run.view.messages.map((n) => n.message)),
         writable: bridge.writable,
         stopWhen: stepCountIs(1),
         abortSignal: AbortSignal.any([step.signal, pauseCtrl.signal]),

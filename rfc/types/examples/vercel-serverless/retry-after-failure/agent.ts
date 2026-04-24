@@ -43,18 +43,18 @@ export const POST = async (req: Request): Promise<Response> => {
   });
   await session.connect();
 
-  const view = session.createView(invocation);
-  await using step = view.createStep();
+  await using run = session.createRun(invocation);
+  await using step = run.createStep();
 
   try {
     await step.start({ signal: req.signal, timeoutMs: 60_000 });
     const result = await agent.stream({
-      messages: await convertToModelMessages(view.messages.map((n) => n.message)),
+      messages: await convertToModelMessages(run.view.messages.map((n) => n.message)),
       abortSignal: step.signal,
     });
     await step.pipe(result.toUIMessageStream());
     await step.end('complete');
-    await view.run.end('complete');
+    await run.end('complete');
   } catch {
     await step.end('failed');
   }

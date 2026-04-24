@@ -30,17 +30,9 @@ export type { MessageNode } from './message-node.js';
 export type ClientMessageNode<C extends AnyCodec> = MessageNode<CodecMessage<C>, ClientRun<C>>;
 
 /** Pre-bound {@link MessageNode} variant for {@link AgentRun} sessions. */
-export type AgentMessageNode<TMessage> = MessageNode<TMessage, AgentRun<TMessage>>;
+export type AgentMessageNode<C extends AnyCodec> = MessageNode<CodecMessage<C>, AgentRun<C>>;
 
-export type {
-  AgentRun,
-  ClientRun,
-  Run,
-  RunEndStatus,
-  RunStatus,
-  SendEventsTarget,
-  SuspendReason,
-} from './run.js';
+export type { AgentRun, ClientRun, Run, RunEndStatus, RunStatus, SendEventsTarget, SuspendReason } from './run.js';
 export type { AgentSession, ClientSession, SessionOptions } from './session.js';
 export { createAgentSession, createClientSession } from './session.js';
 export type { Step, StepEndStatus, StepStartOptions, StepState, StepStatus } from './step.js';

@@ -28,7 +28,7 @@ const withNearestTransport =
   (transport: ClientTransport<unknown, unknown>) =>
   ({ children }: { children: ReactNode }) =>
     createElement(TransportContext.Provider, {
-      value: { nearest: { transport, error: undefined }, providers: {} },
+      value: { nearest: { transport }, providers: {} },
       children,
     });
 

@@ -13,7 +13,7 @@ export interface ChatTransportSlot {
   /** The underlying client transport used to create the chat transport. */
   readonly transport: ClientTransport<AI.UIMessageChunk, AI.UIMessage>;
   /** Construction error from the underlying {@link ClientTransport}, or `undefined` on success. */
-  readonly transportError: Ably.ErrorInfo | undefined;
+  readonly transportError?: Ably.ErrorInfo | undefined;
   /** The chat transport adapter for use with Vercel's useChat hook. */
   readonly chatTransport: ChatTransport;
 }

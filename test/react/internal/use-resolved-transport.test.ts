@@ -23,7 +23,7 @@ describe('useResolvedTransport', () => {
         TransportContext.Provider,
         {
           value: {
-            nearest: { transport: mock.transport as ClientTransport<unknown, unknown>, error: undefined },
+            nearest: { transport: mock.transport as ClientTransport<unknown, unknown> },
             providers: {},
           },
         },
@@ -41,7 +41,7 @@ describe('useResolvedTransport', () => {
         TransportContext.Provider,
         {
           value: {
-            nearest: { transport: mock.transport as ClientTransport<unknown, unknown>, error: undefined },
+            nearest: { transport: mock.transport as ClientTransport<unknown, unknown> },
             providers: {},
           },
         },
@@ -71,7 +71,7 @@ describe('useResolvedTransport', () => {
         TransportContext.Provider,
         {
           value: {
-            nearest: { transport: contextMock.transport as ClientTransport<unknown, unknown>, error: undefined },
+            nearest: { transport: contextMock.transport as ClientTransport<unknown, unknown> },
             providers: {},
           },
         },

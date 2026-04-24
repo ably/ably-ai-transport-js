@@ -34,7 +34,6 @@ const createFakeClientTransport = (): ClientTransport<AI.UIMessageChunk, AI.UIMe
 
 const createFakeChatTransportSlot = (): ChatTransportSlot => ({
   transport: createFakeClientTransport(),
-  transportError: undefined,
   chatTransport: createFakeChatTransport(),
 });
 

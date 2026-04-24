@@ -82,7 +82,7 @@ const TransportProviderInner = <TEvent, TMessage>({
   const currentError = constructionErrorRef.current;
 
   const slot = useMemo<TransportSlot>(
-    () => ({ transport: currentTransport, error: currentError }),
+    () => ({ transport: currentTransport, transportError: currentError }),
     [currentTransport, currentError],
   );
 

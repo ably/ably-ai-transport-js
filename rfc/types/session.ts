@@ -201,7 +201,6 @@ export interface AgentSession<C extends AnyCodec> {
  * const session = createClientSession({ client, sessionName, codec });
  * //     ^? ClientSession<typeof codec>
  * ```
- *
  * @param options - Shared {@link SessionOptions} wiring client, session name, codec, and optional storage.
  * @returns A not-yet-connected {@link ClientSession}.
  */
@@ -214,7 +213,6 @@ export declare function createClientSession<C extends AnyCodec>(options: Session
  *
  * `C` is inferred from `options.codec`, so call sites don't need to write
  * it explicitly.
- *
  * @param options - Shared {@link SessionOptions} wiring client, session name, codec, and optional storage.
  * @returns A not-yet-connected {@link AgentSession}.
  */

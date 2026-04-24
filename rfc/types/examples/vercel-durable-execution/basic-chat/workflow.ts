@@ -50,10 +50,12 @@ const MAX_STEPS = 20;
 
 /**
  * Narrow an unknown caught value to an {@link Ably.ErrorInfo} with the
- * given code. Stands in for a future shared helper; inlined here so
- * examples remain self-contained without new source modules.
+ * given code. Kept inline here so each example file stands alone.
+ * @param value - The value caught from a try/catch.
+ * @param code - The {@link ErrorCode} to match on `.code`.
+ * @returns `true` when `value` is an `Ably.ErrorInfo` whose `.code` matches.
  */
-const isErrorInfoWithCode = (value: unknown, code: ErrorCode): boolean =>
+const isErrorInfoWithCode = (value: unknown, code: number): boolean =>
   value instanceof Ably.ErrorInfo && value.code === code;
 
 /**
@@ -61,6 +63,7 @@ const isErrorInfoWithCode = (value: unknown, code: ErrorCode): boolean =>
  * step. Runs exactly one LLM call via `stopWhen: stepCountIs(1)`.
  * @param invocationData - The serialized {@link InvocationData} the client posted.
  * @param options - WDK step context, providing the durable `abortSignal`.
+ * @param options.abortSignal - Durable abort signal supplied by the WDK step context.
  * @returns The `finishReason` from the LLM hop so the workflow can decide whether to continue.
  */
 export const runAgentHop = async (
@@ -84,9 +87,9 @@ export const runAgentHop = async (
 
   try {
     await step.start({ signal: wdkSignal, timeoutMs: 60_000 });
-  } catch (e) {
-    if (isErrorInfoWithCode(e, ErrorCode.StepSuperseded)) return 'stop';
-    throw e;
+  } catch (error) {
+    if (isErrorInfoWithCode(error, ErrorCode.StepSuperseded)) return 'stop';
+    throw error;
   }
 
   try {
@@ -106,9 +109,9 @@ export const runAgentHop = async (
 
     const lastStep = result.steps.at(-1);
     return lastStep?.finishReason ?? 'stop';
-  } catch (err) {
+  } catch (error) {
     await run.end(step.signal.aborted ? 'aborted' : 'failed');
-    throw err;
+    throw error;
   }
 };
 

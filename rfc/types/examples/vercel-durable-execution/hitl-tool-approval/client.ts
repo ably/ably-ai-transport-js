@@ -60,7 +60,6 @@ view.subscribe(() => {
  * Publishes a `AI.ToolModelMessage` carrying a single
  * `tool-approval-response` content part, targeting the assistant message
  * that holds the `approval-requested` tool part.
- *
  * @param run - The suspended client run holding the approval.
  * @param approvalId - The `approval.id` of the `approval-requested` tool part.
  * @param assistantMessageId - The ID of the assistant message to target.

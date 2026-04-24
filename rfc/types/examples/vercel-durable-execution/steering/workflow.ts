@@ -41,8 +41,13 @@ interface HopResult {
 /** Upper bound on agent hops — guards against runaway loops. */
 const MAX_STEPS = 40;
 
-/** Narrow a caught value to an {@link Ably.ErrorInfo} with the given code. */
-const isErrorInfoWithCode = (value: unknown, code: ErrorCode): boolean =>
+/**
+ * Narrow a caught value to an {@link Ably.ErrorInfo} with the given code.
+ * @param value - The value caught from a try/catch.
+ * @param code - The {@link ErrorCode} to match on `.code`.
+ * @returns `true` when `value` is an `Ably.ErrorInfo` whose `.code` matches.
+ */
+const isErrorInfoWithCode = (value: unknown, code: number): boolean =>
   value instanceof Ably.ErrorInfo && value.code === code;
 
 /**
@@ -50,6 +55,7 @@ const isErrorInfoWithCode = (value: unknown, code: ErrorCode): boolean =>
  * at hop start so the workflow can decide whether to loop again.
  * @param invocationData - The serialized {@link InvocationData} identifying the run.
  * @param options - WDK step context, providing the durable `abortSignal`.
+ * @param options.abortSignal - Durable abort signal supplied by the WDK step context.
  * @returns The hop's finishReason and the latest user-message ID at hop start.
  */
 export const runAgentHop = async (
@@ -73,11 +79,11 @@ export const runAgentHop = async (
 
   try {
     await step.start({ signal: wdkSignal, timeoutMs: 60_000 });
-  } catch (e) {
-    if (isErrorInfoWithCode(e, ErrorCode.StepSuperseded)) {
+  } catch (error) {
+    if (isErrorInfoWithCode(error, ErrorCode.StepSuperseded)) {
       return { finishReason: 'stop', latestUserMessageId: undefined };
     }
-    throw e;
+    throw error;
   }
 
   const latestUserMessageId = run.view.messages.findLast((n) => n.message.role === 'user')?.id;

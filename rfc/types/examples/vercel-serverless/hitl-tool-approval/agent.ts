@@ -64,9 +64,9 @@ export const POST = async (req: Request): Promise<Response> => {
       last?.message.parts.filter(isToolUIPart).some((part) => part.state === 'approval-requested') ?? false;
 
     await (pending ? run.suspend('awaiting-input') : run.end('complete'));
-  } catch (err) {
+  } catch (error) {
     await run.end(step.signal.aborted ? 'aborted' : 'failed');
-    throw err;
+    throw error;
   }
 
   return new Response(undefined, { status: 202 });

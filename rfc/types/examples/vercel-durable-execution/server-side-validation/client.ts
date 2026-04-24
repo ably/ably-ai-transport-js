@@ -8,7 +8,7 @@
 
 import type * as AI from 'ai';
 
-import type { Codec, ClientSession } from '../../../index.js';
+import type { ClientSession, Codec } from '../../../index.js';
 
 /**
  * Handler for the send button. Delegates the publish to the server for

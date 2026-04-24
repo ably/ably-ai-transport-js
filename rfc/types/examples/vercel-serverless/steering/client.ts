@@ -9,7 +9,7 @@
 
 import type * as AI from 'ai';
 
-import type { Codec, ClientRun, ClientView, MessageNode } from '../../../index.js';
+import type { ClientRun, ClientView, Codec, MessageNode } from '../../../index.js';
 
 /**
  * Send a follow-up on the view's single active run.

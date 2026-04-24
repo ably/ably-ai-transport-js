@@ -35,8 +35,13 @@ const agent = new DurableAgent({
 /** Upper bound on agent hops — guards against runaway loops. */
 const MAX_STEPS = 20;
 
-/** Narrow a caught value to an {@link Ably.ErrorInfo} with the given code. */
-const isErrorInfoWithCode = (value: unknown, code: ErrorCode): boolean =>
+/**
+ * Narrow a caught value to an {@link Ably.ErrorInfo} with the given code.
+ * @param value - The value caught from a try/catch.
+ * @param code - The {@link ErrorCode} to match on `.code`.
+ * @returns `true` when `value` is an `Ably.ErrorInfo` whose `.code` matches.
+ */
+const isErrorInfoWithCode = (value: unknown, code: number): boolean =>
   value instanceof Ably.ErrorInfo && value.code === code;
 
 /**
@@ -47,6 +52,7 @@ const isErrorInfoWithCode = (value: unknown, code: ErrorCode): boolean =>
  * failed one.
  * @param invocationData - The serialized {@link InvocationData} identifying the run.
  * @param options - WDK step context, providing the durable `abortSignal`.
+ * @param options.abortSignal - Durable abort signal supplied by the WDK step context.
  * @returns The hop's `finishReason`.
  */
 export const runAgentHop = async (
@@ -70,9 +76,9 @@ export const runAgentHop = async (
 
   try {
     await step.start({ signal: wdkSignal, timeoutMs: 60_000 });
-  } catch (e) {
-    if (isErrorInfoWithCode(e, ErrorCode.StepSuperseded)) return 'stop';
-    throw e;
+  } catch (error) {
+    if (isErrorInfoWithCode(error, ErrorCode.StepSuperseded)) return 'stop';
+    throw error;
   }
 
   try {
@@ -89,11 +95,11 @@ export const runAgentHop = async (
     ]);
     await step.end('complete');
     return result.steps.at(-1)?.finishReason ?? 'stop';
-  } catch (err) {
+  } catch (error) {
     // Mark the AIT attempt as failed so the channel carries a durable
     // record, then rethrow so WDK retries the `"use step"` function.
     await step.end('failed');
-    throw err;
+    throw error;
   }
 };
 

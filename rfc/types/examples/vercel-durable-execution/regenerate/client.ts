@@ -8,7 +8,7 @@
 
 import type * as AI from 'ai';
 
-import type { Codec, ClientSession, ClientView, InvocationData } from '../../../index.js';
+import type { ClientSession, ClientView, Codec, InvocationData } from '../../../index.js';
 
 /**
  * Deliver an invocation to the workflow HTTP trigger.

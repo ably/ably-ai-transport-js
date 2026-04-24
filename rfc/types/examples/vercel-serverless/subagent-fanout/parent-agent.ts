@@ -116,9 +116,9 @@ export const POST = async (req: Request): Promise<Response> => {
     const outcome = step.signal.aborted ? 'aborted' : 'complete';
     await step.end(outcome);
     await run.end(outcome);
-  } catch (err) {
+  } catch (error) {
     await run.end(step.signal.aborted ? 'aborted' : 'failed');
-    throw err;
+    throw error;
   }
 
   return new Response(undefined, { status: 202 });

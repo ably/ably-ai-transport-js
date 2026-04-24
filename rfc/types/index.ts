@@ -9,7 +9,6 @@ export type {
   CodecEvent,
   CodecMessage,
   CodecPart,
-  DecodedPart,
   DecodedValue,
   Decoder,
   EncodeEventOptions,
@@ -22,8 +21,8 @@ export { ErrorCode } from './errors.js';
 // same name (the instance shape). A single value re-export carries both
 // sides through to consumers, who can use `Invocation` in type position and
 // call `Invocation.fromJSON(data)` in value position.
-export { Invocation } from './invocation.js';
 export type { InvocationConstructor, InvocationData } from './invocation.js';
+export { Invocation } from './invocation.js';
 export type { MessageNode } from './message-node.js';
 
 /** Pre-bound {@link MessageNode} variant for {@link ClientRun} sessions. */

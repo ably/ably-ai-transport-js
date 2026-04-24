@@ -19,26 +19,34 @@ import type { BaseTransportOption } from './internal/use-resolved-transport.js';
 import { useResolvedTransport } from './internal/use-resolved-transport.js';
 
 /** Options for {@link useActiveTurns}. */
-export type UseActiveTurnsOptions<TEvent, TMessage> = BaseTransportOption<TEvent, TMessage>;
+export interface UseActiveTurnsOptions<TEvent, TMessage> extends BaseTransportOption<TEvent, TMessage> {
+  /** When `true`, skip all subscriptions and return an empty Map immediately. */
+  skip?: boolean;
+}
 
 /**
  * Returns a reactive Map of all active turns on the channel, keyed by clientId.
  * Updates when turns start or end. When `transport` is omitted, uses the nearest
- * {@link TransportProvider}'s transport via context.
- * @param props - Options including optional `transport`.
+ * {@link TransportProvider}'s transport via context. When `skip` is `true`, returns
+ * an empty Map without subscribing.
+ * @param props - Options including optional `transport` and `skip`.
  * @param props.transport - Transport to track turns for; defaults to the nearest provider.
+ * @param props.skip - When `true`, skip all subscriptions and return an empty Map.
  * @returns A Map where keys are clientIds and values are Sets of active turnIds.
  */
-export const useActiveTurns = <TEvent, TMessage>({ transport }: UseActiveTurnsOptions<TEvent, TMessage> = {}): Map<
-  string,
-  Set<string>
-> => {
-  const resolved = useResolvedTransport({ transport });
+export const useActiveTurns = <TEvent, TMessage>({
+  transport,
+  skip,
+}: UseActiveTurnsOptions<TEvent, TMessage> = {}): Map<string, Set<string>> => {
+  const resolved = useResolvedTransport({ transport, skip });
 
   const [turns, setTurns] = useState<Map<string, Set<string>>>(() => new Map());
 
   useEffect(() => {
-    if (!resolved) return;
+    if (!resolved) {
+      setTurns(new Map());
+      return;
+    }
 
     // Initialize from current state
     setTurns(resolved.tree.getActiveTurnIds());

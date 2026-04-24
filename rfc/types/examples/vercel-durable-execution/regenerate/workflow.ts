@@ -3,7 +3,7 @@
  *
  * Regenerate is a client-side concern: the client forks the tree, which
  * pins the new run's branch. The workflow code is identical to basic-chat
- * — each hop reads `view.messages` scoped to the invocation's run.
+ * — each hop reads `run.view.messages` scoped to the invocation's run.
  */
 
 import { DurableAgent } from '@workflow/ai/agent';
@@ -53,8 +53,8 @@ export const runAgentHop = async (
   });
   await session.connect();
 
-  const view = session.createView(invocation);
-  await using step = view.createStep();
+  await using run = session.createRun(invocation);
+  await using step = run.createStep();
 
   try {
     await step.start({ signal: wdkSignal, timeoutMs: 60_000 });
@@ -68,7 +68,7 @@ export const runAgentHop = async (
   const [, result] = await Promise.all([
     step.pipe(readable),
     agent.stream({
-      messages: await convertToModelMessages(view.messages.map((n) => n.message)),
+      messages: await convertToModelMessages(run.view.messages.map((n) => n.message)),
       writable: bridge.writable,
       stopWhen: stepCountIs(1),
       abortSignal: step.signal,

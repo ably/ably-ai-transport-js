@@ -3,7 +3,7 @@
  *
  * Regenerate is a client-side concern: the client forks the tree, which
  * sets a parent on the new run. The agent code is identical to basic-chat
- * — `view.messages` already reflects the correct branch because the
+ * — `run.view.messages` already reflects the correct branch because the
  * invocation pins the run.
  */
 
@@ -41,20 +41,20 @@ export const POST = async (req: Request): Promise<Response> => {
   });
   await session.connect();
 
-  const view = session.createView(invocation);
-  await using step = view.createStep();
+  await using run = session.createRun(invocation);
+  await using step = run.createStep();
   await step.start({ signal: req.signal, timeoutMs: 60_000 });
 
   try {
     const result = await agent.stream({
-      messages: await convertToModelMessages(view.messages.map((n) => n.message)),
+      messages: await convertToModelMessages(run.view.messages.map((n) => n.message)),
       abortSignal: step.signal,
     });
     await step.pipe(result.toUIMessageStream());
     await step.end('complete');
-    await view.run.end('complete');
+    await run.end('complete');
   } catch (err) {
-    await view.run.end(step.signal.aborted ? 'aborted' : 'failed');
+    await run.end(step.signal.aborted ? 'aborted' : 'failed');
     throw err;
   }
 

@@ -2,10 +2,11 @@
  * Steering — durable-execution workflow.
  *
  * Each hop is a `"use step"` boundary that hydrates the session and
- * passes the latest `view.messages` to the model. Steering messages the
- * client publishes between hops land on the channel and are materialised
- * into the session during the next hop's hydration — the workflow needs
- * no special handling because it re-reads the conversation on every hop.
+ * passes the latest `run.view.messages` to the model. Steering messages
+ * the client publishes between hops land on the channel and are
+ * materialised into the session during the next hop's hydration — the
+ * workflow needs no special handling because it re-reads the conversation
+ * on every hop.
  *
  * The workflow continues looping until the model finishes AND no new
  * user messages have arrived since the last hop.
@@ -67,8 +68,8 @@ export const runAgentHop = async (
   });
   await session.connect();
 
-  const view = session.createView(invocation);
-  await using step = view.createStep();
+  await using run = session.createRun(invocation);
+  await using step = run.createStep();
 
   try {
     await step.start({ signal: wdkSignal, timeoutMs: 60_000 });
@@ -79,14 +80,14 @@ export const runAgentHop = async (
     throw e;
   }
 
-  const latestUserMessageId = view.messages.findLast((n) => n.message.role === 'user')?.id;
+  const latestUserMessageId = run.view.messages.findLast((n) => n.message.role === 'user')?.id;
 
   const bridge = new TransformStream<AI.UIMessageChunk, AI.UIMessageChunk>();
   const readable: ReadableStream<AI.UIMessageChunk> = bridge.readable;
   const [, result] = await Promise.all([
     step.pipe(readable),
     agent.stream({
-      messages: await convertToModelMessages(view.messages.map((n) => n.message)),
+      messages: await convertToModelMessages(run.view.messages.map((n) => n.message)),
       writable: bridge.writable,
       stopWhen: stepCountIs(1),
       abortSignal: step.signal,

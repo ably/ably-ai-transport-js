@@ -6,7 +6,7 @@ import type { Invocation } from './invocation.js';
 import type { AgentRun, ClientRun } from './run.js';
 import type { StorageReader, StorageWriter } from './storage.js';
 import type { Tree } from './tree.js';
-import type { AgentView, ClientView, CreateViewOptions } from './view.js';
+import type { ClientView, CreateViewOptions } from './view.js';
 import type { SessionWriter } from './writer.js';
 
 /**
@@ -118,9 +118,9 @@ export interface ClientSession<C extends AnyCodec> {
 
 /**
  * Long-lived handle on a durable session from the agent's perspective.
- * Primary reads happen through an {@link AgentView} scoped to an
- * {@link Invocation}; the tree is available as an escape hatch and the
- * writer is exposed for orchestration patterns.
+ * Primary reads happen through an {@link AgentRun} named by an
+ * {@link Invocation} (and its `run.view` projection); the tree is available
+ * as an escape hatch and the writer is exposed for orchestration patterns.
  */
 export interface AgentSession<C extends AnyCodec> {
   /** The session name, as passed to createAgentSession. */
@@ -130,17 +130,20 @@ export interface AgentSession<C extends AnyCodec> {
    * The unfiltered conversation tree. Available as an escape hatch for
    * advanced cases. Most agents read the conversation through the step.
    */
-  readonly tree: Tree<CodecMessage<C>, AgentRun<CodecMessage<C>>>;
+  readonly tree: Tree<CodecMessage<C>, AgentRun<C>>;
 
   /**
-   * Create a view scoped to the run an invocation names. The view's branch
-   * selection is pinned by the invocation's run ID — it shows the linear
-   * conversation the run sits on (ancestry from root plus the run's own
-   * messages). Views can be created before connect() — the view pends
-   * hydration and fills in as the session materialises the channel. Call
-   * view.createStep() to produce the step that executes the run.
+   * Create a local handle for the run an invocation names. The run already
+   * exists on the channel (the initiator published `x-ably-run-start`
+   * before invoking the agent); this factory binds a local `AgentRun`
+   * scoped to that run ID so the agent can read the conversation through
+   * `run.view`, execute work via `run.createStep()`, and publish lifecycle
+   * transitions via `run.suspend()` / `run.end()`.
+   *
+   * The run handle can be created before connect() — the underlying view
+   * pends hydration and fills in as the session materialises the channel.
    */
-  createView(invocation: Invocation): AgentView<C>;
+  createRun(invocation: Invocation): AgentRun<C>;
 
   /**
    * Hydrate from the storage reader (if provided) and subscribe to the channel

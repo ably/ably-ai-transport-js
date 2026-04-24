@@ -75,7 +75,7 @@ A session is created by `createClientSession({ client, sessionName, codec, stora
 
 **Storage integration.** `StorageReader` (async iterable of `Ably.Message`) is drained during `connect()`. `StorageWriter` (awaited `write(message)`) receives every message the session processes, historical and live. A session hydrated from a storage reader and one hydrated from channel history arrive at the same state — neither path is privileged. Reader failures reject `connect()` via `HydrationFailed`; writer failures surface via `session.on('error')` so the caller owns the retry policy.
 
-**Variants.** `ClientSession<C>` exposes `createView()` and a tree typed with `ClientRun<C>`. `AgentSession<C>` exposes `createView(invocation)` and a tree typed with `AgentRun<TMessage>`. The asymmetry reflects the asymmetry of control: clients branch and navigate; agents execute against one pinned branch.
+**Variants.** `ClientSession<C>` exposes `createView()` and a tree typed with `ClientRun<C>`. `AgentSession<C>` exposes `createRun(invocation)` and a tree typed with `AgentRun<C>`. The asymmetry reflects the asymmetry of control: clients branch and navigate; agents execute against one pinned branch.
 
 ### Tree
 
@@ -97,9 +97,9 @@ A view holds a linear sequence of messages — one selected sibling at each bran
 
 **ClientView** exposes mutable branch state: `select(messageId)` to switch which branch is shown at a fork, `loadMore()` to pull more history. It also exposes `view.runs` — the runs whose messages are visible in the current projection, independent of `view.messages` — so orchestration code can enumerate active runs without walking messages. It's the factory for new runs: `createRun()`, `createRegenerate(messageId, { autoSelect })`, `createEdit(messageId, { autoSelect })`. `createRegenerate` and `createEdit` fork the tree at the target message; the new run is positioned as a sibling, and by default the view auto-selects the new branch. Pass `{ autoSelect: false }` to fork without switching.
 
-**AgentView** has no `select()` and no pagination. The invocation it was created from pins the branch — the view shows the ancestry from root down to the run's parent, then every message published within the run. The agent needs the full ancestry to pass to the model, so pagination would be a footgun. AgentView's factory produces `createStep()` — the execution surface.
+**AgentView** has no `select()` and no pagination. It is reached via `run.view` on the `AgentRun` returned from `session.createRun(invocation)` — the invocation pins the branch, and the view shows the ancestry from root down to the run's parent, then every message published within the run. The agent needs the full ancestry to pass to the model, so pagination would be a footgun. AgentView is a pure read projection: run lifecycle (`end`, `suspend`) and step creation live on the owning `AgentRun`, not on the view.
 
-**AgentView starts empty and fills during hydration.** When a view is created before `connect()` has resolved, `view.messages` is empty. It populates as the session materialises the channel and storage. `step.start()` resolves only after hydration completes, so by the time the agent calls `convertToModelMessages(view.messages...)`, the view is populated. If the agent wants to observe ancestry arriving incrementally (rare, but useful for some telemetry patterns), subscribe before `start()`.
+**AgentView starts empty and fills during hydration.** When the run handle is created before `connect()` has resolved, `run.view.messages` is empty. It populates as the session materialises the channel and storage. `step.start()` resolves only after hydration completes, so by the time the agent calls `convertToModelMessages(run.view.messages...)`, the view is populated. If the agent wants to observe ancestry arriving incrementally (rare, but useful for some telemetry patterns), subscribe via `run.view.subscribe(...)` before `start()`.
 
 ### Run
 
@@ -114,7 +114,12 @@ A run opens with `x-ably-run-start` published by the initiator and closes with `
 - **Control:** `abort()`, `pause()`, `resume({ stepId? })`, `retry({ stepId? })` — each publishes the corresponding control signal and returns an `Invocation` the caller POSTs to wake the agent if none is running. All four are **silent no-ops when the signal would have no effect** — e.g. aborting an already-terminal run publishes nothing. Multi-device races are idempotent by construction.
 - **Observation:** `when(statuses)` resolves when the run's status enters any of the targeted set (or rejects with `RunClosed` if the session closes first). `toInvocation()` snapshots the run's ID and the last sent message's ID into a serialisable `Invocation`.
 
-**AgentRun** is the agent-facing handle. It exposes `suspend(reason)` (publish `x-ably-run-suspend` with `awaiting-input` or `paused`) and `end(status)` (publish `x-ably-run-end` with one of the terminal statuses). `end()` is idempotent on terminal runs (publishes nothing). `suspend()` is idempotent only on already-suspended runs; on terminal runs it throws `RunAlreadyTerminal` because suspending a terminal run is an impossible transition and a loud programming error.
+**AgentRun** is the agent-facing handle, returned by `session.createRun(invocation)`. It owns the run's read projection and execution surface:
+
+- **Read:** `run.view` — the linear `AgentView` projection (ancestry + this run's messages) the agent passes to the model. Equivalent to reading `run.messages` for messages scoped just to this run.
+- **Execute:** `run.createStep()` — factory for the `Step` that publishes `x-ably-step-start`, streams output, and publishes `x-ably-step-end`. Multiple steps per run are permitted; a single run can span a long tool-calling loop, a HITL pause, a workflow hop, and a retry all under one run ID.
+- **Lifecycle:** `suspend(reason)` publishes `x-ably-run-suspend` with `awaiting-input` or `paused`; `end(status)` publishes `x-ably-run-end` with one of the terminal statuses. `end()` is idempotent on terminal runs (publishes nothing). `suspend()` is idempotent only on already-suspended runs; on terminal runs it throws `RunAlreadyTerminal` because suspending a terminal run is an impossible transition and a loud programming error.
+- **Disposal:** `[Symbol.asyncDispose]` closes the underlying view subscription — it does **not** publish `x-ably-run-end`. Run status is a durable protocol fact; disposing the local handle is a local resource concern. Call `run.end(status)` explicitly on the happy path.
 
 **`run.initiatorClientId`** carries the client ID of whoever opened the run. Derived from `x-ably-client-id` on `x-ably-run-start` when a backend published on behalf of an end-user, otherwise from the publishing connection. Stable for the lifetime of the run. This is what makes server-side validation work: the end-user's ID survives the HTTP hop into the session even though the SDK connection is the backend's.
 
@@ -128,11 +133,11 @@ The separation between ClientRun and AgentRun enforces who owns what: the initia
 
 One continuous agent execution within a run. Type signatures: [`step.ts`](./types/step.ts).
 
-A step is created from an `AgentView` via `view.createStep()` and then transitions from `pending` to `active` via `step.start(options)`. The `pending` status is in-memory only — it's never materialised on the channel, because a pending step has not published `x-ably-step-start`. `StepState.status` in the tree never reads `pending`.
+A step is created from an `AgentRun` via `run.createStep()` and then transitions from `pending` to `active` via `step.start(options)`. The `pending` status is in-memory only — it's never materialised on the channel, because a pending step has not published `x-ably-step-start`. `StepState.status` in the tree never reads `pending`.
 
 `start()` does three things: wait for the invocation's preconditions (the message ID, step ID, or signal the agent needs to observe before proceeding), publish `x-ably-step-start`, and resolve. The precondition wait has a default timeout of 60 seconds when neither `timeoutMs` nor `signal` is supplied, which prevents a hop from hanging forever waiting for an invocation message that never arrives. If another agent races the `x-ably-step-start` and wins, `start()` rejects with `StepSuperseded` and the step stays `pending` — no `x-ably-step-start` reached the channel, and the disposer is a no-op.
 
-**Step-start on a suspended run implicitly reactivates it.** If the invocation targets a run currently in `suspended`, a successful `x-ably-step-start` publish transitions the run back to `active`. Publishing `x-ably-resume` is not required to ungate `start()`; the resume control signal exists to *wake* an external agent (drive a new step-start) rather than to gate step-start itself.
+**Step-start on a suspended run implicitly reactivates it.** If the invocation targets a run currently in `suspended`, a successful `x-ably-step-start` publish transitions the run back to `active`. Publishing `x-ably-resume` is not required to ungate `start()`; the resume control signal exists to _wake_ an external agent (drive a new step-start) rather than to gate step-start itself.
 
 **The step owns the abort signal.** `step.signal` is an `AbortSignal` that aborts when either an `x-ably-abort` control signal is observed on the channel for this run, or when a caller-supplied signal passed to `start({ signal })` fires. Wire it into your model call as `abortSignal: step.signal`. The composition happens inside the SDK so callers don't write boilerplate.
 
@@ -142,7 +147,7 @@ A step is created from an `AgentView` via `view.createStep()` and then transitio
 
 **Terminal statuses.** `step.end(status)` publishes `x-ably-step-end` with one of `complete | failed | aborted | paused | superseded`. Idempotent on terminal steps. The `superseded` status is published automatically by the losing step in a race; callers don't pick it.
 
-**Abandonment.** A step can exit its scope without publishing `x-ably-step-end` — an unhandled crash, for instance. The channel leaks an open step. The design handles this passively: when a later `x-ably-step-start` appears in the same run, the session marks the prior open step as `abandoned`. It's a *derived* status, inferred from the absence of a terminal closure, not something the agent sets.
+**Abandonment.** A step can exit its scope without publishing `x-ably-step-end` — an unhandled crash, for instance. The channel leaks an open step. The design handles this passively: when a later `x-ably-step-start` appears in the same run, the session marks the prior open step as `abandoned`. It's a _derived_ status, inferred from the absence of a terminal closure, not something the agent sets.
 
 **Disposer as safety net.** `[Symbol.asyncDispose]` catches scope-exit-via-thrown-error paths. If the step is `pending`, disposal is a no-op (nothing is on the channel to close). If the step is `active`, the disposer publishes a terminal `step.end()` — `aborted` if `step.signal.aborted`, else `failed` with cause `StepDisposedBeforeEnd`. If already terminal, pure cleanup. Callers should still call `step.end('complete')` explicitly on the happy path; the disposer exists for the error path.
 
@@ -186,21 +191,21 @@ A codec produces three collaborators:
 
 **The division of labour:**
 
-| Concern | Owner |
-|---|---|
-| Channel subscription | SDK |
-| Lifecycle events (`x-ably-run-*`, `x-ably-step-*`) | SDK |
-| Control signals (`x-ably-abort` etc.) | SDK |
-| Attribution headers (`x-ably-client-id`, `x-ably-role`, `x-ably-run-id`, `x-ably-step-id`, `x-ably-msg-id`) | SDK |
-| Tree construction and events | SDK |
-| View projection | SDK |
-| Invocation preconditions | SDK |
-| Encoding parts and events to wire format | Codec |
-| Decoding wire messages to parts and events | Codec |
-| Composing parts into complete messages | Codec |
-| Codec-specific headers (`x-domain-*`) | Codec |
+| Concern                                                                                                     | Owner |
+| ----------------------------------------------------------------------------------------------------------- | ----- |
+| Channel subscription                                                                                        | SDK   |
+| Lifecycle events (`x-ably-run-*`, `x-ably-step-*`)                                                          | SDK   |
+| Control signals (`x-ably-abort` etc.)                                                                       | SDK   |
+| Attribution headers (`x-ably-client-id`, `x-ably-role`, `x-ably-run-id`, `x-ably-step-id`, `x-ably-msg-id`) | SDK   |
+| Tree construction and events                                                                                | SDK   |
+| View projection                                                                                             | SDK   |
+| Invocation preconditions                                                                                    | SDK   |
+| Encoding parts and events to wire format                                                                    | Codec |
+| Decoding wire messages to parts and events                                                                  | Codec |
+| Composing parts into complete messages                                                                      | Codec |
+| Codec-specific headers (`x-domain-*`)                                                                       | Codec |
 
-The codec is the *only* place that understands the domain model. A new codec for a different AI SDK needs only to implement Encoder/Decoder/Accumulator; the transport, tree, views, runs, steps, and everything else work as-is.
+The codec is the _only_ place that understands the domain model. A new codec for a different AI SDK needs only to implement Encoder/Decoder/Accumulator; the transport, tree, views, runs, steps, and everything else work as-is.
 
 ### Invocation
 
@@ -210,7 +215,7 @@ A serialisable HTTP pointer. Type signatures: [`invocation.ts`](./types/invocati
 { sessionName, runId, stepId?, messageId? }
 ```
 
-Carries no history, no message content, no parameters. The agent receives an invocation in its HTTP body, rehydrates it with `Invocation.fromJSON(data)`, creates an agent session against `sessionName`, and calls `session.createView(invocation)`. The view is pinned to `runId` and the step's `start()` waits for `messageId` (and, if set, `stepId`) to be visible before proceeding.
+Carries no history, no message content, no parameters. The agent receives an invocation in its HTTP body, rehydrates it with `Invocation.fromJSON(data)`, creates an agent session against `sessionName`, and calls `session.createRun(invocation)`. The run is pinned to `runId` and the step's `start()` waits for `messageId` (and, if set, `stepId`) to be visible before proceeding.
 
 **Preconditions are ordered.** A step won't `start()` until the session has observed the invocation's targets. This is how pause/resume and HITL flow: the client publishes the control signal (or the HITL event), captures the signal's own message ID into the invocation, and POSTs. The next agent's `step.start()` blocks until that exact wire message is visible — guaranteeing the agent sees the approval, the resume, or whatever state change the client just published.
 
@@ -267,30 +272,30 @@ The channel is an append-only, totally-ordered log of messages. Every piece of s
 
 Lifecycle events (SDK-owned):
 
-| Name | Purpose |
-|---|---|
-| `x-ably-run-start` | Open a run. |
+| Name                 | Purpose                                          |
+| -------------------- | ------------------------------------------------ |
+| `x-ably-run-start`   | Open a run.                                      |
 | `x-ably-run-suspend` | Transition a run to `suspended` without closing. |
-| `x-ably-run-end` | Close a run terminally. |
-| `x-ably-step-start` | Open a step. |
-| `x-ably-step-end` | Close a step terminally. |
+| `x-ably-run-end`     | Close a run terminally.                          |
+| `x-ably-step-start`  | Open a step.                                     |
+| `x-ably-step-end`    | Close a step terminally.                         |
 
 Control signals (SDK-owned):
 
-| Name | Purpose |
-|---|---|
-| `x-ably-abort` | Abort a run. |
-| `x-ably-pause` | Pause a run. |
+| Name            | Purpose                                                  |
+| --------------- | -------------------------------------------------------- |
+| `x-ably-abort`  | Abort a run.                                             |
+| `x-ably-pause`  | Pause a run.                                             |
 | `x-ably-resume` | Resume a suspended run, optionally from a specific step. |
-| `x-ably-retry` | Retry a terminal run or step. |
+| `x-ably-retry`  | Retry a terminal run or step.                            |
 
 Content (codec-owned):
 
-| Name | Purpose |
-|---|---|
-| `x-ably-message` | A complete domain message (whole-message publish or same-ID republish). |
-| `x-ably-event` | A codec event (`TEvent`) — state transition, approval response, tool result. |
-| `x-domain-*` | Codec-defined per-part streaming chunks (e.g. Vercel's text/tool/reasoning chunks). |
+| Name             | Purpose                                                                             |
+| ---------------- | ----------------------------------------------------------------------------------- |
+| `x-ably-message` | A complete domain message (whole-message publish or same-ID republish).             |
+| `x-ably-event`   | A codec event (`TEvent`) — state transition, approval response, tool result.        |
+| `x-domain-*`     | Codec-defined per-part streaming chunks (e.g. Vercel's text/tool/reasoning chunks). |
 
 ### Headers
 
@@ -364,9 +369,9 @@ Before the HITL walkthrough, the shape of the simplest possible round-trip. The 
 1. **Client opens the run.** `view.createRun()` returns a `ClientRun` positioned at the current branch tip. `run.start()` publishes `x-ably-run-start` to the channel.
 2. **Client publishes the user message.** `run.sendMessages({ id, role: 'user', parts: [...] })` publishes an `x-ably-message` with `x-ably-msg-id = <id>`, `x-ably-run-id = <runId>`, `x-ably-role = user`. The message ID is caller-supplied (the codec's message type owns it).
 3. **Client POSTs the invocation.** `fetch('/api/agent', { body: run.toInvocation().toJSON() })` carries `{ sessionName, runId, messageId }`. `messageId` is the user message's ID — the agent must see it before starting.
-4. **Agent wakes.** The handler calls `Invocation.fromJSON(body)`, opens an agent session with the same `sessionName`, calls `session.connect()` (hydrates + subscribes), `view = session.createView(invocation)`, `step = view.createStep()`, `await step.start({ signal: req.signal })`. `start()` waits until the session has observed the user message, then publishes `x-ably-step-start`.
-5. **Agent streams.** The handler calls `streamText({ messages: await convertToModelMessages(view.messages.map(n => n.message)), ... })` and `step.pipe(result.toUIMessageStream())`. The codec encodes each chunk into a wire message with `x-ably-msg-id = <assistantId>`, `x-ably-run-id`, `x-ably-step-id`, and publishes. The client sees the chunks arrive via its subscription, the accumulator composes them, views re-render.
-6. **Agent closes.** `step.end('complete')` publishes `x-ably-step-end`; `view.run.end('complete')` publishes `x-ably-run-end`. The run is terminal; the session reflects it.
+4. **Agent wakes.** The handler calls `Invocation.fromJSON(body)`, opens an agent session with the same `sessionName`, calls `session.connect()` (hydrates + subscribes), `run = session.createRun(invocation)`, `step = run.createStep()`, `await step.start({ signal: req.signal })`. `start()` waits until the session has observed the user message, then publishes `x-ably-step-start`.
+5. **Agent streams.** The handler calls `streamText({ messages: await convertToModelMessages(run.view.messages.map(n => n.message)), ... })` and `step.pipe(result.toUIMessageStream())`. The codec encodes each chunk into a wire message with `x-ably-msg-id = <assistantId>`, `x-ably-run-id`, `x-ably-step-id`, and publishes. The client sees the chunks arrive via its subscription, the accumulator composes them, views re-render.
+6. **Agent closes.** `step.end('complete')` publishes `x-ably-step-end`; `run.end('complete')` publishes `x-ably-run-end`. The run is terminal; the session reflects it.
 
 Five wire events for a basic one-message exchange: the run-start, the user message, the step-start, the streaming chunks (one per chunk), the step-end, the run-end. Every header is automatic; the client called four methods, the agent called four.
 
@@ -382,11 +387,11 @@ A client and an agent share a session. The agent has a tool that requires user a
 
 The client publishes `x-ably-run-start`, then its user message (`x-ably-message`), then POSTs an invocation to the agent endpoint with the user message's ID as a precondition.
 
-The agent rehydrates the invocation, opens an agent session, creates a view, creates a step, and calls `step.start({ signal: req.signal, timeoutMs: 60_000 })`. Once the precondition is satisfied and `x-ably-step-start` is published, the agent calls `streamText(...)` and pipes `result.toUIMessageStream()` through the step.
+The agent rehydrates the invocation, opens an agent session, creates the run handle, creates a step, and calls `step.start({ signal: req.signal, timeoutMs: 60_000 })`. Once the precondition is satisfied and `x-ably-step-start` is published, the agent calls `streamText(...)` and pipes `result.toUIMessageStream()` through the step.
 
 The model chooses to call a tool that has `needsApproval: true`. AI SDK v6 surfaces this as a `tool-${name}` part in state `approval-requested` with an `approval: { id }` field. The codec emits that as streaming chunks on the wire. When the stream ends, the agent calls `step.end('complete')` — the step itself finished normally.
 
-Only *then* does the agent inspect the final assistant message. If any tool part is in state `approval-requested`, it calls `view.run.suspend('awaiting-input')`. If not, it calls `view.run.end('complete')`. The step-end is about the execution; the run-suspend is about whether the user's intent is satisfied yet.
+Only _then_ does the agent inspect the final assistant message. If any tool part is in state `approval-requested`, it calls `run.suspend('awaiting-input')`. If not, it calls `run.end('complete')`. The step-end is about the execution; the run-suspend is about whether the user's intent is satisfied yet.
 
 The channel now holds: `x-ably-run-start`, user's `x-ably-message`, `x-ably-step-start`, a sequence of streaming chunks, `x-ably-step-end` (status `complete`), `x-ably-run-suspend` (status `awaiting-input`).
 
@@ -398,9 +403,7 @@ The client's view fires `subscribe()`; the UI renders the pending approval promp
 await run.sendEvents(
   {
     role: 'tool',
-    content: [
-      { type: 'tool-approval-response', approvalId, approved: true, reason: 'OK to run' },
-    ],
+    content: [{ type: 'tool-approval-response', approvalId, approved: true, reason: 'OK to run' }],
   },
   { messageId: assistantMessageId },
 );
@@ -469,7 +472,7 @@ The non-obvious rules that a reader of the types should know up front.
 
 **Abandonment is derived.** A crashed step leaves `x-ably-step-start` with no terminal event. When a later `x-ably-step-start` appears in the same run, the session materialises the prior open step as `abandoned`. The agent doesn't have to detect its own crashes; the presence of a subsequent step is evidence.
 
-**Idempotence is pervasive.** `connect()`, `close()`, `AgentRun.end()`, `AgentRun.suspend()` (on already-suspended), step `[Symbol.asyncDispose]`, control-signal publishes on a run where the signal would have no effect — all are idempotent no-ops. This is deliberate: durable-execution frameworks retry code paths, and the SDK is safe under retry without the caller needing guards. `run.start()` is *not* idempotent (it throws `RunAlreadyStarted`) because opening a run twice is an orchestration bug that should be loud.
+**Idempotence is pervasive.** `connect()`, `close()`, `AgentRun.end()`, `AgentRun.suspend()` (on already-suspended), step `[Symbol.asyncDispose]`, control-signal publishes on a run where the signal would have no effect — all are idempotent no-ops. This is deliberate: durable-execution frameworks retry code paths, and the SDK is safe under retry without the caller needing guards. `run.start()` is _not_ idempotent (it throws `RunAlreadyStarted`) because opening a run twice is an orchestration bug that should be loud.
 
 **Invocation preconditions pair with publishes.** The pattern is always: publish something, capture its message ID, include it in the invocation. For control signals (abort/pause/resume/retry), the returned `Invocation` from the method already has this wired — the caller POSTs it as-is. For HITL events, the caller builds the invocation via `run.toInvocation()` after the event has been published — `toInvocation()` captures the last sent message ID automatically.
 
@@ -485,15 +488,15 @@ The non-obvious rules that a reader of the types should know up front.
 
 All SDK-specific errors are `Ably.ErrorInfo` instances with codes in the `104xxx` reserved range. The full enum lives in [`errors.ts`](./types/errors.ts). Groupings:
 
-| Range | Group |
-|---|---|
-| `104000–104001` | Transport (send failure, subscription error). |
-| `104021` | Step disposer safety net. |
-| `104100–104101` | Session lifecycle (session closed, hydration failed). |
-| `104199–104201` | Run lifecycle (double-start, already-terminal suspend, closed). |
-| `104300–104302` | Step lifecycle (superseded, precondition timeout, start aborted). |
+| Range           | Group                                                                  |
+| --------------- | ---------------------------------------------------------------------- |
+| `104000–104001` | Transport (send failure, subscription error).                          |
+| `104021`        | Step disposer safety net.                                              |
+| `104100–104101` | Session lifecycle (session closed, hydration failed).                  |
+| `104199–104201` | Run lifecycle (double-start, already-terminal suspend, closed).        |
+| `104300–104302` | Step lifecycle (superseded, precondition timeout, start aborted).      |
 | `104400–104402` | View and invocation (view closed, node not found, invalid invocation). |
-| `104500` | Storage writer failure. |
+| `104500`        | Storage writer failure.                                                |
 
 Each code corresponds to one specific recoverable or programming-error condition; the error messages and the JSDoc on the enum values describe the exact trigger.
 
@@ -501,13 +504,13 @@ Each code corresponds to one specific recoverable or programming-error condition
 
 ## Where to look next
 
-| What | Where |
-|---|---|
-| Full type signatures for every interface | [`rfc/types/`](./types/) |
-| Working example for each supported scenario | [`rfc/types/examples/`](./types/examples/) |
-| Original design motivation and problem statement | [`rfc/AIT012.md`](./AIT012.md) |
-| Log of design decisions with rationale | [`rfc/decisions.log`](./decisions.log) |
-| Canonical error definitions | [`rfc/types/errors.ts`](./types/errors.ts) |
-| Wire-level control signal shape | [`rfc/types/control-signal.ts`](./types/control-signal.ts) |
+| What                                             | Where                                                      |
+| ------------------------------------------------ | ---------------------------------------------------------- |
+| Full type signatures for every interface         | [`rfc/types/`](./types/)                                   |
+| Working example for each supported scenario      | [`rfc/types/examples/`](./types/examples/)                 |
+| Original design motivation and problem statement | [`rfc/AIT012.md`](./AIT012.md)                             |
+| Log of design decisions with rationale           | [`rfc/decisions.log`](./decisions.log)                     |
+| Canonical error definitions                      | [`rfc/types/errors.ts`](./types/errors.ts)                 |
+| Wire-level control signal shape                  | [`rfc/types/control-signal.ts`](./types/control-signal.ts) |
 
 The types directory is organised to match the concept sections of this document — one file per concept, with JSDoc on every exported symbol that repeats the semantics described here. When something in this document seems ambiguous, the types file is the source of truth.

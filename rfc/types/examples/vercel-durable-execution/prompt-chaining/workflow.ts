@@ -9,23 +9,23 @@
  * Structural contrast with the serverless variant
  * (`vercel-serverless/prompt-chaining/agent.ts`):
  *
- *   Serverless: one HTTP handler, one session, one view, two
- *               `view.createStep()` calls. Shared session means the
+ *   Serverless: one HTTP handler, one session, one run, two
+ *               `run.createStep()` calls. Shared session means the
  *               view materialises once; the second step's start() sees
  *               preconditions already satisfied.
  *
  *   Durable:    each LLM call is its own `"use step"` WDK function —
- *               each hop opens a fresh session, view, and transport
- *               step, so WDK's replay / retry / crash-recovery work
- *               per hop. The outline is published by `planHop` as an
- *               assistant turn on the channel; `draftHop` reads it
- *               back via `view.messages` after hydrating, so the
+ *               each hop opens a fresh session, run handle, and
+ *               transport step, so WDK's replay / retry / crash-recovery
+ *               work per hop. The outline is published by `planHop` as
+ *               an assistant turn on the channel; `draftHop` reads it
+ *               back via `run.view.messages` after hydrating, so the
  *               outline does not need to flow through WDK step return
  *               values — the channel is already the durable record.
  *
  * Three hops:
  *   1. planHop  — generates the outline and publishes it to the channel.
- *   2. draftHop — reads view.messages, streams the final answer.
+ *   2. draftHop — reads run.view.messages, streams the final answer.
  *   3. endRun   — writer-only terminal publish (plan §5.7).
  */
 
@@ -61,8 +61,8 @@ const isErrorInfoWithCode = (value: unknown, code: ErrorCode): boolean =>
  * answer and publishes it as an assistant turn via {@link step.sendMessages}.
  * The outline lands on the channel and becomes part of the durable
  * conversation, so the next hop — even after a crash and fresh
- * hydration — reads it back via `view.messages`. Clients render the
- * outline as visible progress.
+ * hydration — reads it back via `run.view.messages`. Clients render
+ * the outline as visible progress.
  * @param invocationData - The serialized {@link InvocationData} the client posted.
  * @param options - WDK step context, providing the durable `abortSignal`.
  */
@@ -82,8 +82,8 @@ export const planHop = async (
   });
   await session.connect();
 
-  const view = session.createView(invocation);
-  await using step = view.createStep();
+  await using run = session.createRun(invocation);
+  await using step = run.createStep();
 
   try {
     await step.start({ signal: wdkSignal, timeoutMs: 60_000 });
@@ -98,7 +98,7 @@ export const planHop = async (
       system:
         "Produce a short bullet-point outline that plans the answer to the user's " +
         'most recent question. Keep it under six bullets. Do not answer the question.',
-      messages: await convertToModelMessages(view.messages.map((n) => n.message)),
+      messages: await convertToModelMessages(run.view.messages.map((n) => n.message)),
       abortSignal: step.signal,
     });
     await step.sendMessages({
@@ -108,7 +108,7 @@ export const planHop = async (
     });
     await step.end('complete');
   } catch (error) {
-    await view.run.end(step.signal.aborted ? 'aborted' : 'failed');
+    await run.end(step.signal.aborted ? 'aborted' : 'failed');
     throw error;
   }
 };
@@ -116,10 +116,10 @@ export const planHop = async (
 /**
  * Hop 2 — draft. Streams the final answer to the client, continuing
  * from the plan that hop 1 has now published into the conversation.
- * Reads the outline from `view.messages` (where hop 1's assistant turn
- * has landed — hydrated from the channel via storageReader on fresh
- * start, or from live subscription on a hot resume) rather than taking
- * it as a parameter — one source of truth for the model context.
+ * Reads the outline from `run.view.messages` (where hop 1's assistant
+ * turn has landed — hydrated from the channel via storageReader on
+ * fresh start, or from live subscription on a hot resume) rather than
+ * taking it as a parameter — one source of truth for the model context.
  * @param invocationData - The serialized {@link InvocationData}.
  * @param options - WDK step context, providing the durable `abortSignal`.
  */
@@ -139,8 +139,8 @@ export const draftHop = async (
   });
   await session.connect();
 
-  const view = session.createView(invocation);
-  await using step = view.createStep();
+  await using run = session.createRun(invocation);
+  await using step = run.createStep();
 
   try {
     await step.start({ signal: wdkSignal, timeoutMs: 60_000 });
@@ -155,13 +155,13 @@ export const draftHop = async (
       system:
         'You already outlined your answer in the previous assistant turn. ' +
         "Now write the final answer to the user's most recent question, following that plan.",
-      messages: await convertToModelMessages(view.messages.map((n) => n.message)),
+      messages: await convertToModelMessages(run.view.messages.map((n) => n.message)),
       abortSignal: step.signal,
     });
     await step.pipe(result.toUIMessageStream());
     await step.end('complete');
   } catch (error) {
-    await view.run.end(step.signal.aborted ? 'aborted' : 'failed');
+    await run.end(step.signal.aborted ? 'aborted' : 'failed');
     throw error;
   }
 };

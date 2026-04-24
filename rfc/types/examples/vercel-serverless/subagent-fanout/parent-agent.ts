@@ -46,8 +46,8 @@ export const POST = async (req: Request): Promise<Response> => {
   });
   await session.connect();
 
-  const view = session.createView(invocation);
-  await using step = view.createStep();
+  await using run = session.createRun(invocation);
+  await using step = run.createStep();
   await step.start({ signal: req.signal, timeoutMs: 60_000 });
 
   const spawnSubagent = tool({
@@ -108,16 +108,16 @@ export const POST = async (req: Request): Promise<Response> => {
 
   try {
     const result = await orchestrator.stream({
-      messages: await convertToModelMessages(view.messages.map((n) => n.message)),
+      messages: await convertToModelMessages(run.view.messages.map((n) => n.message)),
       abortSignal: step.signal,
     });
     await step.pipe(result.toUIMessageStream());
 
     const outcome = step.signal.aborted ? 'aborted' : 'complete';
     await step.end(outcome);
-    await view.run.end(outcome);
+    await run.end(outcome);
   } catch (err) {
-    await view.run.end(step.signal.aborted ? 'aborted' : 'failed');
+    await run.end(step.signal.aborted ? 'aborted' : 'failed');
     throw err;
   }
 

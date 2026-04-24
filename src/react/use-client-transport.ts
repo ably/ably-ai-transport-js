@@ -161,7 +161,7 @@ export const useClientTransport = <TEvent, TMessage>({
       // Provider exists but construction failed.
       return {
         transport: SKIPPED_TRANSPORT as unknown as ClientTransport<TEvent, TMessage>,
-        transportError: slot.error,
+        transportError: slot.transportError,
       };
     }
     return {
@@ -184,7 +184,7 @@ export const useClientTransport = <TEvent, TMessage>({
     // Nearest provider exists but construction failed.
     return {
       transport: SKIPPED_TRANSPORT as unknown as ClientTransport<TEvent, TMessage>,
-      transportError: nearestSlot.error,
+      transportError: nearestSlot.transportError,
     };
   }
 

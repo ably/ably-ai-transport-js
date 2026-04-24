@@ -52,7 +52,7 @@ describe('useAblyMessages', () => {
         TransportContext.Provider,
         {
           value: {
-            nearest: { transport: mock.transport as ClientTransport<unknown, unknown>, error: undefined },
+            nearest: { transport: mock.transport as ClientTransport<unknown, unknown> },
             providers: {},
           },
         },

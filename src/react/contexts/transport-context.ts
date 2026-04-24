@@ -14,7 +14,7 @@ export interface TransportSlot {
   /** The constructed transport, or `undefined` if construction failed. */
   transport: ClientTransport<unknown, unknown> | undefined;
   /** Construction error from `createClientTransport`, or `undefined` on success. */
-  error: Ably.ErrorInfo | undefined;
+  transportError?: Ably.ErrorInfo | undefined;
 }
 
 /**

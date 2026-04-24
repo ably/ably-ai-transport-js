@@ -111,7 +111,7 @@ const createMockSlot = (): MockSlot => {
     }
   };
 
-  const slot: ChatTransportSlot = { transport, chatTransport, transportError: undefined };
+  const slot: ChatTransportSlot = { transport, chatTransport };
 
   return { slot, emitView, viewFlattenNodes, setStreaming };
 };

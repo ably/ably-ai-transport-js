@@ -95,6 +95,90 @@ describe('useActiveTurns', () => {
     expect(setBefore?.size).toBe(2);
   });
 
+  describe('skip', () => {
+    it('returns empty Map when skip is true', () => {
+      const mock = createMockTransport();
+      const { result } = renderHook(() => useActiveTurns({ transport: mock.transport, skip: true }));
+      expect(result.current.size).toBe(0);
+    });
+
+    it('does not call tree.getActiveTurnIds when skip is true', () => {
+      const mock = createMockTransport();
+      renderHook(() => useActiveTurns({ transport: mock.transport, skip: true }));
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
+      expect(mock.tree.getActiveTurnIds).not.toHaveBeenCalled();
+    });
+
+    it('does not react to tree turn events when skip is true', () => {
+      const mock = createMockTransport();
+      const { result } = renderHook(() => useActiveTurns({ transport: mock.transport, skip: true }));
+
+      act(() => {
+        mock.emitTree('turn', makeTurnEvent('x-ably-turn-start', 'turn-1', 'client-1'));
+      });
+
+      expect(result.current.size).toBe(0);
+    });
+
+    it('resets turns to empty Map when skip flips from false to true', () => {
+      const mock = createMockTransport();
+      (mock.tree.getActiveTurnIds as ReturnType<typeof vi.fn>).mockReturnValue(
+        new Map([['client-1', new Set(['turn-1'])]]),
+      );
+
+      const { result, rerender } = renderHook(
+        ({ skip }: { skip: boolean }) => useActiveTurns({ transport: mock.transport, skip }),
+        { initialProps: { skip: false } },
+      );
+
+      expect(result.current.get('client-1')?.has('turn-1')).toBe(true);
+
+      act(() => {
+        rerender({ skip: true });
+      });
+
+      expect(result.current.size).toBe(0);
+    });
+
+    it('subscribes and returns turns when skip flips from true to false', () => {
+      const mock = createMockTransport();
+      (mock.tree.getActiveTurnIds as ReturnType<typeof vi.fn>).mockReturnValue(
+        new Map([['client-1', new Set(['turn-1'])]]),
+      );
+
+      const { result, rerender } = renderHook(
+        ({ skip }: { skip: boolean }) => useActiveTurns({ transport: mock.transport, skip }),
+        { initialProps: { skip: true } },
+      );
+
+      expect(result.current.size).toBe(0);
+
+      act(() => {
+        rerender({ skip: false });
+      });
+
+      expect(result.current.get('client-1')?.has('turn-1')).toBe(true);
+    });
+
+    it('stops reacting to tree turn events after skip flips to true', () => {
+      const mock = createMockTransport();
+      const { result, rerender } = renderHook(
+        ({ skip }: { skip: boolean }) => useActiveTurns({ transport: mock.transport, skip }),
+        { initialProps: { skip: false } },
+      );
+
+      act(() => {
+        rerender({ skip: true });
+      });
+
+      act(() => {
+        mock.emitTree('turn', makeTurnEvent('x-ably-turn-start', 'turn-1', 'client-1'));
+      });
+
+      expect(result.current.size).toBe(0);
+    });
+  });
+
   it('uses nearest transport from context when transport is omitted', () => {
     const mock = createMockTransport();
     const initialTurns = new Map([['client-1', new Set(['turn-1'])]]);

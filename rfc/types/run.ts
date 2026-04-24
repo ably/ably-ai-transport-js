@@ -62,11 +62,9 @@ export interface Run<TMessage> {
    * expose presets like `'terminal'` or `'settled'`, because those
    * vocabularies introduce a second state namespace without adding
    * information the caller doesn't already have.
-   *
    * @example
    * await run.when(['complete', 'failed', 'aborted']);              // former "terminal"
    * await run.when(['complete', 'failed', 'aborted', 'suspended']); // former "settled"
-   *
    * @param statuses - The run statuses to wait for.
    * @returns The status the run transitioned into.
    * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.RunClosed} when
@@ -126,7 +124,6 @@ export interface ClientRun<C extends AnyCodec> extends Run<CodecMessage<C>> {
   /**
    * Publish `x-ably-run-start` to the channel. Call after creating the run
    * via view.createRun/createRegenerate/createEdit and before sending content.
-   *
    * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.RunAlreadyStarted}
    *   when called twice on the same run. Lifecycle calls are
    *   orchestrator-authored; programming errors should be loud.
@@ -295,7 +292,7 @@ export interface AgentRun<C extends AnyCodec> extends Run<CodecMessage<C>> {
    * For the full conversation to pass to the model, use `run.view.messages`
    * instead — that includes ancestry from root down to this run's parent,
    * then the run's own messages. Reach for `run.messages` when you want
-   * *just this run's output* (e.g. `run.messages.findLast(n =>
+   * just this run's output* (e.g. `run.messages.findLast(n =>
    * n.message.role === 'assistant')` to grab the agent's final reply).
    *
    * Narrowed from the base so `node.run` is typed as `AgentRun<C>`,
@@ -342,7 +339,6 @@ export interface AgentRun<C extends AnyCodec> extends Run<CodecMessage<C>> {
    * Idempotent on a run that is already suspended — publishes nothing and
    * resolves `void`. Durable retries and multi-replica races fold into
    * one effective transition without the caller needing a guard.
-   *
    * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.RunAlreadyTerminal}
    *   when called on a run that has already reached a terminal status
    *   (`complete`/`aborted`/`failed`). A suspend is forward motion, so

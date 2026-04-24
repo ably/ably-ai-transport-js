@@ -89,7 +89,6 @@ export interface ClientView<C extends AnyCodec> extends View<CodecMessage<C>, Cl
 
   /**
    * Select a sibling at a branch point, switching which branch this view shows.
-   *
    * @param messageId - The ID of a node in the tree to select.
    * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.ViewNodeNotFound}
    *   when `messageId` does not identify any node in the tree.
@@ -110,7 +109,6 @@ export interface ClientView<C extends AnyCodec> extends View<CodecMessage<C>, Cl
    * the view selects the new branch immediately; pass `{ autoSelect: false }`
    * to leave selection untouched. The run is not yet live — call run.start()
    * to publish `x-ably-run-start`.
-   *
    * @param messageId - The message the regenerate should fork from.
    * @param options - Optional fork behaviour; see {@link CreateForkOptions}.
    */
@@ -122,7 +120,6 @@ export interface ClientView<C extends AnyCodec> extends View<CodecMessage<C>, Cl
    * selects the new branch immediately; pass `{ autoSelect: false }` to
    * leave selection untouched. The run is not yet live — call run.start()
    * to publish `x-ably-run-start`.
-   *
    * @param messageId - The message the edit should fork from.
    * @param options - Optional fork behaviour; see {@link CreateForkOptions}.
    */

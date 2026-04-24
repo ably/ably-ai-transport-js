@@ -10,7 +10,7 @@
 
 import type * as AI from 'ai';
 
-import type { Codec, ClientRun, ClientView } from '../../../index.js';
+import type { ClientRun, ClientView, Codec } from '../../../index.js';
 
 /**
  * View-wide stop button. Aborts every cancellable run in the view —

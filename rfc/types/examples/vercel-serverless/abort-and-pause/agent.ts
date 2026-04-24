@@ -51,43 +51,39 @@ export const POST = async (req: Request): Promise<Response> => {
   // Convert pause into a cooperative cancellation the handler owns, so the
   // stream unwinds and the terminal publish happens inside the request.
   const pauseCtrl = new AbortController();
-  let paused = false;
   step.on('pause', () => {
-    paused = true;
     pauseCtrl.abort();
   });
 
   await step.start({ signal: req.signal, timeoutMs: 60_000 });
 
-  // A prior abort already on the channel leaves step.signal aborted.
-  if (step.signal.aborted) {
-    await step.end('aborted');
-    await run.end('aborted');
-    return new Response(undefined, { status: 202 });
-  }
-
   try {
+    // A prior abort already on the channel leaves step.signal aborted;
+    // AbortSignal.any propagates that immediately and stream throws.
     const result = await agent.stream({
       messages: await convertToModelMessages(run.view.messages.map((n) => n.message)),
       abortSignal: AbortSignal.any([step.signal, pauseCtrl.signal]),
     });
     await step.pipe(result.toUIMessageStream());
 
-    if (paused) {
+    if (pauseCtrl.signal.aborted) {
       await step.end('paused');
       await run.suspend('paused');
     } else {
       await step.end('complete');
       await run.end('complete');
     }
-  } catch (err) {
-    if (paused) {
+  } catch (error) {
+    if (pauseCtrl.signal.aborted) {
       await step.end('paused');
       await run.suspend('paused');
+    } else if (step.signal.aborted) {
+      await step.end('aborted');
+      await run.end('aborted');
     } else {
-      await run.end(step.signal.aborted ? 'aborted' : 'failed');
+      await run.end('failed');
+      throw error;
     }
-    throw err;
   }
 
   return new Response(undefined, { status: 202 });

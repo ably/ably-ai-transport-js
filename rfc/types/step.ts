@@ -120,7 +120,6 @@ export interface Step<C extends AnyCodec> {
    * `start()`; the resume control signal exists to *wake* an agent (drive
    * a new step-start externally when none would otherwise fire) rather
    * than to gate step-start itself.
-   *
    * @param options - Precondition-wait timeout and caller-folded abort
    *   signal; see {@link StepStartOptions}.
    * @throws An `Ably.ErrorInfo` with code:

@@ -38,7 +38,7 @@ const MAX_STEPS = 20;
  * @param code - The error code to check for.
  * @returns Whether the value is an `Ably.ErrorInfo` with a matching `code`.
  */
-const isErrorInfoWithCode = (value: unknown, code: ErrorCode): boolean =>
+const isErrorInfoWithCode = (value: unknown, code: number): boolean =>
   value instanceof Ably.ErrorInfo && value.code === code;
 
 /**
@@ -47,6 +47,7 @@ const isErrorInfoWithCode = (value: unknown, code: ErrorCode): boolean =>
  * otherwise returns `'complete'` once the response has been produced.
  * @param invocationData - The serialized {@link InvocationData} identifying the run.
  * @param options - WDK step context, providing the durable `abortSignal`.
+ * @param options.abortSignal - Durable abort signal supplied by the WDK step context.
  * @returns Whether the hop needs HITL input or has finished the run.
  */
 export const runAgentHop = async (
@@ -70,9 +71,9 @@ export const runAgentHop = async (
 
   try {
     await step.start({ signal: wdkSignal, timeoutMs: 60_000 });
-  } catch (e) {
-    if (isErrorInfoWithCode(e, ErrorCode.StepSuperseded)) return 'complete';
-    throw e;
+  } catch (error) {
+    if (isErrorInfoWithCode(error, ErrorCode.StepSuperseded)) return 'complete';
+    throw error;
   }
 
   const result = streamText({

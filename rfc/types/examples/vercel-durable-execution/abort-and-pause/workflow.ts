@@ -37,8 +37,13 @@ type HopOutcome = { kind: 'continue'; finishReason: AI.FinishReason } | { kind: 
 /** Upper bound on agent hops — guards against runaway loops. */
 const MAX_STEPS = 20;
 
-/** Narrow a caught value to an {@link Ably.ErrorInfo} with the given code. */
-const isErrorInfoWithCode = (value: unknown, code: ErrorCode): boolean =>
+/**
+ * Narrow a caught value to an {@link Ably.ErrorInfo} with the given code.
+ * @param value - The value caught from a try/catch.
+ * @param code - The {@link ErrorCode} to match on `.code`.
+ * @returns `true` when `value` is an `Ably.ErrorInfo` whose `.code` matches.
+ */
+const isErrorInfoWithCode = (value: unknown, code: number): boolean =>
   value instanceof Ably.ErrorInfo && value.code === code;
 
 /**
@@ -47,6 +52,7 @@ const isErrorInfoWithCode = (value: unknown, code: ErrorCode): boolean =>
  * to replay hop bodies.
  * @param invocationData - The serialized {@link InvocationData} identifying the run.
  * @param options - WDK step context, providing the durable `abortSignal`.
+ * @param options.abortSignal - Durable abort signal supplied by the WDK step context.
  * @returns The hop's outcome.
  */
 export const runAgentHop = async (
@@ -69,17 +75,15 @@ export const runAgentHop = async (
   await using step = run.createStep();
 
   const pauseCtrl = new AbortController();
-  let paused = false;
   step.on('pause', () => {
-    paused = true;
     pauseCtrl.abort();
   });
 
   try {
     await step.start({ signal: wdkSignal, timeoutMs: 60_000 });
-  } catch (e) {
-    if (isErrorInfoWithCode(e, ErrorCode.StepSuperseded)) return { kind: 'continue', finishReason: 'stop' };
-    throw e;
+  } catch (error) {
+    if (isErrorInfoWithCode(error, ErrorCode.StepSuperseded)) return { kind: 'continue', finishReason: 'stop' };
+    throw error;
   }
 
   // Pre-existing abort was already on the channel.
@@ -104,7 +108,7 @@ export const runAgentHop = async (
     await step.end('complete');
     return { kind: 'continue', finishReason: result.steps.at(-1)?.finishReason ?? 'stop' };
   } catch {
-    if (paused) {
+    if (pauseCtrl.signal.aborted) {
       await step.end('paused');
       return { kind: 'paused' };
     }

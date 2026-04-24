@@ -47,7 +47,6 @@ export interface InvocationConstructor {
    * Rehydrate an {@link Invocation} from its serialized form. Used by agent
    * entry points to reconstruct the typed handle from an incoming HTTP
    * request body.
-   *
    * @param data - The plain object produced by {@link Invocation.toJSON},
    *   typically read from an HTTP request body.
    * @returns An {@link Invocation} carrying the same preconditions.

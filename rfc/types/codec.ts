@@ -84,19 +84,6 @@ export type DecodedValue<TPart, TEvent> =
     };
 
 /**
- * Legacy alias retained for doc compatibility with existing examples. New code
- * should use {@link DecodedValue}.
- *
- * @deprecated Use {@link DecodedValue}.
- */
-export interface DecodedPart<TPart> {
-  /** The decoded domain part. */
-  part: TPart;
-  /** Message ID read from `x-ably-msg-id`, if present. */
-  messageId?: string;
-}
-
-/**
  * Produces channel messages (domain parts or events encoded onto the wire)
  * from a stream of domain parts. The encoder is stateful — it owns any
  * in-flight streaming lifecycle for the duration of a step.

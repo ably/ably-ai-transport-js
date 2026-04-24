@@ -12,7 +12,7 @@
 
 import type * as AI from 'ai';
 
-import type { Codec, ClientSession } from '../../../index.js';
+import type { ClientSession, Codec } from '../../../index.js';
 
 /**
  * Retry a run that the workflow ended as `failed`. Publishes

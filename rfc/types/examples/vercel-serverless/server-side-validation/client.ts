@@ -10,7 +10,7 @@
 
 import type * as AI from 'ai';
 
-import type { Codec, ClientSession, InvocationData } from '../../../index.js';
+import type { ClientSession, Codec, InvocationData } from '../../../index.js';
 
 /**
  * Deliver an invocation to the agent HTTP endpoint.

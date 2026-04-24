@@ -9,7 +9,7 @@
 
 import type * as AI from 'ai';
 
-import type { Codec, ClientSession } from '../../../index.js';
+import type { ClientSession, Codec } from '../../../index.js';
 
 /**
  * Attach a retry-on-failure listener to a session's tree. The step-level

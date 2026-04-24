@@ -50,10 +50,12 @@ declare const workflowStateReader: (runId: string) => StorageReader;
 
 /**
  * Narrow an unknown caught value to an {@link Ably.ErrorInfo} with the
- * given code. Stands in for a future shared helper; inlined here so
- * examples remain self-contained without new source modules.
+ * given code. Kept inline here so each example file stands alone.
+ * @param value - The value caught from a try/catch.
+ * @param code - The {@link ErrorCode} to match on `.code`.
+ * @returns `true` when `value` is an `Ably.ErrorInfo` whose `.code` matches.
  */
-const isErrorInfoWithCode = (value: unknown, code: ErrorCode): boolean =>
+const isErrorInfoWithCode = (value: unknown, code: number): boolean =>
   value instanceof Ably.ErrorInfo && value.code === code;
 
 /**
@@ -65,6 +67,7 @@ const isErrorInfoWithCode = (value: unknown, code: ErrorCode): boolean =>
  * the outline as visible progress.
  * @param invocationData - The serialized {@link InvocationData} the client posted.
  * @param options - WDK step context, providing the durable `abortSignal`.
+ * @param options.abortSignal - Durable abort signal supplied by the WDK step context.
  */
 export const planHop = async (
   invocationData: InvocationData,
@@ -122,6 +125,7 @@ export const planHop = async (
  * taking it as a parameter — one source of truth for the model context.
  * @param invocationData - The serialized {@link InvocationData}.
  * @param options - WDK step context, providing the durable `abortSignal`.
+ * @param options.abortSignal - Durable abort signal supplied by the WDK step context.
  */
 export const draftHop = async (
   invocationData: InvocationData,

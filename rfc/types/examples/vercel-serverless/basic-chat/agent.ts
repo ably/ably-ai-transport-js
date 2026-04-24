@@ -56,9 +56,9 @@ export const POST = async (req: Request): Promise<Response> => {
     await step.pipe(result.toUIMessageStream());
     await step.end('complete');
     await run.end('complete');
-  } catch (err) {
+  } catch (error) {
     await run.end(step.signal.aborted ? 'aborted' : 'failed');
-    throw err;
+    throw error;
   }
 
   return new Response(undefined, { status: 202 });

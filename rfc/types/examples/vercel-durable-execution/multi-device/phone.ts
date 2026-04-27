@@ -42,9 +42,7 @@ export const startFromPhone = async (text: string): Promise<void> => {
   await session.connect();
 
   const view = session.createView();
-  const run = view.createRun();
-  await run.start();
-  await run.sendMessages({
+  const run = await view.send({
     id: crypto.randomUUID(),
     role: 'user',
     parts: [{ type: 'text', text }],

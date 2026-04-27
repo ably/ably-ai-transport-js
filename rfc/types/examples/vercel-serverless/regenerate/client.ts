@@ -1,10 +1,11 @@
 /**
  * Regenerate — client side.
  *
- * `view.createRegenerate(messageId)` forks the tree. The original response
- * is preserved alongside the new branch, and by default the view selects
- * the new branch automatically. The UI reads sibling counts via
- * `session.tree` to decide whether to show branch-switcher controls.
+ * `view.regenerate(messageId)` forks the tree and opens the new run
+ * atomically (one Ably batch publish). The original response is preserved
+ * alongside the new branch, and by default the view selects the new
+ * branch automatically. The UI reads sibling counts via `session.tree`
+ * to decide whether to show branch-switcher controls.
  */
 
 import type * as AI from 'ai';
@@ -23,7 +24,7 @@ const invokeAgent = async (data: InvocationData): Promise<void> => {
 /**
  * Regenerate an assistant response. Forks the tree at the response the
  * user wants redone and invokes the agent on the new branch. The view
- * auto-selects the new branch per {@link ClientView.createRegenerate}.
+ * auto-selects the new branch per {@link ClientView.regenerate}.
  * @param view - The client view positioned on the conversation being regenerated.
  * @param assistantMessageId - The ID of the assistant message to regenerate.
  * @returns Resolves once the invocation has been dispatched.
@@ -32,8 +33,7 @@ export const onRegenerateClick = async (
   view: ClientView<Codec<AI.UIMessageChunk, AI.UIMessage>>,
   assistantMessageId: string,
 ): Promise<void> => {
-  const run = view.createRegenerate(assistantMessageId);
-  await run.start();
+  const run = await view.regenerate(assistantMessageId);
   await invokeAgent(run.toInvocation().toJSON());
 };
 

@@ -1,7 +1,7 @@
 /**
  * Regenerate — client side (durable execution).
  *
- * Identical to the serverless variant. `view.createRegenerate(messageId)`
+ * Identical to the serverless variant. `view.regenerate(messageId)`
  * forks the tree and auto-selects the new branch; the returned run's
  * invocation points the workflow at the new branch.
  */
@@ -31,8 +31,7 @@ export const onRegenerateClick = async (
   view: ClientView<Codec<AI.UIMessageChunk, AI.UIMessage>>,
   assistantMessageId: string,
 ): Promise<void> => {
-  const run = view.createRegenerate(assistantMessageId);
-  await run.start();
+  const run = await view.regenerate(assistantMessageId);
   await invokeWorkflow(run.toInvocation().toJSON());
 };
 

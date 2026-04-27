@@ -31,9 +31,7 @@ export const onSendClick = async (
   view: ClientView<Codec<AI.UIMessageChunk, AI.UIMessage>>,
   text: string,
 ): Promise<void> => {
-  const run = view.createRun();
-  await run.start();
-  await run.sendMessages({
+  const run = await view.send({
     id: crypto.randomUUID(),
     role: 'user',
     parts: [{ type: 'text', text }],

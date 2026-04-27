@@ -1,5 +1,6 @@
 import type { AnyCodec, CodecEvent, CodecMessage, CodecPart } from './codec.js';
 import type { SendEventsTarget } from './run.js';
+import type { ABORTED, PAUSED } from './signal-reason.js';
 
 /** Terminal status for a step. */
 export type StepEndStatus = 'complete' | 'failed' | 'aborted' | 'paused' | 'superseded';
@@ -24,6 +25,19 @@ export interface StepState {
   readonly runId: string;
   /** Current status of the step. */
   readonly status: StepStatus;
+  /**
+   * Signal reason captured at `step.end()` time — whichever sentinel
+   * (`ABORTED` or `PAUSED`) was set on `step.signal.reason` when the
+   * step finalised, or `undefined` if the signal never aborted.
+   *
+   * Consumed by the run terminal classifier (`run.end()` reads
+   * `lastStep.signalReason` to distinguish the case-(a) pattern where a
+   * step completes normally despite an observed pause from the
+   * post-completion happy path). Exposed publicly for symmetric
+   * observability with `status` (telemetry, debug UI explaining why a
+   * run suspended).
+   */
+  readonly signalReason?: typeof ABORTED | typeof PAUSED;
 }
 
 /**
@@ -81,22 +95,46 @@ export interface Step<C extends AnyCodec> {
   readonly status: StepStatus;
 
   /**
-   * Aborts when any of the following happens:
+   * Composed cancellation signal. Aborts when any of the following happens:
    *   - An `x-ably-abort` control signal is observed on the channel
-   *     (the durable "run aborted" fact).
+   *     (the durable "run aborted" fact). `signal.reason` is `ABORTED`.
+   *   - An `x-ably-pause` control signal is observed on the channel
+   *     (the durable "run paused" fact). `signal.reason` is `PAUSED`.
    *   - A signal passed to {@link Step.start} via `start({ signal })` fires
    *     (the caller folds in runtime-owned cancellation: `req.signal` in
    *     serverless handlers, a WDK `abortSignal` in durable execution).
+   *     `signal.reason` is `ABORTED`.
+   *   - The precondition wait exceeds `timeoutMs`. `signal.reason` is
+   *     `ABORTED`.
    *
-   * Wire into your model call as `abortSignal: step.signal`. No explicit
-   * composition at call sites for the common case.
+   * Wire into your model call as `abortSignal: step.signal` for the common
+   * case ("any cancellation interrupts the stream"). The terminal-status
+   * inference at `step.end(error?)` reads `signal.reason` to pick
+   * between `'aborted'` and `'paused'`. Reach for {@link Step.abortSignal}
+   * instead when pause should *not* interrupt the in-flight work.
    *
-   * If the run was aborted before this step started (e.g. during the gap
-   * between a crash and a retry), the signal is already aborted when
-   * {@link Step.start} resolves. Always check `signal.aborted` after
-   * `start()` returns.
+   * If the run was aborted or paused before this step started, the
+   * signal is already aborted when {@link Step.start} resolves with
+   * `signal.reason` populated.
+   *
+   * The `ABORTED` and `PAUSED` sentinels are exported from the package
+   * root.
    */
   readonly signal: AbortSignal;
+
+  /**
+   * Narrow cancellation signal. Aborts only on hard-abort sources —
+   * `x-ably-abort`, caller-folded `start({ signal })`, and the precondition
+   * timeout. **Never aborts on pause.**
+   *
+   * Wire into your model call as `abortSignal: step.abortSignal` when the
+   * handler wants pause to be observed but **not** interrupt the in-flight
+   * stream (the case-(a) pattern: let the current response finish, then
+   * suspend the run for later resume). The pause is still reflected on
+   * `step.signal.reason === PAUSED` and frozen onto `StepState.signalReason`
+   * at `step.end()` time, so `run.end()` can route correctly.
+   */
+  readonly abortSignal: AbortSignal;
 
   /**
    * Wait for all preconditions declared in the view's invocation to be
@@ -134,16 +172,45 @@ export interface Step<C extends AnyCodec> {
   start(options?: StepStartOptions): Promise<void>;
 
   /**
-   * Publish `x-ably-step-end` with the given status and release step
-   * resources (signal listeners, stream references).
+   * Finalise the step. Publishes `x-ably-step-end` with the terminal
+   * status the SDK derives from the inputs and releases step resources
+   * (signal listeners, stream references). The chosen status is also
+   * frozen onto `StepState.signalReason` for the run classifier.
+   *
+   * Inference table (single-method, single-argument; no explicit-status
+   * overload):
+   *
+   * | Inputs                                                | Step terminal |
+   * | ----------------------------------------------------- | ------------- |
+   * | `error === undefined`, `!signal.aborted`              | `'complete'`  |
+   * | `error === undefined`, `signal.aborted` (late)        | `'complete'`  |
+   * | `error !== undefined`, `signal.reason === ABORTED`    | `'aborted'`   |
+   * | `error !== undefined`, `signal.reason === PAUSED`     | `'paused'`    |
+   * | `error !== undefined`, `signal.aborted`, other reason | `'aborted'`   |
+   * | `error !== undefined`, `!signal.aborted`              | `'failed'`    |
+   *
+   * Pass the caught error from a `catch` block to `end(error)`; pass no
+   * argument from the happy path. Observable-outcome rules: a late abort
+   * or pause that arrives after the handler decided "done" cannot unwind
+   * completed work, so `error === undefined` always classifies as
+   * `'complete'`.
+   *
+   * On `'failed'`, the SDK serialises `error.message` (and, when `error`
+   * is an `Ably.ErrorInfo`, its `code`) onto the `x-ably-step-end`
+   * headers for downstream observability.
    *
    * Idempotent on a step that has already reached a terminal status —
-   * publishes nothing and resolves `void`. Useful for the
-   * retry-after-failure pattern where a caller unconditionally calls
-   * `step.end('failed')` in a catch block even though `step.start()` may
-   * have already left the step terminal via `StepSuperseded`.
+   * publishes nothing and resolves `void`. No-op when the step is still
+   * `'pending'` (`start()` never resolved, so no `x-ably-step-start`
+   * reached the channel).
+   *
+   * `'superseded'` and `'abandoned'` are SDK-derived: `'superseded'` is
+   * picked automatically when a concurrent `step-start` wins the race;
+   * `'abandoned'` is a tree-side classification for orphaned steps and
+   * is never wire-published. Neither is reachable from `end()`.
+   * @param error - The caught error, or omitted on the happy path.
    */
-  end(status: StepEndStatus): Promise<void>;
+  end(error?: unknown): Promise<void>;
 
   /**
    * Symbol.asyncDispose — pessimistic safety net. Behaviour depends on
@@ -159,11 +226,11 @@ export interface Step<C extends AnyCodec> {
    *       {@link ErrorCode.StepDisposedBeforeEnd} (`104021`).
    *   - Terminal (any {@link StepEndStatus}) → pure cleanup, no publish.
    *     The idempotent `end()` contract means an explicit earlier
-   *     `end('complete')` is not clobbered.
+   *     `end()` call is not clobbered.
    *
-   * Callers still call `step.end('complete')` explicitly on the happy path;
-   * the disposer exists to close out runs that leave scope via a thrown
-   * error.
+   * Callers still call `step.end()` (or `step.end(error)` from a catch)
+   * on the explicit path; the disposer exists to close out runs that
+   * leave scope via a thrown error before the explicit call ran.
    */
   [Symbol.asyncDispose](): Promise<void>;
 

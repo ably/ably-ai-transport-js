@@ -34,10 +34,11 @@ export type AgentMessageNode<C extends AnyCodec> = MessageNode<CodecMessage<C>, 
 export type { AgentRun, ClientRun, Run, RunEndStatus, RunStatus, SendEventsTarget, SuspendReason } from './run.js';
 export type { AgentSession, ClientSession, SessionOptions } from './session.js';
 export { createAgentSession, createClientSession } from './session.js';
+export { ABORTED, PAUSED } from './signal-reason.js';
 export type { Step, StepEndStatus, StepStartOptions, StepState, StepStatus } from './step.js';
 export type { StorageReader, StorageWriter } from './storage.js';
 export type { Tree } from './tree.js';
-export type { AgentView, ClientView, CreateForkOptions, CreateViewOptions, View } from './view.js';
+export type { AgentView, ClientView, CreateForkOptions, CreateRunOptions, CreateViewOptions, View } from './view.js';
 export type {
   AbortOptions,
   ClientRunAbortOptions,

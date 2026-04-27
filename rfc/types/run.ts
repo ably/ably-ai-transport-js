@@ -36,6 +36,18 @@ export interface Run<TMessage> {
   readonly steps: readonly StepState[];
 
   /**
+   * The most recent step on this run, or `undefined` if no step has been
+   * materialised. Equivalent to `steps.at(-1)`. Reads directly from the
+   * tree.
+   *
+   * Consumed by the run terminal classifier (`run.end()` reads
+   * `lastStep?.status` and `lastStep?.signalReason` to infer
+   * `'aborted'`/`'paused'`/etc.) and exposed publicly for callers that
+   * want to inspect step outcome without walking `steps`.
+   */
+  readonly lastStep?: StepState;
+
+  /**
    * Messages published **within this run** — the user message (or messages)
    * that opened it plus anything its steps produced. Scoped to the run; does
    * not include ancestry from earlier runs on the same branch.
@@ -122,8 +134,12 @@ export interface ClientRun<C extends AnyCodec> extends Run<CodecMessage<C>> {
   // --- Lifecycle ---
 
   /**
-   * Publish `x-ably-run-start` to the channel. Call after creating the run
-   * via view.createRun/createRegenerate/createEdit and before sending content.
+   * Publish `x-ably-run-start` to the channel. The verb methods on
+   * {@link ClientView} (`send`/`regenerate`/`edit`) call this internally
+   * as part of their atomic batch publish; reach for this directly only
+   * on the escape-hatch path where the run was created via
+   * {@link ClientView.createRun} and the caller wants to drive lifecycle
+   * manually.
    * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.RunAlreadyStarted}
    *   when called twice on the same run. Lifecycle calls are
    *   orchestrator-authored; programming errors should be loud.
@@ -332,13 +348,21 @@ export interface AgentRun<C extends AnyCodec> extends Run<CodecMessage<C>> {
   createStep(): Step<C>;
 
   /**
-   * Suspend this run without closing it. Published by the agent when the
-   * current step's work requires external input before continuing, or in
-   * response to a pause signal.
+   * Suspend this run without closing it. The explicit escape hatch for
+   * suspensions the inference classifier on {@link AgentRun.end} cannot
+   * derive: typically `'awaiting-input'` (orchestrator-authored, not
+   * pause-driven), or any orchestrator that wants to suspend without
+   * throwing.
    *
-   * Idempotent on a run that is already suspended — publishes nothing and
-   * resolves `void`. Durable retries and multi-replica races fold into
-   * one effective transition without the caller needing a guard.
+   * For pause-driven suspensions in error-handling paths, prefer
+   * `run.end(error)` — the classifier routes to a `paused` suspend
+   * automatically when `lastStep.status === 'paused'` or
+   * `signal.reason === PAUSED`. Reach for `suspend()` directly only when
+   * the inputs the classifier reads do not reflect the desired transition.
+   *
+   * Idempotent on a run that is already suspended — publishes nothing
+   * and resolves `void`. Durable retries and multi-replica races fold
+   * into one effective transition without the caller needing a guard.
    * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.RunAlreadyTerminal}
    *   when called on a run that has already reached a terminal status
    *   (`complete`/`aborted`/`failed`). A suspend is forward motion, so
@@ -348,16 +372,40 @@ export interface AgentRun<C extends AnyCodec> extends Run<CodecMessage<C>> {
   suspend(reason: SuspendReason): Promise<void>;
 
   /**
-   * Close this run terminally. Published by the agent when the task
-   * completes, is aborted, or fails beyond recovery.
+   * Finalise the run. Single-method, single-argument form: the SDK
+   * derives the transition from the caller's error (or lack of one),
+   * the step signal's reason, and the last step's recorded outcome.
+   *
+   * Inference table — `run.end(error?)` routes to:
+   *
+   * | Inputs                                                                      | Action                  |
+   * | --------------------------------------------------------------------------- | ----------------------- |
+   * | `error` given, `signal.reason === ABORTED`                                  | `run.end('aborted')`    |
+   * | `error` given, `signal.reason === PAUSED` or `lastStep.status === 'paused'` | `run.suspend('paused')` |
+   * | `error` given, otherwise                                                    | `run.end('failed')`     |
+   * | no `error`, `lastStep?.status === 'paused'`                                 | `run.suspend('paused')` |
+   * | no `error`, `lastStep?.signalReason === PAUSED`                             | `run.suspend('paused')` |
+   * | no `error`, otherwise                                                       | `run.end('complete')`   |
+   *
+   * The classifier reads {@link Run.lastStep}, not the run as a whole.
+   * In a multi-step run where step 1 observed pause and completed but
+   * step 2 ran cleanly to completion (`signalReason === undefined`,
+   * `status === 'complete'`), `run.end()` reads step 2 and picks
+   * `'complete'` — the explicit decision to start another step drains
+   * the earlier pause.
+   *
+   * On the wire, this publishes either `x-ably-run-end` (for
+   * `complete`/`aborted`/`failed`) or `x-ably-run-suspend` (for the
+   * `paused` row). On `'failed'`, the SDK serialises `error.message`
+   * (and, when `error` is an `Ably.ErrorInfo`, its `code`) onto the
+   * `x-ably-run-end` headers.
    *
    * Idempotent on a run that has already reached a terminal status —
-   * publishes nothing and resolves `void`. The terminal state already
-   * landed (possibly via a prior hop, a peer replica, or an explicit
-   * control signal); re-publishing is redundant, not a programming error.
-   * From `suspended`, `end()` publishes the forward transition normally.
+   * publishes nothing and resolves `void`. From `suspended`, `end()`
+   * publishes the forward transition normally.
+   * @param error - The caught error, or omitted on the happy path.
    */
-  end(status: RunEndStatus): Promise<void>;
+  end(error?: unknown): Promise<void>;
 
   /**
    * Symbol.asyncDispose — releases the local handle's subscriptions

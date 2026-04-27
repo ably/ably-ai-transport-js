@@ -88,23 +88,30 @@ export const runAgentHop = async (
 
   const latestUserMessageId = run.view.messages.findLast((n) => n.message.role === 'user')?.id;
 
-  const bridge = new TransformStream<AI.UIMessageChunk, AI.UIMessageChunk>();
-  const readable: ReadableStream<AI.UIMessageChunk> = bridge.readable;
-  const [, result] = await Promise.all([
-    step.pipe(readable),
-    agent.stream({
-      messages: await convertToModelMessages(run.view.messages.map((n) => n.message)),
-      writable: bridge.writable,
-      stopWhen: stepCountIs(1),
-      abortSignal: step.signal,
-    }),
-  ]);
-  await step.end('complete');
+  try {
+    const bridge = new TransformStream<AI.UIMessageChunk, AI.UIMessageChunk>();
+    const readable: ReadableStream<AI.UIMessageChunk> = bridge.readable;
+    const [, result] = await Promise.all([
+      step.pipe(readable),
+      agent.stream({
+        messages: await convertToModelMessages(run.view.messages.map((n) => n.message)),
+        writable: bridge.writable,
+        stopWhen: stepCountIs(1),
+        abortSignal: step.signal,
+      }),
+    ]);
+    await step.end();
 
-  return {
-    finishReason: result.steps.at(-1)?.finishReason ?? 'stop',
-    latestUserMessageId,
-  };
+    return {
+      finishReason: result.steps.at(-1)?.finishReason ?? 'stop',
+      latestUserMessageId,
+    };
+  } catch (error) {
+    await step.end(error);
+    await run.end(error);
+    if (!step.signal.aborted) throw error;
+    return { finishReason: 'stop', latestUserMessageId };
+  }
 };
 
 /**

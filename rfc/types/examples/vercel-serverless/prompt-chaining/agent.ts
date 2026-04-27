@@ -59,10 +59,10 @@ export const POST = async (req: Request): Promise<Response> => {
   try {
     await planStep(run, req.signal);
     await draftStep(run, req.signal);
-    await run.end('complete');
+    await run.end();
   } catch (error) {
-    await run.end(req.signal.aborted ? 'aborted' : 'failed');
-    throw error;
+    await run.end(error);
+    if (run.status === 'failed') throw error;
   }
 
   return new Response(undefined, { status: 202 });
@@ -83,21 +83,26 @@ const planStep = async (
   await using step = run.createStep();
   await step.start({ signal: reqSignal, timeoutMs: 60_000 });
 
-  const result = await generateText({
-    model: openai('gpt-4o'),
-    system:
-      "Produce a short bullet-point outline that plans the answer to the user's " +
-      'most recent question. Keep it under six bullets. Do not answer the question.',
-    messages: await convertToModelMessages(run.view.messages.map((n) => n.message)),
-    abortSignal: step.signal,
-  });
+  try {
+    const result = await generateText({
+      model: openai('gpt-4o'),
+      system:
+        "Produce a short bullet-point outline that plans the answer to the user's " +
+        'most recent question. Keep it under six bullets. Do not answer the question.',
+      messages: await convertToModelMessages(run.view.messages.map((n) => n.message)),
+      abortSignal: step.signal,
+    });
 
-  await step.sendMessages({
-    id: crypto.randomUUID(),
-    role: 'assistant',
-    parts: [{ type: 'text', text: result.text }],
-  });
-  await step.end('complete');
+    await step.sendMessages({
+      id: crypto.randomUUID(),
+      role: 'assistant',
+      parts: [{ type: 'text', text: result.text }],
+    });
+    await step.end();
+  } catch (error) {
+    await step.end(error);
+    throw error;
+  }
 };
 
 /**
@@ -118,15 +123,20 @@ const draftStep = async (
   await using step = run.createStep();
   await step.start({ signal: reqSignal, timeoutMs: 60_000 });
 
-  const result = streamText({
-    model: openai('gpt-4o'),
-    system:
-      'You already outlined your answer in the previous assistant turn. ' +
-      "Now write the final answer to the user's most recent question, following that plan.",
-    messages: await convertToModelMessages(run.view.messages.map((n) => n.message)),
-    abortSignal: step.signal,
-  });
+  try {
+    const result = streamText({
+      model: openai('gpt-4o'),
+      system:
+        'You already outlined your answer in the previous assistant turn. ' +
+        "Now write the final answer to the user's most recent question, following that plan.",
+      messages: await convertToModelMessages(run.view.messages.map((n) => n.message)),
+      abortSignal: step.signal,
+    });
 
-  await step.pipe(result.toUIMessageStream());
-  await step.end('complete');
+    await step.pipe(result.toUIMessageStream());
+    await step.end();
+  } catch (error) {
+    await step.end(error);
+    throw error;
+  }
 };

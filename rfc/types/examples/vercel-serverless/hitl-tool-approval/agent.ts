@@ -53,7 +53,7 @@ export const POST = async (req: Request): Promise<Response> => {
       abortSignal: step.signal,
     });
     await step.pipe(result.toUIMessageStream());
-    await step.end('complete');
+    await step.end();
 
     // AI SDK v6 represents a pending approval as a `tool-${name}` part whose
     // `state` is `'approval-requested'` on the final assistant message. Scan
@@ -63,10 +63,11 @@ export const POST = async (req: Request): Promise<Response> => {
     const pending =
       last?.message.parts.filter(isToolUIPart).some((part) => part.state === 'approval-requested') ?? false;
 
-    await (pending ? run.suspend('awaiting-input') : run.end('complete'));
+    await (pending ? run.suspend('awaiting-input') : run.end());
   } catch (error) {
-    await run.end(step.signal.aborted ? 'aborted' : 'failed');
-    throw error;
+    await step.end(error);
+    await run.end(error);
+    if (!step.signal.aborted) throw error;
   }
 
   return new Response(undefined, { status: 202 });

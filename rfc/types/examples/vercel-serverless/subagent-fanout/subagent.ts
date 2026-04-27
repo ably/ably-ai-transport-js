@@ -52,13 +52,12 @@ export const POST = async (req: Request): Promise<Response> => {
       abortSignal: step.signal,
     });
     await step.pipe(result.toUIMessageStream());
-
-    const outcome = step.signal.aborted ? 'aborted' : 'complete';
-    await step.end(outcome);
-    await run.end(outcome);
+    await step.end();
+    await run.end();
   } catch (error) {
-    await run.end(step.signal.aborted ? 'aborted' : 'failed');
-    throw error;
+    await step.end(error);
+    await run.end(error);
+    if (!step.signal.aborted) throw error;
   }
 
   return new Response(undefined, { status: 202 });

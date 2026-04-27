@@ -7,10 +7,9 @@
  * `step.start()`. Abort closes the run terminally between hops; pause
  * suspends the run and leaves it waiting for a resume invocation.
  *
- * Within a hop, `step.signal` surfaces live aborts to the model SDK and
- * the pause event converts a pause into a cooperative cancellation the
- * hop's handler owns, so the terminal publish happens inside the hop's
- * durable boundary.
+ * Within a hop, `step.signal` surfaces both abort and pause to the model
+ * SDK; `run.end(error)` reads `step.signal.reason` and routes to the
+ * correct terminal — a hard abort closes the run, a pause suspends it.
  */
 
 import { DurableAgent } from '@workflow/ai/agent';
@@ -19,7 +18,7 @@ import type * as AI from 'ai';
 import { convertToModelMessages, stepCountIs } from 'ai';
 
 import type { Codec, InvocationData, StorageReader } from '../../../index.js';
-import { createAgentSession, ErrorCode, Invocation } from '../../../index.js';
+import { createAgentSession, ErrorCode, Invocation, PAUSED } from '../../../index.js';
 
 declare const ably: Ably.Realtime;
 declare const codec: Codec<AI.UIMessageChunk, AI.UIMessage>;
@@ -74,11 +73,6 @@ export const runAgentHop = async (
   await using run = session.createRun(invocation);
   await using step = run.createStep();
 
-  const pauseCtrl = new AbortController();
-  step.on('pause', () => {
-    pauseCtrl.abort();
-  });
-
   try {
     await step.start({ signal: wdkSignal, timeoutMs: 60_000 });
   } catch (error) {
@@ -86,34 +80,25 @@ export const runAgentHop = async (
     throw error;
   }
 
-  // Pre-existing abort was already on the channel.
-  if (step.signal.aborted) {
-    await step.end('aborted');
-    return { kind: 'aborted' };
-  }
-
-  const bridge = new TransformStream<AI.UIMessageChunk, AI.UIMessageChunk>();
-  const readable: ReadableStream<AI.UIMessageChunk> = bridge.readable;
-
   try {
+    const bridge = new TransformStream<AI.UIMessageChunk, AI.UIMessageChunk>();
+    const readable: ReadableStream<AI.UIMessageChunk> = bridge.readable;
     const [, result] = await Promise.all([
       step.pipe(readable),
       agent.stream({
         messages: await convertToModelMessages(run.view.messages.map((n) => n.message)),
         writable: bridge.writable,
         stopWhen: stepCountIs(1),
-        abortSignal: AbortSignal.any([step.signal, pauseCtrl.signal]),
+        abortSignal: step.signal,
       }),
     ]);
-    await step.end('complete');
+    await step.end();
     return { kind: 'continue', finishReason: result.steps.at(-1)?.finishReason ?? 'stop' };
-  } catch {
-    if (pauseCtrl.signal.aborted) {
-      await step.end('paused');
-      return { kind: 'paused' };
-    }
-    await step.end('aborted');
-    return { kind: 'aborted' };
+  } catch (error) {
+    await step.end(error);
+    await run.end(error);
+    if (!step.signal.aborted) throw error;
+    return step.signal.reason === PAUSED ? { kind: 'paused' } : { kind: 'aborted' };
   }
 };
 

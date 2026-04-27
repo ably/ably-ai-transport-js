@@ -4,11 +4,12 @@
  * Demonstrates three things:
  *   - Handling a pre-existing abort (published while no agent was live)
  *     observed as `step.signal.aborted === true` immediately after `start()`.
- *   - Surfacing live aborts to the model SDK through `step.signal`.
- *   - Reacting to a durable pause signal via the step's `'pause'` event,
- *     converting it into a cooperative cancellation the handler owns so
- *     the serverless container can publish the correct terminal state
- *     before the request ends.
+ *   - Surfacing live aborts to the model SDK through `step.signal` —
+ *     the broad signal aborts on both `x-ably-abort` and `x-ably-pause`.
+ *   - Letting the run-end inference classify pause vs abort. The catch
+ *     passes the error through to `step.end(error)` and `run.end(error)`;
+ *     the SDK reads `step.signal.reason` to route to the correct terminal
+ *     (a paused pause, an aborted abort) without the caller branching.
  */
 
 import type * as Ably from 'ably';
@@ -47,43 +48,22 @@ export const POST = async (req: Request): Promise<Response> => {
 
   await using run = session.createRun(invocation);
   await using step = run.createStep();
-
-  // Convert pause into a cooperative cancellation the handler owns, so the
-  // stream unwinds and the terminal publish happens inside the request.
-  const pauseCtrl = new AbortController();
-  step.on('pause', () => {
-    pauseCtrl.abort();
-  });
-
   await step.start({ signal: req.signal, timeoutMs: 60_000 });
 
   try {
-    // A prior abort already on the channel leaves step.signal aborted;
-    // AbortSignal.any propagates that immediately and stream throws.
+    // A prior abort or pause already on the channel leaves step.signal
+    // aborted; the model SDK observes that and rejects synchronously.
     const result = await agent.stream({
       messages: await convertToModelMessages(run.view.messages.map((n) => n.message)),
-      abortSignal: AbortSignal.any([step.signal, pauseCtrl.signal]),
+      abortSignal: step.signal,
     });
     await step.pipe(result.toUIMessageStream());
-
-    if (pauseCtrl.signal.aborted) {
-      await step.end('paused');
-      await run.suspend('paused');
-    } else {
-      await step.end('complete');
-      await run.end('complete');
-    }
+    await step.end();
+    await run.end();
   } catch (error) {
-    if (pauseCtrl.signal.aborted) {
-      await step.end('paused');
-      await run.suspend('paused');
-    } else if (step.signal.aborted) {
-      await step.end('aborted');
-      await run.end('aborted');
-    } else {
-      await run.end('failed');
-      throw error;
-    }
+    await step.end(error);
+    await run.end(error);
+    if (!step.signal.aborted) throw error;
   }
 
   return new Response(undefined, { status: 202 });

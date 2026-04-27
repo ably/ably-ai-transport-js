@@ -61,11 +61,12 @@ export const POST = async (req: Request): Promise<Response> => {
       lastUserId = currentUserId;
     }
 
-    await step.end('complete');
-    await run.end('complete');
+    await step.end();
+    await run.end();
   } catch (error) {
-    await run.end(step.signal.aborted ? 'aborted' : 'failed');
-    throw error;
+    await step.end(error);
+    await run.end(error);
+    if (!step.signal.aborted) throw error;
   }
 
   return new Response(undefined, { status: 202 });

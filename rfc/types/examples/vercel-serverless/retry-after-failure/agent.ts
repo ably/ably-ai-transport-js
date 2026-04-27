@@ -1,11 +1,10 @@
 /**
  * Retry after failure — serverless agent side.
  *
- * On any error during the step, the agent marks the attempt as `failed`
- * so a subsequent `x-ably-retry` signal has something to target. If
- * `step.start()` rejected because a concurrent attempt is the winner, the
- * step has already reached a terminal status — end('failed') is a no-op
- * in that case.
+ * On any error during the step, the canonical catch ends the step and run
+ * with the error so a subsequent `x-ably-retry` signal has something to
+ * target. The retry transitions the failed run back to `active` via a
+ * fresh `x-ably-step-start`.
  */
 
 import type * as Ably from 'ably';
@@ -53,10 +52,12 @@ export const POST = async (req: Request): Promise<Response> => {
       abortSignal: step.signal,
     });
     await step.pipe(result.toUIMessageStream());
-    await step.end('complete');
-    await run.end('complete');
-  } catch {
-    await step.end('failed');
+    await step.end();
+    await run.end();
+  } catch (error) {
+    await step.end(error);
+    await run.end(error);
+    if (!step.signal.aborted) throw error;
   }
 
   return new Response(undefined, { status: 202 });

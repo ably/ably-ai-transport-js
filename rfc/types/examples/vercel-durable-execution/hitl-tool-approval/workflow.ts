@@ -76,18 +76,26 @@ export const runAgentHop = async (
     throw error;
   }
 
-  const result = streamText({
-    model: openai('gpt-4o'),
-    messages: await convertToModelMessages(run.view.messages.map((n) => n.message)),
-    tools,
-    abortSignal: step.signal,
-  });
-  await step.pipe(result.toUIMessageStream());
-  await step.end('complete');
+  try {
+    const result = streamText({
+      model: openai('gpt-4o'),
+      messages: await convertToModelMessages(run.view.messages.map((n) => n.message)),
+      tools,
+      abortSignal: step.signal,
+    });
+    await step.pipe(result.toUIMessageStream());
+    await step.end();
 
-  const last = run.view.messages.findLast((n) => n.message.role === 'assistant');
-  const pending = last?.message.parts.filter(isToolUIPart).some((part) => part.state === 'approval-requested') ?? false;
-  return pending ? 'awaiting-input' : 'complete';
+    const last = run.view.messages.findLast((n) => n.message.role === 'assistant');
+    const pending =
+      last?.message.parts.filter(isToolUIPart).some((part) => part.state === 'approval-requested') ?? false;
+    return pending ? 'awaiting-input' : 'complete';
+  } catch (error) {
+    await step.end(error);
+    await run.end(error);
+    if (!step.signal.aborted) throw error;
+    return 'complete';
+  }
 };
 
 /**

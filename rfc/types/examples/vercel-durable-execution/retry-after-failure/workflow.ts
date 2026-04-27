@@ -93,12 +93,12 @@ export const runAgentHop = async (
         abortSignal: step.signal,
       }),
     ]);
-    await step.end('complete');
+    await step.end();
     return result.steps.at(-1)?.finishReason ?? 'stop';
   } catch (error) {
     // Mark the AIT attempt as failed so the channel carries a durable
     // record, then rethrow so WDK retries the `"use step"` function.
-    await step.end('failed');
+    await step.end(error);
     throw error;
   }
 };

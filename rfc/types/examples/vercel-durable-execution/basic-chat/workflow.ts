@@ -105,13 +105,15 @@ export const runAgentHop = async (
       }),
     ]);
 
-    await step.end('complete');
+    await step.end();
 
     const lastStep = result.steps.at(-1);
     return lastStep?.finishReason ?? 'stop';
   } catch (error) {
-    await run.end(step.signal.aborted ? 'aborted' : 'failed');
-    throw error;
+    await step.end(error);
+    await run.end(error);
+    if (!step.signal.aborted) throw error;
+    return 'stop';
   }
 };
 

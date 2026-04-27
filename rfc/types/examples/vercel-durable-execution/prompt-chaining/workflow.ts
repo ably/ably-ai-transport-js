@@ -109,10 +109,11 @@ export const planHop = async (
       role: 'assistant',
       parts: [{ type: 'text', text: result.text }],
     });
-    await step.end('complete');
+    await step.end();
   } catch (error) {
-    await run.end(step.signal.aborted ? 'aborted' : 'failed');
-    throw error;
+    await step.end(error);
+    await run.end(error);
+    if (!step.signal.aborted) throw error;
   }
 };
 
@@ -163,10 +164,11 @@ export const draftHop = async (
       abortSignal: step.signal,
     });
     await step.pipe(result.toUIMessageStream());
-    await step.end('complete');
+    await step.end();
   } catch (error) {
-    await run.end(step.signal.aborted ? 'aborted' : 'failed');
-    throw error;
+    await step.end(error);
+    await run.end(error);
+    if (!step.signal.aborted) throw error;
   }
 };
 

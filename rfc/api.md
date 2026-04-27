@@ -95,7 +95,7 @@ A linear projection over the tree, plus a write surface. Type signatures: [`view
 
 A view holds a linear sequence of messages — one selected sibling at each branch point, root to leaf. Subscribe with `view.subscribe(callback)` and re-render from `view.messages` in the callback. The callback fires only when the visible sequence changes.
 
-**ClientView** exposes mutable branch state: `select(messageId)` to switch which branch is shown at a fork, `loadMore()` to pull more history. It also exposes `view.runs` — the runs whose messages are visible in the current projection, independent of `view.messages` — so orchestration code can enumerate active runs without walking messages. It's the factory for new runs: `createRun()`, `createRegenerate(messageId, { autoSelect })`, `createEdit(messageId, { autoSelect })`. `createRegenerate` and `createEdit` fork the tree at the target message; the new run is positioned as a sibling, and by default the view auto-selects the new branch. Pass `{ autoSelect: false }` to fork without switching.
+**ClientView** exposes mutable branch state: `select(messageId)` to switch which branch is shown at a fork, `loadMore()` to pull more history. It also exposes `view.runs` — the runs whose messages are visible in the current projection, independent of `view.messages` — so orchestration code can enumerate active runs without walking messages. Three verb methods open new runs atomically (single-batch Ably publish) and return live `ClientRun`s: `view.send(messages)` opens a run at the current branch tip and publishes the user message; `view.regenerate(messageId, { autoSelect })` forks at the target message without publishing a user message; `view.edit(messageId, messages, { autoSelect })` forks at the target message and publishes a replacement. By default fork operations auto-select the new branch; pass `{ autoSelect: false }` to fork without switching. For split lifecycle control (delayed start, custom batched publishes) `view.createRun({ forkFrom?, autoSelect? })` returns a non-live handle the caller drives via `run.start()` and `run.sendMessages(...)`.
 
 **AgentView** has no `select()` and no pagination. It is reached via `run.view` on the `AgentRun` returned from `session.createRun(invocation)` — the invocation pins the branch, and the view shows the ancestry from root down to the run's parent, then every message published within the run. The agent needs the full ancestry to pass to the model, so pagination would be a footgun. AgentView is a pure read projection: run lifecycle (`end`, `suspend`) and step creation live on the owning `AgentRun`, not on the view.
 
@@ -118,8 +118,8 @@ A run opens with `x-ably-run-start` published by the initiator and closes with `
 
 - **Read:** `run.view` — the linear `AgentView` projection (ancestry + this run's messages) the agent passes to the model. Equivalent to reading `run.messages` for messages scoped just to this run.
 - **Execute:** `run.createStep()` — factory for the `Step` that publishes `x-ably-step-start`, streams output, and publishes `x-ably-step-end`. Multiple steps per run are permitted; a single run can span a long tool-calling loop, a HITL pause, a workflow hop, and a retry all under one run ID.
-- **Lifecycle:** `suspend(reason)` publishes `x-ably-run-suspend` with `awaiting-input` or `paused`; `end(status)` publishes `x-ably-run-end` with one of the terminal statuses. `end()` is idempotent on terminal runs (publishes nothing). `suspend()` is idempotent only on already-suspended runs; on terminal runs it throws `RunAlreadyTerminal` because suspending a terminal run is an impossible transition and a loud programming error.
-- **Disposal:** `[Symbol.asyncDispose]` closes the underlying view subscription — it does **not** publish `x-ably-run-end`. Run status is a durable protocol fact; disposing the local handle is a local resource concern. Call `run.end(status)` explicitly on the happy path.
+- **Lifecycle:** `suspend(reason)` publishes `x-ably-run-suspend` with `awaiting-input` or `paused` and is the explicit escape hatch for orchestrator-driven suspensions. `end(error?)` is the single-method, single-argument form: pass the caught error from a `catch` block, or no argument from the happy path. The SDK derives the transition from the inputs it already holds — the error (if any), `step.signal.reason`, and `lastStep?.status`/`signalReason` — and publishes either `x-ably-run-end` (for `complete`/`aborted`/`failed`) or `x-ably-run-suspend` (for the `paused` row). `end()` is idempotent on terminal runs (publishes nothing). `suspend()` is idempotent only on already-suspended runs; on terminal runs it throws `RunAlreadyTerminal` because suspending a terminal run is an impossible transition and a loud programming error.
+- **Disposal:** `[Symbol.asyncDispose]` closes the underlying view subscription — it does **not** publish `x-ably-run-end`. Run status is a durable protocol fact; disposing the local handle is a local resource concern. Call `run.end(error?)` explicitly on the happy path.
 
 **`run.initiatorClientId`** carries the client ID of whoever opened the run. Derived from `x-ably-client-id` on `x-ably-run-start` when a backend published on behalf of an end-user, otherwise from the publishing connection. Stable for the lifetime of the run. This is what makes server-side validation work: the end-user's ID survives the HTTP hop into the session even though the SDK connection is the backend's.
 
@@ -145,11 +145,11 @@ A step is created from an `AgentRun` via `run.createStep()` and then transitions
 
 **Writing.** `step.pipe(stream)` pipes a `ReadableStream` of codec parts through the encoder to the channel, cancelling on abort. `step.sendMessages(messages)`, `step.sendParts(parts)`, and `step.sendEvents(events, target?)` are discrete variants.
 
-**Terminal statuses.** `step.end(status)` publishes `x-ably-step-end` with one of `complete | failed | aborted | paused | superseded`. Idempotent on terminal steps. The `superseded` status is published automatically by the losing step in a race; callers don't pick it.
+**Terminal statuses.** `step.end(error?)` is the single-method, single-argument form. Pass the caught error from a `catch` block; pass no argument from the happy path. The SDK derives the terminal status — one of `complete | failed | aborted | paused` — from the error (or lack of one) plus `step.signal.reason`, publishes `x-ably-step-end` with that status, and freezes the signal reason onto `StepState.signalReason` for the run classifier. Idempotent on terminal steps; no-op when the step is still `pending`. The `superseded` status is published automatically by the losing step in a race and is not reachable from `end()`; `abandoned` is a tree-side classification and is never wire-published.
 
 **Abandonment.** A step can exit its scope without publishing `x-ably-step-end` — an unhandled crash, for instance. The channel leaks an open step. The design handles this passively: when a later `x-ably-step-start` appears in the same run, the session marks the prior open step as `abandoned`. It's a _derived_ status, inferred from the absence of a terminal closure, not something the agent sets.
 
-**Disposer as safety net.** `[Symbol.asyncDispose]` catches scope-exit-via-thrown-error paths. If the step is `pending`, disposal is a no-op (nothing is on the channel to close). If the step is `active`, the disposer publishes a terminal `step.end()` — `aborted` if `step.signal.aborted`, else `failed` with cause `StepDisposedBeforeEnd`. If already terminal, pure cleanup. Callers should still call `step.end('complete')` explicitly on the happy path; the disposer exists for the error path.
+**Disposer as safety net.** `[Symbol.asyncDispose]` catches scope-exit-via-thrown-error paths. If the step is `pending`, disposal is a no-op (nothing is on the channel to close). If the step is `active`, the disposer publishes a terminal `step.end()` — `aborted` if `step.signal.aborted`, else `failed` with cause `StepDisposedBeforeEnd`. If already terminal, pure cleanup. Callers should still call `step.end()` explicitly on the happy path; the disposer exists for the error path.
 
 ### MessageNode
 
@@ -346,7 +346,7 @@ channel message
 ### Write path
 
 ```
-view.createRun() / run.sendMessages() / step.pipe() / run.abort() / ...
+view.send() / view.regenerate() / step.pipe() / run.abort() / ...
   │
   └─ SessionWriter method
         │
@@ -366,14 +366,13 @@ view.createRun() / run.sendMessages() / step.pipe() / run.abort() / ...
 
 Before the HITL walkthrough, the shape of the simplest possible round-trip. The client sends one message, the agent streams one response, done. Full example: [`rfc/types/examples/vercel-serverless/basic-chat/`](./types/examples/vercel-serverless/basic-chat/).
 
-1. **Client opens the run.** `view.createRun()` returns a `ClientRun` positioned at the current branch tip. `run.start()` publishes `x-ably-run-start` to the channel.
-2. **Client publishes the user message.** `run.sendMessages({ id, role: 'user', parts: [...] })` publishes an `x-ably-message` with `x-ably-msg-id = <id>`, `x-ably-run-id = <runId>`, `x-ably-role = user`. The message ID is caller-supplied (the codec's message type owns it).
-3. **Client POSTs the invocation.** `fetch('/api/agent', { body: run.toInvocation().toJSON() })` carries `{ sessionName, runId, messageId }`. `messageId` is the user message's ID — the agent must see it before starting.
-4. **Agent wakes.** The handler calls `Invocation.fromJSON(body)`, opens an agent session with the same `sessionName`, calls `session.connect()` (hydrates + subscribes), `run = session.createRun(invocation)`, `step = run.createStep()`, `await step.start({ signal: req.signal })`. `start()` waits until the session has observed the user message, then publishes `x-ably-step-start`.
-5. **Agent streams.** The handler calls `streamText({ messages: await convertToModelMessages(run.view.messages.map(n => n.message)), ... })` and `step.pipe(result.toUIMessageStream())`. The codec encodes each chunk into a wire message with `x-ably-msg-id = <assistantId>`, `x-ably-run-id`, `x-ably-step-id`, and publishes. The client sees the chunks arrive via its subscription, the accumulator composes them, views re-render.
-6. **Agent closes.** `step.end('complete')` publishes `x-ably-step-end`; `run.end('complete')` publishes `x-ably-run-end`. The run is terminal; the session reflects it.
+1. **Client opens the run and publishes the user message.** `await view.send({ id, role: 'user', parts: [...] })` returns a live `ClientRun`. The SDK ships `x-ably-run-start` and the user message's `x-ably-message` (with `x-ably-msg-id = <id>`, `x-ably-run-id = <runId>`, `x-ably-role = user`) in a single Ably batch publish — the run either lands fully live with its message, or not at all. The message ID is caller-supplied (the codec's message type owns it).
+2. **Client POSTs the invocation.** `fetch('/api/agent', { body: run.toInvocation().toJSON() })` carries `{ sessionName, runId, messageId }`. `messageId` is the user message's ID — the agent must see it before starting.
+3. **Agent wakes.** The handler calls `Invocation.fromJSON(body)`, opens an agent session with the same `sessionName`, calls `session.connect()` (hydrates + subscribes), `run = session.createRun(invocation)`, `step = run.createStep()`, `await step.start({ signal: req.signal })`. `start()` waits until the session has observed the user message, then publishes `x-ably-step-start`.
+4. **Agent streams.** The handler calls `streamText({ messages: await convertToModelMessages(run.view.messages.map(n => n.message)), ... })` and `step.pipe(result.toUIMessageStream())`. The codec encodes each chunk into a wire message with `x-ably-msg-id = <assistantId>`, `x-ably-run-id`, `x-ably-step-id`, and publishes. The client sees the chunks arrive via its subscription, the accumulator composes them, views re-render.
+5. **Agent closes.** `step.end()` publishes `x-ably-step-end`; `run.end()` publishes `x-ably-run-end`. The run is terminal; the session reflects it.
 
-Five wire events for a basic one-message exchange: the run-start, the user message, the step-start, the streaming chunks (one per chunk), the step-end, the run-end. Every header is automatic; the client called four methods, the agent called four.
+Five wire events for a basic one-message exchange: the batched run-start + user message, the step-start, the streaming chunks (one per chunk), the step-end, the run-end. Every header is automatic; the client called two methods, the agent called four.
 
 ## Worked example: HITL tool approval
 
@@ -389,9 +388,9 @@ The client publishes `x-ably-run-start`, then its user message (`x-ably-message`
 
 The agent rehydrates the invocation, opens an agent session, creates the run handle, creates a step, and calls `step.start({ signal: req.signal, timeoutMs: 60_000 })`. Once the precondition is satisfied and `x-ably-step-start` is published, the agent calls `streamText(...)` and pipes `result.toUIMessageStream()` through the step.
 
-The model chooses to call a tool that has `needsApproval: true`. AI SDK v6 surfaces this as a `tool-${name}` part in state `approval-requested` with an `approval: { id }` field. The codec emits that as streaming chunks on the wire. When the stream ends, the agent calls `step.end('complete')` — the step itself finished normally.
+The model chooses to call a tool that has `needsApproval: true`. AI SDK v6 surfaces this as a `tool-${name}` part in state `approval-requested` with an `approval: { id }` field. The codec emits that as streaming chunks on the wire. When the stream ends, the agent calls `step.end()` — the step itself finished normally, and inference picks `'complete'`.
 
-Only _then_ does the agent inspect the final assistant message. If any tool part is in state `approval-requested`, it calls `run.suspend('awaiting-input')`. If not, it calls `run.end('complete')`. The step-end is about the execution; the run-suspend is about whether the user's intent is satisfied yet.
+Only _then_ does the agent inspect the final assistant message. If any tool part is in state `approval-requested`, it calls `run.suspend('awaiting-input')` — the explicit escape hatch for orchestrator-authored suspensions the inference classifier cannot derive. If not, it calls `run.end()` and inference picks `'complete'`. The step-end is about the execution; the run-suspend is about whether the user's intent is satisfied yet.
 
 The channel now holds: `x-ably-run-start`, user's `x-ably-message`, `x-ably-step-start`, a sequence of streaming chunks, `x-ably-step-end` (status `complete`), `x-ably-run-suspend` (status `awaiting-input`).
 
@@ -449,7 +448,7 @@ Examples for each scenario live under [`rfc/types/examples/`](./types/examples/)
 
 - **basic-chat** — The baseline. Session setup, view creation, run lifecycle, streaming a single response.
 - **multi-device** — Two clients on the same session name. Both hydrate from history and see the same state; either can abort.
-- **regenerate** — `view.createRegenerate(messageId)` forks at a prior assistant message. The original is preserved; the new branch is the default selection.
+- **regenerate** — `view.regenerate(messageId)` forks at a prior assistant message. The original is preserved; the new branch is the default selection.
 - **steering** — Client publishes a user message mid-run; the agent observes it on the next loop iteration.
 - **prompt-chaining** — One agent output triggers a second agent run. Runs are independent units; chaining is just a new run.
 - **retry-after-failure** — Client observes a failed step, publishes `x-ably-retry` with the failed step's ID, and POSTs with the retry signal's message ID as precondition. A new step picks up.

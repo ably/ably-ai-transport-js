@@ -186,9 +186,13 @@ function Header({ clientId }: { clientId?: string }) {
       <div className="ml-auto flex items-center gap-2">
         <button
           type="button"
-          onClick={() => window.open(window.location.href, '_blank')}
+          onClick={() => {
+            const url = new URL(window.location.href);
+            url.searchParams.delete('clientId');
+            window.open(url.toString(), '_blank');
+          }}
           className="rounded-md border border-zinc-700 px-2 py-1 text-[10px] text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition-colors"
-          title="Open this channel in a new tab"
+          title="Open this channel in a new tab as a fresh client"
         >
           open in new tab
         </button>

@@ -10,11 +10,13 @@ import {
   useView,
   useStagedAddToolApprovalResponse,
 } from '@ably/ai-transport/vercel/react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { MessageList } from './components/message-list';
 import type { CallbackLogEntry } from './components/debug-pane';
 import { DebugPane } from './components/debug-pane';
+import { SuggestionChips } from './components/suggestion-chips';
 import { useClientTools } from './hooks/use-client-tools';
+import { useDemoProgress } from './hooks/use-demo-progress';
 
 // ---------------------------------------------------------------------------
 // Chat component
@@ -96,6 +98,15 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
 
   const ablyMessages = useAblyMessages();
 
+  const unfinishedSteps = useDemoProgress(nodes, hasSiblings, ablyMessages);
+
+  const [input, setInput] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+  const handleSelectPrompt = useCallback((prompt: string) => {
+    setInput(prompt);
+    inputRef.current?.focus();
+  }, []);
+
   return (
     <div className="flex h-dvh">
       <div className="flex flex-1 flex-col">
@@ -111,11 +122,20 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
           onToolApprove={(approvalId) => stagedApproval({ id: approvalId, approved: true })}
           onToolDeny={(approvalId) => stagedApproval({ id: approvalId, approved: false, reason: 'User denied' })}
         />
-        <InputBar
-          onSend={(text) => sendMessage({ text })}
-          onStop={stop}
-          hasAnyTurns={hasAnyTurns}
-        />
+        <div className="border-t border-zinc-800">
+          <SuggestionChips
+            steps={unfinishedSteps}
+            onSelectPrompt={handleSelectPrompt}
+          />
+          <InputBar
+            value={input}
+            onChange={setInput}
+            inputRef={inputRef}
+            onSend={(text) => sendMessage({ text })}
+            onStop={stop}
+            hasAnyTurns={hasAnyTurns}
+          />
+        </div>
       </div>
       <DebugPane
         messages={nodes.map((n) => n.message)}
@@ -203,32 +223,37 @@ function ExternalLinkIcon() {
 // ---------------------------------------------------------------------------
 
 function InputBar({
+  value,
+  onChange,
+  inputRef,
   onSend,
   onStop,
   hasAnyTurns,
 }: {
+  value: string;
+  onChange: (value: string) => void;
+  inputRef?: React.RefObject<HTMLInputElement | null>;
   onSend: (text: string) => void;
   onStop: () => void;
   hasAnyTurns: boolean;
 }) {
-  const [input, setInput] = useState('');
-
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const text = input.trim();
+    const text = value.trim();
     if (!text) return;
-    setInput('');
+    onChange('');
     onSend(text);
   };
 
   return (
     <form
       onSubmit={handleSubmit}
-      className="border-t border-zinc-800 px-4 py-3 flex gap-2"
+      className="px-4 py-3 flex gap-2"
     >
       <input
-        value={input}
-        onChange={(e) => setInput(e.target.value)}
+        ref={inputRef}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
         placeholder="Type a message..."
         className="flex-1 rounded-md bg-zinc-900 border border-zinc-700 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500"
         autoFocus
@@ -244,7 +269,7 @@ function InputBar({
       ) : (
         <button
           type="submit"
-          disabled={!input.trim()}
+          disabled={!value.trim()}
           className="rounded-md bg-zinc-700 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           Send

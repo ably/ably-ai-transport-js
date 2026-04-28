@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import type { UIMessage, DynamicToolUIPart } from 'ai';
 import { ToolInvocation } from './tool-invocation';
+import { clientColor } from '../lib/client-color';
 
 interface MessageBubbleProps {
   message: UIMessage;
@@ -78,11 +79,11 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-function bubbleClasses(isUser: boolean, status: string | undefined): string {
+function bubbleClasses(isUser: boolean, status: string | undefined, userBgClass?: string): string {
   const base = 'rounded-lg px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap';
 
   if (isUser) {
-    return `${base} bg-zinc-800 text-zinc-200`;
+    return `${base} ${userBgClass ?? 'bg-zinc-800'} text-zinc-100`;
   }
 
   if (status === 'streaming') {
@@ -179,6 +180,7 @@ export function MessageBubble({
   const clientId = headers?.['x-ably-turn-client-id'];
   const turnId = headers?.['x-ably-turn-id'];
   const status = headers?.['x-ably-status'];
+  const colors = clientId ? clientColor(clientId) : undefined;
 
   const messageText = message.parts
     .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
@@ -196,7 +198,7 @@ export function MessageBubble({
           />
         ) : (
           <>
-            <div className={bubbleClasses(isUser, status)}>
+            <div className={bubbleClasses(isUser, status, colors?.userBg)}>
               {message.parts.map((part, i) => {
                 if (part.type === 'text') return <span key={i}>{part.text}</span>;
                 if (part.type === 'dynamic-tool') {
@@ -263,7 +265,7 @@ export function MessageBubble({
                     <Badge
                       label="client"
                       value={clientId}
-                      color="bg-zinc-900 text-zinc-500"
+                      color={`bg-zinc-900 ${colors?.text ?? 'text-zinc-500'}`}
                     />
                   )}
                   {turnId && (

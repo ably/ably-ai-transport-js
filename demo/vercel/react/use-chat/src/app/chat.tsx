@@ -17,6 +17,7 @@ import { DebugPane } from './components/debug-pane';
 import { SuggestionChips } from './components/suggestion-chips';
 import { useClientTools } from './hooks/use-client-tools';
 import { useDemoProgress } from './hooks/use-demo-progress';
+import { clientColor } from './lib/client-color';
 
 // ---------------------------------------------------------------------------
 // Chat component
@@ -196,7 +197,7 @@ function Header({ clientId }: { clientId?: string }) {
         >
           open in new tab
         </button>
-        {clientId && <span className="text-xs text-zinc-600 font-mono">{clientId}</span>}
+        {clientId && <span className={`font-mono text-xs ${clientColor(clientId).text}`}>{clientId}</span>}
       </div>
     </header>
   );

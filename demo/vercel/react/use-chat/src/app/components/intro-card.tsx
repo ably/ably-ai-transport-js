@@ -47,15 +47,6 @@ const STEPS: DemoStep[] = [
     demonstrates: 'Both tabs share the same Ably channel. Messages, streams, and turn state stay in sync.',
   },
   {
-    title: 'Regenerate (branch)',
-    action: (
-      <>
-        Hover an assistant reply, click <span className="font-medium text-zinc-100">Regenerate</span>.
-      </>
-    ),
-    demonstrates: 'Forks a new branch from that point. Previous branch is kept — the tree remembers both.',
-  },
-  {
     title: 'Edit (branch)',
     action: (
       <>
@@ -63,6 +54,15 @@ const STEPS: DemoStep[] = [
       </>
     ),
     demonstrates: 'Re-sends as a forked branch rooted at the edited message.',
+  },
+  {
+    title: 'Regenerate (branch)',
+    action: (
+      <>
+        Hover an assistant reply, click <span className="font-medium text-zinc-100">Regenerate</span>.
+      </>
+    ),
+    demonstrates: 'Forks a new branch from that point. Previous branch is kept — the tree remembers both.',
   },
   {
     title: 'Cancel mid-stream',

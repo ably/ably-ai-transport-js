@@ -3,8 +3,8 @@ import * as Ably from 'ably';
 /**
  * Error codes for the AI Transport SDK.
  *
- * Custom SDK-specific codes are reserved in the `104xxx` range and will be
- * added as the features that need them are implemented.
+ * Custom SDK-specific codes live in the reserved `104xxx` range. New codes
+ * are added as the features that need them are implemented.
  */
 export enum ErrorCode {
   /**
@@ -16,6 +16,16 @@ export enum ErrorCode {
    * Invalid argument provided.
    */
   InvalidArgument = 40003,
+
+  // --- Transport ---
+
+  /** The underlying Ably channel subscription failed or lost continuity. */
+  TransportSubscriptionError = 104001,
+
+  // --- Session lifecycle ---
+
+  /** The session has been closed; the requested operation is no longer valid. */
+  SessionClosed = 104100,
 }
 
 /**

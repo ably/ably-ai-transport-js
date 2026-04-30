@@ -7,3 +7,21 @@ export { EventEmitter } from './event-emitter.js';
 // Logger
 export type { LogContext, Logger, LoggerOptions, LogHandler } from './logger.js';
 export { consoleLogger, LogLevel, makeLogger } from './logger.js';
+
+// Codec types
+export type {
+  Accumulator,
+  AnyCodec,
+  Codec,
+  CodecEvent,
+  CodecMessage,
+  CodecPart,
+  DecodedValue,
+  Decoder,
+  EncodeEventOptions,
+  Encoder,
+} from './core/codec/index.js';
+
+// Sessions
+export type { AgentSession, ClientSession, SessionOptions } from './core/session/index.js';
+export { createAgentSession, createClientSession } from './core/session/index.js';

@@ -25,3 +25,6 @@ export type {
 // Sessions
 export type { AgentSession, ClientSession, SessionOptions } from './core/session/index.js';
 export { createAgentSession, createClientSession } from './core/session/index.js';
+
+// Views
+export type { ClientView, View } from './core/view/index.js';

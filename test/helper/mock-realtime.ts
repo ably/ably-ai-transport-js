@@ -2,20 +2,26 @@ import type * as Ably from 'ably';
 import { vi } from 'vitest';
 
 /**
- * Test mock for an `Ably.RealtimeChannel`. Records `attach`/`detach`/`on`/`off`
- * calls and lets tests drive state-change events synchronously via
- * {@link MockChannel.simulateStateChange}.
+ * Test mock for an `Ably.RealtimeChannel`. Records lifecycle calls and lets
+ * tests drive state-change and message events synchronously via
+ * {@link MockChannel.simulateStateChange} and {@link MockChannel.simulateMessage}.
  */
 export interface MockChannel {
   attach: ReturnType<typeof vi.fn>;
   detach: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
   off: ReturnType<typeof vi.fn>;
+  subscribe: ReturnType<typeof vi.fn>;
+  unsubscribe: ReturnType<typeof vi.fn>;
   state: Ably.ChannelState;
   /** Callbacks registered via on(events, listener) keyed by callback ref. */
   stateListeners: Map<Ably.channelEventCallback, Set<Ably.ChannelEvent>>;
+  /** Callbacks registered via subscribe(listener). */
+  messageListeners: Set<(message: Ably.InboundMessage) => void>;
   /** Drive a state-change event to all listeners subscribed to it. */
   simulateStateChange: (change: Ably.ChannelStateChange) => void;
+  /** Drive an inbound message to all message subscribers. */
+  simulateMessage: (message: Ably.InboundMessage) => void;
 }
 
 /**
@@ -26,9 +32,11 @@ export interface MockChannel {
  */
 export const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
   const stateListeners = new Map<Ably.channelEventCallback, Set<Ably.ChannelEvent>>();
+  const messageListeners = new Set<(message: Ably.InboundMessage) => void>();
   const channel: MockChannel = {
     state: 'initialized',
     stateListeners,
+    messageListeners,
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     attach: vi.fn(() => Promise.resolve()),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
@@ -40,6 +48,15 @@ export const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
     off: vi.fn((callback: Ably.channelEventCallback) => {
       stateListeners.delete(callback);
     }),
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock matches Ably.RealtimeChannel.subscribe signature.
+    subscribe: vi.fn((listener: (message: Ably.InboundMessage) => void) => {
+      messageListeners.add(listener);
+      // eslint-disable-next-line unicorn/no-null -- Ably.RealtimeChannel.subscribe returns Promise<ChannelStateChange | null>.
+      return Promise.resolve(null);
+    }),
+    unsubscribe: vi.fn((listener: (message: Ably.InboundMessage) => void) => {
+      messageListeners.delete(listener);
+    }),
     simulateStateChange: (change: Ably.ChannelStateChange) => {
       for (const [callback, events] of stateListeners) {
         if (events.has(change.current)) {
@@ -47,8 +64,13 @@ export const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
         }
       }
     },
+    simulateMessage: (message: Ably.InboundMessage) => {
+      for (const listener of messageListeners) {
+        listener(message);
+      }
+    },
   };
-  // CAST: Tests only exercise attach/detach/on/off — other channel members are unused.
+  // CAST: Tests only exercise the recorded surface — other channel members are unused.
   return channel as unknown as MockChannel & Ably.RealtimeChannel;
 };
 

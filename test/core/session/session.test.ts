@@ -1,10 +1,10 @@
 import * as Ably from 'ably';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { AnyCodec } from '../../../src/core/codec/index.js';
 import type { SessionOptions } from '../../../src/core/session/index.js';
 import { createAgentSession, createClientSession } from '../../../src/core/session/index.js';
 import { ErrorCode } from '../../../src/errors.js';
+import { Headers } from '../../../src/headers.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 import { VERSION } from '../../../src/version.js';
 import {
@@ -13,6 +13,7 @@ import {
   type MockChannel,
   type MockRealtime,
 } from '../../helper/mock-realtime.js';
+import { type StubCodec, stubCodec } from '../../helper/stub-codec.js';
 
 /**
  * Drive a channel state-change event from a previous state of 'attached'.
@@ -29,30 +30,55 @@ const drive = (channel: MockChannel & Ably.RealtimeChannel, current: Ably.Channe
   } as Ably.ChannelStateChange);
 };
 
-// A bare codec stub — the session scaffold does not call any of these methods.
-const stubCodec = {
-  createEncoder: () => {
-    throw new Error('not implemented');
-  },
-  createDecoder: () => {
-    throw new Error('not implemented');
-  },
-  createAccumulator: () => {
-    throw new Error('not implemented');
-  },
-} satisfies AnyCodec;
-
 const makeSession = () => {
   const channel = createMockChannel();
   const realtime = createMockRealtime(channel);
   const logger = makeLogger({ logLevel: LogLevel.Silent });
-  const options: SessionOptions<typeof stubCodec> = {
+  const options: SessionOptions<StubCodec> = {
     client: realtime,
     sessionName: 'session-1',
     codec: stubCodec,
     logger,
   };
   return { options, realtime, channel };
+};
+
+interface InboundOverrides {
+  serial: string;
+  msgId: string;
+  role?: 'user' | 'assistant';
+  clientId?: string;
+  data?: unknown;
+  extraHeaders?: Record<string, string>;
+}
+
+/**
+ * Build an `Ably.InboundMessage` carrying the SDK headers Phase 2's decode
+ * loop reads. Tests pass this through {@link MockChannel.simulateMessage}.
+ * @param overrides Per-message values to project onto the inbound; everything
+ *   else is filled with sensible defaults.
+ * @returns A fully populated `Ably.InboundMessage`.
+ */
+const makeInbound = (overrides: InboundOverrides): Ably.InboundMessage => {
+  const headers: Record<string, string> = {
+    [Headers.MessageId]: overrides.msgId,
+    [Headers.Role]: overrides.role ?? 'user',
+    ...overrides.extraHeaders,
+  };
+  if (overrides.clientId !== undefined) {
+    headers[Headers.ClientId] = overrides.clientId;
+  }
+  return {
+    id: overrides.msgId,
+    serial: overrides.serial,
+    timestamp: Date.now(),
+    action: 1,
+    version: { serial: overrides.serial, timestamp: Date.now() },
+    annotations: {},
+    name: 'x-ably-message',
+    data: overrides.data ?? `payload:${overrides.msgId}`,
+    extras: { headers },
+  } as unknown as Ably.InboundMessage;
 };
 
 describe('Session', () => {
@@ -289,6 +315,245 @@ describe('Session', () => {
 
       expect(channel.detach).toHaveBeenCalledTimes(1);
       expect(realtime.channels.release).toHaveBeenCalledWith('session-1');
+    });
+  });
+
+  describe('createView()', () => {
+    it('returns a view whose messages start empty', () => {
+      const { options } = makeSession();
+      const session = createClientSession(options);
+
+      const view = session.createView();
+
+      expect(view.messages).toEqual([]);
+    });
+
+    it('throws SessionClosed when called after close()', async () => {
+      const { options } = makeSession();
+      const session = createClientSession(options);
+      await session.close();
+
+      expect(() => session.createView()).toThrowErrorInfoWithCode(ErrorCode.SessionClosed);
+    });
+
+    it('closes outstanding views during session.close()', async () => {
+      const { options } = makeSession();
+      const session = createClientSession(options);
+      const view = session.createView();
+      const handler = vi.fn();
+      view.subscribe(handler);
+
+      await session.close();
+
+      // After close the view is severed from the session — even if the session
+      // were still pumping events into the tree, the view would not fire.
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('does not subscribe to the channel until connect()', () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+
+      session.createView();
+
+      expect(channel.subscribe).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('decode loop', () => {
+    it('subscribes to the channel after attach', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+
+      await session.connect();
+
+      expect(channel.subscribe).toHaveBeenCalledTimes(1);
+    });
+
+    it('produces a tree node for an inbound message and fires view subscribers', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+      const view = session.createView();
+      const handler = vi.fn();
+      view.subscribe(handler);
+
+      channel.simulateMessage(
+        makeInbound({ serial: '01', msgId: 'm-1', role: 'user', clientId: 'alice', data: 'hello' }),
+      );
+
+      expect(view.messages).toHaveLength(1);
+      expect(view.messages[0]).toEqual({
+        id: 'm-1',
+        role: 'user',
+        clientId: 'alice',
+        serial: '01',
+        message: 'hello',
+      });
+      expect(handler).toHaveBeenCalledTimes(1);
+    });
+
+    it('falls back to the publishing connection clientId when x-ably-client-id is absent', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+      const view = session.createView();
+
+      const inbound = makeInbound({ serial: '01', msgId: 'm-1', role: 'user', data: 'hello' });
+      // CAST: editing the constructed mock to drop x-ably-client-id and add a connection-level clientId.
+      (inbound as { clientId?: string }).clientId = 'conn-bob';
+      channel.simulateMessage(inbound);
+
+      expect(view.messages[0]?.clientId).toBe('conn-bob');
+    });
+
+    it('skips inbound messages missing x-ably-msg-id', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+      const view = session.createView();
+
+      const inbound = makeInbound({ serial: '01', msgId: 'm-1', role: 'user', clientId: 'alice' });
+      // CAST: drop the message id header to exercise the rejection path.
+      (inbound.extras as { headers: Record<string, string> }).headers = {
+        [Headers.Role]: 'user',
+        [Headers.ClientId]: 'alice',
+      };
+      channel.simulateMessage(inbound);
+
+      expect(view.messages).toHaveLength(0);
+    });
+
+    it('skips inbound messages with an invalid x-ably-role', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+      const view = session.createView();
+
+      channel.simulateMessage(
+        // CAST: deliberately invalid role to exercise rejection.
+        makeInbound({ serial: '01', msgId: 'm-1', role: 'bot' as 'user', clientId: 'alice' }),
+      );
+
+      expect(view.messages).toHaveLength(0);
+    });
+
+    it('skips inbound messages with no clientId in headers or message', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+      const view = session.createView();
+
+      // No header clientId, no connection-level clientId — should be rejected.
+      channel.simulateMessage(makeInbound({ serial: '01', msgId: 'm-1', role: 'user' }));
+
+      expect(view.messages).toHaveLength(0);
+    });
+
+    it('orders nodes by serial when messages arrive out of order', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+      const view = session.createView();
+
+      channel.simulateMessage(
+        makeInbound({ serial: '02', msgId: 'b', role: 'user', clientId: 'alice', data: 'second' }),
+      );
+      channel.simulateMessage(
+        makeInbound({ serial: '01', msgId: 'a', role: 'user', clientId: 'alice', data: 'first' }),
+      );
+
+      expect(view.messages.map((n) => n.id)).toEqual(['a', 'b']);
+    });
+
+    it('skips a duplicate inbound for the same message id while keeping the original node', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+      const view = session.createView();
+
+      channel.simulateMessage(
+        makeInbound({ serial: '01', msgId: 'm-1', role: 'user', clientId: 'alice', data: 'hello' }),
+      );
+      channel.simulateMessage(
+        makeInbound({ serial: '02', msgId: 'm-1', role: 'user', clientId: 'alice', data: 'world' }),
+      );
+
+      expect(view.messages).toHaveLength(1);
+      expect(view.messages[0]?.message).toBe('hello');
+    });
+
+    it('does not fire view subscribers after the view is closed', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+      const view = session.createView();
+      const handler = vi.fn();
+      view.subscribe(handler);
+
+      view.close();
+      channel.simulateMessage(makeInbound({ serial: '01', msgId: 'm-1', role: 'user', clientId: 'alice' }));
+
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('logs and skips when the decoder throws — subsequent messages still flow', async () => {
+      const channel = createMockChannel();
+      const realtime = createMockRealtime(channel);
+      const logger = makeLogger({ logLevel: LogLevel.Silent });
+      let throwOnce = true;
+      const throwingCodec: StubCodec = {
+        ...stubCodec,
+        createDecoder: () => ({
+          decode: (message) => {
+            if (throwOnce) {
+              throwOnce = false;
+              throw new Error('decoder boom');
+            }
+            return stubCodec.createDecoder().decode(message);
+          },
+        }),
+      };
+      const session = createClientSession({
+        client: realtime,
+        sessionName: 'session-1',
+        codec: throwingCodec,
+        logger,
+      });
+      await session.connect();
+      const view = session.createView();
+
+      // First inbound trips the decoder — should not throw, view stays empty.
+      channel.simulateMessage(makeInbound({ serial: '01', msgId: 'm-1', role: 'user', clientId: 'alice' }));
+      expect(view.messages).toHaveLength(0);
+
+      // Subsequent inbound succeeds.
+      channel.simulateMessage(makeInbound({ serial: '02', msgId: 'm-2', role: 'user', clientId: 'alice' }));
+      expect(view.messages.map((n) => n.id)).toEqual(['m-2']);
+    });
+
+    it('unsubscribes from the channel on session.close()', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      await session.close();
+
+      expect(channel.unsubscribe).toHaveBeenCalledTimes(1);
+    });
+
+    it('continues to apply messages to the tree even when no view is registered', async () => {
+      // A session created via createAgentSession has no createView surface,
+      // but the decode loop still feeds the tree so that phase 7's createRun
+      // can read the same state once it lands.
+      const { options, channel } = makeSession();
+      const session = createAgentSession(options);
+      await session.connect();
+
+      // No throw — the inbound is processed silently.
+      expect(() => {
+        channel.simulateMessage(makeInbound({ serial: '01', msgId: 'm-1', role: 'user', clientId: 'alice' }));
+      }).not.toThrow();
     });
   });
 });

@@ -2,11 +2,16 @@ import * as Ably from 'ably';
 
 import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
+import { Headers, readHeader } from '../../headers.js';
 import type { Logger } from '../../logger.js';
 import { LogLevel, makeLogger } from '../../logger.js';
 import type { RealtimeWithOptions } from '../../realtime-extensions.js';
 import { VERSION } from '../../version.js';
-import type { AnyCodec } from '../codec/index.js';
+import type { Accumulator, AnyCodec, CodecEvent, CodecMessage, CodecPart, Decoder } from '../codec/index.js';
+import type { MessageNode, TreeInternal } from '../tree/index.js';
+import { DefaultTree } from '../tree/index.js';
+import type { ClientView } from '../view/index.js';
+import { DefaultView } from '../view/index.js';
 import { ChannelManager } from './channel-manager.js';
 
 /**
@@ -56,13 +61,14 @@ interface SessionEvents {
 /**
  * Long-lived handle on a durable session from the client's perspective.
  *
- * Note: codec-aware reads (`tree`, `createView`) and the `writer` from the
- * RFC are not yet implemented and are intentionally omitted from this
- * scaffold. The codec type parameter from the RFC will be reintroduced once
- * those members land — today the session does not project the codec type
- * onto its surface.
+ * Phase 2 surface — `createView()` returns a {@link ClientView} that
+ * projects the session's tree. The codec-aware writer (`writer`) and the
+ * direct `tree` accessor from the RFC are deferred to later phases.
+ *
+ * Parameterised by the session's codec — `C extends Codec<TPart, TMessage,
+ * TEvent>` — so `createView()` returns the right `ClientView<C>` variant.
  */
-export interface ClientSession {
+export interface ClientSession<C extends AnyCodec> {
   /** The session name, as passed to {@link createClientSession}. */
   readonly sessionName: string;
 
@@ -78,7 +84,8 @@ export interface ClientSession {
   /**
    * Unsubscribe from the channel and tear down the session. Idempotent and
    * never rejects — callers can safely call close() in error-handling paths
-   * without wrapping it in try/catch.
+   * without wrapping it in try/catch. Closes every view created through
+   * {@link createView} as part of teardown.
    */
   close(): Promise<void>;
 
@@ -87,6 +94,17 @@ export interface ClientSession {
    * no publish side effects.
    */
   [Symbol.asyncDispose](): Promise<void>;
+
+  /**
+   * Create a read projection over the session's tree. The view starts empty
+   * and fills in as the channel delivers messages — call {@link connect}
+   * before relying on it. Multiple views can coexist; each has its own
+   * subscriptions and `close()` lifecycle.
+   * @returns A new {@link ClientView} bound to this session.
+   * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.SessionClosed}
+   *   when called after {@link close}.
+   */
+  createView(): ClientView<C>;
 
   /**
    * Fires when the session encounters an unrecoverable error — channel
@@ -106,10 +124,8 @@ export interface ClientSession {
 /**
  * Long-lived handle on a durable session from the agent's perspective.
  *
- * Note: codec-aware reads (`tree`), `createRun`, and the `writer` from the
- * RFC are not yet implemented and are intentionally omitted from this
- * scaffold. The codec type parameter from the RFC will be reintroduced once
- * those members land.
+ * Phase 2 surface — connect/close lifecycle and error events. `createRun`,
+ * `tree`, and `writer` from the RFC are deferred to later phases.
  */
 export interface AgentSession {
   /** The session name, as passed to {@link createAgentSession}. */
@@ -154,26 +170,34 @@ export interface AgentSession {
 
 /**
  * Default implementation backing {@link createClientSession} and
- * {@link createAgentSession}. The two factories return the same underlying
- * object today — the differences land when codec-aware reads and writer
- * surfaces are introduced.
+ * {@link createAgentSession}. Both factories return the same underlying
+ * object today — the agent-only surface (`createRun`, run-side writer)
+ * lands in later phases.
  */
-class DefaultSession implements ClientSession, AgentSession {
+class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSession {
   readonly sessionName: string;
 
   private readonly _realtime: Ably.Realtime;
   private readonly _logger: Logger;
   private readonly _channelManager: ChannelManager;
   private readonly _emitter: EventEmitter<SessionEvents>;
+  private readonly _codec: C;
+  private readonly _tree: TreeInternal<CodecMessage<C>>;
+  private readonly _views = new Set<DefaultView<CodecMessage<C>>>();
+
+  private _decoder?: Decoder<CodecPart<C>, CodecEvent<C>>;
+  private _accumulator?: Accumulator<CodecPart<C>, CodecMessage<C>, CodecEvent<C>>;
 
   private _connectPromise?: Promise<void>;
   private _stateListener?: (change: Ably.ChannelStateChange) => void;
+  private _messageListener?: (message: Ably.InboundMessage) => void;
   private _closed = false;
   private _channelInUse = false;
 
-  constructor(options: SessionOptions<AnyCodec>, role: 'client' | 'agent') {
+  constructor(options: SessionOptions<C>, role: 'client' | 'agent') {
     this.sessionName = options.sessionName;
     this._realtime = options.client;
+    this._codec = options.codec;
 
     this._logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
       component: 'Session',
@@ -182,6 +206,7 @@ class DefaultSession implements ClientSession, AgentSession {
     });
     this._emitter = new EventEmitter(this._logger);
     this._channelManager = new ChannelManager(this._realtime, this.sessionName, this._logger);
+    this._tree = new DefaultTree<CodecMessage<C>>({ logger: this._logger });
 
     this._addAgent('ai-transport-js');
     this._logger.trace('DefaultSession(); initialized');
@@ -239,7 +264,19 @@ class DefaultSession implements ClientSession, AgentSession {
     };
     channel.on(['failed', 'detached'], this._stateListener);
 
-    this._logger.debug('DefaultSession.connect(); channel attached');
+    // Stand up the codec's decoder + accumulator only once we're committed to
+    // running the decode loop. A failed attach above means we never call into
+    // the codec, which keeps unit tests that don't exercise the decode path
+    // from needing a working codec.
+    this._decoder = this._codec.createDecoder();
+    this._accumulator = this._codec.createAccumulator();
+
+    this._messageListener = (message: Ably.InboundMessage) => {
+      this._handleInboundMessage(message);
+    };
+    await channel.subscribe(this._messageListener);
+
+    this._logger.debug('DefaultSession.connect(); channel attached and subscribed');
   }
 
   private _handleStateChange(change: Ably.ChannelStateChange): void {
@@ -263,6 +300,87 @@ class DefaultSession implements ClientSession, AgentSession {
     this._emitter.emit('error', reason);
   }
 
+  private _handleInboundMessage(message: Ably.InboundMessage): void {
+    this._logger.trace('DefaultSession._handleInboundMessage();', { serial: message.serial });
+
+    if (!this._decoder || !this._accumulator) {
+      // Defensive: subscribe is registered after _decoder/_accumulator are set,
+      // so this should not happen. If it does, we have nothing useful to do.
+      this._logger.warn('DefaultSession._handleInboundMessage(); decoder or accumulator missing');
+      return;
+    }
+
+    const wireMessageId = readHeader(message, Headers.MessageId);
+    if (wireMessageId === undefined) {
+      this._logger.warn('DefaultSession._handleInboundMessage(); missing x-ably-msg-id', {
+        serial: message.serial,
+      });
+      return;
+    }
+
+    const role = readHeader(message, Headers.Role);
+    if (role !== 'user' && role !== 'assistant') {
+      this._logger.warn('DefaultSession._handleInboundMessage(); invalid x-ably-role', {
+        role,
+        serial: message.serial,
+      });
+      return;
+    }
+
+    const clientId = readHeader(message, Headers.ClientId) ?? message.clientId;
+    if (clientId === undefined) {
+      this._logger.warn('DefaultSession._handleInboundMessage(); missing clientId', {
+        serial: message.serial,
+      });
+      return;
+    }
+
+    const serial = message.serial;
+    if (serial === undefined) {
+      this._logger.warn('DefaultSession._handleInboundMessage(); inbound message missing serial');
+      return;
+    }
+
+    let decoded;
+    try {
+      decoded = this._decoder.decode(message);
+    } catch (error) {
+      this._logger.error('DefaultSession._handleInboundMessage(); decode failed', { error });
+      return;
+    }
+
+    for (const value of decoded) {
+      // Phase 2 only routes streaming parts. Codec events land in later phases
+      // alongside the writer surfaces that produce them.
+      if (value.kind !== 'part') {
+        continue;
+      }
+
+      const messageId = value.messageId ?? wireMessageId;
+      this._accumulator.processPart(value.part, messageId);
+      const composed = this._accumulator.getMessage(messageId);
+      if (composed === undefined) {
+        continue;
+      }
+
+      // Phase 2's tree is append-only — the accumulator above has already
+      // recorded this part, but the tree gains an update path in a later phase.
+      // Skip the duplicate insert; the accumulator state stays current.
+      if (this._tree.messages.some((node) => node.id === messageId)) {
+        continue;
+      }
+
+      const node: MessageNode<CodecMessage<C>> = {
+        id: messageId,
+        role,
+        clientId,
+        message: composed,
+        serial,
+      };
+      this._tree.applyMessage(node);
+    }
+  }
+
   async close(): Promise<void> {
     this._logger.trace('DefaultSession.close();');
 
@@ -271,6 +389,13 @@ class DefaultSession implements ClientSession, AgentSession {
     }
     const channelInUse = this._channelInUse;
     this._closed = true;
+
+    // Close every view created from this session before tearing down the
+    // channel so consumers see a deterministic teardown order.
+    for (const view of this._views) {
+      view.close();
+    }
+    this._views.clear();
 
     try {
       // Only touch the channel if connect() was attempted — otherwise close()
@@ -281,6 +406,11 @@ class DefaultSession implements ClientSession, AgentSession {
         if (this._stateListener) {
           channel.off(this._stateListener);
           this._stateListener = undefined;
+        }
+
+        if (this._messageListener) {
+          channel.unsubscribe(this._messageListener);
+          this._messageListener = undefined;
         }
 
         try {
@@ -305,6 +435,16 @@ class DefaultSession implements ClientSession, AgentSession {
     await this.close();
   }
 
+  createView(): ClientView<C> {
+    this._logger.trace('DefaultSession.createView();');
+    if (this._closed) {
+      throw new Ably.ErrorInfo('unable to create view; session is closed', ErrorCode.SessionClosed, 400);
+    }
+    const view = new DefaultView<CodecMessage<C>>({ tree: this._tree, logger: this._logger });
+    this._views.add(view);
+    return view;
+  }
+
   on(event: 'error', handler: (error: Ably.ErrorInfo) => void): void {
     this._emitter.on(event, handler);
   }
@@ -318,14 +458,11 @@ class DefaultSession implements ClientSession, AgentSession {
  * Create a new {@link ClientSession}. The returned session is not yet live —
  * register listeners, then call {@link ClientSession.connect} to subscribe to
  * the channel.
- *
- * The codec is held on the session for forward compatibility but is unused
- * in this scaffold (no codec-aware reads or writes are implemented yet).
  * @param options Wiring for the client, session name, codec, and optional logger.
  * @returns A not-yet-connected {@link ClientSession}.
  */
-export const createClientSession = <C extends AnyCodec>(options: SessionOptions<C>): ClientSession =>
-  new DefaultSession(options, 'client');
+export const createClientSession = <C extends AnyCodec>(options: SessionOptions<C>): ClientSession<C> =>
+  new DefaultSession<C>(options, 'client');
 
 /**
  * Create a new {@link AgentSession}. The returned session is not yet live —
@@ -333,9 +470,10 @@ export const createClientSession = <C extends AnyCodec>(options: SessionOptions<
  * the channel.
  *
  * The codec is held on the session for forward compatibility but is unused
- * in this scaffold (no codec-aware reads or writes are implemented yet).
+ * in this scaffold (the agent-side writer and `createRun` land in later
+ * phases).
  * @param options Wiring for the client, session name, codec, and optional logger.
  * @returns A not-yet-connected {@link AgentSession}.
  */
 export const createAgentSession = <C extends AnyCodec>(options: SessionOptions<C>): AgentSession =>
-  new DefaultSession(options, 'agent');
+  new DefaultSession<C>(options, 'agent');

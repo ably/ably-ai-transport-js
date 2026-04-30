@@ -1,5 +1,8 @@
 import type { Logger } from '../../logger.js';
 import type { AnyCodec, CodecMessage } from '../codec/index.js';
+import type { ClientRun } from '../run/index.js';
+import { createClientRun } from '../run/index.js';
+import type { DefaultSessionWriter } from '../session/writer.js';
 import type { MessageNode, Tree } from '../tree/index.js';
 
 /**
@@ -44,16 +47,33 @@ export interface View<TMessage> {
 /**
  * Read projection scoped to the client's UI perspective.
  *
- * Phase 2 subset — `extends View<CodecMessage<C>>` with no extra members
- * yet. `send`, `regenerate`, `edit`, `select`, `loadMore`, `runs`, `hasMore`,
- * and `createRun` land additively in later phases (phase 6 onward).
- *
- * The interface is exported now so that `ClientSession.createView()` can
- * already return `ClientView<C>` and the return type never narrows when
- * later phases add members.
+ * Phase 6 subset — exposes `send`, the verb that opens a new run with the
+ * supplied user message. `regenerate`, `edit`, `select`, `loadMore`,
+ * `runs`, `hasMore`, and `createRun` land additively in later phases.
  */
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type -- Phase 2 subset; members added additively in phase 6+.
-export interface ClientView<C extends AnyCodec> extends View<CodecMessage<C>> {}
+export interface ClientView<C extends AnyCodec> extends View<CodecMessage<C>> {
+  /**
+   * Open a new run at the current branch tip and publish the user
+   * message(s) on it. The SDK builds an `x-ably-run-start` and the encoded
+   * messages, publishes them in a single atomic Ably batch — the run
+   * either lands fully live with its first messages or not at all — and
+   * returns the resulting {@link ClientRun}. POST
+   * `run.toInvocation().toJSON()` to wake the agent endpoint.
+   *
+   * The {@link Invocation} produced by `run.toInvocation()` carries the
+   * **last** message's id as the precondition — the agent waits for that
+   * message to be visible before starting its step.
+   * @param messages A single user message or an array of user messages to
+   *   publish onto the newly opened run.
+   * @returns The live {@link ClientRun}, with `status === 'active'`.
+   * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.SessionClosed}
+   *   when called after the session has been closed.
+   * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.InvalidArgument}
+   *   when the realtime connection has no concrete `clientId` — run
+   *   attribution requires one — or when `messages` is an empty array.
+   */
+  send(messages: CodecMessage<C> | CodecMessage<C>[]): Promise<ClientRun<C>>;
+}
 
 /** Options for constructing a {@link DefaultView}. */
 export interface ViewOptions<TMessage> {
@@ -64,6 +84,22 @@ export interface ViewOptions<TMessage> {
 }
 
 /**
+ * Options for constructing a {@link DefaultClientView}. Extends
+ * {@link ViewOptions} with the dependencies `view.send` needs to open a
+ * run on the channel.
+ */
+export interface ClientViewOptions<C extends AnyCodec> extends ViewOptions<CodecMessage<C>> {
+  /**
+   * Writer that owns the publish path. The view drives `view.send` through
+   * the writer's internal `startRunWithMessages` so all wire-format work
+   * stays out of the view.
+   */
+  writer: DefaultSessionWriter<C>;
+  /** Session name written into the {@link Invocation} produced by `run.toInvocation`. */
+  sessionName: string;
+}
+
+/**
  * Default {@link View} implementation. Phase 2 mirrors the tree directly —
  * `messages` returns `tree.messages` unchanged. The view subscribes to the
  * tree on construction and forwards each notification to its own subscribers
@@ -71,7 +107,7 @@ export interface ViewOptions<TMessage> {
  * @internal
  */
 export class DefaultView<TMessage> implements View<TMessage> {
-  private readonly _logger: Logger;
+  protected readonly _logger: Logger;
   private readonly _tree: Tree<TMessage>;
   private readonly _subscribers = new Set<() => void>();
   private _treeUnsubscribe?: () => void;
@@ -129,5 +165,34 @@ export class DefaultView<TMessage> implements View<TMessage> {
         this._logger.error('DefaultView._notify(); subscriber threw', { error });
       }
     }
+  }
+}
+
+/**
+ * Default {@link ClientView} implementation. Adds the publish path
+ * (`send`) on top of the base {@link DefaultView}; everything else
+ * (`messages`, `subscribe`, `close`) flows through inheritance.
+ * @internal
+ */
+export class DefaultClientView<C extends AnyCodec> extends DefaultView<CodecMessage<C>> implements ClientView<C> {
+  private readonly _writer: DefaultSessionWriter<C>;
+  private readonly _sessionName: string;
+
+  constructor(options: ClientViewOptions<C>) {
+    super({ tree: options.tree, logger: options.logger });
+    this._writer = options.writer;
+    this._sessionName = options.sessionName;
+  }
+
+  async send(messages: CodecMessage<C> | CodecMessage<C>[]): Promise<ClientRun<C>> {
+    this._logger.trace('DefaultClientView.send();');
+    const { runId, lastMessageId, initiatorClientId } = await this._writer.startRunWithMessages({ messages });
+    return createClientRun<C>({
+      id: runId,
+      status: 'active',
+      initiatorClientId,
+      sessionName: this._sessionName,
+      messageId: lastMessageId,
+    });
   }
 }

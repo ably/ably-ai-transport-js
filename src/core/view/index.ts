@@ -1,2 +1,2 @@
-export type { ClientView, View, ViewOptions } from './view.js';
-export { DefaultView } from './view.js';
+export type { ClientView, ClientViewOptions, View, ViewOptions } from './view.js';
+export { DefaultClientView, DefaultView } from './view.js';

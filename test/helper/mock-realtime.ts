@@ -100,6 +100,12 @@ export interface MockRealtime {
   options: {
     agents?: Record<string, string | undefined>;
   };
+  /**
+   * Mirrors `Ably.Realtime.auth`. The writer reads `auth.clientId` to
+   * attribute the initiator on `view.send`; tests can override this when
+   * exercising the unauthenticated/wildcard rejection paths.
+   */
+  auth: { clientId: string };
 }
 
 /**
@@ -107,16 +113,24 @@ export interface MockRealtime {
  * `channels.get(name)` is called. Use {@link createMockRealtimeMulti} when
  * tests need distinct channels per name.
  * @param channel The channel to return from `channels.get`.
+ * @param options Optional overrides for the mock realtime.
+ * @param options.clientId The value writers read from `realtime.auth.clientId`.
+ *   Defaults to `'mock-client'`.
  * @returns A new mock realtime client.
  */
-export const createMockRealtime = (channel: Ably.RealtimeChannel): MockRealtime & Ably.Realtime => {
+export const createMockRealtime = (
+  channel: Ably.RealtimeChannel,
+  options?: { clientId?: string },
+): MockRealtime & Ably.Realtime => {
   const realtime: MockRealtime = {
     channels: {
       get: vi.fn(() => channel),
       release: vi.fn(),
     },
     options: {},
+    auth: { clientId: options?.clientId ?? 'mock-client' },
   };
-  // CAST: Tests only use channels.get/release and options.agents — other Realtime members are unused.
+  // CAST: Tests only use channels.get/release, options.agents, and auth.clientId
+  //       — other Realtime members are unused.
   return realtime as unknown as MockRealtime & Ably.Realtime;
 };

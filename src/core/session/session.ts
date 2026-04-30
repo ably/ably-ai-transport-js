@@ -12,7 +12,7 @@ import type { Run, RunStatus } from '../run/index.js';
 import type { MessageNode, TreeInternal } from '../tree/index.js';
 import { DefaultTree } from '../tree/index.js';
 import type { ClientView } from '../view/index.js';
-import { DefaultView } from '../view/index.js';
+import { DefaultClientView, DefaultView } from '../view/index.js';
 import { ChannelManager } from './channel-manager.js';
 import type { SessionWriter } from './writer.js';
 import { DefaultSessionWriter } from './writer.js';
@@ -230,6 +230,7 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
     this._writer = new DefaultSessionWriter<C>({
       codec: this._codec,
       channelManager: this._channelManager,
+      realtime: this._realtime,
       role: role === 'client' ? 'user' : 'assistant',
       logger: this._logger,
       isClosed: () => this._closed,
@@ -519,7 +520,12 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
     if (this._closed) {
       throw new Ably.ErrorInfo('unable to create view; session is closed', ErrorCode.SessionClosed, 400);
     }
-    const view = new DefaultView<CodecMessage<C>>({ tree: this._tree, logger: this._logger });
+    const view = new DefaultClientView<C>({
+      tree: this._tree,
+      logger: this._logger,
+      writer: this._writer,
+      sessionName: this.sessionName,
+    });
     this._views.add(view);
     return view;
   }

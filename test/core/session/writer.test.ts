@@ -217,6 +217,45 @@ describe('SessionWriter.sendMessages', () => {
     expect(realtime.channels.release).toHaveBeenCalledWith('session-1');
   });
 
+  it('accepts an array of messages and publishes them in a single batch with one msg-id per message', async () => {
+    const { options, channel } = makeSession();
+    const session = createClientSession(options);
+    await session.connect();
+
+    await session.writer.sendMessages({ messages: ['first', 'second', 'third'], runId: 'r-1' });
+
+    expect(channel.publish).toHaveBeenCalledTimes(1);
+    const batch = channel.publishedBatches[0] ?? [];
+    expect(batch).toHaveLength(3);
+
+    // CAST: Ably.Message.data is typed any; this test produced strings.
+    const dataValues = batch.map((m) => m.data as string);
+    expect(dataValues).toEqual(['first', 'second', 'third']);
+
+    const ids = batch.map((m) => headersOf(m)[Headers.MessageId]);
+    expect(new Set(ids).size).toBe(3);
+    for (const id of ids) {
+      expect(typeof id).toBe('string');
+      expect(id?.length).toBeGreaterThan(0);
+    }
+
+    // All messages share the same runId and role.
+    for (const wire of batch) {
+      expect(headersOf(wire)[Headers.RunId]).toBe('r-1');
+      expect(headersOf(wire)[Headers.Role]).toBe('user');
+    }
+  });
+
+  it('does not publish when the messages array is empty', async () => {
+    const { options, channel } = makeSession();
+    const session = createClientSession(options);
+    await session.connect();
+
+    await session.writer.sendMessages({ messages: [], runId: 'r-1' });
+
+    expect(channel.publish).not.toHaveBeenCalled();
+  });
+
   it('publishes x-ably-role=assistant when constructed via createAgentSession', async () => {
     const { options, channel } = makeSession();
     const session = createAgentSession(options);

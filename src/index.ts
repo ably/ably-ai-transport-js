@@ -34,10 +34,18 @@ export type {
 export { createAgentSession, createClientSession } from './core/session/index.js';
 
 // Views
-export type { ClientView, View } from './core/view/index.js';
+export type { AgentView, ClientView, View } from './core/view/index.js';
 
 // Run
-export type { ClientRun, ClientRunOptions, Run, RunEndStatus, RunStatus } from './core/run/index.js';
+export type {
+  AgentRun,
+  AgentRunOptions,
+  ClientRun,
+  ClientRunOptions,
+  Run,
+  RunEndStatus,
+  RunStatus,
+} from './core/run/index.js';
 
 // Invocation
 export type { InvocationConstructor, InvocationData } from './core/invocation/index.js';

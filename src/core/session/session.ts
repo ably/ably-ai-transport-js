@@ -8,7 +8,9 @@ import { LogLevel, makeLogger } from '../../logger.js';
 import type { RealtimeWithOptions } from '../../realtime-extensions.js';
 import { VERSION } from '../../version.js';
 import type { Accumulator, AnyCodec, CodecEvent, CodecMessage, CodecPart, Decoder } from '../codec/index.js';
-import type { Run, RunStatus } from '../run/index.js';
+import type { Invocation } from '../invocation/index.js';
+import type { AgentRun, Run, RunStatus } from '../run/index.js';
+import { DefaultAgentRun } from '../run/index.js';
 import type { MessageNode, TreeInternal } from '../tree/index.js';
 import { DefaultTree } from '../tree/index.js';
 import type { ClientView } from '../view/index.js';
@@ -63,13 +65,13 @@ interface SessionEvents {
 
 /**
  * Narrow a wire `x-ably-status` value to a {@link RunStatus} the tree can
- * transition into via `applyRunEnd`. Phase 5 only accepts `'complete'`;
- * later phases widen this guard alongside the writer surfaces that
- * produce `'aborted'` and `'failed'`.
+ * transition into via `applyRunEnd`. Phase 7 accepts `'complete'` and
+ * `'failed'`; phase 11 widens this guard to include `'aborted'` alongside
+ * `step.signal`.
  * @param value The raw header value.
  * @returns True when `value` is a recognised run-end status.
  */
-const isRunEndStatus = (value: string | undefined): value is RunStatus => value === 'complete';
+const isRunEndStatus = (value: string | undefined): value is RunStatus => value === 'complete' || value === 'failed';
 
 /**
  * Long-lived handle on a durable session from the client's perspective.
@@ -144,10 +146,14 @@ export interface ClientSession<C extends AnyCodec> {
 /**
  * Long-lived handle on a durable session from the agent's perspective.
  *
- * Phase 2 surface — connect/close lifecycle and error events. `createRun`,
- * `tree`, and `writer` from the RFC are deferred to later phases.
+ * Phase 7 surface — connect/close lifecycle, error events, and
+ * `createRun(invocation)` for binding to a run named by the invocation.
+ * `tree` and `writer` from the RFC are deferred to later phases.
+ *
+ * Parameterised by the session's codec — `C extends Codec<TPart, TMessage,
+ * TEvent>` — so `createRun` returns the right `AgentRun<C>` variant.
  */
-export interface AgentSession {
+export interface AgentSession<C extends AnyCodec> {
   /** The session name, as passed to {@link createAgentSession}. */
   readonly sessionName: string;
 
@@ -174,6 +180,24 @@ export interface AgentSession {
   [Symbol.asyncDispose](): Promise<void>;
 
   /**
+   * Bind to the run named by the invocation and return an
+   * {@link AgentRun} the agent can read messages from, end, and dispose.
+   *
+   * Phase 7 issues the handle synchronously without waiting for the run
+   * to be visible on the channel — callers in basic-chat see the
+   * run-start before the agent boots, so the handle's lazy tree reads
+   * always succeed by the time the agent reads them. The slow-precondition
+   * path that pends until the run-start lands lives in a later phase.
+   * @param invocation The invocation produced by `view.send().toInvocation()`.
+   * @returns An {@link AgentRun} bound to `invocation.runId`.
+   * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.SessionClosed}
+   *   when called after {@link close}.
+   * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.InvalidArgument}
+   *   when the invocation's `sessionName` does not match this session.
+   */
+  createRun(invocation: Invocation): AgentRun<C>;
+
+  /**
    * Fires when the session encounters an unrecoverable error — channel
    * detach or failed state.
    * @param event The event name (only `'error'` is supported today).
@@ -194,7 +218,7 @@ export interface AgentSession {
  * object today — the agent-only surface (`createRun`, run-side writer)
  * lands in later phases.
  */
-class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSession {
+class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSession<C> {
   readonly sessionName: string;
 
   private readonly _realtime: Ably.Realtime;
@@ -371,6 +395,14 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
       return;
     }
 
+    const runId = readHeader(message, Headers.RunId);
+    if (runId === undefined) {
+      this._logger.warn('DefaultSession._handleInboundMessage(); missing x-ably-run-id', {
+        serial: message.serial,
+      });
+      return;
+    }
+
     const serial = message.serial;
     if (serial === undefined) {
       this._logger.warn('DefaultSession._handleInboundMessage(); inbound message missing serial');
@@ -410,6 +442,7 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
         id: messageId,
         role,
         clientId,
+        runId,
         message: composed,
         serial,
       };
@@ -530,6 +563,27 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
     return view;
   }
 
+  createRun(invocation: Invocation): AgentRun<C> {
+    this._logger.trace('DefaultSession.createRun();', { runId: invocation.runId });
+    if (this._closed) {
+      throw new Ably.ErrorInfo('unable to create run; session is closed', ErrorCode.SessionClosed, 400);
+    }
+    if (invocation.sessionName !== this.sessionName) {
+      throw new Ably.ErrorInfo(
+        `unable to create run; invocation sessionName ${invocation.sessionName} does not match session ${this.sessionName}`,
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+    return new DefaultAgentRun<C>({
+      runId: invocation.runId,
+      tree: this._tree,
+      writer: this._writer,
+      logger: this._logger,
+      registerView: (view) => this._views.add(view),
+    });
+  }
+
   get writer(): SessionWriter<C> {
     return this._writer;
   }
@@ -556,13 +610,10 @@ export const createClientSession = <C extends AnyCodec>(options: SessionOptions<
 /**
  * Create a new {@link AgentSession}. The returned session is not yet live —
  * register listeners, then call {@link AgentSession.connect} to subscribe to
- * the channel.
- *
- * The codec is held on the session for forward compatibility but is unused
- * in this scaffold (the agent-side writer and `createRun` land in later
- * phases).
+ * the channel and call {@link AgentSession.createRun} to bind to the run
+ * named by the invocation.
  * @param options Wiring for the client, session name, codec, and optional logger.
  * @returns A not-yet-connected {@link AgentSession}.
  */
-export const createAgentSession = <C extends AnyCodec>(options: SessionOptions<C>): AgentSession =>
+export const createAgentSession = <C extends AnyCodec>(options: SessionOptions<C>): AgentSession<C> =>
   new DefaultSession<C>(options, 'agent');

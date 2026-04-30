@@ -79,6 +79,7 @@ describe('Session decode loop (integration)', () => {
         headers: {
           [Headers.MessageId]: 'm-1',
           [Headers.Role]: 'user',
+          [Headers.RunId]: 'r-1',
         },
       },
     });
@@ -121,6 +122,7 @@ describe('Session decode loop (integration)', () => {
           [Headers.MessageId]: 'm-1',
           [Headers.Role]: 'user',
           [Headers.ClientId]: 'end-user-1',
+          [Headers.RunId]: 'r-1',
         },
       },
     });

@@ -50,6 +50,7 @@ interface InboundOverrides {
   msgId: string;
   role?: 'user' | 'assistant';
   clientId?: string;
+  runId?: string;
   data?: unknown;
   extraHeaders?: Record<string, string>;
 }
@@ -108,6 +109,7 @@ const makeInbound = (overrides: InboundOverrides): Ably.InboundMessage => {
   const headers: Record<string, string> = {
     [Headers.MessageId]: overrides.msgId,
     [Headers.Role]: overrides.role ?? 'user',
+    [Headers.RunId]: overrides.runId ?? 'r-1',
     ...overrides.extraHeaders,
   };
   if (overrides.clientId !== undefined) {
@@ -432,6 +434,7 @@ describe('Session', () => {
         id: 'm-1',
         role: 'user',
         clientId: 'alice',
+        runId: 'r-1',
         serial: '01',
         message: 'hello',
       });
@@ -491,6 +494,24 @@ describe('Session', () => {
 
       // No header clientId, no connection-level clientId — should be rejected.
       channel.simulateMessage(makeInbound({ serial: '01', msgId: 'm-1', role: 'user' }));
+
+      expect(view.messages).toHaveLength(0);
+    });
+
+    it('skips inbound messages missing x-ably-run-id', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+      const view = session.createView();
+
+      const inbound = makeInbound({ serial: '01', msgId: 'm-1', role: 'user', clientId: 'alice' });
+      // CAST: drop the run-id header to exercise the rejection path.
+      (inbound.extras as { headers: Record<string, string> }).headers = {
+        [Headers.MessageId]: 'm-1',
+        [Headers.Role]: 'user',
+        [Headers.ClientId]: 'alice',
+      };
+      channel.simulateMessage(inbound);
 
       expect(view.messages).toHaveLength(0);
     });

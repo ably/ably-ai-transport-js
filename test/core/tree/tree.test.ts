@@ -10,6 +10,7 @@ const makeNode = (
 ): MessageNode<string> => ({
   role: 'user',
   clientId: 'client-1',
+  runId: 'r-1',
   message: `msg:${overrides.id}`,
   ...overrides,
 });
@@ -79,6 +80,7 @@ describe('Tree', () => {
         serial: '01',
         role: 'assistant',
         clientId: 'agent-1',
+        runId: 'r-1',
         message: 'hello',
       });
 
@@ -89,6 +91,7 @@ describe('Tree', () => {
         serial: '01',
         role: 'assistant',
         clientId: 'agent-1',
+        runId: 'r-1',
         message: 'hello',
       });
     });

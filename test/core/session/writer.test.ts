@@ -318,4 +318,18 @@ describe('SessionWriter.endRun', () => {
     expect(channel.detach).toHaveBeenCalledTimes(1);
     expect(realtime.channels.release).toHaveBeenCalledWith('session-1');
   });
+
+  it("publishes status='failed' when supplied", async () => {
+    const { options, channel } = makeSession();
+    const session = createClientSession(options);
+    await session.connect();
+
+    await session.writer.endRun({ runId: 'r-1', status: 'failed' });
+
+    const [wire] = channel.publishedBatches[0] ?? [];
+    if (!wire) throw new Error('expected one wire message');
+    // CAST: tests own the structure of `extras` they passed in.
+    const headers = (wire.extras as { headers: Record<string, string> }).headers;
+    expect(headers[Headers.Status]).toBe('failed');
+  });
 });

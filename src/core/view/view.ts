@@ -51,6 +51,18 @@ export interface View<TMessage> {
  * supplied user message. `regenerate`, `edit`, `select`, `loadMore`,
  * `runs`, `hasMore`, and `createRun` land additively in later phases.
  */
+/**
+ * Read projection scoped to a specific run from the agent's perspective.
+ *
+ * Phase 7 subset — `extends View<CodecMessage<C>>` with no extra members
+ * yet. Messages visible on this view are filtered to the bound run's
+ * ancestry (in basic-chat without forks, that's all messages produced
+ * within the run). Branching, pagination, and the codec-typed `run`
+ * field on each node land in later phases.
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type -- Phase 7 subset; members added additively in later phases.
+export interface AgentView<C extends AnyCodec> extends View<CodecMessage<C>> {}
+
 export interface ClientView<C extends AnyCodec> extends View<CodecMessage<C>> {
   /**
    * Open a new run at the current branch tip and publish the user
@@ -100,6 +112,19 @@ export interface ClientViewOptions<C extends AnyCodec> extends ViewOptions<Codec
 }
 
 /**
+ * Options for constructing a {@link DefaultAgentView}. Extends
+ * {@link ViewOptions} with the run id the view filters its messages by.
+ */
+export interface AgentViewOptions<C extends AnyCodec> extends ViewOptions<CodecMessage<C>> {
+  /**
+   * The run this view is scoped to. `messages` returns only nodes whose
+   * `runId` matches; `subscribe` still fires for every tree change so the
+   * agent observes ancestry fill-in and steering messages mid-execution.
+   */
+  runId: string;
+}
+
+/**
  * Default {@link View} implementation. Phase 2 mirrors the tree directly —
  * `messages` returns `tree.messages` unchanged. The view subscribes to the
  * tree on construction and forwards each notification to its own subscribers
@@ -108,7 +133,7 @@ export interface ClientViewOptions<C extends AnyCodec> extends ViewOptions<Codec
  */
 export class DefaultView<TMessage> implements View<TMessage> {
   protected readonly _logger: Logger;
-  private readonly _tree: Tree<TMessage>;
+  protected readonly _tree: Tree<TMessage>;
   private readonly _subscribers = new Set<() => void>();
   private _treeUnsubscribe?: () => void;
   private _closed = false;
@@ -194,5 +219,26 @@ export class DefaultClientView<C extends AnyCodec> extends DefaultView<CodecMess
       sessionName: this._sessionName,
       messageId: lastMessageId,
     });
+  }
+}
+
+/**
+ * Default {@link AgentView} implementation. Filters the underlying tree's
+ * messages to those produced within the bound run; in basic-chat without
+ * forks that's the same set of messages an unfiltered view would show, so
+ * this is a forward-compatible projection that will also do the right
+ * thing once parent-run ancestry lands.
+ * @internal
+ */
+export class DefaultAgentView<C extends AnyCodec> extends DefaultView<CodecMessage<C>> implements AgentView<C> {
+  private readonly _runId: string;
+
+  constructor(options: AgentViewOptions<C>) {
+    super({ tree: options.tree, logger: options.logger });
+    this._runId = options.runId;
+  }
+
+  override get messages(): readonly MessageNode<CodecMessage<C>>[] {
+    return this._tree.messages.filter((node) => node.runId === this._runId);
   }
 }

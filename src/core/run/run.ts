@@ -1,19 +1,19 @@
 /**
  * Lifecycle status of a run.
  *
- * Phase 5 subset of the RFC's `RunStatus` — `'suspended'`, `'aborted'`, and
- * `'failed'` are deferred and join this union additively in later phases as
- * the writer/agent surfaces that produce them land.
+ * Phase 7 subset of the RFC's `RunStatus` — `'suspended'` and `'aborted'`
+ * are deferred and join this union additively in later phases as the
+ * agent/control surfaces that produce them land.
  */
-export type RunStatus = 'active' | 'complete';
+export type RunStatus = 'active' | 'complete' | 'failed';
 
 /**
  * Terminal status accepted by run-end wire messages.
  *
- * Phase 5 subset of the RFC's `RunEndStatus`. Phase 7 adds `'failed'`
- * (alongside `AgentRun.end(error)`) and phase 11 adds `'aborted'`.
+ * Phase 7 subset of the RFC's `RunEndStatus` — `'aborted'` joins in phase
+ * 11 alongside `step.signal`.
  */
-export type RunEndStatus = 'complete';
+export type RunEndStatus = 'complete' | 'failed';
 
 /**
  * Read-only state of a run, common to both client and agent perspectives.

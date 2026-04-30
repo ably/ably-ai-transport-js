@@ -17,6 +17,7 @@ const makeNode = (id: string, serial: string) => ({
   id,
   role: 'user' as const,
   clientId: 'client-1',
+  runId: 'r-1',
   message: `msg:${id}`,
   serial,
 });

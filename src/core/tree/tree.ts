@@ -6,9 +6,11 @@ import type { Run, RunStatus } from '../run/index.js';
  * plus transport metadata (identity, attribution) and the Ably message
  * serial that ordered it on the channel.
  *
- * Phase 1 subset of the RFC's `MessageNode` — the `parentId`, `children`,
- * `run`, `step`, and `streaming` fields are deferred and will be added
- * additively in later phases.
+ * Phase 7 subset of the RFC's `MessageNode` — `parentId`, `children`,
+ * the typed `run`/`step` references, and `streaming` are deferred and
+ * land additively in later phases. `runId` is exposed as a string so
+ * `AgentRun` and `AgentView` can filter messages by their owning run
+ * before the typed `run` reference lands.
  */
 export interface MessageNode<TMessage> {
   /** Unique message ID (from the `x-ably-msg-id` header). */
@@ -31,6 +33,13 @@ export interface MessageNode<TMessage> {
    * filtering to a specific user's activity.
    */
   readonly clientId: string;
+
+  /**
+   * The id of the run this message was published into (from the
+   * `x-ably-run-id` header). Stable for the lifetime of the node;
+   * `AgentRun.messages` and `AgentView.messages` filter on it.
+   */
+  readonly runId: string;
 
   /** The domain message in the codec's representation. */
   readonly message: TMessage;

@@ -26,6 +26,11 @@ export enum ErrorCode {
 
   /** The session has been closed; the requested operation is no longer valid. */
   SessionClosed = 104100,
+
+  // --- Invocation ---
+
+  /** The invocation data passed to {@link Invocation.fromJSON} is missing required fields or has wrong-typed values. */
+  InvocationInvalid = 104402,
 }
 
 /**

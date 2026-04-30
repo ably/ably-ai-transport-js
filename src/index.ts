@@ -34,3 +34,7 @@ export { createAgentSession, createClientSession } from './core/session/index.js
 
 // Views
 export type { ClientView, View } from './core/view/index.js';
+
+// Invocation
+export type { InvocationConstructor, InvocationData } from './core/invocation/index.js';
+export { Invocation } from './core/invocation/index.js';

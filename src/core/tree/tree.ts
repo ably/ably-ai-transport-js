@@ -1,4 +1,5 @@
 import type { Logger } from '../../logger.js';
+import type { Run, RunStatus } from '../run/index.js';
 
 /**
  * A node in the session's conversation tree. Carries the domain message
@@ -44,23 +45,32 @@ export interface MessageNode<TMessage> {
 }
 
 /**
- * The unfiltered conversation tree: every node the session has observed,
- * ordered by Ably message serial. The tree is the canonical source of
- * conversation structure within a session; views project it.
+ * The unfiltered conversation tree: every node and every run the session has
+ * observed. The tree is the canonical source of conversation structure
+ * within a session; views project it.
  *
- * Phase 1 subset — exposes only the coarse `subscribe` notification and
- * the message list. Granular events (`message-added`, `run-started`, …),
- * `runs`/`steps` collections, and lookup helpers land in later phases.
+ * Phase 5 subset — `messages`, `runs`, and the coarse `subscribe`
+ * notification. Granular events (`message-added`, `run-started`, …), the
+ * `steps` collection, and lookup helpers land in later phases.
  */
 export interface Tree<TMessage> {
   /** All message nodes the tree has observed, ordered by serial. */
   readonly messages: readonly MessageNode<TMessage>[];
 
   /**
+   * All runs the tree has observed, in the order their `x-ably-run-start`
+   * arrived on the channel. A run's entry transitions in place from
+   * `'active'` to a terminal status as later wire messages land — callers
+   * re-read this collection on each {@link subscribe} notification rather
+   * than holding references to entries.
+   */
+  readonly runs: readonly Run<TMessage>[];
+
+  /**
    * Register a coarse change listener. The handler fires after every
-   * structural change to the tree — callers re-read {@link messages} to
-   * project the new state. Returns an unsubscribe function; subsequent
-   * calls to it are idempotent.
+   * structural change to the tree — callers re-read {@link messages} or
+   * {@link runs} to project the new state. Returns an unsubscribe function;
+   * subsequent calls to it are idempotent.
    * @param callback Invoked with no arguments after each change.
    * @returns A function that removes the listener when called.
    */
@@ -82,6 +92,27 @@ export interface TreeInternal<TMessage> extends Tree<TMessage> {
    * @param node The node to insert.
    */
   applyMessage(node: MessageNode<TMessage>): void;
+
+  /**
+   * Record a `'active'` run observed via `x-ably-run-start`. A duplicate id
+   * (a second `x-ably-run-start` for the same run) is logged and ignored —
+   * run-start is one-shot per run on the wire, so a duplicate indicates
+   * either history hydration replaying a known run or a faulty publisher.
+   * @param run The run record to record. Status must be `'active'`.
+   */
+  applyRunStart(run: Run<TMessage>): void;
+
+  /**
+   * Transition a known run to a terminal status in response to
+   * `x-ably-run-end`. If `runId` does not match a recorded run the call is
+   * logged and ignored — without history hydration (phase 13) a session
+   * that subscribed mid-run can legitimately see run-end without prior
+   * run-start.
+   * @param options Identification and target status for the transition.
+   * @param options.runId The id of the run to transition.
+   * @param options.status The status to transition the run into.
+   */
+  applyRunEnd(options: { runId: string; status: RunStatus }): void;
 }
 
 /** Options for constructing a {@link DefaultTree}. */
@@ -98,6 +129,7 @@ export interface TreeOptions {
 export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   private readonly _logger: Logger;
   private readonly _messages: MessageNode<TMessage>[] = [];
+  private readonly _runs: Run<TMessage>[] = [];
   private readonly _subscribers = new Set<() => void>();
 
   constructor(options: TreeOptions) {
@@ -109,6 +141,10 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
     return this._messages;
   }
 
+  get runs(): readonly Run<TMessage>[] {
+    return this._runs;
+  }
+
   applyMessage(node: MessageNode<TMessage>): void {
     this._logger.trace('DefaultTree.applyMessage();', { id: node.id, serial: node.serial });
 
@@ -116,6 +152,30 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
     const targetIndex = insertAt === -1 ? this._messages.length : insertAt;
     this._messages.splice(targetIndex, 0, node);
 
+    this._notify();
+  }
+
+  applyRunStart(run: Run<TMessage>): void {
+    this._logger.trace('DefaultTree.applyRunStart();', { runId: run.id });
+
+    if (this._runs.some((existing) => existing.id === run.id)) {
+      this._logger.warn('DefaultTree.applyRunStart(); duplicate run id', { runId: run.id });
+      return;
+    }
+    this._runs.push(run);
+    this._notify();
+  }
+
+  applyRunEnd(options: { runId: string; status: RunStatus }): void {
+    this._logger.trace('DefaultTree.applyRunEnd();', { runId: options.runId, status: options.status });
+
+    const index = this._runs.findIndex((run) => run.id === options.runId);
+    const existing = index === -1 ? undefined : this._runs[index];
+    if (existing === undefined) {
+      this._logger.warn('DefaultTree.applyRunEnd(); run not found', { runId: options.runId });
+      return;
+    }
+    this._runs[index] = { ...existing, status: options.status };
     this._notify();
   }
 

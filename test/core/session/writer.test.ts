@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { SessionOptions, SessionWriter } from '../../../src/core/session/index.js';
 import { createAgentSession, createClientSession } from '../../../src/core/session/index.js';
 import { ErrorCode } from '../../../src/errors.js';
-import { Headers } from '../../../src/headers.js';
+import { Headers, WireMessages } from '../../../src/headers.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 import { createMockChannel, createMockRealtime } from '../../helper/mock-realtime.js';
 import { type StubCodec, stubCodec } from '../../helper/stub-codec.js';
@@ -233,5 +233,50 @@ describe('SessionWriter.sendMessages', () => {
     const [wire] = channel.publishedBatches[0] ?? [];
     if (!wire) throw new Error('expected one wire message');
     expect(headersOf(wire)[Headers.Role]).toBe('assistant');
+  });
+});
+
+describe('SessionWriter.endRun', () => {
+  it('publishes one x-ably-run-end message with run-id and status headers', async () => {
+    const { options, channel } = makeSession();
+    const session = createClientSession(options);
+    await session.connect();
+
+    await session.writer.endRun({ runId: 'r-1', status: 'complete' });
+
+    expect(channel.publish).toHaveBeenCalledTimes(1);
+    expect(channel.publishedBatches).toHaveLength(1);
+    const batch = channel.publishedBatches[0] ?? [];
+    expect(batch).toHaveLength(1);
+    const [wire] = batch;
+    if (!wire) throw new Error('expected one wire message');
+    expect(wire.name).toBe(WireMessages.RunEnd);
+    const headers = headersOf(wire);
+    expect(headers[Headers.RunId]).toBe('r-1');
+    expect(headers[Headers.Status]).toBe('complete');
+  });
+
+  it('throws SessionClosed after the session has been closed', async () => {
+    const { options } = makeSession();
+    const session = createClientSession(options);
+    await session.close();
+
+    await expect(session.writer.endRun({ runId: 'r-1', status: 'complete' })).rejects.toBeErrorInfoWithCode(
+      ErrorCode.SessionClosed,
+    );
+  });
+
+  it('marks the channel in use so close() detaches and releases it', async () => {
+    const { options, channel, realtime } = makeSession();
+    const session = createClientSession(options);
+    // endRun is the only channel-touching call; connect() is intentionally
+    // skipped so this proves the writer's mark-channel-in-use path.
+
+    await session.writer.endRun({ runId: 'r-1', status: 'complete' });
+    await session.close();
+
+    expect(channel.publish).toHaveBeenCalledTimes(1);
+    expect(channel.detach).toHaveBeenCalledTimes(1);
+    expect(realtime.channels.release).toHaveBeenCalledWith('session-1');
   });
 });

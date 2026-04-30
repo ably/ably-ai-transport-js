@@ -26,6 +26,7 @@ export type {
 export type {
   AgentSession,
   ClientSession,
+  EndRunOptions,
   SendMessagesOptions,
   SessionOptions,
   SessionWriter,
@@ -34,6 +35,9 @@ export { createAgentSession, createClientSession } from './core/session/index.js
 
 // Views
 export type { ClientView, View } from './core/view/index.js';
+
+// Run
+export type { Run, RunEndStatus, RunStatus } from './core/run/index.js';
 
 // Invocation
 export type { InvocationConstructor, InvocationData } from './core/invocation/index.js';

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import type { Run } from '../../../src/core/run/index.js';
 import type { MessageNode } from '../../../src/core/tree/index.js';
 import { DefaultTree } from '../../../src/core/tree/index.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
@@ -14,6 +15,12 @@ const makeNode = (
 });
 
 const makeTree = () => new DefaultTree<string>({ logger: makeLogger({ logLevel: LogLevel.Silent }) });
+
+const makeRun = (overrides: Partial<Run<string>> & Pick<Run<string>, 'id'>): Run<string> => ({
+  status: 'active',
+  initiatorClientId: 'client-1',
+  ...overrides,
+});
 
 describe('Tree', () => {
   describe('applyMessage', () => {
@@ -187,6 +194,118 @@ describe('Tree', () => {
       // continues to reflect later applyMessage calls.
       tree.applyMessage(makeNode({ id: 'b', serial: '02' }));
       expect(messages.map((m) => m.id)).toEqual(['a', 'b']);
+    });
+  });
+
+  describe('runs', () => {
+    describe('applyRunStart', () => {
+      it('records the run as active', () => {
+        const tree = makeTree();
+        tree.applyRunStart(makeRun({ id: 'r-1' }));
+
+        expect(tree.runs).toEqual([{ id: 'r-1', status: 'active', initiatorClientId: 'client-1' }]);
+      });
+
+      it('appends multiple runs in arrival order', () => {
+        const tree = makeTree();
+        tree.applyRunStart(makeRun({ id: 'r-1' }));
+        tree.applyRunStart(makeRun({ id: 'r-2' }));
+
+        expect(tree.runs.map((r) => r.id)).toEqual(['r-1', 'r-2']);
+      });
+
+      it('preserves the initiatorClientId from the supplied run', () => {
+        const tree = makeTree();
+        tree.applyRunStart(makeRun({ id: 'r-1', initiatorClientId: 'agent-7' }));
+
+        expect(tree.runs[0]?.initiatorClientId).toBe('agent-7');
+      });
+
+      it('ignores a duplicate run id without disturbing the existing entry', () => {
+        const tree = makeTree();
+        tree.applyRunStart(makeRun({ id: 'r-1', initiatorClientId: 'first' }));
+        tree.applyRunStart(makeRun({ id: 'r-1', initiatorClientId: 'second' }));
+
+        expect(tree.runs).toEqual([{ id: 'r-1', status: 'active', initiatorClientId: 'first' }]);
+      });
+
+      it('fires subscribe', () => {
+        const tree = makeTree();
+        const handler = vi.fn();
+        tree.subscribe(handler);
+
+        tree.applyRunStart(makeRun({ id: 'r-1' }));
+
+        expect(handler).toHaveBeenCalledTimes(1);
+      });
+
+      it('does not fire subscribe when the duplicate is ignored', () => {
+        const tree = makeTree();
+        tree.applyRunStart(makeRun({ id: 'r-1' }));
+        const handler = vi.fn();
+        tree.subscribe(handler);
+
+        tree.applyRunStart(makeRun({ id: 'r-1' }));
+
+        expect(handler).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('applyRunEnd', () => {
+      it('transitions a known run to the supplied status', () => {
+        const tree = makeTree();
+        tree.applyRunStart(makeRun({ id: 'r-1' }));
+
+        tree.applyRunEnd({ runId: 'r-1', status: 'complete' });
+
+        expect(tree.runs).toEqual([{ id: 'r-1', status: 'complete', initiatorClientId: 'client-1' }]);
+      });
+
+      it('fires subscribe on transition', () => {
+        const tree = makeTree();
+        tree.applyRunStart(makeRun({ id: 'r-1' }));
+        const handler = vi.fn();
+        tree.subscribe(handler);
+
+        tree.applyRunEnd({ runId: 'r-1', status: 'complete' });
+
+        expect(handler).toHaveBeenCalledTimes(1);
+      });
+
+      it('ignores run-end for an unknown run id', () => {
+        const tree = makeTree();
+        const handler = vi.fn();
+        tree.subscribe(handler);
+
+        tree.applyRunEnd({ runId: 'never-started', status: 'complete' });
+
+        expect(tree.runs).toEqual([]);
+        expect(handler).not.toHaveBeenCalled();
+      });
+
+      it('preserves run order when an earlier run transitions terminal', () => {
+        const tree = makeTree();
+        tree.applyRunStart(makeRun({ id: 'r-1' }));
+        tree.applyRunStart(makeRun({ id: 'r-2' }));
+
+        tree.applyRunEnd({ runId: 'r-1', status: 'complete' });
+
+        expect(tree.runs.map((r) => r.id)).toEqual(['r-1', 'r-2']);
+        expect(tree.runs[0]?.status).toBe('complete');
+        expect(tree.runs[1]?.status).toBe('active');
+      });
+    });
+
+    it('runs and messages share the same coarse subscribe channel', () => {
+      const tree = makeTree();
+      const handler = vi.fn();
+      tree.subscribe(handler);
+
+      tree.applyMessage(makeNode({ id: 'a', serial: '01' }));
+      tree.applyRunStart(makeRun({ id: 'r-1' }));
+      tree.applyRunEnd({ runId: 'r-1', status: 'complete' });
+
+      expect(handler).toHaveBeenCalledTimes(3);
     });
   });
 });

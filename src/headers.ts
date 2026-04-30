@@ -1,12 +1,13 @@
 import type * as Ably from 'ably';
 
 /**
- * SDK-owned header names attached to every content message published through
- * the SDK. Receivers read these to attribute and route messages without
- * inspecting the codec's payload.
+ * SDK-owned header names attached to messages published through the SDK.
+ * Receivers read these to attribute and route messages without inspecting
+ * the codec's payload.
  *
- * Phase 2 introduces the three identity headers; later phases extend this
- * set with `x-ably-run-id`, `x-ably-step-id`, `x-ably-status`, etc.
+ * Headers grow phase-by-phase as the wire formats that need them land.
+ * Later phases will add `x-ably-step-id`, parent/fork pointers, and
+ * control-signal headers.
  */
 export const Headers = {
   /** Unique message ID — appears on every chunk of a streaming message. */
@@ -15,19 +16,46 @@ export const Headers = {
   Role: 'x-ably-role',
   /**
    * Optional override of the publishing connection's clientId, used when a
-   * backend publishes on behalf of an end-user.
+   * backend publishes on behalf of an end-user. Set on content messages and
+   * on `x-ably-run-start` to attribute a run's initiator.
    */
   ClientId: 'x-ably-client-id',
   /**
-   * The run a content message belongs to. Set on every published message;
-   * later phases will also carry this on lifecycle and control-signal
-   * messages.
+   * The run a message belongs to. Set on content messages and on every
+   * run-lifecycle wire message ({@link WireMessages.RunStart},
+   * {@link WireMessages.RunEnd}); later phases also carry it on
+   * step-lifecycle and control-signal messages.
    */
   RunId: 'x-ably-run-id',
+  /**
+   * Terminal status carried by lifecycle wire messages — phase 5 sets it on
+   * {@link WireMessages.RunEnd} (only `'complete'` today). Later phases reuse
+   * the header on `x-ably-step-end` and add `'aborted'`/`'failed'` values.
+   */
+  Status: 'x-ably-status',
 } as const;
 
 /** Union of valid SDK header names. */
 export type HeaderName = (typeof Headers)[keyof typeof Headers];
+
+/**
+ * SDK-owned wire message names. The SDK uses these as `Ably.Message.name` for
+ * lifecycle and control wire messages it produces and consumes itself; codecs
+ * own the names of their content messages and the SDK never inspects them.
+ *
+ * The decode loop branches on `message.name` against these constants before
+ * delegating to the codec, so codec implementations don't need to guard
+ * against seeing lifecycle messages.
+ */
+export const WireMessages = {
+  /** Opens a run. Carries {@link Headers.RunId} and optional {@link Headers.ClientId}. */
+  RunStart: 'x-ably-run-start',
+  /** Closes a run terminally. Carries {@link Headers.RunId} and {@link Headers.Status}. */
+  RunEnd: 'x-ably-run-end',
+} as const;
+
+/** Union of SDK-owned wire message names. */
+export type WireMessageName = (typeof WireMessages)[keyof typeof WireMessages];
 
 /**
  * Read one of the SDK's `x-ably-*` string headers from an inbound message.

@@ -1,10 +1,12 @@
 import * as Ably from 'ably';
 import { describe, expect, it, vi } from 'vitest';
 
+import type { Run } from '../../../src/core/run/index.js';
 import type { SessionOptions } from '../../../src/core/session/index.js';
 import { createAgentSession, createClientSession } from '../../../src/core/session/index.js';
+import type { Tree } from '../../../src/core/tree/index.js';
 import { ErrorCode } from '../../../src/errors.js';
-import { Headers } from '../../../src/headers.js';
+import { Headers, WireMessages } from '../../../src/headers.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 import { VERSION } from '../../../src/version.js';
 import {
@@ -51,6 +53,49 @@ interface InboundOverrides {
   data?: unknown;
   extraHeaders?: Record<string, string>;
 }
+
+interface RunInboundOverrides {
+  serial: string;
+  name: string;
+  headers: Record<string, string>;
+  clientId?: string;
+}
+
+/**
+ * Build an `Ably.InboundMessage` representing an SDK lifecycle wire message
+ * (run-start / run-end). Tests pass this through
+ * {@link MockChannel.simulateMessage} to drive the decode loop's run-event
+ * branches.
+ * @param overrides Wire message name, serial, headers, and optional clientId.
+ * @returns A fully populated `Ably.InboundMessage`.
+ */
+const makeRunInbound = (overrides: RunInboundOverrides): Ably.InboundMessage =>
+  ({
+    id: `${overrides.name}:${overrides.serial}`,
+    serial: overrides.serial,
+    timestamp: Date.now(),
+    action: 1,
+    version: { serial: overrides.serial, timestamp: Date.now() },
+    annotations: {},
+    name: overrides.name,
+    clientId: overrides.clientId,
+    extras: { headers: overrides.headers },
+  }) as unknown as Ably.InboundMessage;
+
+/**
+ * Reach into a session's private tree for tests that need to inspect run
+ * state. The `tree` accessor is intentionally not on the public
+ * `ClientSession`/`AgentSession` surfaces in phase 5 — it's deferred to a
+ * later phase.
+ * @param session A session created via `createClientSession`/`createAgentSession`.
+ * @returns The session's internal tree.
+ */
+const treeOf = (session: object): Tree<string> => {
+  // CAST: phase 5 keeps `_tree` private; tests reach in via a structural cast
+  // to assert decode-loop run state. The accessor will become public later.
+  const internals = session as { _tree: Tree<string> };
+  return internals._tree;
+};
 
 /**
  * Build an `Ably.InboundMessage` carrying the SDK headers Phase 2's decode
@@ -554,6 +599,182 @@ describe('Session', () => {
       expect(() => {
         channel.simulateMessage(makeInbound({ serial: '01', msgId: 'm-1', role: 'user', clientId: 'alice' }));
       }).not.toThrow();
+    });
+  });
+
+  describe('run lifecycle decode', () => {
+    it('records an active run on x-ably-run-start', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.RunStart,
+          headers: { [Headers.RunId]: 'r-1' },
+          clientId: 'alice',
+        }),
+      );
+
+      const tree = treeOf(session);
+      expect(tree.runs).toEqual<Run<string>[]>([{ id: 'r-1', status: 'active', initiatorClientId: 'alice' }]);
+    });
+
+    it('honours x-ably-client-id over the connection clientId on run-start', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.RunStart,
+          headers: {
+            [Headers.RunId]: 'r-1',
+            [Headers.ClientId]: 'end-user-1',
+          },
+          clientId: 'conn-bob',
+        }),
+      );
+
+      expect(treeOf(session).runs[0]?.initiatorClientId).toBe('end-user-1');
+    });
+
+    it('skips run-start without x-ably-run-id', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.RunStart,
+          headers: {},
+          clientId: 'alice',
+        }),
+      );
+
+      expect(treeOf(session).runs).toHaveLength(0);
+    });
+
+    it('skips run-start with no clientId in headers or message', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.RunStart,
+          headers: { [Headers.RunId]: 'r-1' },
+        }),
+      );
+
+      expect(treeOf(session).runs).toHaveLength(0);
+    });
+
+    it('transitions a run to complete on x-ably-run-end', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.RunStart,
+          headers: { [Headers.RunId]: 'r-1' },
+          clientId: 'alice',
+        }),
+      );
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '02',
+          name: WireMessages.RunEnd,
+          headers: { [Headers.RunId]: 'r-1', [Headers.Status]: 'complete' },
+          clientId: 'alice',
+        }),
+      );
+
+      expect(treeOf(session).runs[0]?.status).toBe('complete');
+    });
+
+    it('skips run-end with an invalid x-ably-status', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.RunStart,
+          headers: { [Headers.RunId]: 'r-1' },
+          clientId: 'alice',
+        }),
+      );
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '02',
+          name: WireMessages.RunEnd,
+          headers: { [Headers.RunId]: 'r-1', [Headers.Status]: 'totally-bogus' },
+          clientId: 'alice',
+        }),
+      );
+
+      expect(treeOf(session).runs[0]?.status).toBe('active');
+    });
+
+    it('skips run-end without x-ably-run-id', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.RunStart,
+          headers: { [Headers.RunId]: 'r-1' },
+          clientId: 'alice',
+        }),
+      );
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '02',
+          name: WireMessages.RunEnd,
+          headers: { [Headers.Status]: 'complete' },
+          clientId: 'alice',
+        }),
+      );
+
+      expect(treeOf(session).runs[0]?.status).toBe('active');
+    });
+
+    it('drives view subscribers from run state changes via the tree', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+      const view = session.createView();
+      const handler = vi.fn();
+      view.subscribe(handler);
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.RunStart,
+          headers: { [Headers.RunId]: 'r-1' },
+          clientId: 'alice',
+        }),
+      );
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '02',
+          name: WireMessages.RunEnd,
+          headers: { [Headers.RunId]: 'r-1', [Headers.Status]: 'complete' },
+          clientId: 'alice',
+        }),
+      );
+
+      expect(handler).toHaveBeenCalledTimes(2);
     });
   });
 });

@@ -1,9 +1,10 @@
 import * as Ably from 'ably';
 
 import { ErrorCode } from '../../errors.js';
-import { Headers } from '../../headers.js';
+import { Headers, WireMessages } from '../../headers.js';
 import type { Logger } from '../../logger.js';
 import type { AnyCodec, CodecMessage, CodecPart } from '../codec/index.js';
+import type { RunEndStatus } from '../run/index.js';
 import type { ChannelManager } from './channel-manager.js';
 
 /**
@@ -33,9 +34,23 @@ export interface SendMessagesOptions<TMessage> {
 }
 
 /**
- * The low-level write surface shared by both session types. Phase 3
- * exposes only `sendMessages`; later phases add `sendParts`, `sendEvents`,
- * run/step lifecycle, and control-signal methods additively.
+ * Options for {@link SessionWriter.endRun}. Phase 5 subset of the RFC
+ * interface — `status` is restricted to `RunEndStatus` (currently only
+ * `'complete'`); `'failed'` and `'aborted'` join the union additively in
+ * later phases.
+ */
+export interface EndRunOptions {
+  /** The run to end. */
+  runId: string;
+  /** Terminal status to record on `x-ably-run-end`. */
+  status: RunEndStatus;
+}
+
+/**
+ * The low-level write surface shared by both session types. Phase 5
+ * exposes `sendMessages` and `endRun`; later phases add `sendParts`,
+ * `sendEvents`, the rest of run/step lifecycle, and control-signal
+ * methods additively.
  *
  * Parameterised by the session's codec so callers name the variant with a
  * single type argument.
@@ -53,6 +68,20 @@ export interface SessionWriter<C extends AnyCodec> {
    *   when called after the session has been closed.
    */
   sendMessages(options: SendMessagesOptions<CodecMessage<C>>): Promise<void>;
+
+  /**
+   * Publish `x-ably-run-end` to the channel, recording the run's terminal
+   * status. The wire message carries `x-ably-run-id` and `x-ably-status`
+   * headers; receivers route it to the tree to advance the matching run.
+   *
+   * Phase 5 only accepts status `'complete'` — `'aborted'` and `'failed'`
+   * land alongside the agent surfaces that produce them. Resolves once
+   * Ably has acknowledged the publish.
+   * @param options Per-call wiring; see {@link EndRunOptions}.
+   * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.SessionClosed}
+   *   when called after the session has been closed.
+   */
+  endRun(options: EndRunOptions): Promise<void>;
 }
 
 /** Options for constructing a {@link DefaultSessionWriter}. */
@@ -138,6 +167,30 @@ export class DefaultSessionWriter<C extends AnyCodec> implements SessionWriter<C
       runId: options.runId,
       messageId,
       count: decorated.length,
+    });
+  }
+
+  async endRun(options: EndRunOptions): Promise<void> {
+    this._logger.trace('DefaultSessionWriter.endRun();', { runId: options.runId, status: options.status });
+
+    if (this._isClosed()) {
+      throw new Ably.ErrorInfo('unable to end run; session is closed', ErrorCode.SessionClosed, 400);
+    }
+
+    const channel = this._channelManager.get();
+    await channel.publish({
+      name: WireMessages.RunEnd,
+      extras: {
+        headers: {
+          [Headers.RunId]: options.runId,
+          [Headers.Status]: options.status,
+        },
+      },
+    });
+
+    this._logger.debug('DefaultSessionWriter.endRun(); published', {
+      runId: options.runId,
+      status: options.status,
     });
   }
 

@@ -2,12 +2,13 @@ import * as Ably from 'ably';
 
 import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
-import { Headers, readHeader } from '../../headers.js';
+import { Headers, readHeader, WireMessages } from '../../headers.js';
 import type { Logger } from '../../logger.js';
 import { LogLevel, makeLogger } from '../../logger.js';
 import type { RealtimeWithOptions } from '../../realtime-extensions.js';
 import { VERSION } from '../../version.js';
 import type { Accumulator, AnyCodec, CodecEvent, CodecMessage, CodecPart, Decoder } from '../codec/index.js';
+import type { Run, RunStatus } from '../run/index.js';
 import type { MessageNode, TreeInternal } from '../tree/index.js';
 import { DefaultTree } from '../tree/index.js';
 import type { ClientView } from '../view/index.js';
@@ -59,6 +60,16 @@ interface SessionEvents {
   /** Emitted when the session encounters an unrecoverable error. */
   error: Ably.ErrorInfo;
 }
+
+/**
+ * Narrow a wire `x-ably-status` value to a {@link RunStatus} the tree can
+ * transition into via `applyRunEnd`. Phase 5 only accepts `'complete'`;
+ * later phases widen this guard alongside the writer surfaces that
+ * produce `'aborted'` and `'failed'`.
+ * @param value The raw header value.
+ * @returns True when `value` is a recognised run-end status.
+ */
+const isRunEndStatus = (value: string | undefined): value is RunStatus => value === 'complete';
 
 /**
  * Long-lived handle on a durable session from the client's perspective.
@@ -316,7 +327,16 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
   }
 
   private _handleInboundMessage(message: Ably.InboundMessage): void {
-    this._logger.trace('DefaultSession._handleInboundMessage();', { serial: message.serial });
+    this._logger.trace('DefaultSession._handleInboundMessage();', { serial: message.serial, name: message.name });
+
+    if (message.name === WireMessages.RunStart) {
+      this._handleRunStart(message);
+      return;
+    }
+    if (message.name === WireMessages.RunEnd) {
+      this._handleRunEnd(message);
+      return;
+    }
 
     if (!this._decoder || !this._accumulator) {
       // Defensive: subscribe is registered after _decoder/_accumulator are set,
@@ -394,6 +414,50 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
       };
       this._tree.applyMessage(node);
     }
+  }
+
+  private _handleRunStart(message: Ably.InboundMessage): void {
+    const runId = readHeader(message, Headers.RunId);
+    if (runId === undefined) {
+      this._logger.warn('DefaultSession._handleRunStart(); missing x-ably-run-id', {
+        serial: message.serial,
+      });
+      return;
+    }
+
+    const initiatorClientId = readHeader(message, Headers.ClientId) ?? message.clientId;
+    if (initiatorClientId === undefined) {
+      this._logger.warn('DefaultSession._handleRunStart(); missing initiator clientId', {
+        runId,
+        serial: message.serial,
+      });
+      return;
+    }
+
+    const run: Run<CodecMessage<C>> = { id: runId, status: 'active', initiatorClientId };
+    this._tree.applyRunStart(run);
+  }
+
+  private _handleRunEnd(message: Ably.InboundMessage): void {
+    const runId = readHeader(message, Headers.RunId);
+    if (runId === undefined) {
+      this._logger.warn('DefaultSession._handleRunEnd(); missing x-ably-run-id', {
+        serial: message.serial,
+      });
+      return;
+    }
+
+    const status = readHeader(message, Headers.Status);
+    if (!isRunEndStatus(status)) {
+      this._logger.warn('DefaultSession._handleRunEnd(); invalid x-ably-status', {
+        runId,
+        status,
+        serial: message.serial,
+      });
+      return;
+    }
+
+    this._tree.applyRunEnd({ runId, status });
   }
 
   async close(): Promise<void> {

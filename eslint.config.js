@@ -29,6 +29,10 @@ export default [
   {
     ignores: [
       'demo/**',
+      'src_old/**',
+      'test_old/**',
+      'demo_old/**',
+      'examples_old/**',
       '**/eslint.config.js',
       '**/dist',
       '**/node_modules',

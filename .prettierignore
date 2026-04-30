@@ -1,3 +1,7 @@
 ably-common/
 specification/
 .next/
+src_old/
+test_old/
+demo_old/
+examples_old/

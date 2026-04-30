@@ -61,4 +61,24 @@ describe('ChannelManager', () => {
 
     expect(realtime.channels.get).toHaveBeenCalledTimes(2);
   });
+
+  describe('isResolved', () => {
+    it('is false before get()', () => {
+      const { manager } = makeChannelManager();
+      expect(manager.isResolved).toBe(false);
+    });
+
+    it('is true after get()', () => {
+      const { manager } = makeChannelManager();
+      manager.get();
+      expect(manager.isResolved).toBe(true);
+    });
+
+    it('returns to false after release()', () => {
+      const { manager } = makeChannelManager();
+      manager.get();
+      manager.release();
+      expect(manager.isResolved).toBe(false);
+    });
+  });
 });

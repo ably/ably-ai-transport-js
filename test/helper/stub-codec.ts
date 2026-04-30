@@ -50,29 +50,27 @@ const createStubAccumulator = (): Accumulator<StubPart, StubMessage> => {
   };
 };
 
-const stubEncoder: Encoder<StubPart> = {
-  encodePart: (): Ably.Message[] => {
-    throw new Error('stubCodec encoder not implemented — phase 3 stub will extend this');
-  },
+const createStubEncoder = (): Encoder<StubPart> => ({
+  encodePart: (part: StubPart): Ably.Message[] => [{ name: 'x-ably-message', data: part }],
   encodeEvent: (): Ably.Message[] => {
-    throw new Error('stubCodec encoder not implemented — phase 3 stub will extend this');
+    throw new Error('stubCodec.encodeEvent not implemented — events land in a later phase');
   },
   close: (): Ably.Message[] => [],
-};
+});
 
 /**
- * Stub codec for unit and integration tests. Implements `decode` and
- * `createAccumulator` per the phase 2 plan; `createEncoder` throws because
- * encoding doesn't land until phase 3.
+ * Stub codec for unit and integration tests.
  *
  * - `decode` returns `{ kind: 'part', part: msg.data }` when `data` is a
  *   string — the SDK falls back to the inbound's `x-ably-msg-id` header
  *   for routing, so the codec doesn't need to set `messageId` itself.
  * - `createAccumulator` records the most recent part as the message keyed
  *   by `messageId` and replays it from `getMessage`.
+ * - `createEncoder` emits one Ably wire message per part (data = part).
+ *   `encodeEvent` still throws — events land in a later phase.
  */
 export const stubCodec: StubCodec = {
   createDecoder: () => stubDecoder,
   createAccumulator: () => createStubAccumulator(),
-  createEncoder: () => stubEncoder,
+  createEncoder: () => createStubEncoder(),
 };

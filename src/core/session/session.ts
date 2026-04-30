@@ -13,6 +13,8 @@ import { DefaultTree } from '../tree/index.js';
 import type { ClientView } from '../view/index.js';
 import { DefaultView } from '../view/index.js';
 import { ChannelManager } from './channel-manager.js';
+import type { SessionWriter } from './writer.js';
+import { DefaultSessionWriter } from './writer.js';
 
 /**
  * Options shared by {@link createClientSession} and {@link createAgentSession}.
@@ -107,6 +109,13 @@ export interface ClientSession<C extends AnyCodec> {
   createView(): ClientView<C>;
 
   /**
+   * Low-level write surface for publishing onto the session's channel.
+   * Phase 3 exposes only `sendMessages`; later phases add additional
+   * publish methods additively.
+   */
+  readonly writer: SessionWriter<C>;
+
+  /**
    * Fires when the session encounters an unrecoverable error — channel
    * detach or failed state.
    * @param event The event name (only `'error'` is supported today).
@@ -184,6 +193,7 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
   private readonly _codec: C;
   private readonly _tree: TreeInternal<CodecMessage<C>>;
   private readonly _views = new Set<DefaultView<CodecMessage<C>>>();
+  private readonly _writer: DefaultSessionWriter<C>;
 
   private _decoder?: Decoder<CodecPart<C>, CodecEvent<C>>;
   private _accumulator?: Accumulator<CodecPart<C>, CodecMessage<C>, CodecEvent<C>>;
@@ -192,7 +202,6 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
   private _stateListener?: (change: Ably.ChannelStateChange) => void;
   private _messageListener?: (message: Ably.InboundMessage) => void;
   private _closed = false;
-  private _channelInUse = false;
 
   constructor(options: SessionOptions<C>, role: 'client' | 'agent') {
     this.sessionName = options.sessionName;
@@ -207,6 +216,13 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
     this._emitter = new EventEmitter(this._logger);
     this._channelManager = new ChannelManager(this._realtime, this.sessionName, this._logger);
     this._tree = new DefaultTree<CodecMessage<C>>({ logger: this._logger });
+    this._writer = new DefaultSessionWriter<C>({
+      codec: this._codec,
+      channelManager: this._channelManager,
+      role: role === 'client' ? 'user' : 'assistant',
+      logger: this._logger,
+      isClosed: () => this._closed,
+    });
 
     this._addAgent('ai-transport-js');
     this._logger.trace('DefaultSession(); initialized');
@@ -253,7 +269,6 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
 
   private async _doConnect(): Promise<void> {
     const channel = this._channelManager.get();
-    this._channelInUse = true;
 
     await channel.attach();
 
@@ -387,7 +402,7 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
     if (this._closed) {
       return;
     }
-    const channelInUse = this._channelInUse;
+    const channelResolved = this._channelManager.isResolved;
     this._closed = true;
 
     // Close every view created from this session before tearing down the
@@ -398,9 +413,9 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
     this._views.clear();
 
     try {
-      // Only touch the channel if connect() was attempted — otherwise close()
-      // before connect() is a true no-op on the realtime client.
-      if (channelInUse) {
+      // Only touch the channel if it was acquired — close() before connect()
+      // and before any writer.publish is a true no-op on the realtime client.
+      if (channelResolved) {
         const channel = this._channelManager.get();
 
         if (this._stateListener) {
@@ -443,6 +458,10 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
     const view = new DefaultView<CodecMessage<C>>({ tree: this._tree, logger: this._logger });
     this._views.add(view);
     return view;
+  }
+
+  get writer(): SessionWriter<C> {
+    return this._writer;
   }
 
   on(event: 'error', handler: (error: Ably.ErrorInfo) => void): void {

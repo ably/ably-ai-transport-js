@@ -38,6 +38,17 @@ export class ChannelManager {
   }
 
   /**
+   * Whether the channel has been acquired via {@link get} and not yet
+   * released. Callers use this to decide whether teardown work is required
+   * — if the channel was never acquired, there is nothing to detach or
+   * release.
+   * @returns `true` once {@link get} has been called and before {@link release}.
+   */
+  get isResolved(): boolean {
+    return this._resolvedChannel !== undefined;
+  }
+
+  /**
    * Release the channel from the realtime client. No-op if the channel was
    * never resolved.
    *

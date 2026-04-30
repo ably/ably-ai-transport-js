@@ -18,6 +18,12 @@ export const Headers = {
    * backend publishes on behalf of an end-user.
    */
   ClientId: 'x-ably-client-id',
+  /**
+   * The run a content message belongs to. Set on every published message;
+   * later phases will also carry this on lifecycle and control-signal
+   * messages.
+   */
+  RunId: 'x-ably-run-id',
 } as const;
 
 /** Union of valid SDK header names. */

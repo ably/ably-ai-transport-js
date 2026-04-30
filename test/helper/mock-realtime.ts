@@ -13,11 +13,18 @@ export interface MockChannel {
   off: ReturnType<typeof vi.fn>;
   subscribe: ReturnType<typeof vi.fn>;
   unsubscribe: ReturnType<typeof vi.fn>;
+  publish: ReturnType<typeof vi.fn>;
   state: Ably.ChannelState;
   /** Callbacks registered via on(events, listener) keyed by callback ref. */
   stateListeners: Map<Ably.channelEventCallback, Set<Ably.ChannelEvent>>;
   /** Callbacks registered via subscribe(listener). */
   messageListeners: Set<(message: Ably.InboundMessage) => void>;
+  /**
+   * Wire messages observed via publish(), in publish order. Each entry is
+   * the array passed to publish() — single-message publishes wrap into a
+   * one-element array so tests have a uniform shape.
+   */
+  publishedBatches: Ably.Message[][];
   /** Drive a state-change event to all listeners subscribed to it. */
   simulateStateChange: (change: Ably.ChannelStateChange) => void;
   /** Drive an inbound message to all message subscribers. */
@@ -33,10 +40,12 @@ export interface MockChannel {
 export const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
   const stateListeners = new Map<Ably.channelEventCallback, Set<Ably.ChannelEvent>>();
   const messageListeners = new Set<(message: Ably.InboundMessage) => void>();
+  const publishedBatches: Ably.Message[][] = [];
   const channel: MockChannel = {
     state: 'initialized',
     stateListeners,
     messageListeners,
+    publishedBatches,
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     attach: vi.fn(() => Promise.resolve()),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
@@ -56,6 +65,11 @@ export const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
     }),
     unsubscribe: vi.fn((listener: (message: Ably.InboundMessage) => void) => {
       messageListeners.delete(listener);
+    }),
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock matches Ably.RealtimeChannel.publish signature.
+    publish: vi.fn((messages: Ably.Message | Ably.Message[]) => {
+      publishedBatches.push(Array.isArray(messages) ? [...messages] : [messages]);
+      return Promise.resolve();
     }),
     simulateStateChange: (change: Ably.ChannelStateChange) => {
       for (const [callback, events] of stateListeners) {

@@ -23,7 +23,13 @@ export type {
 } from './core/codec/index.js';
 
 // Sessions
-export type { AgentSession, ClientSession, SessionOptions } from './core/session/index.js';
+export type {
+  AgentSession,
+  ClientSession,
+  SendMessagesOptions,
+  SessionOptions,
+  SessionWriter,
+} from './core/session/index.js';
 export { createAgentSession, createClientSession } from './core/session/index.js';
 
 // Views

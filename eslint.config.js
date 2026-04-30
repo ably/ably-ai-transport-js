@@ -33,6 +33,7 @@ export default [
       'test_old/**',
       'demo_old/**',
       'examples_old/**',
+      'rfc/**',
       '**/eslint.config.js',
       '**/dist',
       '**/node_modules',

@@ -163,6 +163,71 @@ describe('UIMessageCodec (integration)', () => {
     await subscriberSession.close();
   });
 
+  it('round-trips a full tool-input → tool-output sequence; subscriber observes input-available then output-available', async () => {
+    const channelName = uniqueChannelName('vercel-codec-tool-output');
+
+    const subscriberClient = ablyRealtimeClient();
+    const subscriberSession = createClientSession({
+      client: subscriberClient,
+      sessionName: channelName,
+      codec: UIMessageCodec,
+    });
+    await subscriberSession.connect();
+    const subscriberView = subscriberSession.createView();
+
+    const publisherClient = ablyRealtimeClient();
+    const channel = publisherClient.channels.get(channelName);
+    await channel.attach();
+
+    const core = createEncoderCore(channel);
+    const encoder = UIMessageCodec.createEncoder({ core });
+    const sdkHeaders = {
+      [Headers.MessageId]: 'agent-msg-tool-out',
+      [Headers.Role]: 'assistant',
+      [Headers.RunId]: 'r-tool-out',
+    };
+
+    const parsedInput = { city: 'Paris' };
+    const toolOutput = { temperature: 22, units: 'celsius' };
+
+    await encoder.encodePart(
+      { type: 'tool-input-start', toolCallId: 'tc-out-1', toolName: 'getWeather' },
+      { headers: sdkHeaders },
+    );
+    await encoder.encodePart({
+      type: 'tool-input-available',
+      toolCallId: 'tc-out-1',
+      toolName: 'getWeather',
+      input: parsedInput,
+    });
+    await encoder.encodePart(
+      { type: 'tool-output-available', toolCallId: 'tc-out-1', output: toolOutput },
+      { headers: sdkHeaders },
+    );
+    await encoder.close();
+
+    const observed = await waitForMessage(
+      subscriberView,
+      (m) =>
+        m.id === 'agent-msg-tool-out' &&
+        m.parts.some(
+          (p) =>
+            (p as { type?: string }).type === 'tool-getWeather' &&
+            (p as { state?: string }).state === 'output-available',
+        ),
+      15_000,
+    );
+
+    const toolPart = observed.parts.find((p) => (p as { type?: string }).type === 'tool-getWeather');
+    if (!toolPart) throw new Error('expected a tool-getWeather part');
+    expect((toolPart as { state: string }).state).toBe('output-available');
+    expect((toolPart as { input: unknown }).input).toEqual(parsedInput);
+    expect((toolPart as { output: unknown }).output).toEqual(toolOutput);
+    expect((toolPart as { toolCallId: string }).toolCallId).toBe('tc-out-1');
+
+    await subscriberSession.close();
+  });
+
   it.skipIf(!process.env.ANTHROPIC_API_KEY)(
     'pipes a real streamText() response through the codec onto Ably and the subscriber assembles the assistant UIMessage',
     async () => {

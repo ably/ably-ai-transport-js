@@ -15,6 +15,12 @@ import type { Logger } from '../../logger.js';
 /** Wire message name carrying a streamed tool-input. Mirrors the encoder. */
 const TOOL_INPUT_WIRE_NAME = 'tool-input';
 
+/** Discrete wire name for `tool-output-available` chunks. */
+const TOOL_OUTPUT_AVAILABLE_WIRE_NAME = 'tool-output-available';
+
+/** Discrete wire name for `tool-output-error` chunks. */
+const TOOL_OUTPUT_ERROR_WIRE_NAME = 'tool-output-error';
+
 /**
  * Type assertion helper for `ProviderMetadata` values pulled from domain
  * headers. The header reader returns `unknown` because JSON values are
@@ -156,11 +162,24 @@ class DefaultUIMessageDecoder implements Decoder<AI.UIMessageChunk, AI.UIMessage
     logger: Logger | undefined,
     input: { name: string; data: unknown; headers: Record<string, string> },
   ): DecodedValue<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>[] {
-    if (input.name !== 'text' || input.headers[Headers.Discrete] !== 'true') {
-      logger?.debug('UIMessageDecoder.decodeDiscrete(); dropping out-of-scope wire', { name: input.name });
-      return [];
+    if (input.name === 'text' && input.headers[Headers.Discrete] === 'true') {
+      return this._decodeDiscreteText(input);
     }
+    if (input.name === TOOL_OUTPUT_AVAILABLE_WIRE_NAME) {
+      return this._decodeToolOutputAvailable(logger, input);
+    }
+    if (input.name === TOOL_OUTPUT_ERROR_WIRE_NAME) {
+      return this._decodeToolOutputError(logger, input);
+    }
+    logger?.debug('UIMessageDecoder.decodeDiscrete(); dropping out-of-scope wire', { name: input.name });
+    return [];
+  }
 
+  private _decodeDiscreteText(input: {
+    name: string;
+    data: unknown;
+    headers: Record<string, string>;
+  }): DecodedValue<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>[] {
     const r = headerReader(input.headers);
     const domainId = r.str('messageId');
     const wireRole = input.headers[Headers.Role];
@@ -179,6 +198,50 @@ class DefaultUIMessageDecoder implements Decoder<AI.UIMessageChunk, AI.UIMessage
       parts: [{ type: 'text', text }],
     };
     return [{ kind: 'message', message }];
+  }
+
+  private _decodeToolOutputAvailable(
+    logger: Logger | undefined,
+    input: { name: string; data: unknown; headers: Record<string, string> },
+  ): DecodedValue<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>[] {
+    const r = headerReader(input.headers);
+    const toolCallId = r.str('toolCallId');
+    if (toolCallId === undefined) {
+      logger?.warn('UIMessageDecoder.decodeDiscrete(); tool-output-available missing toolCallId');
+      return [];
+    }
+    const part: AI.UIMessageChunk = {
+      type: 'tool-output-available',
+      toolCallId,
+      output: input.data,
+      providerExecuted: r.bool('providerExecuted'),
+      providerMetadata: asProviderMetadata(r.json('providerMetadata')),
+      dynamic: r.bool('dynamic'),
+      preliminary: r.bool('preliminary'),
+    };
+    return [{ kind: 'part', part }];
+  }
+
+  private _decodeToolOutputError(
+    logger: Logger | undefined,
+    input: { name: string; data: unknown; headers: Record<string, string> },
+  ): DecodedValue<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage>[] {
+    const r = headerReader(input.headers);
+    const toolCallId = r.str('toolCallId');
+    if (toolCallId === undefined) {
+      logger?.warn('UIMessageDecoder.decodeDiscrete(); tool-output-error missing toolCallId');
+      return [];
+    }
+    const errorText = typeof input.data === 'string' ? input.data : '';
+    const part: AI.UIMessageChunk = {
+      type: 'tool-output-error',
+      toolCallId,
+      errorText,
+      providerExecuted: r.bool('providerExecuted'),
+      providerMetadata: asProviderMetadata(r.json('providerMetadata')),
+      dynamic: r.bool('dynamic'),
+    };
+    return [{ kind: 'part', part }];
   }
 }
 

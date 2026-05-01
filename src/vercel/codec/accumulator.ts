@@ -121,6 +121,14 @@ class DefaultUIMessageAccumulator implements Accumulator<AI.UIMessageChunk, AI.U
         this._handleToolInputError(messageId, chunk);
         return;
       }
+      case 'tool-output-available': {
+        this._handleToolOutputAvailable(messageId, chunk);
+        return;
+      }
+      case 'tool-output-error': {
+        this._handleToolOutputError(messageId, chunk);
+        return;
+      }
       default: {
         this._logger?.debug('DefaultUIMessageAccumulator.processPart(); dropping out-of-scope chunk', {
           chunkType: chunk.type,
@@ -300,6 +308,69 @@ class DefaultUIMessageAccumulator implements Accumulator<AI.UIMessageChunk, AI.U
       rawInput: chunk.input,
       errorText: chunk.errorText,
       callProviderMetadata: chunk.providerMetadata,
+    };
+    // CAST: see _handleToolInputStart.
+    state.message.parts[index] = part as AI.UIMessage['parts'][number];
+  }
+
+  private _handleToolOutputAvailable(
+    messageId: string,
+    chunk: Extract<AI.UIMessageChunk, { type: 'tool-output-available' }>,
+  ): void {
+    const index = this._lookupToolPartIndex(messageId, chunk.toolCallId, 'tool-output-available');
+    if (index === undefined) return;
+    const state = this._states.get(messageId);
+    if (!state) return;
+    const existing = state.message.parts[index];
+    if (existing === undefined) return;
+
+    // Spread the existing part to preserve identity (type, toolName for
+    // dynamic-tool, toolCallId, title, providerExecuted, input,
+    // callProviderMetadata) — the output chunk only carries the result
+    // payload. The chunk's `providerMetadata` becomes
+    // `resultProviderMetadata` on the part (the call-side metadata
+    // captured in `_handleToolInputStart` stays under
+    // `callProviderMetadata`). We strip `errorText` / `rawInput` defensively
+    // in case a prior `output-error` state carried them — output-available
+    // declares `errorText?: never`.
+    // CAST: existing part is the constructed runtime object from prior
+    // state handlers; read it through a permissive shape because
+    // discriminated-union narrowing on `AI.UIMessagePart` is too granular
+    // for in-place transitions.
+    const { errorText: _errorText, rawInput: _rawInput, ...identity } = existing as Record<string, unknown>;
+    void _errorText;
+    void _rawInput;
+    const part = {
+      ...identity,
+      state: 'output-available',
+      output: chunk.output,
+      resultProviderMetadata: chunk.providerMetadata,
+      preliminary: chunk.preliminary,
+    };
+    // CAST: see _handleToolInputStart.
+    state.message.parts[index] = part as AI.UIMessage['parts'][number];
+  }
+
+  private _handleToolOutputError(
+    messageId: string,
+    chunk: Extract<AI.UIMessageChunk, { type: 'tool-output-error' }>,
+  ): void {
+    const index = this._lookupToolPartIndex(messageId, chunk.toolCallId, 'tool-output-error');
+    if (index === undefined) return;
+    const state = this._states.get(messageId);
+    if (!state) return;
+    const existing = state.message.parts[index];
+    if (existing === undefined) return;
+
+    // CAST: see _handleToolOutputAvailable.
+    const { output: _output, preliminary: _preliminary, ...identity } = existing as Record<string, unknown>;
+    void _output;
+    void _preliminary;
+    const part = {
+      ...identity,
+      state: 'output-error',
+      errorText: chunk.errorText,
+      resultProviderMetadata: chunk.providerMetadata,
     };
     // CAST: see _handleToolInputStart.
     state.message.parts[index] = part as AI.UIMessage['parts'][number];

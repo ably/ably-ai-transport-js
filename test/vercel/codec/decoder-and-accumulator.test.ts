@@ -409,6 +409,281 @@ describe('UIMessageCodec decoder + accumulator', () => {
       expect((part as { state: string }).state).toBe('input-streaming');
     });
 
+    it('transitions input-available → output-available when a tool-output-available wire arrives', () => {
+      const { accumulator, feed } = makeStack();
+      // Open and complete a tool input stream first.
+      feed(
+        makeInbound({
+          action: 'message.create',
+          serial: '20',
+          name: 'tool-input',
+          data: '',
+          headers: { ...persistentToolInputHeaders(), [Headers.Status]: 'streaming' },
+        }),
+      );
+      feed(
+        makeInbound({
+          action: 'message.append',
+          serial: '20',
+          data: '',
+          headers: {
+            ...persistentToolInputHeaders(),
+            [Headers.Status]: 'finished',
+            'x-domain-input': JSON.stringify({ city: 'Paris' }),
+          },
+        }),
+      );
+
+      // Now the output arrives as a discrete wire.
+      feed(
+        makeInbound({
+          action: 'message.create',
+          serial: '21',
+          name: 'tool-output-available',
+          data: { temperature: 22, units: 'celsius' },
+          headers: {
+            [Headers.Stream]: 'false',
+            [Headers.MessageId]: 'tool-msg',
+            'x-domain-toolCallId': 't-1',
+          },
+        }),
+      );
+
+      const part = accumulator.getMessage('tool-msg')?.parts[0];
+      expect((part as { state: string }).state).toBe('output-available');
+      expect((part as { input: unknown }).input).toEqual({ city: 'Paris' });
+      expect((part as { output: unknown }).output).toEqual({ temperature: 22, units: 'celsius' });
+      // Identity preserved from the input phase.
+      expect(part?.type).toBe('tool-getWeather');
+      expect((part as { toolCallId: string }).toolCallId).toBe('t-1');
+    });
+
+    it('preserves resultProviderMetadata and preliminary on output-available', () => {
+      const { accumulator, feed } = makeStack();
+      feed(
+        makeInbound({
+          action: 'message.create',
+          serial: '22',
+          name: 'tool-input',
+          data: '',
+          headers: { ...persistentToolInputHeaders(), [Headers.Status]: 'streaming' },
+        }),
+      );
+      feed(
+        makeInbound({
+          action: 'message.append',
+          serial: '22',
+          data: '',
+          headers: {
+            ...persistentToolInputHeaders(),
+            [Headers.Status]: 'finished',
+            'x-domain-input': JSON.stringify({ q: 'hello' }),
+          },
+        }),
+      );
+
+      feed(
+        makeInbound({
+          action: 'message.create',
+          serial: '23',
+          name: 'tool-output-available',
+          data: 'partial',
+          headers: {
+            [Headers.Stream]: 'false',
+            [Headers.MessageId]: 'tool-msg',
+            'x-domain-toolCallId': 't-1',
+            'x-domain-preliminary': 'true',
+            'x-domain-providerMetadata': JSON.stringify({ anthropic: { cacheHit: true } }),
+          },
+        }),
+      );
+
+      const part = accumulator.getMessage('tool-msg')?.parts[0];
+      expect((part as { preliminary: boolean }).preliminary).toBe(true);
+      expect((part as { resultProviderMetadata: unknown }).resultProviderMetadata).toEqual({
+        anthropic: { cacheHit: true },
+      });
+    });
+
+    it('overwrites output across successive preliminary tool-output-available chunks then settles on the final', () => {
+      const { accumulator, feed } = makeStack();
+      feed(
+        makeInbound({
+          action: 'message.create',
+          serial: '24a',
+          name: 'tool-input',
+          data: '',
+          headers: { ...persistentToolInputHeaders(), [Headers.Status]: 'streaming' },
+        }),
+      );
+      feed(
+        makeInbound({
+          action: 'message.append',
+          serial: '24a',
+          data: '',
+          headers: {
+            ...persistentToolInputHeaders(),
+            [Headers.Status]: 'finished',
+            'x-domain-input': JSON.stringify({ q: 'streaming-test' }),
+          },
+        }),
+      );
+
+      // First preliminary chunk — partial output.
+      feed(
+        makeInbound({
+          action: 'message.create',
+          serial: '24b',
+          name: 'tool-output-available',
+          data: { partial: 'first' },
+          headers: {
+            [Headers.Stream]: 'false',
+            [Headers.MessageId]: 'tool-msg',
+            'x-domain-toolCallId': 't-1',
+            'x-domain-preliminary': 'true',
+          },
+        }),
+      );
+      const afterFirst = accumulator.getMessage('tool-msg')?.parts[0];
+      expect((afterFirst as { output: unknown }).output).toEqual({ partial: 'first' });
+      expect((afterFirst as { preliminary: boolean }).preliminary).toBe(true);
+
+      // Second preliminary chunk — overwrite output, still preliminary.
+      feed(
+        makeInbound({
+          action: 'message.create',
+          serial: '24c',
+          name: 'tool-output-available',
+          data: { partial: 'second' },
+          headers: {
+            [Headers.Stream]: 'false',
+            [Headers.MessageId]: 'tool-msg',
+            'x-domain-toolCallId': 't-1',
+            'x-domain-preliminary': 'true',
+          },
+        }),
+      );
+      const afterSecond = accumulator.getMessage('tool-msg')?.parts[0];
+      expect((afterSecond as { output: unknown }).output).toEqual({ partial: 'second' });
+
+      // Final non-preliminary chunk — settles. preliminary becomes false (not undefined: header explicitly says 'false').
+      feed(
+        makeInbound({
+          action: 'message.create',
+          serial: '24d',
+          name: 'tool-output-available',
+          data: { final: true, value: 42 },
+          headers: {
+            [Headers.Stream]: 'false',
+            [Headers.MessageId]: 'tool-msg',
+            'x-domain-toolCallId': 't-1',
+            'x-domain-preliminary': 'false',
+          },
+        }),
+      );
+      const final = accumulator.getMessage('tool-msg')?.parts[0];
+      expect((final as { output: unknown }).output).toEqual({ final: true, value: 42 });
+      expect((final as { preliminary: boolean }).preliminary).toBe(false);
+      // Input preserved through every preliminary transition.
+      expect((final as { input: unknown }).input).toEqual({ q: 'streaming-test' });
+    });
+
+    it('transitions to output-error when a tool-output-error wire arrives, preserving input', () => {
+      const { accumulator, feed } = makeStack();
+      feed(
+        makeInbound({
+          action: 'message.create',
+          serial: '24',
+          name: 'tool-input',
+          data: '',
+          headers: { ...persistentToolInputHeaders(), [Headers.Status]: 'streaming' },
+        }),
+      );
+      feed(
+        makeInbound({
+          action: 'message.append',
+          serial: '24',
+          data: '',
+          headers: {
+            ...persistentToolInputHeaders(),
+            [Headers.Status]: 'finished',
+            'x-domain-input': JSON.stringify({ city: 'Paris' }),
+          },
+        }),
+      );
+
+      feed(
+        makeInbound({
+          action: 'message.create',
+          serial: '25',
+          name: 'tool-output-error',
+          data: 'rate limited',
+          headers: {
+            [Headers.Stream]: 'false',
+            [Headers.MessageId]: 'tool-msg',
+            'x-domain-toolCallId': 't-1',
+          },
+        }),
+      );
+
+      const part = accumulator.getMessage('tool-msg')?.parts[0];
+      expect((part as { state: string }).state).toBe('output-error');
+      expect((part as { errorText: string }).errorText).toBe('rate limited');
+      // input preserved across the transition; output cleared (output-error has output:never).
+      expect((part as { input: unknown }).input).toEqual({ city: 'Paris' });
+      expect((part as { output?: unknown }).output).toBeUndefined();
+    });
+
+    it('drops a tool-output-available wire with no toolCallId header', () => {
+      const { accumulator, feed } = makeStack();
+      feed(
+        makeInbound({
+          action: 'message.create',
+          serial: '26',
+          name: 'tool-input',
+          data: '',
+          headers: { ...persistentToolInputHeaders(), [Headers.Status]: 'streaming' },
+        }),
+      );
+      feed(
+        makeInbound({
+          action: 'message.create',
+          serial: '27',
+          name: 'tool-output-available',
+          data: 'whatever',
+          // toolCallId intentionally missing
+          headers: { [Headers.Stream]: 'false', [Headers.MessageId]: 'tool-msg' },
+        }),
+      );
+
+      // Part stays in input-streaming — the broken output wire is dropped.
+      const part = accumulator.getMessage('tool-msg')?.parts[0];
+      expect((part as { state: string }).state).toBe('input-streaming');
+    });
+
+    it('drops a tool-output-available wire whose toolCallId has no matching tool part', () => {
+      const { accumulator, feed } = makeStack();
+      feed(
+        makeInbound({
+          action: 'message.create',
+          serial: '28',
+          name: 'tool-output-available',
+          data: 'whatever',
+          headers: {
+            [Headers.Stream]: 'false',
+            [Headers.MessageId]: 'tool-msg-orphan-out',
+            'x-domain-toolCallId': 't-orphan',
+          },
+        }),
+      );
+
+      // No tool-input-start preceded this output and no other path
+      // created state for this messageId, so the lookup fails at the
+      // first hop (no state) and the accumulator never materialises a
+      // message — the wire is logged-and-dropped.
+      expect(accumulator.getMessage('tool-msg-orphan-out')).toBeUndefined();
+    });
+
     it('ignores duplicate tool-input-start chunks for the same toolCallId', () => {
       const { accumulator, feed } = makeStack();
       const startHeaders = { ...persistentToolInputHeaders(), [Headers.Status]: 'streaming' };

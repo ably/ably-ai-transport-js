@@ -149,6 +149,65 @@ describe('UIMessageCodec encoder', () => {
       expect(headers['x-domain-toolName']).toBe('getWeather');
     });
 
+    it('tool-output-available publishes a discrete tool-output-available wire with the output as data', async () => {
+      const { encoder, channel } = makeEncoder();
+
+      await encoder.encodePart(
+        {
+          type: 'tool-output-available',
+          toolCallId: 't-1',
+          output: { temperature: 22, units: 'celsius' },
+        },
+        { headers: { [Headers.MessageId]: 'm-1' } },
+      );
+
+      const [wire] = channel.publishedBatches[0] ?? [];
+      if (!wire) throw new Error('expected one wire');
+      expect(wire.name).toBe('tool-output-available');
+      expect(wire.data).toEqual({ temperature: 22, units: 'celsius' });
+      const headers = headersOf(wire);
+      expect(headers[Headers.Stream]).toBe('false');
+      expect(headers[Headers.MessageId]).toBe('m-1');
+      expect(headers['x-domain-toolCallId']).toBe('t-1');
+    });
+
+    it('tool-output-available carries preliminary and providerMetadata domain headers', async () => {
+      const { encoder, channel } = makeEncoder();
+
+      await encoder.encodePart(
+        {
+          type: 'tool-output-available',
+          toolCallId: 't-1',
+          output: 'partial',
+          preliminary: true,
+          providerMetadata: { anthropic: { cacheHit: true } },
+        },
+        { headers: { [Headers.MessageId]: 'm-1' } },
+      );
+
+      const [wire] = channel.publishedBatches[0] ?? [];
+      if (!wire) throw new Error('expected one wire');
+      const headers = headersOf(wire);
+      expect(headers['x-domain-preliminary']).toBe('true');
+      expect(headers['x-domain-providerMetadata']).toBe(JSON.stringify({ anthropic: { cacheHit: true } }));
+    });
+
+    it('tool-output-error publishes a discrete tool-output-error wire with errorText as data', async () => {
+      const { encoder, channel } = makeEncoder();
+
+      await encoder.encodePart(
+        { type: 'tool-output-error', toolCallId: 't-1', errorText: 'rate limited' },
+        { headers: { [Headers.MessageId]: 'm-1' } },
+      );
+
+      const [wire] = channel.publishedBatches[0] ?? [];
+      if (!wire) throw new Error('expected one wire');
+      expect(wire.name).toBe('tool-output-error');
+      expect(wire.data).toBe('rate limited');
+      const headers = headersOf(wire);
+      expect(headers['x-domain-toolCallId']).toBe('t-1');
+    });
+
     it('tool-input-error closes the stream with errorText so the decoder can discriminate', async () => {
       const { encoder, channel } = makeEncoder();
       await encoder.encodePart(

@@ -20,6 +20,12 @@ import type { Logger } from '../../logger.js';
  */
 const TOOL_INPUT_WIRE_NAME = 'tool-input';
 
+/** Discrete wire name for `tool-output-available` chunks. */
+const TOOL_OUTPUT_AVAILABLE_WIRE_NAME = 'tool-output-available';
+
+/** Discrete wire name for `tool-output-error` chunks. */
+const TOOL_OUTPUT_ERROR_WIRE_NAME = 'tool-output-error';
+
 /**
  * Vercel encoder. Wraps an {@link EncoderCore} and maps `UIMessageChunk`
  * events plus complete `UIMessage` objects onto the core's primitives.
@@ -127,6 +133,38 @@ class DefaultUIMessageEncoder implements Encoder<AI.UIMessageChunk, AI.UIMessage
         await this._core.closeStream(
           chunk.toolCallId,
           { name: TOOL_INPUT_WIRE_NAME, data: '' },
+          { headers: { ...options?.headers, ...headers } },
+        );
+        return;
+      }
+      case 'tool-output-available': {
+        // Discrete wire — the tool-output is independent of the streamed
+        // tool-input that opened the part. Receivers correlate to the
+        // existing tool part by `toolCallId`. The output is shipped as
+        // wire data (Ably handles JSON serialisation of complex
+        // payloads); chunk metadata travels in domain headers.
+        const headers = headerWriter()
+          .str('toolCallId', chunk.toolCallId)
+          .bool('providerExecuted', chunk.providerExecuted)
+          .json('providerMetadata', chunk.providerMetadata)
+          .bool('dynamic', chunk.dynamic)
+          .bool('preliminary', chunk.preliminary)
+          .build();
+        await this._core.publish(
+          { name: TOOL_OUTPUT_AVAILABLE_WIRE_NAME, data: chunk.output },
+          { headers: { ...options?.headers, ...headers } },
+        );
+        return;
+      }
+      case 'tool-output-error': {
+        const headers = headerWriter()
+          .str('toolCallId', chunk.toolCallId)
+          .bool('providerExecuted', chunk.providerExecuted)
+          .json('providerMetadata', chunk.providerMetadata)
+          .bool('dynamic', chunk.dynamic)
+          .build();
+        await this._core.publish(
+          { name: TOOL_OUTPUT_ERROR_WIRE_NAME, data: chunk.errorText },
           { headers: { ...options?.headers, ...headers } },
         );
         return;

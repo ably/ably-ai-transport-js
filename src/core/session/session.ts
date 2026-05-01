@@ -66,13 +66,15 @@ interface SessionEvents {
 
 /**
  * Narrow a wire `x-ably-status` value to a {@link RunStatus} the tree can
- * transition into via `applyRunEnd`. Phase 7 accepts `'complete'` and
- * `'failed'`; phase 11 widens this guard to include `'aborted'` alongside
- * `step.signal`.
+ * transition into via `applyRunEnd`. Phase 11 accepts `'complete'`,
+ * `'failed'`, and `'aborted'` — the abort row of {@link AgentRun.end}'s
+ * classifier produces `'aborted'` when the bound step's `signal.reason`
+ * is `ABORTED`.
  * @param value The raw header value.
  * @returns True when `value` is a recognised run-end status.
  */
-const isRunEndStatus = (value: string | undefined): value is RunStatus => value === 'complete' || value === 'failed';
+const isRunEndStatus = (value: string | undefined): value is RunStatus =>
+  value === 'complete' || value === 'failed' || value === 'aborted';
 
 /**
  * Narrow a wire `x-ably-status` value to a {@link StepStatus} the tree can

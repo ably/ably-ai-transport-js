@@ -50,6 +50,9 @@ export type {
 // Step
 export type { Step, StepEndStatus, StepRecord, StepStatus } from './core/step/index.js';
 
+// Signal reasons
+export { ABORTED, PAUSED } from './signal-reason.js';
+
 // Invocation
 export type { InvocationConstructor, InvocationData } from './core/invocation/index.js';
 export { Invocation } from './core/invocation/index.js';

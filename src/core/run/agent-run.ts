@@ -1,6 +1,7 @@
 import * as Ably from 'ably';
 
 import type { Logger } from '../../logger.js';
+import { ABORTED } from '../../signal-reason.js';
 import type { AnyCodec, CodecMessage } from '../codec/index.js';
 import type { DefaultSessionWriter } from '../session/writer.js';
 import type { Step } from '../step/index.js';
@@ -36,10 +37,12 @@ export interface AgentRun<C extends AnyCodec> extends Run<CodecMessage<C>> {
   readonly messages: readonly MessageNode<CodecMessage<C>>[];
 
   /**
-   * Finalise the run. Phase 7 subset of the RFC's `end` classifier — no
+   * Finalise the run. Phase 11 subset of the RFC's classifier — no
    * error → publishes `x-ably-run-end` with status `'complete'`; an
-   * error → publishes status `'failed'`. The pause and abort rows of the
-   * RFC classifier depend on `step.signal.reason` and land in phase 11.
+   * error → publishes either `'aborted'` (when the most recent step's
+   * `signal.reason === ABORTED`) or `'failed'` (any other error). The
+   * pause row depends on a durable pause control signal and lands when
+   * that surface ships.
    *
    * Idempotent — a second call after the first has resolved is a no-op
    * and resolves `void`. Does not close the run's view; pair with the
@@ -122,6 +125,7 @@ export class DefaultAgentRun<C extends AnyCodec> implements AgentRun<C> {
   private readonly _logger: Logger;
   private readonly _view: DefaultAgentView<C>;
   private _ended = false;
+  private _lastStep?: Step<C>;
 
   constructor(options: AgentRunOptions<C>) {
     this._runId = options.runId;
@@ -169,7 +173,7 @@ export class DefaultAgentRun<C extends AnyCodec> implements AgentRun<C> {
     }
     this._ended = true;
 
-    const status: RunEndStatus = error === undefined ? 'complete' : 'failed';
+    const status: RunEndStatus = this._classifyEndStatus(error);
     try {
       await this._writer.endRun({ runId: this._runId, status });
     } catch (publishError) {
@@ -212,12 +216,37 @@ export class DefaultAgentRun<C extends AnyCodec> implements AgentRun<C> {
 
   createStep(): Step<C> {
     this._logger.trace('DefaultAgentRun.createStep();');
-    return new DefaultStep<C>({
+    const step = new DefaultStep<C>({
       stepId: crypto.randomUUID(),
       runId: this._runId,
       tree: this._tree,
       writer: this._writer,
       logger: this._logger,
     });
+    // Track the most recently created step so end()'s classifier can
+    // read its signal.reason — basic-chat creates one step per hop, so
+    // "last" is "the one currently active". Multi-step variants land
+    // alongside a richer Run.steps surface in a later phase.
+    this._lastStep = step;
+    return step;
+  }
+
+  /**
+   * Pick the wire status for `x-ably-run-end` from the input error and
+   * the most recent step's signal reason. Phase 11 implements three
+   * rows of the RFC's classifier — `'complete'`, `'aborted'`,
+   * `'failed'` — without yet routing the pause row (that row lands
+   * alongside durable pause control signals).
+   * @param error The error supplied to {@link end}, or `undefined`.
+   * @returns The wire status to publish on the run-end.
+   */
+  private _classifyEndStatus(error: unknown): RunEndStatus {
+    if (error === undefined) {
+      return 'complete';
+    }
+    if (this._lastStep?.signal.reason === ABORTED) {
+      return 'aborted';
+    }
+    return 'failed';
   }
 }

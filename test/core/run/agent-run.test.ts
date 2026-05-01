@@ -171,6 +171,67 @@ describe('AgentRun.end', () => {
     expect(headersOf(wire)[Headers.Status]).toBe('failed');
   });
 
+  it("publishes status='aborted' when called with an error and the bound step.signal.reason is ABORTED", async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    await session.connect();
+    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+
+    // Open a step whose composed signal aborts via the caller signal.
+    const step = run.createStep();
+    const ac = new AbortController();
+    const startPromise = step.start({ signal: ac.signal });
+    // Drive the step-start back through the decode loop so start() resolves.
+    channel.simulateMessage({
+      name: 'x-ably-step-start',
+      serial: '02',
+      extras: { headers: { 'x-ably-run-id': 'r-1', 'x-ably-step-id': step.id } },
+    } as unknown as Ably.InboundMessage);
+    await startPromise;
+
+    ac.abort();
+    // Emulate the basic-chat catch-block sequence: step.end(error), then
+    // run.end(error). The run's classifier reads the bound step's
+    // signal.reason and routes the abort row.
+    await step.end(new Error('agent threw — pipe shutdown'));
+    await run.end(new Error('agent threw — pipe shutdown'));
+
+    // Two step wires (step-start, step-end) preceded the run-end; the
+    // run-end is the last batch published.
+    const lastBatch = channel.publishedBatches.at(-1) ?? [];
+    expect(lastBatch).toHaveLength(1);
+    const [wire] = lastBatch;
+    if (!wire) throw new Error('expected run-end wire');
+    expect(wire.name).toBe(WireMessages.RunEnd);
+    expect(headersOf(wire)[Headers.Status]).toBe('aborted');
+  });
+
+  it("publishes status='failed' when an error is supplied without an aborted bound step", async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    await session.connect();
+    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+
+    // Open a step but never abort its signal — the abort row of the
+    // classifier should not fire, and end(error) routes to 'failed'.
+    const step = run.createStep();
+    const startPromise = step.start();
+    channel.simulateMessage({
+      name: 'x-ably-step-start',
+      serial: '02',
+      extras: { headers: { 'x-ably-run-id': 'r-1', 'x-ably-step-id': step.id } },
+    } as unknown as Ably.InboundMessage);
+    await startPromise;
+
+    await run.end(new Error('non-abort error'));
+
+    const lastBatch = channel.publishedBatches.at(-1) ?? [];
+    const [wire] = lastBatch;
+    if (!wire) throw new Error('expected run-end wire');
+    expect(wire.name).toBe(WireMessages.RunEnd);
+    expect(headersOf(wire)[Headers.Status]).toBe('failed');
+  });
+
   it('is idempotent — a second call publishes nothing', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);

@@ -1,7 +1,9 @@
 import * as Ably from 'ably';
 
+import { ErrorCode } from '../../errors.js';
 import { Headers } from '../../headers.js';
 import type { Logger } from '../../logger.js';
+import { ABORTED } from '../../signal-reason.js';
 import type { AnyCodec, CodecEvent, CodecMessage, CodecPart, Encoder } from '../codec/index.js';
 import type { DefaultSessionWriter } from '../session/writer.js';
 import type { Tree } from '../tree/index.js';
@@ -49,12 +51,39 @@ export interface StepRecord {
 }
 
 /**
+ * Options accepted by {@link Step.start}.
+ */
+export interface StepStartOptions {
+  /**
+   * Caller-supplied abort signal folded into {@link Step.signal}. After
+   * `start()` resolves, `step.signal.aborted` becomes true whenever this
+   * signal fires. If the supplied signal is already aborted (or fires
+   * before the publish has been observed on the channel), `start()`
+   * rejects with {@link ErrorCode.StepStartAborted}. Phase 11 only wires
+   * caller-folded cancellation; later phases compose the same
+   * {@link Step.signal} with channel-level `x-ably-abort`/`x-ably-pause`
+   * control signals.
+   */
+  signal?: AbortSignal;
+
+  /**
+   * Abort `start()` after this many milliseconds. Implemented as a
+   * timeout source folded into {@link Step.signal} — a fired timeout
+   * sets `step.signal.reason` to `ABORTED` and rejects `start()` with
+   * {@link ErrorCode.StepStartAborted}. Phase 11 has no default — leave
+   * unset to wait indefinitely.
+   */
+  timeoutMs?: number;
+}
+
+/**
  * The agent's active write handle for one continuous execution within a run.
  *
- * Phase 10 subset of the RFC's `Step<C>` — `start()` (no options yet),
- * `pipe`, `end`, the async disposer, and the immutable identity getters.
- * `signal`, `abortSignal`, `sendMessages`, `sendParts`, `sendEvents`, and
- * the pause event surface land in later phases.
+ * Phase 11 subset of the RFC's `Step<C>` — `start({ signal, timeoutMs })`,
+ * the composed {@link Step.signal}, `pipe`, `end`, the async disposer, and
+ * the immutable identity getters. `abortSignal` (the pause-excluding
+ * variant), `sendMessages`, `sendParts`, `sendEvents`, and the pause
+ * event surface land in later phases.
  *
  * Returned by {@link AgentRun.createStep}.
  */
@@ -76,20 +105,62 @@ export interface Step<C extends AnyCodec> {
   readonly status: StepStatus;
 
   /**
+   * Composed cancellation signal. Aborts when any of the following
+   * happens after `start()` is called:
+   *
+   *   - The signal supplied via {@link StepStartOptions.signal} fires
+   *     (the caller folded in runtime-owned cancellation: `req.signal`
+   *     in serverless handlers, a WDK `abortSignal` in durable
+   *     execution). `signal.reason` is `ABORTED`.
+   *   - The `start()` timeout configured via
+   *     {@link StepStartOptions.timeoutMs} elapses. `signal.reason` is
+   *     `ABORTED`.
+   *
+   * Wire into your model call as `abortSignal: step.signal` for the
+   * common case ("any cancellation interrupts the stream"). The
+   * terminal-status classifier in {@link AgentRun.end} reads
+   * `signal.reason` to pick `'aborted'` vs `'failed'`.
+   *
+   * Phase 11 only wires caller-supplied signal + start-timeout sources;
+   * later phases extend the same signal with channel-level
+   * `x-ably-abort`/`x-ably-pause` control signals.
+   *
+   * The signal object is stable for the lifetime of the step — it is
+   * created at construction and exposed via this getter. The `ABORTED`
+   * sentinel is exported from the package root.
+   *
+   * Note: passing a long-lived `AbortSignal` via `start({ signal })`
+   * attaches an internal listener that stays for the step's lifetime,
+   * so a caller-held controller pins the step until garbage-collected.
+   * The leak is bounded — short-lived steps in serverless handlers
+   * (the basic-chat target) finish well before the controller does.
+   */
+  readonly signal: AbortSignal;
+
+  /**
    * Publish `x-ably-step-start` to the channel and resolve once the
    * publish has come back through the session's decode loop — i.e. the
-   * tree has recorded a {@link StepRecord} for this step. Phase 9 takes
-   * no options; precondition-wait, signal composition, and timeout land
-   * alongside `step.signal` in phase 11.
+   * tree has recorded a {@link StepRecord} for this step.
    *
    * On successful resolution the handle's {@link Step.status} transitions
    * from `'pending'` to `'active'`. If the publish rejects, the handle
    * remains `'pending'` and no `x-ably-step-start` reached the channel.
+   *
+   * If `options.signal` is already aborted on entry, `start()` rejects
+   * immediately without publishing. If the signal fires (or the
+   * `timeoutMs` elapses) before the tree has recorded the step,
+   * {@link Step.signal} aborts with reason `ABORTED` and `start()`
+   * rejects with {@link ErrorCode.StepStartAborted}. The publish itself
+   * is not cancelled — Ably may still record the step-start on the
+   * channel, but the handle stays `'pending'` locally.
+   * @param options Per-call wiring; see {@link StepStartOptions}.
    * @returns Resolves once the tree has recorded the step.
    * @throws An `Ably.ErrorInfo` with code `SessionClosed` when the
-   *   underlying session has been closed.
+   *   underlying session has been closed, or
+   *   {@link ErrorCode.StepStartAborted} when the caller signal or
+   *   start-timeout fires before the tree records the step-start.
    */
-  start(): Promise<void>;
+  start(options?: StepStartOptions): Promise<void>;
 
   /**
    * Pipe a {@link ReadableStream} of domain parts through the codec
@@ -172,6 +243,7 @@ export class DefaultStep<C extends AnyCodec> implements Step<C> {
   private readonly _tree: Tree<CodecMessage<C>>;
   private readonly _writer: DefaultSessionWriter<C>;
   private readonly _logger: Logger;
+  private readonly _abortController = new AbortController();
   private _encoder?: Encoder<CodecPart<C>, CodecMessage<C>, CodecEvent<C>>;
   private _ended = false;
   private _localStatus?: StepEndStatus;
@@ -206,8 +278,44 @@ export class DefaultStep<C extends AnyCodec> implements Step<C> {
     return this._tree.steps.find((step) => step.id === this._stepId)?.status ?? this._localStatus ?? 'pending';
   }
 
-  async start(): Promise<void> {
-    this._logger.trace('DefaultStep.start();');
+  get signal(): AbortSignal {
+    return this._abortController.signal;
+  }
+
+  async start(options?: StepStartOptions): Promise<void> {
+    this._logger.trace('DefaultStep.start();', {
+      hasSignal: options?.signal !== undefined,
+      timeoutMs: options?.timeoutMs,
+    });
+
+    // Pre-check: caller signal already aborted before we publish. Mark our
+    // composed signal aborted and reject without touching the channel — the
+    // RFC contract is that a rejected start() leaves the wire untouched.
+    if (options?.signal?.aborted === true) {
+      this._abortController.abort(ABORTED);
+      throw this._stepStartAbortedError('caller signal already aborted');
+    }
+
+    // Wire up signal sources for the duration of start(). Lasting
+    // composition (so step.signal stays aborted after start resolves) is
+    // achieved by funnelling every source into the step's own
+    // _abortController — the listener stays attached for the step's
+    // lifetime.
+    const onCallerAbort = (): void => {
+      if (!this._abortController.signal.aborted) {
+        this._abortController.abort(ABORTED);
+      }
+    };
+    options?.signal?.addEventListener('abort', onCallerAbort);
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    if (options?.timeoutMs !== undefined) {
+      timeoutHandle = setTimeout(() => {
+        if (!this._abortController.signal.aborted) {
+          this._abortController.abort(ABORTED);
+        }
+      }, options.timeoutMs);
+    }
 
     // Subscribe before publishing so a fast inbound (real Ably echoing the
     // publish back) cannot race ahead of the listener and leave the wait
@@ -216,16 +324,25 @@ export class DefaultStep<C extends AnyCodec> implements Step<C> {
     // was called.
     if (this._observed()) {
       this._logger.debug('DefaultStep.start(); already observed on tree — no-op');
+      if (timeoutHandle !== undefined) {
+        clearTimeout(timeoutHandle);
+      }
       return;
     }
 
-    let unsubscribe: (() => void) | undefined;
-    const observed = new Promise<void>((resolve) => {
-      unsubscribe = this._tree.subscribe(() => {
+    let unsubscribeTree: (() => void) | undefined;
+    let onAbortDuringWait: (() => void) | undefined;
+    type WaitOutcome = 'observed' | 'aborted';
+    const waitForResolution = new Promise<WaitOutcome>((resolve) => {
+      unsubscribeTree = this._tree.subscribe(() => {
         if (this._observed()) {
-          resolve();
+          resolve('observed');
         }
       });
+      onAbortDuringWait = (): void => {
+        resolve('aborted');
+      };
+      this._abortController.signal.addEventListener('abort', onAbortDuringWait, { once: true });
     });
 
     try {
@@ -244,10 +361,19 @@ export class DefaultStep<C extends AnyCodec> implements Step<C> {
       }
 
       if (!this._observed()) {
-        await observed;
+        const outcome = await waitForResolution;
+        if (outcome === 'aborted') {
+          throw this._stepStartAbortedError('aborted before tree observed step-start');
+        }
       }
     } finally {
-      unsubscribe?.();
+      unsubscribeTree?.();
+      if (onAbortDuringWait !== undefined) {
+        this._abortController.signal.removeEventListener('abort', onAbortDuringWait);
+      }
+      if (timeoutHandle !== undefined) {
+        clearTimeout(timeoutHandle);
+      }
     }
 
     this._logger.debug('DefaultStep.start(); started');
@@ -264,10 +390,18 @@ export class DefaultStep<C extends AnyCodec> implements Step<C> {
       [Headers.RunId]: this._runId,
     };
 
+    const signal = this._abortController.signal;
     const reader = readable.getReader();
     try {
+      // Each iteration checks the signal's `aborted` flag in the while
+      // condition — both before pulling the first chunk and again after
+      // every read so a signal that fires mid-stream (caller signal,
+      // start-timeout) terminates the pipe before publishing the next
+      // chunk. The signal cannot un-cancel a publish already in flight,
+      // so the granularity is "between chunks", which matches the plan's
+      // "clean shutdown mid-stream" contract.
       let result = await reader.read();
-      while (!result.done) {
+      while (!result.done && !signal.aborted) {
         await encoder.encodePart(result.value, { headers });
         result = await reader.read();
       }
@@ -275,7 +409,10 @@ export class DefaultStep<C extends AnyCodec> implements Step<C> {
       reader.releaseLock();
     }
 
-    this._logger.debug('DefaultStep.pipe(); done', { messageId });
+    this._logger.debug('DefaultStep.pipe(); done', {
+      messageId,
+      aborted: this._abortController.signal.aborted,
+    });
   }
 
   async end(error?: unknown): Promise<void> {
@@ -331,6 +468,10 @@ export class DefaultStep<C extends AnyCodec> implements Step<C> {
 
   private _observed(): boolean {
     return this._tree.steps.some((step) => step.id === this._stepId);
+  }
+
+  private _stepStartAbortedError(reason: string): Ably.ErrorInfo {
+    return new Ably.ErrorInfo(`unable to start step; ${reason}`, ErrorCode.StepStartAborted, 408);
   }
 
   private _getEncoder(): Encoder<CodecPart<C>, CodecMessage<C>, CodecEvent<C>> {

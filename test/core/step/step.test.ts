@@ -1,5 +1,5 @@
 import * as Ably from 'ably';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { Invocation } from '../../../src/core/invocation/index.js';
 import type { SessionOptions } from '../../../src/core/session/index.js';
@@ -7,6 +7,7 @@ import { createAgentSession } from '../../../src/core/session/index.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { Headers, WireMessages } from '../../../src/headers.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
+import { ABORTED } from '../../../src/signal-reason.js';
 import { createMockChannel, createMockRealtime } from '../../helper/mock-realtime.js';
 import { type StubCodec, stubCodec } from '../../helper/stub-codec.js';
 
@@ -151,6 +152,96 @@ describe('Step.start', () => {
 
     await expect(step.start()).rejects.toBeErrorInfoWithCauseCode(ErrorCode.SessionClosed);
   });
+
+  it('rejects with StepStartAborted and does not publish when the supplied signal is already aborted', async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    await session.connect();
+    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const step = run.createStep();
+    const ac = new AbortController();
+    ac.abort();
+
+    await expect(step.start({ signal: ac.signal })).rejects.toBeErrorInfoWithCode(ErrorCode.StepStartAborted);
+
+    expect(channel.publish).not.toHaveBeenCalled();
+    expect(step.signal.aborted).toBe(true);
+    expect(step.signal.reason).toBe(ABORTED);
+  });
+
+  it('rejects with StepStartAborted when the caller signal fires before the tree observes the publish', async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    await session.connect();
+    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const step = run.createStep();
+    const ac = new AbortController();
+
+    const startPromise = step.start({ signal: ac.signal });
+    await Promise.resolve();
+    // The publish has been issued; the decode loop has not yet observed it.
+    expect(channel.publish).toHaveBeenCalledTimes(1);
+
+    ac.abort();
+
+    await expect(startPromise).rejects.toBeErrorInfoWithCode(ErrorCode.StepStartAborted);
+    expect(step.signal.aborted).toBe(true);
+    expect(step.signal.reason).toBe(ABORTED);
+  });
+
+  it('rejects with StepStartAborted when timeoutMs elapses before the tree observes the publish', async () => {
+    const { options } = makeAgentSession();
+    const session = createAgentSession(options);
+    await session.connect();
+    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const step = run.createStep();
+
+    // Tiny timeout so the test does not wait long; the publish is awaited
+    // synchronously by the mock channel, after which the wait for the tree
+    // observation never resolves — the timeout fires the signal and the
+    // start() promise rejects.
+    await expect(step.start({ timeoutMs: 5 })).rejects.toBeErrorInfoWithCode(ErrorCode.StepStartAborted);
+    expect(step.signal.aborted).toBe(true);
+    expect(step.signal.reason).toBe(ABORTED);
+  });
+
+  it('clears the timeout when the step-start lands before timeoutMs elapses', async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    await session.connect();
+    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const step = run.createStep();
+
+    const startPromise = step.start({ timeoutMs: 50_000 });
+    await Promise.resolve();
+    simulateStepStart(channel, 'r-1', step.id);
+
+    await startPromise;
+
+    expect(step.signal.aborted).toBe(false);
+  });
+
+  it('propagates a caller signal abort to step.signal after start() resolves (lifetime)', async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    await session.connect();
+    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const step = run.createStep();
+    const ac = new AbortController();
+
+    const startPromise = step.start({ signal: ac.signal });
+    await Promise.resolve();
+    simulateStepStart(channel, 'r-1', step.id);
+    await startPromise;
+    expect(step.signal.aborted).toBe(false);
+
+    // Caller signal fires post-resolution — step.signal should track it
+    // because the listener composes for the step's lifetime.
+    ac.abort();
+
+    expect(step.signal.aborted).toBe(true);
+    expect(step.signal.reason).toBe(ABORTED);
+  });
 });
 
 describe('Step.pipe', () => {
@@ -212,6 +303,84 @@ describe('Step.pipe', () => {
     await step.pipe(readable);
 
     expect(channel.publish).not.toHaveBeenCalled();
+  });
+
+  it('exits cleanly without publishing any chunk when step.signal aborts before pipe starts pulling', async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    await session.connect();
+    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const step = run.createStep();
+    const ac = new AbortController();
+
+    const startPromise = step.start({ signal: ac.signal });
+    await Promise.resolve();
+    simulateStepStart(channel, 'r-1', step.id);
+    await startPromise;
+
+    // step-start was the only publish so far.
+    const publishCountAfterStart = channel.publish.mock.calls.length;
+
+    // Abort before pulling — the pipe's while condition exits on the
+    // first signal check, so no chunk is encoded.
+    ac.abort();
+
+    const readable = new ReadableStream<string>({
+      start: (controller) => {
+        controller.enqueue('chunk-1');
+        controller.enqueue('chunk-2');
+        controller.enqueue('chunk-3');
+        controller.close();
+      },
+    });
+    await step.pipe(readable);
+
+    expect(channel.publish.mock.calls.length).toBe(publishCountAfterStart);
+    expect(step.signal.aborted).toBe(true);
+  });
+
+  it('honours mid-stream abort across iterations: chunks pushed after the abort are not published', async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    await session.connect();
+    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const step = run.createStep();
+    const ac = new AbortController();
+
+    const startPromise = step.start({ signal: ac.signal });
+    await Promise.resolve();
+    simulateStepStart(channel, 'r-1', step.id);
+    await startPromise;
+
+    const publishCountAfterStart = channel.publish.mock.calls.length;
+
+    // Hand-rolled controller-driven stream so the test can interleave
+    // chunks with the caller-signal abort.
+    let controller: ReadableStreamDefaultController<string> | undefined;
+    const readable = new ReadableStream<string>({
+      start: (c) => {
+        controller = c;
+      },
+    });
+    if (!controller) throw new Error('expected stream controller');
+
+    const pipePromise = step.pipe(readable);
+
+    controller.enqueue('chunk-1');
+    // Wait until the encoder has issued one publish for chunk-1 — the
+    // encode chain spans several microtasks, so polling avoids brittle
+    // microtask counting.
+    await vi.waitFor(() => {
+      expect(channel.publish.mock.calls.length).toBe(publishCountAfterStart + 1);
+    });
+
+    ac.abort();
+    controller.close();
+
+    await pipePromise;
+
+    expect(channel.publish.mock.calls.length).toBe(publishCountAfterStart + 1);
+    expect(step.signal.aborted).toBe(true);
   });
 });
 

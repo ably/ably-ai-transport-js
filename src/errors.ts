@@ -41,6 +41,15 @@ export enum ErrorCode {
 
   /** The invocation data passed to {@link Invocation.fromJSON} is missing required fields or has wrong-typed values. */
   InvocationInvalid = 104402,
+
+  // --- Step ---
+
+  /**
+   * `Step.start` was aborted before the step-start was confirmed on the
+   * channel — either the caller-supplied `start({ signal })` fired or the
+   * configured `timeoutMs` elapsed.
+   */
+  StepStartAborted = 104302,
 }
 
 /**

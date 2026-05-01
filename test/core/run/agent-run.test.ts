@@ -168,7 +168,7 @@ describe('AgentSession.createRun', () => {
     await expect(promise).rejects.toBeErrorInfoWithCode(ErrorCode.InvocationPreconditionTimeout);
   });
 
-  it('view.messages and run.messages filter the tree by the bound run id', async () => {
+  it('run.messages filters by run id; run.view.messages exposes the linear tree across runs', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
 
@@ -203,8 +203,12 @@ describe('AgentSession.createRun', () => {
       },
     } as unknown as Ably.InboundMessage);
 
+    // run.messages stays scoped to the bound run — it's the agent-side
+    // "what did this run produce" surface.
     expect(run.messages.map((n) => n.id)).toEqual(['m-1']);
-    expect(run.view.messages.map((n) => n.id)).toEqual(['m-1']);
+    // run.view.messages is the linear conversation the agent passes to the
+    // model and includes ancestry from prior runs on the session.
+    expect(run.view.messages.map((n) => n.id)).toEqual(['m-1', 'm-2']);
   });
 });
 

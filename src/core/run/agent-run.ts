@@ -22,17 +22,24 @@ import type { Run, RunEndStatus, RunStatus } from './run.js';
  */
 export interface AgentRun<C extends AnyCodec> extends Run<CodecMessage<C>> {
   /**
-   * The linear read projection for this run: every message published
-   * within the run, filtered from the session's tree on each read.
-   * Subscribe via `run.view.subscribe(...)` to observe ancestry fill-in
-   * and steering messages that arrive mid-execution.
+   * The linear read projection the agent passes to the model: every
+   * message on the session's tree, in serial order, regardless of which
+   * run produced it. This is what the model needs as conversation
+   * context, so multi-turn sessions see the full history (each turn
+   * opens a new run on the wire). Subscribe via `run.view.subscribe(...)`
+   * to observe ancestry fill-in and steering messages that arrive
+   * mid-execution.
+   *
+   * Branching (regenerate/edit) is not yet implemented — once it is,
+   * this projection will switch to walking the run-parent chain rather
+   * than returning the entire tree.
    */
   readonly view: AgentView<C>;
 
   /**
    * Messages published within this run, filtered from the session's tree
-   * by the run's id. Equivalent to `run.view.messages` in phase 7's
-   * subset (no parent-run ancestry yet).
+   * by the run's id. The run-scoped view of "what did this run produce";
+   * use {@link AgentRun.view} to read the conversation as a whole.
    */
   readonly messages: readonly MessageNode<CodecMessage<C>>[];
 
@@ -135,7 +142,6 @@ export class DefaultAgentRun<C extends AnyCodec> implements AgentRun<C> {
     this._view = new DefaultAgentView<C>({
       tree: options.tree,
       logger: options.logger,
-      runId: options.runId,
     });
     options.registerView?.(this._view);
     this._logger.trace('DefaultAgentRun(); initialized');

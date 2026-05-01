@@ -112,17 +112,13 @@ export interface ClientViewOptions<C extends AnyCodec> extends ViewOptions<Codec
 }
 
 /**
- * Options for constructing a {@link DefaultAgentView}. Extends
- * {@link ViewOptions} with the run id the view filters its messages by.
+ * Options for constructing a {@link DefaultAgentView}. Same shape as
+ * {@link ViewOptions} today — the linear projection does not need to
+ * distinguish runs. The branching implementation will reintroduce a
+ * run-anchor field here.
  */
-export interface AgentViewOptions<C extends AnyCodec> extends ViewOptions<CodecMessage<C>> {
-  /**
-   * The run this view is scoped to. `messages` returns only nodes whose
-   * `runId` matches; `subscribe` still fires for every tree change so the
-   * agent observes ancestry fill-in and steering messages mid-execution.
-   */
-  runId: string;
-}
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type -- forward-compatible alias; branching will add fields here.
+export interface AgentViewOptions<C extends AnyCodec> extends ViewOptions<CodecMessage<C>> {}
 
 /**
  * Default {@link View} implementation. Phase 2 mirrors the tree directly —
@@ -223,22 +219,15 @@ export class DefaultClientView<C extends AnyCodec> extends DefaultView<CodecMess
 }
 
 /**
- * Default {@link AgentView} implementation. Filters the underlying tree's
- * messages to those produced within the bound run; in basic-chat without
- * forks that's the same set of messages an unfiltered view would show, so
- * this is a forward-compatible projection that will also do the right
- * thing once parent-run ancestry lands.
+ * Default {@link AgentView} implementation. Surfaces the linear conversation
+ * the agent passes to the model: every message on the session's tree, in
+ * serial order, regardless of which run produced it.
+ *
+ * In basic-chat each turn opens a new run, so a run-scoped filter would
+ * strand the prior run's messages and the model would treat every turn as
+ * a fresh conversation. The unfiltered projection is the right answer for
+ * linear sessions; once branching (regenerate/edit) lands, this projection
+ * will be replaced with one that walks the run-parent chain.
  * @internal
  */
-export class DefaultAgentView<C extends AnyCodec> extends DefaultView<CodecMessage<C>> implements AgentView<C> {
-  private readonly _runId: string;
-
-  constructor(options: AgentViewOptions<C>) {
-    super({ tree: options.tree, logger: options.logger });
-    this._runId = options.runId;
-  }
-
-  override get messages(): readonly MessageNode<CodecMessage<C>>[] {
-    return this._tree.messages.filter((node) => node.runId === this._runId);
-  }
-}
+export class DefaultAgentView<C extends AnyCodec> extends DefaultView<CodecMessage<C>> implements AgentView<C> {}

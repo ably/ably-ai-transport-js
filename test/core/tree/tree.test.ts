@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Run } from '../../../src/core/run/index.js';
 import type { MessageNode } from '../../../src/core/tree/index.js';
 import { DefaultTree } from '../../../src/core/tree/index.js';
+import type { LogHandler } from '../../../src/logger.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 
 const makeNode = (
@@ -94,6 +95,57 @@ describe('Tree', () => {
         runId: 'r-1',
         message: 'hello',
       });
+    });
+  });
+
+  describe('updateMessage', () => {
+    it('replaces the composed message on an existing node and notifies subscribers', () => {
+      const tree = makeTree();
+      tree.applyMessage(makeNode({ id: 'a', serial: '01', message: 'hello' }));
+      const handler = vi.fn();
+      tree.subscribe(handler);
+
+      tree.updateMessage('a', 'hello world');
+
+      expect(tree.messages[0]?.message).toBe('hello world');
+      expect(handler).toHaveBeenCalledTimes(1);
+    });
+
+    it('preserves serial and metadata fields when updating', () => {
+      const tree = makeTree();
+      tree.applyMessage(
+        makeNode({ id: 'a', serial: '01', clientId: 'alice', runId: 'r-1', role: 'assistant', message: 'hello' }),
+      );
+
+      tree.updateMessage('a', 'world');
+
+      expect(tree.messages[0]).toEqual({
+        id: 'a',
+        serial: '01',
+        clientId: 'alice',
+        runId: 'r-1',
+        role: 'assistant',
+        message: 'world',
+      });
+    });
+
+    it('warns and is a no-op when the id does not match a known node', () => {
+      const logHandler = vi.fn<LogHandler>();
+      const tree = new DefaultTree<string>({
+        logger: makeLogger({ logLevel: LogLevel.Warn, logHandler }),
+      });
+      const handler = vi.fn();
+      tree.subscribe(handler);
+
+      tree.updateMessage('does-not-exist', 'hello');
+
+      expect(tree.messages).toEqual([]);
+      expect(handler).not.toHaveBeenCalled();
+      expect(logHandler).toHaveBeenCalledTimes(1);
+      const [message, level, context] = logHandler.mock.calls[0] ?? [];
+      expect(level).toBe(LogLevel.Warn);
+      expect(message).toContain('DefaultTree.updateMessage(); node not found');
+      expect(context).toMatchObject({ id: 'does-not-exist' });
     });
   });
 

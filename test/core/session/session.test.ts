@@ -532,11 +532,13 @@ describe('Session', () => {
       expect(view.messages.map((n) => n.id)).toEqual(['a', 'b']);
     });
 
-    it('skips a duplicate inbound for the same message id while keeping the original node', async () => {
+    it('updates the existing node when a subsequent inbound arrives under the same message id', async () => {
       const { options, channel } = makeSession();
       const session = createClientSession(options);
       await session.connect();
       const view = session.createView();
+      const handler = vi.fn();
+      view.subscribe(handler);
 
       channel.simulateMessage(
         makeInbound({ serial: '01', msgId: 'm-1', role: 'user', clientId: 'alice', data: 'hello' }),
@@ -545,8 +547,14 @@ describe('Session', () => {
         makeInbound({ serial: '02', msgId: 'm-1', role: 'user', clientId: 'alice', data: 'world' }),
       );
 
+      // Streaming codecs publish multiple chunks under one msg-id; the second
+      // chunk must reach the accumulator and update the composed message
+      // rather than being silently dropped.
       expect(view.messages).toHaveLength(1);
-      expect(view.messages[0]?.message).toBe('hello');
+      expect(view.messages[0]?.id).toBe('m-1');
+      expect(view.messages[0]?.serial).toBe('01');
+      expect(view.messages[0]?.message).toBe('world');
+      expect(handler).toHaveBeenCalledTimes(2);
     });
 
     it('does not fire view subscribers after the view is closed', async () => {

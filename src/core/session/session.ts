@@ -431,10 +431,12 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
         continue;
       }
 
-      // Phase 2's tree is append-only — the accumulator above has already
-      // recorded this part, but the tree gains an update path in a later phase.
-      // Skip the duplicate insert; the accumulator state stays current.
+      // Subsequent chunks under one msg-id update the existing node so
+      // streaming codecs can land deltas as composed-message updates without
+      // creating sibling nodes. The accumulator above has already absorbed
+      // the part; the tree mirrors the composed state.
       if (this._tree.messages.some((node) => node.id === messageId)) {
+        this._tree.updateMessage(messageId, composed);
         continue;
       }
 

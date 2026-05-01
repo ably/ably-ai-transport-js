@@ -103,6 +103,21 @@ export interface TreeInternal<TMessage> extends Tree<TMessage> {
   applyMessage(node: MessageNode<TMessage>): void;
 
   /**
+   * Replace the composed `message` payload of an existing node and notify
+   * subscribers. Used by the decode loop when subsequent chunks arrive under
+   * the same `x-ably-msg-id` — the accumulator has already absorbed the new
+   * part, and the tree mirrors the resulting composed state.
+   *
+   * If `id` does not match an existing node the call is logged and ignored —
+   * the session's decode loop only invokes this method after confirming the
+   * id is present, so a not-found case is a programming error worth surfacing
+   * but not throwing on.
+   * @param id Identifier of the node to update.
+   * @param message Replacement composed message payload.
+   */
+  updateMessage(id: string, message: TMessage): void;
+
+  /**
    * Record a `'active'` run observed via `x-ably-run-start`. A duplicate id
    * (a second `x-ably-run-start` for the same run) is logged and ignored —
    * run-start is one-shot per run on the wire, so a duplicate indicates
@@ -161,6 +176,19 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
     const targetIndex = insertAt === -1 ? this._messages.length : insertAt;
     this._messages.splice(targetIndex, 0, node);
 
+    this._notify();
+  }
+
+  updateMessage(id: string, message: TMessage): void {
+    this._logger.trace('DefaultTree.updateMessage();', { id });
+
+    const index = this._messages.findIndex((node) => node.id === id);
+    const existing = index === -1 ? undefined : this._messages[index];
+    if (existing === undefined) {
+      this._logger.warn('DefaultTree.updateMessage(); node not found', { id });
+      return;
+    }
+    this._messages[index] = { ...existing, message };
     this._notify();
   }
 

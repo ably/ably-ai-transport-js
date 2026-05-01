@@ -71,14 +71,10 @@ describe('UIMessageCodec encoder', () => {
       expect(headersOf(closing)[Headers.Status]).toBe('finished');
     });
 
-    it('silently drops out-of-scope chunks (e.g. tool-input-start)', async () => {
+    it('silently drops out-of-scope chunks (e.g. reasoning-start)', async () => {
       const { encoder, channel } = makeEncoder();
 
-      await encoder.encodePart({
-        type: 'tool-input-start',
-        toolCallId: 't-1',
-        toolName: 'doThing',
-      });
+      await encoder.encodePart({ type: 'reasoning-start', id: 'r-1' });
 
       expect(channel.publish).not.toHaveBeenCalled();
       expect(channel.appendedMessages).toHaveLength(0);
@@ -92,6 +88,88 @@ describe('UIMessageCodec encoder', () => {
       await encoder.encodePart({ type: 'finish' });
 
       expect(channel.publish).not.toHaveBeenCalled();
+    });
+
+    it('tool-input-start opens a tool-input stream keyed by toolCallId with toolName/dynamic/title headers', async () => {
+      const { encoder, channel } = makeEncoder();
+
+      await encoder.encodePart(
+        { type: 'tool-input-start', toolCallId: 't-1', toolName: 'getWeather', dynamic: true, title: 'Get weather' },
+        { headers: { [Headers.MessageId]: 'm-1' } },
+      );
+
+      const [wire] = channel.publishedBatches[0] ?? [];
+      if (!wire) throw new Error('expected one wire');
+      expect(wire.name).toBe('tool-input');
+      const headers = headersOf(wire);
+      expect(headers[Headers.Stream]).toBe('true');
+      expect(headers[Headers.StreamId]).toBe('t-1');
+      expect(headers[Headers.MessageId]).toBe('m-1');
+      expect(headers['x-domain-toolName']).toBe('getWeather');
+      expect(headers['x-domain-dynamic']).toBe('true');
+      expect(headers['x-domain-title']).toBe('Get weather');
+    });
+
+    it('tool-input-delta appends the inputTextDelta to the tool-input stream', async () => {
+      const { encoder, channel } = makeEncoder();
+      await encoder.encodePart(
+        { type: 'tool-input-start', toolCallId: 't-1', toolName: 'getWeather' },
+        { headers: { [Headers.MessageId]: 'm-1' } },
+      );
+
+      await encoder.encodePart({ type: 'tool-input-delta', toolCallId: 't-1', inputTextDelta: '{"city":' });
+      await encoder.encodePart({ type: 'tool-input-delta', toolCallId: 't-1', inputTextDelta: '"Paris"}' });
+
+      // appendStream is fire-and-forget — let microtasks settle.
+      await Promise.resolve();
+      expect(channel.appendedMessages).toHaveLength(2);
+      // CAST: Ably.Message.data is typed any; this test produced strings.
+      expect(channel.appendedMessages.map((m) => m.data as string)).toEqual(['{"city":', '"Paris"}']);
+    });
+
+    it('tool-input-available closes the stream with finished status and the parsed input as a domain header', async () => {
+      const { encoder, channel } = makeEncoder();
+      await encoder.encodePart(
+        { type: 'tool-input-start', toolCallId: 't-1', toolName: 'getWeather' },
+        { headers: { [Headers.MessageId]: 'm-1' } },
+      );
+
+      await encoder.encodePart({
+        type: 'tool-input-available',
+        toolCallId: 't-1',
+        toolName: 'getWeather',
+        input: { city: 'Paris' },
+      });
+
+      const closing = channel.appendedMessages.at(-1);
+      if (!closing) throw new Error('expected a closing append');
+      const headers = headersOf(closing);
+      expect(headers[Headers.Status]).toBe('finished');
+      expect(headers['x-domain-input']).toBe(JSON.stringify({ city: 'Paris' }));
+      expect(headers['x-domain-toolName']).toBe('getWeather');
+    });
+
+    it('tool-input-error closes the stream with errorText so the decoder can discriminate', async () => {
+      const { encoder, channel } = makeEncoder();
+      await encoder.encodePart(
+        { type: 'tool-input-start', toolCallId: 't-1', toolName: 'getWeather' },
+        { headers: { [Headers.MessageId]: 'm-1' } },
+      );
+
+      await encoder.encodePart({
+        type: 'tool-input-error',
+        toolCallId: 't-1',
+        toolName: 'getWeather',
+        input: '{"city":',
+        errorText: 'invalid JSON',
+      });
+
+      const closing = channel.appendedMessages.at(-1);
+      if (!closing) throw new Error('expected a closing append');
+      const headers = headersOf(closing);
+      expect(headers[Headers.Status]).toBe('finished');
+      expect(headers['x-domain-errorText']).toBe('invalid JSON');
+      expect(headers['x-domain-input']).toBe(JSON.stringify('{"city":'));
     });
   });
 
@@ -181,6 +259,23 @@ describe('UIMessageCodec encoder', () => {
       const aborted = channel.appendedMessages.at(-1);
       if (!aborted) throw new Error('expected an aborted close-append');
       expect(headersOf(aborted)[Headers.Status]).toBe('aborted');
+    });
+
+    it('auto-aborts an open tool-input stream when the encoder closes mid-stream', async () => {
+      const { encoder, channel } = makeEncoder();
+      await encoder.encodePart(
+        { type: 'tool-input-start', toolCallId: 't-1', toolName: 'getWeather' },
+        { headers: { [Headers.MessageId]: 'm-1' } },
+      );
+
+      await encoder.close();
+
+      const aborted = channel.appendedMessages.at(-1);
+      if (!aborted) throw new Error('expected an aborted close-append');
+      expect(headersOf(aborted)[Headers.Status]).toBe('aborted');
+      // Persistent headers (toolName) are re-applied on the abort wire so
+      // a history-only replay still sees the tool's identity.
+      expect(headersOf(aborted)['x-domain-toolName']).toBe('getWeather');
     });
   });
 });

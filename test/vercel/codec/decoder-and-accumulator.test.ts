@@ -28,6 +28,14 @@ const makeInbound = (overrides: InboundOverrides): Ably.InboundMessage =>
     extras: { headers: overrides.headers ?? {} },
   }) as unknown as Ably.InboundMessage;
 
+const persistentToolInputHeaders = (overrides: Record<string, string> = {}): Record<string, string> => ({
+  [Headers.Stream]: 'true',
+  [Headers.StreamId]: 't-1',
+  [Headers.MessageId]: 'tool-msg',
+  'x-domain-toolName': 'getWeather',
+  ...overrides,
+});
+
 const makeStack = () => {
   const logger = makeLogger({ logLevel: LogLevel.Silent });
   const decoder = createDecoder(logger);
@@ -151,7 +159,7 @@ describe('UIMessageCodec decoder + accumulator', () => {
         makeInbound({
           action: 'message.create',
           serial: '05',
-          name: 'tool-input-start',
+          name: 'reasoning',
           data: '',
           headers: { [Headers.Stream]: 'false', [Headers.Discrete]: 'true', [Headers.MessageId]: 'wire-5' },
         }),
@@ -176,7 +184,7 @@ describe('UIMessageCodec decoder + accumulator', () => {
       expect(accumulator.getMessage('wire-6')).toBeUndefined();
     });
 
-    it('ignores streamed wires whose name is not text', () => {
+    it('ignores streamed wires whose name is not text or tool-input', () => {
       const { accumulator, feed } = makeStack();
 
       feed(
@@ -195,6 +203,226 @@ describe('UIMessageCodec decoder + accumulator', () => {
       );
 
       expect(accumulator.getMessage('wire-7')).toBeUndefined();
+    });
+  });
+
+  describe('streaming tool-input round-trip', () => {
+    it('builds a static tool-${toolName} part transitioning input-streaming → input-available', () => {
+      const { accumulator, feed } = makeStack();
+      const startHeaders = { ...persistentToolInputHeaders(), [Headers.Status]: 'streaming' };
+
+      feed(
+        makeInbound({
+          action: 'message.create',
+          serial: '10',
+          name: 'tool-input',
+          data: '',
+          headers: startHeaders,
+        }),
+      );
+
+      const streaming = accumulator.getMessage('tool-msg');
+      expect(streaming?.parts).toHaveLength(1);
+      const streamingPart = streaming?.parts[0];
+      expect(streamingPart?.type).toBe('tool-getWeather');
+      // CAST: discriminated-union narrowing is awkward in tests; assert
+      // the runtime shape by structural access.
+      expect((streamingPart as { state: string }).state).toBe('input-streaming');
+      expect((streamingPart as { input: unknown }).input).toBeUndefined();
+
+      // Deltas pass through the decoder as `tool-input-delta` chunks but
+      // don't fold into the assembled state — partial JSON parsing is
+      // out-of-scope.
+      feed(
+        makeInbound({
+          action: 'message.append',
+          serial: '10',
+          data: '{"city":"Paris"}',
+          headers: persistentToolInputHeaders(),
+        }),
+      );
+      expect((accumulator.getMessage('tool-msg')?.parts[0] as { state: string }).state).toBe('input-streaming');
+
+      // Closing append carries the parsed input as a domain header — the
+      // decoder rebuilds a `tool-input-available` chunk and the
+      // accumulator transitions the part.
+      feed(
+        makeInbound({
+          action: 'message.append',
+          serial: '10',
+          data: '',
+          headers: {
+            ...persistentToolInputHeaders(),
+            [Headers.Status]: 'finished',
+            'x-domain-input': JSON.stringify({ city: 'Paris' }),
+          },
+        }),
+      );
+
+      const final = accumulator.getMessage('tool-msg');
+      expect(final?.parts).toHaveLength(1);
+      const finalPart = final?.parts[0];
+      expect((finalPart as { state: string }).state).toBe('input-available');
+      expect((finalPart as { input: unknown }).input).toEqual({ city: 'Paris' });
+      expect((finalPart as { toolCallId: string }).toolCallId).toBe('t-1');
+      expect(finalPart?.type).toBe('tool-getWeather');
+    });
+
+    it('builds a dynamic-tool part when the start chunk carries dynamic:true', () => {
+      const { accumulator, feed } = makeStack();
+      const headers = {
+        ...persistentToolInputHeaders(),
+        [Headers.Status]: 'streaming',
+        'x-domain-dynamic': 'true',
+        'x-domain-title': 'Custom tool',
+      };
+
+      feed(makeInbound({ action: 'message.create', serial: '11', name: 'tool-input', data: '', headers }));
+      feed(
+        makeInbound({
+          action: 'message.append',
+          serial: '11',
+          data: '',
+          headers: {
+            ...persistentToolInputHeaders(),
+            [Headers.Status]: 'finished',
+            'x-domain-dynamic': 'true',
+            'x-domain-input': JSON.stringify({ q: 'hello' }),
+          },
+        }),
+      );
+
+      const part = accumulator.getMessage('tool-msg')?.parts[0];
+      expect(part?.type).toBe('dynamic-tool');
+      expect((part as { toolName: string }).toolName).toBe('getWeather');
+      expect((part as { state: string }).state).toBe('input-available');
+      expect((part as { input: unknown }).input).toEqual({ q: 'hello' });
+    });
+
+    it('transitions to output-error when the close carries x-domain-errorText', () => {
+      const { accumulator, feed } = makeStack();
+      feed(
+        makeInbound({
+          action: 'message.create',
+          serial: '12',
+          name: 'tool-input',
+          data: '',
+          headers: { ...persistentToolInputHeaders(), [Headers.Status]: 'streaming' },
+        }),
+      );
+      feed(
+        makeInbound({
+          action: 'message.append',
+          serial: '12',
+          data: '',
+          headers: {
+            ...persistentToolInputHeaders(),
+            [Headers.Status]: 'finished',
+            'x-domain-input': JSON.stringify('{"city":'),
+            'x-domain-errorText': 'invalid JSON',
+          },
+        }),
+      );
+
+      const part = accumulator.getMessage('tool-msg')?.parts[0];
+      expect((part as { state: string }).state).toBe('output-error');
+      expect((part as { errorText: string }).errorText).toBe('invalid JSON');
+      expect((part as { rawInput: unknown }).rawInput).toBe('{"city":');
+      expect((part as { input: unknown }).input).toBeUndefined();
+    });
+
+    it('drops a tool-input stream whose start has no toolName header', () => {
+      const { accumulator, feed } = makeStack();
+      feed(
+        makeInbound({
+          action: 'message.create',
+          serial: '13',
+          name: 'tool-input',
+          data: '',
+          headers: {
+            [Headers.Stream]: 'true',
+            [Headers.StreamId]: 't-broken',
+            [Headers.MessageId]: 'tool-msg-broken',
+            [Headers.Status]: 'streaming',
+            // toolName intentionally missing
+          },
+        }),
+      );
+
+      expect(accumulator.getMessage('tool-msg-broken')).toBeUndefined();
+    });
+
+    it('drops a tool-input close whose headers lose the toolName (defensive)', () => {
+      const { accumulator, feed } = makeStack();
+      feed(
+        makeInbound({
+          action: 'message.create',
+          serial: '14',
+          name: 'tool-input',
+          data: '',
+          headers: { ...persistentToolInputHeaders(), [Headers.Status]: 'streaming' },
+        }),
+      );
+      feed(
+        makeInbound({
+          action: 'message.append',
+          serial: '14',
+          data: '',
+          headers: {
+            // Persistent headers re-applied by the encoder core normally
+            // include toolName; simulate a malformed close by stripping it.
+            [Headers.Stream]: 'true',
+            [Headers.StreamId]: 't-1',
+            [Headers.MessageId]: 'tool-msg',
+            [Headers.Status]: 'finished',
+            'x-domain-input': JSON.stringify({ city: 'Paris' }),
+          },
+        }),
+      );
+
+      // Start built the part in `input-streaming`; the malformed close
+      // emits no event, so the part stays in the streaming state.
+      const part = accumulator.getMessage('tool-msg')?.parts[0];
+      expect((part as { state: string }).state).toBe('input-streaming');
+    });
+
+    it('handles a tool-input append for an unknown serial as first-contact recovery (creates the part lazily)', () => {
+      const { accumulator, feed } = makeStack();
+
+      // Append before any matching create — the decoder core's recovery
+      // path (`_decodeAppend` → `_decodeUpdate` → `_decodeFirstContact`)
+      // treats a streamed append for an unknown serial as if it were a
+      // late-observed create, so subscribers that join mid-stream still
+      // see a tool part in `input-streaming` state.
+      feed(
+        makeInbound({
+          action: 'message.append',
+          serial: '16',
+          name: 'tool-input',
+          data: '',
+          headers: { ...persistentToolInputHeaders(), [Headers.MessageId]: 'tool-msg-orphan' },
+        }),
+      );
+
+      const part = accumulator.getMessage('tool-msg-orphan')?.parts[0];
+      expect(part?.type).toBe('tool-getWeather');
+      expect((part as { state: string }).state).toBe('input-streaming');
+    });
+
+    it('ignores duplicate tool-input-start chunks for the same toolCallId', () => {
+      const { accumulator, feed } = makeStack();
+      const startHeaders = { ...persistentToolInputHeaders(), [Headers.Status]: 'streaming' };
+
+      feed(
+        makeInbound({ action: 'message.create', serial: '15a', name: 'tool-input', data: '', headers: startHeaders }),
+      );
+      feed(
+        makeInbound({ action: 'message.create', serial: '15b', name: 'tool-input', data: '', headers: startHeaders }),
+      );
+
+      // Two creates, but the accumulator deduplicates by toolCallId — only
+      // one part is appended to the message.
+      expect(accumulator.getMessage('tool-msg')?.parts).toHaveLength(1);
     });
   });
 

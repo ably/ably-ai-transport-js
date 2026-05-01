@@ -13,16 +13,23 @@ import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 
 /**
+ * Wire message name carrying a streamed tool-input. The streaming open
+ * publishes `name: 'tool-input'` keyed by `toolCallId`; deltas append the
+ * raw `inputTextDelta` strings; the closing append carries the parsed
+ * `input` (and, for input-error, an `errorText`) in domain headers.
+ */
+const TOOL_INPUT_WIRE_NAME = 'tool-input';
+
+/**
  * Vercel encoder. Wraps an {@link EncoderCore} and maps `UIMessageChunk`
  * events plus complete `UIMessage` objects onto the core's primitives.
  *
- * Phase 8 is **text-only**: `encodePart` handles `text-start` /
- * `text-delta` / `text-end`; every other chunk type (lifecycle markers,
- * tool input/output, reasoning, files, source documents, `data-*`,
- * etc.) is silently dropped with a debug log so an agent's
- * `agent.stream(...)` output flows through unchanged — only text deltas
- * reach the wire. Tool support and the rest of the chunk vocabulary
- * land in follow-up phases.
+ * Handles text streaming (`text-*`) and tool-input streaming (`tool-input-*`).
+ * Every other chunk type (lifecycle markers, tool output, reasoning, files,
+ * source documents, `data-*`, etc.) is silently dropped with a debug log
+ * so an agent's `agent.stream(...)` output flows through unchanged — only
+ * the supported chunks reach the wire. Tool output and the rest of the
+ * chunk vocabulary land in follow-up phases.
  */
 class DefaultUIMessageEncoder implements Encoder<AI.UIMessageChunk, AI.UIMessage, AI.ToolModelMessage> {
   private readonly _core: EncoderCore;
@@ -55,6 +62,71 @@ class DefaultUIMessageEncoder implements Encoder<AI.UIMessageChunk, AI.UIMessage
         await this._core.closeStream(
           chunk.id,
           { name: 'text', data: '' },
+          { headers: { ...options?.headers, ...headers } },
+        );
+        return;
+      }
+      case 'tool-input-start': {
+        // Open a streaming wire keyed by toolCallId. Tool metadata stamps
+        // domain headers on the create; the encoder core re-applies these
+        // persistent headers on every subsequent append/close so the
+        // decoder can recover toolName / dynamic / title even from a
+        // history-only replay that didn't see the start in real time.
+        const headers = headerWriter()
+          .str('toolName', chunk.toolName)
+          .bool('providerExecuted', chunk.providerExecuted)
+          .json('providerMetadata', chunk.providerMetadata)
+          .bool('dynamic', chunk.dynamic)
+          .str('title', chunk.title)
+          .build();
+        await this._core.startStream(
+          chunk.toolCallId,
+          { name: TOOL_INPUT_WIRE_NAME, data: '' },
+          { headers: { ...options?.headers, ...headers } },
+        );
+        return;
+      }
+      case 'tool-input-delta': {
+        this._core.appendStream(chunk.toolCallId, chunk.inputTextDelta);
+        return;
+      }
+      case 'tool-input-available': {
+        // Close the input stream with the parsed input in a domain header.
+        // Re-stamp the chunk's metadata so the close wire carries the
+        // authoritative values for fields the AI SDK allows the chunk to
+        // refresh (toolName / providerExecuted / providerMetadata /
+        // dynamic / title).
+        const headers = headerWriter()
+          .str('toolName', chunk.toolName)
+          .json('input', chunk.input)
+          .bool('providerExecuted', chunk.providerExecuted)
+          .json('providerMetadata', chunk.providerMetadata)
+          .bool('dynamic', chunk.dynamic)
+          .str('title', chunk.title)
+          .build();
+        await this._core.closeStream(
+          chunk.toolCallId,
+          { name: TOOL_INPUT_WIRE_NAME, data: '' },
+          { headers: { ...options?.headers, ...headers } },
+        );
+        return;
+      }
+      case 'tool-input-error': {
+        // Close the input stream and mark it as an error via
+        // `x-domain-errorText`; the decoder discriminates on that header
+        // to emit `tool-input-error` instead of `tool-input-available`.
+        const headers = headerWriter()
+          .str('toolName', chunk.toolName)
+          .json('input', chunk.input)
+          .str('errorText', chunk.errorText)
+          .bool('providerExecuted', chunk.providerExecuted)
+          .json('providerMetadata', chunk.providerMetadata)
+          .bool('dynamic', chunk.dynamic)
+          .str('title', chunk.title)
+          .build();
+        await this._core.closeStream(
+          chunk.toolCallId,
+          { name: TOOL_INPUT_WIRE_NAME, data: '' },
           { headers: { ...options?.headers, ...headers } },
         );
         return;
@@ -102,7 +174,7 @@ class DefaultUIMessageEncoder implements Encoder<AI.UIMessageChunk, AI.UIMessage
     this._logger?.trace('DefaultUIMessageEncoder.encodeEvent();', { messageId: options?.messageId });
     return Promise.reject(
       new Ably.ErrorInfo(
-        'unable to encode event; tool and HITL events are not supported in this phase',
+        'unable to encode event; HITL events are not supported in this phase',
         ErrorCode.InvalidArgument,
         400,
       ),

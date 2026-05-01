@@ -27,6 +27,19 @@ const TOOL_OUTPUT_AVAILABLE_WIRE_NAME = 'tool-output-available';
 const TOOL_OUTPUT_ERROR_WIRE_NAME = 'tool-output-error';
 
 /**
+ * Discrete wire name for the step-boundary marker. The AI SDK emits a
+ * `start-step` chunk at the beginning of every model step (the chunk
+ * vocabulary uses verb form); the receiving accumulator translates that
+ * into a `{ type: 'step-start' }` part on the assembled `UIMessage`.
+ * `convertToModelMessages` reads those parts to split the assistant
+ * message into per-step blocks — without them, a tool call and the
+ * model's reply text fold into a single assistant block, which
+ * downstream providers (Anthropic) reject because the tool_use no
+ * longer ends the assistant message.
+ */
+const STEP_START_WIRE_NAME = 'step-start';
+
+/**
  * Vercel encoder. Wraps an {@link EncoderCore} and maps `UIMessageChunk`
  * events plus complete `UIMessage` objects onto the core's primitives.
  *
@@ -167,6 +180,13 @@ class DefaultUIMessageEncoder implements Encoder<AI.UIMessageChunk, AI.UIMessage
           { name: TOOL_OUTPUT_ERROR_WIRE_NAME, data: chunk.errorText },
           { headers: { ...options?.headers, ...headers } },
         );
+        return;
+      }
+      case 'start-step': {
+        // No payload — only the SDK headers (`x-ably-msg-id`) on the wire.
+        // The decoder translates this back into a `start-step` chunk and
+        // the accumulator pushes a `step-start` part onto the message.
+        await this._core.publish({ name: STEP_START_WIRE_NAME, data: '' }, { headers: { ...options?.headers } });
         return;
       }
       default: {

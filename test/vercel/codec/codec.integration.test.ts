@@ -1,6 +1,6 @@
 import { anthropic } from '@ai-sdk/anthropic';
 import type * as AI from 'ai';
-import { streamText } from 'ai';
+import { convertToModelMessages, streamText } from 'ai';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createEncoderCore } from '../../../src/core/codec/index.js';
@@ -224,6 +224,87 @@ describe('UIMessageCodec (integration)', () => {
     expect((toolPart as { input: unknown }).input).toEqual(parsedInput);
     expect((toolPart as { output: unknown }).output).toEqual(toolOutput);
     expect((toolPart as { toolCallId: string }).toolCallId).toBe('tc-out-1');
+
+    await subscriberSession.close();
+  });
+
+  it('multi-step (start-step boundary) round-trips so convertToModelMessages splits assistant blocks', async () => {
+    const channelName = uniqueChannelName('vercel-codec-multi-step');
+
+    const subscriberClient = ablyRealtimeClient();
+    const subscriberSession = createClientSession({
+      client: subscriberClient,
+      sessionName: channelName,
+      codec: UIMessageCodec,
+    });
+    await subscriberSession.connect();
+    const subscriberView = subscriberSession.createView();
+
+    const publisherClient = ablyRealtimeClient();
+    const channel = publisherClient.channels.get(channelName);
+    await channel.attach();
+
+    const core = createEncoderCore(channel);
+    const encoder = UIMessageCodec.createEncoder({ core });
+    const sdkHeaders = {
+      [Headers.MessageId]: 'agent-msg-multi',
+      [Headers.Role]: 'assistant',
+      [Headers.RunId]: 'r-multi',
+    };
+
+    // Synthesise the full multi-step chunk sequence streamText emits when
+    // the model uses a tool — start-step / tool input / tool output /
+    // start-step / text / step-start markers split the message into the
+    // per-step blocks downstream providers expect.
+    await encoder.encodePart({ type: 'start-step' }, { headers: sdkHeaders });
+    await encoder.encodePart(
+      { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'getWeather' },
+      { headers: sdkHeaders },
+    );
+    await encoder.encodePart({
+      type: 'tool-input-available',
+      toolCallId: 'tc-1',
+      toolName: 'getWeather',
+      input: { city: 'Paris' },
+    });
+    await encoder.encodePart(
+      { type: 'tool-output-available', toolCallId: 'tc-1', output: { temperatureC: 22 } },
+      { headers: sdkHeaders },
+    );
+    await encoder.encodePart({ type: 'start-step' }, { headers: sdkHeaders });
+    await encoder.encodePart({ type: 'text-start', id: 'tx-1' }, { headers: sdkHeaders });
+    await encoder.encodePart({ type: 'text-delta', id: 'tx-1', delta: "It's 22°C." });
+    await encoder.encodePart({ type: 'text-end', id: 'tx-1' }, { headers: sdkHeaders });
+    await encoder.close();
+
+    const observed = await waitForMessage(
+      subscriberView,
+      (m) =>
+        m.id === 'agent-msg-multi' &&
+        m.parts.some((p) => p.type === 'text' && (p as { text?: string }).text === "It's 22°C."),
+      15_000,
+    );
+
+    // The assembled UIMessage must contain step-start parts so
+    // convertToModelMessages produces three separate model messages
+    // (assistant tool-call, tool result, assistant text) — that is what
+    // downstream providers (Anthropic) need to validate the tool_use →
+    // tool_result invariant on the next turn.
+    const stepStartCount = observed.parts.filter((p) => p.type === 'step-start').length;
+    expect(stepStartCount).toBe(2);
+
+    const userMsg: AI.UIMessage = {
+      id: 'u-1',
+      role: 'user',
+      parts: [{ type: 'text', text: 'weather in paris?' }],
+    };
+    const followUp: AI.UIMessage = {
+      id: 'u-2',
+      role: 'user',
+      parts: [{ type: 'text', text: 'how about london?' }],
+    };
+    const model = await convertToModelMessages([userMsg, observed, followUp]);
+    expect(model.map((m) => m.role)).toEqual(['user', 'assistant', 'tool', 'assistant', 'user']);
 
     await subscriberSession.close();
   });

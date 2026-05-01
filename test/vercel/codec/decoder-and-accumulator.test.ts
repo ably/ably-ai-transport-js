@@ -684,6 +684,23 @@ describe('UIMessageCodec decoder + accumulator', () => {
       expect(accumulator.getMessage('tool-msg-orphan-out')).toBeUndefined();
     });
 
+    it('appends a step-start part on a step-start wire so convertToModelMessages can split blocks', () => {
+      const { accumulator, feed } = makeStack();
+
+      feed(
+        makeInbound({
+          action: 'message.create',
+          serial: '30',
+          name: 'step-start',
+          data: '',
+          headers: { [Headers.Stream]: 'false', [Headers.MessageId]: 'tool-msg' },
+        }),
+      );
+
+      const part = accumulator.getMessage('tool-msg')?.parts[0];
+      expect(part?.type).toBe('step-start');
+    });
+
     it('ignores duplicate tool-input-start chunks for the same toolCallId', () => {
       const { accumulator, feed } = makeStack();
       const startHeaders = { ...persistentToolInputHeaders(), [Headers.Status]: 'streaming' };

@@ -21,6 +21,9 @@ const TOOL_OUTPUT_AVAILABLE_WIRE_NAME = 'tool-output-available';
 /** Discrete wire name for `tool-output-error` chunks. */
 const TOOL_OUTPUT_ERROR_WIRE_NAME = 'tool-output-error';
 
+/** Discrete wire name for the step-boundary marker. Mirrors the encoder. */
+const STEP_START_WIRE_NAME = 'step-start';
+
 /**
  * Type assertion helper for `ProviderMetadata` values pulled from domain
  * headers. The header reader returns `unknown` because JSON values are
@@ -170,6 +173,9 @@ class DefaultUIMessageDecoder implements Decoder<AI.UIMessageChunk, AI.UIMessage
     }
     if (input.name === TOOL_OUTPUT_ERROR_WIRE_NAME) {
       return this._decodeToolOutputError(logger, input);
+    }
+    if (input.name === STEP_START_WIRE_NAME) {
+      return [{ kind: 'part', part: { type: 'start-step' } }];
     }
     logger?.debug('UIMessageDecoder.decodeDiscrete(); dropping out-of-scope wire', { name: input.name });
     return [];

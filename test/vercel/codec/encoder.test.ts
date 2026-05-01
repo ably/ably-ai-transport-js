@@ -192,6 +192,19 @@ describe('UIMessageCodec encoder', () => {
       expect(headers['x-domain-providerMetadata']).toBe(JSON.stringify({ anthropic: { cacheHit: true } }));
     });
 
+    it('start-step publishes a discrete step-start wire so receivers can split assistant blocks', async () => {
+      const { encoder, channel } = makeEncoder();
+
+      await encoder.encodePart({ type: 'start-step' }, { headers: { [Headers.MessageId]: 'm-1' } });
+
+      const [wire] = channel.publishedBatches[0] ?? [];
+      if (!wire) throw new Error('expected one wire');
+      expect(wire.name).toBe('step-start');
+      const headers = headersOf(wire);
+      expect(headers[Headers.Stream]).toBe('false');
+      expect(headers[Headers.MessageId]).toBe('m-1');
+    });
+
     it('tool-output-error publishes a discrete tool-output-error wire with errorText as data', async () => {
       const { encoder, channel } = makeEncoder();
 

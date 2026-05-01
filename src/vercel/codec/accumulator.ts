@@ -129,6 +129,16 @@ class DefaultUIMessageAccumulator implements Accumulator<AI.UIMessageChunk, AI.U
         this._handleToolOutputError(messageId, chunk);
         return;
       }
+      case 'start-step': {
+        // Push a `step-start` part onto the message. `convertToModelMessages`
+        // splits assistant content into blocks at every `step-start` part —
+        // without it, multi-step `streamText` runs (tool call, then reply
+        // text) collapse into a single assistant model message and
+        // downstream providers reject the resulting tool_use/tool_result
+        // shape.
+        this._ensureStreamingState(messageId).message.parts.push({ type: 'step-start' });
+        return;
+      }
       default: {
         this._logger?.debug('DefaultUIMessageAccumulator.processPart(); dropping out-of-scope chunk', {
           chunkType: chunk.type,

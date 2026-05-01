@@ -10,7 +10,7 @@
 
 import * as Ably from 'ably';
 import type * as AI from 'ai';
-import { isTextUIPart } from 'ai';
+import { getToolName, isTextUIPart, isToolUIPart } from 'ai';
 
 import { createClientSession } from '../../../src/index.js';
 import { Headers, WireMessages } from '../../../src/headers.js';
@@ -40,6 +40,29 @@ const messageText = (message: AI.UIMessage): string =>
     .map((part) => part.text)
     .join('');
 
+/**
+ * Render a one-line summary for a tool part transition. Used by the CLI's
+ * progress printing so tool calls don't clobber the streaming-text line.
+ * @param part The tool part to render.
+ * @returns A single-line summary including state and any input/output payload.
+ */
+const formatToolLine = (part: AI.ToolUIPart | AI.DynamicToolUIPart): string => {
+  const name = getToolName(part);
+  const id = part.toolCallId.slice(0, 8);
+  switch (part.state) {
+    case 'input-streaming':
+      return `[tool ${name} ${id}: streaming input…]`;
+    case 'input-available':
+      return `[tool ${name} ${id}: input ${JSON.stringify(part.input)}]`;
+    case 'output-available':
+      return `[tool ${name} ${id}: output ${JSON.stringify(part.output)}]`;
+    case 'output-error':
+      return `[tool ${name} ${id}: error ${part.errorText}]`;
+    default:
+      return `[tool ${name} ${id}: ${part.state}]`;
+  }
+};
+
 const main = async (): Promise<void> => {
   const text = process.argv.slice(2).join(' ').trim();
   if (text.length === 0) {
@@ -62,8 +85,10 @@ const main = async (): Promise<void> => {
   const view = session.createView();
 
   // Track how much of each assistant message we've already printed so each
-  // tree update only writes the new tail to stdout.
+  // tree update only writes the new tail to stdout. Tool parts are tracked
+  // separately by toolCallId so each state transition emits exactly once.
   const printed = new Map<string, number>();
+  const toolStates = new Map<string, string>();
   view.subscribe(() => {
     for (const node of view.messages) {
       if (node.role !== 'assistant') continue;
@@ -72,6 +97,13 @@ const main = async (): Promise<void> => {
       if (full.length > previous) {
         process.stdout.write(full.slice(previous));
         printed.set(node.id, full.length);
+      }
+      for (const part of node.message.parts) {
+        if (!isToolUIPart(part)) continue;
+        const last = toolStates.get(part.toolCallId);
+        if (last === part.state) continue;
+        toolStates.set(part.toolCallId, part.state);
+        process.stdout.write(`\n${formatToolLine(part)}\n`);
       }
     }
   });

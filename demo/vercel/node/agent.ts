@@ -11,7 +11,7 @@ import * as http from 'node:http';
 
 import { anthropic } from '@ai-sdk/anthropic';
 import * as Ably from 'ably';
-import { convertToModelMessages, streamText } from 'ai';
+import { convertToModelMessages, jsonSchema, stepCountIs, streamText, tool } from 'ai';
 
 import { Invocation, type InvocationData, createAgentSession } from '../../../src/index.js';
 import { UIMessageCodec } from '../../../src/vercel/index.js';
@@ -56,6 +56,27 @@ const session = createAgentSession({
   codec: UIMessageCodec,
 });
 
+// Demo tool — fake weather lookup. Returns deterministic data so the demo
+// runs without hitting an external API. The model decides when to call it
+// based on the user's prompt; the AI SDK executes the `execute` function
+// and emits `tool-input-*` / `tool-output-*` chunks that the codec
+// transports to subscribers.
+const getWeather = tool({
+  description: 'Get the current weather for a city.',
+  inputSchema: jsonSchema<{ city: string }>({
+    type: 'object',
+    properties: { city: { type: 'string', description: 'City name' } },
+    required: ['city'],
+  }),
+  execute: ({ city }) =>
+    Promise.resolve({
+      city,
+      temperatureC: 22,
+      condition: 'sunny',
+      humidity: 0.45,
+    }),
+});
+
 const handleInvocation = async (data: InvocationData, signal: AbortSignal): Promise<void> => {
   const invocation = Invocation.fromJSON(data);
   if (invocation.sessionName !== SESSION_NAME) {
@@ -72,6 +93,13 @@ const handleInvocation = async (data: InvocationData, signal: AbortSignal): Prom
       model: anthropic(MODEL),
       messages,
       abortSignal: step.signal,
+      tools: { getWeather },
+      // streamText's default `stopWhen` is `stepCountIs(1)`, which stops
+      // after the first model call — meaning the model emits the tool
+      // call, the SDK runs the tool, and the stream ends with no final
+      // assistant text. Bump to 5 so the model gets a chance to use the
+      // tool result to compose a reply.
+      stopWhen: stepCountIs(5),
     });
     await step.pipe(result.toUIMessageStream());
     await step.end();

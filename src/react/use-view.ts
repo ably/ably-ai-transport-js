@@ -11,14 +11,12 @@
 import * as Ably from 'ably';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import type { ActiveTurn, ClientTransport, MessageNode, SendOptions, View } from '../core/transport/types.js';
+import type { ActiveTurn, MessageNode, SendOptions, View } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
-import { useResolvedTransport } from './internal/use-resolved-transport.js';
+import { BaseTransportOption, useResolvedTransport } from './internal/use-resolved-transport.js';
 
 /** Options for {@link useView}. */
-export interface UseViewOptions<TEvent, TMessage> {
-  /** Client transport whose default view to subscribe to; defaults to the nearest provider when omitted. */
-  transport?: ClientTransport<TEvent, TMessage> | null;
+export interface UseViewOptions<TEvent, TMessage> extends BaseTransportOption<TEvent, TMessage> {
   /** A specific {@link View} to subscribe to directly. Takes priority over `transport`. */
   view?: View<TEvent, TMessage> | null;
   /** Maximum number of older messages to load per page. When provided, auto-loads on mount. */

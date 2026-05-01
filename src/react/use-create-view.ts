@@ -15,15 +15,13 @@
 
 import { useEffect, useState } from 'react';
 
-import type { ClientTransport, View } from '../core/transport/types.js';
-import { useResolvedTransport } from './internal/use-resolved-transport.js';
+import type { View } from '../core/transport/types.js';
+import { BaseTransportOption, useResolvedTransport } from './internal/use-resolved-transport.js';
 import type { ViewHandle } from './use-view.js';
 import { useView } from './use-view.js';
 
 /** Options for {@link useCreateView}. */
-export interface UseCreateViewOptions<TEvent, TMessage> {
-  /** Transport to create a view from; defaults to the nearest {@link TransportProvider}. */
-  transport?: ClientTransport<TEvent, TMessage> | null;
+export interface UseCreateViewOptions<TEvent, TMessage> extends BaseTransportOption<TEvent, TMessage> {
   /** When provided, auto-loads the first page on mount. Omit for manual load. */
   limit?: number;
   /** When `true`, skip view creation and return an empty handle immediately. */

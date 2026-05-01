@@ -18,8 +18,8 @@ describe('useCreateView', () => {
     expect(result.current.hasOlder).toBe(false);
   });
 
-  it('returns empty handle when transport is null', () => {
-    const { result } = renderHook(() => useCreateView({ transport: null })); // eslint-disable-line unicorn/no-null -- testing the null input path
+  it('returns empty handle when transport is undefined', () => {
+    const { result } = renderHook(() => useCreateView({ transport: undefined }));
 
     expect(result.current.nodes).toEqual([]);
   });

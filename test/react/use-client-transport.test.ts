@@ -18,7 +18,7 @@ const withTransportContext =
     createElement(TransportContext.Provider, {
       value: {
         nearest: undefined,
-        providers: Object.fromEntries(Object.entries(record).map(([k, v]) => [k, { transport: v, error: undefined }])),
+        providers: Object.fromEntries(Object.entries(record).map(([k, v]) => [k, { transport: v }])),
       },
       children,
     });

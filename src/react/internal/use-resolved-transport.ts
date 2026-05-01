@@ -4,9 +4,19 @@ import type { ClientTransport } from '../../core/transport/types.js';
 import { TransportContext } from '../contexts/transport-context.js';
 
 /**
+ * Shared base for hook options that accept an explicit transport override.
+ * Extend this interface for any hook whose `transport` option defaults to the
+ * nearest {@link TransportProvider} when omitted.
+ */
+export interface BaseTransportOption<TEvent, TMessage> {
+  /** Transport to operate on; defaults to the nearest {@link TransportProvider}. */
+  transport?: ClientTransport<TEvent, TMessage>;
+}
+
+/**
  * Resolve the active `ClientTransport` for a hook.
  *
- * Reads `NearestTransportContext` and applies the standard three-way
+ * Reads `TransportContext` and applies the standard three-way
  * priority: explicit `transport` argument → nearest provider → `undefined`.
  * When `skip` is `true`, returns `undefined` without reading context.
  *
@@ -21,11 +31,12 @@ export const useResolvedTransport = <TEvent, TMessage>({
   skip,
 }: {
   /** Explicit transport; takes priority over the nearest provider. */
-  transport?: ClientTransport<TEvent, TMessage> | null;
+  transport?: ClientTransport<TEvent, TMessage>;
   /** When `true`, bypass context and return `undefined` immediately. */
   skip?: boolean;
 } = {}): ClientTransport<TEvent, TMessage> | undefined => {
   const { nearest } = useContext(TransportContext);
+  // CAST: TransportContext stores transport with erased generics; types fixed at call site.
   const nearestTransport = nearest?.transport as unknown as ClientTransport<TEvent, TMessage> | undefined;
   return skip ? undefined : (transport ?? nearestTransport);
 };

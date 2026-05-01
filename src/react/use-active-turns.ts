@@ -14,14 +14,12 @@
 import { useEffect, useState } from 'react';
 
 import { EVENT_TURN_START } from '../constants.js';
-import type { ClientTransport, TurnLifecycleEvent } from '../core/transport/types.js';
+import type { TurnLifecycleEvent } from '../core/transport/types.js';
+import type { BaseTransportOption } from './internal/use-resolved-transport.js';
 import { useResolvedTransport } from './internal/use-resolved-transport.js';
 
 /** Options for {@link useActiveTurns}. */
-export interface UseActiveTurnsOptions<TEvent, TMessage> {
-  /** Transport to track turns for; defaults to the nearest {@link TransportProvider}. */
-  transport?: ClientTransport<TEvent, TMessage> | null;
-}
+export type UseActiveTurnsOptions<TEvent, TMessage> = BaseTransportOption<TEvent, TMessage>;
 
 /**
  * Returns a reactive Map of all active turns on the channel, keyed by clientId.

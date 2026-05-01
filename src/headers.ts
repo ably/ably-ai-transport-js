@@ -82,10 +82,15 @@ export const WireMessages = {
   RunEnd: 'x-ably-run-end',
   /**
    * Opens a step within a run. Carries {@link Headers.RunId} and
-   * {@link Headers.StepId}; the step-end wire that closes it lands in a
-   * later phase.
+   * {@link Headers.StepId}; the closing {@link WireMessages.StepEnd} also
+   * carries {@link Headers.Status}.
    */
   StepStart: 'x-ably-step-start',
+  /**
+   * Closes a step terminally. Carries {@link Headers.RunId},
+   * {@link Headers.StepId}, and {@link Headers.Status}.
+   */
+  StepEnd: 'x-ably-step-end',
 } as const;
 
 /** Union of SDK-owned wire message names. */

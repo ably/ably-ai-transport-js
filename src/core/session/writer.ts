@@ -3,9 +3,10 @@ import * as Ably from 'ably';
 import { ErrorCode } from '../../errors.js';
 import { Headers, WireMessages } from '../../headers.js';
 import type { Logger } from '../../logger.js';
-import type { AnyCodec, CodecMessage } from '../codec/index.js';
+import type { AnyCodec, CodecEvent, CodecMessage, CodecPart, Encoder } from '../codec/index.js';
 import { createEncoderCore } from '../codec/index.js';
 import type { RunEndStatus } from '../run/index.js';
+import type { StepEndStatus } from '../step/index.js';
 import type { ChannelManager } from './channel-manager.js';
 
 /**
@@ -300,6 +301,87 @@ export class DefaultSessionWriter<C extends AnyCodec> implements SessionWriter<C
       runId: options.runId,
       stepId: options.stepId,
     });
+  }
+
+  /**
+   * Publish `x-ably-step-end` to the channel, recording the terminal status
+   * of an active step. Internal — not on the {@link SessionWriter}
+   * interface; the public {@link Step.end} drives this through
+   * {@link DefaultStep}.
+   *
+   * The wire carries {@link Headers.RunId}, {@link Headers.StepId}, and
+   * {@link Headers.Status}.
+   * @param options Identifiers for the run/step plus its terminal status.
+   * @param options.runId The run the step belongs to.
+   * @param options.stepId The id of the step being ended.
+   * @param options.status The terminal status to record.
+   * @returns Resolves once Ably has acknowledged the publish.
+   * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.SessionClosed}
+   *   when called after the session has been closed.
+   */
+  async endStep(options: { runId: string; stepId: string; status: StepEndStatus }): Promise<void> {
+    this._logger.trace('DefaultSessionWriter.endStep();', {
+      runId: options.runId,
+      stepId: options.stepId,
+      status: options.status,
+    });
+
+    if (this._isClosed()) {
+      throw new Ably.ErrorInfo('unable to end step; session is closed', ErrorCode.SessionClosed, 400);
+    }
+
+    const channel = this._channelManager.get();
+    await channel.publish({
+      name: WireMessages.StepEnd,
+      extras: {
+        headers: {
+          [Headers.RunId]: options.runId,
+          [Headers.StepId]: options.stepId,
+          [Headers.Status]: options.status,
+        },
+      },
+    });
+
+    this._logger.debug('DefaultSessionWriter.endStep(); published', {
+      runId: options.runId,
+      stepId: options.stepId,
+      status: options.status,
+    });
+  }
+
+  /**
+   * Build a fresh codec encoder bound to a new {@link EncoderCore} over the
+   * session's channel. Internal — used by {@link DefaultStep} to drive
+   * {@link Step.pipe}/{@link Step.end} through a long-lived encoder. The
+   * caller owns the encoder's lifecycle and is responsible for calling
+   * `close()` when finished.
+   * @returns A fresh encoder ready for content publishes.
+   */
+  buildEncoder(): Encoder<CodecPart<C>, CodecMessage<C>, CodecEvent<C>> {
+    const channel = this._channelManager.get();
+    const core = createEncoderCore(channel, { logger: this._logger });
+    // CAST: `this._codec` is constrained to `AnyCodec` (Codec<any, any, any>),
+    // so `createEncoder` is typed as returning `Encoder<any, any, any>` at the
+    // constraint layer. The cast narrows back to the precise `C`-bound
+    // parameter triple — equivalent to the implicit narrowing TS performs at
+    // the variable assignment in `_encodeMessageBatch`.
+    return this._codec.createEncoder({ core, logger: this._logger }) as Encoder<
+      CodecPart<C>,
+      CodecMessage<C>,
+      CodecEvent<C>
+    >;
+  }
+
+  /**
+   * The protocol-level role this writer attributes to outgoing content
+   * wires (`'user'` for client sessions, `'assistant'` for agent
+   * sessions). Internal — exposed so {@link DefaultStep.pipe} can stamp
+   * the matching `x-ably-role` header on its piped content wires without
+   * routing through the writer's `sendMessages`/`sendParts` paths.
+   * @returns The protocol role — `'user'` or `'assistant'`.
+   */
+  get role(): 'user' | 'assistant' {
+    return this._role;
   }
 
   async endRun(options: EndRunOptions): Promise<void> {

@@ -417,5 +417,59 @@ describe('Tree', () => {
         expect(handler).not.toHaveBeenCalled();
       });
     });
+
+    describe('applyStepEnd', () => {
+      it('transitions a known step to the supplied status', () => {
+        const tree = makeTree();
+        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
+
+        tree.applyStepEnd({ stepId: 's-1', status: 'complete' });
+
+        expect(tree.steps).toEqual([{ id: 's-1', runId: 'r-1', status: 'complete' }]);
+      });
+
+      it("transitions a step to 'failed' when the publish supplied that status", () => {
+        const tree = makeTree();
+        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
+
+        tree.applyStepEnd({ stepId: 's-1', status: 'failed' });
+
+        expect(tree.steps[0]?.status).toBe('failed');
+      });
+
+      it('fires subscribe on transition', () => {
+        const tree = makeTree();
+        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
+        const handler = vi.fn();
+        tree.subscribe(handler);
+
+        tree.applyStepEnd({ stepId: 's-1', status: 'complete' });
+
+        expect(handler).toHaveBeenCalledTimes(1);
+      });
+
+      it('ignores step-end for an unknown step id', () => {
+        const tree = makeTree();
+        const handler = vi.fn();
+        tree.subscribe(handler);
+
+        tree.applyStepEnd({ stepId: 'never-started', status: 'complete' });
+
+        expect(tree.steps).toEqual([]);
+        expect(handler).not.toHaveBeenCalled();
+      });
+
+      it('preserves step order when an earlier step transitions terminal', () => {
+        const tree = makeTree();
+        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
+        tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active' });
+
+        tree.applyStepEnd({ stepId: 's-1', status: 'complete' });
+
+        expect(tree.steps.map((s) => s.id)).toEqual(['s-1', 's-2']);
+        expect(tree.steps[0]?.status).toBe('complete');
+        expect(tree.steps[1]?.status).toBe('active');
+      });
+    });
   });
 });

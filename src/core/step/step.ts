@@ -1,21 +1,34 @@
 import * as Ably from 'ably';
 
+import { Headers } from '../../headers.js';
 import type { Logger } from '../../logger.js';
-import type { AnyCodec, CodecMessage } from '../codec/index.js';
+import type { AnyCodec, CodecEvent, CodecMessage, CodecPart, Encoder } from '../codec/index.js';
 import type { DefaultSessionWriter } from '../session/writer.js';
 import type { Tree } from '../tree/index.js';
 
 /**
+ * Terminal status accepted by step-end wire messages.
+ *
+ * Phase 10 subset of the RFC's `StepEndStatus` — `'aborted'`, `'paused'`,
+ * and `'superseded'` join the union additively in later phases (`'aborted'`
+ * alongside `step.signal` in phase 11; `'superseded'` alongside the
+ * supersession race in phase 12).
+ */
+export type StepEndStatus = 'complete' | 'failed';
+
+/**
  * Lifecycle status of a step.
  *
- * Phase 9 subset of the RFC's `StepStatus` — `'pending'` is the pre-start
+ * Phase 10 subset of the RFC's `StepStatus` — `'pending'` is the pre-start
  * status of a local step handle (no `x-ably-step-start` on the wire yet);
- * `'active'` is the materialised status the tree records once the step-start
- * is observed. Terminal statuses (`'complete'`, `'failed'`, `'aborted'`,
- * `'paused'`, `'superseded'`, `'abandoned'`) join the union additively in
- * later phases as the surfaces that produce them land.
+ * `'active'` is the materialised status the tree records once the
+ * step-start is observed; `'complete'` and `'failed'` are the terminal
+ * statuses the tree transitions a step into when an `x-ably-step-end`
+ * lands. The remaining terminal statuses (`'aborted'`, `'paused'`,
+ * `'superseded'`, `'abandoned'`) join the union additively in later
+ * phases.
  */
-export type StepStatus = 'pending' | 'active';
+export type StepStatus = 'pending' | 'active' | StepEndStatus;
 
 /**
  * Read-only state of a step, recorded in the session's tree from observed
@@ -38,14 +51,13 @@ export interface StepRecord {
 /**
  * The agent's active write handle for one continuous execution within a run.
  *
- * Phase 9 subset of the RFC's `Step<C>` — `start()` (no options yet),
- * plus the immutable identity getters. `signal`, `abortSignal`, `pipe`,
- * `end`, `sendMessages`, `sendParts`, `sendEvents`, the disposer, and
+ * Phase 10 subset of the RFC's `Step<C>` — `start()` (no options yet),
+ * `pipe`, `end`, the async disposer, and the immutable identity getters.
+ * `signal`, `abortSignal`, `sendMessages`, `sendParts`, `sendEvents`, and
  * the pause event surface land in later phases.
  *
  * Returned by {@link AgentRun.createStep}.
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- C reserved for additive phase-10+ members.
 export interface Step<C extends AnyCodec> {
   /** The step's unique ID, generated when the step is created. */
   readonly id: string;
@@ -57,7 +69,9 @@ export interface Step<C extends AnyCodec> {
    * Current status of the step. A freshly created handle is `'pending'`
    * until {@link Step.start} resolves, at which point the tree has
    * recorded the matching {@link StepRecord} and the handle reports
-   * `'active'`. If `start()` rejects, the handle remains `'pending'`.
+   * `'active'`. After {@link Step.end} resolves the handle reports the
+   * terminal status (`'complete'` on the happy path; `'failed'` when
+   * `end(error)` was called).
    */
   readonly status: StepStatus;
 
@@ -76,6 +90,60 @@ export interface Step<C extends AnyCodec> {
    *   underlying session has been closed.
    */
   start(): Promise<void>;
+
+  /**
+   * Pipe a {@link ReadableStream} of domain parts through the codec
+   * encoder to the channel. Each chunk is encoded via
+   * `codec.createEncoder().encodePart(...)` and published as it arrives;
+   * streaming chunks (`*-start`/`*-delta`/`*-end`) correlate via the
+   * codec's own stream id, so a single piped stream produces wires under
+   * one writer-assigned `x-ably-msg-id`.
+   *
+   * Resolves once every chunk pulled from the readable has been encoded
+   * and the readable has signalled `done`. If reading or encoding rejects,
+   * the rejection propagates — pair with {@link Step.end} (passing the
+   * caught error) to publish a terminal `'failed'` step-end.
+   * @param readable The readable stream of domain parts to encode.
+   * @returns Resolves when the readable is fully consumed.
+   * @throws An `Ably.ErrorInfo` with code `SessionClosed` when the
+   *   underlying session has been closed before/during the pipe.
+   */
+  pipe(readable: ReadableStream<CodecPart<C>>): Promise<void>;
+
+  /**
+   * Finalise the step. Phase 10 subset of the RFC's classifier — no error
+   * → publishes `x-ably-step-end` with status `'complete'`; an error →
+   * publishes status `'failed'`. The full classifier (with `'aborted'`
+   * and `'paused'` rows reading `step.signal.reason`) lands in phase 11.
+   *
+   * Flushes the codec encoder before publishing — any in-flight streaming
+   * state opened by {@link Step.pipe} is closed (status:`'aborted'` on
+   * the wire by the encoder) so receivers see a clean stream tail before
+   * the step's terminal lifecycle wire.
+   *
+   * Idempotent — a second call after the first has resolved is a no-op
+   * and resolves `void`.
+   * @param error The caught error, or omitted on the happy path.
+   * @returns Resolves once Ably has acknowledged the step-end publish (or
+   *   immediately when the step is already terminal locally).
+   */
+  end(error?: unknown): Promise<void>;
+
+  /**
+   * Symbol.asyncDispose — equivalent to calling {@link Step.end} with no
+   * error when the step has not been ended yet. Enables scope-based
+   * cleanup in serverless handlers:
+   *
+   * ```ts
+   * await using step = run.createStep();
+   * ```
+   *
+   * Phase 10 always classifies a non-explicit dispose as `'complete'` —
+   * the RFC's pessimistic-safety branches that publish `'aborted'` or
+   * `'failed'` based on `step.signal.aborted` land in phase 11.
+   * Idempotent.
+   */
+  [Symbol.asyncDispose](): Promise<void>;
 }
 
 /** Options for constructing a {@link DefaultStep}. */
@@ -104,6 +172,9 @@ export class DefaultStep<C extends AnyCodec> implements Step<C> {
   private readonly _tree: Tree<CodecMessage<C>>;
   private readonly _writer: DefaultSessionWriter<C>;
   private readonly _logger: Logger;
+  private _encoder?: Encoder<CodecPart<C>, CodecMessage<C>, CodecEvent<C>>;
+  private _ended = false;
+  private _localStatus?: StepEndStatus;
 
   constructor(options: StepOptions<C>) {
     this._stepId = options.stepId;
@@ -127,7 +198,12 @@ export class DefaultStep<C extends AnyCodec> implements Step<C> {
   }
 
   get status(): StepStatus {
-    return this._tree.steps.find((step) => step.id === this._stepId)?.status ?? 'pending';
+    // Tree state takes precedence so multi-client sync sees the same
+    // status the channel records. Once `end()` has been called locally we
+    // surface its derived terminal even if the publish hasn't echoed back
+    // yet — callers reading `step.status` immediately after `end()`
+    // resolves expect to see `'complete'` / `'failed'`.
+    return this._tree.steps.find((step) => step.id === this._stepId)?.status ?? this._localStatus ?? 'pending';
   }
 
   async start(): Promise<void> {
@@ -177,7 +253,88 @@ export class DefaultStep<C extends AnyCodec> implements Step<C> {
     this._logger.debug('DefaultStep.start(); started');
   }
 
+  async pipe(readable: ReadableStream<CodecPart<C>>): Promise<void> {
+    this._logger.trace('DefaultStep.pipe();');
+
+    const encoder = this._getEncoder();
+    const messageId = crypto.randomUUID();
+    const headers: Record<string, string> = {
+      [Headers.MessageId]: messageId,
+      [Headers.Role]: this._writer.role,
+      [Headers.RunId]: this._runId,
+    };
+
+    const reader = readable.getReader();
+    try {
+      let result = await reader.read();
+      while (!result.done) {
+        await encoder.encodePart(result.value, { headers });
+        result = await reader.read();
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    this._logger.debug('DefaultStep.pipe(); done', { messageId });
+  }
+
+  async end(error?: unknown): Promise<void> {
+    this._logger.trace('DefaultStep.end();', { hasError: error !== undefined });
+
+    if (this._ended) {
+      this._logger.debug('DefaultStep.end(); already ended — no-op');
+      return;
+    }
+    this._ended = true;
+
+    const status: StepEndStatus = error === undefined ? 'complete' : 'failed';
+    this._localStatus = status;
+
+    // Flush any open encoder streams first so receivers see a clean stream
+    // tail before the lifecycle wire. A flush failure is logged at warn —
+    // we still publish the step-end so the lifecycle stays consistent on
+    // the channel even if a streaming append could not be recovered.
+    if (this._encoder !== undefined) {
+      try {
+        await this._encoder.close();
+      } catch (closeError) {
+        this._logger.warn('DefaultStep.end(); encoder close failed', { error: closeError });
+      }
+    }
+
+    try {
+      await this._writer.endStep({ runId: this._runId, stepId: this._stepId, status });
+    } catch (publishError) {
+      // Surface the publish failure but keep `_ended` true: the caller has
+      // committed to ending the step; another attempt would race with our
+      // publish and could double-send if the first eventually lands.
+      if (publishError instanceof Ably.ErrorInfo) {
+        throw new Ably.ErrorInfo(
+          `unable to end step; ${publishError.message}`,
+          publishError.code,
+          publishError.statusCode,
+          publishError,
+        );
+      }
+      throw publishError;
+    }
+
+    this._logger.debug('DefaultStep.end(); published', { status });
+  }
+
+  async [Symbol.asyncDispose](): Promise<void> {
+    if (this._ended) {
+      return;
+    }
+    await this.end();
+  }
+
   private _observed(): boolean {
     return this._tree.steps.some((step) => step.id === this._stepId);
+  }
+
+  private _getEncoder(): Encoder<CodecPart<C>, CodecMessage<C>, CodecEvent<C>> {
+    this._encoder ??= this._writer.buildEncoder();
+    return this._encoder;
   }
 }

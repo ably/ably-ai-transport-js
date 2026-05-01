@@ -152,3 +152,171 @@ describe('Step.start', () => {
     await expect(step.start()).rejects.toBeErrorInfoWithCauseCode(ErrorCode.SessionClosed);
   });
 });
+
+describe('Step.pipe', () => {
+  it('encodes each chunk in arrival order with x-ably-role=assistant and run-id', async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    await session.connect();
+    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const step = run.createStep();
+
+    const readable = new ReadableStream<string>({
+      start: (controller) => {
+        controller.enqueue('chunk-1');
+        controller.enqueue('chunk-2');
+        controller.enqueue('chunk-3');
+        controller.close();
+      },
+    });
+
+    await step.pipe(readable);
+
+    // The stub codec routes encodePart through `core.publish` — one
+    // channel.publish per chunk, in arrival order.
+    expect(channel.publish).toHaveBeenCalledTimes(3);
+    const wires = channel.publishedBatches.map((batch) => {
+      expect(batch).toHaveLength(1);
+      return batch[0];
+    });
+    // CAST: Ably.Message.data is typed any; this test produced strings.
+    expect(wires.map((wire) => wire?.data as string | undefined)).toEqual(['chunk-1', 'chunk-2', 'chunk-3']);
+
+    // Every wire shares the same writer-assigned msg-id and carries the
+    // assistant role + run-id from the step.
+    const ids = new Set<string | undefined>();
+    for (const wire of wires) {
+      if (!wire) throw new Error('expected one wire per published batch');
+      const headers = headersOf(wire);
+      expect(headers[Headers.Role]).toBe('assistant');
+      expect(headers[Headers.RunId]).toBe('r-1');
+      ids.add(headers[Headers.MessageId]);
+    }
+    expect(ids.size).toBe(1);
+    expect(typeof [...ids][0]).toBe('string');
+  });
+
+  it('does nothing when the readable closes immediately', async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    await session.connect();
+    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const step = run.createStep();
+
+    const readable = new ReadableStream<string>({
+      start: (controller) => {
+        controller.close();
+      },
+    });
+
+    await step.pipe(readable);
+
+    expect(channel.publish).not.toHaveBeenCalled();
+  });
+});
+
+describe('Step.end', () => {
+  it("publishes x-ably-step-end with status='complete' on the happy path", async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    await session.connect();
+    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const step = run.createStep();
+
+    await step.end();
+
+    expect(channel.publish).toHaveBeenCalledTimes(1);
+    const [wire] = channel.publishedBatches[0] ?? [];
+    if (!wire) throw new Error('expected one wire message');
+    expect(wire.name).toBe(WireMessages.StepEnd);
+    const headers = headersOf(wire);
+    expect(headers[Headers.RunId]).toBe('r-1');
+    expect(headers[Headers.StepId]).toBe(step.id);
+    expect(headers[Headers.Status]).toBe('complete');
+  });
+
+  it("publishes status='failed' when called with an error", async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    await session.connect();
+    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const step = run.createStep();
+
+    await step.end(new Error('agent threw'));
+
+    const [wire] = channel.publishedBatches[0] ?? [];
+    if (!wire) throw new Error('expected one wire message');
+    expect(headersOf(wire)[Headers.Status]).toBe('failed');
+  });
+
+  it('is idempotent — a second call publishes nothing', async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    await session.connect();
+    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const step = run.createStep();
+
+    await step.end();
+    await step.end();
+    await step.end(new Error('late error'));
+
+    expect(channel.publish).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports the locally derived terminal status before the publish echoes back through the tree', async () => {
+    const { options } = makeAgentSession();
+    const session = createAgentSession(options);
+    await session.connect();
+    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const step = run.createStep();
+
+    await step.end();
+
+    expect(step.status).toBe('complete');
+  });
+
+  it('wraps the underlying publish error and preserves the cause', async () => {
+    const { options, channel } = makeAgentSession();
+    const publishError = new Ably.ErrorInfo('publish failed', 50000, 500);
+    channel.publish.mockRejectedValueOnce(publishError);
+    const session = createAgentSession(options);
+    await session.connect();
+    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const step = run.createStep();
+
+    await expect(step.end()).rejects.toBeErrorInfoWithCauseCode(50000);
+  });
+});
+
+describe('Step[Symbol.asyncDispose]', () => {
+  it('calls end() if the step has not been ended', async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    await session.connect();
+    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const step = run.createStep();
+
+    await step[Symbol.asyncDispose]();
+
+    expect(channel.publish).toHaveBeenCalledTimes(1);
+    const [wire] = channel.publishedBatches[0] ?? [];
+    if (!wire) throw new Error('expected one wire message');
+    expect(headersOf(wire)[Headers.Status]).toBe('complete');
+  });
+
+  it('does not re-publish when end() has already been called', async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    await session.connect();
+    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const step = run.createStep();
+
+    await step.end(new Error('explicit failure'));
+    await step[Symbol.asyncDispose]();
+
+    expect(channel.publish).toHaveBeenCalledTimes(1);
+    const [wire] = channel.publishedBatches[0] ?? [];
+    if (!wire) throw new Error('expected one wire message');
+    expect(headersOf(wire)[Headers.Status]).toBe('failed');
+  });
+});

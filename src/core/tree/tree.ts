@@ -1,6 +1,6 @@
 import type { Logger } from '../../logger.js';
 import type { Run, RunStatus } from '../run/index.js';
-import type { StepRecord } from '../step/index.js';
+import type { StepRecord, StepStatus } from '../step/index.js';
 
 /**
  * A node in the session's conversation tree. Carries the domain message
@@ -155,6 +155,18 @@ export interface TreeInternal<TMessage> extends Tree<TMessage> {
    * @param step The step record to record. Status must be `'active'`.
    */
   applyStepStart(step: StepRecord): void;
+
+  /**
+   * Transition a known step to a terminal status in response to
+   * `x-ably-step-end`. If `stepId` does not match a recorded step the call
+   * is logged and ignored — without history hydration (phase 13) a session
+   * that subscribed mid-run can legitimately see step-end without prior
+   * step-start.
+   * @param options Identification and target status for the transition.
+   * @param options.stepId The id of the step to transition.
+   * @param options.status The terminal status to transition the step into.
+   */
+  applyStepEnd(options: { stepId: string; status: StepStatus }): void;
 }
 
 /** Options for constructing a {@link DefaultTree}. */
@@ -247,6 +259,19 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
       return;
     }
     this._steps.push(step);
+    this._notify();
+  }
+
+  applyStepEnd(options: { stepId: string; status: StepStatus }): void {
+    this._logger.trace('DefaultTree.applyStepEnd();', { stepId: options.stepId, status: options.status });
+
+    const index = this._steps.findIndex((step) => step.id === options.stepId);
+    const existing = index === -1 ? undefined : this._steps[index];
+    if (existing === undefined) {
+      this._logger.warn('DefaultTree.applyStepEnd(); step not found', { stepId: options.stepId });
+      return;
+    }
+    this._steps[index] = { ...existing, status: options.status };
     this._notify();
   }
 

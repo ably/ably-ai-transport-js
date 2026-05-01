@@ -878,5 +878,80 @@ describe('Session', () => {
 
       expect(handler).toHaveBeenCalledTimes(1);
     });
+
+    it('transitions a step to complete on x-ably-step-end', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.StepStart,
+          headers: { [Headers.RunId]: 'r-1', [Headers.StepId]: 's-1' },
+          clientId: 'agent-1',
+        }),
+      );
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '02',
+          name: WireMessages.StepEnd,
+          headers: { [Headers.RunId]: 'r-1', [Headers.StepId]: 's-1', [Headers.Status]: 'complete' },
+          clientId: 'agent-1',
+        }),
+      );
+
+      expect(treeOf(session).steps[0]?.status).toBe('complete');
+    });
+
+    it('skips step-end with an invalid x-ably-status', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.StepStart,
+          headers: { [Headers.RunId]: 'r-1', [Headers.StepId]: 's-1' },
+          clientId: 'agent-1',
+        }),
+      );
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '02',
+          name: WireMessages.StepEnd,
+          headers: { [Headers.RunId]: 'r-1', [Headers.StepId]: 's-1', [Headers.Status]: 'totally-bogus' },
+          clientId: 'agent-1',
+        }),
+      );
+
+      expect(treeOf(session).steps[0]?.status).toBe('active');
+    });
+
+    it('skips step-end without x-ably-step-id', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.StepStart,
+          headers: { [Headers.RunId]: 'r-1', [Headers.StepId]: 's-1' },
+          clientId: 'agent-1',
+        }),
+      );
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '02',
+          name: WireMessages.StepEnd,
+          headers: { [Headers.Status]: 'complete' },
+          clientId: 'agent-1',
+        }),
+      );
+
+      expect(treeOf(session).steps[0]?.status).toBe('active');
+    });
   });
 });

@@ -286,6 +286,22 @@ const reachStartStep = (
   return internals.writer.startStep.bind(internals.writer);
 };
 
+/**
+ * `endStep` is intentionally not on the public {@link SessionWriter}
+ * interface — it is driven by {@link DefaultStep.end} and reached for tests
+ * via the underlying class.
+ * @param session A session whose writer to reach.
+ * @returns A typed view of the writer's `endStep` method.
+ */
+const reachEndStep = (
+  session: ReturnType<typeof createClientSession<StubCodec>>,
+): ((options: { runId: string; stepId: string; status: 'complete' | 'failed' }) => Promise<void>) => {
+  const internals = session as unknown as {
+    writer: { endStep: (options: { runId: string; stepId: string; status: 'complete' | 'failed' }) => Promise<void> };
+  };
+  return internals.writer.endStep.bind(internals.writer);
+};
+
 describe('SessionWriter.startStep (internal)', () => {
   it('publishes one x-ably-step-start with run-id and step-id headers', async () => {
     const { options, channel } = makeSession();
@@ -314,6 +330,52 @@ describe('SessionWriter.startStep (internal)', () => {
     await session.close();
 
     await expect(startStep({ runId: 'r-1', stepId: 's-1' })).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+  });
+});
+
+describe('SessionWriter.endStep (internal)', () => {
+  it('publishes one x-ably-step-end with run-id, step-id, and status headers', async () => {
+    const { options, channel } = makeSession();
+    const session = createClientSession(options);
+    await session.connect();
+    const endStep = reachEndStep(session);
+
+    await endStep({ runId: 'r-1', stepId: 's-1', status: 'complete' });
+
+    expect(channel.publish).toHaveBeenCalledTimes(1);
+    const batch = channel.publishedBatches[0] ?? [];
+    expect(batch).toHaveLength(1);
+    const [wire] = batch;
+    if (!wire) throw new Error('expected one wire message');
+    expect(wire.name).toBe(WireMessages.StepEnd);
+    const headers = headersOf(wire);
+    expect(headers[Headers.RunId]).toBe('r-1');
+    expect(headers[Headers.StepId]).toBe('s-1');
+    expect(headers[Headers.Status]).toBe('complete');
+  });
+
+  it("publishes status='failed' when supplied", async () => {
+    const { options, channel } = makeSession();
+    const session = createClientSession(options);
+    await session.connect();
+    const endStep = reachEndStep(session);
+
+    await endStep({ runId: 'r-1', stepId: 's-1', status: 'failed' });
+
+    const [wire] = channel.publishedBatches[0] ?? [];
+    if (!wire) throw new Error('expected one wire message');
+    expect(headersOf(wire)[Headers.Status]).toBe('failed');
+  });
+
+  it('throws SessionClosed after the session has been closed', async () => {
+    const { options } = makeSession();
+    const session = createClientSession(options);
+    const endStep = reachEndStep(session);
+    await session.close();
+
+    await expect(endStep({ runId: 'r-1', stepId: 's-1', status: 'complete' })).rejects.toBeErrorInfoWithCode(
+      ErrorCode.SessionClosed,
+    );
   });
 });
 

@@ -11,6 +11,7 @@ import type { Accumulator, AnyCodec, CodecEvent, CodecMessage, CodecPart, Decode
 import type { Invocation } from '../invocation/index.js';
 import type { AgentRun, Run, RunStatus } from '../run/index.js';
 import { DefaultAgentRun } from '../run/index.js';
+import type { StepStatus } from '../step/index.js';
 import type { MessageNode, TreeInternal } from '../tree/index.js';
 import { DefaultTree } from '../tree/index.js';
 import type { ClientView } from '../view/index.js';
@@ -72,6 +73,16 @@ interface SessionEvents {
  * @returns True when `value` is a recognised run-end status.
  */
 const isRunEndStatus = (value: string | undefined): value is RunStatus => value === 'complete' || value === 'failed';
+
+/**
+ * Narrow a wire `x-ably-status` value to a {@link StepStatus} the tree can
+ * transition into via `applyStepEnd`. Phase 10 accepts `'complete'` and
+ * `'failed'`; phases 11 and 12 widen this guard to include `'aborted'`,
+ * `'paused'`, and `'superseded'` as the surfaces that produce them land.
+ * @param value The raw header value.
+ * @returns True when `value` is a recognised step-end status.
+ */
+const isStepEndStatus = (value: string | undefined): value is StepStatus => value === 'complete' || value === 'failed';
 
 /**
  * Long-lived handle on a durable session from the client's perspective.
@@ -366,6 +377,10 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
       this._handleStepStart(message);
       return;
     }
+    if (message.name === WireMessages.StepEnd) {
+      this._handleStepEnd(message);
+      return;
+    }
 
     if (!this._decoder || !this._accumulator) {
       // Defensive: subscribe is registered after _decoder/_accumulator are set,
@@ -479,6 +494,28 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
 
     const run: Run<CodecMessage<C>> = { id: runId, status: 'active', initiatorClientId };
     this._tree.applyRunStart(run);
+  }
+
+  private _handleStepEnd(message: Ably.InboundMessage): void {
+    const stepId = readHeader(message, Headers.StepId);
+    if (stepId === undefined) {
+      this._logger.warn('DefaultSession._handleStepEnd(); missing x-ably-step-id', {
+        serial: message.serial,
+      });
+      return;
+    }
+
+    const status = readHeader(message, Headers.Status);
+    if (!isStepEndStatus(status)) {
+      this._logger.warn('DefaultSession._handleStepEnd(); invalid x-ably-status', {
+        stepId,
+        status,
+        serial: message.serial,
+      });
+      return;
+    }
+
+    this._tree.applyStepEnd({ stepId, status });
   }
 
   private _handleStepStart(message: Ably.InboundMessage): void {

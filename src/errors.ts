@@ -37,6 +37,14 @@ export enum ErrorCode {
   /** The session has been closed; the requested operation is no longer valid. */
   SessionClosed = 104100,
 
+  /**
+   * Hydrating the session's tree from channel history failed during
+   * {@link ClientSession.connect}/{@link AgentSession.connect}. The cause
+   * (the underlying `channel.history` rejection) is preserved on
+   * `Ably.ErrorInfo.cause`.
+   */
+  HydrationFailed = 104101,
+
   // --- Invocation ---
 
   /** The invocation data passed to {@link Invocation.fromJSON} is missing required fields or has wrong-typed values. */
@@ -50,6 +58,14 @@ export enum ErrorCode {
    * configured `timeoutMs` elapsed.
    */
   StepStartAborted = 104302,
+
+  /**
+   * `AgentSession.createRun` timed out (or was aborted) waiting for the
+   * invocation's preconditions to materialise on the session — the run-start
+   * for the invocation's `runId` (and, when set, the message named by
+   * `messageId`) never arrived from channel history or live delivery.
+   */
+  InvocationPreconditionTimeout = 104301,
 }
 
 /**

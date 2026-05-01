@@ -20,11 +20,11 @@
 import { after } from 'next/server';
 import { streamText, convertToModelMessages } from 'ai';
 import type { DynamicToolUIPart, UIMessage } from 'ai';
-import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
 import { createAgentSession, UIMessageCodec, vercelRunEndReason } from '@ably/ai-transport/vercel';
 import type { InvocationData } from '@ably/ai-transport';
 import { Invocation } from '@ably/ai-transport';
+import { createModel } from './model';
 import { tools } from './tools';
 
 const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY! });
@@ -64,7 +64,7 @@ export async function POST(req: Request) {
   const allMessages = [...resolvedMessages, ...newNodes.map((m) => m.message)];
 
   const result = streamText({
-    model: anthropic('claude-sonnet-4-6'),
+    model: createModel(),
     system: `You are a helpful assistant. When the user asks about weather, use the getWeather tool. If they don't specify a location, call getLocation first to get their coordinates, then call getWeather with a description of that location. When the user asks about a weather forecast or upcoming weather, use getWeatherForecast.`,
     messages: await convertToModelMessages(allMessages),
     tools,

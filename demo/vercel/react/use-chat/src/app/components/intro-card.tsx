@@ -92,8 +92,10 @@ export function IntroCard() {
       <header className="space-y-2">
         <h2 className="text-lg font-semibold text-zinc-100">useChat over Ably</h2>
         <p className="text-sm text-zinc-300">
-          A Vercel AI SDK chat wired to an Ably transport. Each item below exercises a specific feature of the SDK — try
-          them in order to see what it does.
+          A Vercel AI SDK chat wired to an Ably transport. Supplying Ably as the customTransport for Vercel useChat
+          gives the app resumable streams, sessions that stay in sync across a user's devices and across multiple
+          participants, plus a bidirectional channel between user and agent for cancellation and steering. Each item
+          below exercises a specific feature - try them in order to see what it does.
         </p>
       </header>
 

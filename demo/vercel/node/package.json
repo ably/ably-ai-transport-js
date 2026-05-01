@@ -1,0 +1,10 @@
+{
+  "name": "ably-ai-transport-vercel-node-demo",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "agent": "tsx agent.ts",
+    "client": "tsx client.ts"
+  }
+}

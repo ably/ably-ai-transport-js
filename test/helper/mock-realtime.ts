@@ -14,6 +14,10 @@ export interface MockChannel {
   subscribe: ReturnType<typeof vi.fn>;
   unsubscribe: ReturnType<typeof vi.fn>;
   publish: ReturnType<typeof vi.fn>;
+  /** Append-action publish; satisfies the `ChannelWriter` surface. */
+  appendMessage: ReturnType<typeof vi.fn>;
+  /** Update-action publish; satisfies the `ChannelWriter` surface. */
+  updateMessage: ReturnType<typeof vi.fn>;
   state: Ably.ChannelState;
   /** Callbacks registered via on(events, listener) keyed by callback ref. */
   stateListeners: Map<Ably.channelEventCallback, Set<Ably.ChannelEvent>>;
@@ -25,6 +29,10 @@ export interface MockChannel {
    * one-element array so tests have a uniform shape.
    */
   publishedBatches: Ably.Message[][];
+  /** Append-action calls observed, in arrival order. */
+  appendedMessages: Ably.Message[];
+  /** Update-action calls observed, in arrival order. */
+  updatedMessages: Ably.Message[];
   /** Drive a state-change event to all listeners subscribed to it. */
   simulateStateChange: (change: Ably.ChannelStateChange) => void;
   /** Drive an inbound message to all message subscribers. */
@@ -41,11 +49,21 @@ export const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
   const stateListeners = new Map<Ably.channelEventCallback, Set<Ably.ChannelEvent>>();
   const messageListeners = new Set<(message: Ably.InboundMessage) => void>();
   const publishedBatches: Ably.Message[][] = [];
+  const appendedMessages: Ably.Message[] = [];
+  const updatedMessages: Ably.Message[] = [];
+  let nextSerial = 0;
+  const allocateSerial = (): string => {
+    const value = `mock-serial-${String(nextSerial)}`;
+    nextSerial += 1;
+    return value;
+  };
   const channel: MockChannel = {
     state: 'initialized',
     stateListeners,
     messageListeners,
     publishedBatches,
+    appendedMessages,
+    updatedMessages,
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     attach: vi.fn(() => Promise.resolve()),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
@@ -68,8 +86,24 @@ export const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
     }),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock matches Ably.RealtimeChannel.publish signature.
     publish: vi.fn((messages: Ably.Message | Ably.Message[]) => {
-      publishedBatches.push(Array.isArray(messages) ? [...messages] : [messages]);
-      return Promise.resolve();
+      const batch = Array.isArray(messages) ? [...messages] : [messages];
+      publishedBatches.push(batch);
+      // PublishResult.serials is one serial per published wire — allocate
+      // monotonically increasing values so EncoderCore's stream tracker
+      // can capture a stable id.
+      const serials = batch.map(() => allocateSerial());
+      const result: Ably.PublishResult = { serials };
+      return Promise.resolve(result);
+    }),
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock matches Ably.RealtimeChannel.appendMessage signature.
+    appendMessage: vi.fn((message: Ably.Message) => {
+      appendedMessages.push(message);
+      return Promise.resolve({} as Ably.UpdateDeleteResult);
+    }),
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock matches Ably.RealtimeChannel.updateMessage signature.
+    updateMessage: vi.fn((message: Ably.Message) => {
+      updatedMessages.push(message);
+      return Promise.resolve({} as Ably.UpdateDeleteResult);
     }),
     simulateStateChange: (change: Ably.ChannelStateChange) => {
       for (const [callback, events] of stateListeners) {

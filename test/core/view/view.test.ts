@@ -132,7 +132,7 @@ const makeClientSession = (clientId = 'alice') => {
 };
 
 describe('ClientView.send', () => {
-  it('publishes [run-start, message] in a single atomic batch with matching runId', async () => {
+  it('publishes the run-start wire first then the message wire, sharing one runId', async () => {
     const { options, channel } = makeClientSession();
     const session = createClientSession(options);
     await session.connect();
@@ -140,17 +140,23 @@ describe('ClientView.send', () => {
 
     const run = await view.send('hello');
 
-    expect(channel.publish).toHaveBeenCalledTimes(1);
-    expect(channel.publishedBatches).toHaveLength(1);
-    const batch = channel.publishedBatches[0] ?? [];
-    expect(batch).toHaveLength(2);
+    // The new sequential model: one publish for run-start, one publish per
+    // message — atomicity is intentionally dropped so the codec layer
+    // doesn't need a buffer abstraction.
+    expect(channel.publish).toHaveBeenCalledTimes(2);
+    expect(channel.publishedBatches).toHaveLength(2);
 
-    const [runStart, message] = batch;
-    if (!runStart || !message) throw new Error('expected two wire messages in the batch');
-
+    const runStartBatch = channel.publishedBatches[0] ?? [];
+    expect(runStartBatch).toHaveLength(1);
+    const [runStart] = runStartBatch;
+    if (!runStart) throw new Error('expected run-start wire');
     expect(runStart.name).toBe(WireMessages.RunStart);
     expect(headersOf(runStart)[Headers.RunId]).toBe(run.id);
 
+    const messageBatch = channel.publishedBatches[1] ?? [];
+    expect(messageBatch).toHaveLength(1);
+    const [message] = messageBatch;
+    if (!message) throw new Error('expected message wire');
     expect(message.data).toBe('hello');
     expect(headersOf(message)[Headers.RunId]).toBe(run.id);
     expect(headersOf(message)[Headers.Role]).toBe('user');
@@ -183,10 +189,12 @@ describe('ClientView.send', () => {
     expect(invocationJson.sessionName).toBe('session-1');
     expect(invocationJson.runId).toBe(run.id);
 
-    // The message ID on the invocation matches the messageId attached to the
-    // published message — agents waiting for it can rely on this round-trip.
-    const [, message] = channel.publishedBatches[0] ?? [];
-    if (!message) throw new Error('expected the second wire message');
+    // The message ID on the invocation matches the messageId attached to
+    // the published message wire (the second of two publishes in the new
+    // sequential model). Agents waiting for it can rely on the round-trip.
+    const messageBatch = channel.publishedBatches[1] ?? [];
+    const [message] = messageBatch;
+    if (!message) throw new Error('expected the message wire');
     expect(invocationJson.messageId).toBe(headersOf(message)[Headers.MessageId]);
   });
 
@@ -217,7 +225,7 @@ describe('ClientView.send', () => {
     await expect(view.send('hello')).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
   });
 
-  it('accepts an array of messages and publishes [run-start, ...messages] atomically with one msg-id per message', async () => {
+  it('accepts an array of messages and publishes run-start then one batch per message with a unique msg-id', async () => {
     const { options, channel } = makeClientSession();
     const session = createClientSession(options);
     await session.connect();
@@ -225,21 +233,28 @@ describe('ClientView.send', () => {
 
     const run = await view.send(['one', 'two', 'three']);
 
-    expect(channel.publish).toHaveBeenCalledTimes(1);
-    const batch = channel.publishedBatches[0] ?? [];
-    expect(batch).toHaveLength(4);
+    // 1 run-start publish + 1 publish per message in the new sequential model.
+    expect(channel.publish).toHaveBeenCalledTimes(4);
+    expect(channel.publishedBatches).toHaveLength(4);
 
-    const [runStart, ...messages] = batch;
-    if (!runStart) throw new Error('expected run-start at the head of the batch');
+    const runStartBatch = channel.publishedBatches[0] ?? [];
+    const [runStart] = runStartBatch;
+    if (!runStart) throw new Error('expected run-start at the head of the publishes');
     expect(runStart.name).toBe(WireMessages.RunStart);
     expect(headersOf(runStart)[Headers.RunId]).toBe(run.id);
 
+    const messageBatches = channel.publishedBatches.slice(1);
+    const messages = messageBatches.map((batch) => {
+      expect(batch).toHaveLength(1);
+      return batch[0];
+    });
     // CAST: Ably.Message.data is typed any; this test produced strings.
-    expect(messages.map((m) => m.data as string)).toEqual(['one', 'two', 'three']);
+    expect(messages.map((wire) => wire?.data as string)).toEqual(['one', 'two', 'three']);
 
-    const ids = messages.map((m) => headersOf(m)[Headers.MessageId]);
+    const ids = messages.map((wire) => (wire ? headersOf(wire)[Headers.MessageId] : undefined));
     expect(new Set(ids).size).toBe(3);
     for (const wire of messages) {
+      if (!wire) throw new Error('expected one wire per published batch');
       expect(headersOf(wire)[Headers.RunId]).toBe(run.id);
     }
   });
@@ -252,8 +267,9 @@ describe('ClientView.send', () => {
 
     const run = await view.send(['first', 'last']);
 
-    const batch = channel.publishedBatches[0] ?? [];
-    const lastWire = batch.at(-1);
+    // Last batch is the last message wire (run-start + 2 messages = 3 batches).
+    const lastBatch = channel.publishedBatches.at(-1) ?? [];
+    const [lastWire] = lastBatch;
     if (!lastWire) throw new Error('expected the last wire message');
     const lastMessageId = headersOf(lastWire)[Headers.MessageId];
 
@@ -267,33 +283,6 @@ describe('ClientView.send', () => {
     const view = session.createView();
 
     await expect(view.send([])).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
-    expect(channel.publish).not.toHaveBeenCalled();
-  });
-
-  it('rejects with InvalidArgument when the codec produces zero wire messages for the message', async () => {
-    const channel = createMockChannel();
-    const realtime = createMockRealtime(channel, { clientId: 'alice' });
-    const logger = makeLogger({ logLevel: LogLevel.Silent });
-    const emptyCodec: StubCodec = {
-      ...stubCodec,
-      createEncoder: () => ({
-        encodePart: () => [],
-        encodeEvent: () => {
-          throw new Error('not used');
-        },
-        close: () => [],
-      }),
-    };
-    const session = createClientSession({
-      client: realtime,
-      sessionName: 'session-1',
-      codec: emptyCodec,
-      logger,
-    });
-    await session.connect();
-    const view = session.createView();
-
-    await expect(view.send('hello')).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     expect(channel.publish).not.toHaveBeenCalled();
   });
 

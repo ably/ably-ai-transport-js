@@ -17,6 +17,16 @@ export enum ErrorCode {
    */
   InvalidArgument = 40003,
 
+  // --- Encoder ---
+
+  /**
+   * The encoder's recovery path failed: a `message.append` rejected, and
+   * the fallback `updateMessage` carrying the accumulated buffer also
+   * rejected. The streamed message's content cannot be reconstructed on
+   * the wire — receivers may see truncated content.
+   */
+  EncoderRecoveryFailed = 104000,
+
   // --- Transport ---
 
   /** The underlying Ably channel subscription failed or lost continuity. */

@@ -63,22 +63,30 @@ describe('SessionWriter.sendMessages', () => {
     expect(headersOf(wire)[Headers.ClientId]).toBe('end-user-1');
   });
 
-  it('reuses one msg-id across every wire message produced for a single send', async () => {
-    // Override the codec to emit two wire messages per encodePart so we can
-    // verify the writer attaches the same msg-id to all of them.
+  it('every wire emitted from one encodeMessage call shares the same msg-id', async () => {
+    // Codec whose encodeMessage emits two wires in one publishBatch call —
+    // both should carry the writer's per-message x-ably-msg-id.
     const channel = createMockChannel();
     const realtime = createMockRealtime(channel);
     const multiCodec: StubCodec = {
       ...stubCodec,
-      createEncoder: () => ({
-        encodePart: (part) => [
-          { name: 'x-ably-message', data: `${part}:1` },
-          { name: 'x-ably-message', data: `${part}:2` },
-        ],
-        encodeEvent: () => {
-          throw new Error('not used');
+      createEncoder: (args) => ({
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- rejected-promise factory; no async work to await.
+        encodePart: (): Promise<void> => Promise.reject(new Error('not used')),
+        encodeMessage: async (message, options) => {
+          await args.core.publishBatch(
+            [
+              { name: 'x-ably-message', data: `${message}:1` },
+              { name: 'x-ably-message', data: `${message}:2` },
+            ],
+            { headers: options?.headers },
+          );
         },
-        close: () => [],
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- rejected-promise factory; no async work to await.
+        encodeEvent: (): Promise<void> => Promise.reject(new Error('not used')),
+        close: async () => {
+          await args.core.close();
+        },
       }),
     };
     const logger = makeLogger({ logLevel: LogLevel.Silent });
@@ -99,47 +107,24 @@ describe('SessionWriter.sendMessages', () => {
     expect(ids[0]).toBe(ids[1]);
   });
 
-  it('flushes encoder.close() output alongside the encoded part', async () => {
-    const channel = createMockChannel();
-    const realtime = createMockRealtime(channel);
-    const codecWithCloseOutput: StubCodec = {
-      ...stubCodec,
-      createEncoder: () => ({
-        encodePart: (part) => [{ name: 'x-ably-message', data: part }],
-        encodeEvent: () => {
-          throw new Error('not used');
-        },
-        close: () => [{ name: 'x-ably-message', data: 'closing' }],
-      }),
-    };
-    const logger = makeLogger({ logLevel: LogLevel.Silent });
-    const session = createClientSession({
-      client: realtime,
-      sessionName: 'session-1',
-      codec: codecWithCloseOutput,
-      logger,
-    });
-    await session.connect();
-
-    await session.writer.sendMessages({ messages: 'hello', runId: 'r-1' });
-
-    const batch = channel.publishedBatches[0] ?? [];
-    // CAST: Ably.Message.data is typed `any`; this test produced strings.
-    const dataValues = batch.map((m) => m.data as string);
-    expect(dataValues).toEqual(['hello', 'closing']);
-  });
-
-  it('publishes nothing when the encoder produces no wire messages', async () => {
+  it('publishes nothing when encodeMessage emits no wires', async () => {
+    // A codec whose encodeMessage is a no-op (e.g. dropped a chunk type it
+    // doesn't handle yet) should leave the channel untouched without
+    // tripping the writer.
     const channel = createMockChannel();
     const realtime = createMockRealtime(channel);
     const emptyCodec: StubCodec = {
       ...stubCodec,
-      createEncoder: () => ({
-        encodePart: () => [],
-        encodeEvent: () => {
-          throw new Error('not used');
+      createEncoder: (args) => ({
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- rejected-promise factory; no async work to await.
+        encodePart: (): Promise<void> => Promise.reject(new Error('not used')),
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- intentionally a no-op resolved promise.
+        encodeMessage: (): Promise<void> => Promise.resolve(),
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- rejected-promise factory; no async work to await.
+        encodeEvent: (): Promise<void> => Promise.reject(new Error('not used')),
+        close: async () => {
+          await args.core.close();
         },
-        close: () => [],
       }),
     };
     const logger = makeLogger({ logLevel: LogLevel.Silent });
@@ -156,23 +141,26 @@ describe('SessionWriter.sendMessages', () => {
     expect(channel.publish).not.toHaveBeenCalled();
   });
 
-  it('preserves codec-supplied extras headers and overlays SDK headers on top', async () => {
+  it('passes codec-supplied headers through alongside the SDK headers', async () => {
+    // Codec adds its own x-codec-flag header inside the call to
+    // core.publishBatch; the writer's x-ably-* set should sit alongside
+    // it on the wire.
     const channel = createMockChannel();
     const realtime = createMockRealtime(channel);
     const codecWithExtras: StubCodec = {
       ...stubCodec,
-      createEncoder: () => ({
-        encodePart: (part) => [
-          {
-            name: 'x-ably-message',
-            data: part,
-            extras: { headers: { 'x-codec-flag': 'on' } },
-          },
-        ],
-        encodeEvent: () => {
-          throw new Error('not used');
+      createEncoder: (args) => ({
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- rejected-promise factory; no async work to await.
+        encodePart: (): Promise<void> => Promise.reject(new Error('not used')),
+        encodeMessage: async (message, options) => {
+          const merged: Record<string, string> = { ...options?.headers, 'x-codec-flag': 'on' };
+          await args.core.publishBatch([{ name: 'x-ably-message', data: message }], { headers: merged });
         },
-        close: () => [],
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- rejected-promise factory; no async work to await.
+        encodeEvent: (): Promise<void> => Promise.reject(new Error('not used')),
+        close: async () => {
+          await args.core.close();
+        },
       }),
     };
     const logger = makeLogger({ logLevel: LogLevel.Silent });
@@ -191,6 +179,8 @@ describe('SessionWriter.sendMessages', () => {
     const headers = headersOf(wire);
     expect(headers['x-codec-flag']).toBe('on');
     expect(headers[Headers.RunId]).toBe('r-1');
+    expect(headers[Headers.Role]).toBe('user');
+    expect(typeof headers[Headers.MessageId]).toBe('string');
   });
 
   it('throws SessionClosed after the session has been closed', async () => {
@@ -217,30 +207,34 @@ describe('SessionWriter.sendMessages', () => {
     expect(realtime.channels.release).toHaveBeenCalledWith('session-1');
   });
 
-  it('accepts an array of messages and publishes them in a single batch with one msg-id per message', async () => {
+  it('accepts an array of messages and publishes one batch per message with a unique msg-id', async () => {
     const { options, channel } = makeSession();
     const session = createClientSession(options);
     await session.connect();
 
     await session.writer.sendMessages({ messages: ['first', 'second', 'third'], runId: 'r-1' });
 
-    expect(channel.publish).toHaveBeenCalledTimes(1);
-    const batch = channel.publishedBatches[0] ?? [];
-    expect(batch).toHaveLength(3);
-
+    // The new encoder routes each domain message through its own
+    // `core.publishBatch`, so the writer issues one `channel.publish` per
+    // message. Each batch carries a single wire under a unique msg-id.
+    expect(channel.publish).toHaveBeenCalledTimes(3);
+    expect(channel.publishedBatches).toHaveLength(3);
+    const wires = channel.publishedBatches.map((batch) => {
+      expect(batch).toHaveLength(1);
+      return batch[0];
+    });
     // CAST: Ably.Message.data is typed any; this test produced strings.
-    const dataValues = batch.map((m) => m.data as string);
-    expect(dataValues).toEqual(['first', 'second', 'third']);
+    expect(wires.map((wire) => wire?.data as string)).toEqual(['first', 'second', 'third']);
 
-    const ids = batch.map((m) => headersOf(m)[Headers.MessageId]);
+    const ids = wires.map((wire) => (wire ? headersOf(wire)[Headers.MessageId] : undefined));
     expect(new Set(ids).size).toBe(3);
     for (const id of ids) {
       expect(typeof id).toBe('string');
       expect(id?.length).toBeGreaterThan(0);
     }
 
-    // All messages share the same runId and role.
-    for (const wire of batch) {
+    for (const wire of wires) {
+      if (!wire) throw new Error('expected one wire per published batch');
       expect(headersOf(wire)[Headers.RunId]).toBe('r-1');
       expect(headersOf(wire)[Headers.Role]).toBe('user');
     }

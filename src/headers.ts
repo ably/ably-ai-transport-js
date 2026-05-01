@@ -28,11 +28,33 @@ export const Headers = {
    */
   RunId: 'x-ably-run-id',
   /**
-   * Terminal status carried by lifecycle wire messages — phase 5 sets it on
-   * {@link WireMessages.RunEnd} (only `'complete'` today). Later phases reuse
-   * the header on `x-ably-step-end` and add `'aborted'`/`'failed'` values.
+   * Lifecycle status carried by streamed messages and lifecycle wire
+   * messages. Streamed creates set `'streaming'`; their closing append sets
+   * `'finished'` or `'aborted'`. Run-end (and later step-end) wires set the
+   * terminal status of the lifecycle they close.
    */
   Status: 'x-ably-status',
+  /**
+   * Streaming flag — `'true'` on streamed `message.create` wires (and their
+   * `message.append` deltas), `'false'` on discrete creates. The decoder
+   * branches on this to decide whether to open a tracker keyed by serial
+   * or to route the wire through `decodeDiscrete`.
+   */
+  Stream: 'x-ably-stream',
+  /**
+   * Stream identity — set by the encoder on every streamed wire so the
+   * decoder can correlate creates and appends with the codec's own
+   * `chunk.id` (for text streams, tool-input streams, etc.).
+   */
+  StreamId: 'x-ably-stream-id',
+  /**
+   * Marker stamped on every wire emitted by
+   * {@link import('./core/codec/index.js').EncoderCore.publishBatch} —
+   * complete-message parts published from `encodeMessage`. The decoder uses
+   * the marker to distinguish complete-message parts from lifecycle chunks
+   * of the same name (e.g. `text` discrete-vs-streaming).
+   */
+  Discrete: 'x-ably-discrete',
 } as const;
 
 /** Union of valid SDK header names. */

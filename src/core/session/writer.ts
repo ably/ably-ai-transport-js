@@ -3,7 +3,8 @@ import * as Ably from 'ably';
 import { ErrorCode } from '../../errors.js';
 import { Headers, WireMessages } from '../../headers.js';
 import type { Logger } from '../../logger.js';
-import type { AnyCodec, CodecMessage, CodecPart } from '../codec/index.js';
+import type { AnyCodec, CodecMessage } from '../codec/index.js';
+import { createEncoderCore } from '../codec/index.js';
 import type { RunEndStatus } from '../run/index.js';
 import type { ChannelManager } from './channel-manager.js';
 
@@ -14,8 +15,10 @@ import type { ChannelManager } from './channel-manager.js';
 export interface SendMessagesOptions<TMessage> {
   /**
    * The domain message or messages to encode and publish. Each message
-   * gets its own `x-ably-msg-id`; all wire messages produced by the batch
-   * are published in a single `channel.publish(...)` call.
+   * gets its own `x-ably-msg-id` and is published independently — the
+   * encoder drives one publish (or batch of related wires, codec's
+   * choice) per message rather than bundling them into a single atomic
+   * `channel.publish(...)`.
    */
   messages: TMessage | TMessage[];
   /**
@@ -58,14 +61,14 @@ export interface EndRunOptions {
 export interface SessionWriter<C extends AnyCodec> {
   /**
    * Publish one or more complete domain messages to the channel. The codec
-   * encodes each message into its wire form via `Encoder.encodePart`; the
-   * SDK decorates every wire message with `x-ably-msg-id`, `x-ably-role`,
-   * `x-ably-run-id`, and (when supplied) `x-ably-client-id`. Multiple
-   * messages each carry their own `x-ably-msg-id`; all wire messages
-   * produced by the batch are published in a single `channel.publish(...)`
-   * call.
+   * encodes each message via `Encoder.encodeMessage`, which drives I/O
+   * through an `EncoderCore` bound to the session's channel. The SDK
+   * stamps every emitted wire with `x-ably-msg-id` (one fresh routing id
+   * per message), `x-ably-role`, `x-ably-run-id`, and — when supplied —
+   * `x-ably-client-id`. Each message gets its own `channel.publish(...)`
+   * call; messages are not bundled into a single atomic batch.
    *
-   * Resolves once Ably has acknowledged the publish.
+   * Resolves once every emitted wire is acknowledged by Ably.
    * @param options Per-call wiring; see {@link SendMessagesOptions}.
    * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.SessionClosed}
    *   when called after the session has been closed.
@@ -117,9 +120,10 @@ export interface SessionWriterOptions<C extends AnyCodec> {
 }
 
 /**
- * Generate a fresh transport-level message ID. Used until the codec layer
- * gains a way to surface caller-supplied IDs — at which point this becomes
- * a fallback for codecs whose messages have no intrinsic id.
+ * Generate a fresh transport-level message ID. The SDK always assigns its
+ * own routing id on every outbound wire — codecs that need to round-trip a
+ * caller-supplied domain id (e.g. `UIMessage.id`) carry it inside the wire
+ * via their own `x-domain-*` header rather than reusing this routing id.
  * @returns A random message ID.
  */
 const generateMessageId = (): string => crypto.randomUUID();
@@ -161,35 +165,28 @@ export class DefaultSessionWriter<C extends AnyCodec> implements SessionWriter<C
       return;
     }
 
-    const { decorated } = this._encodeMessageBatch(messageArray, options);
-
-    if (decorated.length === 0) {
-      this._logger.debug('DefaultSessionWriter.sendMessages(); encoder produced no wire messages');
-      return;
-    }
-
-    const channel = this._channelManager.get();
-    await channel.publish(decorated);
+    const { lastMessageId } = await this._encodeMessageBatch(messageArray, options);
 
     this._logger.debug('DefaultSessionWriter.sendMessages(); published', {
       runId: options.runId,
       messageCount: messageArray.length,
-      wireCount: decorated.length,
+      lastMessageId,
     });
   }
 
   /**
-   * Open a new run and publish its first message(s) in a single atomic batch.
-   * Internal — not on the {@link SessionWriter} interface; the public
-   * {@link ClientView.send} drives this. Phase 6 keeps `writer.startRun`
-   * non-public because no caller outside the view needs to drive run-start
-   * separately.
+   * Open a new run and publish its first message(s) sequentially. Internal
+   * — not on the {@link SessionWriter} interface; the public
+   * {@link ClientView.send} drives this.
    *
-   * Generates the runId, encodes each message via the codec with its own
-   * `x-ably-msg-id`, decorates every wire message with the SDK headers,
-   * prepends an `x-ably-run-start` carrying `x-ably-run-id`, and publishes
-   * the whole batch in one `channel.publish(...)` call so the run lands
-   * fully live with its first messages or not at all.
+   * Generates the runId, publishes `x-ably-run-start` first and awaits the
+   * ack, then drives the codec encoder to publish the first message(s).
+   * The run-start and the first content message are **not atomic** on the
+   * wire: if the run-start publish fails, nothing is on the channel and
+   * the call rejects cleanly. If the message publish fails, the run is
+   * open with no first message — the call rejects and the caller is
+   * responsible for retry. The simplification keeps the codec layer free
+   * of buffer abstractions.
    * @param options The messages to publish onto the new run.
    * @param options.messages One or more domain messages to encode and publish.
    * @returns The generated runId, the message id of the **last** message in
@@ -200,8 +197,7 @@ export class DefaultSessionWriter<C extends AnyCodec> implements SessionWriter<C
    * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.InvalidArgument}
    *   when the realtime connection has no concrete `clientId` — run
    *   attribution requires one and wildcard auth (`'*'`) cannot open a run —
-   *   when the supplied messages array is empty, or when the codec produces
-   *   no wire messages for the supplied input (which would land a hollow run).
+   *   or when the supplied messages array is empty.
    */
   async startRunWithMessages(options: { messages: CodecMessage<C> | CodecMessage<C>[] }): Promise<{
     runId: string;
@@ -233,13 +229,25 @@ export class DefaultSessionWriter<C extends AnyCodec> implements SessionWriter<C
     }
 
     const runId = generateMessageId();
-    const decorateOptions: SendMessagesOptions<CodecMessage<C>> = { messages: messageArray, runId };
-    const { decorated, lastMessageId } = this._encodeMessageBatch(messageArray, decorateOptions);
+    const channel = this._channelManager.get();
 
-    if (decorated.length === 0 || lastMessageId === undefined) {
-      // The plan requires `view.send` to publish [runStart, ...messages] atomically;
-      // a codec that produces no wires would land a hollow run with no first
-      // message. Reject loudly rather than violate that contract.
+    // 1. Publish run-start. If this fails, no content has gone out — clean retry.
+    await channel.publish({
+      name: WireMessages.RunStart,
+      extras: { headers: { [Headers.RunId]: runId } },
+    });
+
+    // 2. Encode and publish the message(s). If this fails the run is open
+    //    with no first message; the rejection surfaces to the caller, who
+    //    is responsible for retry. Failure is observable, not silent.
+    const sendOptions: SendMessagesOptions<CodecMessage<C>> = { messages: messageArray, runId };
+    const { lastMessageId } = await this._encodeMessageBatch(messageArray, sendOptions);
+
+    // Non-empty `messageArray` (checked above) always assigns `lastMessageId`
+    // inside `_encodeMessageBatch`'s for-loop, so this assertion is a type
+    // narrowing convenience for the caller — the success path always carries
+    // an id.
+    if (lastMessageId === undefined) {
       throw new Ably.ErrorInfo(
         'unable to start run; encoder produced no wire messages for the supplied messages',
         ErrorCode.InvalidArgument,
@@ -247,20 +255,9 @@ export class DefaultSessionWriter<C extends AnyCodec> implements SessionWriter<C
       );
     }
 
-    const runStartMessage: Ably.Message = {
-      name: WireMessages.RunStart,
-      extras: {
-        headers: { [Headers.RunId]: runId },
-      },
-    };
-
-    const channel = this._channelManager.get();
-    await channel.publish([runStartMessage, ...decorated]);
-
     this._logger.debug('DefaultSessionWriter.startRunWithMessages(); published', {
       runId,
       messageCount: messageArray.length,
-      wireCount: decorated.length + 1,
     });
 
     return { runId, lastMessageId, initiatorClientId };
@@ -291,68 +288,47 @@ export class DefaultSessionWriter<C extends AnyCodec> implements SessionWriter<C
   }
 
   /**
-   * Encode a list of complete domain messages into decorated wire messages,
-   * sharing one encoder across the batch. Each message gets its own
-   * `x-ably-msg-id`; the encoder's closing wires (typically empty for codecs
-   * that don't carry per-batch closure state) are attributed to the **last**
-   * message's id so the toInvocation "last message" precondition aligns with
-   * what's actually on the wire.
+   * Drive the codec encoder against the session's channel for a batch of
+   * complete domain messages. Each call constructs a fresh
+   * {@link import('../codec/index.js').EncoderCore} and codec encoder; the
+   * encoder publishes through the core directly (no buffer or atomic-batch
+   * glue). Each message gets its own writer-generated `x-ably-msg-id`;
+   * caller-supplied domain ids round-trip via codec-owned `x-domain-*`
+   * headers on the wire, not by reusing this routing id.
    * @param messages One or more domain messages.
-   * @param options Decoration parameters (runId, optional clientId override) —
-   *   `options.messages` is ignored; the batch is iterated explicitly.
-   * @returns The decorated wire messages and the last message id (or
-   *   `undefined` when `messages` is empty).
+   * @param options Per-call wiring (runId, optional clientId override).
+   * @returns The id of the **last** message published, or `undefined` when
+   *   `messages` is empty (the caller checks for empty up front).
    */
-  private _encodeMessageBatch(
+  private async _encodeMessageBatch(
     messages: CodecMessage<C>[],
     options: SendMessagesOptions<CodecMessage<C>>,
-  ): { decorated: Ably.Message[]; lastMessageId: string | undefined } {
-    const encoder = this._codec.createEncoder();
-    const decorated: Ably.Message[] = [];
-    let lastMessageId: string | undefined;
-    for (const message of messages) {
-      const messageId = generateMessageId();
-      lastMessageId = messageId;
-      // CAST: writer reuses encodePart per the plan. The stub codec and codecs
-      // whose `TMessage` is a single `TPart` (i.e. messages that are themselves
-      // parts on the wire) round-trip cleanly. Real-codec multi-part encoding
-      // lands in phase 8.
-      const partWireMessages = encoder.encodePart(message as unknown as CodecPart<C>);
-      for (const wire of partWireMessages) {
-        decorated.push(this._decorate(wire, messageId, options));
-      }
-    }
-    const finalWireMessages = encoder.close();
-    if (lastMessageId !== undefined) {
-      for (const wire of finalWireMessages) {
-        decorated.push(this._decorate(wire, lastMessageId, options));
-      }
-    }
-    return { decorated, lastMessageId };
-  }
+  ): Promise<{ lastMessageId: string | undefined }> {
+    const channel = this._channelManager.get();
+    const core = createEncoderCore(channel, { logger: this._logger });
+    const encoder = this._codec.createEncoder({ core, logger: this._logger });
 
-  private _decorate(
-    wireMessage: Ably.Message,
-    messageId: string,
-    options: SendMessagesOptions<CodecMessage<C>>,
-  ): Ably.Message {
-    // CAST: Ably types `extras` as `any`; narrow to the headers shape we own.
-    const existingExtras = wireMessage.extras as { headers?: Record<string, string> } | undefined;
-    const headers: Record<string, string> = {
-      ...existingExtras?.headers,
-      [Headers.MessageId]: messageId,
-      [Headers.Role]: this._role,
-      [Headers.RunId]: options.runId,
-    };
-    if (options.clientId !== undefined) {
-      headers[Headers.ClientId] = options.clientId;
+    let lastMessageId: string | undefined;
+    try {
+      for (const message of messages) {
+        const messageId = generateMessageId();
+        lastMessageId = messageId;
+
+        const headers: Record<string, string> = {
+          [Headers.MessageId]: messageId,
+          [Headers.Role]: this._role,
+          [Headers.RunId]: options.runId,
+        };
+        if (options.clientId !== undefined) {
+          headers[Headers.ClientId] = options.clientId;
+        }
+
+        await encoder.encodeMessage(message, { headers });
+      }
+    } finally {
+      await encoder.close();
     }
-    return {
-      ...wireMessage,
-      extras: {
-        ...existingExtras,
-        headers,
-      },
-    };
+
+    return { lastMessageId };
   }
 }

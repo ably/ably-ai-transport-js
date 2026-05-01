@@ -12,13 +12,10 @@
 import type * as Ably from 'ably';
 import { useEffect, useRef, useState } from 'react';
 
-import type { ClientTransport } from '../core/transport/types.js';
-import { useResolvedTransport } from './internal/use-resolved-transport.js';
+import { type BaseTransportOption, useResolvedTransport } from './internal/use-resolved-transport.js';
 
 /** Options for {@link useAblyMessages}. */
-export interface UseAblyMessagesOptions<TEvent, TMessage> {
-  /** Transport to subscribe to; defaults to the nearest {@link TransportProvider}. */
-  transport?: ClientTransport<TEvent, TMessage>;
+export interface UseAblyMessagesOptions<TEvent, TMessage> extends BaseTransportOption<TEvent, TMessage> {
   /** When `true`, skip all subscriptions and return an empty array. */
   skip?: boolean;
 }

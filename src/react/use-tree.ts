@@ -12,7 +12,8 @@
 
 import { useCallback } from 'react';
 
-import type { ClientTransport, MessageNode } from '../core/transport/types.js';
+import type { MessageNode } from '../core/transport/types.js';
+import type { BaseTransportOption } from './internal/use-resolved-transport.js';
 import { useResolvedTransport } from './internal/use-resolved-transport.js';
 
 /** Handle for querying the conversation tree structure. */
@@ -26,10 +27,7 @@ export interface TreeHandle<TMessage> {
 }
 
 /** Options for {@link useTree}. */
-export interface UseTreeOptions<TEvent, TMessage> {
-  /** Transport to read tree structure from; defaults to the nearest {@link TransportProvider}. */
-  transport?: ClientTransport<TEvent, TMessage>;
-}
+export type UseTreeOptions<TEvent, TMessage> = BaseTransportOption<TEvent, TMessage>;
 
 /**
  * Provide stable structural query callbacks backed by the transport's tree.

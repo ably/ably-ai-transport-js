@@ -28,16 +28,16 @@ export interface StreamTrackerState {
  * Hooks the decoder core delegates to for codec-shaped event building.
  * The core handles wire framing (action dispatch, serial tracking,
  * accumulation) and asks the codec to project tracker state into
- * `DecodedValue<TPart, TEvent>` outputs.
+ * `DecodedValue<TPart, TMessage, TEvent>` outputs.
  */
-export interface DecoderCoreHooks<TPart, TEvent> {
+export interface DecoderCoreHooks<TPart, TMessage, TEvent> {
   /**
    * Build decoded values when a streamed `message.create` lands. The
    * codec typically emits a `*-start` part (e.g. `text-start`).
    * @param tracker Initial tracker state for the new stream.
    * @returns Zero or more decoded values.
    */
-  buildStartEvents(tracker: StreamTrackerState): DecodedValue<TPart, TEvent>[];
+  buildStartEvents(tracker: StreamTrackerState): DecodedValue<TPart, TMessage, TEvent>[];
 
   /**
    * Build decoded values for a delta on an existing stream. The codec
@@ -46,7 +46,7 @@ export interface DecoderCoreHooks<TPart, TEvent> {
    * @param delta The text delta that just arrived.
    * @returns Zero or more decoded values.
    */
-  buildDeltaEvents(tracker: StreamTrackerState, delta: string): DecodedValue<TPart, TEvent>[];
+  buildDeltaEvents(tracker: StreamTrackerState, delta: string): DecodedValue<TPart, TMessage, TEvent>[];
 
   /**
    * Build decoded values when a stream's closing append lands with
@@ -58,13 +58,20 @@ export interface DecoderCoreHooks<TPart, TEvent> {
    *   the start when the codec stamped end-of-stream metadata.
    * @returns Zero or more decoded values.
    */
-  buildEndEvents(tracker: StreamTrackerState, closingHeaders: Record<string, string>): DecodedValue<TPart, TEvent>[];
+  buildEndEvents(
+    tracker: StreamTrackerState,
+    closingHeaders: Record<string, string>,
+  ): DecodedValue<TPart, TMessage, TEvent>[];
 
   /**
    * Decode a discrete (non-streaming) wire — a `message.create` whose
    * `x-ably-stream` header is absent or `'false'`. Used for lifecycle
    * chunks, codec events, and complete-message parts written by
-   * {@link import('./encoder-core.js').EncoderCore.publishBatch}.
+   * {@link import('./encoder-core.js').EncoderCore.publishBatch}. The
+   * codec returns `kind: 'message'` values when the wire reconstructs to
+   * a complete domain message (the discrete user-message round-trip
+   * path), or `kind: 'part'`/`kind: 'event'` for chunks and lifecycle
+   * markers.
    * @param input Wire payload.
    * @param input.name The Ably message name.
    * @param input.data The message data — `unknown` because discrete
@@ -79,7 +86,7 @@ export interface DecoderCoreHooks<TPart, TEvent> {
     data: unknown;
     /** Headers from `extras.headers`. */
     headers: Record<string, string>;
-  }): DecodedValue<TPart, TEvent>[];
+  }): DecodedValue<TPart, TMessage, TEvent>[];
 }
 
 /** Options for constructing a {@link DecoderCore}. */
@@ -109,31 +116,31 @@ export interface DecoderCoreOptions {
  * actions and delegates value construction to the codec's
  * {@link DecoderCoreHooks}.
  */
-export interface DecoderCore<TPart, TEvent> {
+export interface DecoderCore<TPart, TMessage, TEvent> {
   /**
    * Decode one inbound message into zero or more codec-shaped values.
    * @param message The inbound message to decode.
    * @returns Zero or more decoded values, each tagged with the
    *   `x-ably-msg-id` from the inbound (when present).
    */
-  decode(message: Ably.InboundMessage): DecodedValue<TPart, TEvent>[];
+  decode(message: Ably.InboundMessage): DecodedValue<TPart, TMessage, TEvent>[];
 }
 
-class DefaultDecoderCore<TPart, TEvent> implements DecoderCore<TPart, TEvent> {
-  private readonly _hooks: DecoderCoreHooks<TPart, TEvent>;
+class DefaultDecoderCore<TPart, TMessage, TEvent> implements DecoderCore<TPart, TMessage, TEvent> {
+  private readonly _hooks: DecoderCoreHooks<TPart, TMessage, TEvent>;
   private readonly _logger: Logger | undefined;
   private readonly _onStreamUpdate: ((tracker: StreamTrackerState) => void) | undefined;
   private readonly _onStreamDelete: ((serial: string, tracker: StreamTrackerState | undefined) => void) | undefined;
   private readonly _serialState = new Map<string, StreamTrackerState>();
 
-  constructor(hooks: DecoderCoreHooks<TPart, TEvent>, options: DecoderCoreOptions = {}) {
+  constructor(hooks: DecoderCoreHooks<TPart, TMessage, TEvent>, options: DecoderCoreOptions = {}) {
     this._hooks = hooks;
     this._logger = options.logger?.withContext({ component: 'DecoderCore' });
     this._onStreamUpdate = options.onStreamUpdate;
     this._onStreamDelete = options.onStreamDelete;
   }
 
-  decode(message: Ably.InboundMessage): DecodedValue<TPart, TEvent>[] {
+  decode(message: Ably.InboundMessage): DecodedValue<TPart, TMessage, TEvent>[] {
     const action = message.action;
     this._logger?.trace('DefaultDecoderCore.decode();', {
       action,
@@ -141,7 +148,7 @@ class DefaultDecoderCore<TPart, TEvent> implements DecoderCore<TPart, TEvent> {
       name: message.name,
     });
 
-    let outputs: DecodedValue<TPart, TEvent>[];
+    let outputs: DecodedValue<TPart, TMessage, TEvent>[];
     switch (action) {
       case 'message.create': {
         outputs = this._decodeCreate(message);
@@ -174,7 +181,7 @@ class DefaultDecoderCore<TPart, TEvent> implements DecoderCore<TPart, TEvent> {
     return outputs.map((output) => ({ ...output, messageId }));
   }
 
-  private _decodeCreate(message: Ably.InboundMessage): DecodedValue<TPart, TEvent>[] {
+  private _decodeCreate(message: Ably.InboundMessage): DecodedValue<TPart, TMessage, TEvent>[] {
     const headers = getHeaders(message);
     const isStream = headers[Headers.Stream] === 'true';
     const serial = message.serial;
@@ -205,7 +212,7 @@ class DefaultDecoderCore<TPart, TEvent> implements DecoderCore<TPart, TEvent> {
     });
   }
 
-  private _decodeAppend(message: Ably.InboundMessage): DecodedValue<TPart, TEvent>[] {
+  private _decodeAppend(message: Ably.InboundMessage): DecodedValue<TPart, TMessage, TEvent>[] {
     const serial = message.serial;
     if (serial === undefined) {
       return [];
@@ -220,7 +227,7 @@ class DefaultDecoderCore<TPart, TEvent> implements DecoderCore<TPart, TEvent> {
     const headers = getHeaders(message);
     const delta = typeof message.data === 'string' ? message.data : '';
     const status = headers[Headers.Status];
-    const outputs: DecodedValue<TPart, TEvent>[] = [];
+    const outputs: DecodedValue<TPart, TMessage, TEvent>[] = [];
 
     if (delta.length > 0) {
       tracker.accumulated += delta;
@@ -239,7 +246,7 @@ class DefaultDecoderCore<TPart, TEvent> implements DecoderCore<TPart, TEvent> {
     return outputs;
   }
 
-  private _decodeUpdate(message: Ably.InboundMessage): DecodedValue<TPart, TEvent>[] {
+  private _decodeUpdate(message: Ably.InboundMessage): DecodedValue<TPart, TMessage, TEvent>[] {
     const serial = message.serial;
     if (serial === undefined) {
       return [];
@@ -256,7 +263,7 @@ class DefaultDecoderCore<TPart, TEvent> implements DecoderCore<TPart, TEvent> {
 
     if (data.startsWith(tracker.accumulated)) {
       const delta = data.slice(tracker.accumulated.length);
-      const outputs: DecodedValue<TPart, TEvent>[] = [];
+      const outputs: DecodedValue<TPart, TMessage, TEvent>[] = [];
       if (delta.length > 0) {
         tracker.accumulated = data;
         outputs.push(...this._hooks.buildDeltaEvents(tracker, delta));
@@ -292,7 +299,7 @@ class DefaultDecoderCore<TPart, TEvent> implements DecoderCore<TPart, TEvent> {
     serial: string,
     headers: Record<string, string>,
     data: string,
-  ): DecodedValue<TPart, TEvent>[] {
+  ): DecodedValue<TPart, TMessage, TEvent>[] {
     if (!isStream) {
       return this._hooks.decodeDiscrete({
         name: message.name ?? '',
@@ -328,7 +335,7 @@ class DefaultDecoderCore<TPart, TEvent> implements DecoderCore<TPart, TEvent> {
     return outputs;
   }
 
-  private _decodeDelete(message: Ably.InboundMessage): DecodedValue<TPart, TEvent>[] {
+  private _decodeDelete(message: Ably.InboundMessage): DecodedValue<TPart, TMessage, TEvent>[] {
     const serial = message.serial;
     if (serial === undefined) {
       return [];
@@ -356,10 +363,10 @@ class DefaultDecoderCore<TPart, TEvent> implements DecoderCore<TPart, TEvent> {
  * @param options Optional logger and stream-update/delete callbacks.
  * @returns A new decoder core.
  */
-export const createDecoderCore = <TPart, TEvent>(
-  hooks: DecoderCoreHooks<TPart, TEvent>,
+export const createDecoderCore = <TPart, TMessage, TEvent>(
+  hooks: DecoderCoreHooks<TPart, TMessage, TEvent>,
   options?: DecoderCoreOptions,
-): DecoderCore<TPart, TEvent> => new DefaultDecoderCore(hooks, options);
+): DecoderCore<TPart, TMessage, TEvent> => new DefaultDecoderCore<TPart, TMessage, TEvent>(hooks, options);
 
 /**
  * Extract `extras.headers` from an inbound message as a typed record. Ably

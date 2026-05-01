@@ -96,6 +96,7 @@
     }
   },
   "devDependencies": {
+    "@ai-sdk/anthropic": "^3.0.71",
     "@ai-sdk/react": "^3.0.151",
     "@eslint/compat": "^2.0.5",
     "@eslint/eslintrc": "^3.3.0",

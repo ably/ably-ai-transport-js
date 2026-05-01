@@ -25,8 +25,8 @@ export type StubEvent = never;
 /** Codec type alias for tests that need to name `C` explicitly. */
 export type StubCodec = Codec<StubPart, StubMessage>;
 
-const stubDecoder: Decoder<StubPart> = {
-  decode: (message: Ably.InboundMessage): DecodedValue<StubPart, StubEvent>[] => {
+const stubDecoder: Decoder<StubPart, StubMessage> = {
+  decode: (message: Ably.InboundMessage): DecodedValue<StubPart, StubMessage, StubEvent>[] => {
     if (typeof message.data !== 'string') {
       return [];
     }
@@ -46,6 +46,11 @@ const createStubAccumulator = (): Accumulator<StubPart, StubMessage> => {
     // Stub codec has no event type; the interface still requires the method.
     applyEvent: (): void => {
       // no-op
+    },
+    applyMessage: (messageId: string, message: StubMessage): void => {
+      // Stub treats each apply as a replace — the codec produces complete
+      // messages from single wires, so there's nothing to merge.
+      messages.set(messageId, message);
     },
     getMessage: (messageId: string): StubMessage | undefined => messages.get(messageId),
     setMessage: (messageId: string, message: StubMessage): void => {

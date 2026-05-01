@@ -27,7 +27,7 @@ const makeInbound = (overrides: InboundOverrides): Ably.InboundMessage =>
   }) as unknown as Ably.InboundMessage;
 
 interface RecorderHooks {
-  hooks: DecoderCoreHooks<string, never>;
+  hooks: DecoderCoreHooks<string, never, never>;
   startCalls: StreamTrackerState[];
   deltaCalls: { tracker: StreamTrackerState; delta: string }[];
   endCalls: { tracker: StreamTrackerState; closingHeaders: Record<string, string> }[];
@@ -39,20 +39,20 @@ const makeRecorderHooks = (): RecorderHooks => {
   const deltaCalls: { tracker: StreamTrackerState; delta: string }[] = [];
   const endCalls: { tracker: StreamTrackerState; closingHeaders: Record<string, string> }[] = [];
   const discreteCalls: { name: string; data: unknown; headers: Record<string, string> }[] = [];
-  const hooks: DecoderCoreHooks<string, never> = {
-    buildStartEvents: (tracker): DecodedValue<string, never>[] => {
+  const hooks: DecoderCoreHooks<string, never, never> = {
+    buildStartEvents: (tracker): DecodedValue<string, never, never>[] => {
       startCalls.push({ ...tracker });
       return [{ kind: 'part', part: `start:${tracker.streamId}` }];
     },
-    buildDeltaEvents: (tracker, delta): DecodedValue<string, never>[] => {
+    buildDeltaEvents: (tracker, delta): DecodedValue<string, never, never>[] => {
       deltaCalls.push({ tracker: { ...tracker }, delta });
       return [{ kind: 'part', part: `delta:${delta}` }];
     },
-    buildEndEvents: (tracker, closingHeaders): DecodedValue<string, never>[] => {
+    buildEndEvents: (tracker, closingHeaders): DecodedValue<string, never, never>[] => {
       endCalls.push({ tracker: { ...tracker }, closingHeaders: { ...closingHeaders } });
       return [{ kind: 'part', part: `end:${tracker.streamId}` }];
     },
-    decodeDiscrete: ({ name, data, headers }): DecodedValue<string, never>[] => {
+    decodeDiscrete: ({ name, data, headers }): DecodedValue<string, never, never>[] => {
       discreteCalls.push({ name, data, headers: { ...headers } });
       return [{ kind: 'part', part: `discrete:${name}` }];
     },

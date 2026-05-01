@@ -230,7 +230,7 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
   private readonly _views = new Set<DefaultView<CodecMessage<C>>>();
   private readonly _writer: DefaultSessionWriter<C>;
 
-  private _decoder?: Decoder<CodecPart<C>, CodecEvent<C>>;
+  private _decoder?: Decoder<CodecPart<C>, CodecMessage<C>, CodecEvent<C>>;
   private _accumulator?: Accumulator<CodecPart<C>, CodecMessage<C>, CodecEvent<C>>;
 
   private _connectPromise?: Promise<void>;
@@ -418,14 +418,17 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
     }
 
     for (const value of decoded) {
-      // Phase 2 only routes streaming parts. Codec events land in later phases
-      // alongside the writer surfaces that produce them.
-      if (value.kind !== 'part') {
+      const messageId = value.messageId ?? wireMessageId;
+      if (value.kind === 'part') {
+        this._accumulator.processPart(value.part, messageId);
+      } else if (value.kind === 'message') {
+        this._accumulator.applyMessage(messageId, value.message);
+      } else {
+        // Phase 2 doesn't route codec events yet — they land alongside the
+        // writer surfaces that produce them in a later phase.
         continue;
       }
 
-      const messageId = value.messageId ?? wireMessageId;
-      this._accumulator.processPart(value.part, messageId);
       const composed = this._accumulator.getMessage(messageId);
       if (composed === undefined) {
         continue;
@@ -434,7 +437,7 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
       // Subsequent chunks under one msg-id update the existing node so
       // streaming codecs can land deltas as composed-message updates without
       // creating sibling nodes. The accumulator above has already absorbed
-      // the part; the tree mirrors the composed state.
+      // the value; the tree mirrors the composed state.
       if (this._tree.messages.some((node) => node.id === messageId)) {
         this._tree.updateMessage(messageId, composed);
         continue;

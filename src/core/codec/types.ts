@@ -112,7 +112,7 @@ export interface Codec<TPart, TMessage, TEvent = never> {
   createEncoder(args: CreateEncoderArgs): Encoder<TPart, TMessage, TEvent>;
 
   /** Creates a decoder for consuming channel messages into domain parts. */
-  createDecoder(): Decoder<TPart, TEvent>;
+  createDecoder(): Decoder<TPart, TMessage, TEvent>;
 
   /** Creates an accumulator for assembling parts into messages. */
   createAccumulator(): Accumulator<TPart, TMessage, TEvent>;
@@ -154,16 +154,38 @@ export type CodecMessage<C> = C extends Codec<any, infer M, any> ? M : never;
 export type CodecEvent<C> = C extends Codec<any, any, infer E> ? E : never;
 
 /**
- * Output of a decoder: a domain part or event carrying the optional message
- * ID the accumulator uses to route the value to the correct in-progress or
- * existing message.
+ * Output of a decoder: a streaming domain part, a complete domain
+ * message, or an auxiliary event. Each variant carries the optional
+ * `messageId` (read by the core from `x-ably-msg-id`) the accumulator
+ * uses to route the value.
+ *
+ * The `'message'` variant lets a codec emit a fully-assembled domain
+ * message directly when it can reconstruct one from a single wire (e.g.
+ * a `view.send` user message round-trip). It exists to keep
+ * codec-internal correlation off the domain part vocabulary — codecs
+ * whose part type doesn't have a free namespace for synthetic chunks
+ * (and that's most of them) shouldn't need to invent one.
  */
-export type DecodedValue<TPart, TEvent> =
+export type DecodedValue<TPart, TMessage, TEvent> =
   | {
       /** Discriminator — this decoded value is a streaming part. */
       readonly kind: 'part';
       /** The decoded domain part. */
       readonly part: TPart;
+      /** Message ID read from `x-ably-msg-id`, if present. */
+      readonly messageId?: string;
+    }
+  | {
+      /**
+       * Discriminator — this decoded value is a complete domain message
+       * the codec reconstructed in one shot. The session loop routes
+       * these to {@link Accumulator.applyMessage}, which the codec
+       * implements with merge-aware semantics so multi-wire messages
+       * keyed by the same `x-ably-msg-id` accumulate correctly.
+       */
+      readonly kind: 'message';
+      /** The reconstructed domain message. */
+      readonly message: TMessage;
       /** Message ID read from `x-ably-msg-id`, if present. */
       readonly messageId?: string;
     }
@@ -241,22 +263,24 @@ export interface EncodeEventOptions extends EncodeOptions {
 }
 
 /**
- * Consumes content channel messages and yields decoded parts or events.
- * Stateful — tracks in-flight streams across appends so partial payloads
- * resolve into the same part sequence the encoder produced.
+ * Consumes content channel messages and yields decoded values — streaming
+ * parts, complete domain messages, or auxiliary events. Stateful: tracks
+ * in-flight streams across appends so partial payloads resolve into the
+ * same part sequence the encoder produced.
  *
  * The decoder sees only content messages; lifecycle events and control
  * signals are handled by the SDK before this method is called.
  */
-export interface Decoder<TPart, TEvent = never> {
+export interface Decoder<TPart, TMessage, TEvent = never> {
   /**
    * Decode one inbound content message into zero or more decoded values.
-   * A streaming unit may emit nothing until enough data has arrived. An
-   * event message decodes to a single `kind: 'event'` value.
+   * A streaming unit may emit nothing until enough data has arrived. A
+   * complete-message wire decodes to a single `kind: 'message'` value;
+   * an event wire to a single `kind: 'event'`.
    * @param message The inbound channel message to decode.
    * @returns Zero or more decoded values produced by this message.
    */
-  decode(message: Ably.InboundMessage): DecodedValue<TPart, TEvent>[];
+  decode(message: Ably.InboundMessage): DecodedValue<TPart, TMessage, TEvent>[];
 }
 
 /**
@@ -286,6 +310,18 @@ export interface Accumulator<TPart, TMessage, TEvent = never> {
    * @param messageId The message id the event targets (when bound).
    */
   applyEvent(event: TEvent, messageId?: string): void;
+
+  /**
+   * Apply a complete domain message produced by the codec for a single
+   * wire. The codec implements merge-aware semantics: when no state
+   * exists for `messageId`, the new message becomes the assembled state;
+   * when state already exists, the codec merges the new message in
+   * (typically by appending its parts). Distinct from
+   * {@link setMessage}, which is the external replace primitive.
+   * @param messageId The SDK routing id under which the assembled state is keyed.
+   * @param message The complete domain message decoded from one wire.
+   */
+  applyMessage(messageId: string, message: TMessage): void;
 
   /**
    * Return the current assembled state of a message by ID.

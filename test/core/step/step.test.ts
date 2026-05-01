@@ -52,11 +52,39 @@ const simulateStepStart = (
   } as unknown as Ably.InboundMessage);
 };
 
+/**
+ * Connect a freshly created agent session, race a synthetic run-start
+ * against `createRun`'s precondition wait, and resolve to the live
+ * `AgentRun`. Hides the boilerplate from individual tests now that
+ * `createRun` is async and waits for the invocation's preconditions.
+ * @param session The agent session to bootstrap.
+ * @param channel The mock channel feeding the session.
+ * @param runId The run id to bind to (defaults to `r-1`).
+ * @param clientId The initiator id baked onto the run-start (defaults to `agent-1`).
+ * @returns The live `AgentRun` once preconditions are satisfied.
+ */
+const connectAndCreateRun = async (
+  session: ReturnType<typeof createAgentSession<StubCodec>>,
+  channel: ReturnType<typeof createMockChannel>,
+  runId = 'r-1',
+  clientId = 'agent-1',
+) => {
+  await session.connect();
+  const promise = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId }));
+  channel.simulateMessage({
+    name: WireMessages.RunStart,
+    serial: '00',
+    clientId,
+    extras: { headers: { [Headers.RunId]: runId } },
+  } as unknown as Ably.InboundMessage);
+  return promise;
+};
+
 describe('AgentRun.createStep', () => {
-  it('returns a step bound to the run id', () => {
-    const { options } = makeAgentSession();
+  it('returns a step bound to the run id', async () => {
+    const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
 
     const step = run.createStep();
 
@@ -65,20 +93,20 @@ describe('AgentRun.createStep', () => {
     expect(step.id.length).toBeGreaterThan(0);
   });
 
-  it('reports status="pending" before start() resolves', () => {
-    const { options } = makeAgentSession();
+  it('reports status="pending" before start() resolves', async () => {
+    const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
 
     const step = run.createStep();
 
     expect(step.status).toBe('pending');
   });
 
-  it('issues fresh step ids per createStep call', () => {
-    const { options } = makeAgentSession();
+  it('issues fresh step ids per createStep call', async () => {
+    const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
 
     const a = run.createStep();
     const b = run.createStep();
@@ -91,8 +119,7 @@ describe('Step.start', () => {
   it('publishes x-ably-step-start with run-id and step-id headers, then resolves once the tree records it', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
     const step = run.createStep();
 
     const startPromise = step.start();
@@ -116,8 +143,7 @@ describe('Step.start', () => {
   it('resolves immediately if the step-start is already on the tree', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
     const step = run.createStep();
 
     // Pre-seed the tree so start() finds the record on the synchronous
@@ -135,8 +161,7 @@ describe('Step.start', () => {
     const publishError = new Ably.ErrorInfo('publish failed', 50000, 500);
     channel.publish.mockRejectedValueOnce(publishError);
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
     const step = run.createStep();
 
     await expect(step.start()).rejects.toBeErrorInfoWithCauseCode(50000);
@@ -144,9 +169,9 @@ describe('Step.start', () => {
   });
 
   it('throws SessionClosed when the session is closed before start()', async () => {
-    const { options } = makeAgentSession();
+    const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
     const step = run.createStep();
     await session.close();
 
@@ -156,8 +181,7 @@ describe('Step.start', () => {
   it('rejects with StepStartAborted and does not publish when the supplied signal is already aborted', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
     const step = run.createStep();
     const ac = new AbortController();
     ac.abort();
@@ -172,8 +196,7 @@ describe('Step.start', () => {
   it('rejects with StepStartAborted when the caller signal fires before the tree observes the publish', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
     const step = run.createStep();
     const ac = new AbortController();
 
@@ -190,10 +213,9 @@ describe('Step.start', () => {
   });
 
   it('rejects with StepStartAborted when timeoutMs elapses before the tree observes the publish', async () => {
-    const { options } = makeAgentSession();
+    const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
     const step = run.createStep();
 
     // Tiny timeout so the test does not wait long; the publish is awaited
@@ -208,8 +230,7 @@ describe('Step.start', () => {
   it('clears the timeout when the step-start lands before timeoutMs elapses', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
     const step = run.createStep();
 
     const startPromise = step.start({ timeoutMs: 50_000 });
@@ -224,8 +245,7 @@ describe('Step.start', () => {
   it('propagates a caller signal abort to step.signal after start() resolves (lifetime)', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
     const step = run.createStep();
     const ac = new AbortController();
 
@@ -248,8 +268,7 @@ describe('Step.pipe', () => {
   it('encodes each chunk in arrival order with x-ably-role=assistant and run-id', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
     const step = run.createStep();
 
     const readable = new ReadableStream<string>({
@@ -290,8 +309,7 @@ describe('Step.pipe', () => {
   it('does nothing when the readable closes immediately', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
     const step = run.createStep();
 
     const readable = new ReadableStream<string>({
@@ -308,8 +326,7 @@ describe('Step.pipe', () => {
   it('exits cleanly without publishing any chunk when step.signal aborts before pipe starts pulling', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
     const step = run.createStep();
     const ac = new AbortController();
 
@@ -342,8 +359,7 @@ describe('Step.pipe', () => {
   it('honours mid-stream abort across iterations: chunks pushed after the abort are not published', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
     const step = run.createStep();
     const ac = new AbortController();
 
@@ -388,8 +404,7 @@ describe('Step.end', () => {
   it("publishes x-ably-step-end with status='complete' on the happy path", async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
     const step = run.createStep();
 
     await step.end();
@@ -407,8 +422,7 @@ describe('Step.end', () => {
   it("publishes status='failed' when called with an error", async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
     const step = run.createStep();
 
     await step.end(new Error('agent threw'));
@@ -421,8 +435,7 @@ describe('Step.end', () => {
   it('is idempotent — a second call publishes nothing', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
     const step = run.createStep();
 
     await step.end();
@@ -433,10 +446,9 @@ describe('Step.end', () => {
   });
 
   it('reports the locally derived terminal status before the publish echoes back through the tree', async () => {
-    const { options } = makeAgentSession();
+    const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
     const step = run.createStep();
 
     await step.end();
@@ -449,8 +461,7 @@ describe('Step.end', () => {
     const publishError = new Ably.ErrorInfo('publish failed', 50000, 500);
     channel.publish.mockRejectedValueOnce(publishError);
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
     const step = run.createStep();
 
     await expect(step.end()).rejects.toBeErrorInfoWithCauseCode(50000);
@@ -461,8 +472,7 @@ describe('Step[Symbol.asyncDispose]', () => {
   it('calls end() if the step has not been ended', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
     const step = run.createStep();
 
     await step[Symbol.asyncDispose]();
@@ -476,8 +486,7 @@ describe('Step[Symbol.asyncDispose]', () => {
   it('does not re-publish when end() has already been called', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
     const step = run.createStep();
 
     await step.end(new Error('explicit failure'));

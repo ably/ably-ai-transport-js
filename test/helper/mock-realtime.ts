@@ -14,6 +14,12 @@ export interface MockChannel {
   subscribe: ReturnType<typeof vi.fn>;
   unsubscribe: ReturnType<typeof vi.fn>;
   publish: ReturnType<typeof vi.fn>;
+  /**
+   * Backwards channel history. Defaults to a single empty page; tests that
+   * exercise hydration override the implementation via `history.mockResolvedValueOnce`
+   * (or {@link MockChannel.queueHistoryItems}) to drive the hydration loop.
+   */
+  history: ReturnType<typeof vi.fn>;
   /** Append-action publish; satisfies the `ChannelWriter` surface. */
   appendMessage: ReturnType<typeof vi.fn>;
   /** Update-action publish; satisfies the `ChannelWriter` surface. */
@@ -37,6 +43,14 @@ export interface MockChannel {
   simulateStateChange: (change: Ably.ChannelStateChange) => void;
   /** Drive an inbound message to all message subscribers. */
   simulateMessage: (message: Ably.InboundMessage) => void;
+  /**
+   * Queue inbound messages to be returned from {@link MockChannel.history}
+   * as a single page (oldest-first input; the mock reverses to match Ably's
+   * `direction: 'backwards'` behaviour). Subsequent `history()` calls
+   * (e.g. `page.next()`) return an empty terminal page.
+   * @param items Messages in oldest-first order; the mock reverses them.
+   */
+  queueHistoryItems: (items: Ably.InboundMessage[]) => void;
 }
 
 /**
@@ -95,6 +109,21 @@ export const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
       const result: Ably.PublishResult = { serials };
       return Promise.resolve(result);
     }),
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock matches Ably.RealtimeChannel.history signature.
+    history: vi.fn(() => {
+      const empty: Ably.PaginatedResult<Ably.InboundMessage> = {
+        items: [],
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock matches Ably.PaginatedResult.first signature.
+        first: () => Promise.resolve(empty),
+        // eslint-disable-next-line @typescript-eslint/promise-function-async, unicorn/no-null -- mock matches Ably.PaginatedResult.next signature returning null at end.
+        next: () => Promise.resolve(null),
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock matches Ably.PaginatedResult.current signature.
+        current: () => Promise.resolve(empty),
+        hasNext: () => false,
+        isLast: () => true,
+      };
+      return Promise.resolve(empty);
+    }),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock matches Ably.RealtimeChannel.appendMessage signature.
     appendMessage: vi.fn((message: Ably.Message) => {
       appendedMessages.push(message);
@@ -116,6 +145,34 @@ export const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
       for (const listener of messageListeners) {
         listener(message);
       }
+    },
+    queueHistoryItems: (items: Ably.InboundMessage[]) => {
+      // Ably's history with direction='backwards' returns newest-first; tests
+      // pass oldest-first for readability and the mock reverses to match.
+      const newestFirst = items.toReversed();
+      const empty: Ably.PaginatedResult<Ably.InboundMessage> = {
+        items: [],
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock matches Ably.PaginatedResult.first signature.
+        first: () => Promise.resolve(empty),
+        // eslint-disable-next-line @typescript-eslint/promise-function-async, unicorn/no-null -- mock matches Ably.PaginatedResult.next signature returning null at end.
+        next: () => Promise.resolve(null),
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock matches Ably.PaginatedResult.current signature.
+        current: () => Promise.resolve(empty),
+        hasNext: () => false,
+        isLast: () => true,
+      };
+      const page: Ably.PaginatedResult<Ably.InboundMessage> = {
+        items: newestFirst,
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock matches Ably.PaginatedResult.first signature.
+        first: () => Promise.resolve(page),
+        // eslint-disable-next-line @typescript-eslint/promise-function-async, unicorn/no-null -- mock matches Ably.PaginatedResult.next signature returning null at end.
+        next: () => Promise.resolve(null),
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock matches Ably.PaginatedResult.current signature.
+        current: () => Promise.resolve(page),
+        hasNext: () => false,
+        isLast: () => true,
+      };
+      channel.history.mockResolvedValueOnce(page);
     },
   };
   // CAST: Tests only exercise the recorded surface — other channel members are unused.

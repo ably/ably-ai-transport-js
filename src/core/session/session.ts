@@ -157,6 +157,30 @@ export interface ClientSession<C extends AnyCodec> {
 }
 
 /**
+ * Options accepted by {@link AgentSession.createRun}, controlling how long
+ * the SDK waits for the invocation's preconditions to materialise on the
+ * session.
+ */
+export interface CreateRunOptions {
+  /**
+   * Reject the call after this many milliseconds if the invocation's
+   * preconditions are still not met. Defaults to `60_000`. The rejection
+   * surfaces as `Ably.ErrorInfo` with code
+   * {@link ErrorCode.InvocationPreconditionTimeout}.
+   */
+  timeoutMs?: number;
+
+  /**
+   * Caller-supplied abort signal. When the signal fires, the call rejects
+   * with {@link ErrorCode.InvocationPreconditionTimeout} and stops waiting
+   * for preconditions. Wire `req.signal` in serverless handlers so the
+   * runtime's cancellation interrupts the wait alongside any caller-driven
+   * timeout.
+   */
+  signal?: AbortSignal;
+}
+
+/**
  * Long-lived handle on a durable session from the agent's perspective.
  *
  * Phase 7 surface — connect/close lifecycle, error events, and
@@ -196,19 +220,35 @@ export interface AgentSession<C extends AnyCodec> {
    * Bind to the run named by the invocation and return an
    * {@link AgentRun} the agent can read messages from, end, and dispose.
    *
-   * Phase 7 issues the handle synchronously without waiting for the run
-   * to be visible on the channel — callers in basic-chat see the
-   * run-start before the agent boots, so the handle's lazy tree reads
-   * always succeed by the time the agent reads them. The slow-precondition
-   * path that pends until the run-start lands lives in a later phase.
-   * @param invocation The invocation produced by `view.send().toInvocation()`.
-   * @returns An {@link AgentRun} bound to `invocation.runId`.
+   * Waits for the invocation's preconditions to be visible on the
+   * session before resolving:
+   *
+   *   - The run named by `invocation.runId` must have been observed on the
+   *     channel (an `x-ably-run-start` either replayed during {@link connect}
+   *     hydration or delivered live).
+   *   - When `invocation.messageId` is set, the message with that id must
+   *     also be visible.
+   *
+   * If the preconditions are already met (typical when hydration replayed
+   * them), the returned promise resolves on the next microtask. Otherwise
+   * the SDK subscribes to the tree and resolves the moment all
+   * preconditions land. The wait is bounded by `options.timeoutMs`
+   * (default `60_000`) and may be aborted via `options.signal`.
+   * @param invocation The invocation produced by `view.send().toInvocation()`
+   *   on the client side.
+   * @param options Optional precondition-wait controls; see
+   *   {@link CreateRunOptions}.
+   * @returns A promise that resolves with an {@link AgentRun} bound to
+   *   `invocation.runId` once the preconditions are visible on the session.
    * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.SessionClosed}
    *   when called after {@link close}.
    * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.InvalidArgument}
    *   when the invocation's `sessionName` does not match this session.
+   * @throws An `Ably.ErrorInfo` with code
+   *   {@link ErrorCode.InvocationPreconditionTimeout} when the wait elapses
+   *   or the supplied signal aborts before the preconditions are met.
    */
-  createRun(invocation: Invocation): AgentRun<C>;
+  createRun(invocation: Invocation, options?: CreateRunOptions): Promise<AgentRun<C>>;
 
   /**
    * Fires when the session encounters an unrecoverable error — channel
@@ -250,6 +290,15 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
   private _stateListener?: (change: Ably.ChannelStateChange) => void;
   private _messageListener?: (message: Ably.InboundMessage) => void;
   private _closed = false;
+  /**
+   * True while {@link _doConnect} is paging through `channel.history` and
+   * replaying historical messages into the tree. Inbound live messages
+   * delivered during this window are buffered into {@link _hydrationBuffer}
+   * and drained after the historical replay so the tree never sees a live
+   * message ahead of an older history message.
+   */
+  private _hydrating = false;
+  private readonly _hydrationBuffer: Ably.InboundMessage[] = [];
 
   constructor(options: SessionOptions<C>, role: 'client' | 'agent') {
     this.sessionName = options.sessionName;
@@ -335,12 +384,113 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
     this._decoder = this._codec.createDecoder();
     this._accumulator = this._codec.createAccumulator();
 
+    // Subscribe before fetching history so live messages that arrive while we
+    // page through history are not lost. Buffer them while hydrating and drain
+    // after the historical replay so the tree never observes a newer live
+    // message ahead of an older history one.
+    this._hydrating = true;
     this._messageListener = (message: Ably.InboundMessage) => {
+      if (this._hydrating) {
+        this._hydrationBuffer.push(message);
+        return;
+      }
       this._handleInboundMessage(message);
     };
     await channel.subscribe(this._messageListener);
 
-    this._logger.debug('DefaultSession.connect(); channel attached and subscribed');
+    try {
+      await this._hydrateFromHistory(channel);
+    } catch (error) {
+      // Hydration is part of `connect()` — surface the failure to the caller
+      // so the session is not left in a half-attached state. Detach the
+      // listeners we registered above so a retried `connect()` doesn't
+      // double-subscribe and double-fire `error` events.
+      this._hydrating = false;
+      this._hydrationBuffer.length = 0;
+      // Both listeners were registered earlier in this method, so they are
+      // always defined here. Detaching them makes a retried `connect()`
+      // safe — otherwise the retry would double-subscribe and double-fire
+      // `error` events.
+      channel.off(this._stateListener);
+      this._stateListener = undefined;
+      channel.unsubscribe(this._messageListener);
+      this._messageListener = undefined;
+      const cause = error instanceof Ably.ErrorInfo ? error : undefined;
+      throw new Ably.ErrorInfo(
+        `unable to connect; channel history hydration failed${cause ? `: ${cause.message}` : ''}`,
+        ErrorCode.HydrationFailed,
+        500,
+        cause,
+      );
+    }
+
+    // Replay any inbound that landed during hydration. New inbounds bypass
+    // the buffer since `_hydrating` is now false.
+    this._hydrating = false;
+    const buffered = this._hydrationBuffer.splice(0);
+    for (const buffer of buffered) {
+      this._handleInboundMessage(buffer);
+    }
+
+    this._logger.debug('DefaultSession.connect(); channel attached, subscribed, and hydrated', {
+      buffered: buffered.length,
+    });
+  }
+
+  /**
+   * Page through channel history with `untilAttach: true` and replay every
+   * message through the live decode loop in oldest-first order. The Ably
+   * REST `history({ untilAttach: true })` query returns messages newest-first
+   * with `direction: 'backwards'`, so the implementation reverses each page
+   * and walks pages from oldest to newest.
+   *
+   * Aborts if the session is closed mid-page so a `close()` during connect
+   * does not race the replay against teardown.
+   * @param channel The session's realtime channel.
+   */
+  private async _hydrateFromHistory(channel: Ably.RealtimeChannel): Promise<void> {
+    this._logger.trace('DefaultSession._hydrateFromHistory();');
+
+    const pages: Ably.InboundMessage[][] = [];
+    let page: Ably.PaginatedResult<Ably.InboundMessage> | null = await channel.history({
+      untilAttach: true,
+      direction: 'backwards',
+      limit: 100,
+    });
+    while (page !== null) {
+      if (this._closed) {
+        return;
+      }
+      pages.push(page.items);
+      if (!page.hasNext()) {
+        break;
+      }
+      page = await page.next();
+    }
+
+    // pages[0] is the most recent batch; pages[pages.length - 1] is the
+    // oldest. Items within each page are newest-first; iterate both axes
+    // in reverse to deliver oldest-first to the decode loop.
+    let replayed = 0;
+    for (let p = pages.length - 1; p >= 0; p--) {
+      const batch = pages[p];
+      if (batch === undefined) {
+        continue;
+      }
+      for (let i = batch.length - 1; i >= 0; i--) {
+        if (this._closed) {
+          return;
+        }
+        const item = batch[i];
+        if (item === undefined) {
+          continue;
+        }
+        this._handleInboundMessage(item);
+        replayed += 1;
+      }
+    }
+
+    this._logger.debug('DefaultSession._hydrateFromHistory(); replayed', { replayed });
   }
 
   private _handleStateChange(change: Ably.ChannelStateChange): void {
@@ -632,7 +782,7 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
     return view;
   }
 
-  createRun(invocation: Invocation): AgentRun<C> {
+  async createRun(invocation: Invocation, options?: CreateRunOptions): Promise<AgentRun<C>> {
     this._logger.trace('DefaultSession.createRun();', { runId: invocation.runId });
     if (this._closed) {
       throw new Ably.ErrorInfo('unable to create run; session is closed', ErrorCode.SessionClosed, 400);
@@ -644,13 +794,109 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
         400,
       );
     }
-    return new DefaultAgentRun<C>({
+
+    const run = new DefaultAgentRun<C>({
       runId: invocation.runId,
       tree: this._tree,
       writer: this._writer,
       logger: this._logger,
       registerView: (view) => this._views.add(view),
     });
+
+    await this._waitForRunPreconditions(invocation, options);
+
+    return run;
+  }
+
+  /**
+   * Wait for the invocation's preconditions to be visible on the session's
+   * tree — the run-start must have been observed (either via hydration or
+   * live delivery), and when `invocation.messageId` is present the
+   * corresponding message must also be visible.
+   *
+   * Resolves immediately when the preconditions are already satisfied;
+   * otherwise subscribes to the tree and waits, bounded by
+   * `options.timeoutMs` (default `60_000`) and `options.signal`.
+   * @param invocation The invocation whose preconditions to satisfy.
+   * @param options Per-call timeout and abort signal.
+   */
+  private async _waitForRunPreconditions(invocation: Invocation, options?: CreateRunOptions): Promise<void> {
+    const isReady = (): boolean => {
+      if (!this._tree.runs.some((r) => r.id === invocation.runId)) {
+        return false;
+      }
+      if (invocation.messageId !== undefined && !this._tree.messages.some((m) => m.id === invocation.messageId)) {
+        return false;
+      }
+      return true;
+    };
+
+    if (isReady()) {
+      return;
+    }
+
+    if (options?.signal?.aborted === true) {
+      throw this._preconditionTimeoutError(invocation, 'caller signal already aborted');
+    }
+
+    const timeoutMs = options?.timeoutMs ?? 60_000;
+
+    // Mutable holders on a single object so the cleanup closure can capture
+    // the refs while still satisfying `prefer-const` (the locals only ever
+    // alias the holder; the holder fields take care of the lifetime).
+    const handles: {
+      unsubscribe?: () => void;
+      timer?: ReturnType<typeof setTimeout>;
+      onAbort?: () => void;
+    } = {};
+
+    const cleanup = (): void => {
+      handles.unsubscribe?.();
+      if (handles.timer !== undefined) {
+        clearTimeout(handles.timer);
+      }
+      if (handles.onAbort !== undefined && options?.signal !== undefined) {
+        options.signal.removeEventListener('abort', handles.onAbort);
+      }
+    };
+
+    await new Promise<void>((resolve, reject) => {
+      handles.timer = setTimeout(() => {
+        cleanup();
+        reject(this._preconditionTimeoutError(invocation, `timed out after ${String(timeoutMs)}ms`));
+      }, timeoutMs);
+
+      if (options?.signal !== undefined) {
+        handles.onAbort = (): void => {
+          cleanup();
+          reject(this._preconditionTimeoutError(invocation, 'caller signal aborted'));
+        };
+        options.signal.addEventListener('abort', handles.onAbort, { once: true });
+      }
+
+      handles.unsubscribe = this._tree.subscribe(() => {
+        if (isReady()) {
+          cleanup();
+          resolve();
+        }
+      });
+
+      // Re-check after subscribing to close the race where the tree updated
+      // between the synchronous `isReady()` above and the listener landing.
+      if (isReady()) {
+        cleanup();
+        resolve();
+      }
+    });
+  }
+
+  private _preconditionTimeoutError(invocation: Invocation, reason: string): Ably.ErrorInfo {
+    const messageIdSuffix = invocation.messageId === undefined ? '' : `, messageId=${invocation.messageId}`;
+    return new Ably.ErrorInfo(
+      `unable to create run; ${reason} waiting for invocation preconditions (runId=${invocation.runId}${messageIdSuffix})`,
+      ErrorCode.InvocationPreconditionTimeout,
+      408,
+    );
   }
 
   get writer(): SessionWriter<C> {

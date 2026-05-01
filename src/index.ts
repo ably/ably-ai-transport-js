@@ -26,6 +26,7 @@ export type {
 export type {
   AgentSession,
   ClientSession,
+  CreateRunOptions,
   EndRunOptions,
   SendMessagesOptions,
   SessionOptions,

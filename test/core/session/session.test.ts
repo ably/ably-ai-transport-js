@@ -954,4 +954,131 @@ describe('Session', () => {
       expect(treeOf(session).steps[0]?.status).toBe('active');
     });
   });
+
+  describe('hydration on connect()', () => {
+    it('replays channel history into the tree before subscribing the live decoder', async () => {
+      const { options, channel } = makeSession();
+      // History returns a run-start followed by its user message; oldest-first
+      // input — the mock reverses to mimic Ably's `direction: 'backwards'`.
+      channel.queueHistoryItems([
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.RunStart,
+          headers: { [Headers.RunId]: 'r-1' },
+          clientId: 'alice',
+        }),
+        makeInbound({ serial: '02', msgId: 'm-1', role: 'user', clientId: 'alice', data: 'hi' }),
+      ]);
+      const session = createClientSession(options);
+
+      await session.connect();
+
+      const view = session.createView();
+      expect(treeOf(session).runs).toEqual<Run<string>[]>([
+        { id: 'r-1', status: 'active', initiatorClientId: 'alice' },
+      ]);
+      expect(view.messages).toHaveLength(1);
+      expect(view.messages[0]?.id).toBe('m-1');
+    });
+
+    it('drains live messages buffered during hydration after the historical replay', async () => {
+      const { options, channel } = makeSession();
+      // Block the history call so the test can simulate a live message
+      // arriving while hydration is still pending. The deferred resolution
+      // controls the race between buffering and replay.
+      let releaseHistory!: (page: Ably.PaginatedResult<Ably.InboundMessage>) => void;
+      const historyPromise = new Promise<Ably.PaginatedResult<Ably.InboundMessage>>((resolve) => {
+        releaseHistory = resolve;
+      });
+      channel.history.mockReturnValueOnce(historyPromise);
+      const session = createClientSession(options);
+
+      const connectPromise = session.connect();
+      // Yield so subscribe() registers the buffered listener. The mock
+      // channel's subscribe is sync after a microtask — this makes sure the
+      // simulated message lands while hydration is pending.
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Live message arrives while hydration is still pending — must be
+      // buffered, not applied to the tree yet.
+      channel.simulateMessage(
+        makeInbound({ serial: '03', msgId: 'm-live', role: 'user', clientId: 'alice', data: 'live' }),
+      );
+      const view = session.createView();
+      expect(view.messages).toHaveLength(0);
+
+      // Resolve the history call with a single historical message so replay
+      // happens before the buffer drain.
+      const historyMessage = makeInbound({
+        serial: '01',
+        msgId: 'm-hist',
+        role: 'user',
+        clientId: 'alice',
+        data: 'hist',
+      });
+      const page: Ably.PaginatedResult<Ably.InboundMessage> = {
+        items: [historyMessage],
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock matches Ably.PaginatedResult.first signature.
+        first: () => Promise.resolve(page),
+        // eslint-disable-next-line @typescript-eslint/promise-function-async, unicorn/no-null -- mock matches Ably.PaginatedResult.next signature returning null at end.
+        next: () => Promise.resolve(null),
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock matches Ably.PaginatedResult.current signature.
+        current: () => Promise.resolve(page),
+        hasNext: () => false,
+        isLast: () => true,
+      };
+      releaseHistory(page);
+
+      await connectPromise;
+
+      expect(view.messages.map((node) => node.id)).toEqual(['m-hist', 'm-live']);
+    });
+
+    it('rejects connect() with HydrationFailed when history rejects', async () => {
+      const { options, channel } = makeSession();
+      channel.history.mockRejectedValueOnce(new Ably.ErrorInfo('history boom', 50000, 500));
+      const session = createClientSession(options);
+
+      await expect(session.connect()).rejects.toBeErrorInfoWithCode(ErrorCode.HydrationFailed);
+    });
+
+    it('detaches state and message listeners after hydration failure so retried connect() does not double-subscribe', async () => {
+      const { options, channel } = makeSession();
+      channel.history.mockRejectedValueOnce(new Ably.ErrorInfo('history boom', 50000, 500));
+      const session = createClientSession(options);
+
+      await expect(session.connect()).rejects.toBeErrorInfoWithCode(ErrorCode.HydrationFailed);
+
+      // Listeners registered during the failed attempt must have been cleaned
+      // up — otherwise the retry would double-fire the error handler and
+      // double-decode every inbound message.
+      expect(channel.stateListeners.size).toBe(0);
+      expect(channel.messageListeners.size).toBe(0);
+
+      await session.connect();
+
+      // After a successful retry, exactly one of each listener should be
+      // attached.
+      expect(channel.stateListeners.size).toBe(1);
+      expect(channel.messageListeners.size).toBe(1);
+      // attach was called twice (initial + retry) and both subscribe calls
+      // landed; history was called twice too (the rejected first call and the
+      // mock's default empty page on the second).
+      expect(channel.attach).toHaveBeenCalledTimes(2);
+      expect(channel.subscribe).toHaveBeenCalledTimes(2);
+    });
+
+    it('hydration uses untilAttach: true with backwards direction', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+
+      await session.connect();
+
+      expect(channel.history).toHaveBeenCalledTimes(1);
+      const [params] = channel.history.mock.calls[0] as [Ably.RealtimeHistoryParams];
+      expect(params.untilAttach).toBe(true);
+      expect(params.direction).toBe('backwards');
+    });
+  });
 });

@@ -86,7 +86,7 @@ describe('AgentRun.createStep + Step.start (integration)', () => {
     await bSession.connect();
 
     const clientRun = await aView.send('hello');
-    const bRun = bSession.createRun(clientRun.toInvocation());
+    const bRun = await bSession.createRun(clientRun.toInvocation());
     const step = bRun.createStep();
     await step.start();
 

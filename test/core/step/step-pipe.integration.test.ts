@@ -133,7 +133,7 @@ describe('Step.pipe + Step.end with UIMessageCodec (integration)', () => {
     const invocation = clientRun.toInvocation();
 
     // B binds the agent run and starts a step.
-    const bRun = bSession.createRun(Invocation.fromJSON(invocation.toJSON()));
+    const bRun = await bSession.createRun(Invocation.fromJSON(invocation.toJSON()));
     const bStep = bRun.createStep();
     await bStep.start();
 

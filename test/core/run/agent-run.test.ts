@@ -52,59 +52,128 @@ const simulateRunStart = (
   } as unknown as Ably.InboundMessage);
 };
 
-describe('AgentSession.createRun', () => {
-  it('returns a handle bound to invocation.runId', () => {
-    const { options } = makeAgentSession();
-    const session = createAgentSession(options);
-    const invocation = Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' });
+/**
+ * Connect a freshly created agent session, race a `simulateRunStart` against
+ * the createRun precondition wait, and resolve to the bound `AgentRun`.
+ * Drops the boilerplate "kick off createRun, drive run-start, await
+ * promise" pattern from individual tests.
+ * @param session The agent session to operate on (must be connectable).
+ * @param channel The mock channel feeding the session.
+ * @param runId The run id to bind to.
+ * @param clientId The initiator id baked onto the run-start.
+ * @returns The live `AgentRun` once preconditions are satisfied.
+ */
+const connectAndCreateRun = async (
+  session: ReturnType<typeof createAgentSession<StubCodec>>,
+  channel: ReturnType<typeof createMockChannel>,
+  runId = 'r-1',
+  clientId = 'alice',
+) => {
+  await session.connect();
+  const promise = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId }));
+  simulateRunStart(channel, runId, clientId);
+  return promise;
+};
 
-    const run = session.createRun(invocation);
+describe('AgentSession.createRun', () => {
+  it('returns a handle bound to invocation.runId once the run-start lands', async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+
+    const run = await connectAndCreateRun(session, channel, 'r-1', 'alice');
 
     expect(run.id).toBe('r-1');
   });
 
-  it('rejects an invocation whose sessionName does not match the session', () => {
+  it('rejects an invocation whose sessionName does not match the session', async () => {
     const { options } = makeAgentSession();
     const session = createAgentSession(options);
     const invocation = Invocation.fromJSON({ sessionName: 'other-session', runId: 'r-1' });
 
-    expect(() => session.createRun(invocation)).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
+    await expect(session.createRun(invocation)).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
   });
 
-  it('throws SessionClosed after the session has been closed', async () => {
+  it('rejects with SessionClosed after the session has been closed', async () => {
     const { options } = makeAgentSession();
     const session = createAgentSession(options);
     await session.close();
     const invocation = Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' });
 
-    expect(() => session.createRun(invocation)).toThrowErrorInfoWithCode(ErrorCode.SessionClosed);
+    await expect(session.createRun(invocation)).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
   });
 
-  it('exposes status and initiatorClientId once the run-start lands on the tree', async () => {
+  it('exposes status and initiatorClientId from the run-start that satisfied the precondition', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const invocation = Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' });
-    const run = session.createRun(invocation);
 
-    // Before the run-start arrives, status is the optimistic 'active' default
-    // and initiator is the empty string (the handle pends).
-    expect(run.status).toBe('active');
-    expect(run.initiatorClientId).toBe('');
-
-    simulateRunStart(channel, 'r-1', 'alice');
+    const run = await connectAndCreateRun(session, channel, 'r-1', 'alice');
 
     expect(run.status).toBe('active');
     expect(run.initiatorClientId).toBe('alice');
   });
 
-  it('view.messages and run.messages filter the tree by the bound run id', async () => {
+  it('waits for invocation.messageId to be visible before resolving', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
     await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const invocation = Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1', messageId: 'm-1' });
 
+    const promise = session.createRun(invocation);
+
+    // Driving only the run-start is not enough — the messageId precondition
+    // is still outstanding, so the promise must remain pending.
     simulateRunStart(channel, 'r-1', 'alice');
+    let resolved = false;
+    void promise.then(() => {
+      resolved = true;
+    });
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+
+    channel.simulateMessage({
+      name: 'x-ably-message',
+      data: 'hello',
+      serial: '02',
+      clientId: 'alice',
+      extras: {
+        headers: { [Headers.MessageId]: 'm-1', [Headers.Role]: 'user', [Headers.RunId]: 'r-1' },
+      },
+    } as unknown as Ably.InboundMessage);
+
+    const run = await promise;
+    expect(run.id).toBe('r-1');
+  });
+
+  it('rejects with InvocationPreconditionTimeout when the run-start never lands', async () => {
+    const { options } = makeAgentSession();
+    const session = createAgentSession(options);
+    await session.connect();
+    const invocation = Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' });
+
+    await expect(session.createRun(invocation, { timeoutMs: 5 })).rejects.toBeErrorInfoWithCode(
+      ErrorCode.InvocationPreconditionTimeout,
+    );
+  });
+
+  it('rejects with InvocationPreconditionTimeout when the caller signal aborts', async () => {
+    const { options } = makeAgentSession();
+    const session = createAgentSession(options);
+    await session.connect();
+    const invocation = Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' });
+    const ac = new AbortController();
+
+    const promise = session.createRun(invocation, { signal: ac.signal });
+    ac.abort();
+
+    await expect(promise).rejects.toBeErrorInfoWithCode(ErrorCode.InvocationPreconditionTimeout);
+  });
+
+  it('view.messages and run.messages filter the tree by the bound run id', async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+
+    const run = await connectAndCreateRun(session, channel, 'r-1', 'alice');
+
     simulateRunStart(channel, 'r-2', 'alice', '02');
     // Two content messages — one for r-1, one for r-2.
     channel.simulateMessage({
@@ -143,11 +212,12 @@ describe('AgentRun.end', () => {
   it("publishes x-ably-run-end with status='complete' on the happy path", async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
 
     await run.end();
 
+    // Two publishes total: the run-start the test simulated arrives via
+    // simulateMessage (no publish), so the only publish is the run-end.
     expect(channel.publish).toHaveBeenCalledTimes(1);
     const batch = channel.publishedBatches[0] ?? [];
     expect(batch).toHaveLength(1);
@@ -161,8 +231,7 @@ describe('AgentRun.end', () => {
   it("publishes status='failed' when called with an error", async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
 
     await run.end(new Error('agent threw'));
 
@@ -174,8 +243,7 @@ describe('AgentRun.end', () => {
   it("publishes status='aborted' when called with an error and the bound step.signal.reason is ABORTED", async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
 
     // Open a step whose composed signal aborts via the caller signal.
     const step = run.createStep();
@@ -209,8 +277,7 @@ describe('AgentRun.end', () => {
   it("publishes status='failed' when an error is supplied without an aborted bound step", async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
 
     // Open a step but never abort its signal — the abort row of the
     // classifier should not fire, and end(error) routes to 'failed'.
@@ -235,8 +302,7 @@ describe('AgentRun.end', () => {
   it('is idempotent — a second call publishes nothing', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
 
     await run.end();
     await run.end();
@@ -250,8 +316,7 @@ describe('AgentRun.end', () => {
     const publishError = new Ably.ErrorInfo('publish failed', 50000, 500);
     channel.publish.mockRejectedValueOnce(publishError);
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
 
     await expect(run.end()).rejects.toBeErrorInfoWithCauseCode(50000);
   });
@@ -261,8 +326,7 @@ describe('AgentRun.close', () => {
   it('calls end() if the run has not been ended and closes the view', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
     const handler = vi.fn();
     run.view.subscribe(handler);
 
@@ -274,15 +338,14 @@ describe('AgentRun.close', () => {
     expect(headersOf(wire)[Headers.Status]).toBe('complete');
 
     handler.mockReset();
-    simulateRunStart(channel, 'r-1', 'alice', '02');
+    simulateRunStart(channel, 'r-2', 'alice', '02');
     expect(handler).not.toHaveBeenCalled();
   });
 
   it('does not re-publish when end() has already been called', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
 
     await run.end(new Error('explicit failure'));
     await run.close();
@@ -293,8 +356,7 @@ describe('AgentRun.close', () => {
   it('Symbol.asyncDispose delegates to close()', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
 
     await run[Symbol.asyncDispose]();
 
@@ -309,8 +371,7 @@ describe('AgentRun[Symbol.asyncDispose]', () => {
   it('calls end() if the run has not been ended', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
 
     await run[Symbol.asyncDispose]();
 
@@ -323,8 +384,7 @@ describe('AgentRun[Symbol.asyncDispose]', () => {
   it('does not re-publish when end() has already been called', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
 
     await run.end(new Error('explicit failure'));
     await run[Symbol.asyncDispose]();
@@ -338,8 +398,7 @@ describe('AgentRun[Symbol.asyncDispose]', () => {
   it("closes the run's view so it stops firing subscribers", async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
     const handler = vi.fn();
     run.view.subscribe(handler);
 
@@ -348,7 +407,6 @@ describe('AgentRun[Symbol.asyncDispose]', () => {
 
     // Drive an inbound after dispose — a still-live view would re-fire its
     // subscribers; the closed view must not.
-    simulateRunStart(channel, 'r-1', 'alice', '02');
     channel.simulateMessage({
       name: 'x-ably-message',
       data: 'after-dispose',
@@ -371,8 +429,7 @@ describe('AgentRun[Symbol.asyncDispose]', () => {
     const publishError = new Ably.ErrorInfo('publish failed', 50000, 500);
     channel.publish.mockRejectedValueOnce(publishError);
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
 
     await expect(run[Symbol.asyncDispose]()).resolves.toBeUndefined();
   });
@@ -382,8 +439,7 @@ describe('AgentSession.close', () => {
   it("closes a run's view as part of session teardown", async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-    await session.connect();
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const run = await connectAndCreateRun(session, channel);
     const handler = vi.fn();
     run.view.subscribe(handler);
 
@@ -394,25 +450,23 @@ describe('AgentSession.close', () => {
     // inbound and confirm silence. The inbound is only meaningful before
     // close, so the assertion is that the view's tree subscription was
     // severed during teardown.
-    simulateRunStart(channel, 'r-1', 'alice', '02');
+    simulateRunStart(channel, 'r-2', 'alice', '02');
     expect(handler).not.toHaveBeenCalled();
   });
 });
 
-describe('AgentSession lazy-read race', () => {
-  it('createRun before connect() succeeds; tree reads return defaults until run-start lands', async () => {
+describe('AgentSession precondition resolution', () => {
+  it('resolves createRun once the run-start that satisfies the precondition lands live', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
-
-    // createRun before connect — handle is built; the tree is empty.
-    const run = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
-    expect(run.status).toBe('active');
-    expect(run.initiatorClientId).toBe('');
-    expect(run.messages).toEqual([]);
-
-    // Once connected and run-start lands, lazy reads pick it up.
     await session.connect();
+
+    // Kick off createRun before the run-start arrives — the promise is
+    // pending until simulateRunStart drives it.
+    const promise = session.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
     simulateRunStart(channel, 'r-1', 'alice');
+
+    const run = await promise;
     expect(run.initiatorClientId).toBe('alice');
   });
 
@@ -420,15 +474,19 @@ describe('AgentSession lazy-read race', () => {
     // The runtime object is shared between client and agent flavours; this
     // confirms the codec parameter flows through both. The cast is the same
     // pattern other tests use for surface-not-yet-on-the-public-type.
-    const { options } = makeAgentSession();
+    const { options, channel } = makeAgentSession();
     const session = createClientSession(options);
     await session.connect();
 
     // CAST: ClientSession's runtime object also exposes createRun via
     //       declaration merging on the underlying class. Phase 7's public
     //       ClientSession type omits createRun deliberately.
-    const reach = session as unknown as { createRun: (i: ReturnType<typeof Invocation.fromJSON>) => unknown };
-    const run = reach.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    const reach = session as unknown as {
+      createRun: (i: ReturnType<typeof Invocation.fromJSON>) => Promise<unknown>;
+    };
+    const promise = reach.createRun(Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' }));
+    simulateRunStart(channel, 'r-1', 'alice');
+    const run = await promise;
     expect(run).toBeDefined();
   });
 });

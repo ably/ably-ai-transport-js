@@ -129,7 +129,7 @@ describe('Step.signal abort + AgentRun.end abort row (integration)', () => {
     const clientRun = await aView.send(userMessage);
 
     // B binds the agent run and opens a step under a caller signal.
-    const bRun = bSession.createRun(Invocation.fromJSON(clientRun.toInvocation().toJSON()));
+    const bRun = await bSession.createRun(Invocation.fromJSON(clientRun.toInvocation().toJSON()));
     const bStep = bRun.createStep();
     const ac = new AbortController();
     await bStep.start({ signal: ac.signal });

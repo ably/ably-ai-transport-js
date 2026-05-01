@@ -155,7 +155,9 @@ describe('AgentSession.createRun + AgentRun (integration)', () => {
     // B builds the agent handle from the invocation. Wait for the user
     // message to be visible on B before reading from run.view.
     const invocation = clientRun.toInvocation();
-    const bRun = bSession.createRun(invocation);
+    const bRun = await bSession.createRun(invocation);
+    // createRun already waited for the run-start precondition; wait for the
+    // user message to be visible on B before reading from run.view.
     await waitForRunMessages(bRun, 1);
 
     expect(bRun.id).toBe(clientRun.id);
@@ -194,7 +196,7 @@ describe('AgentSession.createRun + AgentRun (integration)', () => {
     const aView = aSession.createView();
     const clientRun = await aView.send('hello');
 
-    const bRun = bSession.createRun(clientRun.toInvocation());
+    const bRun = await bSession.createRun(clientRun.toInvocation());
     await waitForRunMessages(bRun, 1);
     await bRun.end(new Error('agent threw'));
 
@@ -232,7 +234,7 @@ describe('AgentSession.createRun + AgentRun (integration)', () => {
     await waitForClientMessages(aView, 1);
 
     {
-      await using bRun = bSession.createRun(clientRun.toInvocation());
+      await using bRun = await bSession.createRun(clientRun.toInvocation());
       await waitForRunMessages(bRun, 1);
       // No explicit end — dispose should publish run-end on scope exit.
     }

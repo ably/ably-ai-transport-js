@@ -362,6 +362,10 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
       this._handleRunEnd(message);
       return;
     }
+    if (message.name === WireMessages.StepStart) {
+      this._handleStepStart(message);
+      return;
+    }
 
     if (!this._decoder || !this._accumulator) {
       // Defensive: subscribe is registered after _decoder/_accumulator are set,
@@ -475,6 +479,27 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
 
     const run: Run<CodecMessage<C>> = { id: runId, status: 'active', initiatorClientId };
     this._tree.applyRunStart(run);
+  }
+
+  private _handleStepStart(message: Ably.InboundMessage): void {
+    const runId = readHeader(message, Headers.RunId);
+    if (runId === undefined) {
+      this._logger.warn('DefaultSession._handleStepStart(); missing x-ably-run-id', {
+        serial: message.serial,
+      });
+      return;
+    }
+
+    const stepId = readHeader(message, Headers.StepId);
+    if (stepId === undefined) {
+      this._logger.warn('DefaultSession._handleStepStart(); missing x-ably-step-id', {
+        runId,
+        serial: message.serial,
+      });
+      return;
+    }
+
+    this._tree.applyStepStart({ id: stepId, runId, status: 'active' });
   }
 
   private _handleRunEnd(message: Ably.InboundMessage): void {

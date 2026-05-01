@@ -47,6 +47,9 @@ export type {
   RunStatus,
 } from './core/run/index.js';
 
+// Step
+export type { Step, StepRecord, StepStatus } from './core/step/index.js';
+
 // Invocation
 export type { InvocationConstructor, InvocationData } from './core/invocation/index.js';
 export { Invocation } from './core/invocation/index.js';

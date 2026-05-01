@@ -806,4 +806,77 @@ describe('Session', () => {
       expect(handler).toHaveBeenCalledTimes(2);
     });
   });
+
+  describe('step lifecycle decode', () => {
+    it('records an active step on x-ably-step-start', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.StepStart,
+          headers: { [Headers.RunId]: 'r-1', [Headers.StepId]: 's-1' },
+          clientId: 'agent-1',
+        }),
+      );
+
+      expect(treeOf(session).steps).toEqual([{ id: 's-1', runId: 'r-1', status: 'active' }]);
+    });
+
+    it('skips step-start without x-ably-run-id', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.StepStart,
+          headers: { [Headers.StepId]: 's-1' },
+          clientId: 'agent-1',
+        }),
+      );
+
+      expect(treeOf(session).steps).toHaveLength(0);
+    });
+
+    it('skips step-start without x-ably-step-id', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.StepStart,
+          headers: { [Headers.RunId]: 'r-1' },
+          clientId: 'agent-1',
+        }),
+      );
+
+      expect(treeOf(session).steps).toHaveLength(0);
+    });
+
+    it('drives view subscribers via the tree', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+      const view = session.createView();
+      const handler = vi.fn();
+      view.subscribe(handler);
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.StepStart,
+          headers: { [Headers.RunId]: 'r-1', [Headers.StepId]: 's-1' },
+          clientId: 'agent-1',
+        }),
+      );
+
+      expect(handler).toHaveBeenCalledTimes(1);
+    });
+  });
 });

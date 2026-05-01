@@ -55,6 +55,12 @@ export const Headers = {
    * of the same name (e.g. `text` discrete-vs-streaming).
    */
   Discrete: 'x-ably-discrete',
+  /**
+   * The step a wire belongs to. Carried by step-lifecycle messages
+   * ({@link WireMessages.StepStart} and the step-end wire that lands in a
+   * later phase) so the decode loop can route step state into the tree.
+   */
+  StepId: 'x-ably-step-id',
 } as const;
 
 /** Union of valid SDK header names. */
@@ -74,6 +80,12 @@ export const WireMessages = {
   RunStart: 'x-ably-run-start',
   /** Closes a run terminally. Carries {@link Headers.RunId} and {@link Headers.Status}. */
   RunEnd: 'x-ably-run-end',
+  /**
+   * Opens a step within a run. Carries {@link Headers.RunId} and
+   * {@link Headers.StepId}; the step-end wire that closes it lands in a
+   * later phase.
+   */
+  StepStart: 'x-ably-step-start',
 } as const;
 
 /** Union of SDK-owned wire message names. */

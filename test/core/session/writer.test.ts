@@ -269,6 +269,54 @@ describe('SessionWriter.sendMessages', () => {
   });
 });
 
+/**
+ * `startStep` is intentionally not on the public {@link SessionWriter}
+ * interface — it is driven by {@link DefaultStep.start} and reached for
+ * tests via the underlying class. The cast mirrors the pattern used for
+ * {@link DefaultSessionWriter.startRunWithMessages} elsewhere.
+ * @param session A session whose writer to reach.
+ * @returns A typed view of the writer's `startStep` method.
+ */
+const reachStartStep = (
+  session: ReturnType<typeof createClientSession<StubCodec>>,
+): ((options: { runId: string; stepId: string }) => Promise<void>) => {
+  const internals = session as unknown as {
+    writer: { startStep: (options: { runId: string; stepId: string }) => Promise<void> };
+  };
+  return internals.writer.startStep.bind(internals.writer);
+};
+
+describe('SessionWriter.startStep (internal)', () => {
+  it('publishes one x-ably-step-start with run-id and step-id headers', async () => {
+    const { options, channel } = makeSession();
+    const session = createClientSession(options);
+    await session.connect();
+    const startStep = reachStartStep(session);
+
+    await startStep({ runId: 'r-1', stepId: 's-1' });
+
+    expect(channel.publish).toHaveBeenCalledTimes(1);
+    expect(channel.publishedBatches).toHaveLength(1);
+    const batch = channel.publishedBatches[0] ?? [];
+    expect(batch).toHaveLength(1);
+    const [wire] = batch;
+    if (!wire) throw new Error('expected one wire message');
+    expect(wire.name).toBe(WireMessages.StepStart);
+    const headers = headersOf(wire);
+    expect(headers[Headers.RunId]).toBe('r-1');
+    expect(headers[Headers.StepId]).toBe('s-1');
+  });
+
+  it('throws SessionClosed after the session has been closed', async () => {
+    const { options } = makeSession();
+    const session = createClientSession(options);
+    const startStep = reachStartStep(session);
+    await session.close();
+
+    await expect(startStep({ runId: 'r-1', stepId: 's-1' })).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+  });
+});
+
 describe('SessionWriter.endRun', () => {
   it('publishes one x-ably-run-end message with run-id and status headers', async () => {
     const { options, channel } = makeSession();

@@ -263,6 +263,45 @@ export class DefaultSessionWriter<C extends AnyCodec> implements SessionWriter<C
     return { runId, lastMessageId, initiatorClientId };
   }
 
+  /**
+   * Publish `x-ably-step-start` to the channel, opening a step within an
+   * existing run. Internal — not on the {@link SessionWriter} interface;
+   * the public {@link Step.start} drives this through {@link DefaultStep}.
+   *
+   * The wire carries {@link Headers.RunId} and {@link Headers.StepId}; the
+   * step-end wire that closes the lifecycle lands in a later phase along
+   * with the rest of the step write surface (`pipe`, `end`, `sendMessages`).
+   * @param options Identifiers for the run and step to publish.
+   * @param options.runId The run this step belongs to.
+   * @param options.stepId The id of the step being opened.
+   * @returns Resolves once Ably has acknowledged the publish.
+   * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.SessionClosed}
+   *   when called after the session has been closed.
+   */
+  async startStep(options: { runId: string; stepId: string }): Promise<void> {
+    this._logger.trace('DefaultSessionWriter.startStep();', { runId: options.runId, stepId: options.stepId });
+
+    if (this._isClosed()) {
+      throw new Ably.ErrorInfo('unable to start step; session is closed', ErrorCode.SessionClosed, 400);
+    }
+
+    const channel = this._channelManager.get();
+    await channel.publish({
+      name: WireMessages.StepStart,
+      extras: {
+        headers: {
+          [Headers.RunId]: options.runId,
+          [Headers.StepId]: options.stepId,
+        },
+      },
+    });
+
+    this._logger.debug('DefaultSessionWriter.startStep(); published', {
+      runId: options.runId,
+      stepId: options.stepId,
+    });
+  }
+
   async endRun(options: EndRunOptions): Promise<void> {
     this._logger.trace('DefaultSessionWriter.endRun();', { runId: options.runId, status: options.status });
 

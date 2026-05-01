@@ -1,5 +1,6 @@
 import type { Logger } from '../../logger.js';
 import type { Run, RunStatus } from '../run/index.js';
+import type { StepRecord } from '../step/index.js';
 
 /**
  * A node in the session's conversation tree. Carries the domain message
@@ -76,6 +77,13 @@ export interface Tree<TMessage> {
   readonly runs: readonly Run<TMessage>[];
 
   /**
+   * All steps the tree has observed, in the order their `x-ably-step-start`
+   * arrived on the channel. Phase 9 records steps as `'active'`; later
+   * phases transition entries in place to terminal statuses.
+   */
+  readonly steps: readonly StepRecord[];
+
+  /**
    * Register a coarse change listener. The handler fires after every
    * structural change to the tree — callers re-read {@link messages} or
    * {@link runs} to project the new state. Returns an unsubscribe function;
@@ -137,6 +145,16 @@ export interface TreeInternal<TMessage> extends Tree<TMessage> {
    * @param options.status The status to transition the run into.
    */
   applyRunEnd(options: { runId: string; status: RunStatus }): void;
+
+  /**
+   * Record a `'active'` step observed via `x-ably-step-start`. A duplicate
+   * id (a second `x-ably-step-start` for the same step) is logged and
+   * ignored — step-start is one-shot per step on the wire, so a duplicate
+   * indicates either history hydration replaying a known step or a faulty
+   * publisher.
+   * @param step The step record to record. Status must be `'active'`.
+   */
+  applyStepStart(step: StepRecord): void;
 }
 
 /** Options for constructing a {@link DefaultTree}. */
@@ -154,6 +172,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   private readonly _logger: Logger;
   private readonly _messages: MessageNode<TMessage>[] = [];
   private readonly _runs: Run<TMessage>[] = [];
+  private readonly _steps: StepRecord[] = [];
   private readonly _subscribers = new Set<() => void>();
 
   constructor(options: TreeOptions) {
@@ -167,6 +186,10 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
 
   get runs(): readonly Run<TMessage>[] {
     return this._runs;
+  }
+
+  get steps(): readonly StepRecord[] {
+    return this._steps;
   }
 
   applyMessage(node: MessageNode<TMessage>): void {
@@ -213,6 +236,17 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
       return;
     }
     this._runs[index] = { ...existing, status: options.status };
+    this._notify();
+  }
+
+  applyStepStart(step: StepRecord): void {
+    this._logger.trace('DefaultTree.applyStepStart();', { stepId: step.id, runId: step.runId });
+
+    if (this._steps.some((existing) => existing.id === step.id)) {
+      this._logger.warn('DefaultTree.applyStepStart(); duplicate step id', { stepId: step.id });
+      return;
+    }
+    this._steps.push(step);
     this._notify();
   }
 

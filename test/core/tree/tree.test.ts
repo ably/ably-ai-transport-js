@@ -363,4 +363,59 @@ describe('Tree', () => {
       expect(handler).toHaveBeenCalledTimes(3);
     });
   });
+
+  describe('steps', () => {
+    describe('applyStepStart', () => {
+      it('records the step as active', () => {
+        const tree = makeTree();
+        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
+
+        expect(tree.steps).toEqual([{ id: 's-1', runId: 'r-1', status: 'active' }]);
+      });
+
+      it('appends multiple steps in arrival order', () => {
+        const tree = makeTree();
+        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
+        tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active' });
+
+        expect(tree.steps.map((s) => s.id)).toEqual(['s-1', 's-2']);
+      });
+
+      it('preserves the runId from the supplied step', () => {
+        const tree = makeTree();
+        tree.applyStepStart({ id: 's-1', runId: 'r-7', status: 'active' });
+
+        expect(tree.steps[0]?.runId).toBe('r-7');
+      });
+
+      it('ignores a duplicate step id without disturbing the existing entry', () => {
+        const tree = makeTree();
+        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
+        tree.applyStepStart({ id: 's-1', runId: 'r-other', status: 'active' });
+
+        expect(tree.steps).toEqual([{ id: 's-1', runId: 'r-1', status: 'active' }]);
+      });
+
+      it('fires subscribe', () => {
+        const tree = makeTree();
+        const handler = vi.fn();
+        tree.subscribe(handler);
+
+        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
+
+        expect(handler).toHaveBeenCalledTimes(1);
+      });
+
+      it('does not fire subscribe when the duplicate is ignored', () => {
+        const tree = makeTree();
+        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
+        const handler = vi.fn();
+        tree.subscribe(handler);
+
+        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
+
+        expect(handler).not.toHaveBeenCalled();
+      });
+    });
+  });
 });

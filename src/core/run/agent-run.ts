@@ -3,15 +3,17 @@ import * as Ably from 'ably';
 import type { Logger } from '../../logger.js';
 import type { AnyCodec, CodecMessage } from '../codec/index.js';
 import type { DefaultSessionWriter } from '../session/writer.js';
+import type { Step } from '../step/index.js';
+import { DefaultStep } from '../step/index.js';
 import type { MessageNode, Tree } from '../tree/index.js';
 import type { AgentView } from '../view/index.js';
 import { DefaultAgentView } from '../view/index.js';
 import type { Run, RunEndStatus, RunStatus } from './run.js';
 
 /**
- * Run as seen from an {@link AgentSession}. Phase 7 subset of the RFC's
- * `AgentRun<C>` — adds `view`, `messages`, `end`, and the async disposer
- * on top of the base {@link Run}. `createStep`, `suspend`, `lastStep`,
+ * Run as seen from an {@link AgentSession}. Phase 9 subset of the RFC's
+ * `AgentRun<C>` — adds `view`, `messages`, `end`, the async disposer, and
+ * `createStep` on top of the base {@link Run}. `suspend`, `lastStep`,
  * `when`, and run-level `sendMessages`/`sendParts`/`sendEvents` land in
  * later phases.
  *
@@ -73,6 +75,15 @@ export interface AgentRun<C extends AnyCodec> extends Run<CodecMessage<C>> {
    * ```
    */
   [Symbol.asyncDispose](): Promise<void>;
+
+  /**
+   * Create a new {@link Step} bound to this run. Phase 9 subset — the
+   * returned handle owns its own freshly generated id and exposes
+   * {@link Step.start}; the rest of the step surface (`pipe`, `end`,
+   * `signal`, etc.) lands in later phases.
+   * @returns A `'pending'` step handle ready for {@link Step.start}.
+   */
+  createStep(): Step<C>;
 }
 
 /** Options for constructing a {@link DefaultAgentRun}. */
@@ -197,5 +208,16 @@ export class DefaultAgentRun<C extends AnyCodec> implements AgentRun<C> {
 
   async [Symbol.asyncDispose](): Promise<void> {
     await this.close();
+  }
+
+  createStep(): Step<C> {
+    this._logger.trace('DefaultAgentRun.createStep();');
+    return new DefaultStep<C>({
+      stepId: crypto.randomUUID(),
+      runId: this._runId,
+      tree: this._tree,
+      writer: this._writer,
+      logger: this._logger,
+    });
   }
 }

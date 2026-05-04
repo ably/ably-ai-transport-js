@@ -4,10 +4,12 @@ import { useCallback, useState } from 'react';
 
 interface InputBarProps {
   onSubmit: (text: string) => void;
+  /** Invoked when the user clicks Stop while a run is in flight. */
+  onStop?: () => void;
   disabled: boolean;
 }
 
-export function InputBar({ onSubmit, disabled }: InputBarProps) {
+export function InputBar({ onSubmit, onStop, disabled }: InputBarProps) {
   const [input, setInput] = useState('');
 
   const submit = useCallback(() => {
@@ -16,6 +18,8 @@ export function InputBar({ onSubmit, disabled }: InputBarProps) {
     onSubmit(text);
     setInput('');
   }, [input, disabled, onSubmit]);
+
+  const showStop = disabled && onStop !== undefined;
 
   return (
     <div className="border-t border-zinc-800 px-4 py-3">
@@ -33,14 +37,25 @@ export function InputBar({ onSubmit, disabled }: InputBarProps) {
           className="flex-1 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500"
           autoFocus
         />
-        <button
-          type="button"
-          onClick={submit}
-          disabled={disabled || input.trim().length === 0}
-          className="rounded-md bg-zinc-700 px-4 py-2 text-sm font-medium text-zinc-200 transition-colors hover:bg-zinc-600 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          Send
-        </button>
+        {showStop ? (
+          <button
+            type="button"
+            onClick={onStop}
+            className="rounded-md bg-red-700 px-4 py-2 text-sm font-medium text-zinc-100 transition-colors hover:bg-red-600"
+            aria-label="Stop the running response"
+          >
+            Stop
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={submit}
+            disabled={disabled || input.trim().length === 0}
+            className="rounded-md bg-zinc-700 px-4 py-2 text-sm font-medium text-zinc-200 transition-colors hover:bg-zinc-600 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Send
+          </button>
+        )}
       </div>
     </div>
   );

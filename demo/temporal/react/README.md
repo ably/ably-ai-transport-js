@@ -112,14 +112,14 @@ You can inspect each agent invocation in the Temporal Web UI at
 
 ## Files of interest
 
-| File                                  | Purpose                                                                     |
-| ------------------------------------- | --------------------------------------------------------------------------- |
-| `src/app/api/agent/route.ts`          | Validates the invocation and starts the `chatTurn` workflow.                |
-| `src/temporal/workflows.ts`           | Workflow definition. Calls `runAgentTurn` and waits for it to finish.       |
-| `src/temporal/activities.ts`          | Activity that drives the run/step/pipe lifecycle through `AgentSession`.    |
-| `src/temporal/worker.ts`              | Worker entry point. Pre-warms the `AgentSession` and registers activities. |
-| `src/lib/agent-session.ts`            | Cached `AgentSession` factory used inside the worker.                       |
-| `src/lib/temporal-client.ts`          | Cached Temporal `Client` used by the API route.                             |
+| File                         | Purpose                                                                    |
+| ---------------------------- | -------------------------------------------------------------------------- |
+| `src/app/api/agent/route.ts` | Validates the invocation and starts the `chatTurn` workflow.               |
+| `src/temporal/workflows.ts`  | Workflow definition. Calls `runAgentTurn` and waits for it to finish.      |
+| `src/temporal/activities.ts` | Activity that drives the run/step/pipe lifecycle through `AgentSession`.   |
+| `src/temporal/worker.ts`     | Worker entry point. Pre-warms the `AgentSession` and registers activities. |
+| `src/lib/agent-session.ts`   | Cached `AgentSession` factory used inside the worker.                      |
+| `src/lib/temporal-client.ts` | Cached Temporal `Client` used by the API route.                            |
 
 ## Differences from `demo/vercel/react`
 

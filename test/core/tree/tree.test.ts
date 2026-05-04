@@ -20,6 +20,7 @@ const makeTree = () => new DefaultTree<string>({ logger: makeLogger({ logLevel: 
 
 const makeRun = (overrides: Partial<Run<string>> & Pick<Run<string>, 'id'>): Run<string> => ({
   status: 'active',
+  abortRequested: false,
   initiatorClientId: 'client-1',
   ...overrides,
 });
@@ -258,7 +259,9 @@ describe('Tree', () => {
         const tree = makeTree();
         tree.applyRunStart(makeRun({ id: 'r-1' }));
 
-        expect(tree.runs).toEqual([{ id: 'r-1', status: 'active', initiatorClientId: 'client-1' }]);
+        expect(tree.runs).toEqual([
+          { id: 'r-1', status: 'active', abortRequested: false, initiatorClientId: 'client-1' },
+        ]);
       });
 
       it('appends multiple runs in arrival order', () => {
@@ -281,7 +284,7 @@ describe('Tree', () => {
         tree.applyRunStart(makeRun({ id: 'r-1', initiatorClientId: 'first' }));
         tree.applyRunStart(makeRun({ id: 'r-1', initiatorClientId: 'second' }));
 
-        expect(tree.runs).toEqual([{ id: 'r-1', status: 'active', initiatorClientId: 'first' }]);
+        expect(tree.runs).toEqual([{ id: 'r-1', status: 'active', abortRequested: false, initiatorClientId: 'first' }]);
       });
 
       it('fires subscribe', () => {
@@ -313,7 +316,9 @@ describe('Tree', () => {
 
         tree.applyRunEnd({ runId: 'r-1', status: 'complete' });
 
-        expect(tree.runs).toEqual([{ id: 'r-1', status: 'complete', initiatorClientId: 'client-1' }]);
+        expect(tree.runs).toEqual([
+          { id: 'r-1', status: 'complete', abortRequested: false, initiatorClientId: 'client-1' },
+        ]);
       });
 
       it('fires subscribe on transition', () => {
@@ -348,6 +353,85 @@ describe('Tree', () => {
         expect(tree.runs.map((r) => r.id)).toEqual(['r-1', 'r-2']);
         expect(tree.runs[0]?.status).toBe('complete');
         expect(tree.runs[1]?.status).toBe('active');
+      });
+    });
+
+    describe('applyAbort', () => {
+      it("sets abortRequested and synthesises status to 'aborted'", () => {
+        const tree = makeTree();
+        tree.applyRunStart(makeRun({ id: 'r-1' }));
+
+        tree.applyAbort({ runId: 'r-1' });
+
+        expect(tree.runs[0]?.abortRequested).toBe(true);
+        expect(tree.runs[0]?.status).toBe('aborted');
+      });
+
+      it('notifies subscribers exactly once for the first abort observation', () => {
+        const tree = makeTree();
+        tree.applyRunStart(makeRun({ id: 'r-1' }));
+        const handler = vi.fn();
+        tree.subscribe(handler);
+
+        tree.applyAbort({ runId: 'r-1' });
+
+        expect(handler).toHaveBeenCalledTimes(1);
+      });
+
+      it('is idempotent — second abort observation is a no-op (no notify)', () => {
+        const tree = makeTree();
+        tree.applyRunStart(makeRun({ id: 'r-1' }));
+        tree.applyAbort({ runId: 'r-1' });
+
+        const handler = vi.fn();
+        tree.subscribe(handler);
+        tree.applyAbort({ runId: 'r-1' });
+
+        expect(handler).not.toHaveBeenCalled();
+        expect(tree.runs[0]?.status).toBe('aborted');
+      });
+
+      it('logs warn and drops when the run is unknown', () => {
+        const messages: { level: LogLevel; message: string }[] = [];
+        const handler: LogHandler = (message, level) => messages.push({ level, message });
+        const tree = new DefaultTree<string>({
+          logger: makeLogger({ logHandler: handler, logLevel: LogLevel.Warn }),
+        });
+
+        tree.applyAbort({ runId: 'never-started' });
+
+        expect(messages.some((m) => m.message.includes('run not found'))).toBe(true);
+        expect(tree.runs).toEqual([]);
+      });
+
+      it('aborted runs override later run-end (aborted) — confirmation is logged at debug', () => {
+        const messages: { level: LogLevel; message: string }[] = [];
+        const handler: LogHandler = (message, level) => messages.push({ level, message });
+        const tree = new DefaultTree<string>({
+          logger: makeLogger({ logHandler: handler, logLevel: LogLevel.Debug }),
+        });
+        tree.applyRunStart(makeRun({ id: 'r-1' }));
+        tree.applyAbort({ runId: 'r-1' });
+
+        tree.applyRunEnd({ runId: 'r-1', status: 'aborted' });
+
+        expect(tree.runs[0]?.status).toBe('aborted');
+        expect(messages.some((m) => m.message.includes('confirmation for aborted run'))).toBe(true);
+      });
+
+      it('aborted runs override later run-end (complete) — conflict is logged at warn', () => {
+        const messages: { level: LogLevel; message: string }[] = [];
+        const handler: LogHandler = (message, level) => messages.push({ level, message });
+        const tree = new DefaultTree<string>({
+          logger: makeLogger({ logHandler: handler, logLevel: LogLevel.Warn }),
+        });
+        tree.applyRunStart(makeRun({ id: 'r-1' }));
+        tree.applyAbort({ runId: 'r-1' });
+
+        tree.applyRunEnd({ runId: 'r-1', status: 'complete' });
+
+        expect(tree.runs[0]?.status).toBe('aborted');
+        expect(messages.some((m) => m.message.includes('abort overrides observed run-end'))).toBe(true);
       });
     });
 

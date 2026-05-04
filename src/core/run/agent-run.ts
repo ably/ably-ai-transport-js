@@ -1,7 +1,7 @@
 import * as Ably from 'ably';
 
+import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
-import { ABORTED } from '../../signal-reason.js';
 import type { AnyCodec, CodecMessage } from '../codec/index.js';
 import type { DefaultSessionWriter } from '../session/writer.js';
 import type { Step } from '../step/index.js';
@@ -44,12 +44,23 @@ export interface AgentRun<C extends AnyCodec> extends Run<CodecMessage<C>> {
   readonly messages: readonly MessageNode<CodecMessage<C>>[];
 
   /**
-   * Finalise the run. Phase 11 subset of the RFC's classifier — no
-   * error → publishes `x-ably-run-end` with status `'complete'`; an
-   * error → publishes either `'aborted'` (when the most recent step's
-   * `signal.reason === ABORTED`) or `'failed'` (any other error). The
-   * pause row depends on a durable pause control signal and lands when
-   * that surface ships.
+   * Finalise the run. The classifier picks the wire status from the
+   * caller's error (or absence) and the run's durable abort state:
+   *
+   * | Inputs                                                    | Wire status   |
+   * | --------------------------------------------------------- | ------------- |
+   * | No error, run not aborted                                 | `'complete'`  |
+   * | No error, run observed aborted (`abortRequested === true`) | `'aborted'`  |
+   * | Error, run observed aborted, error is signal-driven       | `'aborted'`   |
+   * | Error otherwise                                           | `'failed'`    |
+   *
+   * "Signal-driven" means a web-standard `AbortError` (what `AbortSignal`
+   * paths throw, including model SDKs whose `abortSignal` is wired to
+   * `step.signal`) or an `Ably.ErrorInfo` with code
+   * {@link ErrorCode.RunAborted} (what {@link Step.start} throws when an
+   * abort lands between steps). Any other error is genuine and routes to
+   * `'failed'` even if the run has been aborted concurrently — `'failed'`
+   * runs are retryable, `'aborted'` runs are not. Spec: AIT-AB7.
    *
    * Idempotent — a second call after the first has resolved is a no-op
    * and resolves `void`. Does not close the run's view; pair with the
@@ -132,7 +143,6 @@ export class DefaultAgentRun<C extends AnyCodec> implements AgentRun<C> {
   private readonly _logger: Logger;
   private readonly _view: DefaultAgentView<C>;
   private _ended = false;
-  private _lastStep?: Step<C>;
 
   constructor(options: AgentRunOptions<C>) {
     this._runId = options.runId;
@@ -154,8 +164,14 @@ export class DefaultAgentRun<C extends AnyCodec> implements AgentRun<C> {
   get status(): RunStatus {
     // Lazy-read from the tree — the run-start may not yet be visible (the
     // plan defers slow-precondition handling), in which case we report the
-    // status the agent expects to see, namely 'active'.
+    // status the agent expects to see, namely 'active'. Tree synthesises
+    // 'aborted' when abortRequested is set, so this getter inherits that
+    // synthesis transparently.
     return this._tree.runs.find((run) => run.id === this._runId)?.status ?? 'active';
+  }
+
+  get abortRequested(): boolean {
+    return this._tree.runs.find((run) => run.id === this._runId)?.abortRequested === true;
   }
 
   get initiatorClientId(): string {
@@ -222,37 +238,106 @@ export class DefaultAgentRun<C extends AnyCodec> implements AgentRun<C> {
 
   createStep(): Step<C> {
     this._logger.trace('DefaultAgentRun.createStep();');
-    const step = new DefaultStep<C>({
+    return new DefaultStep<C>({
       stepId: crypto.randomUUID(),
       runId: this._runId,
       tree: this._tree,
       writer: this._writer,
       logger: this._logger,
     });
-    // Track the most recently created step so end()'s classifier can
-    // read its signal.reason — basic-chat creates one step per hop, so
-    // "last" is "the one currently active". Multi-step variants land
-    // alongside a richer Run.steps surface in a later phase.
-    this._lastStep = step;
-    return step;
   }
 
   /**
    * Pick the wire status for `x-ably-run-end` from the input error and
-   * the most recent step's signal reason. Phase 11 implements three
-   * rows of the RFC's classifier — `'complete'`, `'aborted'`,
-   * `'failed'` — without yet routing the pause row (that row lands
-   * alongside durable pause control signals).
+   * the run's durable abort state. Evaluated in two branches:
+   *
+   *   1. Error not supplied (happy path / disposer):
+   *      - `tree.runs[runId].abortRequested === true` → `'aborted'`.
+   *        Default flow: the step ran to completion while an abort was
+   *        observed on the channel; this publish is the agent's
+   *        confirmation. The wire is already aborted via the client's
+   *        `x-ably-abort`.
+   *      - Otherwise → `'complete'`.
+   *
+   *   2. Error supplied (catch path):
+   *      - The run was observed aborted AND the error is attributable to
+   *        the abort path (a web-standard `AbortError` from a model SDK
+   *        whose `abortSignal` was wired to `step.signal`, or an
+   *        SDK-thrown `Ably.ErrorInfo` with code `RunAborted`) →
+   *        `'aborted'`.
+   *      - Otherwise → `'failed'`. A genuine error wins over a coincident
+   *        abort — `'failed'` runs are retryable, `'aborted'` runs are
+   *        not, so the distinction is load-bearing. A non-signal-driven
+   *        error means the throw was not the abort, even if
+   *        `step.signal` happens to be aborted (e.g. the channel observed
+   *        an abort while a network error bubbled up independently).
+   *
+   * Spec: AIT-AB7.
    * @param error The error supplied to {@link end}, or `undefined`.
    * @returns The wire status to publish on the run-end.
    */
   private _classifyEndStatus(error: unknown): RunEndStatus {
     if (error === undefined) {
-      return 'complete';
+      return this._abortRequestedForRun() ? 'aborted' : 'complete';
     }
-    if (this._lastStep?.signal.reason === ABORTED) {
+    if (this._abortRequestedForRun() && (isAbortSignalError(error) || isRunAbortedErrorInfo(error))) {
       return 'aborted';
     }
     return 'failed';
   }
+
+  private _abortRequestedForRun(): boolean {
+    return this._tree.runs.find((r) => r.id === this._runId)?.abortRequested === true;
+  }
 }
+
+/**
+ * Detect a web-standard signal-driven abort error. `AbortSignal`-driven
+ * paths (fetch, the Vercel AI SDK, most model SDK clients) throw a
+ * `DOMException` whose `name` is `'AbortError'` when their bound signal
+ * fires. Some SDKs wrap the abort in their own error class (e.g. the
+ * OpenAI SDK's `APIUserAbortError` carries the original `AbortError` on
+ * `cause`), so the check walks the cause chain.
+ *
+ * Used by the run-end classifier to distinguish signal-driven errors
+ * (`'aborted'`) from genuine errors coincident with an abort observation
+ * (`'failed'`).
+ * @param error The caught error to classify.
+ * @returns True when the error appears to be signal-driven.
+ */
+const isAbortSignalError = (error: unknown): boolean => {
+  // Bound the cause chain walk to defend against pathological self-references.
+  const visited = new Set<unknown>();
+  let current: unknown = error;
+  while (current !== undefined && current !== null && !visited.has(current)) {
+    visited.add(current);
+    if (typeof current !== 'object') {
+      return false;
+    }
+    // CAST: errors are unstructured at the catch boundary. Read `name` and
+    // `cause` defensively without committing to an `Error` shape so wrapper
+    // classes from third-party SDKs are still inspected.
+    const candidate = current as { name?: unknown; cause?: unknown };
+    if (candidate.name === 'AbortError') {
+      return true;
+    }
+    current = candidate.cause;
+  }
+  return false;
+};
+
+/**
+ * Detect an SDK-thrown `Ably.ErrorInfo` whose code is {@link ErrorCode.RunAborted}.
+ * Used by the run-end classifier to recognise an error that was thrown
+ * because the run was already observably aborted (e.g. `step.start()`
+ * rejected on a multi-step run after an abort landed between steps).
+ * @param error The caught error to classify.
+ * @returns True when the error is `Ably.ErrorInfo` with code `RunAborted`.
+ */
+const isRunAbortedErrorInfo = (error: unknown): boolean => {
+  if (!(error instanceof Ably.ErrorInfo)) {
+    return false;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
+  return error.code === ErrorCode.RunAborted;
+};

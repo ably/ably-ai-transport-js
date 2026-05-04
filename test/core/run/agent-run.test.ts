@@ -168,6 +168,35 @@ describe('AgentSession.createRun', () => {
     await expect(promise).rejects.toBeErrorInfoWithCode(ErrorCode.InvocationPreconditionTimeout);
   });
 
+  it('rejects with RunAborted when the run is observably aborted at invocation time', async () => {
+    // Spec: AIT-AB4. Channel observed an x-ably-abort before the agent's
+    // invocation arrived. createRun rejects without publishing — the wire
+    // is already correct (abort is itself the run terminal).
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    await session.connect();
+    const invocation = Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1' });
+
+    const promise = session.createRun(invocation);
+    // Drive run-start so preconditions resolve, then publish the abort.
+    channel.simulateMessage({
+      name: WireMessages.RunStart,
+      serial: '01',
+      clientId: 'agent-1',
+      extras: { headers: { [Headers.RunId]: 'r-1' } },
+    } as unknown as Ably.InboundMessage);
+    channel.simulateMessage({
+      name: WireMessages.Abort,
+      serial: '02',
+      extras: { headers: { [Headers.RunId]: 'r-1', [Headers.Reason]: 'aborted' } },
+    } as unknown as Ably.InboundMessage);
+
+    await expect(promise).rejects.toBeErrorInfoWithCode(ErrorCode.RunAborted);
+    // No publishes from the createRun reject path — the channel is
+    // already correct via the client's x-ably-abort.
+    expect(channel.publish).not.toHaveBeenCalled();
+  });
+
   it('run.messages filters by run id; run.view.messages exposes the linear tree across runs', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
@@ -244,16 +273,56 @@ describe('AgentRun.end', () => {
     expect(headersOf(wire)[Headers.Status]).toBe('failed');
   });
 
-  it("publishes status='aborted' when called with an error and the bound step.signal.reason is ABORTED", async () => {
+  it("publishes status='aborted' when called with an AbortError after channel abort observed (opt-in flow)", async () => {
+    // Spec: AIT-AB7 row 3. Developer wired step.signal into the model SDK;
+    // x-ably-abort lands on the channel; step.signal fires; model throws
+    // AbortError. The classifier sees abortRequested AND a signal-driven
+    // error → routes to 'aborted'.
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
     const run = await connectAndCreateRun(session, channel);
 
-    // Open a step whose composed signal aborts via the caller signal.
+    const step = run.createStep();
+    const startPromise = step.start();
+    channel.simulateMessage({
+      name: 'x-ably-step-start',
+      serial: '02',
+      extras: { headers: { 'x-ably-run-id': 'r-1', 'x-ably-step-id': step.id } },
+    } as unknown as Ably.InboundMessage);
+    await startPromise;
+
+    // Channel abort observed.
+    channel.simulateMessage({
+      name: WireMessages.Abort,
+      serial: '03',
+      extras: { headers: { [Headers.RunId]: 'r-1', [Headers.Reason]: 'aborted' } },
+    } as unknown as Ably.InboundMessage);
+
+    const abortError = new DOMException('aborted', 'AbortError');
+    await step.end(abortError);
+    await run.end(abortError);
+
+    const lastBatch = channel.publishedBatches.at(-1) ?? [];
+    const [wire] = lastBatch;
+    if (!wire) throw new Error('expected run-end wire');
+    expect(wire.name).toBe(WireMessages.RunEnd);
+    expect(headersOf(wire)[Headers.Status]).toBe('aborted');
+  });
+
+  it("publishes status='failed' when caller signal aborts without a channel abort observation", async () => {
+    // The HTTP request was abandoned (req.signal fired) without an
+    // x-ably-abort being published. Caller-signal aborts don't propagate
+    // to the channel, so the run isn't observably aborted; the classifier
+    // routes the AbortError to 'failed'. Failed runs are retryable —
+    // matches the user's intent that only deliberate (channel-published)
+    // aborts are non-retryable.
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    const run = await connectAndCreateRun(session, channel);
+
     const step = run.createStep();
     const ac = new AbortController();
     const startPromise = step.start({ signal: ac.signal });
-    // Drive the step-start back through the decode loop so start() resolves.
     channel.simulateMessage({
       name: 'x-ably-step-start',
       serial: '02',
@@ -262,20 +331,14 @@ describe('AgentRun.end', () => {
     await startPromise;
 
     ac.abort();
-    // Emulate the basic-chat catch-block sequence: step.end(error), then
-    // run.end(error). The run's classifier reads the bound step's
-    // signal.reason and routes the abort row.
-    await step.end(new Error('agent threw — pipe shutdown'));
-    await run.end(new Error('agent threw — pipe shutdown'));
+    const abortError = new DOMException('aborted', 'AbortError');
+    await step.end(abortError);
+    await run.end(abortError);
 
-    // Two step wires (step-start, step-end) preceded the run-end; the
-    // run-end is the last batch published.
     const lastBatch = channel.publishedBatches.at(-1) ?? [];
-    expect(lastBatch).toHaveLength(1);
     const [wire] = lastBatch;
     if (!wire) throw new Error('expected run-end wire');
-    expect(wire.name).toBe(WireMessages.RunEnd);
-    expect(headersOf(wire)[Headers.Status]).toBe('aborted');
+    expect(headersOf(wire)[Headers.Status]).toBe('failed');
   });
 
   it("publishes status='failed' when an error is supplied without an aborted bound step", async () => {
@@ -300,6 +363,65 @@ describe('AgentRun.end', () => {
     const [wire] = lastBatch;
     if (!wire) throw new Error('expected run-end wire');
     expect(wire.name).toBe(WireMessages.RunEnd);
+    expect(headersOf(wire)[Headers.Status]).toBe('failed');
+  });
+
+  it("publishes status='aborted' when no error is supplied and the run was observed aborted (default flow)", async () => {
+    // Spec: AIT-AB7 row 3. Step ran to completion (developer didn't wire
+    // step.signal); abort observed during run; run.end() reads
+    // tree.runs[runId].abortRequested and publishes the confirmation.
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    const run = await connectAndCreateRun(session, channel);
+
+    // Mark the run aborted via channel observation (no developer signal).
+    channel.simulateMessage({
+      name: WireMessages.Abort,
+      serial: '02',
+      extras: { headers: { [Headers.RunId]: 'r-1', [Headers.Reason]: 'aborted' } },
+    } as unknown as Ably.InboundMessage);
+
+    await run.end();
+
+    const lastBatch = channel.publishedBatches.at(-1) ?? [];
+    const [wire] = lastBatch;
+    if (!wire) throw new Error('expected run-end wire');
+    expect(wire.name).toBe(WireMessages.RunEnd);
+    expect(headersOf(wire)[Headers.Status]).toBe('aborted');
+  });
+
+  it("publishes status='failed' when a genuine error coincides with an observed abort (failed wins, retryable)", async () => {
+    // Spec: AIT-AB7 row 2. A genuine (non-signal-driven) error wins over a
+    // coincident abort observation. Failed runs are retryable; aborted
+    // runs are not — so the distinction is load-bearing.
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    const run = await connectAndCreateRun(session, channel);
+
+    // Open a step but never abort its signal — the developer didn't wire
+    // step.signal into the model SDK, so signal.reason is undefined.
+    const step = run.createStep();
+    const startPromise = step.start();
+    channel.simulateMessage({
+      name: 'x-ably-step-start',
+      serial: '02',
+      extras: { headers: { 'x-ably-run-id': 'r-1', 'x-ably-step-id': step.id } },
+    } as unknown as Ably.InboundMessage);
+    await startPromise;
+
+    // Abort observed during the step.
+    channel.simulateMessage({
+      name: WireMessages.Abort,
+      serial: '03',
+      extras: { headers: { [Headers.RunId]: 'r-1', [Headers.Reason]: 'aborted' } },
+    } as unknown as Ably.InboundMessage);
+
+    // Now the model throws an unrelated network error.
+    await run.end(new Error('network error from model'));
+
+    const lastBatch = channel.publishedBatches.at(-1) ?? [];
+    const [wire] = lastBatch;
+    if (!wire) throw new Error('expected run-end wire');
     expect(headersOf(wire)[Headers.Status]).toBe('failed');
   });
 

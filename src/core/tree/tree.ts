@@ -140,11 +140,29 @@ export interface TreeInternal<TMessage> extends Tree<TMessage> {
    * logged and ignored — without history hydration (phase 13) a session
    * that subscribed mid-run can legitimately see run-end without prior
    * run-start.
+   *
+   * Aborted runs are terminal-and-final: when `abortRequested === true` on
+   * the existing record, the call is logged and ignored. A run-end with
+   * status `'aborted'` is treated as the agent's confirmation publish
+   * (logged at debug); any other status is a conflict (logged at warn).
+   * Spec: AIT-AB2a.
    * @param options Identification and target status for the transition.
    * @param options.runId The id of the run to transition.
    * @param options.status The status to transition the run into.
    */
   applyRunEnd(options: { runId: string; status: RunStatus }): void;
+
+  /**
+   * Record that an `x-ably-abort` control signal targeting `runId` has been
+   * observed on the channel. Sets `abortRequested: true` on the run record
+   * and synthesises {@link Run.status} to `'aborted'`. Idempotent — a
+   * second call after the flag is set is a no-op (no notify). If `runId`
+   * does not match a known run the call is logged and ignored. Spec:
+   * AIT-AB2.
+   * @param options Identification of the run to mark aborted.
+   * @param options.runId The id of the run to mark aborted.
+   */
+  applyAbort(options: { runId: string }): void;
 
   /**
    * Record a `'active'` step observed via `x-ably-step-start`. A duplicate
@@ -247,7 +265,43 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
       this._logger.warn('DefaultTree.applyRunEnd(); run not found', { runId: options.runId });
       return;
     }
+
+    // Spec: AIT-AB2a. Aborted runs are terminal-and-final; the abort signal
+    // is itself the run terminal. A `run-end (aborted)` is the agent's
+    // confirmation publish — informational. Any other status is a conflict.
+    if (existing.abortRequested) {
+      if (options.status === 'aborted') {
+        this._logger.debug('DefaultTree.applyRunEnd(); confirmation for aborted run', { runId: options.runId });
+      } else {
+        this._logger.warn('DefaultTree.applyRunEnd(); abort overrides observed run-end', {
+          runId: options.runId,
+          incomingStatus: options.status,
+        });
+      }
+      return;
+    }
+
     this._runs[index] = { ...existing, status: options.status };
+    this._notify();
+  }
+
+  applyAbort(options: { runId: string }): void {
+    this._logger.trace('DefaultTree.applyAbort();', { runId: options.runId });
+
+    const index = this._runs.findIndex((run) => run.id === options.runId);
+    const existing = index === -1 ? undefined : this._runs[index];
+    if (existing === undefined) {
+      this._logger.warn('DefaultTree.applyAbort(); run not found', { runId: options.runId });
+      return;
+    }
+
+    if (existing.abortRequested) {
+      // Idempotent — a second abort observation is a no-op. Don't notify.
+      return;
+    }
+
+    // Spec: AIT-AB2. Mark abortRequested and synthesise status.
+    this._runs[index] = { ...existing, abortRequested: true, status: 'aborted' };
     this._notify();
   }
 

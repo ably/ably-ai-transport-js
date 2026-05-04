@@ -647,7 +647,9 @@ describe('Session', () => {
       );
 
       const tree = treeOf(session);
-      expect(tree.runs).toEqual<Run<string>[]>([{ id: 'r-1', status: 'active', initiatorClientId: 'alice' }]);
+      expect(tree.runs).toEqual<Run<string>[]>([
+        { id: 'r-1', status: 'active', abortRequested: false, initiatorClientId: 'alice' },
+      ]);
     });
 
     it('honours x-ably-client-id over the connection clientId on run-start', async () => {
@@ -804,6 +806,124 @@ describe('Session', () => {
       );
 
       expect(handler).toHaveBeenCalledTimes(2);
+    });
+
+    it('marks a run aborted on x-ably-abort and synthesises status', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.RunStart,
+          headers: { [Headers.RunId]: 'r-1' },
+          clientId: 'alice',
+        }),
+      );
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '02',
+          name: WireMessages.Abort,
+          headers: { [Headers.RunId]: 'r-1', [Headers.Reason]: 'aborted' },
+          clientId: 'alice',
+        }),
+      );
+
+      expect(treeOf(session).runs[0]?.status).toBe('aborted');
+      expect(treeOf(session).runs[0]?.abortRequested).toBe(true);
+    });
+
+    it('skips x-ably-abort without x-ably-run-id', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.RunStart,
+          headers: { [Headers.RunId]: 'r-1' },
+          clientId: 'alice',
+        }),
+      );
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '02',
+          name: WireMessages.Abort,
+          headers: { [Headers.Reason]: 'aborted' },
+          clientId: 'alice',
+        }),
+      );
+
+      expect(treeOf(session).runs[0]?.status).toBe('active');
+      expect(treeOf(session).runs[0]?.abortRequested).toBe(false);
+    });
+
+    it('confirmation x-ably-run-end (aborted) after x-ably-abort leaves status aborted', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.RunStart,
+          headers: { [Headers.RunId]: 'r-1' },
+          clientId: 'alice',
+        }),
+      );
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '02',
+          name: WireMessages.Abort,
+          headers: { [Headers.RunId]: 'r-1', [Headers.Reason]: 'aborted' },
+          clientId: 'alice',
+        }),
+      );
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '03',
+          name: WireMessages.RunEnd,
+          headers: { [Headers.RunId]: 'r-1', [Headers.Status]: 'aborted' },
+          clientId: 'alice',
+        }),
+      );
+
+      expect(treeOf(session).runs[0]?.status).toBe('aborted');
+    });
+
+    it('conflicting x-ably-run-end (complete) after x-ably-abort is dropped', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.RunStart,
+          headers: { [Headers.RunId]: 'r-1' },
+          clientId: 'alice',
+        }),
+      );
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '02',
+          name: WireMessages.Abort,
+          headers: { [Headers.RunId]: 'r-1', [Headers.Reason]: 'aborted' },
+          clientId: 'alice',
+        }),
+      );
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '03',
+          name: WireMessages.RunEnd,
+          headers: { [Headers.RunId]: 'r-1', [Headers.Status]: 'complete' },
+          clientId: 'alice',
+        }),
+      );
+
+      expect(treeOf(session).runs[0]?.status).toBe('aborted');
     });
   });
 
@@ -975,7 +1095,7 @@ describe('Session', () => {
 
       const view = session.createView();
       expect(treeOf(session).runs).toEqual<Run<string>[]>([
-        { id: 'r-1', status: 'active', initiatorClientId: 'alice' },
+        { id: 'r-1', status: 'active', abortRequested: false, initiatorClientId: 'alice' },
       ]);
       expect(view.messages).toHaveLength(1);
       expect(view.messages[0]?.id).toBe('m-1');

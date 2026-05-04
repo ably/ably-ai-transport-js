@@ -1,9 +1,12 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Run } from '../../../src/core/run/index.js';
+import { createClientRun } from '../../../src/core/run/index.js';
 import { createClientSession } from '../../../src/core/session/index.js';
+import type { DefaultSessionWriter } from '../../../src/core/session/writer.js';
 import type { Tree } from '../../../src/core/tree/index.js';
 import { Headers, WireMessages } from '../../../src/headers.js';
+import { LogLevel, makeLogger } from '../../../src/logger.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 import { type StubCodec, stubCodec } from '../../helper/stub-codec.js';
@@ -102,6 +105,7 @@ describe('Run lifecycle (integration)', () => {
     expect(treeOf(bSession).runs[0]).toEqual<Run<string>>({
       id: 'r-1',
       status: 'active',
+      abortRequested: false,
       initiatorClientId: aClient.auth.clientId,
     });
 
@@ -141,6 +145,68 @@ describe('Run lifecycle (integration)', () => {
     await waitForRuns(bSession, (runs) => runs.length === 1);
     expect(treeOf(bSession).runs[0]?.initiatorClientId).toBe('end-user-1');
 
+    await bSession.close();
+  });
+
+  it('multi-device idempotence: second client.abort() is a no-op once the abort is observed', async () => {
+    // Spec: AIT-AB3. Two clients on the same channel. Client A calls
+    // run.abort(); the wire records one x-ably-abort. Client B observes
+    // the abort via its channel subscription; B's run.abort() is a no-op.
+    const channelName = uniqueChannelName('run-abort-idempotence');
+
+    const aClient = ablyRealtimeClient();
+    const aSession = createClientSession({
+      client: aClient,
+      sessionName: channelName,
+      codec: stubCodec,
+    });
+    await aSession.connect();
+    const aView = aSession.createView();
+
+    const bClient = ablyRealtimeClient();
+    const bSession = createClientSession({
+      client: bClient,
+      sessionName: channelName,
+      codec: stubCodec,
+    });
+    await bSession.connect();
+
+    const aRun = await aView.send('hello');
+    await waitForRuns(bSession, (runs) => runs.length === 1 && runs[0]?.status === 'active');
+
+    // Client A publishes the abort. Both clients observe it.
+    await aRun.abort();
+    await waitForRuns(bSession, (runs) => runs[0]?.status === 'aborted');
+
+    // Construct a B-side ClientRun handle bound to the same runId. (Real
+    // apps would obtain this via a future `view.runs` surface; this test
+    // reaches in to assert ClientRun.abort's idempotence directly.)
+    // CAST: integration tests reach into session internals to assemble a
+    // ClientRun without re-publishing run-start.
+    const bInternals = bSession as unknown as {
+      _writer: DefaultSessionWriter<StubCodec>;
+      _tree: Tree<string>;
+    };
+    const bChannel = bClient.channels.get(channelName);
+    const bPublishSpy = vi.spyOn(bChannel, 'publish');
+    const bRun = createClientRun<StubCodec>({
+      id: aRun.id,
+      status: 'active',
+      initiatorClientId: aClient.auth.clientId,
+      sessionName: channelName,
+      tree: bInternals._tree,
+      writer: bInternals._writer,
+      logger: makeLogger({ logLevel: LogLevel.Silent }),
+    });
+
+    await bRun.abort();
+
+    // The run was already terminal in B's tree (synthesised aborted from
+    // the observed x-ably-abort), so abort() short-circuits without
+    // touching the channel.
+    expect(bPublishSpy).not.toHaveBeenCalled();
+
+    await aSession.close();
     await bSession.close();
   });
 });

@@ -24,6 +24,7 @@ export type {
 
 // Sessions
 export type {
+  AbortOptions,
   AgentSession,
   ClientSession,
   CreateRunOptions,

@@ -247,6 +247,7 @@ export class DefaultStep<C extends AnyCodec> implements Step<C> {
   private _encoder?: Encoder<CodecPart<C>, CodecMessage<C>, CodecEvent<C>>;
   private _ended = false;
   private _localStatus?: StepEndStatus;
+  private _abortTreeUnsubscribe?: () => void;
 
   constructor(options: StepOptions<C>) {
     this._stepId = options.stepId;
@@ -376,7 +377,32 @@ export class DefaultStep<C extends AnyCodec> implements Step<C> {
       }
     }
 
+    // Spec: AIT-AB5. Subscribe to live abort notifications first, then check
+    // synchronously — order matters so an abort that lands between the
+    // synchronous read and the subscription's first notification is still
+    // observed. A subsequent live abort fires the listener; an abort already
+    // recorded in the tree is caught by the synchronous check below.
+    this._abortTreeUnsubscribe = this._tree.subscribe(() => {
+      this._fireAbortIfRequested();
+    });
+    if (this._isRunAborted()) {
+      this._abortTreeUnsubscribe();
+      this._abortTreeUnsubscribe = undefined;
+      throw new Ably.ErrorInfo(`unable to start step; run ${this._runId} has been aborted`, ErrorCode.RunAborted, 410);
+    }
+
     this._logger.debug('DefaultStep.start(); started');
+  }
+
+  private _isRunAborted(): boolean {
+    return this._tree.runs.find((r) => r.id === this._runId)?.abortRequested === true;
+  }
+
+  private _fireAbortIfRequested(): void {
+    if (this._isRunAborted() && !this._abortController.signal.aborted) {
+      this._logger.debug('DefaultStep._fireAbortIfRequested(); firing step.signal from observed abort');
+      this._abortController.abort(ABORTED);
+    }
   }
 
   async pipe(readable: ReadableStream<CodecPart<C>>): Promise<void> {
@@ -390,18 +416,15 @@ export class DefaultStep<C extends AnyCodec> implements Step<C> {
       [Headers.RunId]: this._runId,
     };
 
-    const signal = this._abortController.signal;
+    // Pipe consumes the readable to its `done` regardless of signal state.
+    // The composed signal is informational at this layer — wire `step.signal`
+    // into the model SDK if mid-stream interruption is wanted; the model's
+    // shortened readable is what truncates the pipe, not a check here.
+    // Spec: AIT-AB6.
     const reader = readable.getReader();
     try {
-      // Each iteration checks the signal's `aborted` flag in the while
-      // condition — both before pulling the first chunk and again after
-      // every read so a signal that fires mid-stream (caller signal,
-      // start-timeout) terminates the pipe before publishing the next
-      // chunk. The signal cannot un-cancel a publish already in flight,
-      // so the granularity is "between chunks", which matches the plan's
-      // "clean shutdown mid-stream" contract.
       let result = await reader.read();
-      while (!result.done && !signal.aborted) {
+      while (!result.done) {
         await encoder.encodePart(result.value, { headers });
         result = await reader.read();
       }
@@ -423,6 +446,8 @@ export class DefaultStep<C extends AnyCodec> implements Step<C> {
       return;
     }
     this._ended = true;
+    this._abortTreeUnsubscribe?.();
+    this._abortTreeUnsubscribe = undefined;
 
     const status: StepEndStatus = error === undefined ? 'complete' : 'failed';
     this._localStatus = status;

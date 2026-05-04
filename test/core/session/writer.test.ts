@@ -437,3 +437,57 @@ describe('SessionWriter.endRun', () => {
     expect(headers[Headers.Status]).toBe('failed');
   });
 });
+
+describe('SessionWriter.abort', () => {
+  it('publishes one x-ably-abort message with run-id and reason headers', async () => {
+    const { options, channel } = makeSession();
+    const session = createClientSession(options);
+    await session.connect();
+
+    await session.writer.abort({ runId: 'r-1' });
+
+    expect(channel.publish).toHaveBeenCalledTimes(1);
+    expect(channel.publishedBatches).toHaveLength(1);
+    const batch = channel.publishedBatches[0] ?? [];
+    expect(batch).toHaveLength(1);
+    const [wire] = batch;
+    if (!wire) throw new Error('expected one wire message');
+    expect(wire.name).toBe(WireMessages.Abort);
+    const headers = headersOf(wire);
+    expect(headers[Headers.RunId]).toBe('r-1');
+    expect(headers[Headers.Reason]).toBe('aborted');
+    expect(headers[Headers.ClientId]).toBeUndefined();
+  });
+
+  it('attaches x-ably-client-id when supplied', async () => {
+    const { options, channel } = makeSession();
+    const session = createClientSession(options);
+    await session.connect();
+
+    await session.writer.abort({ runId: 'r-1', clientId: 'end-user-1' });
+
+    const [wire] = channel.publishedBatches[0] ?? [];
+    if (!wire) throw new Error('expected one wire message');
+    expect(headersOf(wire)[Headers.ClientId]).toBe('end-user-1');
+  });
+
+  it('throws SessionClosed after the session has been closed', async () => {
+    const { options } = makeSession();
+    const session = createClientSession(options);
+    await session.close();
+
+    await expect(session.writer.abort({ runId: 'r-1' })).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+  });
+
+  it('marks the channel in use so close() detaches and releases it', async () => {
+    const { options, channel, realtime } = makeSession();
+    const session = createClientSession(options);
+
+    await session.writer.abort({ runId: 'r-1' });
+    await session.close();
+
+    expect(channel.publish).toHaveBeenCalledTimes(1);
+    expect(channel.detach).toHaveBeenCalledTimes(1);
+    expect(realtime.channels.release).toHaveBeenCalledWith('session-1');
+  });
+});

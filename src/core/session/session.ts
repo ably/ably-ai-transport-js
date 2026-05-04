@@ -533,6 +533,10 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
       this._handleStepEnd(message);
       return;
     }
+    if (message.name === WireMessages.Abort) {
+      this._handleAbort(message);
+      return;
+    }
 
     if (!this._decoder || !this._accumulator) {
       // Defensive: subscribe is registered after _decoder/_accumulator are set,
@@ -644,7 +648,7 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
       return;
     }
 
-    const run: Run<CodecMessage<C>> = { id: runId, status: 'active', initiatorClientId };
+    const run: Run<CodecMessage<C>> = { id: runId, status: 'active', abortRequested: false, initiatorClientId };
     this._tree.applyRunStart(run);
   }
 
@@ -689,6 +693,22 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
     }
 
     this._tree.applyStepStart({ id: stepId, runId, status: 'active' });
+  }
+
+  private _handleAbort(message: Ably.InboundMessage): void {
+    const runId = readHeader(message, Headers.RunId);
+    if (runId === undefined) {
+      this._logger.warn('DefaultSession._handleAbort(); missing x-ably-run-id', {
+        serial: message.serial,
+      });
+      return;
+    }
+
+    // Spec: AIT-AB2. The abort signal is itself the run terminal — the tree
+    // synthesises status 'aborted' from this observation. Live delivery to
+    // the active step (if any) is driven by the step's own subscription to
+    // tree change notifications.
+    this._tree.applyAbort({ runId });
   }
 
   private _handleRunEnd(message: Ably.InboundMessage): void {
@@ -795,17 +815,29 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
       );
     }
 
-    const run = new DefaultAgentRun<C>({
+    await this._waitForRunPreconditions(invocation, options);
+
+    // Spec: AIT-AB4. Once preconditions resolve, the run-start (and any
+    // subsequent x-ably-abort observed during hydration or live delivery)
+    // are visible. Reject if the run has been aborted — the agent must not
+    // open a step on a terminally aborted run. No publish from this path:
+    // the wire is already correct (x-ably-abort is itself the terminal),
+    // and the synthesised tree status reflects that.
+    if (this._tree.runs.find((r) => r.id === invocation.runId)?.abortRequested === true) {
+      throw new Ably.ErrorInfo(
+        `unable to create run; run ${invocation.runId} has been aborted`,
+        ErrorCode.RunAborted,
+        410,
+      );
+    }
+
+    return new DefaultAgentRun<C>({
       runId: invocation.runId,
       tree: this._tree,
       writer: this._writer,
       logger: this._logger,
       registerView: (view) => this._views.add(view),
     });
-
-    await this._waitForRunPreconditions(invocation, options);
-
-    return run;
   }
 
   /**

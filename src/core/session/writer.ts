@@ -51,6 +51,26 @@ export interface EndRunOptions {
 }
 
 /**
+ * Options for {@link SessionWriter.abort}. Publishes an `x-ably-abort`
+ * control signal targeting the named run. The signal is itself the run
+ * terminal — receivers synthesise `status: 'aborted'` from its observation,
+ * so no follow-up `x-ably-run-end` is required for tree correctness (an
+ * agent that picks up the invocation will publish one as a confirmation,
+ * but it is redundant on the wire). Spec: AIT-AB1, AIT-AB2.
+ */
+export interface AbortOptions {
+  /** The run to abort. */
+  runId: string;
+  /**
+   * Override the attribution clientId sent as `x-ably-client-id`. Use this
+   * in backend publishers that abort on behalf of an end-user
+   * (server-side orchestration). When omitted, the publishing connection's
+   * clientId is used.
+   */
+  clientId?: string;
+}
+
+/**
  * The low-level write surface shared by both session types. Phase 5
  * exposes `sendMessages` and `endRun`; later phases add `sendParts`,
  * `sendEvents`, the rest of run/step lifecycle, and control-signal
@@ -89,6 +109,25 @@ export interface SessionWriter<C extends AnyCodec> {
    *   when called after the session has been closed.
    */
   endRun(options: EndRunOptions): Promise<void>;
+
+  /**
+   * Publish an `x-ably-abort` control signal for the named run. The wire
+   * carries `x-ably-run-id`, `x-ably-reason: 'aborted'`, and (when supplied)
+   * `x-ably-client-id`.
+   *
+   * The signal is itself the run terminal — receivers synthesise
+   * `status: 'aborted'` from it, so no follow-up `x-ably-run-end` is
+   * required for tree correctness. Idempotence (no-op on terminal runs)
+   * is enforced at the {@link ClientRun.abort} layer; this writer method
+   * publishes unconditionally so backend orchestrators that hold the
+   * runId directly can publish without a tree lookup.
+   *
+   * Spec: AIT-AB1, AIT-AB2.
+   * @param options Per-call wiring; see {@link AbortOptions}.
+   * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.SessionClosed}
+   *   when called after the session has been closed.
+   */
+  abort(options: AbortOptions): Promise<void>;
 }
 
 /** Options for constructing a {@link DefaultSessionWriter}. */
@@ -406,6 +445,30 @@ export class DefaultSessionWriter<C extends AnyCodec> implements SessionWriter<C
       runId: options.runId,
       status: options.status,
     });
+  }
+
+  async abort(options: AbortOptions): Promise<void> {
+    this._logger.trace('DefaultSessionWriter.abort();', { runId: options.runId });
+
+    if (this._isClosed()) {
+      throw new Ably.ErrorInfo('unable to abort run; session is closed', ErrorCode.SessionClosed, 400);
+    }
+
+    const headers: Record<string, string> = {
+      [Headers.RunId]: options.runId,
+      [Headers.Reason]: 'aborted',
+    };
+    if (options.clientId !== undefined) {
+      headers[Headers.ClientId] = options.clientId;
+    }
+
+    const channel = this._channelManager.get();
+    await channel.publish({
+      name: WireMessages.Abort,
+      extras: { headers },
+    });
+
+    this._logger.debug('DefaultSessionWriter.abort(); published', { runId: options.runId });
   }
 
   /**

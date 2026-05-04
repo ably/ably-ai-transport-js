@@ -61,6 +61,12 @@ export const Headers = {
    * later phase) so the decode loop can route step state into the tree.
    */
   StepId: 'x-ably-step-id',
+  /**
+   * Reason carried by control-signal wires. For {@link WireMessages.Abort}
+   * the value is always `'aborted'`; reserved for future control signals
+   * (`'paused'` etc.) that share the header slot.
+   */
+  Reason: 'x-ably-reason',
 } as const;
 
 /** Union of valid SDK header names. */
@@ -91,6 +97,15 @@ export const WireMessages = {
    * {@link Headers.StepId}, and {@link Headers.Status}.
    */
   StepEnd: 'x-ably-step-end',
+  /**
+   * Durable control signal terminating a run. Carries {@link Headers.RunId}
+   * and {@link Headers.Reason} (always `'aborted'`); may carry
+   * {@link Headers.ClientId} when a backend publishes on behalf of an
+   * end-user. The signal is itself the run terminal — receivers synthesise
+   * `status: 'aborted'` from observation of an abort, regardless of whether
+   * a follow-up `x-ably-run-end` arrives. Spec: AIT-AB1, AIT-AB2.
+   */
+  Abort: 'x-ably-abort',
 } as const;
 
 /** Union of SDK-owned wire message names. */

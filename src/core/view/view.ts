@@ -214,6 +214,9 @@ export class DefaultClientView<C extends AnyCodec> extends DefaultView<CodecMess
       initiatorClientId,
       sessionName: this._sessionName,
       messageId: lastMessageId,
+      tree: this._tree,
+      writer: this._writer,
+      logger: this._logger,
     });
   }
 }

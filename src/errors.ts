@@ -66,6 +66,18 @@ export enum ErrorCode {
    * `messageId`) never arrived from channel history or live delivery.
    */
   InvocationPreconditionTimeout = 104301,
+
+  // --- Run lifecycle ---
+
+  /**
+   * The run has been aborted (an `x-ably-abort` control signal was observed
+   * on the channel) and cannot accept new lifecycle transitions. Thrown by
+   * `AgentSession.createRun` when called with an invocation whose runId is
+   * aborted, and by `Step.start` when the run was aborted between steps.
+   * Aborted runs are terminal-and-final; only `'failed'` runs are retryable.
+   * Spec: AIT-AB4, AIT-AB5.
+   */
+  RunAborted = 104303,
 }
 
 /**

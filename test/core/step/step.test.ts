@@ -262,6 +262,80 @@ describe('Step.start', () => {
     expect(step.signal.aborted).toBe(true);
     expect(step.signal.reason).toBe(ABORTED);
   });
+
+  it('rejects with RunAborted when the run is observed as aborted at start time', async () => {
+    // Spec: AIT-AB5. Pre-existing abort on the run — start() rejects after
+    // the step-start observe loop, before the step is considered live.
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    const run = await connectAndCreateRun(session, channel);
+    const step = run.createStep();
+
+    // Mark the run aborted before start() runs.
+    channel.simulateMessage({
+      name: WireMessages.Abort,
+      serial: '01',
+      extras: { headers: { [Headers.RunId]: 'r-1', [Headers.Reason]: 'aborted' } },
+    } as unknown as Ably.InboundMessage);
+
+    const startPromise = step.start();
+    await Promise.resolve();
+    simulateStepStart(channel, 'r-1', step.id, '02');
+
+    await expect(startPromise).rejects.toBeErrorInfoWithCode(ErrorCode.RunAborted);
+  });
+
+  it('subscribes to live abort: x-ably-abort observed during step fires step.signal with reason ABORTED', async () => {
+    // Spec: AIT-AB6. Channel-observed abort flows into step.signal.
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    const run = await connectAndCreateRun(session, channel);
+    const step = run.createStep();
+
+    const startPromise = step.start();
+    await Promise.resolve();
+    simulateStepStart(channel, 'r-1', step.id);
+    await startPromise;
+    expect(step.signal.aborted).toBe(false);
+
+    // Live abort observed.
+    channel.simulateMessage({
+      name: WireMessages.Abort,
+      serial: '02',
+      extras: { headers: { [Headers.RunId]: 'r-1', [Headers.Reason]: 'aborted' } },
+    } as unknown as Ably.InboundMessage);
+
+    expect(step.signal.aborted).toBe(true);
+    expect(step.signal.reason).toBe(ABORTED);
+  });
+
+  it('does not fire step.signal for an abort targeting a different run', async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    const run = await connectAndCreateRun(session, channel);
+    const step = run.createStep();
+
+    const startPromise = step.start();
+    await Promise.resolve();
+    simulateStepStart(channel, 'r-1', step.id);
+    await startPromise;
+
+    // Open another run on the same session and abort it. Our step is on
+    // r-1; abort targets r-2. step.signal must stay clean.
+    channel.simulateMessage({
+      name: WireMessages.RunStart,
+      serial: '02',
+      clientId: 'agent-1',
+      extras: { headers: { [Headers.RunId]: 'r-2' } },
+    } as unknown as Ably.InboundMessage);
+    channel.simulateMessage({
+      name: WireMessages.Abort,
+      serial: '03',
+      extras: { headers: { [Headers.RunId]: 'r-2', [Headers.Reason]: 'aborted' } },
+    } as unknown as Ably.InboundMessage);
+
+    expect(step.signal.aborted).toBe(false);
+  });
 });
 
 describe('Step.pipe', () => {
@@ -323,7 +397,10 @@ describe('Step.pipe', () => {
     expect(channel.publish).not.toHaveBeenCalled();
   });
 
-  it('exits cleanly without publishing any chunk when step.signal aborts before pipe starts pulling', async () => {
+  it('consumes the full readable even when step.signal aborts before the first read (signal is informational)', async () => {
+    // Spec: AIT-AB6. Pipe runs the readable to its `done` regardless of
+    // signal state. The composed signal is informational at this layer —
+    // wire it into the model SDK to truncate the stream upstream.
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
     const run = await connectAndCreateRun(session, channel);
@@ -335,11 +412,8 @@ describe('Step.pipe', () => {
     simulateStepStart(channel, 'r-1', step.id);
     await startPromise;
 
-    // step-start was the only publish so far.
     const publishCountAfterStart = channel.publish.mock.calls.length;
 
-    // Abort before pulling — the pipe's while condition exits on the
-    // first signal check, so no chunk is encoded.
     ac.abort();
 
     const readable = new ReadableStream<string>({
@@ -352,11 +426,11 @@ describe('Step.pipe', () => {
     });
     await step.pipe(readable);
 
-    expect(channel.publish.mock.calls.length).toBe(publishCountAfterStart);
+    expect(channel.publish.mock.calls.length).toBe(publishCountAfterStart + 3);
     expect(step.signal.aborted).toBe(true);
   });
 
-  it('honours mid-stream abort across iterations: chunks pushed after the abort are not published', async () => {
+  it('consumes chunks pushed after the caller-signal abort fires (signal does not interrupt pipe)', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
     const run = await connectAndCreateRun(session, channel);
@@ -370,8 +444,6 @@ describe('Step.pipe', () => {
 
     const publishCountAfterStart = channel.publish.mock.calls.length;
 
-    // Hand-rolled controller-driven stream so the test can interleave
-    // chunks with the caller-signal abort.
     let controller: ReadableStreamDefaultController<string> | undefined;
     const readable = new ReadableStream<string>({
       start: (c) => {
@@ -383,19 +455,20 @@ describe('Step.pipe', () => {
     const pipePromise = step.pipe(readable);
 
     controller.enqueue('chunk-1');
-    // Wait until the encoder has issued one publish for chunk-1 — the
-    // encode chain spans several microtasks, so polling avoids brittle
-    // microtask counting.
     await vi.waitFor(() => {
       expect(channel.publish.mock.calls.length).toBe(publishCountAfterStart + 1);
     });
 
     ac.abort();
+    controller.enqueue('chunk-2');
     controller.close();
 
     await pipePromise;
 
-    expect(channel.publish.mock.calls.length).toBe(publishCountAfterStart + 1);
+    // Pipe is informational — chunks pushed after the abort are still
+    // published. The model SDK's job is to truncate the readable upstream
+    // when it observes the signal.
+    expect(channel.publish.mock.calls.length).toBe(publishCountAfterStart + 2);
     expect(step.signal.aborted).toBe(true);
   });
 });

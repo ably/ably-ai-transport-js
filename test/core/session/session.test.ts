@@ -437,8 +437,38 @@ describe('Session', () => {
         runId: 'r-1',
         serial: '01',
         message: 'hello',
+        streaming: true,
       });
       expect(handler).toHaveBeenCalledTimes(1);
+    });
+
+    it("produces streaming: false on the tree node for a kind: 'message' decoded value", async () => {
+      // The stub codec returns `kind: 'part'`, which the decode loop
+      // routes to streaming: true. A codec that emits a complete
+      // domain message in one wire should produce streaming: false.
+      const channel = createMockChannel();
+      const realtime = createMockRealtime(channel, { clientId: 'alice' });
+      const logger = makeLogger({ logLevel: LogLevel.Silent });
+      const oneShotCodec: StubCodec = {
+        ...stubCodec,
+        createDecoder: () => ({
+          decode: (message) => (typeof message.data === 'string' ? [{ kind: 'message', message: message.data }] : []),
+        }),
+      };
+      const session = createClientSession({
+        client: realtime,
+        sessionName: 'session-1',
+        codec: oneShotCodec,
+        logger,
+      });
+      await session.connect();
+      const view = session.createView();
+
+      channel.simulateMessage(
+        makeInbound({ serial: '01', msgId: 'm-1', role: 'user', clientId: 'alice', data: 'hello' }),
+      );
+
+      expect(view.messages[0]?.streaming).toBe(false);
     });
 
     it('falls back to the publishing connection clientId when x-ably-client-id is absent', async () => {

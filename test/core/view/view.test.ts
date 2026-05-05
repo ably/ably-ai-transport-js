@@ -19,6 +19,7 @@ const makeNode = (id: string, serial: string) => ({
   clientId: 'client-1',
   runId: 'r-1',
   message: `msg:${id}`,
+  streaming: false,
   serial,
 });
 

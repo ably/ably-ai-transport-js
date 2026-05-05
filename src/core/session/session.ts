@@ -594,10 +594,17 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
 
     for (const value of decoded) {
       const messageId = value.messageId ?? wireMessageId;
+      // Streaming-part wires belong to an in-flight assistant stream; the
+      // node is `streaming: true` until a step-end / run-end / abort lands
+      // for the run. Complete-message wires (the user-message round-trip
+      // path) reconstruct in one shot, so the node is `streaming: false`.
+      let streaming: boolean;
       if (value.kind === 'part') {
         this._accumulator.processPart(value.part, messageId);
+        streaming = true;
       } else if (value.kind === 'message') {
         this._accumulator.applyMessage(messageId, value.message);
+        streaming = false;
       } else {
         // Phase 2 doesn't route codec events yet — they land alongside the
         // writer surfaces that produce them in a later phase.
@@ -612,7 +619,9 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
       // Subsequent chunks under one msg-id update the existing node so
       // streaming codecs can land deltas as composed-message updates without
       // creating sibling nodes. The accumulator above has already absorbed
-      // the value; the tree mirrors the composed state.
+      // the value; the tree mirrors the composed state. Update preserves the
+      // node's streaming flag — `streaming` only flips false on a lifecycle
+      // observation (step-end / run-end / abort) routed through the tree.
       if (this._tree.messages.some((node) => node.id === messageId)) {
         this._tree.updateMessage(messageId, composed);
         continue;
@@ -624,6 +633,7 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
         clientId,
         runId,
         message: composed,
+        streaming,
         serial,
       };
       this._tree.applyMessage(node);

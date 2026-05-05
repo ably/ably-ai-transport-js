@@ -13,6 +13,7 @@ const makeNode = (
   clientId: 'client-1',
   runId: 'r-1',
   message: `msg:${overrides.id}`,
+  streaming: false,
   ...overrides,
 });
 
@@ -95,6 +96,7 @@ describe('Tree', () => {
         clientId: 'agent-1',
         runId: 'r-1',
         message: 'hello',
+        streaming: false,
       });
     });
   });
@@ -127,6 +129,7 @@ describe('Tree', () => {
         runId: 'r-1',
         role: 'assistant',
         message: 'world',
+        streaming: false,
       });
     });
 
@@ -554,6 +557,70 @@ describe('Tree', () => {
         expect(tree.steps[0]?.status).toBe('complete');
         expect(tree.steps[1]?.status).toBe('active');
       });
+    });
+  });
+
+  describe('streaming', () => {
+    it('preserves the streaming flag the inserter supplied', () => {
+      const tree = makeTree();
+      tree.applyMessage(makeNode({ id: 'a', serial: '01', runId: 'r-1', streaming: true }));
+
+      expect(tree.messages[0]?.streaming).toBe(true);
+    });
+
+    it('clears streaming on every assistant node for a run when run-end lands', () => {
+      const tree = makeTree();
+      tree.applyRunStart(makeRun({ id: 'r-1' }));
+      tree.applyMessage(makeNode({ id: 'a', serial: '01', runId: 'r-1', role: 'assistant', streaming: true }));
+      tree.applyMessage(makeNode({ id: 'b', serial: '02', runId: 'r-1', role: 'assistant', streaming: true }));
+
+      tree.applyRunEnd({ runId: 'r-1', status: 'complete' });
+
+      expect(tree.messages.map((n) => n.streaming)).toEqual([false, false]);
+    });
+
+    it('clears streaming when an abort lands for the run', () => {
+      const tree = makeTree();
+      tree.applyRunStart(makeRun({ id: 'r-1' }));
+      tree.applyMessage(makeNode({ id: 'a', serial: '01', runId: 'r-1', role: 'assistant', streaming: true }));
+
+      tree.applyAbort({ runId: 'r-1' });
+
+      expect(tree.messages[0]?.streaming).toBe(false);
+    });
+
+    it('clears streaming when a step-end lands for the run', () => {
+      const tree = makeTree();
+      tree.applyRunStart(makeRun({ id: 'r-1' }));
+      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
+      tree.applyMessage(makeNode({ id: 'a', serial: '01', runId: 'r-1', role: 'assistant', streaming: true }));
+
+      tree.applyStepEnd({ stepId: 's-1', status: 'complete' });
+
+      expect(tree.messages[0]?.streaming).toBe(false);
+    });
+
+    it('does not flip nodes from another run when a run-end lands', () => {
+      const tree = makeTree();
+      tree.applyRunStart(makeRun({ id: 'r-1' }));
+      tree.applyRunStart(makeRun({ id: 'r-2' }));
+      tree.applyMessage(makeNode({ id: 'a', serial: '01', runId: 'r-1', role: 'assistant', streaming: true }));
+      tree.applyMessage(makeNode({ id: 'b', serial: '02', runId: 'r-2', role: 'assistant', streaming: true }));
+
+      tree.applyRunEnd({ runId: 'r-1', status: 'complete' });
+
+      expect(tree.messages[0]?.streaming).toBe(false);
+      expect(tree.messages[1]?.streaming).toBe(true);
+    });
+
+    it('updateMessage preserves the streaming flag', () => {
+      const tree = makeTree();
+      tree.applyMessage(makeNode({ id: 'a', serial: '01', runId: 'r-1', streaming: true, message: 'hello' }));
+
+      tree.updateMessage('a', 'hello world');
+
+      expect(tree.messages[0]?.streaming).toBe(true);
+      expect(tree.messages[0]?.message).toBe('hello world');
     });
   });
 });

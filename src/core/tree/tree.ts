@@ -46,6 +46,22 @@ export interface MessageNode<TMessage> {
   readonly message: TMessage;
 
   /**
+   * Whether any part of this message is still being streamed. `true` while
+   * streaming chunks are being appended; `false` once the message is
+   * complete. Set by the session decode loop:
+   *
+   *   - Streaming-part wires (`kind: 'part'`) produce nodes with
+   *     `streaming: true`.
+   *   - Complete-message wires (`kind: 'message'`) produce nodes with
+   *     `streaming: false`.
+   *   - Tree-level lifecycle observations (`x-ably-run-end`,
+   *     `x-ably-step-end`, `x-ably-abort`) flip every still-streaming node
+   *     for the affected run to `streaming: false` — no further chunks
+   *     can land coherently after those wires.
+   */
+  readonly streaming: boolean;
+
+  /**
    * The Ably message serial that delivered this node. Retained on the
    * node so later phases (step supersession in particular) can reason
    * about total ordering on the channel without having to thread the
@@ -245,6 +261,36 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
     this._notify();
   }
 
+  /**
+   * Flip `streaming` to `false` on every node belonging to the given run
+   * that is currently streaming. Called from {@link applyRunEnd},
+   * {@link applyAbort}, and {@link applyStepEnd} — after any of those
+   * lifecycle wires lands no further parts can coherently extend a
+   * message in the run.
+   *
+   * Mutates each affected node into a fresh object (so identity-based
+   * change detection in consumers picks the transition up) and notifies
+   * subscribers exactly once when at least one node was updated.
+   * @param runId The id of the run whose streaming nodes should be marked
+   *   complete.
+   * @returns `true` when at least one node was updated, otherwise `false`.
+   */
+  private _clearStreamingForRun(runId: string): boolean {
+    let changed = false;
+    for (let i = 0; i < this._messages.length; i++) {
+      const existing = this._messages[i];
+      if (existing === undefined) {
+        continue;
+      }
+      if (existing.runId !== runId || !existing.streaming) {
+        continue;
+      }
+      this._messages[i] = { ...existing, streaming: false };
+      changed = true;
+    }
+    return changed;
+  }
+
   applyRunStart(run: Run<TMessage>): void {
     this._logger.trace('DefaultTree.applyRunStart();', { runId: run.id });
 
@@ -282,6 +328,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
     }
 
     this._runs[index] = { ...existing, status: options.status };
+    this._clearStreamingForRun(options.runId);
     this._notify();
   }
 
@@ -302,6 +349,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
 
     // Spec: AIT-AB2. Mark abortRequested and synthesise status.
     this._runs[index] = { ...existing, abortRequested: true, status: 'aborted' };
+    this._clearStreamingForRun(options.runId);
     this._notify();
   }
 
@@ -326,6 +374,11 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
       return;
     }
     this._steps[index] = { ...existing, status: options.status };
+    // The step-end terminates the streaming wave for the run — no further
+    // codec parts under in-flight messages can coherently arrive after it.
+    // Phase 6 has at most one step per run, so clearing across the run is a
+    // safe superset; richer per-step scoping lands when nodes carry stepId.
+    this._clearStreamingForRun(existing.runId);
     this._notify();
   }
 

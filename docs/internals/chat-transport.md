@@ -32,7 +32,7 @@ Without the hook, the adapter builds a default body with `history` (including pe
 
 The adapter returns the real run stream from `sendMessages()`. `useChat` consumes this stream to drive status transitions (`submitted` -> `streaming` -> `ready`), fire callbacks (`onToolCall`, `onData`, `onFinish`), and evaluate `sendAutomaticallyWhen`.
 
-Both `useChat` and `useMessageSync` accumulate messages in parallel: `useChat` builds from the stream, while `useMessageSync` pushes from the transport's message store via `setMessages` (a full replacement). The transport's version is always authoritative - both accumulators produce identical messages from the same chunks, and `setMessages` overwrites `useChat`'s state on every transport event.
+Both `useChat` and `useMessageSync` accumulate messages in parallel: `useChat` builds from the stream, while `useMessageSync` pushes from the session's message store via `setMessages` (a full replacement). The session's version is always authoritative - both accumulators produce identical messages from the same chunks, and `setMessages` overwrites `useChat`'s state on every session event.
 
 The server encoder ensures `messageId` alignment by stamping the transport-assigned `x-ably-msg-id` as a fallback domain `messageId` on the `start` chunk. This ensures both accumulators assign the same message ID.
 

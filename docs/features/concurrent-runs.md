@@ -2,7 +2,7 @@
 
 Multiple runs can be active simultaneously on the same Ably channel. Each run has its own stream, its own cancel handle, and its own lifecycle - they don't interfere with one other.
 
-Without concurrent run support, a transport must serialize interactions: one request finishes before the next starts. AI Transport allows parallel runs, enabling multi-agent patterns, interruption without cancelling, and multi-user conversations where multiple people interact at once.
+Without concurrent run support, a session must serialize interactions: one request finishes before the next starts. AI Transport allows parallel runs, enabling multi-agent patterns, interruption without cancelling, and multi-user conversations where multiple people interact at once.
 
 ## How it works
 
@@ -40,7 +40,7 @@ const { reason } = await run.pipe(result.toUIMessageStream());
 await run.end(reason);
 ```
 
-Multiple runs can stream on the same channel at the same time. The transport routes cancel signals to the correct run based on the filter headers.
+Multiple runs can stream on the same channel at the same time. The session routes cancel signals to the correct run based on the filter headers.
 
 ## Tracking active runs
 
@@ -56,7 +56,7 @@ In React:
 ```typescript
 import { useActiveRuns } from '@ably/ai-transport/react';
 
-const activeRuns = useActiveRuns(session);
+const activeRuns = useActiveRuns({ session });
 
 // Check if any client has active runs
 const isAnythingStreaming = activeRuns.size > 0;

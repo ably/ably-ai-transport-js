@@ -542,7 +542,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
 /**
  * Create a Tree that materializes branching history from a flat oplog.
  * @param logger - Logger for diagnostic output.
- * @returns A new {@link DefaultTree} instance. The transport uses DefaultTree
+ * @returns A new {@link DefaultTree} instance. The session uses DefaultTree
  *   directly for internal methods (emitAblyMessage, emitRun, trackRun, untrackRun).
  *   Public consumers see the narrower {@link Tree} interface.
  */

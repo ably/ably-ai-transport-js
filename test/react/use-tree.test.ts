@@ -7,11 +7,11 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ClientSession } from '../../src/core/transport/types.js';
 import { ClientSessionContext } from '../../src/react/contexts/client-session-context.js';
 import { useTree } from '../../src/react/use-tree.js';
-import { createMockTransport } from './helper/mock-session.js';
+import { createMockSession } from './helper/mock-session.js';
 
 describe('useTree', () => {
   it('delegates getSiblings to tree', () => {
-    const mock = createMockTransport([]);
+    const mock = createMockSession([]);
     (mock.tree.getSiblings as ReturnType<typeof vi.fn>).mockReturnValue(['a', 'b']);
 
     const { result } = renderHook(() => useTree({ session: mock.session }));
@@ -22,7 +22,7 @@ describe('useTree', () => {
   });
 
   it('delegates hasSiblings to tree', () => {
-    const mock = createMockTransport([]);
+    const mock = createMockSession([]);
     (mock.tree.hasSiblings as ReturnType<typeof vi.fn>).mockReturnValue(true);
 
     const { result } = renderHook(() => useTree({ session: mock.session }));
@@ -31,7 +31,7 @@ describe('useTree', () => {
   });
 
   it('delegates getNode to tree', () => {
-    const mock = createMockTransport([]);
+    const mock = createMockSession([]);
     const fakeNode = {
       message: 'hi',
       msgId: 'msg-1',
@@ -47,7 +47,7 @@ describe('useTree', () => {
     expect(result.current.getNode('msg-1')).toBe(fakeNode);
   });
 
-  it('returns safe defaults when no transport and no nearest context', () => {
+  it('returns safe defaults when no session and no nearest context', () => {
     const { result } = renderHook(() => useTree());
 
     expect(result.current.getSiblings('msg-1')).toEqual([]);
@@ -55,8 +55,8 @@ describe('useTree', () => {
     expect(result.current.getNode('msg-1')).toBeUndefined();
   });
 
-  it('uses nearest transport from context when transport is omitted', () => {
-    const mock = createMockTransport([]);
+  it('uses nearest session from context when session is omitted', () => {
+    const mock = createMockSession([]);
     (mock.tree.getSiblings as ReturnType<typeof vi.fn>).mockReturnValue(['a', 'b']);
 
     const wrapper = ({ children }: { children: ReactNode }): ReactNode =>

@@ -40,10 +40,10 @@ interface ViewEventsMap {
 // ---------------------------------------------------------------------------
 
 /**
- * Internal delegate function provided by the transport for executing sends.
+ * Internal delegate function provided by the session for executing sends.
  * The View pre-computes the visible branch history and passes it directly,
  * so the delegate has no back-reference to the View.
- * When `eventNodes` is provided, the transport includes them in the POST body
+ * When `eventNodes` is provided, the session includes them in the POST body
  * for the server to publish as cross-run events.
  */
 export type SendDelegate<TEvent, TMessage> = (
@@ -65,7 +65,7 @@ export interface ViewOptions<TEvent, TMessage> {
   channel: Ably.RealtimeChannel;
   /** The codec for decoding history messages. */
   codec: Codec<TEvent, TMessage>;
-  /** Delegate for executing sends through the transport. */
+  /** Delegate for executing sends through the session. */
   sendDelegate: SendDelegate<TEvent, TMessage>;
   /** Logger for diagnostic output. */
   logger: Logger;
@@ -311,7 +311,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     }
 
     // Pre-compute visible branch history before the delegate call so the
-    // transport has no back-reference to the View (one-way dependency).
+    // session has no back-reference to the View (one-way dependency).
     const history = this.flattenNodes();
     const result = await this._sendDelegate(input, options, history);
 

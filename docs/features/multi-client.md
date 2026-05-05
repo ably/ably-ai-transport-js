@@ -6,7 +6,7 @@ Without multi-client support, sharing a conversation across browser tabs, device
 
 ## How it works
 
-All clients subscribe to the same Ably channel. The transport distinguishes between:
+All clients subscribe to the same Ably channel. The session distinguishes between:
 
 - **Own runs** - runs this client initiated via `send()`, `regenerate()`, or `edit()`. Events route to the `ActiveRun`'s stream.
 - **Observer runs** - runs from other clients. Events are decoded, accumulated via the codec's `MessageAccumulator`, and inserted into the conversation tree.
@@ -33,7 +33,7 @@ No special API is needed. Connect two clients to the same channel name, and mess
 
 When another client's run streams a response:
 
-1. The transport receives Ably messages from the channel subscription
+1. The session receives Ably messages from the channel subscription
 2. The decoder produces domain events from the raw Ably messages
 3. A per-run accumulator builds domain messages from the events
 4. Accumulated messages are upserted into the conversation tree
@@ -48,7 +48,7 @@ This happens for every event - observer messages stream in real time, not just a
 ```typescript
 import { useActiveRuns } from '@ably/ai-transport/react';
 
-const activeRuns = useActiveRuns(transport);
+const activeRuns = useActiveRuns({ session });
 
 // activeRuns is Map<clientId, Set<runId>>
 // Show which users have active runs:
@@ -71,7 +71,7 @@ session.tree.on('run', (event) => {
 A client that joins mid-conversation loads history from the channel:
 
 ```typescript
-const { nodes, hasOlder, loadOlder } = useView(transport, { limit: 50 });
+const { nodes, hasOlder, loadOlder } = useView({ session, limit: 50 });
 ```
 
 History contains all messages from all clients, with their full branch structure. The late joiner sees the same conversation state as clients who were present from the start. See [History](history.md) for details.
@@ -89,10 +89,10 @@ useMessageSync({ setMessages });
 // messages now includes messages from all clients on the channel
 ```
 
-Without `useMessageSync()`, `useChat()` would only show messages from its own sends. The sync hook replaces `useChat()`'s message state with the transport's authoritative list on every update.
+Without `useMessageSync()`, `useChat()` would only show messages from its own sends. The sync hook replaces `useChat()`'s message state with the session's authoritative list on every update.
 
 ## Identity
 
-Each client is identified by a `clientId` passed to the transport. The transport stamps this on outgoing messages and run lifecycle events. Clients can use the `clientId` from message headers or run events to show who sent what.
+Each client is identified by a `clientId` passed to the session. The session stamps this on outgoing messages and run lifecycle events. Clients can use the `clientId` from message headers or run events to show who sent what.
 
 Client identity is established through Ably's token authentication - the `clientId` in the JWT token must match. See the [Get Started](../get-started/vercel-use-chat.md) guide for the auth setup.

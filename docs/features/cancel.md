@@ -37,7 +37,7 @@ In React, `useActiveRuns()` tells you whether runs are active:
 ```typescript
 import { useActiveRuns } from '@ably/ai-transport/react';
 
-const activeRuns = useActiveRuns(session);
+const activeRuns = useActiveRuns({ session });
 const isStreaming = activeRuns.size > 0;
 
 // Stop button
@@ -131,4 +131,4 @@ await session.close({ cancel: { own: true } });
 await session.close();
 ```
 
-See [Interruption](interruption.md) for cancel-then-send patterns. See [Error codes](../reference/error-codes.md) for cancel-related error codes. See [React hooks reference](../reference/react-hooks.md) for the `useActiveRuns()` API. For the internal cancel routing and filter resolution, see [Cancel routing](../internals/transport-components.md#cancel-routing-server-transport).
+See [Interruption](interruption.md) for cancel-then-send patterns. See [Error codes](../reference/error-codes.md) for cancel-related error codes. See [React hooks reference](../reference/react-hooks.md) for the `useActiveRuns()` API. For the internal cancel routing and filter resolution, see [Cancel routing](../internals/transport-components.md#cancel-routing-agent-session).

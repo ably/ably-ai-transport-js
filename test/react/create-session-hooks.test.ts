@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ClientSession } from '../../src/core/transport/types.js';
 import { createSessionHooks } from '../../src/react/create-session-hooks.js';
-import { createMockTransport } from './helper/mock-session.js';
+import { createMockSession } from './helper/mock-session.js';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -32,14 +32,14 @@ vi.mock('../../src/core/transport/client-session.js', () => ({
 describe('createSessionHooks', () => {
   beforeEach(() => {
     createClientSessionMock.mockClear();
-    createClientSessionMock.mockImplementation(() => createMockTransport().session);
+    createClientSessionMock.mockImplementation(() => createMockSession().session);
   });
 
   it('takes no arguments', () => {
     expect(() => createSessionHooks()).not.toThrow();
   });
 
-  it('useClientSession returns the transport when wrapped in ClientSessionProvider', () => {
+  it('useClientSession returns the session when wrapped in ClientSessionProvider', () => {
     const { ClientSessionProvider, useClientSession } = createSessionHooks<unknown, unknown>();
 
     const wrapper = ({ children }: { children: ReactNode }): ReactNode =>

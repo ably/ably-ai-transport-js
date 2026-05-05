@@ -7,10 +7,10 @@ import { vi } from 'vitest';
 import type { ClientSession, RunLifecycleEvent, Tree, View } from '../../../src/core/transport/types.js';
 
 type TreeEventType = 'update' | 'ably-message' | 'run';
-type TransportEventType = 'error';
+type SessionEventType = 'error';
 type Handler = ((...args: never[]) => void) | (() => void);
 
-export interface MockTransport {
+export interface MockSession {
   session: ClientSession<unknown, string>;
   send: ReturnType<typeof vi.fn>;
   regenerate: ReturnType<typeof vi.fn>;
@@ -20,21 +20,21 @@ export interface MockTransport {
   close: ReturnType<typeof vi.fn>;
   connect: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
-  /** Fire an event on the transport (only 'error'). */
-  emit: (event: TransportEventType, ...args: unknown[]) => void;
+  /** Fire an event on the session (only 'error'). */
+  emit: (event: SessionEventType, ...args: unknown[]) => void;
   /** Fire an event on tree/view (update, ably-message, run). */
   emitTree: (event: TreeEventType, ...args: unknown[]) => void;
   tree: Tree<string>;
   view: View<unknown, string>;
 }
 
-export const createMockTransport = (initialMessages: string[] = []): MockTransport => {
-  const transportHandlers = new Map<string, Set<Handler>>();
+export const createMockSession = (initialMessages: string[] = []): MockSession => {
+  const sessionHandlers = new Map<string, Set<Handler>>();
   const treeHandlers = new Map<string, Set<Handler>>();
   const viewHandlers = new Map<string, Set<Handler>>();
 
-  const emit = (event: TransportEventType, ...args: unknown[]): void => {
-    const set = transportHandlers.get(event);
+  const emit = (event: SessionEventType, ...args: unknown[]): void => {
+    const set = sessionHandlers.get(event);
     if (set) {
       for (const handler of set) {
         (handler as (...a: unknown[]) => void)(...args);
@@ -54,10 +54,10 @@ export const createMockTransport = (initialMessages: string[] = []): MockTranspo
   };
 
   const on = vi.fn((event: string, handler: Handler) => {
-    let set = transportHandlers.get(event);
+    let set = sessionHandlers.get(event);
     if (!set) {
       set = new Set();
-      transportHandlers.set(event, set);
+      sessionHandlers.set(event, set);
     }
     set.add(handler);
     return () => {

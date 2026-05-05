@@ -255,8 +255,8 @@ const streamOf = (...chunks: AI.UIMessageChunk[]): ReadableStream<AI.UIMessageCh
   });
 
 /**
- * Pull the `resolveWriteOptions` hook out of the last `streamResponse` call.
- * @param mock - The mock run whose last `streamResponse` call to inspect.
+ * Pull the `resolveWriteOptions` hook out of the last `pipe` call.
+ * @param mock - The mock run whose last `pipe` call to inspect.
  * @returns The resolver function passed by the helper, or undefined.
  */
 const lastResolver = (mock: MockRun): ((event: AI.UIMessageChunk) => WriteOptions | undefined) | undefined => {
@@ -268,7 +268,7 @@ const lastResolver = (mock: MockRun): ((event: AI.UIMessageChunk) => WriteOption
 };
 
 describe('streamResponseWithApprovalRedirect', () => {
-  it('delegates straight to run.streamResponse with no resolver when no approvals are approved', async () => {
+  it('delegates straight to run.pipe with no resolver when no approvals are approved', async () => {
     const mock = createMockRun();
 
     await streamResponseWithApprovalRedirect(mock.run, streamOf(), {
@@ -281,7 +281,7 @@ describe('streamResponseWithApprovalRedirect', () => {
     expect(lastResolver(mock)).toBeUndefined();
   });
 
-  it('delegates straight to run.streamResponse with no resolver when decisions is absent or empty', async () => {
+  it('delegates straight to run.pipe with no resolver when decisions is absent or empty', async () => {
     const mock = createMockRun();
 
     await streamResponseWithApprovalRedirect(mock.run, streamOf(), { parent: 'p1', decisions: undefined });

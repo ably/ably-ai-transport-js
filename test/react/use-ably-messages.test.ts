@@ -7,17 +7,17 @@ import { describe, expect, it } from 'vitest';
 import type { ClientSession } from '../../src/core/transport/types.js';
 import { ClientSessionContext } from '../../src/react/contexts/client-session-context.js';
 import { useAblyMessages } from '../../src/react/use-ably-messages.js';
-import { createMockTransport } from './helper/mock-session.js';
+import { createMockSession } from './helper/mock-session.js';
 
 describe('useAblyMessages', () => {
   it('returns empty array initially', () => {
-    const mock = createMockTransport();
+    const mock = createMockSession();
     const { result } = renderHook(() => useAblyMessages({ session: mock.session }));
     expect(result.current).toEqual([]);
   });
 
   it('accumulates messages from tree ably-message event', () => {
-    const mock = createMockTransport();
+    const mock = createMockSession();
     const { result } = renderHook(() => useAblyMessages({ session: mock.session }));
     expect(result.current).toEqual([]);
 
@@ -30,7 +30,7 @@ describe('useAblyMessages', () => {
   });
 
   it('unsubscribes on unmount', () => {
-    const mock = createMockTransport();
+    const mock = createMockSession();
     const { unmount } = renderHook(() => useAblyMessages({ session: mock.session }));
     unmount();
 
@@ -40,13 +40,13 @@ describe('useAblyMessages', () => {
     });
   });
 
-  it('returns empty array when no transport and no nearest context', () => {
+  it('returns empty array when no session and no nearest context', () => {
     const { result } = renderHook(() => useAblyMessages());
     expect(result.current).toEqual([]);
   });
 
-  it('uses nearest transport from context when transport is omitted', () => {
-    const mock = createMockTransport();
+  it('uses nearest session from context when session is omitted', () => {
+    const mock = createMockSession();
     const wrapper = ({ children }: { children: ReactNode }): ReactNode =>
       createElement(
         ClientSessionContext.Provider,

@@ -266,7 +266,7 @@ describe('AgentSession integration', () => {
   /**
    * Scenario: Multi-run sequential.
    *
-   * Runs two runs sequentially on the same transport and verifies
+   * Runs two runs sequentially on the same session and verifies
    * both complete successfully.
    */
   it('handles sequential runs', async () => {
@@ -322,7 +322,7 @@ describe('AgentSession integration', () => {
   /**
    * Scenario: Concurrent runs.
    *
-   * Starts two runs concurrently on the same transport and verifies
+   * Starts two runs concurrently on the same session and verifies
    * both complete and are distinguishable by run IDs.
    */
   it('handles concurrent runs', async () => {
@@ -567,7 +567,7 @@ describe('AgentSession integration', () => {
   /**
    * Scenario: Channel continuity loss is surfaced via onError (AIT-ST12).
    *
-   * The transport is mid-run when the channel is detached. The developer's
+   * The session is mid-run when the channel is detached. The developer's
    * onError callback must be invoked with a ChannelContinuityLost error so
    * they can decide whether to abort in-flight work.
    */

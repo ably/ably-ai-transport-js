@@ -6,7 +6,7 @@ import type { AnyCodec, CodecMessage } from '../codec/index.js';
 import type { Invocation } from '../invocation/index.js';
 import { Invocation as InvocationCtor } from '../invocation/index.js';
 import type { DefaultSessionWriter } from '../session/writer.js';
-import type { Tree } from '../tree/index.js';
+import type { ControlSignal, Tree } from '../tree/index.js';
 import type { Run, RunStatus } from './run.js';
 
 /**
@@ -29,30 +29,18 @@ export interface ClientRun<C extends AnyCodec> extends Run<CodecMessage<C>> {
   toInvocation(): Invocation;
 
   /**
-   * Abort this run by publishing an `x-ably-abort` control signal. The
-   * signal is itself the run terminal — once it lands, every observer
-   * sees `status === 'aborted'` (the tree synthesises it) without waiting
-   * for a follow-up `x-ably-run-end`. When an agent is processing the
-   * run, the agent's `step.signal` fires; whether that interrupts the
-   * stream depends on whether the developer wired `step.signal` into
-   * their model SDK. Either way, the agent's `run.end()` publishes
-   * `run-end (aborted)` as a confirmation.
+   * Abort this run by publishing an `x-ably-abort` control signal.
+   * Observation of the signal does not change run status on its own —
+   * the agent processing it publishes `run-end (aborted)`, and that
+   * lifecycle wire is what transitions the run to `'aborted'`.
    *
-   * Returns the run's invocation so the caller can POST it to wake an
-   * offline agent. The agent's `createRun` will reject with
-   * `RunAborted` (HTTP 410) — the wake-up just confirms the wire state
-   * to any agent that didn't already observe the abort. POSTing is
-   * optional; when an agent is already alive on the channel, the
-   * subscription delivers the abort directly.
+   * Returns an {@link Invocation} the caller can POST to wake an
+   * offline agent. With a live agent on the channel, the subscription
+   * delivers the abort directly and POSTing is optional.
    *
-   * No-op on terminal runs (`'aborted' | 'complete' | 'failed'`) —
-   * multi-device idempotence. The tree synthesises `'aborted'` from
-   * `abortRequested` so the second call from a different client (which
-   * has already observed the first client's abort via the channel
-   * subscription) returns without publishing. The returned `Invocation`
-   * is valid regardless of the no-op path.
-   *
-   * Spec: AIT-AB3.
+   * No-op on already-terminal runs (`'aborted' | 'complete' | 'failed'`)
+   * — multi-device idempotence. The returned `Invocation` is valid
+   * regardless of the no-op path.
    * @returns The run's `Invocation` for the caller to POST.
    */
   abort(): Promise<Invocation>;
@@ -114,11 +102,11 @@ export interface ClientRunOptions<C extends AnyCodec> {
 
 /**
  * Default {@link ClientRun} implementation. Lazy-reads run state from the
- * tree on each getter access (so `status` reflects the synthesis from
- * `abortRequested`) and publishes through the session's writer on
- * `abort()`. The instance is constructed by {@link DefaultClientView.send}
- * after a successful run-start; it lives for as long as the calling code
- * holds the reference.
+ * tree on each getter access (so `status` reflects the latest observed
+ * lifecycle wire) and publishes through the session's writer on
+ * `abort()`. The instance is constructed by
+ * {@link DefaultClientView.send} after a successful run-start; it lives
+ * for as long as the calling code holds the reference.
  * @internal
  */
 class DefaultClientRun<C extends AnyCodec> implements ClientRun<C> {
@@ -150,19 +138,20 @@ class DefaultClientRun<C extends AnyCodec> implements ClientRun<C> {
   }
 
   get status(): RunStatus {
-    // Read from the tree so the synthesised 'aborted' (from abortRequested)
-    // surfaces here without a separate code path. Falls back to the
-    // initial status when the run-start hasn't echoed back through the
-    // decode loop yet.
+    // Read from the tree so observed lifecycle wires drive status
+    // without a separate code path. Falls back to the local initial
+    // status when the run-start hasn't echoed back through the decode
+    // loop yet (publisher-only pre-echo hint; falls away once the wire
+    // confirms).
     return this._tree.runs.find((r) => r.id === this._id)?.status ?? this._initialStatus;
-  }
-
-  get abortRequested(): boolean {
-    return this._tree.runs.find((r) => r.id === this._id)?.abortRequested === true;
   }
 
   get initiatorClientId(): string {
     return this._initiatorClientId;
+  }
+
+  get controlSignals(): readonly ControlSignal[] {
+    return this._tree.runs.find((r) => r.id === this._id)?.controlSignals ?? [];
   }
 
   toInvocation(): Invocation {

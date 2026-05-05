@@ -678,7 +678,7 @@ describe('Session', () => {
 
       const tree = treeOf(session);
       expect(tree.runs).toEqual<Run<string>[]>([
-        { id: 'r-1', status: 'active', abortRequested: false, initiatorClientId: 'alice' },
+        { id: 'r-1', status: 'active', initiatorClientId: 'alice', controlSignals: [] },
       ]);
     });
 
@@ -838,7 +838,7 @@ describe('Session', () => {
       expect(handler).toHaveBeenCalledTimes(2);
     });
 
-    it('marks a run aborted on x-ably-abort and synthesises status', async () => {
+    it('records x-ably-abort on the run as a control signal without mutating status', async () => {
       const { options, channel } = makeSession();
       const session = createClientSession(options);
       await session.connect();
@@ -855,13 +855,19 @@ describe('Session', () => {
         makeRunInbound({
           serial: '02',
           name: WireMessages.Abort,
-          headers: { [Headers.RunId]: 'r-1', [Headers.Reason]: 'aborted' },
+          headers: {
+            [Headers.RunId]: 'r-1',
+            [Headers.MessageId]: 'sig-1',
+            [Headers.Reason]: 'aborted',
+          },
           clientId: 'alice',
         }),
       );
 
-      expect(treeOf(session).runs[0]?.status).toBe('aborted');
-      expect(treeOf(session).runs[0]?.abortRequested).toBe(true);
+      expect(treeOf(session).runs[0]?.status).toBe('active');
+      expect(treeOf(session).runs[0]?.controlSignals).toEqual([
+        { type: 'abort', runId: 'r-1', messageId: 'sig-1', clientId: 'alice' },
+      ]);
     });
 
     it('skips x-ably-abort without x-ably-run-id', async () => {
@@ -881,16 +887,16 @@ describe('Session', () => {
         makeRunInbound({
           serial: '02',
           name: WireMessages.Abort,
-          headers: { [Headers.Reason]: 'aborted' },
+          headers: { [Headers.MessageId]: 'sig-1', [Headers.Reason]: 'aborted' },
           clientId: 'alice',
         }),
       );
 
       expect(treeOf(session).runs[0]?.status).toBe('active');
-      expect(treeOf(session).runs[0]?.abortRequested).toBe(false);
+      expect(treeOf(session).runs[0]?.controlSignals).toEqual([]);
     });
 
-    it('confirmation x-ably-run-end (aborted) after x-ably-abort leaves status aborted', async () => {
+    it('skips x-ably-abort without x-ably-msg-id', async () => {
       const { options, channel } = makeSession();
       const session = createClientSession(options);
       await session.connect();
@@ -908,6 +914,35 @@ describe('Session', () => {
           serial: '02',
           name: WireMessages.Abort,
           headers: { [Headers.RunId]: 'r-1', [Headers.Reason]: 'aborted' },
+          clientId: 'alice',
+        }),
+      );
+
+      expect(treeOf(session).runs[0]?.controlSignals).toEqual([]);
+    });
+
+    it('x-ably-run-end (aborted) after x-ably-abort transitions status to aborted', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.RunStart,
+          headers: { [Headers.RunId]: 'r-1' },
+          clientId: 'alice',
+        }),
+      );
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '02',
+          name: WireMessages.Abort,
+          headers: {
+            [Headers.RunId]: 'r-1',
+            [Headers.MessageId]: 'sig-1',
+            [Headers.Reason]: 'aborted',
+          },
           clientId: 'alice',
         }),
       );
@@ -923,7 +958,11 @@ describe('Session', () => {
       expect(treeOf(session).runs[0]?.status).toBe('aborted');
     });
 
-    it('conflicting x-ably-run-end (complete) after x-ably-abort is dropped', async () => {
+    it('latest lifecycle wire wins — x-ably-run-end (complete) after x-ably-abort lands as complete', async () => {
+      // Symmetric model: signals never mutate status. The run-end is the
+      // only thing that can. If an agent (perhaps acting on a different
+      // policy) publishes complete after the client published abort, the
+      // run is complete.
       const { options, channel } = makeSession();
       const session = createClientSession(options);
       await session.connect();
@@ -940,7 +979,11 @@ describe('Session', () => {
         makeRunInbound({
           serial: '02',
           name: WireMessages.Abort,
-          headers: { [Headers.RunId]: 'r-1', [Headers.Reason]: 'aborted' },
+          headers: {
+            [Headers.RunId]: 'r-1',
+            [Headers.MessageId]: 'sig-1',
+            [Headers.Reason]: 'aborted',
+          },
           clientId: 'alice',
         }),
       );
@@ -953,7 +996,7 @@ describe('Session', () => {
         }),
       );
 
-      expect(treeOf(session).runs[0]?.status).toBe('aborted');
+      expect(treeOf(session).runs[0]?.status).toBe('complete');
     });
   });
 
@@ -1125,7 +1168,7 @@ describe('Session', () => {
 
       const view = session.createView();
       expect(treeOf(session).runs).toEqual<Run<string>[]>([
-        { id: 'r-1', status: 'active', abortRequested: false, initiatorClientId: 'alice' },
+        { id: 'r-1', status: 'active', initiatorClientId: 'alice', controlSignals: [] },
       ]);
       expect(view.messages).toHaveLength(1);
       expect(view.messages[0]?.id).toBe('m-1');

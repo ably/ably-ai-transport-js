@@ -439,12 +439,12 @@ describe('SessionWriter.endRun', () => {
 });
 
 describe('SessionWriter.abort', () => {
-  it('publishes one x-ably-abort message with run-id and reason headers', async () => {
+  it('publishes one x-ably-abort message with run-id, msg-id, and reason headers', async () => {
     const { options, channel } = makeSession();
     const session = createClientSession(options);
     await session.connect();
 
-    await session.writer.abort({ runId: 'r-1' });
+    const result = await session.writer.abort({ runId: 'r-1' });
 
     expect(channel.publish).toHaveBeenCalledTimes(1);
     expect(channel.publishedBatches).toHaveLength(1);
@@ -457,6 +457,9 @@ describe('SessionWriter.abort', () => {
     expect(headers[Headers.RunId]).toBe('r-1');
     expect(headers[Headers.Reason]).toBe('aborted');
     expect(headers[Headers.ClientId]).toBeUndefined();
+    expect(headers[Headers.MessageId]).toBeDefined();
+    // Returned messageId matches the wire's stamped header.
+    expect(result.messageId).toBe(headers[Headers.MessageId]);
   });
 
   it('attaches x-ably-client-id when supplied', async () => {

@@ -105,8 +105,8 @@ describe('Run lifecycle (integration)', () => {
     expect(treeOf(bSession).runs[0]).toEqual<Run<string>>({
       id: 'r-1',
       status: 'active',
-      abortRequested: false,
       initiatorClientId: aClient.auth.clientId,
+      controlSignals: [],
     });
 
     await aSession.writer.endRun({ runId: 'r-1', status: 'complete' });

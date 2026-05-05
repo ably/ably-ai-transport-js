@@ -21,8 +21,8 @@ const makeTree = () => new DefaultTree<string>({ logger: makeLogger({ logLevel: 
 
 const makeRun = (overrides: Partial<Run<string>> & Pick<Run<string>, 'id'>): Run<string> => ({
   status: 'active',
-  abortRequested: false,
   initiatorClientId: 'client-1',
+  controlSignals: [],
   ...overrides,
 });
 
@@ -262,9 +262,7 @@ describe('Tree', () => {
         const tree = makeTree();
         tree.applyRunStart(makeRun({ id: 'r-1' }));
 
-        expect(tree.runs).toEqual([
-          { id: 'r-1', status: 'active', abortRequested: false, initiatorClientId: 'client-1' },
-        ]);
+        expect(tree.runs).toEqual([{ id: 'r-1', status: 'active', initiatorClientId: 'client-1', controlSignals: [] }]);
       });
 
       it('appends multiple runs in arrival order', () => {
@@ -287,7 +285,7 @@ describe('Tree', () => {
         tree.applyRunStart(makeRun({ id: 'r-1', initiatorClientId: 'first' }));
         tree.applyRunStart(makeRun({ id: 'r-1', initiatorClientId: 'second' }));
 
-        expect(tree.runs).toEqual([{ id: 'r-1', status: 'active', abortRequested: false, initiatorClientId: 'first' }]);
+        expect(tree.runs).toEqual([{ id: 'r-1', status: 'active', initiatorClientId: 'first', controlSignals: [] }]);
       });
 
       it('fires subscribe', () => {
@@ -320,7 +318,7 @@ describe('Tree', () => {
         tree.applyRunEnd({ runId: 'r-1', status: 'complete' });
 
         expect(tree.runs).toEqual([
-          { id: 'r-1', status: 'complete', abortRequested: false, initiatorClientId: 'client-1' },
+          { id: 'r-1', status: 'complete', initiatorClientId: 'client-1', controlSignals: [] },
         ]);
       });
 
@@ -359,39 +357,61 @@ describe('Tree', () => {
       });
     });
 
-    describe('applyAbort', () => {
-      it("sets abortRequested and synthesises status to 'aborted'", () => {
+    describe('applyControlSignal', () => {
+      it('records the signal on the targeted run without mutating status', () => {
         const tree = makeTree();
         tree.applyRunStart(makeRun({ id: 'r-1' }));
 
-        tree.applyAbort({ runId: 'r-1' });
+        tree.applyControlSignal({ type: 'abort', runId: 'r-1', messageId: 'sig-1', clientId: 'client-1' });
 
-        expect(tree.runs[0]?.abortRequested).toBe(true);
-        expect(tree.runs[0]?.status).toBe('aborted');
+        expect(tree.runs[0]?.status).toBe('active');
+        expect(tree.runs[0]?.controlSignals).toEqual([
+          { type: 'abort', runId: 'r-1', messageId: 'sig-1', clientId: 'client-1' },
+        ]);
       });
 
-      it('notifies subscribers exactly once for the first abort observation', () => {
+      it('records retry signals with their stepId when supplied', () => {
         const tree = makeTree();
         tree.applyRunStart(makeRun({ id: 'r-1' }));
-        const handler = vi.fn();
-        tree.subscribe(handler);
 
-        tree.applyAbort({ runId: 'r-1' });
+        tree.applyControlSignal({
+          type: 'retry',
+          runId: 'r-1',
+          stepId: 's-1',
+          messageId: 'sig-1',
+          clientId: 'client-1',
+        });
 
-        expect(handler).toHaveBeenCalledTimes(1);
+        expect(tree.runs[0]?.controlSignals[0]).toEqual({
+          type: 'retry',
+          runId: 'r-1',
+          stepId: 's-1',
+          messageId: 'sig-1',
+          clientId: 'client-1',
+        });
       });
 
-      it('is idempotent — second abort observation is a no-op (no notify)', () => {
+      it('appends multiple signals in arrival order', () => {
         const tree = makeTree();
         tree.applyRunStart(makeRun({ id: 'r-1' }));
-        tree.applyAbort({ runId: 'r-1' });
+
+        tree.applyControlSignal({ type: 'abort', runId: 'r-1', messageId: 'sig-1', clientId: 'a' });
+        tree.applyControlSignal({ type: 'retry', runId: 'r-1', messageId: 'sig-2', clientId: 'b' });
+
+        expect(tree.runs[0]?.controlSignals.map((s) => s.messageId)).toEqual(['sig-1', 'sig-2']);
+      });
+
+      it('is idempotent on messageId — duplicate observation is recorded once', () => {
+        const tree = makeTree();
+        tree.applyRunStart(makeRun({ id: 'r-1' }));
+        tree.applyControlSignal({ type: 'abort', runId: 'r-1', messageId: 'sig-1', clientId: 'a' });
 
         const handler = vi.fn();
         tree.subscribe(handler);
-        tree.applyAbort({ runId: 'r-1' });
+        tree.applyControlSignal({ type: 'abort', runId: 'r-1', messageId: 'sig-1', clientId: 'a' });
 
         expect(handler).not.toHaveBeenCalled();
-        expect(tree.runs[0]?.status).toBe('aborted');
+        expect(tree.runs[0]?.controlSignals.length).toBe(1);
       });
 
       it('logs warn and drops when the run is unknown', () => {
@@ -401,40 +421,36 @@ describe('Tree', () => {
           logger: makeLogger({ logHandler: handler, logLevel: LogLevel.Warn }),
         });
 
-        tree.applyAbort({ runId: 'never-started' });
+        tree.applyControlSignal({ type: 'abort', runId: 'never-started', messageId: 'sig-1', clientId: 'a' });
 
         expect(messages.some((m) => m.message.includes('run not found'))).toBe(true);
         expect(tree.runs).toEqual([]);
       });
 
-      it('aborted runs override later run-end (aborted) — confirmation is logged at debug', () => {
-        const messages: { level: LogLevel; message: string }[] = [];
-        const handler: LogHandler = (message, level) => messages.push({ level, message });
-        const tree = new DefaultTree<string>({
-          logger: makeLogger({ logHandler: handler, logLevel: LogLevel.Debug }),
-        });
+      it('emits the granular control-signal event with the signal and run', () => {
+        const tree = makeTree();
         tree.applyRunStart(makeRun({ id: 'r-1' }));
-        tree.applyAbort({ runId: 'r-1' });
+        const handler = vi.fn();
+        tree.on('control-signal', handler);
+
+        tree.applyControlSignal({ type: 'abort', runId: 'r-1', messageId: 'sig-1', clientId: 'a' });
+
+        expect(handler).toHaveBeenCalledTimes(1);
+        const arg = handler.mock.calls[0]?.[0] as { signal: { messageId: string }; run: { id: string } };
+        expect(arg.signal.messageId).toBe('sig-1');
+        expect(arg.run.id).toBe('r-1');
+      });
+
+      it('does not transition status — the agent must publish run-end (aborted)', () => {
+        const tree = makeTree();
+        tree.applyRunStart(makeRun({ id: 'r-1' }));
+        tree.applyControlSignal({ type: 'abort', runId: 'r-1', messageId: 'sig-1', clientId: 'a' });
+
+        expect(tree.runs[0]?.status).toBe('active');
 
         tree.applyRunEnd({ runId: 'r-1', status: 'aborted' });
 
         expect(tree.runs[0]?.status).toBe('aborted');
-        expect(messages.some((m) => m.message.includes('confirmation for aborted run'))).toBe(true);
-      });
-
-      it('aborted runs override later run-end (complete) — conflict is logged at warn', () => {
-        const messages: { level: LogLevel; message: string }[] = [];
-        const handler: LogHandler = (message, level) => messages.push({ level, message });
-        const tree = new DefaultTree<string>({
-          logger: makeLogger({ logHandler: handler, logLevel: LogLevel.Warn }),
-        });
-        tree.applyRunStart(makeRun({ id: 'r-1' }));
-        tree.applyAbort({ runId: 'r-1' });
-
-        tree.applyRunEnd({ runId: 'r-1', status: 'complete' });
-
-        expect(tree.runs[0]?.status).toBe('aborted');
-        expect(messages.some((m) => m.message.includes('abort overrides observed run-end'))).toBe(true);
       });
     });
 
@@ -579,13 +595,18 @@ describe('Tree', () => {
       expect(tree.messages.map((n) => n.streaming)).toEqual([false, false]);
     });
 
-    it('clears streaming when an abort lands for the run', () => {
+    it('does not clear streaming when an abort signal lands — only run-end does', () => {
+      // Under the symmetric model, signal observation never mutates state.
+      // The agent reacting to the signal publishes run-end (aborted), and
+      // that lifecycle wire is what clears streaming.
       const tree = makeTree();
       tree.applyRunStart(makeRun({ id: 'r-1' }));
       tree.applyMessage(makeNode({ id: 'a', serial: '01', runId: 'r-1', role: 'assistant', streaming: true }));
 
-      tree.applyAbort({ runId: 'r-1' });
+      tree.applyControlSignal({ type: 'abort', runId: 'r-1', messageId: 'sig-1', clientId: 'a' });
+      expect(tree.messages[0]?.streaming).toBe(true);
 
+      tree.applyRunEnd({ runId: 'r-1', status: 'aborted' });
       expect(tree.messages[0]?.streaming).toBe(false);
     });
 
@@ -638,12 +659,83 @@ describe('Tree', () => {
       expect(tree.getRun('never-started')).toBeUndefined();
     });
 
-    it('reflects the synthesised aborted status', () => {
+    it('reflects the latest lifecycle status', () => {
       const tree = makeTree();
       tree.applyRunStart(makeRun({ id: 'r-1' }));
-      tree.applyAbort({ runId: 'r-1' });
+      tree.applyRunEnd({ runId: 'r-1', status: 'aborted' });
 
       expect(tree.getRun('r-1')?.status).toBe('aborted');
+    });
+  });
+
+  describe('applyStepStart re-activation', () => {
+    it("re-activates a 'failed' run when a fresh step-start lands", () => {
+      const tree = makeTree();
+      tree.applyRunStart(makeRun({ id: 'r-1' }));
+      tree.applyRunEnd({ runId: 'r-1', status: 'failed' });
+
+      tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active' });
+
+      expect(tree.getRun('r-1')?.status).toBe('active');
+    });
+
+    it("re-activates an 'aborted' run when a fresh step-start lands", () => {
+      const tree = makeTree();
+      tree.applyRunStart(makeRun({ id: 'r-1' }));
+      tree.applyRunEnd({ runId: 'r-1', status: 'aborted' });
+
+      tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active' });
+
+      expect(tree.getRun('r-1')?.status).toBe('active');
+    });
+
+    it("re-activates a 'complete' run when a fresh step-start lands", () => {
+      const tree = makeTree();
+      tree.applyRunStart(makeRun({ id: 'r-1' }));
+      tree.applyRunEnd({ runId: 'r-1', status: 'complete' });
+
+      tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active' });
+
+      expect(tree.getRun('r-1')?.status).toBe('active');
+    });
+
+    it("does not change status when the run is already 'active'", () => {
+      const tree = makeTree();
+      tree.applyRunStart(makeRun({ id: 'r-1' }));
+
+      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
+
+      expect(tree.getRun('r-1')?.status).toBe('active');
+    });
+  });
+
+  describe('granular events', () => {
+    it("fires 'step-ended' when a step transitions terminal", () => {
+      const tree = makeTree();
+      tree.applyRunStart(makeRun({ id: 'r-1' }));
+      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
+
+      const handler = vi.fn();
+      tree.on('step-ended', handler);
+      tree.applyStepEnd({ stepId: 's-1', status: 'failed' });
+
+      expect(handler).toHaveBeenCalledTimes(1);
+      const arg = handler.mock.calls[0]?.[0] as { step: { id: string; status: string }; run: { id: string } };
+      expect(arg.step.id).toBe('s-1');
+      expect(arg.step.status).toBe('failed');
+      expect(arg.run.id).toBe('r-1');
+    });
+
+    it('off() removes a previously registered handler', () => {
+      const tree = makeTree();
+      tree.applyRunStart(makeRun({ id: 'r-1' }));
+      const handler = vi.fn();
+      tree.on('control-signal', handler);
+      tree.off('control-signal', handler);
+
+      tree.applyControlSignal({ type: 'abort', runId: 'r-1', messageId: 'sig-1', clientId: 'a' });
+
+      expect(handler).not.toHaveBeenCalled();
     });
   });
 });

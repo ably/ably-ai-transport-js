@@ -65,19 +65,32 @@ describe('createClientRun', () => {
     expect(run.initiatorClientId).toBe('alice');
   });
 
-  it('reads status from the tree (synthesised aborted from abortRequested)', () => {
+  it("reads status from the tree (returns 'aborted' after run-end aborted)", () => {
     fixture.tree.applyRunStart({
       id: 'r-1',
       status: 'active',
-      abortRequested: false,
+      controlSignals: [],
       initiatorClientId: 'alice',
     } satisfies Run<string>);
-    fixture.tree.applyAbort({ runId: 'r-1' });
+    fixture.tree.applyRunEnd({ runId: 'r-1', status: 'aborted' });
 
     const run = createClientRun<StubCodec>({ ...baseOptions() });
 
     expect(run.status).toBe('aborted');
-    expect(run.abortRequested).toBe(true);
+  });
+
+  it('exposes controlSignals from the tree', () => {
+    fixture.tree.applyRunStart({
+      id: 'r-1',
+      status: 'active',
+      controlSignals: [],
+      initiatorClientId: 'alice',
+    } satisfies Run<string>);
+    fixture.tree.applyControlSignal({ type: 'abort', runId: 'r-1', messageId: 'sig-1', clientId: 'alice' });
+
+    const run = createClientRun<StubCodec>({ ...baseOptions() });
+
+    expect(run.controlSignals).toEqual([{ type: 'abort', runId: 'r-1', messageId: 'sig-1', clientId: 'alice' }]);
   });
 
   describe('toInvocation', () => {
@@ -122,7 +135,7 @@ describe('createClientRun', () => {
       fixture.tree.applyRunStart({
         id: 'r-1',
         status: 'active',
-        abortRequested: false,
+        controlSignals: [],
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       const run = createClientRun<StubCodec>({ ...baseOptions(), messageId: 'm-1' });
@@ -139,14 +152,14 @@ describe('createClientRun', () => {
       expect(inv.messageId).toBe('m-1');
     });
 
-    it('is a no-op (no publish) when the tree synthesises aborted (multi-device)', async () => {
+    it("is a no-op (no publish) when the run is already 'aborted' on the tree (multi-device)", async () => {
       fixture.tree.applyRunStart({
         id: 'r-1',
         status: 'active',
-        abortRequested: false,
+        controlSignals: [],
         initiatorClientId: 'alice',
       } satisfies Run<string>);
-      fixture.tree.applyAbort({ runId: 'r-1' });
+      fixture.tree.applyRunEnd({ runId: 'r-1', status: 'aborted' });
       const run = createClientRun<StubCodec>({ ...baseOptions() });
 
       const inv = await run.abort();
@@ -159,7 +172,7 @@ describe('createClientRun', () => {
       fixture.tree.applyRunStart({
         id: 'r-1',
         status: 'active',
-        abortRequested: false,
+        controlSignals: [],
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       fixture.tree.applyRunEnd({ runId: 'r-1', status: 'complete' });
@@ -174,7 +187,7 @@ describe('createClientRun', () => {
       fixture.tree.applyRunStart({
         id: 'r-1',
         status: 'active',
-        abortRequested: false,
+        controlSignals: [],
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       fixture.tree.applyRunEnd({ runId: 'r-1', status: 'failed' });
@@ -189,7 +202,7 @@ describe('createClientRun', () => {
       fixture.tree.applyRunStart({
         id: 'r-1',
         status: 'active',
-        abortRequested: false,
+        controlSignals: [],
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       fixture.tree.applyRunEnd({ runId: 'r-1', status: 'complete' });
@@ -204,7 +217,7 @@ describe('createClientRun', () => {
       fixture.tree.applyRunStart({
         id: 'r-1',
         status: 'active',
-        abortRequested: false,
+        controlSignals: [],
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       fixture.channel.publish.mockRejectedValueOnce(new Error('publish failed'));
@@ -231,7 +244,7 @@ describe('createClientRun', () => {
       tree.applyRunStart({
         id: 'r-1',
         status: 'active',
-        abortRequested: false,
+        controlSignals: [],
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       const run = createClientRun<StubCodec>({
@@ -253,7 +266,7 @@ describe('createClientRun', () => {
       fixture.tree.applyRunStart({
         id: 'r-1',
         status: 'active',
-        abortRequested: false,
+        controlSignals: [],
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       fixture.tree.applyRunEnd({ runId: 'r-1', status: 'complete' });
@@ -266,13 +279,13 @@ describe('createClientRun', () => {
       fixture.tree.applyRunStart({
         id: 'r-1',
         status: 'active',
-        abortRequested: false,
+        controlSignals: [],
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       const run = createClientRun<StubCodec>({ ...baseOptions() });
 
       const promise = run.when(['complete', 'aborted', 'failed']);
-      fixture.tree.applyAbort({ runId: 'r-1' });
+      fixture.tree.applyRunEnd({ runId: 'r-1', status: 'aborted' });
 
       await expect(promise).resolves.toBe('aborted');
     });
@@ -281,7 +294,7 @@ describe('createClientRun', () => {
       fixture.tree.applyRunStart({
         id: 'r-1',
         status: 'active',
-        abortRequested: false,
+        controlSignals: [],
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       const run = createClientRun<StubCodec>({ ...baseOptions() });
@@ -295,7 +308,7 @@ describe('createClientRun', () => {
       fixture.tree.applyRunStart({
         id: 'r-2',
         status: 'active',
-        abortRequested: false,
+        controlSignals: [],
         initiatorClientId: 'alice',
       } satisfies Run<string>);
 
@@ -307,7 +320,7 @@ describe('createClientRun', () => {
       fixture.tree.applyRunStart({
         id: 'r-1',
         status: 'active',
-        abortRequested: false,
+        controlSignals: [],
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       const closeController = new AbortController();
@@ -326,7 +339,7 @@ describe('createClientRun', () => {
       fixture.tree.applyRunStart({
         id: 'r-1',
         status: 'active',
-        abortRequested: false,
+        controlSignals: [],
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       const closeController = new AbortController();
@@ -343,7 +356,7 @@ describe('createClientRun', () => {
       fixture.tree.applyRunStart({
         id: 'r-1',
         status: 'active',
-        abortRequested: false,
+        controlSignals: [],
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       const run = createClientRun<StubCodec>({
@@ -352,7 +365,7 @@ describe('createClientRun', () => {
       });
 
       const promise = run.when(['aborted']);
-      fixture.tree.applyAbort({ runId: 'r-1' });
+      fixture.tree.applyRunEnd({ runId: 'r-1', status: 'aborted' });
 
       await expect(promise).resolves.toBe('aborted');
     });

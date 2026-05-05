@@ -27,6 +27,7 @@ export type {
   AbortOptions,
   AgentSession,
   ClientSession,
+  ControlSignalPublishResult,
   CreateRunOptions,
   EndRunOptions,
   SendMessagesOptions,
@@ -37,6 +38,9 @@ export { createAgentSession, createClientSession } from './core/session/index.js
 
 // Views
 export type { AgentView, ClientView, View } from './core/view/index.js';
+
+// Tree
+export type { ControlSignal, ControlSignalType, MessageNode, Tree, TreeEvents } from './core/tree/index.js';
 
 // Run
 export type {

@@ -70,16 +70,6 @@ export enum ErrorCode {
   // --- Run lifecycle ---
 
   /**
-   * The run has been aborted (an `x-ably-abort` control signal was observed
-   * on the channel) and cannot accept new lifecycle transitions. Thrown by
-   * `AgentSession.createRun` when called with an invocation whose runId is
-   * aborted, and by `Step.start` when the run was aborted between steps.
-   * Aborted runs are terminal-and-final; only `'failed'` runs are retryable.
-   * Spec: AIT-AB4, AIT-AB5.
-   */
-  RunAborted = 104303,
-
-  /**
    * The session backing a {@link ClientRun} closed before the awaited run
    * status was reached. Rejection from {@link ClientRun.when} when the
    * underlying tree's session shuts down while a status promise is still

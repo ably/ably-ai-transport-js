@@ -10,7 +10,13 @@ import type * as Ably from 'ably';
  * control-signal headers.
  */
 export const Headers = {
-  /** Unique message ID — appears on every chunk of a streaming message. */
+  /**
+   * Unique message ID. Appears on every chunk of a streaming message and on
+   * every control-signal wire ({@link WireMessages.Abort} today, with the
+   * future pause/resume wires sharing the same slot) so callers can
+   * reference a specific signal as an invocation precondition. SDK-generated
+   * via `crypto.randomUUID()` — never read from `PublishResponse.serials`.
+   */
   MessageId: 'x-ably-msg-id',
   /** Protocol-level role — `'user'` or `'assistant'`. */
   Role: 'x-ably-role',
@@ -63,8 +69,8 @@ export const Headers = {
   StepId: 'x-ably-step-id',
   /**
    * Reason carried by control-signal wires. For {@link WireMessages.Abort}
-   * the value is always `'aborted'`; reserved for future control signals
-   * (`'paused'` etc.) that share the header slot.
+   * the value is `'aborted'`; reserved for the future pause/resume wires
+   * (`'paused'`/`'resumed'`) which share the header slot.
    */
   Reason: 'x-ably-reason',
 } as const;
@@ -98,12 +104,16 @@ export const WireMessages = {
    */
   StepEnd: 'x-ably-step-end',
   /**
-   * Durable control signal terminating a run. Carries {@link Headers.RunId}
-   * and {@link Headers.Reason} (always `'aborted'`); may carry
+   * Durable control signal requesting that an active run be aborted.
+   * Carries {@link Headers.RunId}, {@link Headers.MessageId}, and
+   * {@link Headers.Reason} (always `'aborted'`); may carry
    * {@link Headers.ClientId} when a backend publishes on behalf of an
-   * end-user. The signal is itself the run terminal — receivers synthesise
-   * `status: 'aborted'` from observation of an abort, regardless of whether
-   * a follow-up `x-ably-run-end` arrives. Spec: AIT-AB1, AIT-AB2.
+   * end-user.
+   *
+   * Symmetric with the other control signals — observation does **not**
+   * mutate run status; the agent processes the signal and publishes the
+   * `x-ably-run-end (aborted)` that actually terminates the run. With no
+   * live agent, the signal sits durably on the channel until one wakes.
    */
   Abort: 'x-ably-abort',
 } as const;

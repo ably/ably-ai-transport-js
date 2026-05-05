@@ -6,7 +6,7 @@ import type { Logger } from '../../logger.js';
 import { ABORTED } from '../../signal-reason.js';
 import type { AnyCodec, CodecEvent, CodecMessage, CodecPart, Encoder } from '../codec/index.js';
 import type { DefaultSessionWriter } from '../session/writer.js';
-import type { Tree } from '../tree/index.js';
+import type { ControlSignal, Tree } from '../tree/index.js';
 
 /**
  * Terminal status accepted by step-end wire messages.
@@ -247,7 +247,7 @@ export class DefaultStep<C extends AnyCodec> implements Step<C> {
   private _encoder?: Encoder<CodecPart<C>, CodecMessage<C>, CodecEvent<C>>;
   private _ended = false;
   private _localStatus?: StepEndStatus;
-  private _abortTreeUnsubscribe?: () => void;
+  private _controlSignalHandler?: (event: { signal: ControlSignal }) => void;
 
   constructor(options: StepOptions<C>) {
     this._stepId = options.stepId;
@@ -318,91 +318,84 @@ export class DefaultStep<C extends AnyCodec> implements Step<C> {
       }, options.timeoutMs);
     }
 
-    // Subscribe before publishing so a fast inbound (real Ably echoing the
-    // publish back) cannot race ahead of the listener and leave the wait
-    // hanging. The synchronous check after subscribing covers the case
-    // where a step-start for this id was already on the tree before start()
-    // was called.
+    // Wait for the step-start to land on the tree, then mount the
+    // control-signal subscription. Both the fast path (already observed
+    // when start() was called) and the slow path (subscribe + publish +
+    // wait) must end with the subscription installed — abort signals
+    // observed during the step's lifetime fire step.signal regardless
+    // of which path resolved.
     if (this._observed()) {
-      this._logger.debug('DefaultStep.start(); already observed on tree — no-op');
+      this._logger.debug('DefaultStep.start(); already observed on tree — no-op publish');
       if (timeoutHandle !== undefined) {
         clearTimeout(timeoutHandle);
       }
-      return;
-    }
-
-    let unsubscribeTree: (() => void) | undefined;
-    let onAbortDuringWait: (() => void) | undefined;
-    type WaitOutcome = 'observed' | 'aborted';
-    const waitForResolution = new Promise<WaitOutcome>((resolve) => {
-      unsubscribeTree = this._tree.subscribe(() => {
-        if (this._observed()) {
-          resolve('observed');
-        }
+    } else {
+      let unsubscribeTree: (() => void) | undefined;
+      let onAbortDuringWait: (() => void) | undefined;
+      type WaitOutcome = 'observed' | 'aborted';
+      const waitForResolution = new Promise<WaitOutcome>((resolve) => {
+        unsubscribeTree = this._tree.subscribe(() => {
+          if (this._observed()) {
+            resolve('observed');
+          }
+        });
+        onAbortDuringWait = (): void => {
+          resolve('aborted');
+        };
+        this._abortController.signal.addEventListener('abort', onAbortDuringWait, { once: true });
       });
-      onAbortDuringWait = (): void => {
-        resolve('aborted');
-      };
-      this._abortController.signal.addEventListener('abort', onAbortDuringWait, { once: true });
-    });
 
-    try {
       try {
-        await this._writer.startStep({ runId: this._runId, stepId: this._stepId });
-      } catch (publishError) {
-        if (publishError instanceof Ably.ErrorInfo) {
-          throw new Ably.ErrorInfo(
-            `unable to start step; ${publishError.message}`,
-            publishError.code,
-            publishError.statusCode,
-            publishError,
-          );
+        try {
+          await this._writer.startStep({ runId: this._runId, stepId: this._stepId });
+        } catch (publishError) {
+          if (publishError instanceof Ably.ErrorInfo) {
+            throw new Ably.ErrorInfo(
+              `unable to start step; ${publishError.message}`,
+              publishError.code,
+              publishError.statusCode,
+              publishError,
+            );
+          }
+          throw publishError;
         }
-        throw publishError;
-      }
 
-      if (!this._observed()) {
-        const outcome = await waitForResolution;
-        if (outcome === 'aborted') {
-          throw this._stepStartAbortedError('aborted before tree observed step-start');
+        if (!this._observed()) {
+          const outcome = await waitForResolution;
+          if (outcome === 'aborted') {
+            throw this._stepStartAbortedError('aborted before tree observed step-start');
+          }
         }
-      }
-    } finally {
-      unsubscribeTree?.();
-      if (onAbortDuringWait !== undefined) {
-        this._abortController.signal.removeEventListener('abort', onAbortDuringWait);
-      }
-      if (timeoutHandle !== undefined) {
-        clearTimeout(timeoutHandle);
+      } finally {
+        unsubscribeTree?.();
+        if (onAbortDuringWait !== undefined) {
+          this._abortController.signal.removeEventListener('abort', onAbortDuringWait);
+        }
+        if (timeoutHandle !== undefined) {
+          clearTimeout(timeoutHandle);
+        }
       }
     }
 
-    // Spec: AIT-AB5. Subscribe to live abort notifications first, then check
-    // synchronously — order matters so an abort that lands between the
-    // synchronous read and the subscription's first notification is still
-    // observed. A subsequent live abort fires the listener; an abort already
-    // recorded in the tree is caught by the synchronous check below.
-    this._abortTreeUnsubscribe = this._tree.subscribe(() => {
-      this._fireAbortIfRequested();
-    });
-    if (this._isRunAborted()) {
-      this._abortTreeUnsubscribe();
-      this._abortTreeUnsubscribe = undefined;
-      throw new Ably.ErrorInfo(`unable to start step; run ${this._runId} has been aborted`, ErrorCode.RunAborted, 410);
-    }
+    // Subscribe to control-signal events so an abort observed *during this
+    // step's lifetime* fires step.signal. Scoping by lifetime is what makes
+    // retry-after-abort safe — a fresh step on a previously aborted run
+    // does not start pre-aborted; only signals delivered while this
+    // subscription is active count.
+    this._controlSignalHandler = ({ signal }: { signal: ControlSignal }): void => {
+      if (signal.runId !== this._runId || signal.type !== 'abort') {
+        return;
+      }
+      if (!this._abortController.signal.aborted) {
+        this._logger.debug('DefaultStep(); firing step.signal from observed abort signal', {
+          messageId: signal.messageId,
+        });
+        this._abortController.abort(ABORTED);
+      }
+    };
+    this._tree.on('control-signal', this._controlSignalHandler);
 
     this._logger.debug('DefaultStep.start(); started');
-  }
-
-  private _isRunAborted(): boolean {
-    return this._tree.runs.find((r) => r.id === this._runId)?.abortRequested === true;
-  }
-
-  private _fireAbortIfRequested(): void {
-    if (this._isRunAborted() && !this._abortController.signal.aborted) {
-      this._logger.debug('DefaultStep._fireAbortIfRequested(); firing step.signal from observed abort');
-      this._abortController.abort(ABORTED);
-    }
   }
 
   async pipe(readable: ReadableStream<CodecPart<C>>): Promise<void> {
@@ -414,13 +407,14 @@ export class DefaultStep<C extends AnyCodec> implements Step<C> {
       [Headers.MessageId]: messageId,
       [Headers.Role]: this._writer.role,
       [Headers.RunId]: this._runId,
+      [Headers.StepId]: this._stepId,
     };
 
     // Pipe consumes the readable to its `done` regardless of signal state.
     // The composed signal is informational at this layer — wire `step.signal`
     // into the model SDK if mid-stream interruption is wanted; the model's
     // shortened readable is what truncates the pipe, not a check here.
-    // Spec: AIT-AB6.
+    // Spec: AIT-CS10a.
     const reader = readable.getReader();
     try {
       let result = await reader.read();
@@ -446,8 +440,10 @@ export class DefaultStep<C extends AnyCodec> implements Step<C> {
       return;
     }
     this._ended = true;
-    this._abortTreeUnsubscribe?.();
-    this._abortTreeUnsubscribe = undefined;
+    if (this._controlSignalHandler !== undefined) {
+      this._tree.off('control-signal', this._controlSignalHandler);
+      this._controlSignalHandler = undefined;
+    }
 
     const status: StepEndStatus = error === undefined ? 'complete' : 'failed';
     this._localStatus = status;

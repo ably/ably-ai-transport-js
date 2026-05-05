@@ -52,11 +52,10 @@ export interface EndRunOptions {
 
 /**
  * Options for {@link SessionWriter.abort}. Publishes an `x-ably-abort`
- * control signal targeting the named run. The signal is itself the run
- * terminal — receivers synthesise `status: 'aborted'` from its observation,
- * so no follow-up `x-ably-run-end` is required for tree correctness (an
- * agent that picks up the invocation will publish one as a confirmation,
- * but it is redundant on the wire). Spec: AIT-AB1, AIT-AB2.
+ * control signal targeting the named run. Observation does not move
+ * status on its own — the agent that processes the signal publishes
+ * the lifecycle wire (`x-ably-run-end (aborted)`) that actually
+ * terminates the run.
  */
 export interface AbortOptions {
   /** The run to abort. */
@@ -68,6 +67,17 @@ export interface AbortOptions {
    * clientId is used.
    */
   clientId?: string;
+}
+
+/**
+ * Result returned by control-signal publish methods. Carries the wire
+ * messageId the writer generated and stamped on the signal — pair this
+ * with an {@link Invocation}'s `messageId` precondition when waking an
+ * agent in response to the signal.
+ */
+export interface ControlSignalPublishResult {
+  /** The `x-ably-msg-id` stamped on the published signal wire. */
+  messageId: string;
 }
 
 /**
@@ -112,22 +122,21 @@ export interface SessionWriter<C extends AnyCodec> {
 
   /**
    * Publish an `x-ably-abort` control signal for the named run. The wire
-   * carries `x-ably-run-id`, `x-ably-reason: 'aborted'`, and (when supplied)
-   * `x-ably-client-id`.
+   * carries `x-ably-msg-id`, `x-ably-run-id`, `x-ably-reason: 'aborted'`,
+   * and (when supplied) `x-ably-client-id`.
    *
-   * The signal is itself the run terminal — receivers synthesise
-   * `status: 'aborted'` from it, so no follow-up `x-ably-run-end` is
-   * required for tree correctness. Idempotence (no-op on terminal runs)
-   * is enforced at the {@link ClientRun.abort} layer; this writer method
-   * publishes unconditionally so backend orchestrators that hold the
-   * runId directly can publish without a tree lookup.
-   *
-   * Spec: AIT-AB1, AIT-AB2.
+   * Observation does not transition status — the agent that processes
+   * the signal publishes the `x-ably-run-end (aborted)` that does.
+   * Idempotence (no-op on terminal runs) is enforced at the
+   * {@link ClientRun.abort} layer; this writer method publishes
+   * unconditionally so backend orchestrators that hold the runId
+   * directly can publish without a tree lookup.
    * @param options Per-call wiring; see {@link AbortOptions}.
+   * @returns The wire messageId stamped on the published signal.
    * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.SessionClosed}
    *   when called after the session has been closed.
    */
-  abort(options: AbortOptions): Promise<void>;
+  abort(options: AbortOptions): Promise<ControlSignalPublishResult>;
 }
 
 /** Options for constructing a {@link DefaultSessionWriter}. */
@@ -447,14 +456,16 @@ export class DefaultSessionWriter<C extends AnyCodec> implements SessionWriter<C
     });
   }
 
-  async abort(options: AbortOptions): Promise<void> {
+  async abort(options: AbortOptions): Promise<ControlSignalPublishResult> {
     this._logger.trace('DefaultSessionWriter.abort();', { runId: options.runId });
 
     if (this._isClosed()) {
       throw new Ably.ErrorInfo('unable to abort run; session is closed', ErrorCode.SessionClosed, 400);
     }
 
+    const messageId = generateMessageId();
     const headers: Record<string, string> = {
+      [Headers.MessageId]: messageId,
       [Headers.RunId]: options.runId,
       [Headers.Reason]: 'aborted',
     };
@@ -468,7 +479,8 @@ export class DefaultSessionWriter<C extends AnyCodec> implements SessionWriter<C
       extras: { headers },
     });
 
-    this._logger.debug('DefaultSessionWriter.abort(); published', { runId: options.runId });
+    this._logger.debug('DefaultSessionWriter.abort(); published', { runId: options.runId, messageId });
+    return { messageId };
   }
 
   /**

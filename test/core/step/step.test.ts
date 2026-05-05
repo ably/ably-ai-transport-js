@@ -263,30 +263,36 @@ describe('Step.start', () => {
     expect(step.signal.reason).toBe(ABORTED);
   });
 
-  it('rejects with RunAborted when the run is observed as aborted at start time', async () => {
-    // Spec: AIT-AB5. Pre-existing abort on the run — start() rejects after
-    // the step-start observe loop, before the step is considered live.
+  it('start() resolves even when an abort signal landed before start (symmetric model — signals never terminate)', async () => {
+    // Under the symmetric model, an abort signal on the channel does not
+    // terminate the run, so start() proceeds. The signal still routes
+    // through to step.signal during the step's lifetime.
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
     const run = await connectAndCreateRun(session, channel);
     const step = run.createStep();
 
-    // Mark the run aborted before start() runs.
     channel.simulateMessage({
       name: WireMessages.Abort,
       serial: '01',
-      extras: { headers: { [Headers.RunId]: 'r-1', [Headers.Reason]: 'aborted' } },
+      clientId: 'alice',
+      extras: {
+        headers: {
+          [Headers.RunId]: 'r-1',
+          [Headers.MessageId]: 'sig-1',
+          [Headers.Reason]: 'aborted',
+        },
+      },
     } as unknown as Ably.InboundMessage);
 
     const startPromise = step.start();
     await Promise.resolve();
     simulateStepStart(channel, 'r-1', step.id, '02');
 
-    await expect(startPromise).rejects.toBeErrorInfoWithCode(ErrorCode.RunAborted);
+    await expect(startPromise).resolves.toBeUndefined();
   });
 
   it('subscribes to live abort: x-ably-abort observed during step fires step.signal with reason ABORTED', async () => {
-    // Spec: AIT-AB6. Channel-observed abort flows into step.signal.
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);
     const run = await connectAndCreateRun(session, channel);
@@ -298,11 +304,17 @@ describe('Step.start', () => {
     await startPromise;
     expect(step.signal.aborted).toBe(false);
 
-    // Live abort observed.
     channel.simulateMessage({
       name: WireMessages.Abort,
       serial: '02',
-      extras: { headers: { [Headers.RunId]: 'r-1', [Headers.Reason]: 'aborted' } },
+      clientId: 'alice',
+      extras: {
+        headers: {
+          [Headers.RunId]: 'r-1',
+          [Headers.MessageId]: 'sig-1',
+          [Headers.Reason]: 'aborted',
+        },
+      },
     } as unknown as Ably.InboundMessage);
 
     expect(step.signal.aborted).toBe(true);
@@ -320,8 +332,6 @@ describe('Step.start', () => {
     simulateStepStart(channel, 'r-1', step.id);
     await startPromise;
 
-    // Open another run on the same session and abort it. Our step is on
-    // r-1; abort targets r-2. step.signal must stay clean.
     channel.simulateMessage({
       name: WireMessages.RunStart,
       serial: '02',
@@ -331,10 +341,112 @@ describe('Step.start', () => {
     channel.simulateMessage({
       name: WireMessages.Abort,
       serial: '03',
-      extras: { headers: { [Headers.RunId]: 'r-2', [Headers.Reason]: 'aborted' } },
+      clientId: 'alice',
+      extras: {
+        headers: {
+          [Headers.RunId]: 'r-2',
+          [Headers.MessageId]: 'sig-2',
+          [Headers.Reason]: 'aborted',
+        },
+      },
     } as unknown as Ably.InboundMessage);
 
     expect(step.signal.aborted).toBe(false);
+  });
+
+  it('does not fire step.signal for an abort observed before start() — only signals during step lifetime count', async () => {
+    // Symmetric scoping: a fresh step on a previously-aborted run must
+    // not start pre-aborted. The control-signal subscription is mounted
+    // by start() and torn down by end(), so signals outside that window
+    // are ignored by the step.
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    const run = await connectAndCreateRun(session, channel);
+
+    // Prior abort observed before any step is started.
+    channel.simulateMessage({
+      name: WireMessages.Abort,
+      serial: '02',
+      clientId: 'alice',
+      extras: {
+        headers: {
+          [Headers.RunId]: 'r-1',
+          [Headers.MessageId]: 'sig-1',
+          [Headers.Reason]: 'aborted',
+        },
+      },
+    } as unknown as Ably.InboundMessage);
+
+    const step = run.createStep();
+    const startPromise = step.start();
+    await Promise.resolve();
+    simulateStepStart(channel, 'r-1', step.id, '03');
+    await startPromise;
+
+    expect(step.signal.aborted).toBe(false);
+  });
+
+  it('does not fire step.signal for an abort observed after end() — subscription torn down on end', async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    const run = await connectAndCreateRun(session, channel);
+    const step = run.createStep();
+
+    const startPromise = step.start();
+    await Promise.resolve();
+    simulateStepStart(channel, 'r-1', step.id);
+    await startPromise;
+    await step.end();
+
+    // Abort observed after end() — subscription has been torn down,
+    // so step.signal must remain clean.
+    channel.simulateMessage({
+      name: WireMessages.Abort,
+      serial: '03',
+      clientId: 'alice',
+      extras: {
+        headers: {
+          [Headers.RunId]: 'r-1',
+          [Headers.MessageId]: 'sig-1',
+          [Headers.Reason]: 'aborted',
+        },
+      },
+    } as unknown as Ably.InboundMessage);
+
+    expect(step.signal.aborted).toBe(false);
+  });
+
+  it("fires step.signal for an abort observed during step's lifetime even when start() took the fast 'already observed' path", async () => {
+    // If the step-start happens to be on the tree before start() is
+    // called (e.g. multi-client where Ably echoed a prior publish),
+    // start() takes the no-op-publish path. The control-signal
+    // subscription must still be installed — otherwise abort signals
+    // observed during the step's lifetime would silently fail to
+    // fire step.signal.
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    const run = await connectAndCreateRun(session, channel);
+    const step = run.createStep();
+
+    // Pre-seed the step-start on the tree before start() is called.
+    simulateStepStart(channel, 'r-1', step.id, '02');
+    await step.start();
+
+    channel.simulateMessage({
+      name: WireMessages.Abort,
+      serial: '03',
+      clientId: 'alice',
+      extras: {
+        headers: {
+          [Headers.RunId]: 'r-1',
+          [Headers.MessageId]: 'sig-1',
+          [Headers.Reason]: 'aborted',
+        },
+      },
+    } as unknown as Ably.InboundMessage);
+
+    expect(step.signal.aborted).toBe(true);
+    expect(step.signal.reason).toBe(ABORTED);
   });
 });
 

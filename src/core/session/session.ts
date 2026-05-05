@@ -12,7 +12,7 @@ import type { Invocation } from '../invocation/index.js';
 import type { AgentRun, Run, RunStatus } from '../run/index.js';
 import { DefaultAgentRun } from '../run/index.js';
 import type { StepStatus } from '../step/index.js';
-import type { MessageNode, TreeInternal } from '../tree/index.js';
+import type { ControlSignalType, MessageNode, TreeInternal } from '../tree/index.js';
 import { DefaultTree } from '../tree/index.js';
 import type { ClientView } from '../view/index.js';
 import { DefaultClientView, DefaultView } from '../view/index.js';
@@ -78,13 +78,34 @@ const isRunEndStatus = (value: string | undefined): value is RunStatus =>
 
 /**
  * Narrow a wire `x-ably-status` value to a {@link StepStatus} the tree can
- * transition into via `applyStepEnd`. Phase 10 accepts `'complete'` and
- * `'failed'`; phases 11 and 12 widen this guard to include `'aborted'`,
- * `'paused'`, and `'superseded'` as the surfaces that produce them land.
+ * transition into via `applyStepEnd`. Accepts `'complete'`, `'failed'`,
+ * and `'aborted'`; pause/supersession statuses land alongside those
+ * surfaces in later phases.
  * @param value The raw header value.
  * @returns True when `value` is a recognised step-end status.
  */
-const isStepEndStatus = (value: string | undefined): value is StepStatus => value === 'complete' || value === 'failed';
+const isStepEndStatus = (value: string | undefined): value is StepStatus =>
+  value === 'complete' || value === 'failed' || value === 'aborted';
+
+/**
+ * Translate a {@link WireMessages} control-signal wire name into the
+ * {@link ControlSignalType} discriminator carried on
+ * {@link ControlSignal.type}. Returns `undefined` for non-signal wire
+ * names so the dispatcher can warn.
+ * @param name The Ably message name to translate.
+ * @returns The control-signal type, or `undefined` if the name is not
+ *   a known control-signal wire.
+ */
+const wireMessageNameToControlSignalType = (name: string | undefined): ControlSignalType | undefined => {
+  switch (name) {
+    case WireMessages.Abort: {
+      return 'abort';
+    }
+    default: {
+      return undefined;
+    }
+  }
+};
 
 /**
  * Long-lived handle on a durable session from the client's perspective.
@@ -541,7 +562,7 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
       return;
     }
     if (message.name === WireMessages.Abort) {
-      this._handleAbort(message);
+      this._handleControlSignal(message);
       return;
     }
 
@@ -584,6 +605,8 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
       });
       return;
     }
+
+    const stepId = readHeader(message, Headers.StepId);
 
     const serial = message.serial;
     if (serial === undefined) {
@@ -639,6 +662,7 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
         role,
         clientId,
         runId,
+        ...(stepId === undefined ? {} : { stepId }),
         message: composed,
         streaming,
         serial,
@@ -665,7 +689,12 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
       return;
     }
 
-    const run: Run<CodecMessage<C>> = { id: runId, status: 'active', abortRequested: false, initiatorClientId };
+    const run: Run<CodecMessage<C>> = {
+      id: runId,
+      status: 'active',
+      initiatorClientId,
+      controlSignals: [],
+    };
     this._tree.applyRunStart(run);
   }
 
@@ -712,20 +741,50 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
     this._tree.applyStepStart({ id: stepId, runId, status: 'active' });
   }
 
-  private _handleAbort(message: Ably.InboundMessage): void {
-    const runId = readHeader(message, Headers.RunId);
-    if (runId === undefined) {
-      this._logger.warn('DefaultSession._handleAbort(); missing x-ably-run-id', {
+  private _handleControlSignal(message: Ably.InboundMessage): void {
+    const type = wireMessageNameToControlSignalType(message.name);
+    if (type === undefined) {
+      this._logger.warn('DefaultSession._handleControlSignal(); unrecognised name', {
+        name: message.name,
         serial: message.serial,
       });
       return;
     }
+    const runId = readHeader(message, Headers.RunId);
+    if (runId === undefined) {
+      this._logger.warn('DefaultSession._handleControlSignal(); missing x-ably-run-id', {
+        type,
+        serial: message.serial,
+      });
+      return;
+    }
+    const messageId = readHeader(message, Headers.MessageId);
+    if (messageId === undefined) {
+      this._logger.warn('DefaultSession._handleControlSignal(); missing x-ably-msg-id', {
+        type,
+        runId,
+        serial: message.serial,
+      });
+      return;
+    }
+    const clientId = readHeader(message, Headers.ClientId) ?? message.clientId;
+    if (clientId === undefined) {
+      this._logger.warn('DefaultSession._handleControlSignal(); missing clientId', {
+        type,
+        runId,
+        serial: message.serial,
+      });
+      return;
+    }
+    const stepId = readHeader(message, Headers.StepId);
 
-    // Spec: AIT-AB2. The abort signal is itself the run terminal — the tree
-    // synthesises status 'aborted' from this observation. Live delivery to
-    // the active step (if any) is driven by the step's own subscription to
-    // tree change notifications.
-    this._tree.applyAbort({ runId });
+    this._tree.applyControlSignal({
+      type,
+      runId,
+      messageId,
+      clientId,
+      ...(stepId === undefined ? {} : { stepId }),
+    });
   }
 
   private _handleRunEnd(message: Ably.InboundMessage): void {
@@ -841,20 +900,6 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
 
     await this._waitForRunPreconditions(invocation, options);
 
-    // Spec: AIT-AB4. Once preconditions resolve, the run-start (and any
-    // subsequent x-ably-abort observed during hydration or live delivery)
-    // are visible. Reject if the run has been aborted — the agent must not
-    // open a step on a terminally aborted run. No publish from this path:
-    // the wire is already correct (x-ably-abort is itself the terminal),
-    // and the synthesised tree status reflects that.
-    if (this._tree.runs.find((r) => r.id === invocation.runId)?.abortRequested === true) {
-      throw new Ably.ErrorInfo(
-        `unable to create run; run ${invocation.runId} has been aborted`,
-        ErrorCode.RunAborted,
-        410,
-      );
-    }
-
     return new DefaultAgentRun<C>({
       runId: invocation.runId,
       tree: this._tree,
@@ -878,11 +923,16 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
    */
   private async _waitForRunPreconditions(invocation: Invocation, options?: CreateRunOptions): Promise<void> {
     const isReady = (): boolean => {
-      if (!this._tree.runs.some((r) => r.id === invocation.runId)) {
+      const run = this._tree.runs.find((r) => r.id === invocation.runId);
+      if (run === undefined) {
         return false;
       }
-      if (invocation.messageId !== undefined && !this._tree.messages.some((m) => m.id === invocation.messageId)) {
-        return false;
+      if (invocation.messageId !== undefined) {
+        const messageVisible = this._tree.messages.some((m) => m.id === invocation.messageId);
+        const signalVisible = run.controlSignals.some((s) => s.messageId === invocation.messageId);
+        if (!messageVisible && !signalVisible) {
+          return false;
+        }
       }
       return true;
     };

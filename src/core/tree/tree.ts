@@ -1,6 +1,8 @@
+import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import type { Run, RunStatus } from '../run/index.js';
 import type { StepRecord, StepStatus } from '../step/index.js';
+import type { ControlSignal } from './control-signal.js';
 
 /**
  * A node in the session's conversation tree. Carries the domain message
@@ -48,6 +50,18 @@ export interface MessageNode<TMessage, TRun extends Run<TMessage> = Run<TMessage
   readonly runId: string;
 
   /**
+   * The id of the step this message was published into (from the
+   * `x-ably-step-id` header), or `undefined` for messages published
+   * outside any step (typically client-published user messages).
+   * Stable for the lifetime of the node.
+   *
+   * Reads as the natural unit of "this step's output" — UI projections
+   * that want to discard a failed step's partial output keep the
+   * step-id and filter; the run as a whole stays visible.
+   */
+  readonly stepId?: string;
+
+  /**
    * The run this message belongs to, typed to the session variant — a
    * `ClientRun<C>` on a `ClientView`'s nodes, the plain {@link Run} record
    * on the tree itself. Filled in by the projecting view; tree-level nodes
@@ -74,10 +88,11 @@ export interface MessageNode<TMessage, TRun extends Run<TMessage> = Run<TMessage
    *     `streaming: true`.
    *   - Complete-message wires (`kind: 'message'`) produce nodes with
    *     `streaming: false`.
-   *   - Tree-level lifecycle observations (`x-ably-run-end`,
-   *     `x-ably-step-end`, `x-ably-abort`) flip every still-streaming node
-   *     for the affected run to `streaming: false` — no further chunks
-   *     can land coherently after those wires.
+   *   - Lifecycle wires (`x-ably-run-end`, `x-ably-step-end`) flip every
+   *     still-streaming node for the affected run to `streaming: false`
+   *     — no further chunks can land coherently after those wires.
+   *     Control-signal observations do not flip the flag; the agent
+   *     reacting to a signal publishes the lifecycle wire that does.
    */
   readonly streaming: boolean;
 
@@ -91,13 +106,33 @@ export interface MessageNode<TMessage, TRun extends Run<TMessage> = Run<TMessage
 }
 
 /**
- * The unfiltered conversation tree: every node and every run the session has
- * observed. The tree is the canonical source of conversation structure
- * within a session; views project it.
+ * Typed event surface emitted by the {@link Tree}. Granular alternative to
+ * the coarse {@link Tree.subscribe} callback for consumers that want to
+ * react to specific transitions without re-reading the full tree.
  *
- * Phase 5 subset — `messages`, `runs`, and the coarse `subscribe`
- * notification. Granular events (`message-added`, `run-started`, …), the
- * `steps` collection, and lookup helpers land in later phases.
+ * - `'step-ended'` fires when a step transitions from `'active'` to a
+ *   terminal status via observed `x-ably-step-end`. Carries the
+ *   updated {@link StepRecord} and its parent {@link Run} record.
+ * - `'control-signal'` fires when a control-signal wire is observed
+ *   on the channel. Carries the {@link ControlSignal} record and the
+ *   targeted run.
+ *
+ * Other tree-level transitions (run-started/run-ended,
+ * step-started, message-added/updated) remain accessible via
+ * {@link Tree.subscribe}; granular events for them land if and when
+ * concrete consumers need them.
+ */
+export interface TreeEvents<TMessage> {
+  /** A step transitioned from `'active'` to a terminal status. */
+  'step-ended': { step: StepRecord; run: Run<TMessage> };
+  /** A control-signal wire was observed for a known run. */
+  'control-signal': { signal: ControlSignal; run: Run<TMessage> };
+}
+
+/**
+ * The unfiltered conversation tree: every node, run, step, and observed
+ * control signal the session has materialised. The tree is the canonical
+ * source of conversation structure; views project it.
  */
 export interface Tree<TMessage> {
   /** All message nodes the tree has observed, ordered by serial. */
@@ -138,6 +173,25 @@ export interface Tree<TMessage> {
    * @returns A function that removes the listener when called.
    */
   subscribe(callback: () => void): () => void;
+
+  /**
+   * Register a typed listener for a granular tree event. See
+   * {@link TreeEvents} for the available event names and payloads.
+   *
+   * Listener exceptions are isolated — a throwing listener is logged
+   * and does not prevent other listeners from firing or subsequent
+   * events from being delivered.
+   * @param event The event name to subscribe to.
+   * @param handler The callback invoked with the event's payload.
+   */
+  on<K extends keyof TreeEvents<TMessage>>(event: K, handler: (event: TreeEvents<TMessage>[K]) => void): void;
+
+  /**
+   * Remove a previously registered granular event listener.
+   * @param event The event name the handler was registered for.
+   * @param handler The handler to remove.
+   */
+  off<K extends keyof TreeEvents<TMessage>>(event: K, handler: (event: TreeEvents<TMessage>[K]) => void): void;
 }
 
 /**
@@ -181,17 +235,14 @@ export interface TreeInternal<TMessage> extends Tree<TMessage> {
   applyRunStart(run: Run<TMessage>): void;
 
   /**
-   * Transition a known run to a terminal status in response to
-   * `x-ably-run-end`. If `runId` does not match a recorded run the call is
-   * logged and ignored — without history hydration (phase 13) a session
-   * that subscribed mid-run can legitimately see run-end without prior
-   * run-start.
+   * Transition a known run to the terminal status carried by
+   * `x-ably-run-end`. The terminal is taken at face value — a later
+   * `x-ably-step-start` (e.g. driven by retry) re-activates the run via
+   * {@link applyStepStart}.
    *
-   * Aborted runs are terminal-and-final: when `abortRequested === true` on
-   * the existing record, the call is logged and ignored. A run-end with
-   * status `'aborted'` is treated as the agent's confirmation publish
-   * (logged at debug); any other status is a conflict (logged at warn).
-   * Spec: AIT-AB2a.
+   * If `runId` does not match a recorded run the call is logged and
+   * ignored — a session that subscribed mid-run can legitimately see
+   * run-end without prior run-start.
    * @param options Identification and target status for the transition.
    * @param options.runId The id of the run to transition.
    * @param options.status The status to transition the run into.
@@ -199,23 +250,30 @@ export interface TreeInternal<TMessage> extends Tree<TMessage> {
   applyRunEnd(options: { runId: string; status: RunStatus }): void;
 
   /**
-   * Record that an `x-ably-abort` control signal targeting `runId` has been
-   * observed on the channel. Sets `abortRequested: true` on the run record
-   * and synthesises {@link Run.status} to `'aborted'`. Idempotent — a
-   * second call after the flag is set is a no-op (no notify). If `runId`
-   * does not match a known run the call is logged and ignored. Spec:
-   * AIT-AB2.
-   * @param options Identification of the run to mark aborted.
-   * @param options.runId The id of the run to mark aborted.
+   * Record a control signal observed on the channel and emit
+   * {@link TreeEvents.control-signal}. Appends to the targeted run's
+   * {@link Run.controlSignals} list. Status is **never** mutated — the
+   * agent that processes the signal publishes the lifecycle wire that
+   * actually transitions state.
+   *
+   * If `runId` does not match a known run the call is logged and
+   * ignored. Idempotent on `messageId` — a duplicate observation
+   * (history replay) is recorded once.
+   * @param signal The control signal to record.
    */
-  applyAbort(options: { runId: string }): void;
+  applyControlSignal(signal: ControlSignal): void;
 
   /**
-   * Record a `'active'` step observed via `x-ably-step-start`. A duplicate
-   * id (a second `x-ably-step-start` for the same step) is logged and
-   * ignored — step-start is one-shot per step on the wire, so a duplicate
-   * indicates either history hydration replaying a known step or a faulty
-   * publisher.
+   * Record a `'active'` step observed via `x-ably-step-start`. If the
+   * step's run is currently in a terminal status (`'failed'`,
+   * `'aborted'`, or `'complete'`), the run transitions back to
+   * `'active'` — this is the retry mechanic: the agent processing a
+   * retry signal publishes a fresh step-start, which re-activates the
+   * run.
+   *
+   * A duplicate id (a second `x-ably-step-start` for the same step)
+   * is logged and ignored — step-start is one-shot per step on the
+   * wire.
    * @param step The step record to record. Status must be `'active'`.
    */
   applyStepStart(step: StepRecord): void;
@@ -242,6 +300,7 @@ export interface TreeOptions {
 /**
  * Default {@link TreeInternal} implementation. Maintains a single array
  * of nodes ordered by serial and a flat set of coarse subscribers.
+ * Granular event delivery is handled by an internal {@link EventEmitter}.
  * @internal
  */
 export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
@@ -250,9 +309,11 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   private readonly _runs: Run<TMessage>[] = [];
   private readonly _steps: StepRecord[] = [];
   private readonly _subscribers = new Set<() => void>();
+  private readonly _emitter: EventEmitter<TreeEvents<TMessage>>;
 
   constructor(options: TreeOptions) {
     this._logger = options.logger.withContext({ component: 'Tree' });
+    this._emitter = new EventEmitter<TreeEvents<TMessage>>(this._logger);
     this._logger.trace('DefaultTree(); initialized');
   }
 
@@ -297,10 +358,12 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
 
   /**
    * Flip `streaming` to `false` on every node belonging to the given run
-   * that is currently streaming. Called from {@link applyRunEnd},
-   * {@link applyAbort}, and {@link applyStepEnd} — after any of those
-   * lifecycle wires lands no further parts can coherently extend a
-   * message in the run.
+   * that is currently streaming. Called from {@link applyRunEnd} and
+   * {@link applyStepEnd} — after either lifecycle wire lands no further
+   * parts can coherently extend a message in the run. Control-signal
+   * observation does not call this: signals never end a stream
+   * directly; the agent reacting to a signal publishes the lifecycle
+   * wire that does.
    *
    * Mutates each affected node into a fresh object (so identity-based
    * change detection in consumers picks the transition up) and notifies
@@ -346,45 +409,40 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
       return;
     }
 
-    // Spec: AIT-AB2a. Aborted runs are terminal-and-final; the abort signal
-    // is itself the run terminal. A `run-end (aborted)` is the agent's
-    // confirmation publish — informational. Any other status is a conflict.
-    if (existing.abortRequested) {
-      if (options.status === 'aborted') {
-        this._logger.debug('DefaultTree.applyRunEnd(); confirmation for aborted run', { runId: options.runId });
-      } else {
-        this._logger.warn('DefaultTree.applyRunEnd(); abort overrides observed run-end', {
-          runId: options.runId,
-          incomingStatus: options.status,
-        });
-      }
-      return;
-    }
-
     this._runs[index] = { ...existing, status: options.status };
     this._clearStreamingForRun(options.runId);
     this._notify();
   }
 
-  applyAbort(options: { runId: string }): void {
-    this._logger.trace('DefaultTree.applyAbort();', { runId: options.runId });
+  applyControlSignal(signal: ControlSignal): void {
+    this._logger.trace('DefaultTree.applyControlSignal();', {
+      type: signal.type,
+      runId: signal.runId,
+      stepId: signal.stepId,
+      messageId: signal.messageId,
+    });
 
-    const index = this._runs.findIndex((run) => run.id === options.runId);
+    const index = this._runs.findIndex((run) => run.id === signal.runId);
     const existing = index === -1 ? undefined : this._runs[index];
     if (existing === undefined) {
-      this._logger.warn('DefaultTree.applyAbort(); run not found', { runId: options.runId });
+      this._logger.warn('DefaultTree.applyControlSignal(); run not found', {
+        type: signal.type,
+        runId: signal.runId,
+      });
       return;
     }
 
-    if (existing.abortRequested) {
-      // Idempotent — a second abort observation is a no-op. Don't notify.
+    if (existing.controlSignals.some((s) => s.messageId === signal.messageId)) {
+      // Idempotent on messageId — history replay can re-deliver the same
+      // signal wire. Re-recording would skew callers that read the list as
+      // an arrival-ordered log.
       return;
     }
 
-    // Spec: AIT-AB2. Mark abortRequested and synthesise status.
-    this._runs[index] = { ...existing, abortRequested: true, status: 'aborted' };
-    this._clearStreamingForRun(options.runId);
+    const updated: Run<TMessage> = { ...existing, controlSignals: [...existing.controlSignals, signal] };
+    this._runs[index] = updated;
     this._notify();
+    this._emitter.emit('control-signal', { signal, run: updated });
   }
 
   applyStepStart(step: StepRecord): void {
@@ -395,6 +453,21 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
       return;
     }
     this._steps.push(step);
+
+    // Re-activate the run if it was in a terminal status — this is what
+    // makes retry-after-{failed,aborted,complete} work. The signal alone
+    // never changed status; the agent's step-start is the lifecycle wire
+    // that does. Status only ever moves through observed lifecycle wires.
+    const runIndex = this._runs.findIndex((r) => r.id === step.runId);
+    const existingRun = runIndex === -1 ? undefined : this._runs[runIndex];
+    if (existingRun !== undefined && existingRun.status !== 'active') {
+      this._logger.debug('DefaultTree.applyStepStart(); re-activating run from terminal', {
+        runId: step.runId,
+        previousStatus: existingRun.status,
+      });
+      this._runs[runIndex] = { ...existingRun, status: 'active' };
+    }
+
     this._notify();
   }
 
@@ -407,13 +480,27 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
       this._logger.warn('DefaultTree.applyStepEnd(); step not found', { stepId: options.stepId });
       return;
     }
-    this._steps[index] = { ...existing, status: options.status };
+    const updated: StepRecord = { ...existing, status: options.status };
+    this._steps[index] = updated;
     // The step-end terminates the streaming wave for the run — no further
     // codec parts under in-flight messages can coherently arrive after it.
-    // Phase 6 has at most one step per run, so clearing across the run is a
-    // safe superset; richer per-step scoping lands when nodes carry stepId.
     this._clearStreamingForRun(existing.runId);
     this._notify();
+
+    // Granular emit happens after _notify so consumers reading the tree
+    // from the granular handler see the post-update state.
+    const run = this._runs.find((r) => r.id === existing.runId);
+    if (run !== undefined) {
+      this._emitter.emit('step-ended', { step: updated, run });
+    }
+  }
+
+  on<K extends keyof TreeEvents<TMessage>>(event: K, handler: (event: TreeEvents<TMessage>[K]) => void): void {
+    this._emitter.on(event, handler);
+  }
+
+  off<K extends keyof TreeEvents<TMessage>>(event: K, handler: (event: TreeEvents<TMessage>[K]) => void): void {
+    this._emitter.off(event, handler);
   }
 
   subscribe(callback: () => void): () => void {

@@ -384,25 +384,24 @@ describe('ClientView.runs', () => {
     const run = await view.send('hello');
     expect(run.status).toBe('active');
 
-    // CAST: reach for the tree internals to record the run and an abort.
-    // applyAbort no-ops on unknown runs, so the run-start has to be on
-    // the tree before the abort is observed (mirroring the real wire
-    // ordering — run-start is emitted before any abort).
+    // CAST: reach for the tree internals to drive a run-end (aborted)
+    // for the run we just opened. Under the symmetric model, status
+    // changes only via lifecycle wires.
     const tree = (
       session as unknown as {
         _tree: {
           applyRunStart: (run: {
             id: string;
             status: string;
-            abortRequested: boolean;
+            controlSignals: readonly never[];
             initiatorClientId: string;
           }) => void;
-          applyAbort: (o: { runId: string }) => void;
+          applyRunEnd: (o: { runId: string; status: 'aborted' }) => void;
         };
       }
     )._tree;
-    tree.applyRunStart({ id: run.id, status: 'active', abortRequested: false, initiatorClientId: 'alice' });
-    tree.applyAbort({ runId: run.id });
+    tree.applyRunStart({ id: run.id, status: 'active', initiatorClientId: 'alice', controlSignals: [] });
+    tree.applyRunEnd({ runId: run.id, status: 'aborted' });
 
     expect(view.runs[0]?.status).toBe('aborted');
   });

@@ -56,7 +56,11 @@ interface InboundOverrides {
 }
 
 interface RunInboundOverrides {
-  serial: string;
+  /**
+   * Wire serial. Real Ably inbounds always carry one; tests may pass
+   * `undefined` to exercise the decode loop's missing-serial guards.
+   */
+  serial: string | undefined;
   name: string;
   headers: Record<string, string>;
   clientId?: string;
@@ -72,7 +76,7 @@ interface RunInboundOverrides {
  */
 const makeRunInbound = (overrides: RunInboundOverrides): Ably.InboundMessage =>
   ({
-    id: `${overrides.name}:${overrides.serial}`,
+    id: `${overrides.name}:${overrides.serial ?? '<no-serial>'}`,
     serial: overrides.serial,
     timestamp: Date.now(),
     action: 1,
@@ -438,6 +442,8 @@ describe('Session', () => {
         serial: '01',
         message: 'hello',
         streaming: true,
+        canonical: true,
+        run: undefined,
       });
       expect(handler).toHaveBeenCalledTimes(1);
     });
@@ -1047,7 +1053,9 @@ describe('Session', () => {
         }),
       );
 
-      expect(treeOf(session).steps).toEqual([{ id: 's-1', runId: 'r-1', status: 'active' }]);
+      expect(treeOf(session).steps).toEqual([
+        { id: 's-1', runId: 'r-1', status: 'active', serial: '01', canonical: true },
+      ]);
     });
 
     it('skips step-start without x-ably-run-id', async () => {
@@ -1077,6 +1085,27 @@ describe('Session', () => {
           serial: '01',
           name: WireMessages.StepStart,
           headers: { [Headers.RunId]: 'r-1' },
+          clientId: 'agent-1',
+        }),
+      );
+
+      expect(treeOf(session).steps).toHaveLength(0);
+    });
+
+    it('skips step-start with no message serial (defensive guard)', async () => {
+      // Real Ably inbound messages always carry a serial; this guard
+      // exists so a malformed test/mock or unexpected protocol shape
+      // can't insert a step record without the serial the canonical
+      // rule depends on. Spec: AIT-CS01.
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: undefined,
+          name: WireMessages.StepStart,
+          headers: { [Headers.RunId]: 'r-1', [Headers.StepId]: 's-1' },
           clientId: 'agent-1',
         }),
       );

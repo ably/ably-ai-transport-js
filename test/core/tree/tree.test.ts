@@ -14,6 +14,7 @@ const makeNode = (
   runId: 'r-1',
   message: `msg:${overrides.id}`,
   streaming: false,
+  canonical: true,
   ...overrides,
 });
 
@@ -97,6 +98,7 @@ describe('Tree', () => {
         runId: 'r-1',
         message: 'hello',
         streaming: false,
+        canonical: true,
       });
     });
   });
@@ -130,6 +132,7 @@ describe('Tree', () => {
         role: 'assistant',
         message: 'world',
         streaming: false,
+        canonical: true,
       });
     });
 
@@ -471,32 +474,32 @@ describe('Tree', () => {
     describe('applyStepStart', () => {
       it('records the step as active', () => {
         const tree = makeTree();
-        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
+        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
 
-        expect(tree.steps).toEqual([{ id: 's-1', runId: 'r-1', status: 'active' }]);
+        expect(tree.steps).toEqual([{ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true }]);
       });
 
       it('appends multiple steps in arrival order', () => {
         const tree = makeTree();
-        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
-        tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active' });
+        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
+        tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active', serial: 's-2', canonical: true });
 
         expect(tree.steps.map((s) => s.id)).toEqual(['s-1', 's-2']);
       });
 
       it('preserves the runId from the supplied step', () => {
         const tree = makeTree();
-        tree.applyStepStart({ id: 's-1', runId: 'r-7', status: 'active' });
+        tree.applyStepStart({ id: 's-1', runId: 'r-7', status: 'active', serial: 's-1', canonical: true });
 
         expect(tree.steps[0]?.runId).toBe('r-7');
       });
 
       it('ignores a duplicate step id without disturbing the existing entry', () => {
         const tree = makeTree();
-        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
-        tree.applyStepStart({ id: 's-1', runId: 'r-other', status: 'active' });
+        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
+        tree.applyStepStart({ id: 's-1', runId: 'r-other', status: 'active', serial: 's-1', canonical: true });
 
-        expect(tree.steps).toEqual([{ id: 's-1', runId: 'r-1', status: 'active' }]);
+        expect(tree.steps).toEqual([{ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true }]);
       });
 
       it('fires subscribe', () => {
@@ -504,18 +507,18 @@ describe('Tree', () => {
         const handler = vi.fn();
         tree.subscribe(handler);
 
-        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
+        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
 
         expect(handler).toHaveBeenCalledTimes(1);
       });
 
       it('does not fire subscribe when the duplicate is ignored', () => {
         const tree = makeTree();
-        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
+        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
         const handler = vi.fn();
         tree.subscribe(handler);
 
-        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
+        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
 
         expect(handler).not.toHaveBeenCalled();
       });
@@ -524,16 +527,16 @@ describe('Tree', () => {
     describe('applyStepEnd', () => {
       it('transitions a known step to the supplied status', () => {
         const tree = makeTree();
-        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
+        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
 
         tree.applyStepEnd({ stepId: 's-1', status: 'complete' });
 
-        expect(tree.steps).toEqual([{ id: 's-1', runId: 'r-1', status: 'complete' }]);
+        expect(tree.steps).toEqual([{ id: 's-1', runId: 'r-1', status: 'complete', serial: 's-1', canonical: true }]);
       });
 
       it("transitions a step to 'failed' when the publish supplied that status", () => {
         const tree = makeTree();
-        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
+        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
 
         tree.applyStepEnd({ stepId: 's-1', status: 'failed' });
 
@@ -542,7 +545,7 @@ describe('Tree', () => {
 
       it('fires subscribe on transition', () => {
         const tree = makeTree();
-        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
+        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
         const handler = vi.fn();
         tree.subscribe(handler);
 
@@ -562,15 +565,18 @@ describe('Tree', () => {
         expect(handler).not.toHaveBeenCalled();
       });
 
-      it('preserves step order when an earlier step transitions terminal', () => {
+      it('ignores step-end for an abandoned step (later step-start retired it)', () => {
         const tree = makeTree();
-        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
-        tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active' });
+        // s-2's arrival retires s-1 to 'abandoned' before any step-end
+        // could land — abandonment is final. A late step-end from the
+        // retired worker is logged and ignored. Spec: AIT-CN3.
+        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
+        tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active', serial: 's-2', canonical: true });
 
         tree.applyStepEnd({ stepId: 's-1', status: 'complete' });
 
         expect(tree.steps.map((s) => s.id)).toEqual(['s-1', 's-2']);
-        expect(tree.steps[0]?.status).toBe('complete');
+        expect(tree.steps[0]?.status).toBe('abandoned');
         expect(tree.steps[1]?.status).toBe('active');
       });
     });
@@ -613,7 +619,7 @@ describe('Tree', () => {
     it('clears streaming when a step-end lands for the run', () => {
       const tree = makeTree();
       tree.applyRunStart(makeRun({ id: 'r-1' }));
-      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
+      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
       tree.applyMessage(makeNode({ id: 'a', serial: '01', runId: 'r-1', role: 'assistant', streaming: true }));
 
       tree.applyStepEnd({ stepId: 's-1', status: 'complete' });
@@ -674,7 +680,7 @@ describe('Tree', () => {
       tree.applyRunStart(makeRun({ id: 'r-1' }));
       tree.applyRunEnd({ runId: 'r-1', status: 'failed' });
 
-      tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active' });
+      tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active', serial: 's-2', canonical: true });
 
       expect(tree.getRun('r-1')?.status).toBe('active');
     });
@@ -684,7 +690,7 @@ describe('Tree', () => {
       tree.applyRunStart(makeRun({ id: 'r-1' }));
       tree.applyRunEnd({ runId: 'r-1', status: 'aborted' });
 
-      tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active' });
+      tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active', serial: 's-2', canonical: true });
 
       expect(tree.getRun('r-1')?.status).toBe('active');
     });
@@ -694,7 +700,7 @@ describe('Tree', () => {
       tree.applyRunStart(makeRun({ id: 'r-1' }));
       tree.applyRunEnd({ runId: 'r-1', status: 'complete' });
 
-      tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active' });
+      tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active', serial: 's-2', canonical: true });
 
       expect(tree.getRun('r-1')?.status).toBe('active');
     });
@@ -703,7 +709,7 @@ describe('Tree', () => {
       const tree = makeTree();
       tree.applyRunStart(makeRun({ id: 'r-1' }));
 
-      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
+      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
 
       expect(tree.getRun('r-1')?.status).toBe('active');
     });
@@ -713,7 +719,7 @@ describe('Tree', () => {
     it("fires 'step-ended' when a step transitions terminal", () => {
       const tree = makeTree();
       tree.applyRunStart(makeRun({ id: 'r-1' }));
-      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active' });
+      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
 
       const handler = vi.fn();
       tree.on('step-ended', handler);
@@ -736,6 +742,215 @@ describe('Tree', () => {
       tree.applyControlSignal({ type: 'abort', runId: 'r-1', messageId: 'sig-1', clientId: 'a' });
 
       expect(handler).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('canonical-step rule (Spec: AIT-CN2, AIT-CN3)', () => {
+    it("a sole 'active' step is canonical", () => {
+      const tree = makeTree();
+      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
+
+      expect(tree.steps[0]).toMatchObject({ status: 'active', canonical: true });
+    });
+
+    it("a sole 'complete' step is canonical", () => {
+      const tree = makeTree();
+      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
+      tree.applyStepEnd({ stepId: 's-1', status: 'complete' });
+
+      expect(tree.steps[0]).toMatchObject({ status: 'complete', canonical: true });
+    });
+
+    it("a sole 'failed' step (no retry yet) is canonical", () => {
+      const tree = makeTree();
+      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
+      tree.applyStepEnd({ stepId: 's-1', status: 'failed' });
+
+      expect(tree.steps[0]).toMatchObject({ status: 'failed', canonical: true });
+    });
+
+    it("multi-step success keeps every 'complete' step canonical (continuations contribute to current state)", () => {
+      const tree = makeTree();
+      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
+      tree.applyStepEnd({ stepId: 's-1', status: 'complete' });
+      tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active', serial: 's-2', canonical: true });
+      tree.applyStepEnd({ stepId: 's-2', status: 'complete' });
+
+      expect(tree.steps[0]).toMatchObject({ id: 's-1', status: 'complete', canonical: true });
+      expect(tree.steps[1]).toMatchObject({ id: 's-2', status: 'complete', canonical: true });
+    });
+
+    it("retry of a 'failed' run flips the failed predecessor to non-canonical", () => {
+      const tree = makeTree();
+      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
+      tree.applyStepEnd({ stepId: 's-1', status: 'failed' });
+
+      tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active', serial: 's-2', canonical: true });
+
+      expect(tree.steps[0]).toMatchObject({ id: 's-1', status: 'failed', canonical: false });
+      expect(tree.steps[1]).toMatchObject({ id: 's-2', status: 'active', canonical: true });
+    });
+
+    it("retry of an 'aborted' run flips the aborted predecessor to non-canonical", () => {
+      const tree = makeTree();
+      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
+      tree.applyStepEnd({ stepId: 's-1', status: 'aborted' });
+
+      tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active', serial: 's-2', canonical: true });
+
+      expect(tree.steps[0]).toMatchObject({ id: 's-1', status: 'aborted', canonical: false });
+      expect(tree.steps[1]).toMatchObject({ id: 's-2', status: 'active', canonical: true });
+    });
+
+    it("crash recovery — a later step-start abandons a still-'active' prior step", () => {
+      const tree = makeTree();
+      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
+
+      tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active', serial: 's-2', canonical: true });
+
+      expect(tree.steps[0]).toMatchObject({ id: 's-1', status: 'abandoned', canonical: false });
+      expect(tree.steps[1]).toMatchObject({ id: 's-2', status: 'active', canonical: true });
+    });
+
+    it("abandonment clears streaming on the abandoned step's nodes", () => {
+      const tree = makeTree();
+      tree.applyRunStart(makeRun({ id: 'r-1' }));
+      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
+      tree.applyMessage(
+        makeNode({ id: 'a', serial: '01', runId: 'r-1', stepId: 's-1', role: 'assistant', streaming: true }),
+      );
+
+      tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active', serial: 's-2', canonical: true });
+
+      expect(tree.messages[0]?.streaming).toBe(false);
+      expect(tree.messages[0]?.canonical).toBe(false);
+    });
+
+    it('flips canonical to false on every node belonging to a retired step', () => {
+      const tree = makeTree();
+      tree.applyRunStart(makeRun({ id: 'r-1' }));
+      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
+      tree.applyMessage(makeNode({ id: 'a', serial: '01', runId: 'r-1', stepId: 's-1', role: 'assistant' }));
+      tree.applyMessage(makeNode({ id: 'b', serial: '02', runId: 'r-1', stepId: 's-1', role: 'assistant' }));
+      tree.applyStepEnd({ stepId: 's-1', status: 'failed' });
+
+      tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active', serial: 's-2', canonical: true });
+
+      expect(tree.messages[0]?.canonical).toBe(false);
+      expect(tree.messages[1]?.canonical).toBe(false);
+    });
+
+    it("does not flip canonical on prior 'complete' steps' nodes when a new step-start lands", () => {
+      const tree = makeTree();
+      tree.applyRunStart(makeRun({ id: 'r-1' }));
+      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
+      tree.applyMessage(makeNode({ id: 'a', serial: '01', runId: 'r-1', stepId: 's-1', role: 'assistant' }));
+      tree.applyStepEnd({ stepId: 's-1', status: 'complete' });
+
+      tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active', serial: 's-2', canonical: true });
+
+      expect(tree.messages[0]?.canonical).toBe(true);
+    });
+
+    it('does not flip canonical on nodes from another run', () => {
+      const tree = makeTree();
+      tree.applyRunStart(makeRun({ id: 'r-1' }));
+      tree.applyRunStart(makeRun({ id: 'r-2' }));
+      tree.applyStepStart({ id: 's-r1-1', runId: 'r-1', status: 'active', serial: 's-r1-1', canonical: true });
+      tree.applyStepStart({ id: 's-r2-1', runId: 'r-2', status: 'active', serial: 's-r2-1', canonical: true });
+      tree.applyMessage(makeNode({ id: 'a', serial: '01', runId: 'r-2', stepId: 's-r2-1', role: 'assistant' }));
+      tree.applyStepEnd({ stepId: 's-r1-1', status: 'failed' });
+
+      // A retry on r-1 should not touch r-2's step or its nodes.
+      tree.applyStepStart({ id: 's-r1-2', runId: 'r-1', status: 'active', serial: 's-r1-2', canonical: true });
+
+      expect(tree.steps.find((s) => s.id === 's-r2-1')).toMatchObject({ canonical: true });
+      expect(tree.messages[0]?.canonical).toBe(true);
+    });
+
+    it('a node arriving with no observed step defaults to canonical: true', () => {
+      const tree = makeTree();
+      tree.applyMessage(
+        makeNode({ id: 'a', serial: '01', runId: 'r-1', stepId: 's-not-yet-observed', role: 'assistant' }),
+      );
+
+      // Out-of-order delivery — step-start arrives later. The default assumes
+      // the step is canonical; if the step turns out to be retired by a
+      // later step-start, the tree's flip-on-retire logic updates the node.
+      expect(tree.messages[0]?.canonical).toBe(true);
+    });
+
+    it('a node with no stepId is always canonical (user messages, run-start payloads)', () => {
+      const tree = makeTree();
+      tree.applyMessage(makeNode({ id: 'u', serial: '01', runId: 'r-1', role: 'user' }));
+
+      expect(tree.messages[0]?.canonical).toBe(true);
+    });
+
+    it('an arriving node attached to a retired step inherits canonical: false', () => {
+      const tree = makeTree();
+      tree.applyRunStart(makeRun({ id: 'r-1' }));
+      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
+      tree.applyStepEnd({ stepId: 's-1', status: 'failed' });
+      // s-2's arrival flips s-1 to non-canonical.
+      tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active', serial: 's-2', canonical: true });
+
+      // A late-arriving node from the failed s-1 (rare — this could happen
+      // with mid-stream reconnect / hydration backfill) inherits the step's
+      // current canonical: false.
+      tree.applyMessage(makeNode({ id: 'late', serial: '99', runId: 'r-1', stepId: 's-1', role: 'assistant' }));
+
+      expect(tree.messages.find((n) => n.id === 'late')?.canonical).toBe(false);
+    });
+
+    it('ignores a wire step-end on an already-abandoned step', () => {
+      const tree = makeTree();
+      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
+      tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active', serial: 's-2', canonical: true });
+      // s-1 is now 'abandoned'. A late wire step-end (e.g. the original
+      // worker eventually publishing 'complete' before discovering it
+      // was abandoned) is logged and ignored.
+      tree.applyStepEnd({ stepId: 's-1', status: 'complete' });
+
+      expect(tree.steps[0]).toMatchObject({ status: 'abandoned', canonical: false });
+    });
+
+    it('does not retire a later-serial sibling when an older step-start arrives after it', () => {
+      // Hypothetical out-of-order arrival (a hydration replay edge case
+      // brings an older serial after a newer one already landed live).
+      // The rule is "no later-serial step-start exists in the same
+      // run", so the older arrival must not retire the newer one.
+      // Spec: AIT-CN2.
+      const tree = makeTree();
+      tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active', serial: 's-2', canonical: true });
+      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
+
+      // s-2 (the later-serial sibling) must still be canonical and
+      // active — the older s-1 does not have authority to retire it.
+      expect(tree.steps.find((s) => s.id === 's-2')).toMatchObject({ status: 'active', canonical: true });
+      // s-1 itself remains 'active' here too — it was the earlier
+      // arrival from a serial-ordering perspective, so on its own
+      // arrival there are no "earlier-serial siblings" to retire.
+      expect(tree.steps.find((s) => s.id === 's-1')).toMatchObject({ status: 'active', canonical: true });
+    });
+
+    it('preserves canonical: false through a streaming updateMessage on a retired step', () => {
+      const tree = makeTree();
+      tree.applyRunStart(makeRun({ id: 'r-1' }));
+      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
+      tree.applyMessage(makeNode({ id: 'a', serial: '01', runId: 'r-1', stepId: 's-1', role: 'assistant' }));
+      tree.applyStepEnd({ stepId: 's-1', status: 'failed' });
+      // Retire s-1.
+      tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active', serial: 's-2', canonical: true });
+      expect(tree.messages[0]?.canonical).toBe(false);
+
+      // A subsequent updateMessage on the retired-step node must
+      // preserve the canonical: false flip — `updateMessage` only
+      // replaces the composed message body, not other node fields.
+      tree.updateMessage('a', 'msg:a (revised)');
+
+      expect(tree.messages[0]?.canonical).toBe(false);
+      expect(tree.messages[0]?.message).toBe('msg:a (revised)');
     });
   });
 });

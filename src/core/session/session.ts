@@ -660,6 +660,9 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
         continue;
       }
 
+      // `canonical: true` is a placeholder — the tree projects from the
+      // current step state (or defaults to `true` for stepless / not-yet-
+      // observed-step nodes) inside applyMessage. Spec: AIT-CN2.
       const node: MessageNode<CodecMessage<C>> = {
         id: messageId,
         role,
@@ -669,6 +672,7 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
         message: composed,
         streaming,
         serial,
+        canonical: true,
       };
       this._tree.applyMessage(node);
     }
@@ -741,7 +745,19 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
       return;
     }
 
-    this._tree.applyStepStart({ id: stepId, runId, status: 'active' });
+    const serial = message.serial;
+    if (serial === undefined) {
+      this._logger.warn('DefaultSession._handleStepStart(); inbound step-start missing serial', {
+        runId,
+        stepId,
+      });
+      return;
+    }
+
+    // A freshly observed step-start is canonical at insertion (Spec: AIT-CN2);
+    // the tree's `applyStepStart` retires any prior canonical predecessors in
+    // the same run.
+    this._tree.applyStepStart({ id: stepId, runId, status: 'active', serial, canonical: true });
   }
 
   private _handleControlSignal(message: Ably.InboundMessage): void {

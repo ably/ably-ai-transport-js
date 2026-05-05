@@ -21,6 +21,7 @@ const makeNode = (id: string, serial: string) => ({
   message: `msg:${id}`,
   streaming: false,
   serial,
+  canonical: true,
 });
 
 describe('View', () => {

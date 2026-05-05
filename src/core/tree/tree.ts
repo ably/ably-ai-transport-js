@@ -103,6 +103,25 @@ export interface MessageNode<TMessage, TRun extends Run<TMessage> = Run<TMessage
    * inbound message through.
    */
   readonly serial: string;
+
+  /**
+   * Whether this message contributes to the run's current state.
+   *
+   * Mirrors the canonical flag of the step that produced this message
+   * (see {@link import('../step/index.js').StepRecord.canonical}). Always
+   * `true` when the message has no `stepId` — user messages and other
+   * client publishes are not retry-targetable. Otherwise tracks the
+   * step's flag: when a later `x-ably-step-start` arrives that retires
+   * a prior step (failed/aborted predecessor of a retry, or an
+   * `'active'` step being abandoned), the tree flips `canonical` on
+   * every message that step produced. Spec: AIT-CN2.
+   *
+   * Consumers project this field. The agent's model-bound view typically
+   * filters by `canonical` so the model never sees a retried attempt's
+   * partial output; UI projections render non-canonical bubbles
+   * distinctly while preserving them as history.
+   */
+  readonly canonical: boolean;
 }
 
 /**
@@ -271,10 +290,27 @@ export interface TreeInternal<TMessage> extends Tree<TMessage> {
    * retry signal publishes a fresh step-start, which re-activates the
    * run.
    *
+   * The arrival also retires prior steps in the same run as the
+   * canonical-step rule requires (Spec: AIT-CN2, AIT-CN3):
+   *
+   *   - Any prior `'active'` step in the same run is mutated to
+   *     `'abandoned'` (tree-derived; never wire-published) and its
+   *     nodes' `streaming` flag cleared. Crash detection without
+   *     heartbeats — the new step-start is unambiguous proof the prior
+   *     worker is no longer running.
+   *   - Any prior `'failed'` or `'aborted'` step in the same run flips
+   *     `canonical` to `false` — the new step is the retry attempt, so
+   *     the failed predecessor's output no longer contributes to the
+   *     run's current state.
+   *   - `'complete'` and `'paused'` predecessors stay canonical
+   *     (multi-step continuations all contribute to current state).
+   *
    * A duplicate id (a second `x-ably-step-start` for the same step)
    * is logged and ignored — step-start is one-shot per step on the
    * wire.
-   * @param step The step record to record. Status must be `'active'`.
+   * @param step The step record to record. Status must be `'active'`,
+   *   `canonical` must be `true`, and `serial` must carry the inbound
+   *   `x-ably-step-start` wire's serial.
    */
   applyStepStart(step: StepRecord): void;
 
@@ -336,11 +372,32 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   applyMessage(node: MessageNode<TMessage>): void {
     this._logger.trace('DefaultTree.applyMessage();', { id: node.id, serial: node.serial });
 
-    const insertAt = this._messages.findIndex((existing) => existing.serial > node.serial);
+    // Project `canonical` from the current step state. Messages without a
+    // stepId are always canonical (user messages, run-start time messages
+    // are not retry-targetable). Messages whose step has not yet been
+    // observed default to `true` — out-of-order delivery typically lands
+    // the step-start shortly afterwards, and the alternative (default
+    // false) would render the bubble as historical from the start.
+    // Spec: AIT-CN2.
+    const stepCanonical = node.stepId === undefined ? true : (this._stepCanonical(node.stepId) ?? true);
+    const projected: MessageNode<TMessage> = { ...node, canonical: stepCanonical };
+
+    const insertAt = this._messages.findIndex((existing) => existing.serial > projected.serial);
     const targetIndex = insertAt === -1 ? this._messages.length : insertAt;
-    this._messages.splice(targetIndex, 0, node);
+    this._messages.splice(targetIndex, 0, projected);
 
     this._notify();
+  }
+
+  /**
+   * Read the canonical flag of a step by id. Returns `undefined` when the
+   * step has not been observed — the caller decides the default for that
+   * case.
+   * @param stepId The step id to look up.
+   * @returns The step's canonical flag, or `undefined` if not yet observed.
+   */
+  private _stepCanonical(stepId: string): boolean | undefined {
+    return this._steps.find((s) => s.id === stepId)?.canonical;
   }
 
   updateMessage(id: string, message: TMessage): void {
@@ -446,12 +503,23 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   }
 
   applyStepStart(step: StepRecord): void {
-    this._logger.trace('DefaultTree.applyStepStart();', { stepId: step.id, runId: step.runId });
+    this._logger.trace('DefaultTree.applyStepStart();', { stepId: step.id, runId: step.runId, serial: step.serial });
 
     if (this._steps.some((existing) => existing.id === step.id)) {
       this._logger.warn('DefaultTree.applyStepStart(); duplicate step id', { stepId: step.id });
       return;
     }
+
+    // Retire prior steps in the same run before adding the new entry. The
+    // canonical-step rule (Spec: AIT-CN2) treats a later-serial step-start
+    // as the current latest, so any earlier-serial sibling that's
+    // `'active'` is abandoned (Spec: AIT-CN3), and any `'failed'`/
+    // `'aborted'` predecessor flips to non-canonical (it was retried).
+    // Out-of-order delivery is handled by serial comparison inside the
+    // helper — a later-serial sibling that lands first must not retire
+    // the newer arrival.
+    this._retirePriorStepsForRun(step.runId, step.serial);
+
     this._steps.push(step);
 
     // Re-activate the run if it was in a terminal status — this is what
@@ -471,6 +539,81 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
     this._notify();
   }
 
+  /**
+   * Walk the steps in a run and retire predecessors of a newly-arriving
+   * step-start, per the canonical-step rule (Spec: AIT-CN2, AIT-CN3):
+   *
+   *   - `'active'` step → mutate to `'abandoned'`, canonical → `false`,
+   *     and clear `streaming` on its nodes (worker is provably gone).
+   *   - `'failed'` / `'aborted'` step that was canonical → flip
+   *     canonical → `false` (it was retried; the new step-start is
+   *     proof). Status stays as recorded so observers can still see the
+   *     attempt's terminal.
+   *   - Other statuses (`'complete'`, `'paused'`, already-non-canonical
+   *     `'abandoned'`/`'superseded'`) are left untouched.
+   *
+   * Only siblings with an earlier `serial` are considered — a later-
+   * serial sibling that happens to land first (out-of-order delivery)
+   * must not retire the newer arrival. The rule is "no later-serial
+   * step-start exists in the same run", read directly. Spec: AIT-CN2.
+   *
+   * Each affected step's nodes are projected onto a fresh node object
+   * with the new `canonical` (and, for abandoned, `streaming: false`)
+   * so identity-based change detection picks the transition up.
+   * @param runId The run whose prior steps to retire.
+   * @param newSerial Serial of the newly-arriving step-start; only
+   *   siblings whose serial sorts strictly earlier are considered.
+   */
+  private _retirePriorStepsForRun(runId: string, newSerial: string): void {
+    for (let i = 0; i < this._steps.length; i++) {
+      const existing = this._steps[i];
+      if (existing?.runId !== runId) {
+        continue;
+      }
+      if (existing.serial >= newSerial) {
+        // Lex-compare on the Ably serial — `>=` rules out same-serial
+        // (the duplicate-id guard already rejects exact resubmissions)
+        // and any later-serial sibling that landed before its
+        // step-start in delivery order.
+        continue;
+      }
+      if (existing.status === 'active') {
+        const updated: StepRecord = { ...existing, status: 'abandoned', canonical: false };
+        this._steps[i] = updated;
+        this._flipNodeFlagsForStep(existing.id, { canonical: false, clearStreaming: true });
+        continue;
+      }
+      if ((existing.status === 'failed' || existing.status === 'aborted') && existing.canonical) {
+        const updated: StepRecord = { ...existing, canonical: false };
+        this._steps[i] = updated;
+        this._flipNodeFlagsForStep(existing.id, { canonical: false, clearStreaming: false });
+      }
+    }
+  }
+
+  /**
+   * Mutate the stored nodes for a given step to reflect a status
+   * transition that retired the step. Used by
+   * {@link _retirePriorStepsForRun} to flip `canonical` (and optionally
+   * `streaming`) on every node carrying the step's id.
+   * @param stepId The id of the step whose nodes to update.
+   * @param updates Per-flag instructions; see field descriptions.
+   * @param updates.canonical New `canonical` value to set on every
+   *   matching node.
+   * @param updates.clearStreaming When `true`, also flip `streaming` to
+   *   `false` on every matching node that is currently streaming.
+   */
+  private _flipNodeFlagsForStep(stepId: string, updates: { canonical: boolean; clearStreaming: boolean }): void {
+    for (let i = 0; i < this._messages.length; i++) {
+      const existing = this._messages[i];
+      if (existing?.stepId !== stepId) {
+        continue;
+      }
+      const next: MessageNode<TMessage> = { ...existing, canonical: updates.canonical };
+      this._messages[i] = updates.clearStreaming && existing.streaming ? { ...next, streaming: false } : next;
+    }
+  }
+
   applyStepEnd(options: { stepId: string; status: StepStatus }): void {
     this._logger.trace('DefaultTree.applyStepEnd();', { stepId: options.stepId, status: options.status });
 
@@ -480,6 +623,23 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
       this._logger.warn('DefaultTree.applyStepEnd(); step not found', { stepId: options.stepId });
       return;
     }
+    if (existing.status === 'abandoned') {
+      // Abandonment is a tree-derived classification proved by a later
+      // step-start in the same run; a wire step-end from the abandoned
+      // worker doesn't undo it. The wire status is logged and ignored
+      // — the tree's view is authoritative because it has observed the
+      // retiring step-start. Spec: AIT-CN3.
+      this._logger.debug('DefaultTree.applyStepEnd(); ignoring step-end on abandoned step', {
+        stepId: options.stepId,
+        wireStatus: options.status,
+      });
+      return;
+    }
+    // Preserve the existing canonical flag — applyStepStart is the only
+    // mutation point that retires a step. Transitioning `'active'` →
+    // terminal does not change canonical-ness on its own (multi-step
+    // success keeps every `'complete'` step canonical; an isolated
+    // `'failed'` is canonical until a retry lands). Spec: AIT-CN2.
     const updated: StepRecord = { ...existing, status: options.status };
     this._steps[index] = updated;
     // The step-end terminates the streaming wave for the run — no further

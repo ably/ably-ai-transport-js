@@ -1,6 +1,6 @@
 /**
  * End-to-end integration tests: verify that stream errors from the core
- * transport propagate all the way through to useChat's status and onError.
+ * session propagate all the way through to useChat's status and onError.
  *
  * These tests exercise the full chain:
  *   ClientSession (real Ably channel) → ChatTransport adapter → useChat
@@ -152,7 +152,7 @@ describe('useChat error propagation', () => {
     );
     const firstCall = fetchCalls[0];
     if (!firstCall) throw new Error('expected fetch to have been called');
-    // CAST: transport serialises the POST body as JSON containing runId.
+    // CAST: session serialises the POST body as JSON containing runId.
     const { runId } = JSON.parse(firstCall.body as string) as { runId: string };
 
     // Start a server run that streams events but doesn't finish.
@@ -174,7 +174,7 @@ describe('useChat error propagation', () => {
     // Fire-and-forget — the stream stays open indefinitely
     void serverRun.pipe(openStream);
 
-    // Poll the transport tree for streamed events. ChatTransport returns an
+    // Poll the session tree for streamed events. ChatTransport returns an
     // empty stream to useChat (useMessageSync handles message state separately),
     // so result.current.messages won't reflect streamed data. Polling at 50ms
     // (waitFor's default interval) is fine for an integration test.

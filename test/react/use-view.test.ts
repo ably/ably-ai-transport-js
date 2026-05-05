@@ -9,10 +9,10 @@ import type { ClientSession } from '../../src/core/transport/types.js';
 import { ErrorCode } from '../../src/errors.js';
 import { ClientSessionContext } from '../../src/react/contexts/client-session-context.js';
 import { useView } from '../../src/react/use-view.js';
-import { createMockTransport } from './helper/mock-session.js';
+import { createMockSession } from './helper/mock-session.js';
 
 describe('useView', () => {
-  it('returns empty nodes, hasOlder=false, loading=false when no source and no nearest transport', () => {
+  it('returns empty nodes, hasOlder=false, loading=false when no source and no nearest session', () => {
     const { result } = renderHook(() => useView());
     expect(result.current.nodes).toEqual([]);
     expect(result.current.hasOlder).toBe(false);
@@ -20,7 +20,7 @@ describe('useView', () => {
   });
 
   it('returns initial nodes and messages from view on mount', () => {
-    const mock = createMockTransport(['hello', 'world']);
+    const mock = createMockSession(['hello', 'world']);
     const { result } = renderHook(() => useView({ session: mock.session }));
     expect(result.current.nodes).toHaveLength(2);
     expect(result.current.nodes[0]?.message).toBe('hello');
@@ -29,7 +29,7 @@ describe('useView', () => {
   });
 
   it('updates nodes and messages when view emits update', () => {
-    const mock = createMockTransport(['hello']);
+    const mock = createMockSession(['hello']);
     const { result } = renderHook(() => useView({ session: mock.session }));
     expect(result.current.nodes).toHaveLength(1);
     expect(result.current.messages).toEqual(['hello']);
@@ -52,7 +52,7 @@ describe('useView', () => {
   });
 
   it('loadOlder sets loading, calls view.loadOlder, then clears loading', async () => {
-    const mock = createMockTransport();
+    const mock = createMockSession();
     let resolveFn: () => void;
     const deferred = new Promise<void>((resolve) => {
       resolveFn = resolve;
@@ -79,7 +79,7 @@ describe('useView', () => {
   });
 
   it('prevents concurrent loadOlder calls', async () => {
-    const mock = createMockTransport();
+    const mock = createMockSession();
     let resolveFn: () => void;
     const deferred = new Promise<void>((resolve) => {
       resolveFn = resolve;
@@ -109,7 +109,7 @@ describe('useView', () => {
   });
 
   it('auto-loads on mount when limit is provided', () => {
-    const mock = createMockTransport();
+    const mock = createMockSession();
 
     renderHook(() => useView({ session: mock.session, limit: 50 }));
 
@@ -118,7 +118,7 @@ describe('useView', () => {
   });
 
   it('does not auto-load when limit is omitted', () => {
-    const mock = createMockTransport();
+    const mock = createMockSession();
 
     renderHook(() => useView({ session: mock.session }));
 
@@ -127,7 +127,7 @@ describe('useView', () => {
   });
 
   it('update calls the view update method', async () => {
-    const mock = createMockTransport();
+    const mock = createMockSession();
     const { result } = renderHook(() => useView({ session: mock.session }));
 
     const events = ['tool-output'];
@@ -143,7 +143,7 @@ describe('useView', () => {
   });
 
   it('unsubscribes on unmount', () => {
-    const mock = createMockTransport(['hello']);
+    const mock = createMockSession(['hello']);
     const { unmount } = renderHook(() => useView({ session: mock.session }));
 
     unmount();
@@ -160,7 +160,7 @@ describe('useView', () => {
   });
 
   it('subscribes to a view directly when view prop is provided', () => {
-    const mock = createMockTransport(['hello']);
+    const mock = createMockSession(['hello']);
 
     const { result } = renderHook(() => useView({ view: mock.view }));
 
@@ -168,8 +168,8 @@ describe('useView', () => {
     expect(result.current.messages).toEqual(['hello']);
   });
 
-  it('uses nearest transport from context when transport and view are omitted', () => {
-    const mock = createMockTransport(['hello']);
+  it('uses nearest session from context when session and view are omitted', () => {
+    const mock = createMockSession(['hello']);
     const wrapper = ({ children }: { children: ReactNode }): ReactNode =>
       createElement(
         ClientSessionContext.Provider,
@@ -195,7 +195,7 @@ describe('useView', () => {
   it('preserves message references for unchanged messages during streaming update', () => {
     const msg1 = 'stable-message';
     const msg2 = 'streaming-message';
-    const mock = createMockTransport([msg1, msg2]);
+    const mock = createMockSession([msg1, msg2]);
     const { result } = renderHook(() => useView(mock.session));
 
     // Verify initial messages
@@ -222,13 +222,13 @@ describe('useView', () => {
 
   describe('error', () => {
     it('error is undefined initially', () => {
-      const mock = createMockTransport();
+      const mock = createMockSession();
       const { result } = renderHook(() => useView({ session: mock.session }));
       expect(result.current.loadError).toBeUndefined();
     });
 
     it('error is set when loadOlder rejects', async () => {
-      const mock = createMockTransport();
+      const mock = createMockSession();
       const loadError = new Ably.ErrorInfo('unable to load older messages; network error', ErrorCode.BadRequest, 400);
       (mock.view.loadOlder as ReturnType<typeof vi.fn>).mockReturnValue(Promise.reject(loadError));
 
@@ -243,7 +243,7 @@ describe('useView', () => {
     });
 
     it('error is cleared on next successful loadOlder', async () => {
-      const mock = createMockTransport();
+      const mock = createMockSession();
       const loadError = new Ably.ErrorInfo('unable to load older messages; network error', ErrorCode.BadRequest, 400);
 
       // First call fails
@@ -265,7 +265,7 @@ describe('useView', () => {
     });
 
     it('clears loadError when the view changes', async () => {
-      const mockA = createMockTransport();
+      const mockA = createMockSession();
       const loadError = new Ably.ErrorInfo('unable to load; network error', ErrorCode.BadRequest, 400);
       (mockA.view.loadOlder as ReturnType<typeof vi.fn>).mockReturnValue(Promise.reject(loadError));
 
@@ -278,7 +278,7 @@ describe('useView', () => {
       expect(result.current.loadError).toBe(loadError);
 
       // Switch to a different view — loadError must be cleared.
-      const mockB = createMockTransport();
+      const mockB = createMockSession();
       act(() => {
         currentView = mockB.view;
         rerender();
@@ -288,7 +288,7 @@ describe('useView', () => {
     });
 
     it('error is undefined when skip is true', () => {
-      const mock = createMockTransport();
+      const mock = createMockSession();
       const { result } = renderHook(() => useView({ session: mock.session, skip: true }));
       expect(result.current.loadError).toBeUndefined();
     });
@@ -296,7 +296,7 @@ describe('useView', () => {
 
   describe('send', () => {
     it('delegates to view.send', async () => {
-      const mock = createMockTransport();
+      const mock = createMockSession();
       const { result } = renderHook(() => useView({ session: mock.session }));
 
       await act(async () => {
@@ -307,7 +307,7 @@ describe('useView', () => {
     });
 
     it('returns a stable reference across rerenders', () => {
-      const mock = createMockTransport();
+      const mock = createMockSession();
       const { result, rerender } = renderHook(() => useView({ session: mock.session }));
       const first = result.current.send;
       rerender();
@@ -328,7 +328,7 @@ describe('useView', () => {
 
   describe('regenerate', () => {
     it('delegates to view.regenerate', async () => {
-      const mock = createMockTransport();
+      const mock = createMockSession();
       const { result } = renderHook(() => useView({ session: mock.session }));
 
       await act(async () => {
@@ -339,7 +339,7 @@ describe('useView', () => {
     });
 
     it('returns a stable reference across rerenders', () => {
-      const mock = createMockTransport();
+      const mock = createMockSession();
       const { result, rerender } = renderHook(() => useView({ session: mock.session }));
       const first = result.current.regenerate;
       rerender();
@@ -360,7 +360,7 @@ describe('useView', () => {
 
   describe('edit', () => {
     it('delegates to view.edit with a messages array', async () => {
-      const mock = createMockTransport();
+      const mock = createMockSession();
       const { result } = renderHook(() => useView({ session: mock.session }));
 
       await act(async () => {
@@ -371,7 +371,7 @@ describe('useView', () => {
     });
 
     it('delegates to view.edit with a single message', async () => {
-      const mock = createMockTransport();
+      const mock = createMockSession();
       const { result } = renderHook(() => useView({ session: mock.session }));
 
       await act(async () => {
@@ -382,7 +382,7 @@ describe('useView', () => {
     });
 
     it('returns a stable reference across rerenders', () => {
-      const mock = createMockTransport();
+      const mock = createMockSession();
       const { result, rerender } = renderHook(() => useView({ session: mock.session }));
       const first = result.current.edit;
       rerender();

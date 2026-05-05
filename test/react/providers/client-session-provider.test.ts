@@ -18,7 +18,7 @@ const flushMicrotasks = async (): Promise<void> => {
 import type { ClientSession } from '../../../src/core/transport/types.js';
 import { ClientSessionProvider } from '../../../src/react/contexts/client-session-provider.js';
 import { useClientSession } from '../../../src/react/use-client-session.js';
-import { createMockTransport } from '../helper/mock-session.js';
+import { createMockSession } from '../helper/mock-session.js';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -85,10 +85,10 @@ const renderProviderForChannel = (channelName: string): ReactNode =>
 describe('ClientSessionProvider', () => {
   beforeEach(() => {
     createClientSessionMock.mockClear();
-    createClientSessionMock.mockImplementation(() => createMockTransport().session);
+    createClientSessionMock.mockImplementation(() => createMockSession().session);
   });
 
-  it('creates a transport and makes it available via useClientSession(channelName)', () => {
+  it('creates a session and makes it available via useClientSession(channelName)', () => {
     const { result } = renderHook(() => useClientSession({ channelName: 'ai:test' }), { wrapper: wrapDefault });
     expect(result.current).toBeDefined();
     expect(createClientSessionMock).toHaveBeenCalledTimes(1);
@@ -102,7 +102,7 @@ describe('ClientSessionProvider', () => {
     expect(callArgs.channel.name).toBe('ai:demo');
   });
 
-  it('registers the transport under channelName', () => {
+  it('registers the session under channelName', () => {
     const { result } = renderHook(() => useClientSession({ channelName: 'ai:test' }), { wrapper: wrapDefault });
     expect(result.current).toBeDefined();
   });
@@ -113,7 +113,7 @@ describe('ClientSessionProvider', () => {
   });
 
   it('surfaces construction error as sessionError when createClientSession throws', () => {
-    const constructionError = new Ably.ErrorInfo('unable to create transport; codec is invalid', 40003, 400);
+    const constructionError = new Ably.ErrorInfo('unable to create session; codec is invalid', 40003, 400);
     createClientSessionMock.mockImplementationOnce(() => {
       throw constructionError;
     });
@@ -121,12 +121,12 @@ describe('ClientSessionProvider', () => {
     const { result } = renderHook(() => useClientSession({ channelName: 'ai:test' }), { wrapper: wrapDefault });
 
     expect(result.current.sessionError).toBe(constructionError);
-    // transport is a stub that throws on access
+    // session is a stub that throws on access
     expect(() => result.current.session.tree).toThrow();
   });
 
-  it('does not retry transport creation on re-renders after a constructor error', () => {
-    const constructionError = new Ably.ErrorInfo('unable to create transport; codec is invalid', 40003, 400);
+  it('does not retry session creation on re-renders after a constructor error', () => {
+    const constructionError = new Ably.ErrorInfo('unable to create session; codec is invalid', 40003, 400);
     createClientSessionMock.mockImplementation(() => {
       throw constructionError;
     });
@@ -150,7 +150,7 @@ describe('ClientSessionProvider', () => {
     expect(result.current.sessionError).toBe(constructionError);
   });
 
-  it('creates the transport exactly once across re-renders', () => {
+  it('creates the session exactly once across re-renders', () => {
     const { rerender } = renderHook(() => useClientSession({ channelName: 'ai:test' }), { wrapper: wrapDefault });
     act(() => {
       rerender();
@@ -162,7 +162,7 @@ describe('ClientSessionProvider', () => {
     expect(createClientSessionMock).toHaveBeenCalledTimes(1);
   });
 
-  it('stacks two nested providers so both transports are accessible', () => {
+  it('stacks two nested providers so both sessions are accessible', () => {
     const { result: outerResult } = renderHook(() => useClientSession({ channelName: 'ai:outer' }), {
       wrapper: wrapNested,
     });
@@ -175,10 +175,10 @@ describe('ClientSessionProvider', () => {
     expect(outerResult.current).not.toBe(innerResult.current);
   });
 
-  it('closes the transport when the provider unmounts', async () => {
-    const created: ReturnType<typeof createMockTransport>[] = [];
+  it('closes the session when the provider unmounts', async () => {
+    const created: ReturnType<typeof createMockSession>[] = [];
     createClientSessionMock.mockImplementation(() => {
-      const mock = createMockTransport();
+      const mock = createMockSession();
       created.push(mock);
       return mock.session;
     });
@@ -191,9 +191,9 @@ describe('ClientSessionProvider', () => {
   });
 
   it('connects the new session and closes the old one when channelName changes', async () => {
-    const created: ReturnType<typeof createMockTransport>[] = [];
+    const created: ReturnType<typeof createMockSession>[] = [];
     createClientSessionMock.mockImplementation(() => {
-      const mock = createMockTransport();
+      const mock = createMockSession();
       created.push(mock);
       return mock.session;
     });
@@ -211,7 +211,7 @@ describe('ClientSessionProvider', () => {
     expect(created[0]?.close).toHaveBeenCalled();
   });
 
-  it('forwards transport options to createClientSession', () => {
+  it('forwards session options to createClientSession', () => {
     const logger = {
       trace: vi.fn(),
       debug: vi.fn(),

@@ -17,7 +17,7 @@ The Vercel AI SDK provides model abstraction, streaming primitives, and React ho
 
 ### useChat path (simpler)
 
-Wrap the transport in a `ChatTransport` adapter and pass it to Vercel's `useChat()`. Message state is managed by `useChat()` - the transport delivers messages over Ably instead of HTTP.
+Vercel's `useChat()` accepts a custom `transport` that handles message delivery. `ChatTransportProvider` provides one that streams over Ably; pass it to `useChat()` and let it manage message state as usual.
 
 ```tsx
 import { ChatTransportProvider, useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
@@ -47,7 +47,7 @@ useMessageSync({ setMessages });
 
 ### Generic hooks path (more control)
 
-Use the generic React hooks directly. You manage message state through the transport's conversation tree instead of `useChat()`.
+Use the generic React hooks directly. You manage message state through the session's conversation tree instead of `useChat()`.
 
 ```tsx
 import { ClientSessionProvider, useClientSession, useView, useActiveRuns } from '@ably/ai-transport/react';
@@ -78,8 +78,8 @@ const {
   getSelectedIndex,
   getSiblings,
   hasSiblings,
-} = useView(session, { limit: 30 });
-const activeRuns = useActiveRuns(session);
+} = useView({ session, limit: 30 });
+const activeRuns = useActiveRuns({ session });
 ```
 
 This path gives you conversation branching UI (sibling navigation), write operations, and direct access to the view state.

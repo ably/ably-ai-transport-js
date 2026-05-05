@@ -162,7 +162,7 @@ import { useState } from 'react';
 function ChatInner({ chatId }: { chatId: string }) {
   const [input, setInput] = useState('');
 
-  // 1. Read both the chat transport and the session created by ChatTransportProvider
+  // 1. Read the chat transport adapter and underlying session created by ChatTransportProvider
   const { chatTransport, session } = useChatTransport();
 
   // 2. Use Vercel's useChat with the chat transport adapter
@@ -242,7 +242,7 @@ Open `http://localhost:3000`. Type a message - you'll see tokens stream in real 
 ## What's happening
 
 1. `ChatTransportProvider` creates a `ClientSession` (subscribed to the Ably channel before attach — no messages lost) and wraps it in a `ChatTransport`. Both are stored in `ChatTransportContext` for descendants.
-2. `useChatTransport()` reads both transports from `ChatTransportContext` — no arguments needed for the nearest provider.
+2. `useChatTransport()` reads both from `ChatTransportContext` — no arguments needed for the nearest provider.
 3. `chatTransport` satisfies Vercel's `ChatTransport` interface; `session` is the underlying `ClientSession` used for `useMessageSync`, `useActiveRuns`, and `useView`.
 4. When you send a message, `useChat()` calls the chat transport's `sendMessages`, which fires an HTTP POST to `/api/chat` and opens a stream on the Ably channel.
 5. The server creates a run, publishes user messages, streams the LLM response through the encoder to the channel, and publishes a run-end event.

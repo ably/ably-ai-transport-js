@@ -55,7 +55,7 @@ class TestChat extends AbstractChat<AI.UIMessage> {
 }
 
 // ---------------------------------------------------------------------------
-// Mock transport (same pattern as chat-session.test.ts)
+// Mock session (same pattern as chat-transport.test.ts)
 // ---------------------------------------------------------------------------
 
 interface MockRun {
@@ -101,7 +101,7 @@ const createMockTree = () =>
     delete: vi.fn(),
   }) as unknown as Tree<AI.UIMessage>;
 
-const createMockTransport = () => {
+const createMockSession = () => {
   const mockRun = createMockRun();
   const tree = createMockTree();
 
@@ -139,7 +139,7 @@ const createMockTransport = () => {
   return { session, send, mockRun };
 };
 
-const createMultiRunMockTransport = () => {
+const createMultiRunMockSession = () => {
   const runA = createMockRun('run-a');
   const runB = createMockRun('run-b');
   const send = vi.fn().mockResolvedValueOnce(runA).mockResolvedValueOnce(runB);
@@ -207,7 +207,7 @@ const enqueueTextResponse = (run: MockRun, messageId: string, textId: string, de
 };
 
 // ---------------------------------------------------------------------------
-// Helper: simulate a server run producing chunks through the mock transport
+// Helper: simulate a server run producing chunks through the mock session
 // ---------------------------------------------------------------------------
 
 /**
@@ -277,7 +277,7 @@ const simulateApprovalRequestRun = (run: MockRun): void => {
 describe('ChatTransport useChat integration — features work with the real stream', () => {
   describe('status transitions', () => {
     it('transitions through streaming on its way to ready', async () => {
-      const { session, mockRun } = createMockTransport();
+      const { session, mockRun } = createMockSession();
       const chatTransport = createChatTransport(session);
 
       const statusLog: AI.ChatStatus[] = [];
@@ -308,7 +308,7 @@ describe('ChatTransport useChat integration — features work with the real stre
 
   describe('onToolCall', () => {
     it('fires when the server streams a tool call', async () => {
-      const { session, mockRun } = createMockTransport();
+      const { session, mockRun } = createMockSession();
       const chatTransport = createChatTransport(session);
 
       const onToolCall = vi.fn();
@@ -330,7 +330,7 @@ describe('ChatTransport useChat integration — features work with the real stre
 
   describe('onData', () => {
     it('fires when the server streams a data-* chunk', async () => {
-      const { session, mockRun } = createMockTransport();
+      const { session, mockRun } = createMockSession();
       const chatTransport = createChatTransport(session);
 
       const onData = vi.fn();
@@ -351,7 +351,7 @@ describe('ChatTransport useChat integration — features work with the real stre
 
   describe('onFinish', () => {
     it('fires with real content and finishReason', async () => {
-      const { session, mockRun } = createMockTransport();
+      const { session, mockRun } = createMockSession();
       const chatTransport = createChatTransport(session);
 
       const onFinish = vi.fn();
@@ -381,7 +381,7 @@ describe('ChatTransport useChat integration — features work with the real stre
 
   describe('sendAutomaticallyWhen', () => {
     it('onToolCall fires, enabling the automatic resubmission loop', async () => {
-      const { session, mockRun } = createMockTransport();
+      const { session, mockRun } = createMockSession();
       const chatTransport = createChatTransport(session);
 
       const sendAutomaticallyWhen = vi.fn(() => false);
@@ -407,7 +407,7 @@ describe('ChatTransport useChat integration — features work with the real stre
     });
 
     it('triggers automatic resubmission when it returns true', async () => {
-      const { session, send, runA, runB } = createMultiRunMockTransport();
+      const { session, send, runA, runB } = createMultiRunMockSession();
       const chatTransport = createChatTransport(session);
 
       // Returns true only on the first call so the resubmit loop does not run indefinitely.
@@ -442,7 +442,7 @@ describe('ChatTransport useChat integration — features work with the real stre
 
   describe('addToolOutput', () => {
     it('calls sendAutomaticallyWhen after tool output is added', async () => {
-      const { session, mockRun } = createMockTransport();
+      const { session, mockRun } = createMockSession();
       const chatTransport = createChatTransport(session);
 
       const sendAutomaticallyWhen = vi.fn(() => false);
@@ -465,7 +465,7 @@ describe('ChatTransport useChat integration — features work with the real stre
     });
 
     it('triggers automatic resubmission when sendAutomaticallyWhen returns true', async () => {
-      const { session, send, runA, runB } = createMultiRunMockTransport();
+      const { session, send, runA, runB } = createMultiRunMockSession();
       const chatTransport = createChatTransport(session);
 
       // Returns false after the initial stream close so only addToolOutput triggers resubmission.
@@ -494,7 +494,7 @@ describe('ChatTransport useChat integration — features work with the real stre
     });
 
     it('does not resubmit when sendAutomaticallyWhen returns false', async () => {
-      const { session, send, mockRun } = createMockTransport();
+      const { session, send, mockRun } = createMockSession();
       const chatTransport = createChatTransport(session);
 
       const sendAutomaticallyWhen = vi.fn(() => false);
@@ -521,7 +521,7 @@ describe('ChatTransport useChat integration — features work with the real stre
 
   describe('addToolApprovalResponse', () => {
     it('calls sendAutomaticallyWhen after approval response is added', async () => {
-      const { session, mockRun } = createMockTransport();
+      const { session, mockRun } = createMockSession();
       const chatTransport = createChatTransport(session);
 
       const sendAutomaticallyWhen = vi.fn(() => false);
@@ -544,7 +544,7 @@ describe('ChatTransport useChat integration — features work with the real stre
     });
 
     it('triggers automatic resubmission when sendAutomaticallyWhen returns true', async () => {
-      const { session, send, runA, runB } = createMultiRunMockTransport();
+      const { session, send, runA, runB } = createMultiRunMockSession();
       const chatTransport = createChatTransport(session);
 
       const sendAutomaticallyWhen = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true);
@@ -572,7 +572,7 @@ describe('ChatTransport useChat integration — features work with the real stre
     });
 
     it('does not resubmit when sendAutomaticallyWhen returns false', async () => {
-      const { session, send, mockRun } = createMockTransport();
+      const { session, send, mockRun } = createMockSession();
       const chatTransport = createChatTransport(session);
 
       const sendAutomaticallyWhen = vi.fn(() => false);
@@ -604,7 +604,7 @@ describe('ChatTransport useChat integration — features work with the real stre
 
   describe('multiple streaming responses', () => {
     it('sequential: two responses produce four correctly ordered messages', async () => {
-      const { session, runA, runB } = createMultiRunMockTransport();
+      const { session, runA, runB } = createMultiRunMockSession();
       const chatTransport = createChatTransport(session);
 
       let idCounter = 0;
@@ -662,7 +662,7 @@ describe('ChatTransport useChat integration — features work with the real stre
     });
 
     it('concurrent: serialized sendMessages prevents dual streams but cannot fix activeResponse overwrite', async () => {
-      const { session, runA, runB } = createMultiRunMockTransport();
+      const { session, runA, runB } = createMultiRunMockSession();
       const chatTransport = createChatTransport(session);
 
       let idCounter = 0;

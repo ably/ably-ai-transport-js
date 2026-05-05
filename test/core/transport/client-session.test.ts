@@ -268,7 +268,7 @@ const flushMicrotasks = async (): Promise<void> => {
  * @param messages - Seed messages.
  * @returns A new client session with seeded messages.
  */
-const createSeededTransport = async (
+const createSeededSession = async (
   codec: Codec<TestEvent, TestMessage>,
   mockFetch: MockFetch,
   messages: TestMessage[],
@@ -481,7 +481,7 @@ describe('ClientSession', () => {
       });
       await seeded.connect();
 
-      // Get the transport-assigned msgId of the seed message
+      // Get the session-assigned msgId of the seed message
       const seedNode = seeded.view.flattenNodes()[0];
       expect(seedNode).toBeDefined();
 
@@ -537,18 +537,18 @@ describe('ClientSession', () => {
             // never resolves
           }),
       );
-      const blockTransport = createClientSession({
+      const blockSession = createClientSession({
         channel: createMockChannel(),
         codec,
         api: '/test',
         fetch: blockingFetch as unknown as typeof globalThis.fetch,
       });
-      await blockTransport.connect();
+      await blockSession.connect();
 
-      const run = await blockTransport.view.send({ id: 'u1', content: 'hi' });
+      const run = await blockSession.view.send({ id: 'u1', content: 'hi' });
       expect(run.stream).toBeInstanceOf(ReadableStream);
 
-      await blockTransport.close();
+      await blockSession.close();
     });
 
     it('POST body messages include msg-id and role headers', async () => {
@@ -587,100 +587,100 @@ describe('ClientSession', () => {
 
     it('fires error event when POST fails with non-OK status', async () => {
       const failFetch = createMockFetch(500);
-      const failTransport = createClientSession({
+      const failSession = createClientSession({
         channel: createMockChannel(),
         codec,
         api: '/test',
         fetch: failFetch.fn as unknown as typeof globalThis.fetch,
       });
-      await failTransport.connect();
+      await failSession.connect();
 
       const errors: Ably.ErrorInfo[] = [];
-      failTransport.on('error', (e) => errors.push(e));
+      failSession.on('error', (e) => errors.push(e));
 
-      await failTransport.view.send({ id: 'u1', content: 'hi' });
+      await failSession.view.send({ id: 'u1', content: 'hi' });
       await failFetch.waitForCalls(1);
       await flushMicrotasks();
 
       expect(errors).toHaveLength(1);
       expect(errors[0]?.code).toBe(ErrorCode.SessionSendFailed);
 
-      await failTransport.close();
+      await failSession.close();
     });
 
     it('fires error event when POST throws a network error', async () => {
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.reject directly
       const errorFetch = vi.fn(() => Promise.reject(new Error('network down')));
-      const errorTransport = createClientSession({
+      const errorSession = createClientSession({
         channel: createMockChannel(),
         codec,
         api: '/test',
         fetch: errorFetch as unknown as typeof globalThis.fetch,
       });
-      await errorTransport.connect();
+      await errorSession.connect();
 
       const errors: Ably.ErrorInfo[] = [];
-      errorTransport.on('error', (e) => errors.push(e));
+      errorSession.on('error', (e) => errors.push(e));
 
-      await errorTransport.view.send({ id: 'u1', content: 'hi' });
+      await errorSession.view.send({ id: 'u1', content: 'hi' });
       await flushMicrotasks();
 
       expect(errors).toHaveLength(1);
       expect(errors[0]?.code).toBe(ErrorCode.SessionSendFailed);
       expect(errors[0]?.message).toContain('network down');
 
-      await errorTransport.close();
+      await errorSession.close();
     });
 
     it('errors the stream when POST fails', async () => {
       const failFetch = createMockFetch(500);
-      const failTransport = createClientSession({
+      const failSession = createClientSession({
         channel: createMockChannel(),
         codec,
         api: '/test',
         fetch: failFetch.fn as unknown as typeof globalThis.fetch,
       });
-      await failTransport.connect();
+      await failSession.connect();
 
-      failTransport.on('error', () => {
+      failSession.on('error', () => {
         /* consume error */
       });
 
-      const run = await failTransport.view.send({ id: 'u1', content: 'hi' });
+      const run = await failSession.view.send({ id: 'u1', content: 'hi' });
       await failFetch.waitForCalls(1);
       await flushMicrotasks();
 
       const reader = run.stream.getReader();
       await expect(reader.read()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSendFailed);
 
-      await failTransport.close();
+      await failSession.close();
     });
 
     it('errors the stream when POST throws a network error', async () => {
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.reject directly
       const errorFetch = vi.fn(() => Promise.reject(new Error('network down')));
-      const errorTransport = createClientSession({
+      const errorSession = createClientSession({
         channel: createMockChannel(),
         codec,
         api: '/test',
         fetch: errorFetch as unknown as typeof globalThis.fetch,
       });
-      await errorTransport.connect();
+      await errorSession.connect();
 
-      errorTransport.on('error', () => {
+      errorSession.on('error', () => {
         /* consume error */
       });
 
-      const run = await errorTransport.view.send({ id: 'u1', content: 'hi' });
+      const run = await errorSession.view.send({ id: 'u1', content: 'hi' });
       await flushMicrotasks();
 
       const reader = run.stream.getReader();
       await expect(reader.read()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSendFailed);
 
-      await errorTransport.close();
+      await errorSession.close();
     });
 
-    it('throws when transport is closed', async () => {
+    it('throws when session is closed', async () => {
       await session.close();
       await expect(session.view.send({ id: 'u1', content: 'hi' })).rejects.toThrow('view is closed');
     });
@@ -714,7 +714,7 @@ describe('ClientSession', () => {
     });
 
     it('merges dynamic options.headers and options.body', async () => {
-      const dynTransport = createClientSession({
+      const dynSession = createClientSession({
         channel: createMockChannel(),
         codec,
         api: '/test',
@@ -722,9 +722,9 @@ describe('ClientSession', () => {
         body: () => ({ sessionId: 'abc' }),
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
-      await dynTransport.connect();
+      await dynSession.connect();
 
-      await dynTransport.view.send({ id: 'u1', content: 'hi' });
+      await dynSession.view.send({ id: 'u1', content: 'hi' });
       await mockFetch.waitForCalls(1);
 
       const headers = mockFetch.calls[0]?.init.headers as Record<string, string>;
@@ -733,26 +733,26 @@ describe('ClientSession', () => {
       const body = mockFetch.body(0);
       expect(body.sessionId).toBe('abc');
 
-      await dynTransport.close();
+      await dynSession.close();
     });
 
     it('includes credentials option in fetch when configured', async () => {
-      const credTransport = createClientSession({
+      const credSession = createClientSession({
         channel: createMockChannel(),
         codec,
         api: '/test',
         credentials: 'include',
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
-      await credTransport.connect();
+      await credSession.connect();
 
-      await credTransport.view.send({ id: 'u1', content: 'hi' });
+      await credSession.view.send({ id: 'u1', content: 'hi' });
       await mockFetch.waitForCalls(1);
 
       const callArgs = vi.mocked(mockFetch.fn).mock.calls[0] as [string, RequestInit];
       expect(callArgs[1].credentials).toBe('include');
 
-      await credTransport.close();
+      await credSession.close();
     });
 
     it('handles array of messages', async () => {
@@ -1505,7 +1505,7 @@ describe('ClientSession', () => {
 
   describe('regenerate', () => {
     it('sends with forkOf set to the target messageId', async () => {
-      const seeded = await createSeededTransport(codec, mockFetch, [
+      const seeded = await createSeededSession(codec, mockFetch, [
         { id: 'user-msg', content: 'question' },
         { id: 'asst-msg', content: 'answer' },
       ]);
@@ -1520,7 +1520,7 @@ describe('ClientSession', () => {
     });
 
     it('sends with empty messages array', async () => {
-      const seeded = await createSeededTransport(codec, mockFetch, [{ id: 'msg-1', content: 'hi' }]);
+      const seeded = await createSeededSession(codec, mockFetch, [{ id: 'msg-1', content: 'hi' }]);
 
       await seeded.view.regenerate('msg-1');
       await mockFetch.waitForCalls(1);
@@ -1532,7 +1532,7 @@ describe('ClientSession', () => {
     });
 
     it('includes truncated history in POST body', async () => {
-      const seeded = await createSeededTransport(codec, mockFetch, [
+      const seeded = await createSeededSession(codec, mockFetch, [
         { id: 'q1', content: 'question' },
         { id: 'a1', content: 'answer' },
       ]);
@@ -1550,7 +1550,7 @@ describe('ClientSession', () => {
     });
 
     it('sets parent from the tree node', async () => {
-      const seeded = await createSeededTransport(codec, mockFetch, [
+      const seeded = await createSeededSession(codec, mockFetch, [
         { id: 'q1', content: 'question' },
         { id: 'a1', content: 'answer' },
       ]);
@@ -1566,7 +1566,7 @@ describe('ClientSession', () => {
     });
 
     it('returns an ActiveRun', async () => {
-      const seeded = await createSeededTransport(codec, mockFetch, [{ id: 'msg-1', content: 'hi' }]);
+      const seeded = await createSeededSession(codec, mockFetch, [{ id: 'msg-1', content: 'hi' }]);
 
       const run = await seeded.view.regenerate('msg-1');
       expect(run.stream).toBeInstanceOf(ReadableStream);
@@ -1582,7 +1582,7 @@ describe('ClientSession', () => {
 
   describe('edit', () => {
     it('sends with forkOf set to the target messageId', async () => {
-      const seeded = await createSeededTransport(codec, mockFetch, [{ id: 'user-msg', content: 'original' }]);
+      const seeded = await createSeededSession(codec, mockFetch, [{ id: 'user-msg', content: 'original' }]);
 
       await seeded.view.edit('user-msg', { id: 'edited', content: 'revised' });
       await mockFetch.waitForCalls(1);
@@ -1594,7 +1594,7 @@ describe('ClientSession', () => {
     });
 
     it('sends replacement messages in the POST body', async () => {
-      const seeded = await createSeededTransport(codec, mockFetch, [{ id: 'user-msg', content: 'original' }]);
+      const seeded = await createSeededSession(codec, mockFetch, [{ id: 'user-msg', content: 'original' }]);
 
       await seeded.view.edit('user-msg', [
         { id: 'edit-1', content: 'revised-1' },
@@ -1610,7 +1610,7 @@ describe('ClientSession', () => {
     });
 
     it('sets parent from the tree node', async () => {
-      const seeded = await createSeededTransport(codec, mockFetch, [
+      const seeded = await createSeededSession(codec, mockFetch, [
         { id: 'q1', content: 'question' },
         { id: 'u1', content: 'user message' },
       ]);
@@ -1626,7 +1626,7 @@ describe('ClientSession', () => {
     });
 
     it('handles single message input', async () => {
-      const seeded = await createSeededTransport(codec, mockFetch, [{ id: 'user-msg', content: 'original' }]);
+      const seeded = await createSeededSession(codec, mockFetch, [{ id: 'user-msg', content: 'original' }]);
 
       const run = await seeded.view.edit('user-msg', { id: 'edited', content: 'revised' });
       expect(run.stream).toBeInstanceOf(ReadableStream);
@@ -1638,7 +1638,7 @@ describe('ClientSession', () => {
       // Regression: edit() sent the full tree as history, so the LLM saw
       // messages that were children of the message being edited — which
       // belong to the old branch and should not be in the edit's context.
-      const seeded = await createSeededTransport(codec, mockFetch, [
+      const seeded = await createSeededSession(codec, mockFetch, [
         { id: 'q1', content: 'Tell me a joke' },
         { id: 'a1', content: 'Why did the chicken...' },
         { id: 'u2', content: 'Actually a poem' },
@@ -1916,7 +1916,7 @@ describe('ClientSession', () => {
       expect(session.tree.getNode('unknown')).toBeUndefined();
     });
 
-    it('is a no-op after the transport is closed', async () => {
+    it('is a no-op after the session is closed', async () => {
       session.tree.upsert(
         'msg-1',
         { id: 'msg-1', content: 'original' },
@@ -1957,7 +1957,7 @@ describe('ClientSession', () => {
       expect(channel.publish).toHaveBeenCalled();
     });
 
-    it('does nothing when transport is closed', async () => {
+    it('does nothing when session is closed', async () => {
       await session.close();
       vi.mocked(channel.publish).mockClear();
       await session.cancel({ runId: 'run-1' });
@@ -2085,7 +2085,7 @@ describe('ClientSession', () => {
       await waitPromise;
     });
 
-    it('does nothing when transport is closed', async () => {
+    it('does nothing when session is closed', async () => {
       await session.close();
       await session.waitForRun({ runId: 'run-1' });
     });
@@ -2256,7 +2256,7 @@ describe('ClientSession', () => {
       expect(handler).not.toHaveBeenCalled();
     });
 
-    it('returns no-op unsubscribe when transport is closed', async () => {
+    it('returns no-op unsubscribe when session is closed', async () => {
       await session.close();
       const unsub = session.on('error', vi.fn());
       expect(typeof unsub).toBe('function');
@@ -2496,15 +2496,15 @@ describe('ClientSession', () => {
       const preAttachedChannel = createMockChannel();
       preAttachedChannel.state = 'attached';
 
-      const preAttachedTransport = createClientSession({
+      const preAttachedSession = createClientSession({
         channel: preAttachedChannel,
         codec,
         api: '/test',
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
-      await preAttachedTransport.connect();
+      await preAttachedSession.connect();
 
-      const run = await preAttachedTransport.view.send({ id: 'u1', content: 'hi' });
+      const run = await preAttachedSession.view.send({ id: 'u1', content: 'hi' });
       await mockFetch.waitForCalls(1);
 
       // UPDATE with resumed: false — should be treated as a real discontinuity
@@ -2518,23 +2518,23 @@ describe('ClientSession', () => {
       const reader = run.stream.getReader();
       await expect(reader.read()).rejects.toBeErrorInfoWithCode(ErrorCode.ChannelContinuityLost);
 
-      await preAttachedTransport.close();
+      await preAttachedSession.close();
     });
 
     it('does not treat the initial attach as continuity loss', async () => {
       const uninitChannel = createMockChannel();
       uninitChannel.state = 'initialized';
 
-      const uninitTransport = createClientSession({
+      const uninitSession = createClientSession({
         channel: uninitChannel,
         codec,
         api: '/test',
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
-      await uninitTransport.connect();
+      await uninitSession.connect();
 
       const errors: Ably.ErrorInfo[] = [];
-      uninitTransport.on('error', (e) => errors.push(e));
+      uninitSession.on('error', (e) => errors.push(e));
 
       simulateStateChange(uninitChannel, {
         current: 'attached',
@@ -2544,7 +2544,7 @@ describe('ClientSession', () => {
 
       expect(errors).toHaveLength(0);
 
-      await uninitTransport.close();
+      await uninitSession.close();
     });
 
     // Documents current behaviour — see AIT-692 for revisiting this.
@@ -2552,16 +2552,16 @@ describe('ClientSession', () => {
       const uninitChannel = createMockChannel();
       uninitChannel.state = 'initialized';
 
-      const uninitTransport = createClientSession({
+      const uninitSession = createClientSession({
         channel: uninitChannel,
         codec,
         api: '/test',
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
-      await uninitTransport.connect();
+      await uninitSession.connect();
 
       const errors: Ably.ErrorInfo[] = [];
-      uninitTransport.on('error', (e) => errors.push(e));
+      uninitSession.on('error', (e) => errors.push(e));
 
       simulateStateChange(uninitChannel, {
         current: 'attaching',
@@ -2575,13 +2575,13 @@ describe('ClientSession', () => {
         resumed: false,
       } as Ably.ChannelStateChange);
 
-      // The transport was never receiving messages, so there was no continuity
+      // The session was never receiving messages, so there was no continuity
       // to lose — but we still emit the error. No streams are affected because
       // _ownRunIds is empty (send() hasn't been called).
       expect(errors).toHaveLength(1);
       expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.ChannelContinuityLost);
 
-      await uninitTransport.close();
+      await uninitSession.close();
     });
 
     for (const state of ['failed', 'suspended', 'detached'] as const) {
@@ -3010,7 +3010,7 @@ describe('ClientSession', () => {
       expect(channel.history).toHaveBeenCalled();
     });
 
-    it('does not throw when transport is closed', async () => {
+    it('does not throw when session is closed', async () => {
       await session.close();
       // loadOlder is a no-op after close — should not throw
       await session.view.loadOlder();
@@ -3068,22 +3068,22 @@ describe('ClientSession', () => {
       };
       vi.mocked(histChannel.history).mockResolvedValueOnce(histPage);
 
-      const histTransport = createClientSession({
+      const histSession = createClientSession({
         channel: histChannel as unknown as Ably.RealtimeChannel,
         codec,
         api: '/test',
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
       });
-      await histTransport.connect();
+      await histSession.connect();
 
       // Load history with limit=1 — view should reveal 1 message and withhold the rest
-      await histTransport.view.loadOlder(1);
+      await histSession.view.loadOlder(1);
 
-      const visible = histTransport.view.flattenNodes();
+      const visible = histSession.view.flattenNodes();
       expect(visible).toHaveLength(1);
-      expect(histTransport.view.hasOlder()).toBe(true);
+      expect(histSession.view.hasOlder()).toBe(true);
 
-      await histTransport.close();
+      await histSession.close();
     });
   });
 
@@ -3101,7 +3101,7 @@ describe('ClientSession', () => {
         }),
       );
 
-      const pendingTransport = createClientSession({
+      const pendingSession = createClientSession({
         channel: pendingChannel as unknown as Ably.RealtimeChannel,
         codec,
         api: '/test',
@@ -3109,12 +3109,12 @@ describe('ClientSession', () => {
       });
       // Fire-and-forget connect — its promise never resolves until we trigger
       // the subscribe mock. Send awaits the same promise.
-      void pendingTransport.connect();
+      void pendingSession.connect();
 
-      const sendPromise = pendingTransport.view.send({ id: 'u1', content: 'hi' });
+      const sendPromise = pendingSession.view.send({ id: 'u1', content: 'hi' });
 
       // Close while connect is pending
-      await pendingTransport.close();
+      await pendingSession.close();
 
       // Now resolve attach — send should reject because the session is closed
       if (resolveAttach) resolveAttach();

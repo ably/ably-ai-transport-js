@@ -20,8 +20,8 @@ The most common pattern: cancel active runs before sending the new message.
 ```typescript
 import { useActiveRuns, useView } from '@ably/ai-transport/react';
 
-const activeRuns = useActiveRuns(transport);
-const { send } = useView(transport);
+const activeRuns = useActiveRuns({ session });
+const { send } = useView({ session });
 const isStreaming = activeRuns.size > 0;
 
 async function handleSend(text: string) {
@@ -54,7 +54,7 @@ Use `useActiveRuns()` to know whether any run is streaming:
 ```typescript
 import { useActiveRuns } from '@ably/ai-transport/react';
 
-const activeRuns = useActiveRuns(transport);
+const activeRuns = useActiveRuns({ session });
 
 // Any run active on the channel (any client)
 const isAnyoneStreaming = activeRuns.size > 0;

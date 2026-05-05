@@ -37,7 +37,9 @@ Create a `ClientSession` and make it available to descendant components. Wraps c
 | `logger`      | `Logger?`                                                     | Logger instance                                                              |
 | `children`    | `ReactNode?`                                                  | Child components that will have access to this session                       |
 
-The session subscribes to the Ably channel immediately on creation. It does not auto-close on unmount — channel lifecycle is managed by the internal `ChannelProvider`.
+The session subscribes to the Ably channel immediately on creation and `connect()` is called once on mount. The session is closed when the provider truly unmounts; the close is scheduled as a microtask so that React Strict Mode's synchronous remount cycle can cancel it.
+
+If `createClientSession` throws during construction, the error is surfaced through `useClientSession` as `sessionError` — the component tree does not crash and children are still rendered.
 
 For multiple sessions, nest providers with distinct `channelName` values:
 
@@ -64,27 +66,38 @@ For multiple sessions, nest providers with distinct `channelName` values:
 Access the `ClientSession` from the nearest `ClientSessionProvider`.
 
 ```typescript
-const { session } = useClientSession<TEvent, TMessage>({ channelName?, skip? } = {});
+const { session, sessionError } = useClientSession<TEvent, TMessage>({ channelName?, skip?, onError? } = {});
 ```
 
-| Prop          | Type       | Description                                                                                             |
-| ------------- | ---------- | ------------------------------------------------------------------------------------------------------- |
-| `channelName` | `string?`  | Channel name to look up. Omit to use the nearest `ClientSessionProvider` in the tree                    |
-| `skip`        | `boolean?` | When `true`, return a stub session that throws on any access — safe to hold before conditions are ready |
+| Prop          | Type                               | Description                                                                                             |
+| ------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `channelName` | `string?`                          | Channel name to look up. Omit to use the nearest `ClientSessionProvider` in the tree                    |
+| `skip`        | `boolean?`                         | When `true`, return a stub session that throws on any access — safe to hold before conditions are ready |
+| `onError`     | `(error: Ably.ErrorInfo) => void?` | Called whenever the resolved session emits an error event. Subscription is cleaned up on unmount        |
 
-**Returns:** `ClientSession<TEvent, TMessage>` — the session instance, or a stub whose every property/method throws `Ably.ErrorInfo` when `skip` is `true`.
+**Returns:** `ClientSessionHandle<TEvent, TMessage>`
 
-**Throws:** `Ably.ErrorInfo` (code `40000`) if `skip` is falsy and no matching `ClientSessionProvider` is found in the component tree.
+| Field          | Type                              | Description                                                                                                                                                                                      |
+| -------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `session`      | `ClientSession<TEvent, TMessage>` | The resolved session. A throwing stub when `skip` is `true`, when no matching `ClientSessionProvider` was found in the tree, or when session construction failed                                 |
+| `sessionError` | `Ably.ErrorInfo?`                 | Set when no matching `ClientSessionProvider` was found, or when session construction failed (and `skip` is `false`). `undefined` when the session resolved successfully or when `skip` is `true` |
+
+The hook never throws during render. Check `sessionError` before using `session` to avoid the stub's throws on access.
 
 ```typescript
 // Nearest provider (most common)
-const { session } = useClientSession<UIMessageChunk, UIMessage>();
+const { session, sessionError } = useClientSession<UIMessageChunk, UIMessage>();
 
 // Specific channel
 const { session } = useClientSession<UIMessageChunk, UIMessage>({ channelName: 'ai:main' });
 
 // Deferred until auth resolves — stub throws on any access
 const { session } = useClientSession<UIMessageChunk, UIMessage>({ skip: !userId });
+
+// Observe post-construction session errors (e.g. send failures, channel continuity loss)
+const { session } = useClientSession<UIMessageChunk, UIMessage>({
+  onError: (err) => console.error('session error', err),
+});
 ```
 
 ---
@@ -97,12 +110,12 @@ Subscribe to a view and return nodes with pagination, branch navigation, and wri
 const view = useView<TEvent, TMessage>({ session?, view?, limit?, skip? } = {});
 ```
 
-| Prop      | Type                     | Description                                                                  |
-| --------- | ------------------------ | ---------------------------------------------------------------------------- |
-| `session` | `ClientSession \| null?` | Session whose default view to subscribe to; defaults to the nearest provider |
-| `view`    | `View \| null?`          | A specific `View` to subscribe to directly; takes priority over `session`    |
-| `limit`   | `number?`                | When provided, auto-loads the first page on mount. Default: 100              |
-| `skip`    | `boolean?`               | When `true`, skip all subscriptions and return an empty handle               |
+| Prop      | Type                     | Description                                                                    |
+| --------- | ------------------------ | ------------------------------------------------------------------------------ |
+| `session` | `ClientSession \| null?` | Session whose default view to subscribe to; defaults to the nearest provider   |
+| `view`    | `View \| null?`          | A specific `View` to subscribe to directly; takes priority over `session`      |
+| `limit`   | `number?`                | Max older messages per page. When provided, auto-loads the first page on mount |
+| `skip`    | `boolean?`               | When `true`, skip all subscriptions and return an empty handle                 |
 
 **Returns:** `ViewHandle<TEvent, TMessage>`
 
@@ -112,7 +125,8 @@ const view = useView<TEvent, TMessage>({ session?, view?, limit?, skip? } = {});
 | `messages`                               | `TMessage[]`                                                                                                    | The visible domain messages (shorthand for `nodes.map(n => n.message)`)                                                          |
 | `hasOlder`                               | `boolean`                                                                                                       | Are there older pages? False until history has been loaded                                                                       |
 | `loading`                                | `boolean`                                                                                                       | Is a page being fetched?                                                                                                         |
-| `loadOlder()`                            | `() => Promise<void>`                                                                                           | Load more older messages                                                                                                         |
+| `loadError`                              | `Ably.ErrorInfo \| undefined`                                                                                   | Set when the most recent `loadOlder` call failed. Cleared automatically on the next successful load                              |
+| `loadOlder()`                            | `() => Promise<void>`                                                                                           | Load more older messages. No-op if already loading                                                                               |
 | `select(msgId, index)`                   | `(msgId: string, index: number) => void`                                                                        | Switch to a sibling branch. Triggers re-render                                                                                   |
 | `getSelectedIndex(msgId)`                | `(msgId: string) => number`                                                                                     | Index of the currently selected sibling                                                                                          |
 | `getSiblings(msgId)`                     | `(msgId: string) => TMessage[]`                                                                                 | All alternatives at a fork point                                                                                                 |
@@ -142,14 +156,15 @@ const handle = useCreateView<TEvent, TMessage>({ session?, limit?, skip? } = {})
 | Prop      | Type                     | Description                                                                                        |
 | --------- | ------------------------ | -------------------------------------------------------------------------------------------------- |
 | `session` | `ClientSession \| null?` | The session to create a view from; defaults to the nearest provider. Pass `null` to defer creation |
-| `limit`   | `number?`                | When provided, auto-loads the first page on mount. Default: 100                                    |
+| `limit`   | `number?`                | When provided, auto-loads the first page on mount. Omit for manual loading                         |
 | `skip`    | `boolean?`               | When `true`, skip view creation and return an empty handle                                         |
 
 **Returns:** `ViewHandle<TEvent, TMessage>` - the same handle type as `useView()`, with nodes, pagination, navigation, and write operations. Returns an empty handle (no nodes, no messages) when no session is provided or `skip` is `true`.
 
 ```typescript
-import { useView, useCreateView } from '@ably/ai-transport/react';
+import { useView, useCreateView, useClientSession } from '@ably/ai-transport/react';
 
+const { session } = useClientSession<UIMessageChunk, UIMessage>();
 const view = useView({ limit: 50 }); // default view, nearest provider
 const splitView = useCreateView({ session: split ? session : null, limit: 50 }); // independent view
 ```
@@ -281,11 +296,12 @@ const { chatTransport, session, sessionError, chatTransportError } = useChatTran
 
 **Returns:** `ChatTransportHandle`
 
-| Field                | Type                                       | Description                                                                                                                                     |
-| -------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `chatTransport`      | `ChatTransport`                            | The adapter for `useChat()`'s `transport` option                                                                                                |
-| `session`            | `ClientSession<UIMessageChunk, UIMessage>` | The underlying session for `useMessageSync`, `useView`, `useActiveRuns`, etc.                                                                   |
-| `chatTransportError` | `Ably.ErrorInfo?`                          | Set when no matching `ChatTransportProvider` was found, or when chat transport construction failed. `chatTransport` is a throwing stub when set |
+| Field                | Type                                       | Description                                                                                                                                                                                      |
+| -------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `chatTransport`      | `ChatTransport`                            | The adapter for `useChat()`'s `transport` option. A throwing stub when `skip` is `true`, when no matching `ChatTransportProvider` was found, or when session construction failed                 |
+| `session`            | `ClientSession<UIMessageChunk, UIMessage>` | The underlying client session, also exposed by `useClientSession()`. Used directly with `useMessageSync`, `useView`, `useActiveRuns`, etc.                                                       |
+| `sessionError`       | `Ably.ErrorInfo?`                          | Set when no matching `ClientSessionProvider` was found, or when session construction failed (and `skip` is `false`). `undefined` when the session resolved successfully or when `skip` is `true` |
+| `chatTransportError` | `Ably.ErrorInfo?`                          | Set when no matching `ChatTransportProvider` was found, or when session construction failed (and `skip` is `false`). `undefined` when the chat transport resolved successfully                   |
 
 ```typescript
 // Nearest provider (most common)
@@ -340,7 +356,7 @@ interface UseMessageSyncOptions {
 
 **Returns:** `void`
 
-Subscribes to the provider's session view `'update'` event and replaces `useChat()`'s message state with the session's authoritative list on every update. Also gates `setMessages` during active own-run streams to prevent ID mismatches. This is how messages from other clients (observer messages) appear in `useChat()`.
+Subscribes to the session view's `'update'` event and replaces `useChat()`'s message state with the view's authoritative message list on every update. Also gates `setMessages` during active own-run streams (using the `ChatTransport`'s `streaming` state) to prevent ID mismatches in `useChat`'s `write()`. When the stream finishes, the gate opens and an immediate sync fires to pick up any observer messages that arrived during the stream. This is how messages from other clients (observer messages) appear in `useChat()`.
 
 ```typescript
 // Nearest provider (most common)

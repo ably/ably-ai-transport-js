@@ -13,7 +13,7 @@ expect.extend({ toBeErrorInfo });
 // Test helpers
 // ---------------------------------------------------------------------------
 
-// eslint-disable-next-line @typescript-eslint/no-empty-function -- no-op unsubscribe stub for mock transport
+// eslint-disable-next-line @typescript-eslint/no-empty-function -- no-op unsubscribe stub for mock session
 const noop = (): void => {};
 
 const makeMessage = (id: string, role: AI.UIMessage['role'] = 'user'): AI.UIMessage => ({
@@ -66,7 +66,7 @@ const createMockRun = (): MockRun => {
   };
 };
 
-interface MockTransport {
+interface MockSession {
   session: ClientSession<AI.UIMessageChunk, AI.UIMessage>;
   send: ReturnType<typeof vi.fn>;
   cancel: ReturnType<typeof vi.fn>;
@@ -76,7 +76,7 @@ interface MockTransport {
   view: View<AI.UIMessageChunk, AI.UIMessage>;
 }
 
-const createMockTransport = (): MockTransport => {
+const createMockSession = (): MockSession => {
   const mockRun = createMockRun();
   const tree: Tree<AI.UIMessage> = {
     getSiblings: vi.fn(() => []),
@@ -139,7 +139,7 @@ const createMockTransport = (): MockTransport => {
 describe('createChatTransport', () => {
   describe('sendMessages — submit-message', () => {
     it('sends the last message and passes history in body', async () => {
-      const { session, send, view, mockRun } = createMockTransport();
+      const { session, send, view, mockRun } = createMockSession();
       const chat = createChatTransport(session);
 
       const m1 = makeMessage('1');
@@ -182,7 +182,7 @@ describe('createChatTransport', () => {
     });
 
     it('throws on empty messages array', async () => {
-      const { session } = createMockTransport();
+      const { session } = createMockSession();
       const chat = createChatTransport(session);
 
       await expect(
@@ -206,7 +206,7 @@ describe('createChatTransport', () => {
 
   describe('sendMessages — regenerate-message', () => {
     it('sends empty messages with all input as history', async () => {
-      const { session, send, mockRun } = createMockTransport();
+      const { session, send, mockRun } = createMockSession();
       const chat = createChatTransport(session);
 
       const m1 = makeMessage('1');
@@ -229,7 +229,7 @@ describe('createChatTransport', () => {
     });
 
     it('resolves fork metadata from the conversation tree', async () => {
-      const { session, send, view, mockRun } = createMockTransport();
+      const { session, send, view, mockRun } = createMockSession();
 
       const msg = makeMessage('ui-message-id');
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
@@ -262,7 +262,7 @@ describe('createChatTransport', () => {
     });
 
     it('falls back to raw messageId when node not found in tree', async () => {
-      const { session, send, view, mockRun } = createMockTransport();
+      const { session, send, view, mockRun } = createMockSession();
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([]);
 
       const chat = createChatTransport(session);
@@ -286,7 +286,7 @@ describe('createChatTransport', () => {
 
   describe('sendMessages — submit-message with messageId (edit)', () => {
     it('resolves fork metadata from the conversation tree', async () => {
-      const { session, send, view, mockRun } = createMockTransport();
+      const { session, send, view, mockRun } = createMockSession();
 
       const edited = makeMessage('ui-msg-id');
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
@@ -319,7 +319,7 @@ describe('createChatTransport', () => {
     });
 
     it('falls back to raw messageId when node not found in tree', async () => {
-      const { session, send, view, mockRun } = createMockTransport();
+      const { session, send, view, mockRun } = createMockSession();
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([]);
 
       const chat = createChatTransport(session);
@@ -341,7 +341,7 @@ describe('createChatTransport', () => {
     });
 
     it('sends the edited message as new and prior messages as history', async () => {
-      const { session, send, view, mockRun } = createMockTransport();
+      const { session, send, view, mockRun } = createMockSession();
 
       const m1 = makeMessage('1');
       const edited = makeMessage('2');
@@ -377,7 +377,7 @@ describe('createChatTransport', () => {
 
   describe('real stream return', () => {
     it('returns the run stream with chunks flowing through', async () => {
-      const { session, mockRun } = createMockTransport();
+      const { session, mockRun } = createMockSession();
       const chat = createChatTransport(session);
 
       const stream = await chat.sendMessages({
@@ -414,7 +414,7 @@ describe('createChatTransport', () => {
 
   describe('stream error propagation', () => {
     it('errors the returned stream when the run stream errors', async () => {
-      const { session, mockRun } = createMockTransport();
+      const { session, mockRun } = createMockSession();
       const chat = createChatTransport(session);
 
       const stream = await chat.sendMessages({
@@ -435,7 +435,7 @@ describe('createChatTransport', () => {
 
   describe('abort signal', () => {
     it('wires to session.cancel({ all: true })', async () => {
-      const { session, cancel, mockRun } = createMockTransport();
+      const { session, cancel, mockRun } = createMockSession();
       const chat = createChatTransport(session);
       const abortController = new AbortController();
 
@@ -462,7 +462,7 @@ describe('createChatTransport', () => {
 
   describe('prepareSendMessagesRequest hook', () => {
     it('uses the hook to customize body and headers', async () => {
-      const { session, send, mockRun } = createMockTransport();
+      const { session, send, mockRun } = createMockSession();
 
       const hook = vi.fn().mockReturnValue({
         body: { custom: 'body' },
@@ -507,7 +507,7 @@ describe('createChatTransport', () => {
 
   describe('default body construction', () => {
     it('includes history nodes from session.view.flattenNodes', async () => {
-      const { session, send, view, mockRun } = createMockTransport();
+      const { session, send, view, mockRun } = createMockSession();
 
       const m1 = makeMessage('1');
       const m2 = makeMessage('2');
@@ -566,7 +566,7 @@ describe('createChatTransport', () => {
 
   describe('reconnectToStream', () => {
     it('returns null', async () => {
-      const { session } = createMockTransport();
+      const { session } = createMockSession();
       const chat = createChatTransport(session);
 
       const result = await chat.reconnectToStream({ chatId: 'chat-1' });
@@ -576,7 +576,7 @@ describe('createChatTransport', () => {
 
   describe('close', () => {
     it('delegates to session.close with options', async () => {
-      const { session, close } = createMockTransport();
+      const { session, close } = createMockSession();
       const chat = createChatTransport(session);
 
       await chat.close({ cancel: { all: true } });
@@ -585,7 +585,7 @@ describe('createChatTransport', () => {
     });
 
     it('delegates to session.close without options', async () => {
-      const { session, close } = createMockTransport();
+      const { session, close } = createMockSession();
       const chat = createChatTransport(session);
 
       await chat.close();
@@ -596,13 +596,13 @@ describe('createChatTransport', () => {
 
   describe('streaming signal', () => {
     it('streaming is false initially', () => {
-      const { session } = createMockTransport();
+      const { session } = createMockSession();
       const chat = createChatTransport(session);
       expect(chat.streaming).toBe(false);
     });
 
     it('streaming becomes true during sendMessages and false after stream closes', async () => {
-      const { session, mockRun } = createMockTransport();
+      const { session, mockRun } = createMockSession();
       const chat = createChatTransport(session);
 
       const streamPromise = chat.sendMessages({
@@ -629,7 +629,7 @@ describe('createChatTransport', () => {
     });
 
     it('onStreamingChange fires on transitions', async () => {
-      const { session, mockRun } = createMockTransport();
+      const { session, mockRun } = createMockSession();
       const chat = createChatTransport(session);
 
       const log: boolean[] = [];
@@ -658,7 +658,7 @@ describe('createChatTransport', () => {
     });
 
     it('streaming resets to false when the source stream errors', async () => {
-      const { session, mockRun } = createMockTransport();
+      const { session, mockRun } = createMockSession();
       const chat = createChatTransport(session);
 
       const log: boolean[] = [];
@@ -688,7 +688,7 @@ describe('createChatTransport', () => {
     });
 
     it('streaming resets to false when sendMessages throws', async () => {
-      const { session, send } = createMockTransport();
+      const { session, send } = createMockSession();
       const chat = createChatTransport(session);
 
       // Make session.send reject
@@ -720,7 +720,7 @@ describe('createChatTransport', () => {
 
   describe('sendMessages — fork on unresolved tool call', () => {
     it('forks off the preceding assistant when it has approval-requested', async () => {
-      const { session, send, view, mockRun } = createMockTransport();
+      const { session, send, view, mockRun } = createMockSession();
 
       const user1 = makeMessage('u1');
       const assistant = makeAssistantWithToolPart('a1', {
@@ -769,7 +769,7 @@ describe('createChatTransport', () => {
     });
 
     it('forks when the preceding assistant has input-available (client tool pending)', async () => {
-      const { session, send, view, mockRun } = createMockTransport();
+      const { session, send, view, mockRun } = createMockSession();
 
       const user1 = makeMessage('u1');
       const assistant = makeAssistantWithToolPart('a1', {
@@ -810,7 +810,7 @@ describe('createChatTransport', () => {
     });
 
     it('forks when the preceding assistant has input-streaming', async () => {
-      const { session, send, view, mockRun } = createMockTransport();
+      const { session, send, view, mockRun } = createMockSession();
 
       const user1 = makeMessage('u1');
       const assistant = makeAssistantWithToolPart('a1', {
@@ -851,7 +851,7 @@ describe('createChatTransport', () => {
     });
 
     it('does NOT fork when the preceding assistant has output-available (resolved)', async () => {
-      const { session, send, view, mockRun } = createMockTransport();
+      const { session, send, view, mockRun } = createMockSession();
 
       const user1 = makeMessage('u1');
       const assistant = makeAssistantWithToolPart('a1', {
@@ -894,7 +894,7 @@ describe('createChatTransport', () => {
     });
 
     it('does NOT fork when the preceding assistant has approval-responded', async () => {
-      const { session, send, view, mockRun } = createMockTransport();
+      const { session, send, view, mockRun } = createMockSession();
 
       const user1 = makeMessage('u1');
       const assistant = makeAssistantWithToolPart('a1', {
@@ -936,7 +936,7 @@ describe('createChatTransport', () => {
     });
 
     it('does NOT fork in edit mode (messageId takes priority over preceding unresolved tool)', async () => {
-      const { session, send, view, mockRun } = createMockTransport();
+      const { session, send, view, mockRun } = createMockSession();
 
       const user1 = makeMessage('u1');
       const assistant = makeAssistantWithToolPart('a1', {

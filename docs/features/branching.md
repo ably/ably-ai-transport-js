@@ -1,6 +1,6 @@
 # Conversation branching
 
-AI Transport stores conversation history as a tree, not a linear array. When a user regenerates an assistant response or edits a user message, the transport creates a fork - the original message and its replacement are siblings in the tree, and the user can navigate between them.
+AI Transport stores conversation history as a tree, not a linear array. When a user regenerates an assistant response or edits a user message, the session creates a fork - the original message and its replacement are siblings in the tree, and the user can navigate between them.
 
 Without tree-based history, regeneration and editing destroy the original response. With branching, every version is preserved and navigable.
 
@@ -12,7 +12,7 @@ Every message in the tree has:
 - **`parentId`** - the preceding message in the thread (`x-ably-parent`)
 - **`forkOf`** - the message this one replaces (`x-ably-fork-of`), if it's a fork
 
-When you regenerate or edit, the transport sets `forkOf` to the original message's ID. Messages that share the same `parentId` and fork the same original are **siblings** - alternatives at the same point in the conversation.
+When you regenerate or edit, the session sets `forkOf` to the original message's ID. Messages that share the same `parentId` and fork the same original are **siblings** - alternatives at the same point in the conversation.
 
 ```
 User: "What is Rust?"                     (msg-1, parent: null)
@@ -36,7 +36,7 @@ const { regenerate } = useView();
 await regenerate(nodeId);
 ```
 
-The transport automatically computes `forkOf` (the assistant message being replaced) and `parent` (the message before it). The server receives these in the POST body and passes them to `createRun()`.
+The session automatically computes `forkOf` (the assistant message being replaced) and `parent` (the message before it). The server receives these in the POST body and passes them to `createRun()`.
 
 ## Edit
 
@@ -126,13 +126,13 @@ const { reason } = await run.pipe(result.toUIMessageStream());
 await run.end(reason);
 ```
 
-The transport stamps `x-ably-parent` and `x-ably-fork-of` headers on the published messages. All clients on the channel see these headers and update their local tree.
+The session stamps `x-ably-parent` and `x-ably-fork-of` headers on the published messages. All clients on the channel see these headers and update their local tree.
 
 ## Multiple views
 
 With a single view, navigating to a different branch in one part of the UI changes what every other part sees. Split-pane comparison UIs need independent views so each pane can show a different branch of the same conversation without interfering with the other.
 
-`useCreateView()` has the same API as `useView()` but creates an independent view instead of using the transport's default. The view is closed automatically when the component unmounts or the transport changes:
+`useCreateView()` has the same API as `useView()` but creates an independent view instead of using the session's default. The view is closed automatically when the component unmounts or the session changes:
 
 ```typescript
 import { useCreateView, useView } from '@ably/ai-transport/react';

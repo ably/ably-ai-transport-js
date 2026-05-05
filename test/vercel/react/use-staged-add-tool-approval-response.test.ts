@@ -36,7 +36,7 @@ const makeNode = (msgId: string, message: AI.UIMessage): MessageNode<AI.UIMessag
   serial: '',
 });
 
-const createMockTransport = (
+const createMockSession = (
   nodes: MessageNode<AI.UIMessage>[],
 ): ClientSession<AI.UIMessageChunk, AI.UIMessage> & { stageMessage: ReturnType<typeof vi.fn> } => {
   const stageMessage = vi.fn();
@@ -60,7 +60,7 @@ describe('useStagedAddToolApprovalResponse', () => {
 
     const message = makeAssistantWithApprovalRequest(uiMsgId, toolCallId, approvalId);
     const nodes = [makeNode(msgId, message)];
-    const session = createMockTransport(nodes);
+    const session = createMockSession(nodes);
     const raw = vi.fn();
 
     const { result } = renderHook(() => useStagedAddToolApprovalResponse(session, raw));
@@ -81,7 +81,7 @@ describe('useStagedAddToolApprovalResponse', () => {
 
   it('propagates approved: false and reason into the patched approval', () => {
     const nodes = [makeNode('tree-1', makeAssistantWithApprovalRequest('ui-1', 'tc-1', 'ap-1'))];
-    const session = createMockTransport(nodes);
+    const session = createMockSession(nodes);
     const raw = vi.fn();
 
     const { result } = renderHook(() => useStagedAddToolApprovalResponse(session, raw));
@@ -96,7 +96,7 @@ describe('useStagedAddToolApprovalResponse', () => {
   });
 
   it('tolerates missing approval id — delegates without staging', () => {
-    const session = createMockTransport([]);
+    const session = createMockSession([]);
     const raw = vi.fn();
 
     const { result } = renderHook(() => useStagedAddToolApprovalResponse(session, raw));
@@ -107,7 +107,7 @@ describe('useStagedAddToolApprovalResponse', () => {
   });
 
   it('returns the same wrapped function across re-renders when deps are stable', () => {
-    const session = createMockTransport([]);
+    const session = createMockSession([]);
     const raw = vi.fn();
 
     const { result, rerender } = renderHook(() => useStagedAddToolApprovalResponse(session, raw));

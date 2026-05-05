@@ -1,7 +1,8 @@
 import type * as Ably from 'ably';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createClientTransport, createServerTransport } from '../../../src/vercel/transport/index.js';
+import { createAgentSession, createClientSession } from '../../../src/vercel/transport/index.js';
+import { createRunFromOpts } from '../../helper/run-from-opts.js';
 
 // ---------------------------------------------------------------------------
 // Mock channel
@@ -47,27 +48,28 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('Vercel createClientTransport', () => {
-  it('returns a functional ClientTransport with UIMessageCodec pre-bound', async () => {
+describe('Vercel createClientSession', () => {
+  it('returns a functional ClientSession with UIMessageCodec pre-bound', async () => {
     const channel = createMockChannel();
-    const transport = createClientTransport({ channel });
+    const session = createClientSession({ channel });
 
     // view.flattenNodes works without error — proves the codec is wired up
-    expect(transport.view.flattenNodes()).toEqual([]);
+    expect(session.view.flattenNodes()).toEqual([]);
 
-    await transport.close();
+    await session.close();
   });
 
   it('defaults api to /api/chat when not specified', async () => {
     const channel = createMockChannel();
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     const mockFetch = vi.fn(() => Promise.resolve(new Response(undefined, { status: 200 })));
-    const transport = createClientTransport({
+    const session = createClientSession({
       channel,
       fetch: mockFetch as unknown as typeof globalThis.fetch,
     });
+    await session.connect();
 
-    await transport.view.send({ id: '1', role: 'user', parts: [] });
+    await session.view.send({ id: '1', role: 'user', parts: [] });
 
     await vi.waitFor(() => {
       expect(mockFetch).toHaveBeenCalledTimes(1);
@@ -76,14 +78,14 @@ describe('Vercel createClientTransport', () => {
     const [url] = mockFetch.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('/api/chat');
 
-    await transport.close();
+    await session.close();
   });
 
   it('passes through all options to the core factory', async () => {
     const channel = createMockChannel();
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     const mockFetch = vi.fn(() => Promise.resolve(new Response(undefined, { status: 200 })));
-    const transport = createClientTransport({
+    const session = createClientSession({
       channel,
       clientId: 'user-1',
       api: '/api/custom',
@@ -91,10 +93,11 @@ describe('Vercel createClientTransport', () => {
       credentials: 'include',
       fetch: mockFetch,
     });
+    await session.connect();
 
     // send() triggers a POST to the configured api endpoint with the configured fetch
-    const sendPromise = transport.view.send({ id: '1', role: 'user', parts: [] });
-    const turn = await sendPromise;
+    const sendPromise = session.view.send({ id: '1', role: 'user', parts: [] });
+    const run = await sendPromise;
 
     // Wait for the fire-and-forget fetch to resolve
     await vi.waitFor(() => {
@@ -111,32 +114,34 @@ describe('Vercel createClientTransport', () => {
     // Verify the body contains the clientId
     const body = JSON.parse(init.body as string) as Record<string, unknown>;
     expect(body.clientId).toBe('user-1');
-    expect(body.turnId).toBe(turn.turnId);
+    expect(body.runId).toBe(run.runId);
 
-    await transport.close();
+    await session.close();
   });
 });
 
-describe('Vercel createServerTransport', () => {
-  it('returns a functional ServerTransport with UIMessageCodec pre-bound', () => {
+describe('Vercel createAgentSession', () => {
+  it('returns a functional AgentSession with UIMessageCodec pre-bound', async () => {
     const channel = createMockChannel();
-    const transport = createServerTransport({ channel });
+    const session = createAgentSession({ channel });
+    await session.connect();
 
-    const turn = transport.newTurn({ turnId: 'test-turn' });
-    expect(turn.turnId).toBe('test-turn');
+    const run = createRunFromOpts(session, { runId: 'test-run' });
+    expect(run.runId).toBe('test-run');
 
-    transport.close();
+    session.close();
   });
 
-  it('passes through options to the core factory', () => {
+  it('passes through options to the core factory', async () => {
     const channel = createMockChannel();
     const onError = vi.fn();
-    const transport = createServerTransport({ channel, onError });
+    const session = createAgentSession({ channel, onError });
+    await session.connect();
 
-    // Transport was created without error — proves options were forwarded
-    const turn = transport.newTurn({ turnId: 'turn-2', clientId: 'user-1' });
-    expect(turn.turnId).toBe('turn-2');
+    // Session was created without error — proves options were forwarded
+    const run = createRunFromOpts(session, { runId: 'run-2', clientId: 'user-1' });
+    expect(run.runId).toBe('run-2');
 
-    transport.close();
+    session.close();
   });
 });

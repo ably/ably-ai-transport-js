@@ -2,22 +2,23 @@
  * useView — reactive paginated view of the conversation.
  *
  * Subscribes to view updates and exposes the visible nodes, branch navigation,
- * write operations, pagination state, and a `loadOlder` callback. Pass `transport`
- * to use a transport's default view, or `view` to subscribe to a specific
+ * write operations, pagination state, and a `loadOlder` callback. Pass `session`
+ * to use a session's default view, or `view` to subscribe to a specific
  * {@link View} directly. When both are omitted, defaults to the nearest
- * {@link TransportProvider}'s transport via context.
+ * {@link ClientSessionProvider}'s session via context.
  */
 
 import * as Ably from 'ably';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import type { ActiveTurn, MessageNode, SendOptions, View } from '../core/transport/types.js';
+import type { ActiveRun, MessageNode, SendOptions, View } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
-import { BaseTransportOption, useResolvedTransport } from './internal/use-resolved-transport.js';
+import type { BaseSessionOption } from './internal/use-resolved-session.js';
+import { useResolvedSession } from './internal/use-resolved-session.js';
 
 /** Options for {@link useView}. */
-export interface UseViewOptions<TEvent, TMessage> extends BaseTransportOption<TEvent, TMessage> {
-  /** A specific {@link View} to subscribe to directly. Takes priority over `transport`. */
+export interface UseViewOptions<TEvent, TMessage> extends BaseSessionOption<TEvent, TMessage> {
+  /** A specific {@link View} to subscribe to directly. Takes priority over `session`. */
   view?: View<TEvent, TMessage> | null;
   /** Maximum number of older messages to load per page. When provided, auto-loads on mount. */
   limit?: number;
@@ -57,36 +58,36 @@ export interface ViewHandle<TEvent, TMessage> {
   /** Get a node by msgId, or undefined if not found. */
   getNode: (msgId: string) => MessageNode<TMessage> | undefined;
   /** Send one or more messages in the context of this view's selected branch. */
-  send: (messages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>;
+  send: (messages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>;
   /** Regenerate an assistant message, using this view's branch for history. */
-  regenerate: (messageId: string, options?: SendOptions) => Promise<ActiveTurn<TEvent>>;
+  regenerate: (messageId: string, options?: SendOptions) => Promise<ActiveRun<TEvent>>;
   /** Edit a user message, forking from this view's branch. */
-  edit: (messageId: string, newMessages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>;
-  /** Amend an existing message and start a continuation turn (e.g. tool results). */
-  update: (msgId: string, events: TEvent[], options?: SendOptions) => Promise<ActiveTurn<TEvent>>;
+  edit: (messageId: string, newMessages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>;
+  /** Amend an existing message and start a continuation run (e.g. tool results). */
+  update: (msgId: string, events: TEvent[], options?: SendOptions) => Promise<ActiveRun<TEvent>>;
 }
 
 /**
  * Subscribe to a view and return the visible node list with pagination, navigation, and write operations.
  *
- * `view` takes priority over `transport`. When neither is provided, the nearest
- * {@link TransportProvider}'s transport is used. When `limit` is provided, auto-loads
+ * `view` takes priority over `session`. When neither is provided, the nearest
+ * {@link ClientSessionProvider}'s session is used. When `limit` is provided, auto-loads
  * the first page on mount (SWR-style).
  * @param props - Options for selecting the view source and configuring auto-load.
- * @param props.transport - Client transport whose default view to subscribe to; defaults to the nearest provider.
- * @param props.view - A specific {@link View} to subscribe to directly. Takes priority over `transport`.
+ * @param props.session - Client session whose default view to subscribe to; defaults to the nearest provider.
+ * @param props.view - A specific {@link View} to subscribe to directly. Takes priority over `session`.
  * @param props.limit - Max older messages per page; when provided, auto-loads on mount.
  * @param props.skip - When `true`, skip all subscriptions and return an empty handle.
  * @returns A {@link ViewHandle} with nodes, pagination state, navigation, write operations, and loadOlder.
  */
 export const useView = <TEvent, TMessage>({
-  transport,
+  session,
   view,
   limit,
   skip,
 }: UseViewOptions<TEvent, TMessage> = {}): ViewHandle<TEvent, TMessage> => {
-  const resolvedTransport = useResolvedTransport({ transport, skip });
-  const resolvedView = skip ? undefined : (view ?? resolvedTransport?.view);
+  const resolvedSession = useResolvedSession({ session, skip });
+  const resolvedView = skip ? undefined : (view ?? resolvedSession?.view);
 
   const [nodes, setNodes] = useState<MessageNode<TMessage>[]>(() => resolvedView?.flattenNodes() ?? []);
   const [hasOlder, setHasOlder] = useState(() => resolvedView?.hasOlder() ?? false);

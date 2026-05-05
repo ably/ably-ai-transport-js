@@ -1,7 +1,7 @@
 /**
  * Validates that the ChatTransport correctly drives useChat features.
  *
- * The Ably ChatTransport returns the real turn stream from sendMessages().
+ * The Ably ChatTransport returns the real run stream from sendMessages().
  * useChat's internal Chat class reads that stream to drive status transitions,
  * callbacks, and automatic resubmission. Since chunks flow through the stream,
  * these features work correctly.
@@ -14,7 +14,7 @@ import type * as AI from 'ai';
 import { AbstractChat } from 'ai';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ClientTransport, Tree } from '../../../src/core/transport/types.js';
+import type { ClientSession, Tree } from '../../../src/core/transport/types.js';
 import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
 
 // ---------------------------------------------------------------------------
@@ -55,20 +55,20 @@ class TestChat extends AbstractChat<AI.UIMessage> {
 }
 
 // ---------------------------------------------------------------------------
-// Mock transport (same pattern as chat-transport.test.ts)
+// Mock transport (same pattern as chat-session.test.ts)
 // ---------------------------------------------------------------------------
 
-interface MockTurn {
+interface MockRun {
   stream: ReadableStream<AI.UIMessageChunk>;
-  turnId: string;
+  runId: string;
   cancel: ReturnType<typeof vi.fn>;
-  /** Enqueue a chunk into the turn stream. */
+  /** Enqueue a chunk into the run stream. */
   enqueue: (chunk: AI.UIMessageChunk) => void;
-  /** Close the turn stream (simulates turn end). */
+  /** Close the run stream (simulates run end). */
   close: () => void;
 }
 
-const createMockTurn = (turnId = 'turn-1'): MockTurn => {
+const createMockRun = (runId = 'run-1'): MockRun => {
   let controller!: ReadableStreamDefaultController<AI.UIMessageChunk>;
   const stream = new ReadableStream<AI.UIMessageChunk>({
     start: (c) => {
@@ -77,7 +77,7 @@ const createMockTurn = (turnId = 'turn-1'): MockTurn => {
   });
   return {
     stream,
-    turnId,
+    runId,
     cancel: vi.fn(),
     enqueue: (chunk: AI.UIMessageChunk) => {
       controller.enqueue(chunk);
@@ -102,23 +102,23 @@ const createMockTree = () =>
   }) as unknown as Tree<AI.UIMessage>;
 
 const createMockTransport = () => {
-  const mockTurn = createMockTurn();
+  const mockRun = createMockRun();
   const tree = createMockTree();
 
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-  const send = vi.fn(() => Promise.resolve(mockTurn));
+  const send = vi.fn(() => Promise.resolve(mockRun));
 
   const view = {
     flattenNodes: vi.fn(() => []),
     send,
     regenerate: vi.fn(),
     edit: vi.fn(),
-    getActiveTurnIds: vi.fn(() => new Map()),
+    getActiveRunIds: vi.fn(() => new Map()),
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
     on: vi.fn(() => () => {}),
   };
 
-  const transport = {
+  const session = {
     send,
     tree,
     view,
@@ -128,21 +128,21 @@ const createMockTransport = () => {
     close: vi.fn(() => Promise.resolve()),
     regenerate: vi.fn(),
     edit: vi.fn(),
-    waitForTurn: vi.fn(),
+    waitForRun: vi.fn(),
     on: vi.fn(() => noop),
-    getActiveTurnIds: vi.fn(() => new Map()),
+    getActiveRunIds: vi.fn(() => new Map()),
     getMessages: vi.fn(() => []),
     getAblyMessages: vi.fn(() => []),
     history: vi.fn(),
-  } as unknown as ClientTransport<AI.UIMessageChunk, AI.UIMessage>;
+  } as unknown as ClientSession<AI.UIMessageChunk, AI.UIMessage>;
 
-  return { transport, send, mockTurn };
+  return { session, send, mockRun };
 };
 
-const createMultiTurnMockTransport = () => {
-  const turnA = createMockTurn('turn-a');
-  const turnB = createMockTurn('turn-b');
-  const send = vi.fn().mockResolvedValueOnce(turnA).mockResolvedValueOnce(turnB);
+const createMultiRunMockTransport = () => {
+  const runA = createMockRun('run-a');
+  const runB = createMockRun('run-b');
+  const send = vi.fn().mockResolvedValueOnce(runA).mockResolvedValueOnce(runB);
   const tree = createMockTree();
 
   const view = {
@@ -150,12 +150,12 @@ const createMultiTurnMockTransport = () => {
     send,
     regenerate: vi.fn(),
     edit: vi.fn(),
-    getActiveTurnIds: vi.fn(() => new Map()),
+    getActiveRunIds: vi.fn(() => new Map()),
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
     on: vi.fn(() => () => {}),
   };
 
-  const transport = {
+  const session = {
     send,
     tree,
     view,
@@ -165,21 +165,21 @@ const createMultiTurnMockTransport = () => {
     close: vi.fn(() => Promise.resolve()),
     regenerate: vi.fn(),
     edit: vi.fn(),
-    waitForTurn: vi.fn(),
+    waitForRun: vi.fn(),
     on: vi.fn(() => noop),
-    getActiveTurnIds: vi.fn(() => new Map()),
+    getActiveRunIds: vi.fn(() => new Map()),
     getMessages: vi.fn(() => []),
     getAblyMessages: vi.fn(() => []),
     history: vi.fn(),
-  } as unknown as ClientTransport<AI.UIMessageChunk, AI.UIMessage>;
+  } as unknown as ClientSession<AI.UIMessageChunk, AI.UIMessage>;
 
-  return { transport, send, turnA, turnB };
+  return { session, send, runA, runB };
 };
 
 /**
- * Enqueue a complete text response into a mock turn stream.
+ * Enqueue a complete text response into a mock run stream.
  * Sequence: start → text-start → text-delta(s) → text-end → finish → close
- * @param turn
+ * @param run
  * @param messageId
  * @param textId
  * @param deltas
@@ -195,41 +195,41 @@ const getAssistantText = (msg: AI.UIMessage): string =>
     .map((p) => p.text)
     .join('');
 
-const enqueueTextResponse = (turn: MockTurn, messageId: string, textId: string, deltas: string[]): void => {
-  turn.enqueue({ type: 'start', messageId });
-  turn.enqueue({ type: 'text-start', id: textId });
+const enqueueTextResponse = (run: MockRun, messageId: string, textId: string, deltas: string[]): void => {
+  run.enqueue({ type: 'start', messageId });
+  run.enqueue({ type: 'text-start', id: textId });
   for (const delta of deltas) {
-    turn.enqueue({ type: 'text-delta', id: textId, delta });
+    run.enqueue({ type: 'text-delta', id: textId, delta });
   }
-  turn.enqueue({ type: 'text-end', id: textId });
-  turn.enqueue({ type: 'finish', finishReason: 'stop' });
-  turn.close();
+  run.enqueue({ type: 'text-end', id: textId });
+  run.enqueue({ type: 'finish', finishReason: 'stop' });
+  run.close();
 };
 
 // ---------------------------------------------------------------------------
-// Helper: simulate a server turn producing chunks through the mock transport
+// Helper: simulate a server run producing chunks through the mock transport
 // ---------------------------------------------------------------------------
 
 /**
- * Enqueue a realistic chunk sequence into the mock turn stream:
+ * Enqueue a realistic chunk sequence into the mock run stream:
  * start -> start-step -> text -> tool-input -> data -> finish -> close
- * @param turn - The mock turn to enqueue chunks into.
+ * @param run - The mock run to enqueue chunks into.
  */
-const simulateServerTurn = (turn: MockTurn): void => {
-  turn.enqueue({ type: 'start', messageId: 'assistant-1' });
-  turn.enqueue({ type: 'start-step' });
-  turn.enqueue({ type: 'text-start', id: 'text-1' });
-  turn.enqueue({ type: 'text-delta', id: 'text-1', delta: 'Hello' });
-  turn.enqueue({ type: 'text-end', id: 'text-1' });
-  turn.enqueue({
+const simulateServerRun = (run: MockRun): void => {
+  run.enqueue({ type: 'start', messageId: 'assistant-1' });
+  run.enqueue({ type: 'start-step' });
+  run.enqueue({ type: 'text-start', id: 'text-1' });
+  run.enqueue({ type: 'text-delta', id: 'text-1', delta: 'Hello' });
+  run.enqueue({ type: 'text-end', id: 'text-1' });
+  run.enqueue({
     type: 'tool-input-start',
     toolCallId: 'tool-1',
     toolName: 'get_weather',
     dynamic: true,
   });
-  turn.enqueue({ type: 'tool-input-delta', toolCallId: 'tool-1', inputTextDelta: '{"city":' });
-  turn.enqueue({ type: 'tool-input-delta', toolCallId: 'tool-1', inputTextDelta: '"London"}' });
-  turn.enqueue({
+  run.enqueue({ type: 'tool-input-delta', toolCallId: 'tool-1', inputTextDelta: '{"city":' });
+  run.enqueue({ type: 'tool-input-delta', toolCallId: 'tool-1', inputTextDelta: '"London"}' });
+  run.enqueue({
     type: 'tool-input-available',
     toolCallId: 'tool-1',
     toolName: 'get_weather',
@@ -237,37 +237,37 @@ const simulateServerTurn = (turn: MockTurn): void => {
     dynamic: true,
   });
   // CAST: data-custom is a valid UIMessageChunk variant; TS cannot narrow the string union from a literal.
-  turn.enqueue({ type: 'data-custom', data: { value: 42 }, id: 'data-1' } as AI.UIMessageChunk);
-  turn.enqueue({ type: 'finish-step' });
-  turn.enqueue({ type: 'finish', finishReason: 'tool-calls' });
-  turn.close();
+  run.enqueue({ type: 'data-custom', data: { value: 42 }, id: 'data-1' } as AI.UIMessageChunk);
+  run.enqueue({ type: 'finish-step' });
+  run.enqueue({ type: 'finish', finishReason: 'tool-calls' });
+  run.close();
 };
 
 /**
  * Enqueue a chunk sequence that leaves the tool in `approval-requested` state:
  * start -> start-step -> tool-input-start -> tool-input-delta -> tool-input-available -> tool-approval-request -> finish -> close
- * @param turn - The mock turn to enqueue chunks into.
+ * @param run - The mock run to enqueue chunks into.
  */
-const simulateApprovalRequestTurn = (turn: MockTurn): void => {
-  turn.enqueue({ type: 'start', messageId: 'assistant-1' });
-  turn.enqueue({ type: 'start-step' });
-  turn.enqueue({
+const simulateApprovalRequestRun = (run: MockRun): void => {
+  run.enqueue({ type: 'start', messageId: 'assistant-1' });
+  run.enqueue({ type: 'start-step' });
+  run.enqueue({
     type: 'tool-input-start',
     toolCallId: 'tool-1',
     toolName: 'get_weather',
     dynamic: true,
   });
-  turn.enqueue({ type: 'tool-input-delta', toolCallId: 'tool-1', inputTextDelta: '{"city":"London"}' });
-  turn.enqueue({
+  run.enqueue({ type: 'tool-input-delta', toolCallId: 'tool-1', inputTextDelta: '{"city":"London"}' });
+  run.enqueue({
     type: 'tool-input-available',
     toolCallId: 'tool-1',
     toolName: 'get_weather',
     input: { city: 'London' },
     dynamic: true,
   });
-  turn.enqueue({ type: 'tool-approval-request', approvalId: 'approval-1', toolCallId: 'tool-1' });
-  turn.enqueue({ type: 'finish', finishReason: 'tool-calls' });
-  turn.close();
+  run.enqueue({ type: 'tool-approval-request', approvalId: 'approval-1', toolCallId: 'tool-1' });
+  run.enqueue({ type: 'finish', finishReason: 'tool-calls' });
+  run.close();
 };
 
 // ---------------------------------------------------------------------------
@@ -277,8 +277,8 @@ const simulateApprovalRequestTurn = (turn: MockTurn): void => {
 describe('ChatTransport useChat integration — features work with the real stream', () => {
   describe('status transitions', () => {
     it('transitions through streaming on its way to ready', async () => {
-      const { transport, mockTurn } = createMockTransport();
-      const chatTransport = createChatTransport(transport);
+      const { session, mockRun } = createMockTransport();
+      const chatTransport = createChatTransport(session);
 
       const statusLog: AI.ChatStatus[] = [];
       const chat = new TestChat({
@@ -293,11 +293,11 @@ describe('ChatTransport useChat integration — features work with the real stre
         origSetStatus(opts);
       };
 
-      // Simulate: server produces a full turn with text + tool call
+      // Simulate: server produces a full run with text + tool call
       const sendPromise = chat.sendMessage({ text: 'Hello' });
       // Let the stream be consumed before closing
       await new Promise((r) => setTimeout(r, 10));
-      simulateServerTurn(mockTurn);
+      simulateServerRun(mockRun);
       await sendPromise;
 
       // With the real stream: submitted -> streaming -> ready
@@ -308,8 +308,8 @@ describe('ChatTransport useChat integration — features work with the real stre
 
   describe('onToolCall', () => {
     it('fires when the server streams a tool call', async () => {
-      const { transport, mockTurn } = createMockTransport();
-      const chatTransport = createChatTransport(transport);
+      const { session, mockRun } = createMockTransport();
+      const chatTransport = createChatTransport(session);
 
       const onToolCall = vi.fn();
       const chat = new TestChat({
@@ -320,7 +320,7 @@ describe('ChatTransport useChat integration — features work with the real stre
 
       const sendPromise = chat.sendMessage({ text: 'What is the weather?' });
       await new Promise((r) => setTimeout(r, 10));
-      simulateServerTurn(mockTurn); // includes tool-input-available
+      simulateServerRun(mockRun); // includes tool-input-available
       await sendPromise;
 
       // The tool call was streamed through the real stream -> useChat saw it.
@@ -330,8 +330,8 @@ describe('ChatTransport useChat integration — features work with the real stre
 
   describe('onData', () => {
     it('fires when the server streams a data-* chunk', async () => {
-      const { transport, mockTurn } = createMockTransport();
-      const chatTransport = createChatTransport(transport);
+      const { session, mockRun } = createMockTransport();
+      const chatTransport = createChatTransport(session);
 
       const onData = vi.fn();
       const chat = new TestChat({
@@ -342,7 +342,7 @@ describe('ChatTransport useChat integration — features work with the real stre
 
       const sendPromise = chat.sendMessage({ text: 'Give me data' });
       await new Promise((r) => setTimeout(r, 10));
-      simulateServerTurn(mockTurn); // includes data-custom chunk
+      simulateServerRun(mockRun); // includes data-custom chunk
       await sendPromise;
 
       expect(onData).toHaveBeenCalled();
@@ -351,8 +351,8 @@ describe('ChatTransport useChat integration — features work with the real stre
 
   describe('onFinish', () => {
     it('fires with real content and finishReason', async () => {
-      const { transport, mockTurn } = createMockTransport();
-      const chatTransport = createChatTransport(transport);
+      const { session, mockRun } = createMockTransport();
+      const chatTransport = createChatTransport(session);
 
       const onFinish = vi.fn();
       const chat = new TestChat({
@@ -363,7 +363,7 @@ describe('ChatTransport useChat integration — features work with the real stre
 
       const sendPromise = chat.sendMessage({ text: 'Hello' });
       await new Promise((r) => setTimeout(r, 10));
-      simulateServerTurn(mockTurn); // includes finish with finishReason: 'tool-calls'
+      simulateServerRun(mockRun); // includes finish with finishReason: 'tool-calls'
       await sendPromise;
 
       expect(onFinish).toHaveBeenCalledOnce();
@@ -381,8 +381,8 @@ describe('ChatTransport useChat integration — features work with the real stre
 
   describe('sendAutomaticallyWhen', () => {
     it('onToolCall fires, enabling the automatic resubmission loop', async () => {
-      const { transport, mockTurn } = createMockTransport();
-      const chatTransport = createChatTransport(transport);
+      const { session, mockRun } = createMockTransport();
+      const chatTransport = createChatTransport(session);
 
       const sendAutomaticallyWhen = vi.fn(() => false);
       const onToolCall = vi.fn();
@@ -396,7 +396,7 @@ describe('ChatTransport useChat integration — features work with the real stre
 
       const sendPromise = chat.sendMessage({ text: 'Call a tool' });
       await new Promise((r) => setTimeout(r, 10));
-      simulateServerTurn(mockTurn);
+      simulateServerRun(mockRun);
       await sendPromise;
 
       // onToolCall fires because the real stream carries the tool-input-available chunk.
@@ -407,8 +407,8 @@ describe('ChatTransport useChat integration — features work with the real stre
     });
 
     it('triggers automatic resubmission when it returns true', async () => {
-      const { transport, send, turnA, turnB } = createMultiTurnMockTransport();
-      const chatTransport = createChatTransport(transport);
+      const { session, send, runA, runB } = createMultiRunMockTransport();
+      const chatTransport = createChatTransport(session);
 
       // Returns true only on the first call so the resubmit loop does not run indefinitely.
       const sendAutomaticallyWhen = vi.fn().mockReturnValueOnce(true);
@@ -419,10 +419,10 @@ describe('ChatTransport useChat integration — features work with the real stre
         sendAutomaticallyWhen,
       });
 
-      // sendMessage only resolves after both the original and auto-resubmit turns complete,
-      // so we must feed both turns before awaiting the promise.
+      // sendMessage only resolves after both the original and auto-resubmit runs complete,
+      // so we must feed both runs before awaiting the promise.
       const sendPromise = chat.sendMessage({ text: 'Call a tool' });
-      simulateServerTurn(turnA);
+      simulateServerRun(runA);
 
       // Wait for shouldSendAutomatically() to resolve and makeRequest to fire the second send.
       await vi.waitFor(() => {
@@ -430,8 +430,8 @@ describe('ChatTransport useChat integration — features work with the real stre
       });
       expect(sendAutomaticallyWhen).toHaveBeenCalledOnce();
 
-      // Feed the second turn so sendPromise can resolve.
-      enqueueTextResponse(turnB, 'assistant-2', 'text-2', ['Auto-resubmit response.']);
+      // Feed the second run so sendPromise can resolve.
+      enqueueTextResponse(runB, 'assistant-2', 'text-2', ['Auto-resubmit response.']);
       await sendPromise;
     });
   });
@@ -442,8 +442,8 @@ describe('ChatTransport useChat integration — features work with the real stre
 
   describe('addToolOutput', () => {
     it('calls sendAutomaticallyWhen after tool output is added', async () => {
-      const { transport, mockTurn } = createMockTransport();
-      const chatTransport = createChatTransport(transport);
+      const { session, mockRun } = createMockTransport();
+      const chatTransport = createChatTransport(session);
 
       const sendAutomaticallyWhen = vi.fn(() => false);
 
@@ -454,7 +454,7 @@ describe('ChatTransport useChat integration — features work with the real stre
       });
 
       const sendPromise = chat.sendMessage({ text: 'Call a tool' });
-      simulateServerTurn(mockTurn); // produces tool-1 in input-available state
+      simulateServerRun(mockRun); // produces tool-1 in input-available state
       await sendPromise;
 
       sendAutomaticallyWhen.mockClear();
@@ -465,8 +465,8 @@ describe('ChatTransport useChat integration — features work with the real stre
     });
 
     it('triggers automatic resubmission when sendAutomaticallyWhen returns true', async () => {
-      const { transport, send, turnA, turnB } = createMultiTurnMockTransport();
-      const chatTransport = createChatTransport(transport);
+      const { session, send, runA, runB } = createMultiRunMockTransport();
+      const chatTransport = createChatTransport(session);
 
       // Returns false after the initial stream close so only addToolOutput triggers resubmission.
       const sendAutomaticallyWhen = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true);
@@ -478,7 +478,7 @@ describe('ChatTransport useChat integration — features work with the real stre
       });
 
       const sendPromise = chat.sendMessage({ text: 'Call a tool' });
-      simulateServerTurn(turnA);
+      simulateServerRun(runA);
       await sendPromise;
 
       expect(send).toHaveBeenCalledTimes(1);
@@ -490,12 +490,12 @@ describe('ChatTransport useChat integration — features work with the real stre
         expect(send).toHaveBeenCalledTimes(2);
       });
 
-      enqueueTextResponse(turnB, 'assistant-2', 'text-2', ['The weather is 22°C.']);
+      enqueueTextResponse(runB, 'assistant-2', 'text-2', ['The weather is 22°C.']);
     });
 
     it('does not resubmit when sendAutomaticallyWhen returns false', async () => {
-      const { transport, send, mockTurn } = createMockTransport();
-      const chatTransport = createChatTransport(transport);
+      const { session, send, mockRun } = createMockTransport();
+      const chatTransport = createChatTransport(session);
 
       const sendAutomaticallyWhen = vi.fn(() => false);
 
@@ -506,7 +506,7 @@ describe('ChatTransport useChat integration — features work with the real stre
       });
 
       const sendPromise = chat.sendMessage({ text: 'Call a tool' });
-      simulateServerTurn(mockTurn);
+      simulateServerRun(mockRun);
       await sendPromise;
 
       await chat.addToolOutput({ tool: 'get_weather', toolCallId: 'tool-1', output: { temperature: 22 } });
@@ -521,8 +521,8 @@ describe('ChatTransport useChat integration — features work with the real stre
 
   describe('addToolApprovalResponse', () => {
     it('calls sendAutomaticallyWhen after approval response is added', async () => {
-      const { transport, mockTurn } = createMockTransport();
-      const chatTransport = createChatTransport(transport);
+      const { session, mockRun } = createMockTransport();
+      const chatTransport = createChatTransport(session);
 
       const sendAutomaticallyWhen = vi.fn(() => false);
 
@@ -533,7 +533,7 @@ describe('ChatTransport useChat integration — features work with the real stre
       });
 
       const sendPromise = chat.sendMessage({ text: 'Approve the tool' });
-      simulateApprovalRequestTurn(mockTurn);
+      simulateApprovalRequestRun(mockRun);
       await sendPromise;
 
       sendAutomaticallyWhen.mockClear();
@@ -544,8 +544,8 @@ describe('ChatTransport useChat integration — features work with the real stre
     });
 
     it('triggers automatic resubmission when sendAutomaticallyWhen returns true', async () => {
-      const { transport, send, turnA, turnB } = createMultiTurnMockTransport();
-      const chatTransport = createChatTransport(transport);
+      const { session, send, runA, runB } = createMultiRunMockTransport();
+      const chatTransport = createChatTransport(session);
 
       const sendAutomaticallyWhen = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true);
 
@@ -556,7 +556,7 @@ describe('ChatTransport useChat integration — features work with the real stre
       });
 
       const sendPromise = chat.sendMessage({ text: 'Approve the tool' });
-      simulateApprovalRequestTurn(turnA);
+      simulateApprovalRequestRun(runA);
       await sendPromise;
 
       expect(send).toHaveBeenCalledTimes(1);
@@ -568,12 +568,12 @@ describe('ChatTransport useChat integration — features work with the real stre
         expect(send).toHaveBeenCalledTimes(2);
       });
 
-      enqueueTextResponse(turnB, 'assistant-2', 'text-2', ['Tool approved and executed.']);
+      enqueueTextResponse(runB, 'assistant-2', 'text-2', ['Tool approved and executed.']);
     });
 
     it('does not resubmit when sendAutomaticallyWhen returns false', async () => {
-      const { transport, send, mockTurn } = createMockTransport();
-      const chatTransport = createChatTransport(transport);
+      const { session, send, mockRun } = createMockTransport();
+      const chatTransport = createChatTransport(session);
 
       const sendAutomaticallyWhen = vi.fn(() => false);
 
@@ -584,7 +584,7 @@ describe('ChatTransport useChat integration — features work with the real stre
       });
 
       const sendPromise = chat.sendMessage({ text: 'Deny the tool' });
-      simulateApprovalRequestTurn(mockTurn);
+      simulateApprovalRequestRun(mockRun);
       await sendPromise;
 
       await chat.addToolApprovalResponse({ id: 'approval-1', approved: false, reason: 'Not authorized' });
@@ -604,8 +604,8 @@ describe('ChatTransport useChat integration — features work with the real stre
 
   describe('multiple streaming responses', () => {
     it('sequential: two responses produce four correctly ordered messages', async () => {
-      const { transport, turnA, turnB } = createMultiTurnMockTransport();
-      const chatTransport = createChatTransport(transport);
+      const { session, runA, runB } = createMultiRunMockTransport();
+      const chatTransport = createChatTransport(session);
 
       let idCounter = 0;
       const onFinish = vi.fn();
@@ -626,13 +626,13 @@ describe('ChatTransport useChat integration — features work with the real stre
       // --- Response A ---
       const p1 = chat.sendMessage({ text: 'First' });
       await new Promise((r) => setTimeout(r, 10));
-      enqueueTextResponse(turnA, 'assistant-a', 'text-a', ['Response ', 'A.']);
+      enqueueTextResponse(runA, 'assistant-a', 'text-a', ['Response ', 'A.']);
       await p1;
 
       // --- Response B ---
       const p2 = chat.sendMessage({ text: 'Second' });
       await new Promise((r) => setTimeout(r, 10));
-      enqueueTextResponse(turnB, 'assistant-b', 'text-b', ['Response ', 'B.']);
+      enqueueTextResponse(runB, 'assistant-b', 'text-b', ['Response ', 'B.']);
       await p2;
 
       // Four messages in the correct order
@@ -662,8 +662,8 @@ describe('ChatTransport useChat integration — features work with the real stre
     });
 
     it('concurrent: serialized sendMessages prevents dual streams but cannot fix activeResponse overwrite', async () => {
-      const { transport, turnA, turnB } = createMultiTurnMockTransport();
-      const chatTransport = createChatTransport(transport);
+      const { session, runA, runB } = createMultiRunMockTransport();
+      const chatTransport = createChatTransport(session);
 
       let idCounter = 0;
       const onFinish = vi.fn();
@@ -690,13 +690,13 @@ describe('ChatTransport useChat integration — features work with the real stre
         const p1 = chat.sendMessage({ text: 'First' });
         const p2 = chat.sendMessage({ text: 'Second' });
 
-        // Let the first transport.send resolve
+        // Let the first session.send resolve
         await new Promise((r) => setTimeout(r, 10));
-        enqueueTextResponse(turnA, 'assistant-a', 'text-a', ['Response ', 'A.']);
+        enqueueTextResponse(runA, 'assistant-a', 'text-a', ['Response ', 'A.']);
 
         // Let the queue advance
         await new Promise((r) => setTimeout(r, 10));
-        enqueueTextResponse(turnB, 'assistant-b', 'text-b', ['Response ', 'B.']);
+        enqueueTextResponse(runB, 'assistant-b', 'text-b', ['Response ', 'B.']);
 
         await Promise.allSettled([p1, p2]);
 

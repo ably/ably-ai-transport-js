@@ -4,10 +4,10 @@
  *
  * When a client-executed tool resolves, the client stages the resulting
  * `tool-output-available` / `tool-output-error` chunk via
- * `transport.stageEvents(msgId, [...])`. The next send flushes it into the
+ * `session.stageEvents(msgId, [...])`. The next send flushes it into the
  * POST body's `events` field. The server republishes the event on the
- * channel via `turn.addEvents`, and must also merge it into the in-memory
- * history so the LLM sees the tool result this turn.
+ * channel via `run.addEvents`, and must also merge it into the in-memory
+ * history so the LLM sees the tool result this run.
  */
 
 import type * as AI from 'ai';
@@ -19,7 +19,7 @@ import { createAccumulator } from './codec/accumulator.js';
  * Fold a batch of client-shipped events into an in-memory history array.
  *
  * Mirrors the optimistic tree update in
- * `DefaultClientTransport._internalSend` (src/core/transport/client-transport.ts)
+ * `DefaultClientSession._internalSend` (src/core/transport/client-session.ts)
  * so the server can rebuild the same message state before handing it to
  * `convertToModelMessages` / `streamText`.
  * @param events - The events shipped by the client.

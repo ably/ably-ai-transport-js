@@ -51,7 +51,7 @@ The closing append carries the closing `data` payload (which is also accumulated
 
 Sends an append with `x-ably-status: "aborted"` and empty data. Marks the tracker as aborted so recovery uses the correct status. Then flushes all pending appends - both the prior content appends (already in-flight but unacknowledged) and the abort appends just queued. There is no need to flush before the abort: content appends are already on their way to Ably, and the serial-based ordering guarantees the abort append follows them. The single flush at the end waits for acknowledgement of everything in one pass.
 
-`abortAllStreams()` aborts every active stream - used when a turn is [cancelled](transport-components.md#cancel-routing-server-transport).
+`abortAllStreams()` aborts every active stream - used when a run is [cancelled](transport-components.md#cancel-routing-server-transport).
 
 ## Recovery mechanism
 
@@ -79,7 +79,7 @@ Headers are merged in priority order (later wins):
 
 If `WriteOptions.messageId` is set, the encoder stamps it as [`x-ably-msg-id`](wire-protocol.md#message-identity-x-ably-msg-id) during header merging. For streamed messages, this header is included in `persistentHeaders` - so every append and the closing append carry the same message ID, giving the entire message append lifecycle a single identity.
 
-After the headers are merged, the `onMessage` hook runs as a post-processing step - it receives the fully constructed `Ably.Message` object and can mutate it in place. The transport uses this hook to stamp [transport-level headers](wire-protocol.md#transport-headers-x-ably) (turn ID, role, parent, fork-of) onto every message without the codec needing to know about them.
+After the headers are merged, the `onMessage` hook runs as a post-processing step - it receives the fully constructed `Ably.Message` object and can mutate it in place. The transport uses this hook to stamp [transport-level headers](wire-protocol.md#transport-headers-x-ably) (run IDs, role, parent, fork-of) onto every message without the codec needing to know about them.
 
 ### Closing appends repeat all headers
 

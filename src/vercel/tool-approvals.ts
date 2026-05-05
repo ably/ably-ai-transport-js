@@ -1,5 +1,5 @@
 /**
- * Server-side helpers for processing a tool-approval turn.
+ * Server-side helpers for processing a tool-approval run.
  *
  * When a Vercel AI SDK tool is marked `needsApproval`, `streamText` pauses
  * after emitting a `dynamic-tool` part in state `approval-requested`. To
@@ -15,9 +15,9 @@
  *   4. Redirect the resulting `tool-output-available` / `tool-output-error`
  *      chunks back to the ORIGINAL assistant message (the one that held
  *      the `approval-requested` part) via `x-ably-amend`, instead of
- *      letting them land on the new assistant message this turn produces.
+ *      letting them land on the new assistant message this run produces.
  *
- * `prepareApprovalTurn` covers steps 1–3; `streamResponseWithApprovalRedirect`
+ * `prepareApprovalRun` covers steps 1–3; `streamResponseWithApprovalRedirect`
  * covers step 4.
  */
 
@@ -25,7 +25,7 @@ import type * as AI from 'ai';
 import { convertToModelMessages } from 'ai';
 
 import { HEADER_AMEND } from '../constants.js';
-import type { MessageNode, StreamResponseOptions, StreamResult, Turn } from '../core/transport/types.js';
+import type { MessageNode, PipeOptions, Run, StreamResult } from '../core/transport/types.js';
 import { stripUndefined } from '../utils.js';
 import { toolBase } from './codec/tool-transitions.js';
 
@@ -62,7 +62,7 @@ const applyApprovalDeniedToPart = (part: AI.DynamicToolUIPart, approvalId: strin
 /**
  * A user's decision on a pending tool approval. The client ships an array of
  * these to the server in the POST body; the server feeds them to
- * `prepareApprovalTurn` (to patch history) and
+ * `prepareApprovalRun` (to patch history) and
  * `streamResponseWithApprovalRedirect` (to route tool outputs back to the
  * original assistant message).
  *
@@ -81,7 +81,7 @@ export interface ToolApprovalDecision {
   /**
    * The `x-ably-msg-id` of the assistant message whose `dynamic-tool` part
    * is being responded to. When approved and the tool executes successfully,
-   * the output is published cross-turn targeting this message.
+   * the output is published cross-run targeting this message.
    */
   targetMsgId: string;
   /** Optional reason accompanying the response. */
@@ -194,8 +194,8 @@ const disableApprovalFor = <T extends Record<string, object>>(tools: T, approved
 // Orchestration
 // ---------------------------------------------------------------------------
 
-/** Options for {@link prepareApprovalTurn}. */
-export interface PrepareApprovalTurnOptions<T extends Record<string, object>> {
+/** Options for {@link prepareApprovalRun}. */
+export interface PrepareApprovalRunOptions<T extends Record<string, object>> {
   /** The full UIMessage history (user + assistant messages for this conversation). */
   messages: AI.UIMessage[];
   /** The user's approval decisions for this request, if any. */
@@ -208,8 +208,8 @@ export interface PrepareApprovalTurnOptions<T extends Record<string, object>> {
   tools: T;
 }
 
-/** Result of {@link prepareApprovalTurn}. */
-export interface PrepareApprovalTurnResult<T extends Record<string, object>> {
+/** Result of {@link prepareApprovalRun}. */
+export interface PrepareApprovalRunResult<T extends Record<string, object>> {
   /** Model-format messages ready to pass to `streamText({ messages })`. */
   modelMessages: AI.ModelMessage[];
   /** Tools with `needsApproval` disabled for any tool that was just approved. */
@@ -218,19 +218,19 @@ export interface PrepareApprovalTurnResult<T extends Record<string, object>> {
 
 /**
  * One-shot transform to ready a history + tool dict for a `streamText` call
- * on an approval turn. Returns the patched model-message array and the
+ * on an approval run. Returns the patched model-message array and the
  * effective tools dict.
  *
  * When `decisions` is absent or empty, this is a thin wrapper around
  * `convertToModelMessages(messages)` that returns the original tools — so
  * callers can use it uniformly regardless of whether the request carries
  * approvals.
- * @param options - See {@link PrepareApprovalTurnOptions}.
- * @returns See {@link PrepareApprovalTurnResult}.
+ * @param options - See {@link PrepareApprovalRunOptions}.
+ * @returns See {@link PrepareApprovalRunResult}.
  */
-export const prepareApprovalTurn = async <T extends Record<string, object>>(
-  options: PrepareApprovalTurnOptions<T>,
-): Promise<PrepareApprovalTurnResult<T>> => {
+export const prepareApprovalRun = async <T extends Record<string, object>>(
+  options: PrepareApprovalRunOptions<T>,
+): Promise<PrepareApprovalRunResult<T>> => {
   const { messages, decisions, tools } = options;
 
   if (!decisions || decisions.length === 0) {
@@ -250,13 +250,13 @@ export const prepareApprovalTurn = async <T extends Record<string, object>>(
 };
 
 // ---------------------------------------------------------------------------
-// Stream response with cross-turn redirect
+// Stream response with cross-run redirect
 // ---------------------------------------------------------------------------
 
 /** Options for {@link streamResponseWithApprovalRedirect}. */
-export interface StreamResponseWithApprovalRedirectOptions extends StreamResponseOptions<AI.UIMessageChunk> {
+export interface StreamResponseWithApprovalRedirectOptions extends PipeOptions<AI.UIMessageChunk> {
   /**
-   * The approval decisions this turn is resolving. Only approved decisions
+   * The approval decisions this run is resolving. Only approved decisions
    * redirect tool outputs — denied decisions have already been reflected
    * in the history and produce no tool output to capture.
    */
@@ -264,35 +264,35 @@ export interface StreamResponseWithApprovalRedirectOptions extends StreamRespons
 }
 
 /**
- * Pipe a UIMessage chunk stream through the turn's encoder, but redirect
+ * Pipe a UIMessage chunk stream through the run's encoder, but redirect
  * `tool-output-available` / `tool-output-error` chunks for approved tools to
  * the original assistant message via `x-ably-amend`.
  *
  * Without this redirect, the tool output would land on the new assistant
- * message produced this turn — leaving the original message stuck in
+ * message produced this run — leaving the original message stuck in
  * `approval-responded` state. The redirect uses a per-event
- * {@link StreamResponseOptions.resolveWriteOptions} hook: when a matching
+ * {@link PipeOptions.resolveWriteOptions} hook: when a matching
  * chunk reaches the encoder, it is published with the target's `msgId`
  * and an `x-ably-amend` header so the client merges the output onto the
- * original message instead of the current-turn one.
+ * original message instead of the current-run one.
  *
- * To preserve "no amendments on cancel" semantics — a partial turn must
+ * To preserve "no amendments on cancel" semantics — a partial run must
  * not leave torn-off tool outputs on the original message — redirect-
  * target chunks are held in a small TransformStream buffer and only
  * released to the encoder when the source stream closes normally. If the
- * turn's `abortSignal` fires before the flush, the buffer is discarded.
+ * run's `abortSignal` fires before the flush, the buffer is discarded.
  * Non-redirect chunks are enqueued inline and are unaffected by the buffer.
- * @param turn - The active server turn.
+ * @param run - The active server run.
  * @param stream - The UIMessage chunk stream to pipe through the encoder.
  * @param options - Stream options plus the approval decisions to redirect.
- * @returns The underlying `streamResponse` result.
+ * @returns The underlying `pipe` result.
  */
 // The redirect-eligible subset of UIMessageChunk — narrow enough for the type
 // guard below to tell TypeScript that `event.toolCallId` is defined.
 type RedirectTargetChunk = Extract<AI.UIMessageChunk, { type: 'tool-output-available' | 'tool-output-error' }>;
 
 export const streamResponseWithApprovalRedirect = (
-  turn: Turn<AI.UIMessageChunk, AI.UIMessage>,
+  run: Run<AI.UIMessageChunk, AI.UIMessage>,
   stream: ReadableStream<AI.UIMessageChunk>,
   options: StreamResponseWithApprovalRedirectOptions,
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- body only returns other promises; an async wrapper would add a pointless microtask hop
@@ -304,7 +304,7 @@ export const streamResponseWithApprovalRedirect = (
     if (decision.approved) targets.set(decision.toolCallId, decision.targetMsgId);
   }
 
-  if (targets.size === 0) return turn.streamResponse(stream, streamOptions);
+  if (targets.size === 0) return run.pipe(stream, streamOptions);
 
   const isRedirectTarget = (event: AI.UIMessageChunk): event is RedirectTargetChunk =>
     (event.type === 'tool-output-available' || event.type === 'tool-output-error') && targets.has(event.toolCallId);
@@ -320,13 +320,13 @@ export const streamResponseWithApprovalRedirect = (
         controller.enqueue(chunk);
       },
       flush: (controller) => {
-        if (turn.abortSignal.aborted) return;
+        if (run.abortSignal.aborted) return;
         for (const chunk of buffer) controller.enqueue(chunk);
       },
     }),
   );
 
-  return turn.streamResponse(guarded, {
+  return run.pipe(guarded, {
     ...streamOptions,
     resolveWriteOptions: (event) => {
       if (!isRedirectTarget(event)) return;

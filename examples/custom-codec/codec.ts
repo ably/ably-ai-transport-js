@@ -53,18 +53,18 @@ type Out = DecoderOutput<AgentEvent, AgentMessage>;
 //
 // The encoder implements StreamEncoder<TEvent, TMessage>, which extends
 // DiscreteEncoder<TEvent, TMessage>. The interface has six methods. Only
-// three are called by the transport:
+// three are called by the session:
 //
-//   appendEvent(event)      — the hot path: the server transport calls
+//   appendEvent(event)      — the hot path: the agent session calls
 //                             this for each chunk from the model's
 //                             streaming response. This is where you map
 //                             events to streamed or discrete operations.
-//   writeMessages(messages) — the server transport calls this to publish
+//   writeMessages(messages) — the agent session calls this to publish
 //                             user messages (the prompt) atomically. All
 //                             messages share one x-ably-msg-id and form
 //                             one node in the conversation tree. Decompose
 //                             each TMessage into MessagePayloads.
-//   abort(reason?)          — called when a turn is cancelled. Close all
+//   abort(reason?)          — called when a run is cancelled. Close all
 //                             open streams with "aborted" status and
 //                             publish an abort signal.
 //
@@ -208,7 +208,7 @@ class AgentEncoder implements StreamEncoder<AgentEvent, AgentMessage> {
     return await Promise.reject(new Ably.ErrorInfo('writeEvent is not implemented', ErrorCode.InvalidArgument, 400));
   }
 
-  // Called by the server transport to publish user messages (the prompt)
+  // Called by the agent session to publish user messages (the prompt)
   // to the channel atomically. All messages share the encoder's transport
   // headers (including x-ably-msg-id) and form one node in the conversation
   // tree. Decompose each TMessage into MessagePayloads — one per logical
@@ -226,7 +226,7 @@ class AgentEncoder implements StreamEncoder<AgentEvent, AgentMessage> {
     return this._core.publishDiscreteBatch(payloads, perWrite);
   }
 
-  // abort is called by the transport when a turn is cancelled. It closes
+  // abort is called by the transport when a run is cancelled. It closes
   // all open streams with x-ably-status: aborted (so subscribers know the
   // stream was interrupted, not completed) and publishes an abort signal.
   async abort(reason?: string): Promise<void> {
@@ -509,12 +509,12 @@ class AgentAccumulator implements MessageAccumulator<AgentEvent, AgentMessage> {
    */
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- interface contract requires parameters
   initMessage(_messageId: string, _message: AgentMessage): void {
-    // No-op — cross-turn events are not supported by this codec.
+    // No-op — cross-run events are not supported by this codec.
   }
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- interface contract requires parameters
   completeMessage(_messageId: string): void {
-    // No-op — cross-turn events are not supported by this codec.
+    // No-op — cross-run events are not supported by this codec.
   }
 }
 
@@ -533,14 +533,14 @@ class AgentAccumulator implements MessageAccumulator<AgentEvent, AgentMessage> {
  * A custom codec for structured AI agent responses.
  *
  * Implements `Codec<AgentEvent, AgentMessage>` — the same interface used by
- * the transport layer. Plug this into `createClientTransport` or
- * `createServerTransport` to stream structured AI responses over Ably.
+ * the transport layer. Plug this into `createClientSession` or
+ * `createAgentSession` to stream structured AI responses over Ably.
  *
  * ```ts
- * import { createServerTransport } from '@ably/ai-transport';
+ * import { createAgentSession } from '@ably/ai-transport';
  * import { AgentCodec } from './codec.js';
  *
- * const transport = createServerTransport(channel, { codec: AgentCodec });
+ * const session = createAgentSession(channel, { codec: AgentCodec });
  * ```
  */
 export const AgentCodec: Codec<AgentEvent, AgentMessage> = {

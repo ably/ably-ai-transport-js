@@ -8,23 +8,23 @@ A durable transport layer between AI agents and users. Streams AI responses over
 
 Most AI frameworks stream tokens over HTTP response bodies or SSE. That works until it doesn't: connections drop through corporate proxies, responses vanish on page refresh, and sessions are stuck on a single device or tab. Once an agent starts a long-running task, the user has no way to interrupt it, check if it's still running, or continue the conversation from another device. If a human needs to take over from the agent, the session context is lost.
 
-Ably AI Transport replaces the HTTP stream with an Ably channel. The server publishes tokens to the channel as they arrive from the LLM; the response accumulates on the channel and persists, so partial responses survive disconnection. Any client can subscribe to the same channel from any device. Cancel signals, turn lifecycle events, and conversation history all flow through the channel rather than depending on a single HTTP connection.
+Ably AI Transport replaces the HTTP stream with an Ably channel. The server publishes tokens to the channel as they arrive from the LLM; the response accumulates on the channel and persists, so partial responses survive disconnection. Any client can subscribe to the same channel from any device. Cancel signals, run lifecycle events, and conversation history all flow through the channel rather than depending on a single HTTP connection.
 
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant CT as Client Transport
+    participant CS as Client Session
     participant AC as Ably Channel
-    participant ST as Server Transport
+    participant AS as Agent Session
     participant LLM
 
-    U->>CT: type message
-    CT->>ST: HTTP POST (messages)
-    ST->>LLM: prompt
-    LLM-->>ST: token stream
-    ST->>AC: publish chunks
-    AC->>CT: subscribe (decode)
-    CT->>U: render tokens
+    U->>CS: type message
+    CS->>AS: HTTP POST (messages)
+    AS->>LLM: prompt
+    LLM-->>AS: token stream
+    AS->>AC: publish chunks
+    AC->>CS: subscribe (decode)
+    CS->>U: render tokens
 ```
 
 Ably AI Transport SDK is not an agent framework or orchestration layer - it works alongside whatever agent framework/model provider you choose, through a pluggable codec architecture (Vercel AI SDK supported now, more frameworks and models coming soon). It can be used in a serverless architecture (e.g. Next.js), with a durable execution framework (e.g. Temporal, Vercel Workflow DevKit) or in a traditional client-server architecture.
@@ -34,9 +34,9 @@ Ably AI Transport SDK is not an agent framework or orchestration layer - it work
 - **Resumable streaming** - If a connection drops mid-response, client reconnects and picks up where it left off. The response persists on the channel, so nothing is lost.
 - **Session continuity across surfaces** - The session belongs to the channel, not the connection. A user can change tab or device and pick up at the same point.
 - **Multi-client sync** - Multiple users, agents, or operators subscribe to the same channel. Human-AI handover is a channel operation, not a session migration.
-- **Cancellation** - Cancel signals travel over the Ably channel, not the HTTP connection, and the server turn's `abortSignal` fires automatically.
+- **Cancellation** - Cancel signals travel over the Ably channel, not the HTTP connection, and the server run's `abortSignal` fires automatically.
 - **Interruption** - Users send new messages while the AI is still responding, with composable primitives for cancel-and-resend or queue-until-complete.
-- **Concurrent turns** - Multiple request-response cycles run in parallel on the same channel. Each turn has its own stream and abort signal.
+- **Concurrent runs** - Multiple request-response cycles run in parallel on the same channel. Each run has its own stream and abort signal.
 - **History** - The Ably channel is the conversation record. Clients hydrate from channel history on load - no separate database query needed.
 - **Branching** - Regenerate or edit messages to fork the conversation. The SDK tracks parent/child relationships and exposes a navigable tree.
 - **Framework-agnostic** - A codec interface decouples transport from the AI framework. Ships with a Vercel AI SDK codec; bring your own for any other stack.
@@ -88,49 +88,42 @@ import { streamText, convertToModelMessages } from 'ai';
 import type { UIMessage } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
-import { createServerTransport } from '@ably/ai-transport/vercel';
-import type { TreeNode } from '@ably/ai-transport';
-
-interface ChatRequestBody {
-  turnId: string;
-  clientId: string;
-  messages: TreeNode<UIMessage>[];
-  history?: TreeNode<UIMessage>[];
-  chatId: string;
-  forkOf?: string;
-  parent?: string | null;
-}
+import { createAgentSession } from '@ably/ai-transport/vercel';
+import { Invocation, type InvocationData } from '@ably/ai-transport';
+import type { UIMessageChunk } from 'ai';
 
 const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY });
 
 export async function POST(req: Request) {
-  const { messages, history, chatId, turnId, clientId, forkOf, parent } = (await req.json()) as ChatRequestBody;
+  const data = (await req.json()) as InvocationData<UIMessageChunk, UIMessage>;
+  const invocation = Invocation.fromJSON(data);
 
-  const channel = ably.channels.get(chatId);
-  const transport = createServerTransport({ channel });
-  const turn = transport.newTurn({ turnId, clientId, parent, forkOf });
+  const channel = ably.channels.get(invocation.sessionName);
+  const session = createAgentSession({ channel });
+  await session.connect();
+  const run = session.createRun(invocation, { signal: req.signal });
 
-  await turn.start();
+  await run.start();
 
-  if (messages.length > 0) {
-    await turn.addMessages(messages, { clientId });
+  if (invocation.messages.length > 0) {
+    await run.addMessages(invocation.messages, { clientId: invocation.clientId });
   }
 
-  const historyMsgs = (history ?? []).map((h) => h.message);
-  const newMsgs = messages.map((m) => m.message);
+  const historyMsgs = invocation.history.map((h) => h.message);
+  const newMsgs = invocation.messages.map((m) => m.message);
 
   const result = streamText({
     model: anthropic('claude-sonnet-4-6'),
     system: 'You are a helpful assistant.',
     messages: await convertToModelMessages([...historyMsgs, ...newMsgs]),
-    abortSignal: turn.abortSignal,
+    abortSignal: run.abortSignal,
   });
 
   // Stream the response over Ably in the background
   after(async () => {
-    const { reason } = await turn.streamResponse(result.toUIMessageStream());
-    await turn.end(reason);
-    transport.close();
+    const { reason } = await run.pipe(result.toUIMessageStream());
+    await run.end(reason);
+    session.close();
   });
 
   return new Response(null, { status: 200 });
@@ -147,7 +140,7 @@ import {
   ChatTransportProvider,
   useChatTransport,
   useMessageSync,
-  useActiveTurns,
+  useActiveRuns,
   useView,
 } from '@ably/ai-transport/vercel/react';
 
@@ -161,7 +154,7 @@ function ChatInner({ chatId }: { chatId: string }) {
 
   useMessageSync({ setMessages });
 
-  const activeTurns = useActiveTurns();
+  const activeRuns = useActiveRuns();
   useView({ limit: 30 });
 
   return (
@@ -175,7 +168,7 @@ function ChatInner({ chatId }: { chatId: string }) {
           sendMessage({ text: 'Hello' });
         }}
       >
-        {activeTurns.size > 0 ? (
+        {activeRuns.size > 0 ? (
           <button
             type="button"
             onClick={stop}
@@ -240,20 +233,21 @@ The core entry point is framework-agnostic. Bring your own `Codec` to map betwee
 ### Client
 
 ```typescript
-import { createClientTransport } from '@ably/ai-transport';
+import { createClientSession } from '@ably/ai-transport';
 import { myCodec } from './my-codec';
 
-const transport = createClientTransport({
+const session = createClientSession({
   channel, // Ably RealtimeChannel
   codec: myCodec,
   clientId: 'user-123',
   api: '/api/chat',
 });
+await session.connect();
 
-const turn = await transport.send(messages);
+const run = await session.view.send(messages);
 
 // Read the stream
-const reader = turn.stream.getReader();
+const reader = run.stream.getReader();
 while (true) {
   const { done, value } = await reader.read();
   if (done) break;
@@ -261,21 +255,22 @@ while (true) {
 }
 ```
 
-### Server
+### Agent (server-side)
 
 ```typescript
-import { createServerTransport } from '@ably/ai-transport';
+import { createAgentSession, Invocation } from '@ably/ai-transport';
 import { myCodec } from './my-codec';
 
-const transport = createServerTransport({ channel, codec: myCodec });
-const turn = transport.newTurn({ turnId, clientId, parent, forkOf });
+const session = createAgentSession({ channel, codec: myCodec });
+await session.connect();
+const run = session.createRun(invocation);
 
-await turn.start();
-await turn.addMessages(messages, { clientId });
+await run.start();
+await run.addMessages(invocation.messages, { clientId: invocation.clientId });
 
-const { reason } = await turn.streamResponse(aiStream);
-await turn.end(reason);
-transport.close();
+const { reason } = await run.pipe(aiStream);
+await run.end(reason);
+session.close();
 ```
 
 ---
@@ -291,15 +286,15 @@ transport.close();
 
 ### React hooks
 
-| Hook                 | Entry point     | Description                                         |
-| -------------------- | --------------- | --------------------------------------------------- |
-| `useClientTransport` | `/react`        | Create and memoize a client transport instance      |
-| `useView`            | `/react`        | Subscribe to messages with history loading          |
-| `useActiveTurns`     | `/react`        | Track active turns by client ID                     |
-| `useTree`            | `/react`        | Navigate branches in a forked conversation          |
-| `useAblyMessages`    | `/react`        | Access raw Ably messages                            |
-| `useChatTransport`   | `/vercel/react` | Wrap transport for Vercel's `useChat`               |
-| `useMessageSync`     | `/vercel/react` | Sync transport state with `useChat`'s `setMessages` |
+| Hook               | Entry point     | Description                                       |
+| ------------------ | --------------- | ------------------------------------------------- |
+| `useClientSession` | `/react`        | Read a client session from the nearest provider   |
+| `useView`          | `/react`        | Subscribe to messages with history loading        |
+| `useActiveRuns`    | `/react`        | Track active runs by client ID                    |
+| `useTree`          | `/react`        | Navigate branches in a forked conversation        |
+| `useAblyMessages`  | `/react`        | Access raw Ably messages                          |
+| `useChatTransport` | `/vercel/react` | Wrap session for Vercel's `useChat`               |
+| `useMessageSync`   | `/vercel/react` | Sync session state with `useChat`'s `setMessages` |
 
 ---
 
@@ -315,17 +310,17 @@ Two mechanisms cover different failure modes:
 ### Cancellation
 
 ```typescript
-// Client: cancel your own active turns
-await transport.cancel();
+// Client: cancel your own active runs
+await session.cancel();
 
-// Cancel a specific turn
-await transport.cancel({ turnId: 'turn-abc' });
+// Cancel a specific run
+await session.cancel({ runId: 'run-abc' });
 
-// Server: the turn's abortSignal fires automatically
+// Agent: the run's abortSignal fires automatically
 const result = streamText({
   model: anthropic('claude-sonnet-4-6'),
   messages,
-  abortSignal: turn.abortSignal, // Aborted when client cancels
+  abortSignal: run.abortSignal, // Aborted when client cancels
 });
 ```
 
@@ -335,15 +330,15 @@ Regenerate or edit messages to create forks in the conversation tree. The SDK tr
 
 ```typescript
 // Regenerate the last assistant message
-const turn = await transport.regenerate(assistantMessageId);
+const run = await session.view.regenerate(assistantMessageId);
 
 // Edit a user message and regenerate from that point
-const turn = await transport.edit(userMessageId, [newMessage]);
+const run = await session.view.edit(userMessageId, [newMessage]);
 
 // Navigate branches
-const tree = transport.tree;
+const tree = session.tree;
 const siblings = tree.getSiblings(messageId);
-tree.select(messageId, 1); // Switch to second branch
+session.view.select(messageId, 1); // Switch to second branch
 ```
 
 ### History and hydration
@@ -351,7 +346,7 @@ tree.select(messageId, 1); // Switch to second branch
 Load previous conversation state when a client joins or returns to a session.
 
 ```typescript
-const view = transport.view;
+const view = session.view;
 await view.loadOlder(50);
 // view.flattenNodes() returns the messages loaded so far
 
@@ -362,15 +357,15 @@ await view.loadOlder(50);
 ### Events
 
 ```typescript
-transport.view.on('update', () => {
-  console.log(transport.view.flattenNodes().map((n) => n.message));
+session.view.on('update', () => {
+  console.log(session.view.flattenNodes().map((n) => n.message));
 });
 
-transport.tree.on('turn', (event) => {
-  console.log(event.turnId, event.type); // 'x-ably-turn-start' | 'x-ably-turn-end'
+session.tree.on('run', (event) => {
+  console.log(event.runId, event.type); // 'x-ably-run-start' | 'x-ably-run-end'
 });
 
-transport.on('error', (error) => {
+session.on('error', (error) => {
   console.error(error.code, error.message);
 });
 ```
@@ -381,10 +376,10 @@ transport.on('error', (error) => {
 
 Detailed documentation lives in the [`docs/`](./docs/) directory:
 
-- **[Concepts](./docs/concepts/)** - [Transport architecture](./docs/concepts/transport.md), [Turns](./docs/concepts/turns.md)
-- **[Get started](./docs/get-started/)** - [Vercel AI SDK with useChat](./docs/get-started/vercel-use-chat.md), [Vercel AI SDK with useClientTransport](./docs/get-started/vercel-use-client-transport.md)
+- **[Concepts](./docs/concepts/)** - [Sessions](./docs/concepts/sessions.md), [Runs](./docs/concepts/runs.md)
+- **[Get started](./docs/get-started/)** - [Vercel AI SDK with useChat](./docs/get-started/vercel-use-chat.md), [Vercel AI SDK with useClientSession](./docs/get-started/vercel-use-client-session.md)
 - **[Frameworks](./docs/frameworks/)** - [Vercel AI SDK](./docs/frameworks/vercel-ai-sdk.md)
-- **[Features](./docs/features/)** - [Streaming](./docs/features/streaming.md), [Cancellation](./docs/features/cancel.md), [Interruption](./docs/features/interruption.md), [Optimistic updates](./docs/features/optimistic-updates.md), [History](./docs/features/history.md), [Branching](./docs/features/branching.md), [Multi-client sync](./docs/features/multi-client.md), [Concurrent turns](./docs/features/concurrent-turns.md)
+- **[Features](./docs/features/)** - [Streaming](./docs/features/streaming.md), [Cancellation](./docs/features/cancel.md), [Interruption](./docs/features/interruption.md), [Optimistic updates](./docs/features/optimistic-updates.md), [History](./docs/features/history.md), [Branching](./docs/features/branching.md), [Multi-client sync](./docs/features/multi-client.md), [Concurrent runs](./docs/features/concurrent-runs.md)
 - **[Reference](./docs/reference/)** - [React hooks](./docs/reference/react-hooks.md), [Error codes](./docs/reference/error-codes.md)
 - **[Internals](./docs/internals/)** - Architecture details for contributors
 
@@ -395,7 +390,7 @@ Detailed documentation lives in the [`docs/`](./docs/) directory:
 Working demo applications live in the [`demo/`](./demo/) directory:
 
 - **[`demo/vercel/react/use-chat/`](./demo/vercel/react/use-chat/)** - Vercel AI SDK with `useChat` integration
-- **[`demo/vercel/react/use-client-transport/`](./demo/vercel/react/use-client-transport/)** - Vercel AI SDK with direct `useClientTransport` hooks
+- **[`demo/vercel/react/use-client-session/`](./demo/vercel/react/use-client-session/)** - Vercel AI SDK with direct `useClientSession` hooks
 
 ---
 
@@ -417,7 +412,7 @@ npm run precommit         # format:check + lint + typecheck
 src/
 ├── core/               # Generic transport and codec (no framework deps)
 │   ├── codec/          # Codec interfaces and core encoder/decoder
-│   └── transport/      # ClientTransport, ServerTransport, Tree
+│   └── transport/      # ClientSession, AgentSession, Tree
 ├── react/              # React hooks for any codec
 ├── vercel/             # Vercel AI SDK codec and transport adapters
 │   ├── codec/          # UIMessageCodec

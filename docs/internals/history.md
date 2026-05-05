@@ -4,7 +4,7 @@
 
 ## The problem
 
-Ably's history API returns messages newest-first. The [decoder](decoder.md) needs messages oldest-first (chronological) because [stream accumulation](decoder.md#stream-tracker) depends on seeing the create before the appends. A single domain message may span many Ably [wire messages](wire-protocol.md#streamed-messages) (create + N appends + close), and a turn's messages may span page boundaries.
+Ably's history API returns messages newest-first. The [decoder](decoder.md) needs messages oldest-first (chronological) because [stream accumulation](decoder.md#stream-tracker) depends on seeing the create before the appends. A single domain message may span many Ably [wire messages](wire-protocol.md#streamed-messages) (create + N appends + close), and a run's messages may span page boundaries.
 
 Additionally, the `limit` parameter should control the number of complete **domain messages** returned, not the number of raw Ably messages fetched. A single domain message with 100 token deltas produces 100+ Ably messages.
 
@@ -18,7 +18,7 @@ Additionally, the `limit` parameter should control the number of complete **doma
 4. If the counter shows enough completed domain messages, stop; otherwise fetch the next page and repeat
 5. Once the loop exits, reverse the collection to chronological order and run the decoder over the full set
 
-Decoding the full set at the end (rather than per page) is what lets the implementation handle turns that span page boundaries, interleaved concurrent turns, and the many-to-one wire-message-to-domain-message ratio without paying an O(n) re-decode cost per page.
+Decoding the full set at the end (rather than per page) is what lets the implementation handle runs that span page boundaries, interleaved concurrent runs, and the many-to-one wire-message-to-domain-message ratio without paying an O(n) re-decode cost per page.
 
 ## Completion counter
 
@@ -38,19 +38,19 @@ A msg-id is **terminated** when:
 - `x-ably-discrete` is present on the create.
 - `x-ably-status` is `"finished"` or `"aborted"` on any later action.
 
-Messages with `x-ably-amend` are skipped - amendments target an existing message rather than producing a new completion. Messages without `x-ably-msg-id` (turn lifecycle events) are skipped too. `message.delete` is never a start signal: it clears the decoder's tracker and emits nothing.
+Messages with `x-ably-amend` are skipped - amendments target an existing message rather than producing a new completion. Messages without `x-ably-msg-id` (run lifecycle events) are skipped too. `message.delete` is never a start signal: it clears the decoder's tracker and emits nothing.
 
-Requiring both halves matters when a streaming turn spans a page boundary. The terminal arrives in the newer (first-fetched) page while the start sits in an older page. Counting the terminal alone would stop the fetch loop prematurely - the decoder would have no stream state to resolve, and the message wouldn't make it into the result.
+Requiring both halves matters when a streaming run spans a page boundary. The terminal arrives in the newer (first-fetched) page while the start sits in an older page. Counting the terminal alone would stop the fetch loop prematurely - the decoder would have no stream state to resolve, and the message wouldn't make it into the result.
 
-Accepting `message.update` and `message.append` as starts matters because Ably history can compact a live `create + append + ... + append{status:finished}` sequence into a single `message.update` with the accumulated data and terminal status - the decoder handles that via first-contact, and the counter has to recognise it or the loop pages past compacted turns without ever marking them complete.
+Accepting `message.update` and `message.append` as starts matters because Ably history can compact a live `create + append + ... + append{status:finished}` sequence into a single `message.update` with the accumulated data and terminal status - the decoder handles that via first-contact, and the counter has to recognise it or the loop pages past compacted runs without ever marking them complete.
 
 The counter is an approximation, not a proof: a truncated history where every start signal for a msg-id has rolled off but a terminal survives will never complete that msg-id in the counter. The loop keeps fetching until it exhausts Ably pages, then returns whatever the decoder actually produced - which for this pathological case is nothing for that msg-id.
 
-## Per-turn accumulators
+## Per-run accumulators
 
-Messages are grouped by [`x-ably-turn-id`](wire-protocol.md#transport-headers-x-ably). Each turn gets its own [`MessageAccumulator`](codec-interface.md#accumulator) instance. Messages without a turn ID go to a default accumulator.
+Messages are grouped by [`x-ably-run-id`](wire-protocol.md#transport-headers-x-ably). Each run gets its own [`MessageAccumulator`](codec-interface.md#accumulator) instance. Messages without a run IDs go to a default accumulator.
 
-Each turn needs a separate accumulator because the accumulator is stateful - it tracks in-progress messages, active streams, and part assembly. If events from concurrent turns were fed into a single accumulator, a text-delta from turn A could be accumulated into turn B's message, corrupting both. Isolation by turn ID ensures each accumulator builds only the messages belonging to its turn.
+Each run needs a separate accumulator because the accumulator is stateful - it tracks in-progress messages, active streams, and part assembly. If events from concurrent runs were fed into a single accumulator, a text-delta from run A could be accumulated into run B's message, corrupting both. Isolation by run IDs ensures each accumulator builds only the messages belonging to its run.
 
 After all wire messages have been decoded, the transport reads `completedMessages` (not `messages`) from each accumulator. Only messages whose streams have terminated appear in history results - partial messages at page boundaries are buffered until more pages are fetched. See [Accumulator](codec-interface.md#accumulator) for the distinction between `messages` and `completedMessages`.
 
@@ -71,7 +71,7 @@ The implementation requests `limit * 10` Ably messages per page to account for t
 
 ### Completed vs partial
 
-Only completed messages appear in results. A message is complete when its [terminal event](glossary.md#terminal-event) (finish, abort, error) has been received. Partial messages (stream still in progress, or turn spans a page boundary) are buffered internally and may complete on the next page fetch.
+Only completed messages appear in results. A message is complete when its [terminal event](glossary.md#terminal-event) (finish, abort, error) has been received. Partial messages (stream still in progress, or run spans a page boundary) are buffered internally and may complete on the next page fetch.
 
 ## Result shape
 
@@ -90,9 +90,9 @@ interface HistoryPage<TMessage> {
 }
 ```
 
-Each `HistoryItem` pairs a decoded message with its canonical [transport headers](wire-protocol.md#transport-headers-x-ably) and Ably serial. The transport uses these to seed the [conversation tree](conversation-tree.md#upsert-the-sole-mutation) with correct [branching metadata](wire-protocol.md#branching-headers) and serials.
+Each `HistoryItem` pairs a decoded message with its canonical [transport headers](wire-protocol.md#transport-headers-x-ably) and Ably serial. The session uses these to seed the [conversation tree](conversation-tree.md#upsert-the-sole-mutation) with correct [branching metadata](wire-protocol.md#branching-headers) and serials.
 
-`rawMessages` provides the raw Ably messages for this page, in chronological order. The client transport uses these for its internal message log.
+`rawMessages` provides the raw Ably messages for this page, in chronological order. The client session uses these for its internal message log.
 
 ## Channel attach and untilAttach
 
@@ -114,7 +114,7 @@ Each `next()` call either slices more completed messages from the cached decode,
 
 Each completed domain message needs its canonical transport headers and Ably serial for the conversation tree. The implementation tracks:
 
-- **Per-turn headers by message ID** - the last-seen headers for each [`x-ably-msg-id`](wire-protocol.md#message-identity-x-ably-msg-id) within a turn (closing appends override earlier headers, e.g. [status](wire-protocol.md#streamed-messages) changes from `"streaming"` to `"finished"`)
+- **Per-run headers by message ID** - the last-seen headers for each [`x-ably-msg-id`](wire-protocol.md#message-identity-x-ably-msg-id) within a run (closing appends override earlier headers, e.g. [status](wire-protocol.md#streamed-messages) changes from `"streaming"` to `"finished"`)
 - **Discrete message headers** - captured when the decoder produces a `kind: 'message'` output
 - **Serials** - from the first Ably message for each message ID
 

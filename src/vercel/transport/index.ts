@@ -5,9 +5,10 @@
  * explicitly when using the Vercel AI SDK integration.
  *
  * ```ts
- * import { createClientTransport } from '@ably/ai-transport/vercel';
+ * import { createClientSession } from '@ably/ai-transport/vercel';
  *
- * const transport = createClientTransport({ channel });
+ * const session = createClientSession({ channel });
+ * await session.connect();
  * ```
  */
 
@@ -17,38 +18,38 @@ export { createChatTransport } from './chat-transport.js';
 
 import type * as AI from 'ai';
 
-import { createClientTransport as createCoreClientTransport } from '../../core/transport/client-transport.js';
-import { createServerTransport as createCoreServerTransport } from '../../core/transport/server-transport.js';
+import { createAgentSession as createCoreAgentSession } from '../../core/transport/agent-session.js';
+import { createClientSession as createCoreClientSession } from '../../core/transport/client-session.js';
 import type {
-  ClientTransport,
-  ClientTransportOptions,
-  ServerTransport,
-  ServerTransportOptions,
+  AgentSession,
+  AgentSessionOptions,
+  ClientSession,
+  ClientSessionOptions,
 } from '../../core/transport/types.js';
 import { UIMessageCodec } from '../codec/index.js';
 
-/** Core client transport options with Vercel AI SDK types pre-applied. */
-type CoreClientOpts = ClientTransportOptions<AI.UIMessageChunk, AI.UIMessage>;
+/** Core client session options with Vercel AI SDK types pre-applied. */
+type CoreClientOpts = ClientSessionOptions<AI.UIMessageChunk, AI.UIMessage>;
 
-/** Options for creating a Vercel client transport. Same as core options but without the codec field, and with `api` optional (defaults to `"/api/chat"`). */
-export type VercelClientTransportOptions = Omit<CoreClientOpts, 'codec' | 'api'> & Partial<Pick<CoreClientOpts, 'api'>>;
+/** Options for creating a Vercel client session. Same as core options but without the codec field, and with `api` optional (defaults to `"/api/chat"`). */
+export type VercelClientSessionOptions = Omit<CoreClientOpts, 'codec' | 'api'> & Partial<Pick<CoreClientOpts, 'api'>>;
 
-/** Options for creating a Vercel server transport. Same as core options but without the codec field. */
-export type VercelServerTransportOptions = Omit<ServerTransportOptions<AI.UIMessageChunk, AI.UIMessage>, 'codec'>;
+/** Options for creating a Vercel agent session. Same as core options but without the codec field. */
+export type VercelAgentSessionOptions = Omit<AgentSessionOptions<AI.UIMessageChunk, AI.UIMessage>, 'codec'>;
 
 export const DEFAULT_VERCEL_API = '/api/chat';
 
 /**
- * Create a client-side transport pre-configured with the Vercel AI SDK codec.
+ * Create a client-side session pre-configured with the Vercel AI SDK codec.
  *
- * Equivalent to calling the core `createClientTransport` with `codec: UIMessageCodec`.
- * @param options - Configuration for the client transport (codec is provided automatically).
- * @returns A new {@link ClientTransport} for Vercel AI SDK UIMessage/UIMessageChunk types.
+ * Equivalent to calling the core `createClientSession` with `codec: UIMessageCodec`.
+ * @param options - Configuration for the client session (codec is provided automatically).
+ * @returns A new {@link ClientSession} for Vercel AI SDK UIMessage/UIMessageChunk types.
  */
-export const createClientTransport = (
-  options: VercelClientTransportOptions,
-): ClientTransport<AI.UIMessageChunk, AI.UIMessage> =>
-  createCoreClientTransport({
+export const createClientSession = (
+  options: VercelClientSessionOptions,
+): ClientSession<AI.UIMessageChunk, AI.UIMessage> =>
+  createCoreClientSession({
     ...options,
     codec: UIMessageCodec,
     // Mirrors the Vercel AI SDK's DefaultChatTransport default.
@@ -56,12 +57,11 @@ export const createClientTransport = (
   });
 
 /**
- * Create a server-side transport pre-configured with the Vercel AI SDK codec.
+ * Create an agent (server-side) session pre-configured with the Vercel AI SDK codec.
  *
- * Equivalent to calling the core `createServerTransport` with `codec: UIMessageCodec`.
- * @param options - Configuration for the server transport (codec is provided automatically).
- * @returns A new {@link ServerTransport} for Vercel AI SDK UIMessage/UIMessageChunk types.
+ * Equivalent to calling the core `createAgentSession` with `codec: UIMessageCodec`.
+ * @param options - Configuration for the agent session (codec is provided automatically).
+ * @returns A new {@link AgentSession} for Vercel AI SDK UIMessage/UIMessageChunk types.
  */
-export const createServerTransport = (
-  options: VercelServerTransportOptions,
-): ServerTransport<AI.UIMessageChunk, AI.UIMessage> => createCoreServerTransport({ ...options, codec: UIMessageCodec });
+export const createAgentSession = (options: VercelAgentSessionOptions): AgentSession<AI.UIMessageChunk, AI.UIMessage> =>
+  createCoreAgentSession({ ...options, codec: UIMessageCodec });

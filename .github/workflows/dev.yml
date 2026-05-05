@@ -103,7 +103,7 @@ jobs:
       matrix:
         demo:
           - demo/vercel/react/use-chat
-          - demo/vercel/react/use-client-transport
+          - demo/vercel/react/use-client-session
     name: demo ${{ matrix.demo }}
     steps:
       - uses: actions/checkout@v6

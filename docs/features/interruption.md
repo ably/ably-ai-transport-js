@@ -1,74 +1,74 @@
 # Interruption
 
-Interruption is when a user sends a new message while the AI is still streaming a response. The new message starts a new concurrent turn - the previous response can continue streaming or be cancelled first.
+Interruption is when a user sends a new message while the AI is still streaming a response. The new message starts a new concurrent run - the previous response can continue streaming or be cancelled first.
 
-Without interruption support, users must wait for the AI to finish before sending another message. With AI Transport, calling `send()` during an active turn creates a new independent turn immediately.
+Without interruption support, users must wait for the AI to finish before sending another message. With AI Transport, calling `send()` during an active run creates a new independent run immediately.
 
 ## How it works
 
-Each `send()` call creates a new turn with its own stream and lifecycle. There's no queue or lock - if the AI is mid-response, the new turn runs alongside it.
+Each `send()` call creates a new run with its own stream and lifecycle. There's no queue or lock - if the AI is mid-response, the new run runs alongside it.
 
 Two patterns:
 
 1. **Cancel and send** - stop the current response, then send. The user gets a clean break.
-2. **Send alongside** - let the current response continue while starting a new one. Both turns stream concurrently.
+2. **Send alongside** - let the current response continue while starting a new one. Both runs stream concurrently.
 
 ## Cancel first, then send
 
-The most common pattern: cancel active turns before sending the new message.
+The most common pattern: cancel active runs before sending the new message.
 
 ```typescript
-import { useActiveTurns, useView } from '@ably/ai-transport/react';
+import { useActiveRuns, useView } from '@ably/ai-transport/react';
 
-const activeTurns = useActiveTurns(transport);
+const activeRuns = useActiveRuns(transport);
 const { send } = useView(transport);
-const isStreaming = activeTurns.size > 0;
+const isStreaming = activeRuns.size > 0;
 
 async function handleSend(text: string) {
   // Cancel the active response before sending a new message
   if (isStreaming) {
-    await transport.cancel({ own: true });
+    await session.cancel({ own: true });
   }
   const msg = { id: crypto.randomUUID(), role: 'user', parts: [{ type: 'text', text }], createdAt: new Date() };
   await send([msg]);
 }
 ```
 
-The cancel publishes a signal to the channel (see [Cancel](cancel.md)), the server aborts the current turn, and the new turn starts cleanly.
+The cancel publishes a signal to the channel (see [Cancel](cancel.md)), the server aborts the current run, and the new run starts cleanly.
 
-## Send alongside (concurrent turns)
+## Send alongside (concurrent runs)
 
 If you want both responses to continue, just call `send()` without cancelling:
 
 ```typescript
-// New turn starts immediately - old turn keeps streaming
-const turn = await send([newMessage]);
+// New run starts immediately - old run keeps streaming
+const run = await send([newMessage]);
 ```
 
-Both turns produce independent event streams. The message list grows with responses from both. See [Concurrent turns](concurrent-turns.md) for details.
+Both runs produce independent event streams. The message list grows with responses from both. See [Concurrent runs](concurrent-runs.md) for details.
 
-## Detecting active turns
+## Detecting active runs
 
-Use `useActiveTurns()` to know whether any turn is streaming:
+Use `useActiveRuns()` to know whether any run is streaming:
 
 ```typescript
-import { useActiveTurns } from '@ably/ai-transport/react';
+import { useActiveRuns } from '@ably/ai-transport/react';
 
-const activeTurns = useActiveTurns(transport);
+const activeRuns = useActiveRuns(transport);
 
-// Any turn active on the channel (any client)
-const isAnyoneStreaming = activeTurns.size > 0;
+// Any run active on the channel (any client)
+const isAnyoneStreaming = activeRuns.size > 0;
 
-// Only this client's turns
-const myTurns = clientId ? activeTurns.get(clientId) : undefined;
-const amIStreaming = myTurns !== undefined && myTurns.size > 0;
+// Only this client's runs
+const myRuns = clientId ? activeRuns.get(clientId) : undefined;
+const amIStreaming = myRuns !== undefined && myRuns.size > 0;
 ```
 
 Use this to toggle between "Send" and "Stop" buttons, or to queue messages for later delivery.
 
 ## UI pattern: queue while streaming
 
-The use-client-transport demo shows a queue pattern - messages typed during streaming are queued and sent after the current turn ends:
+The use-client-session demo shows a queue pattern - messages typed during streaming are queued and sent after the current run ends:
 
 ```typescript
 // Simplified queue pattern
@@ -79,4 +79,4 @@ if (isStreaming) {
 }
 ```
 
-This avoids concurrent turns while still letting the user type freely. The queue drains automatically when the current turn finishes.
+This avoids concurrent runs while still letting the user type freely. The queue drains automatically when the current run finishes.

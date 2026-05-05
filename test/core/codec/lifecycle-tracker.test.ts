@@ -11,44 +11,44 @@ const phases = [
 describe('LifecycleTracker', () => {
   it('ensurePhases returns all phases on first call', () => {
     const tracker = createLifecycleTracker(phases);
-    const events = tracker.ensurePhases('turn-1', { id: 'msg-1' });
+    const events = tracker.ensurePhases('run-1', { id: 'msg-1' });
     expect(events).toEqual(['start:msg-1', 'step']);
   });
 
   it('ensurePhases returns empty on repeat call', () => {
     const tracker = createLifecycleTracker(phases);
-    tracker.ensurePhases('turn-1', { id: 'msg-1' });
-    const events = tracker.ensurePhases('turn-1', { id: 'msg-1' });
+    tracker.ensurePhases('run-1', { id: 'msg-1' });
+    const events = tracker.ensurePhases('run-1', { id: 'msg-1' });
     expect(events).toEqual([]);
   });
 
   it('markEmitted prevents synthesis of that phase', () => {
     const tracker = createLifecycleTracker(phases);
-    tracker.markEmitted('turn-1', 'start');
-    const events = tracker.ensurePhases('turn-1', { id: 'msg-1' });
+    tracker.markEmitted('run-1', 'start');
+    const events = tracker.ensurePhases('run-1', { id: 'msg-1' });
     expect(events).toEqual(['step']);
   });
 
   it('resetPhase allows re-synthesis', () => {
     const tracker = createLifecycleTracker(phases);
-    tracker.ensurePhases('turn-1', { id: 'msg-1' });
-    tracker.resetPhase('turn-1', 'step');
-    const events = tracker.ensurePhases('turn-1', { id: 'msg-1' });
+    tracker.ensurePhases('run-1', { id: 'msg-1' });
+    tracker.resetPhase('run-1', 'step');
+    const events = tracker.ensurePhases('run-1', { id: 'msg-1' });
     expect(events).toEqual(['step']);
   });
 
   it('clearScope resets everything', () => {
     const tracker = createLifecycleTracker(phases);
-    tracker.ensurePhases('turn-1', { id: 'msg-1' });
-    tracker.clearScope('turn-1');
-    const events = tracker.ensurePhases('turn-1', { id: 'msg-2' });
+    tracker.ensurePhases('run-1', { id: 'msg-1' });
+    tracker.clearScope('run-1');
+    const events = tracker.ensurePhases('run-1', { id: 'msg-2' });
     expect(events).toEqual(['start:msg-2', 'step']);
   });
 
   it('multiple scopes are independent', () => {
     const tracker = createLifecycleTracker(phases);
-    tracker.ensurePhases('turn-1', { id: 'msg-1' });
-    const events = tracker.ensurePhases('turn-2', { id: 'msg-2' });
+    tracker.ensurePhases('run-1', { id: 'msg-1' });
+    const events = tracker.ensurePhases('run-2', { id: 'msg-2' });
     expect(events).toEqual(['start:msg-2', 'step']);
   });
 

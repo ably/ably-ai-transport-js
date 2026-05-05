@@ -46,87 +46,87 @@ describe('StreamRouter', () => {
   });
 
   describe('createStream', () => {
-    it('returns a ReadableStream for the given turnId', () => {
-      const stream = router.createStream('turn-1');
+    it('returns a ReadableStream for the given runId', () => {
+      const stream = router.createStream('run-1');
       expect(stream).toBeInstanceOf(ReadableStream);
     });
 
-    it('registers the turnId as active', () => {
-      router.createStream('turn-1');
-      expect(router.has('turn-1')).toBe(true);
+    it('registers the runId as active', () => {
+      router.createStream('run-1');
+      expect(router.has('run-1')).toBe(true);
     });
   });
 
   describe('route', () => {
     it('enqueues events to the correct stream', async () => {
-      const stream = router.createStream('turn-1');
+      const stream = router.createStream('run-1');
       const event: TestEvent = { type: 'text', text: 'hello' };
       const terminal: TestEvent = { type: 'finish' };
 
-      expect(router.route('turn-1', event)).toBe(true);
-      expect(router.route('turn-1', terminal)).toBe(true);
+      expect(router.route('run-1', event)).toBe(true);
+      expect(router.route('run-1', terminal)).toBe(true);
 
       const items = await drain(stream);
       expect(items).toEqual([event, terminal]);
     });
 
-    it('returns false when routing to a non-existent turnId', () => {
-      expect(router.route('no-such-turn', { type: 'text' })).toBe(false);
+    it('returns false when routing to a non-existent runId', () => {
+      expect(router.route('no-such-run', { type: 'text' })).toBe(false);
     });
 
     it('closes the stream on a terminal event', async () => {
-      const stream = router.createStream('turn-1');
+      const stream = router.createStream('run-1');
 
-      router.route('turn-1', { type: 'text', text: 'data' });
-      router.route('turn-1', { type: 'finish' });
+      router.route('run-1', { type: 'text', text: 'data' });
+      router.route('run-1', { type: 'finish' });
 
       // Stream should be closed — drain completes
       const items = await drain(stream);
       expect(items).toHaveLength(2);
 
-      // Turn should no longer be active
-      expect(router.has('turn-1')).toBe(false);
+      // Run should no longer be active
+      expect(router.has('run-1')).toBe(false);
     });
 
-    it('removes the turn when the controller throws on enqueue', () => {
-      const stream = router.createStream('turn-1');
+    it('removes the run when the controller throws on enqueue', () => {
+      const stream = router.createStream('run-1');
 
       // Close the stream externally by reading and cancelling
       void stream.cancel();
 
       // Now route should fail gracefully
-      const result = router.route('turn-1', { type: 'text' });
+      const result = router.route('run-1', { type: 'text' });
       expect(result).toBe(false);
-      expect(router.has('turn-1')).toBe(false);
+      expect(router.has('run-1')).toBe(false);
     });
   });
 
   describe('closeStream', () => {
     it('closes the stream and removes it from the router', async () => {
-      const stream = router.createStream('turn-1');
+      const stream = router.createStream('run-1');
 
-      router.route('turn-1', { type: 'text', text: 'hello' });
-      router.closeStream('turn-1');
+      router.route('run-1', { type: 'text', text: 'hello' });
+      router.closeStream('run-1');
 
-      expect(router.has('turn-1')).toBe(false);
+      expect(router.has('run-1')).toBe(false);
 
       const items = await drain(stream);
       expect(items).toEqual([{ type: 'text', text: 'hello' }]);
     });
 
     it('returns true when a stream existed', () => {
-      router.createStream('turn-1');
-      expect(router.closeStream('turn-1')).toBe(true);
+      router.createStream('run-1');
+      expect(router.closeStream('run-1')).toBe(true);
     });
 
-    it('returns false for a non-existent turnId', () => {
-      expect(router.closeStream('no-such-turn')).toBe(false);
+    it('returns false for a non-existent runId', () => {
+      expect(router.closeStream('no-such-run')).toBe(false);
     });
 
     it('is idempotent — second close returns false', () => {
-      router.createStream('turn-1');
-      expect(router.closeStream('turn-1')).toBe(true);
-      expect(router.closeStream('turn-1')).toBe(false);
+      router.createStream('run-1');
+      expect(router.closeStream('run-1')).toBe(true);
+      expect(router.closeStream('run-1')).toBe(false);
     });
   });
 
@@ -134,64 +134,64 @@ describe('StreamRouter', () => {
     const error = new Ably.ErrorInfo('test error', 104006, 500);
 
     it('errors the stream and removes it from the router', async () => {
-      const stream = router.createStream('turn-1');
+      const stream = router.createStream('run-1');
 
-      router.errorStream('turn-1', error);
+      router.errorStream('run-1', error);
 
-      expect(router.has('turn-1')).toBe(false);
+      expect(router.has('run-1')).toBe(false);
 
       const reader = stream.getReader();
       await expect(reader.read()).rejects.toBe(error);
     });
 
     it('returns true when a stream was errored', () => {
-      router.createStream('turn-1');
-      expect(router.errorStream('turn-1', error)).toBe(true);
+      router.createStream('run-1');
+      expect(router.errorStream('run-1', error)).toBe(true);
     });
 
-    it('returns false for a non-existent turnId', () => {
-      expect(router.errorStream('no-such-turn', error)).toBe(false);
+    it('returns false for a non-existent runId', () => {
+      expect(router.errorStream('no-such-run', error)).toBe(false);
     });
 
     it('is idempotent — second error returns false', () => {
-      router.createStream('turn-1');
-      expect(router.errorStream('turn-1', error)).toBe(true);
-      expect(router.errorStream('turn-1', error)).toBe(false);
+      router.createStream('run-1');
+      expect(router.errorStream('run-1', error)).toBe(true);
+      expect(router.errorStream('run-1', error)).toBe(false);
     });
   });
 
   describe('has', () => {
     it('returns false when no streams are registered', () => {
-      expect(router.has('turn-1')).toBe(false);
+      expect(router.has('run-1')).toBe(false);
     });
 
     it('reflects multiple concurrent streams', () => {
-      router.createStream('turn-1');
-      router.createStream('turn-2');
+      router.createStream('run-1');
+      router.createStream('run-2');
 
-      expect(router.has('turn-1')).toBe(true);
-      expect(router.has('turn-2')).toBe(true);
+      expect(router.has('run-1')).toBe(true);
+      expect(router.has('run-2')).toBe(true);
 
-      router.closeStream('turn-1');
-      expect(router.has('turn-1')).toBe(false);
-      expect(router.has('turn-2')).toBe(true);
+      router.closeStream('run-1');
+      expect(router.has('run-1')).toBe(false);
+      expect(router.has('run-2')).toBe(true);
 
-      router.closeStream('turn-2');
-      expect(router.has('turn-1')).toBe(false);
-      expect(router.has('turn-2')).toBe(false);
+      router.closeStream('run-2');
+      expect(router.has('run-1')).toBe(false);
+      expect(router.has('run-2')).toBe(false);
     });
   });
 
   describe('multiple concurrent streams', () => {
     it('routes events to the correct stream independently', async () => {
-      const stream1 = router.createStream('turn-1');
-      const stream2 = router.createStream('turn-2');
+      const stream1 = router.createStream('run-1');
+      const stream2 = router.createStream('run-2');
 
-      router.route('turn-1', { type: 'text', text: 'a' });
-      router.route('turn-2', { type: 'text', text: 'b' });
-      router.route('turn-1', { type: 'finish' });
-      router.route('turn-2', { type: 'text', text: 'c' });
-      router.route('turn-2', { type: 'finish' });
+      router.route('run-1', { type: 'text', text: 'a' });
+      router.route('run-2', { type: 'text', text: 'b' });
+      router.route('run-1', { type: 'finish' });
+      router.route('run-2', { type: 'text', text: 'c' });
+      router.route('run-2', { type: 'finish' });
 
       const items1 = await drain(stream1);
       const items2 = await drain(stream2);

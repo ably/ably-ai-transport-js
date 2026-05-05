@@ -3,10 +3,10 @@ export type { ChatTransport } from '../transport/chat-transport.js';
 export type { ChatTransportProviderProps } from './contexts/chat-transport-provider.js';
 export {
   ChatTransportProvider,
-  TransportProvider,
+  ClientSessionProvider,
   useAblyMessages,
-  useActiveTurns,
-  useClientTransport,
+  useActiveRuns,
+  useClientSession,
   useCreateView,
   useTree,
   useView,

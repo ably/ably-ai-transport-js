@@ -22,9 +22,9 @@ interface Codec<TEvent, TMessage> {
 
 ## How the transport uses the codec
 
-### Server transport
+### Agent session
 
-The server transport uses `createEncoder()` to get a `StreamEncoder`. For each turn:
+The agent session uses `createEncoder()` to get a `StreamEncoder`. For each run:
 
 1. `writeMessages()` - publishes user messages as discrete Ably messages
 2. `appendEvent()` - streams LLM response events as message appends
@@ -32,13 +32,13 @@ The server transport uses `createEncoder()` to get a `StreamEncoder`. For each t
 
 The encoder translates domain events into [encoder core](encoder.md#stream-lifecycle) operations (`startStream()`, `appendStream()`, `closeStream()`). The encoder core handles Ably primitives.
 
-### Client transport
+### Client session
 
-The client transport uses:
+The client session uses:
 
 - `createDecoder()` - decodes inbound Ably messages into domain events and messages
-- `createAccumulator()` - builds complete messages from events (for [observer turns](glossary.md#own-turn-vs-observer-turn) - other clients' streams)
-- `isTerminal()` - tells the [stream router](transport-components.md#terminal-detection) when to close a per-turn ReadableStream
+- `createAccumulator()` - builds complete messages from events (for [observer runs](glossary.md#own-run-vs-observer-run) - other clients' streams)
+- `isTerminal()` - tells the [stream router](transport-components.md#terminal-detection) when to close a per-run ReadableStream
 
 ## Encoder architecture
 
@@ -93,15 +93,15 @@ interface MessageAccumulator<TEvent, TMessage> {
 
 ### Why a list, not a single message
 
-A single turn can produce multiple domain messages. For example, a Vercel turn produces both the user message (via `writeMessages()`, which emits a `kind: 'message'` output) and the assistant message (built from streaming `kind: 'event'` outputs). The accumulator tracks all messages within its scope.
+A single run can produce multiple domain messages. For example, a Vercel run produces both the user message (via `writeMessages()`, which emits a `kind: 'message'` output) and the assistant message (built from streaming `kind: 'event'` outputs). The accumulator tracks all messages within its scope.
 
 ### Two usage contexts
 
 The transport creates accumulators in two situations, and reads different properties from each:
 
-**Live streaming (observer turns):** When another client's turn is streaming, the transport creates a per-turn accumulator and feeds decoded events into it. After each event, the transport reads **`messages`** to get the latest in-progress snapshot - including partially-built messages still receiving data - and upserts it into the [conversation tree](conversation-tree.md). The accumulator is a working buffer; the tree is the source of truth.
+**Live streaming (observer runs):** When another client's run is streaming, the transport creates a per-run accumulator and feeds decoded events into it. After each event, the transport reads **`messages`** to get the latest in-progress snapshot - including partially-built messages still receiving data - and upserts it into the [conversation tree](conversation-tree.md). The accumulator is a working buffer; the tree is the source of truth.
 
-**History decoding:** When loading [history](history.md), each turn gets its own accumulator. After replaying all wire messages through the decoder, the transport reads **`completedMessages`** - only messages whose streams have terminated (finish, abort, error). Partial messages at page boundaries are excluded until more history pages are fetched. Each turn needs a separate accumulator because events from interleaved concurrent turns would corrupt each other's message assembly.
+**History decoding:** When loading [history](history.md), each run gets its own accumulator. After replaying all wire messages through the decoder, the transport reads **`completedMessages`** - only messages whose streams have terminated (finish, abort, error). Partial messages at page boundaries are excluded until more history pages are fetched. Each run needs a separate accumulator because events from interleaved concurrent runs would corrupt each other's message assembly.
 
 ### Properties
 
@@ -109,7 +109,7 @@ The transport creates accumulators in two situations, and reads different proper
 | ------------------- | ------------------------------------------- | ------------------------------------------------------ |
 | `messages`          | All messages, including in-progress         | Live streaming - shows partial state while streaming   |
 | `completedMessages` | Only messages with no active streams        | History - only fully terminated messages should appear |
-| `hasActiveStream`   | Whether any message is still receiving data | Transport - detects when a turn is complete            |
+| `hasActiveStream`   | Whether any message is still receiving data | Transport - detects when a run is complete             |
 
 ### Identity and ownership
 

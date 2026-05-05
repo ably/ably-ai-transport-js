@@ -13,7 +13,7 @@ export interface CallbackLogEntry {
 interface DebugPaneProps {
   messages: UIMessage[];
   ablyMessages: Ably.InboundMessage[];
-  activeTurns: Map<string, Set<string>>;
+  activeRuns: Map<string, Set<string>>;
   status: string;
   callbackLog: CallbackLogEntry[];
   statusLog: { time: number; status: string }[];
@@ -85,11 +85,11 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
 
 function UIMessagesTab({
   messages,
-  activeTurns,
+  activeRuns,
   status,
 }: {
   messages: UIMessage[];
-  activeTurns: Map<string, Set<string>>;
+  activeRuns: Map<string, Set<string>>;
   status: string;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -100,9 +100,9 @@ function UIMessagesTab({
     }
   }, [messages]);
 
-  const turnsDisplay =
-    activeTurns.size > 0
-      ? Array.from(activeTurns.entries())
+  const runsDisplay =
+    activeRuns.size > 0
+      ? Array.from(activeRuns.entries())
           .map(
             ([cid, tids]) =>
               `${cid}: [${Array.from(tids)
@@ -129,10 +129,8 @@ function UIMessagesTab({
           </span>
         </div>
         <div className="rounded border border-zinc-800 bg-zinc-900/50 px-2 py-1.5 text-[10px]">
-          <span className="text-zinc-600">Active turns: </span>
-          <span className={`font-mono ${activeTurns.size > 0 ? 'text-blue-400' : 'text-zinc-600'}`}>
-            {turnsDisplay}
-          </span>
+          <span className="text-zinc-600">Active runs: </span>
+          <span className={`font-mono ${activeRuns.size > 0 ? 'text-blue-400' : 'text-zinc-600'}`}>{runsDisplay}</span>
         </div>
       </div>
       {messages.length === 0 ? (
@@ -234,7 +232,7 @@ function LifecycleTab({
 export function DebugPane({
   messages,
   ablyMessages,
-  activeTurns,
+  activeRuns,
   status,
   callbackLog,
   statusLog,
@@ -299,7 +297,7 @@ export function DebugPane({
           ) : tab === 'uimessages' ? (
             <UIMessagesTab
               messages={messages}
-              activeTurns={activeTurns}
+              activeRuns={activeRuns}
               status={status}
             />
           ) : (

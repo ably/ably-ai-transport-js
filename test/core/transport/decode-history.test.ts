@@ -5,9 +5,9 @@ import {
   HEADER_AMEND,
   HEADER_DISCRETE,
   HEADER_MSG_ID,
+  HEADER_RUN_ID,
   HEADER_STATUS,
   HEADER_STREAM,
-  HEADER_TURN_ID,
 } from '../../../src/constants.js';
 import type { Codec, DecoderOutput, MessageAccumulator, StreamDecoder } from '../../../src/core/codec/types.js';
 import { decodeHistory } from '../../../src/core/transport/decode-history.js';
@@ -34,7 +34,7 @@ const silentLogger = makeLogger({ logLevel: LogLevel.Silent });
 // ---------------------------------------------------------------------------
 // Shared outputs lookup — a fresh decoder is created per decodeAll call, so
 // the decoder -> outputs mapping needs to live outside the decoder instance.
-// Keyed by message identity (not serial) because a streaming turn's wire
+// Keyed by message identity (not serial) because a streaming run's wire
 // messages all share the same Ably serial.
 // ---------------------------------------------------------------------------
 
@@ -81,7 +81,7 @@ const withOutputs = (msg: Ably.InboundMessage, outputs: TestDecoderOutput[]): Ab
 };
 
 /**
- * Build a discrete (non-turn) message and the corresponding decoder output.
+ * Build a discrete (non-run) message and the corresponding decoder output.
  * Matches the real encoder's wire format for `publishDiscreteBatch`:
  * `x-ably-stream: "false"` plus `x-ably-discrete: "true"`.
  * @param msgId - The `x-ably-msg-id` header value.
@@ -103,19 +103,19 @@ const discreteMsg = (msgId: string, content: string, extraHeaders: Record<string
   );
 
 /**
- * Build the four wire messages for a single streaming turn. All four share
+ * Build the four wire messages for a single streaming run. All four share
  * the same Ably serial (per real Ably append semantics) and the same
  * `x-ably-msg-id` header. Returned in newest-first order to match Ably
  * history's convention (finish first, then deltas, then create).
- * @param turnId - The `x-ably-turn-id` header value.
+ * @param runId - The `x-ably-run-id` header value.
  * @param msgId - The `x-ably-msg-id` header value.
  * @param deltas - Text deltas in chronological (send) order.
  * @returns `[finish, ...deltas.reverse(), create]` — newest-first.
  */
-const streamingTurn = (turnId: string, msgId: string, deltas: string[]): Ably.InboundMessage[] => {
+const streamingRun = (runId: string, msgId: string, deltas: string[]): Ably.InboundMessage[] => {
   const serial = nextSerial();
   const baseHeaders = {
-    [HEADER_TURN_ID]: turnId,
+    [HEADER_RUN_ID]: runId,
     [HEADER_MSG_ID]: msgId,
     [HEADER_STREAM]: 'true',
   };
@@ -142,18 +142,18 @@ const streamingTurn = (turnId: string, msgId: string, deltas: string[]): Ably.In
 };
 
 /**
- * Build a cross-turn amendment targeting an existing message.
+ * Build a cross-run amendment targeting an existing message.
  * @param targetMsgId - The `x-ably-msg-id` of the existing message to amend.
- * @param turnId - The `x-ably-turn-id` of the amending turn.
+ * @param runId - The `x-ably-run-id` of the amending run.
  * @returns The built Ably message, with outputs registered.
  */
-const amendMsg = (targetMsgId: string, turnId: string): Ably.InboundMessage =>
+const amendMsg = (targetMsgId: string, runId: string): Ably.InboundMessage =>
   withOutputs(
     ablyMsg({
       headers: {
         [HEADER_MSG_ID]: targetMsgId,
         [HEADER_AMEND]: targetMsgId,
-        [HEADER_TURN_ID]: turnId,
+        [HEADER_RUN_ID]: runId,
       },
     }),
     [{ kind: 'event', event: { type: 'text', text: '[amended]' }, messageId: targetMsgId }],
@@ -203,7 +203,7 @@ const createMockChannel = (pages: Ably.InboundMessage[][] = []): Ably.RealtimeCh
 
 // ---------------------------------------------------------------------------
 // Mock codec — decoder looks up per-serial outputs; accumulator simulates
-// real aggregation of discrete messages and streamed turns.
+// real aggregation of discrete messages and streamed runs.
 // ---------------------------------------------------------------------------
 
 // The real decoder handles first-contact for `message.update` and
@@ -333,14 +333,14 @@ describe('decodeHistory', () => {
     expect(page.hasNext()).toBe(false);
   });
 
-  it('reconstructs a turn whose stream spans a page boundary', async () => {
-    // Turn T1: message.create is in the OLDER page, the deltas and finish are
+  it('reconstructs a run whose stream spans a page boundary', async () => {
+    // Run T1: message.create is in the OLDER page, the deltas and finish are
     // in the NEWER page. All four wire messages share the SAME Ably serial
     // (real append semantics), so the decoder's per-serial state must be
     // built from oldest to newest - otherwise the appends hit before the
     // create and emit nothing. This directly exercises the invariant that
     // decode-history re-decodes in chronological order.
-    const [finish, delta2, delta1, create] = streamingTurn('T1', 'asst-1', ['hello', ' world']);
+    const [finish, delta2, delta1, create] = streamingRun('T1', 'asst-1', ['hello', ' world']);
     if (!finish || !delta2 || !delta1 || !create) throw new Error('invariant: 4 wire messages');
 
     // Newest page: finish, delta2, delta1 (newest-first within the page).
@@ -354,13 +354,13 @@ describe('decodeHistory', () => {
     expect(page.items[0]?.message).toEqual({ id: 'asst-1', content: 'hello world' });
   });
 
-  it('handles two turns interleaved across pages', async () => {
-    // Each turn's four wire messages share their own serial. The turns are
+  it('handles two runs interleaved across pages', async () => {
+    // Each run's four wire messages share their own serial. The runs are
     // interleaved so that both cross the page boundary.
-    const [aFinish, aDelta, aCreate] = streamingTurn('TA', 'asst-A', ['A-text']);
-    const [bFinish, bDelta, bCreate] = streamingTurn('TB', 'asst-B', ['B-text']);
+    const [aFinish, aDelta, aCreate] = streamingRun('TA', 'asst-A', ['A-text']);
+    const [bFinish, bDelta, bCreate] = streamingRun('TB', 'asst-B', ['B-text']);
     if (!aFinish || !aDelta || !aCreate || !bFinish || !bDelta || !bCreate) {
-      throw new Error('invariant: 3 wire messages per turn (finish, delta, create)');
+      throw new Error('invariant: 3 wire messages per run (finish, delta, create)');
     }
 
     // Newest page (top of history): aFinish, bFinish, aDelta, bDelta
@@ -379,11 +379,11 @@ describe('decodeHistory', () => {
     expect(page.items).toHaveLength(2);
   });
 
-  it('omits turns that never received a terminal event', async () => {
-    // Complete turn (create + delta + finish) plus an incomplete turn (just
+  it('omits runs that never received a terminal event', async () => {
+    // Complete run (create + delta + finish) plus an incomplete run (just
     // a create). Only the completed one should be returned.
-    const [completeFinish, completeDelta, completeCreate] = streamingTurn('T1', 'asst-1', ['done']);
-    const [incompleteCreate] = streamingTurn('T2', 'asst-2', []);
+    const [completeFinish, completeDelta, completeCreate] = streamingRun('T1', 'asst-1', ['done']);
+    const [incompleteCreate] = streamingRun('T2', 'asst-2', []);
     if (!completeFinish || !completeDelta || !completeCreate || !incompleteCreate) {
       throw new Error('invariant: wire messages present');
     }
@@ -464,11 +464,11 @@ describe('decodeHistory', () => {
     expect(page.items[0]?.headers).toMatchObject({ [HEADER_MSG_ID]: 'u1', 'x-extra': 'v1' });
   });
 
-  it('routes cross-turn amendments to the originating turn', async () => {
-    // Turn T1 streams and finishes. A later message in turn T2 amends T1's
+  it('routes cross-run amendments to the originating run', async () => {
+    // Run T1 streams and finishes. A later message in run T2 amends T1's
     // message. The amendment should be applied to the existing message via
     // initMessage/completeMessage, not create a duplicate.
-    const [finish, delta, create] = streamingTurn('T1', 'asst-1', ['original']);
+    const [finish, delta, create] = streamingRun('T1', 'asst-1', ['original']);
     if (!finish || !delta || !create) throw new Error('invariant: 3 wire messages');
     const amend = amendMsg('asst-1', 'T2');
 
@@ -599,7 +599,7 @@ describe('decodeHistory', () => {
     const create = withOutputs(
       ablyMsg({
         action: 'message.create',
-        headers: { [HEADER_TURN_ID]: 'T1', [HEADER_MSG_ID]: 'asst-1', [HEADER_STREAM]: 'true' },
+        headers: { [HEADER_RUN_ID]: 'T1', [HEADER_MSG_ID]: 'asst-1', [HEADER_STREAM]: 'true' },
       }),
       [{ kind: 'event', event: { type: 'text', text: '' }, messageId: 'asst-1' }],
     );
@@ -617,7 +617,7 @@ describe('decodeHistory', () => {
     // status=aborted. The counter's terminal rule must accept either
     // "finished" or "aborted" to complete the msg-id on page 1.
     const serial = nextSerial();
-    const baseHeaders = { [HEADER_TURN_ID]: 'T1', [HEADER_MSG_ID]: 'asst-1', [HEADER_STREAM]: 'true' };
+    const baseHeaders = { [HEADER_RUN_ID]: 'T1', [HEADER_MSG_ID]: 'asst-1', [HEADER_STREAM]: 'true' };
     const create = withOutputs(ablyMsg({ action: 'message.create', headers: baseHeaders, serial }), [
       { kind: 'event', event: { type: 'text', text: 'partial' }, messageId: 'asst-1' },
     ]);
@@ -639,12 +639,12 @@ describe('decodeHistory', () => {
     expect(page.items).toHaveLength(1);
   });
 
-  it('completes a streamed turn delivered as a single message.update (history compaction)', async () => {
+  it('completes a streamed run delivered as a single message.update (history compaction)', async () => {
     // history can compact a live `create + append + ... + append{finished}`
     // sequence into a single `message.update` carrying the accumulated data
     // and `x-ably-status: "finished"`. The decoder handles this via
     // first-contact in `_decodeUpdate`; the counter must too, otherwise the
-    // fetch loop pages past a compacted turn without ever marking it
+    // fetch loop pages past a compacted run without ever marking it
     // complete (there's no preceding `message.create` to match on).
     //
     // To catch the regression — not just verify user-visible output —
@@ -654,7 +654,7 @@ describe('decodeHistory', () => {
       ablyMsg({
         action: 'message.update',
         headers: {
-          [HEADER_TURN_ID]: 'T1',
+          [HEADER_RUN_ID]: 'T1',
           [HEADER_MSG_ID]: 'asst-1',
           [HEADER_STREAM]: 'true',
           [HEADER_STATUS]: 'finished',
@@ -688,7 +688,7 @@ describe('decodeHistory', () => {
       ablyMsg({
         action: 'message.append',
         headers: {
-          [HEADER_TURN_ID]: 'T1',
+          [HEADER_RUN_ID]: 'T1',
           [HEADER_MSG_ID]: 'asst-1',
           [HEADER_STREAM]: 'true',
           [HEADER_STATUS]: 'finished',
@@ -710,11 +710,11 @@ describe('decodeHistory', () => {
     expect(page.rawMessages).toHaveLength(1);
   });
 
-  it('does not count cross-turn amendments as new completions', async () => {
-    // A finished turn plus an amendment on the same msg-id. Naive counting
+  it('does not count cross-run amendments as new completions', async () => {
+    // A finished run plus an amendment on the same msg-id. Naive counting
     // that didn't skip HEADER_AMEND would double-count. We only want one
     // completion here.
-    const [finish, delta, create] = streamingTurn('T1', 'asst-1', ['original']);
+    const [finish, delta, create] = streamingRun('T1', 'asst-1', ['original']);
     if (!finish || !delta || !create) throw new Error('invariant: 3 wire messages');
     const amend = amendMsg('asst-1', 'T2');
     const channel = createMockChannel([[amend, finish, delta, create]]);
@@ -740,7 +740,7 @@ describe('decodeHistory', () => {
       ablyMsg({
         action: 'message.append',
         headers: {
-          [HEADER_TURN_ID]: 'T1',
+          [HEADER_RUN_ID]: 'T1',
           [HEADER_MSG_ID]: 'orphan',
           [HEADER_STREAM]: 'true',
           [HEADER_STATUS]: 'finished',

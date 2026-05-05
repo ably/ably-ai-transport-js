@@ -8,10 +8,10 @@ Without a durable transport layer, tool call sequences break on disconnection. A
 
 Tools are defined in the AI SDK's `tool()` format and passed to `streamText()`. AI Transport handles two execution models:
 
-| Model               | Where it runs                       | How the result is published                                                                                                                              |
-| ------------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Server-executed** | Inside `streamText()` on the server | Automatically - the AI SDK calls `execute`, and the result streams through `turn.streamResponse()`                                                       |
-| **Client-executed** | In the browser (or any client)      | The client sends the result via [`view.update()`](../reference/react-hooks.md#useview) which amends the assistant message and starts a continuation turn |
+| Model               | Where it runs                       | How the result is published                                                                                                                             |
+| ------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Server-executed** | Inside `streamText()` on the server | Automatically - the AI SDK calls `execute`, and the result streams through `run.pipe()`                                                                 |
+| **Client-executed** | In the browser (or any client)      | The client sends the result via [`view.update()`](../reference/react-hooks.md#useview) which amends the assistant message and starts a continuation run |
 
 Tool events flow through the codec like any other streaming content. The Vercel codec maps tool lifecycle to these wire events:
 
@@ -31,13 +31,14 @@ Define tools with an `execute` function. The AI SDK calls them automatically dur
 ```typescript
 import { streamText } from 'ai';
 import { z } from 'zod';
-import { createServerTransport } from '@ably/ai-transport/vercel';
+import { Invocation } from '@ably/ai-transport';
+import { createAgentSession } from '@ably/ai-transport/vercel';
 
-const transport = createServerTransport({ channel });
-const turn = transport.newTurn({ turnId, clientId });
+const session = createAgentSession({ channel });
+const run = session.createRun(Invocation.fromJSON({ runId, clientId }));
 
-await turn.start();
-await turn.addMessages(userMessages, { clientId });
+await run.start();
+await run.addMessages(userMessages, { clientId });
 
 const result = streamText({
   model,
@@ -54,11 +55,11 @@ const result = streamText({
       },
     },
   },
-  abortSignal: turn.abortSignal,
+  abortSignal: run.abortSignal,
 });
 
-const { reason } = await turn.streamResponse(result.toUIMessageStream());
-await turn.end(reason);
+const { reason } = await run.pipe(result.toUIMessageStream());
+await run.end(reason);
 ```
 
 The model decides to call `getWeather`, the AI SDK executes it on the server, and the encoder publishes both the tool input (streamed) and tool output (discrete) to the channel. All clients see the tool call and result appear in the assistant message's parts.
@@ -107,7 +108,7 @@ const node = view.nodes.find(
 // 2. Execute the browser API
 const position = await new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject));
 
-// 3. Update the assistant message with the result and start a continuation turn
+// 3. Update the assistant message with the result and start a continuation run
 await view.update(node.msgId, [
   {
     type: 'tool-output-available',
@@ -120,15 +121,15 @@ await view.update(node.msgId, [
 ]);
 ```
 
-`update` updates the existing assistant message and starts a continuation [turn](../concepts/turns.md) in a single call. The tree updates optimistically, then the events are sent to the server in the POST body. The server publishes them to the channel (with `x-ably-amend` header targeting the assistant message's `x-ably-msg-id`) and calls `streamText()` again with the tool result in the conversation history. All clients see the tool part transition from `input-available` to `output-available`.
+`update` updates the existing assistant message and starts a continuation [run](../concepts/runs.md) in a single call. The tree updates optimistically, then the events are sent to the server in the POST body. The server publishes them to the channel (with `x-ably-amend` header targeting the assistant message's `x-ably-msg-id`) and calls `streamText()` again with the tool result in the conversation history. All clients see the tool part transition from `input-available` to `output-available`.
 
 ## Multi-client tool execution
 
-When multiple clients share a channel, only the client that initiated the turn should execute client-side tools. The `x-ably-turn-client-id` header on each message identifies which client started the turn. Compare it against the local `clientId` to skip observer tool calls:
+When multiple clients share a channel, only the client that initiated the run should execute client-side tools. The `x-ably-run-client-id` header on each message identifies which client started the run. Compare it against the local `clientId` to skip observer tool calls:
 
 ```typescript
-const turnClientId = node.headers['x-ably-turn-client-id'];
-if (turnClientId !== myClientId) {
+const runClientId = node.headers['x-ably-run-client-id'];
+if (runClientId !== myClientId) {
   // This tool call was triggered by another client — skip execution.
   // That client will publish the result, and we'll see it via the channel.
   return;
@@ -139,14 +140,14 @@ Observer clients see the tool call arrive (the assistant message streams normall
 
 ## Server-side tool result events
 
-For tool calls that require server-mediated approval workflows or deferred execution, the server can publish tool results targeting a previous turn's message using `turn.addEvents()`:
+For tool calls that require server-mediated approval workflows or deferred execution, the server can publish tool results targeting a previous run's message using `run.addEvents()`:
 
 ```typescript
-const turn = transport.newTurn({ turnId, clientId });
-await turn.start();
+const run = session.createRun(Invocation.fromJSON({ runId, clientId }));
+await run.start();
 
-// Publish the tool result targeting a message from a previous turn
-await turn.addEvents([
+// Publish the tool result targeting a message from a previous run
+await run.addEvents([
   {
     kind: 'event',
     msgId: previousAssistantMsgId,
@@ -156,15 +157,15 @@ await turn.addEvents([
 
 // Continue streaming with the tool result in history
 const response = streamText({ model, messages: updatedHistory, tools });
-await turn.streamResponse(response.toUIMessageStream());
-await turn.end(reason);
+await run.pipe(response.toUIMessageStream());
+await run.end(reason);
 ```
 
 ## History and persistence
 
-Tool call events persist in Ably channel history. When a client loads history, the decoder reconstructs tool parts with their final state - including cross-turn events. A tool that was called, executed, and resolved in a previous session appears with `state: 'output-available'` and the full output.
+Tool call events persist in Ably channel history. When a client loads history, the decoder reconstructs tool parts with their final state - including cross-run events. A tool that was called, executed, and resolved in a previous session appears with `state: 'output-available'` and the full output.
 
-Cross-turn events (from `view.update()` or server-side `turn.addEvents()`) are stored in history with `x-ably-amend` header identifying the target message. The history decoder detects these and routes them to the correct message's accumulator, so the tool part state is reconstructed correctly.
+Cross-run events (from `view.update()` or server-side `run.addEvents()`) are stored in history with `x-ably-amend` header identifying the target message. The history decoder detects these and routes them to the correct message's accumulator, so the tool part state is reconstructed correctly.
 
 To avoid re-executing client tools after a page refresh, check whether the tool call already has a follow-up assistant message (which means the model already consumed the result):
 

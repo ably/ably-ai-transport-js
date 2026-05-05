@@ -23,9 +23,9 @@ export enum ErrorCode {
   EncoderRecoveryFailed = 104000,
 
   /**
-   * A transport-level channel subscription callback threw unexpectedly.
+   * A session-level channel subscription callback threw unexpectedly.
    */
-  TransportSubscriptionError = 104001,
+  SessionSubscriptionError = 104001,
 
   /**
    * Cancel listener or onCancel hook threw while processing a cancel message.
@@ -33,19 +33,19 @@ export enum ErrorCode {
   CancelListenerError = 104002,
 
   /**
-   * A publish within a turn failed (lifecycle event, message, or event).
+   * A publish within a run failed (lifecycle event, message, or event).
    */
-  TurnLifecycleError = 104003,
+  RunLifecycleError = 104003,
 
   /**
-   * An operation was attempted on a transport that has already been closed.
+   * An operation was attempted on a session that has already been closed.
    */
-  TransportClosed = 104004,
+  SessionClosed = 104004,
 
   /**
-   * The HTTP POST to the server endpoint failed (network error or non-2xx response).
+   * The HTTP POST to the agent endpoint failed (network error or non-2xx response).
    */
-  TransportSendFailed = 104005,
+  SessionSendFailed = 104005,
 
   /**
    * The Ably channel lost message continuity — the channel entered FAILED,

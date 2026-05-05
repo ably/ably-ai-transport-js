@@ -43,29 +43,29 @@ const { messages, setMessages, sendMessage, stop } = useChat({
 useMessageSync({ setMessages });
 ```
 
-`ChatTransportProvider` creates both a `ClientTransport` and a `ChatTransport` and makes them available in context. `useChatTransport()` reads both from context — `chatTransport` is passed to `useChat()`, and `transport` is used for `useMessageSync`, `useActiveTurns`, and `useView`. `useMessageSync()` pushes the transport's authoritative message list into `useChat()`'s state — this is how messages from other clients appear.
+`ChatTransportProvider` creates both a `ClientSession` and a `ChatTransport` and makes them available in context. `useChatTransport()` reads both from context — `chatTransport` is passed to `useChat()`, and `session` is used for `useMessageSync`, `useActiveRuns`, and `useView`. `useMessageSync()` pushes the session's authoritative message list into `useChat()`'s state — this is how messages from other clients appear.
 
 ### Generic hooks path (more control)
 
 Use the generic React hooks directly. You manage message state through the transport's conversation tree instead of `useChat()`.
 
 ```tsx
-import { TransportProvider, useClientTransport, useView, useActiveTurns } from '@ably/ai-transport/react';
+import { ClientSessionProvider, useClientSession, useView, useActiveRuns } from '@ably/ai-transport/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import type * as AI from 'ai';
 
-// Wrap your component tree with TransportProvider
-<TransportProvider
+// Wrap your component tree with ClientSessionProvider
+<ClientSessionProvider
   channelName={chatId}
   codec={UIMessageCodec}
   clientId={clientId}
   api="/api/chat"
 >
   <ChatInner />
-</TransportProvider>;
+</ClientSessionProvider>;
 
 // Inside ChatInner:
-const { transport } = useClientTransport<AI.UIMessageChunk, AI.UIMessage>();
+const { session } = useClientSession<AI.UIMessageChunk, AI.UIMessage>();
 const {
   nodes,
   hasOlder,
@@ -78,8 +78,8 @@ const {
   getSelectedIndex,
   getSiblings,
   hasSiblings,
-} = useView(transport, { limit: 30 });
-const activeTurns = useActiveTurns(transport);
+} = useView(session, { limit: 30 });
+const activeRuns = useActiveRuns(session);
 ```
 
 This path gives you conversation branching UI (sibling navigation), write operations, and direct access to the view state.
@@ -95,39 +95,40 @@ This path gives you conversation branching UI (sibling navigation), write operat
 
 ## Entry points
 
-| Import                            | What you get                                                                                                                    |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `@ably/ai-transport/vercel`       | `UIMessageCodec`, `createServerTransport()`, `createClientTransport()`, `createChatTransport()` - all pre-bound to Vercel types |
-| `@ably/ai-transport/vercel/react` | `ChatTransportProvider`, `useChatTransport()`, `useMessageSync()`, plus all generic hooks pre-bound to Vercel types             |
-| `@ably/ai-transport/react`        | Generic hooks (`useView`, `useActiveTurns`, `useClientTransport`, etc.) - work with any codec including `UIMessageCodec`        |
+| Import                            | What you get                                                                                                               |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `@ably/ai-transport/vercel`       | `UIMessageCodec`, `createAgentSession()`, `createClientSession()`, `createChatTransport()` - all pre-bound to Vercel types |
+| `@ably/ai-transport/vercel/react` | `ChatTransportProvider`, `useChatTransport()`, `useMessageSync()`, plus all generic hooks pre-bound to Vercel types        |
+| `@ably/ai-transport/react`        | Generic hooks (`useView`, `useActiveRuns`, `useClientSession`, etc.) - work with any codec including `UIMessageCodec`      |
 
-The Vercel entry points are convenience wrappers. `createServerTransport()` from `/vercel` is the same as the core `createServerTransport()` with `UIMessageCodec` pre-bound - you don't pass a `codec` option.
+The Vercel entry points are convenience wrappers. `createAgentSession()` from `/vercel` is the same as the core `createAgentSession()` with `UIMessageCodec` pre-bound - you don't pass a `codec` option.
 
 ## Server side
 
-The server code is the same for both client paths. Use `createServerTransport()` from the Vercel entry point and pipe `streamText()`'s output through a turn:
+The server code is the same for both client paths. Use `createAgentSession()` from the Vercel entry point and pipe `streamText()`'s output through a run:
 
 ```typescript
-import { createServerTransport } from '@ably/ai-transport/vercel';
+import { Invocation } from '@ably/ai-transport';
+import { createAgentSession } from '@ably/ai-transport/vercel';
 import { streamText, convertToModelMessages } from 'ai';
 
-const transport = createServerTransport({ channel });
-const turn = transport.newTurn({ turnId, clientId, parent, forkOf });
+const session = createAgentSession({ channel });
+const run = session.createRun(Invocation.fromJSON({ runId, clientId, parent, forkOf }));
 
-await turn.start();
+await run.start();
 
 // Publish user messages to the channel so all clients see them and they persist in history
-await turn.addMessages(userMessages, { clientId });
+await run.addMessages(userMessages, { clientId });
 
 const result = streamText({
   model: yourModel,
   messages: await convertToModelMessages(allMessages),
-  abortSignal: turn.abortSignal,
+  abortSignal: run.abortSignal,
 });
 
-const { reason } = await turn.streamResponse(result.toUIMessageStream());
-await turn.end(reason);
-transport.close();
+const { reason } = await run.pipe(result.toUIMessageStream());
+await run.end(reason);
+session.close();
 ```
 
 `result.toUIMessageStream()` produces a `ReadableStream<UIMessageChunk>` - the codec knows how to encode these chunks as Ably messages (message appends for text/reasoning, discrete messages for lifecycle events).
@@ -147,4 +148,4 @@ The codec handles the full `UIMessageChunk` union. On the decode side, it recons
 
 ## Status
 
-The Vercel AI SDK is the only supported framework today. The generic transport and codec interfaces (`Codec<TEvent, TMessage>`) support custom integrations for other frameworks. See [Client and server transport](../concepts/transport.md) for the architecture.
+The Vercel AI SDK is the only supported framework today. The generic session and codec interfaces (`Codec<TEvent, TMessage>`) support custom integrations for other frameworks. See [Client and agent sessions](../concepts/sessions.md) for the architecture.

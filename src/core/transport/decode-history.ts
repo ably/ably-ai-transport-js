@@ -3,12 +3,12 @@
  * return decoded messages as a paginated HistoryPage result.
  *
  * Uses a fresh decoder (not shared with the live subscription) to avoid
- * state conflicts. Per-turn accumulators handle interleaved turns correctly.
+ * state conflicts. Per-run accumulators handle interleaved runs correctly.
  *
  * The `limit` option controls the number of **messages** returned,
  * not the number of Ably wire messages fetched. The implementation pages
  * back through Ably history until `limit` complete messages have
- * been assembled. Partial turns (incomplete at the page boundary) are
+ * been assembled. Partial runs (incomplete at the page boundary) are
  * buffered internally and completed when `next()` fetches more pages.
  *
  * Only completed messages appear in `items`. A message is complete when
@@ -16,7 +16,7 @@
  *
  * Because Ably history returns newest-first while the decoder requires
  * chronological order, all collected Ably messages are re-decoded from
- * oldest to newest at the point a result is built. This handles turns
+ * oldest to newest at the point a result is built. This handles runs
  * that span page boundaries correctly. The fetch loop uses a cheap
  * header-based completion counter to decide when to stop paging, so the
  * full decode runs exactly once per traversal regardless of page count.
@@ -28,9 +28,9 @@ import {
   HEADER_AMEND,
   HEADER_DISCRETE,
   HEADER_MSG_ID,
+  HEADER_RUN_ID,
   HEADER_STATUS,
   HEADER_STREAM,
-  HEADER_TURN_ID,
 } from '../../constants.js';
 import type { Logger } from '../../logger.js';
 import { getHeaders } from '../../utils.js';
@@ -105,29 +105,29 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
   // Reverse to chronological (oldest first)
   const chronological = [...state.rawMessages].toReversed();
 
-  // Fresh decoder and per-turn accumulators for each full re-decode.
+  // Fresh decoder and per-run accumulators for each full re-decode.
   const decoder = state.codec.createDecoder();
-  const turns = new Map<
+  const runs = new Map<
     string,
     {
       accumulator: MessageAccumulator<TEvent, TMessage>;
       firstSeen: number;
-      /** Headers from the first Ably message per x-ably-msg-id within this turn. */
+      /** Headers from the first Ably message per x-ably-msg-id within this run. */
       msgHeaders: Map<string, Record<string, string>>;
-      /** Ably serial from the first Ably message per x-ably-msg-id within this turn. */
+      /** Ably serial from the first Ably message per x-ably-msg-id within this run. */
       msgSerials: Map<string, string>;
     }
   >();
   const defaultAccumulator = state.codec.createAccumulator();
   let orderCounter = 0;
 
-  // Headers and serials for non-turn discrete messages, keyed by x-ably-msg-id.
+  // Headers and serials for non-run discrete messages, keyed by x-ably-msg-id.
   const discreteHeaders = new Map<string, Record<string, string>>();
   const discreteSerials = new Map<string, string>();
-  // Track which msgId produced each non-turn discrete message output (in order).
+  // Track which msgId produced each non-run discrete message output (in order).
   const discreteMsgIds: string[] = [];
 
-  // Cross-turn event targets to complete after all events are processed.
+  // Cross-run event targets to complete after all events are processed.
   // Deferred so that finish/abort events that follow the update in serial
   // order can still process on the active message (e.g. applying messageMetadata).
   const deferredCompletions: { accumulator: MessageAccumulator<TEvent, TMessage>; messageId: string }[] = [];
@@ -135,59 +135,59 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
   for (const msg of chronological) {
     const outputs: DecoderOutput<TEvent, TMessage>[] = decoder.decode(msg);
     const headers = getHeaders(msg);
-    const turnId = headers[HEADER_TURN_ID];
+    const runId = headers[HEADER_RUN_ID];
     const msgId = headers[HEADER_MSG_ID];
     const serial = msg.serial;
     const amendTarget = headers[HEADER_AMEND];
 
-    // Cross-turn events target an existing message from a different turn.
-    // Route to the owning turn's accumulator via initMessage lifecycle.
+    // Cross-run events target an existing message from a different run.
+    // Route to the owning run's accumulator via initMessage lifecycle.
     if (amendTarget) {
-      for (const turn of turns.values()) {
-        if (turn.msgHeaders.has(amendTarget)) {
-          const headerKeys = [...turn.msgHeaders.keys()];
+      for (const run of runs.values()) {
+        if (run.msgHeaders.has(amendTarget)) {
+          const headerKeys = [...run.msgHeaders.keys()];
           const msgIndex = headerKeys.indexOf(amendTarget);
-          const currentMsg = msgIndex === -1 ? undefined : turn.accumulator.messages[msgIndex];
+          const currentMsg = msgIndex === -1 ? undefined : run.accumulator.messages[msgIndex];
           if (currentMsg) {
-            turn.accumulator.initMessage(amendTarget, currentMsg);
+            run.accumulator.initMessage(amendTarget, currentMsg);
           }
-          turn.accumulator.processOutputs(outputs);
-          deferredCompletions.push({ accumulator: turn.accumulator, messageId: amendTarget });
+          run.accumulator.processOutputs(outputs);
+          deferredCompletions.push({ accumulator: run.accumulator, messageId: amendTarget });
           break;
         }
       }
       continue;
     }
 
-    if (turnId) {
-      let turn = turns.get(turnId);
-      if (!turn) {
-        turn = {
+    if (runId) {
+      let run = runs.get(runId);
+      if (!run) {
+        run = {
           accumulator: state.codec.createAccumulator(),
           firstSeen: orderCounter++,
           msgHeaders: new Map(),
           msgSerials: new Map(),
         };
-        turns.set(turnId, turn);
+        runs.set(runId, run);
       }
-      // Capture headers per msg-id within this turn. Update on later
+      // Capture headers per msg-id within this run. Update on later
       // messages too (e.g. closing append overrides status from
       // "streaming" to "finished"/"aborted"). Only merge when the
       // incoming message has non-empty headers.
       if (msgId) {
-        const existing = turn.msgHeaders.get(msgId);
+        const existing = run.msgHeaders.get(msgId);
         if (!existing) {
-          turn.msgHeaders.set(msgId, { ...headers });
-          if (serial) turn.msgSerials.set(msgId, serial);
+          run.msgHeaders.set(msgId, { ...headers });
+          if (serial) run.msgSerials.set(msgId, serial);
         } else if (Object.keys(headers).length > 0) {
           Object.assign(existing, headers);
         }
       }
-      turn.accumulator.processOutputs(outputs);
+      run.accumulator.processOutputs(outputs);
     } else {
       defaultAccumulator.processOutputs(outputs);
 
-      // Capture headers and serial for non-turn discrete messages by x-ably-msg-id.
+      // Capture headers and serial for non-run discrete messages by x-ably-msg-id.
       for (const output of outputs) {
         if (output.kind === 'message' && msgId) {
           discreteMsgIds.push(msgId);
@@ -203,14 +203,14 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
     }
   }
 
-  // Complete any messages that were re-activated for cross-turn updates.
+  // Complete any messages that were re-activated for cross-run updates.
   // Idempotent — if finish already removed the message from active tracking,
   // completeMessage is a no-op.
   for (const { accumulator, messageId } of deferredCompletions) {
     accumulator.completeMessage(messageId);
   }
 
-  // Collect completed messages in chronological order (oldest first) by turn.
+  // Collect completed messages in chronological order (oldest first) by run.
   const completed: DecodedItem<TMessage>[] = [];
 
   // Default accumulator messages: pair with their discrete headers by position.
@@ -223,22 +223,22 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
     });
   }
 
-  const sorted = [...turns.values()].toSorted((a, b) => a.firstSeen - b.firstSeen);
-  for (const turn of sorted) {
-    // Assign headers and serials to each completed message in this turn.
-    // The turn's msgHeaders map is keyed by x-ably-msg-id and ordered by
+  const sorted = [...runs.values()].toSorted((a, b) => a.firstSeen - b.firstSeen);
+  for (const run of sorted) {
+    // Assign headers and serials to each completed message in this run.
+    // The run's msgHeaders map is keyed by x-ably-msg-id and ordered by
     // first-seen. Completed messages are matched positionally.
-    const headerEntries = [...turn.msgHeaders.entries()];
+    const headerEntries = [...run.msgHeaders.entries()];
     let headerIdx = 0;
 
-    for (const msg of turn.accumulator.completedMessages) {
+    for (const msg of run.accumulator.completedMessages) {
       const entry = headerEntries[headerIdx];
       if (entry) {
         const [mid, hdrs] = entry;
         completed.push({
           message: msg,
           headers: hdrs,
-          serial: turn.msgSerials.get(mid) ?? '',
+          serial: run.msgSerials.get(mid) ?? '',
         });
         headerIdx++;
       } else {
@@ -293,9 +293,9 @@ const decodeAllCached = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>
  * `message.update` with `STREAM=true` and `STATUS=finished`. The decoder
  * handles that in {@link _decodeUpdate} via first-contact. Counting only
  * `message.create` as a start would cause the fetch loop to page past a
- * compacted turn without ever marking it complete.
+ * compacted run without ever marking it complete.
  *
- * Requiring both halves matters when a streaming turn spans a page
+ * Requiring both halves matters when a streaming run spans a page
  * boundary: the terminal arrives in the newer page (fetched first) while
  * the start sits in an older page. Counting the terminal alone would stop
  * the fetch loop prematurely - the decoder would have no stream state to

@@ -30,7 +30,7 @@ demo/                                 # Standalone demo apps (separate package.j
 └── vercel/                           # Vercel AI SDK demos
     └── react/                        # Vercel AI SDK React demos
         └── use-chat/                 # Demo using useChat
-        └── use-client-transport/     # Demo using useClientTransport
+        └── use-client-session/       # Demo using useClientSession
 scripts/                              # Build and validation scripts
 ably-common/                          # Git submodule — shared protocol resources
 ```
@@ -39,12 +39,12 @@ ably-common/                          # Git submodule — shared protocol resour
 
 The SDK ships four entry points from a single package:
 
-| Export path                       | Contains                                                                                                         | Purpose                                                 | External deps                 |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- | ----------------------------- |
-| `@ably/ai-transport`              | Generic codec interfaces, `createClientTransport`, `createServerTransport`, shared utilities                     | Core primitives — codec-agnostic transport and encoding | `ably` (peer)                 |
-| `@ably/ai-transport/react`        | `TransportProvider`,`useClientTransport`, `useView`, `useTree`, `useActiveTurns`, `useAblyMessages`              | Generic React hooks for any codec                       | `ably`, `react` (peers)       |
-| `@ably/ai-transport/vercel`       | `UIMessageCodec`, `createServerTransport`, `createClientTransport`, `createChatTransport`, Vercel-specific types | Drop-in Vercel AI SDK integration                       | `ably`, `ai` (peers)          |
-| `@ably/ai-transport/vercel/react` | `useChatTransport`, `useMessageSync`                                                                             | React hooks for Vercel's `useChat`                      | `ably`, `ai`, `react` (peers) |
+| Export path                       | Contains                                                                                                    | Purpose                                                 | External deps                 |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- | ----------------------------- |
+| `@ably/ai-transport`              | Generic codec interfaces, `createClientSession`, `createAgentSession`, shared utilities                     | Core primitives — codec-agnostic transport and encoding | `ably` (peer)                 |
+| `@ably/ai-transport/react`        | `ClientSessionProvider`,`useClientSession`, `useView`, `useTree`, `useActiveRuns`, `useAblyMessages`        | Generic React hooks for any codec                       | `ably`, `react` (peers)       |
+| `@ably/ai-transport/vercel`       | `UIMessageCodec`, `createAgentSession`, `createClientSession`, `createChatTransport`, Vercel-specific types | Drop-in Vercel AI SDK integration                       | `ably`, `ai` (peers)          |
+| `@ably/ai-transport/vercel/react` | `useChatTransport`, `useMessageSync`                                                                        | React hooks for Vercel's `useChat`                      | `ably`, `ai`, `react` (peers) |
 
 ## Two-Layer Architecture
 
@@ -52,11 +52,11 @@ The codebase is split into a **generic layer** and a **Vercel layer**:
 
 ### Generic layer (`src/core/`, `src/react/`)
 
-Defines the `Codec<TEvent, TMessage>` interface and provides `ClientTransport`, `ServerTransport`, `Tree`, and `decodeHistory` — all parameterized by codec. Framework-agnostic; knows nothing about Vercel's `UIMessageChunk` or `UIMessage`. Uses only `x-ably-*` headers — must never reference codec-specific domain headers.
+Defines the `Codec<TEvent, TMessage>` interface and provides `ClientSession`, `AgentSession`, `Tree`, and `decodeHistory` — all parameterized by codec. Framework-agnostic; knows nothing about Vercel's `UIMessageChunk` or `UIMessage`. Uses only `x-ably-*` headers — must never reference codec-specific domain headers.
 
 ### Vercel layer (`src/vercel/`)
 
-Implements `UIMessageCodec` and provides convenience factories plus React hooks. The `ChatTransport` adapter wraps a generic `ClientTransport` to satisfy the `ChatTransport` interface that `useChat` expects.
+Implements `UIMessageCodec` and provides convenience factories plus React hooks. The `ChatTransport` adapter wraps a generic `ClientSession` to satisfy the `ChatTransport` interface that `useChat` expects.
 
 ### Shared (`src/constants.ts`, `src/utils.ts`)
 
@@ -66,11 +66,11 @@ Header/event/message-name constants and Ably message utilities used by both laye
 
 The client-side architecture separates three concerns:
 
-| Component     | Owns                                                                                                             | Events                                                                                                                       |
-| ------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| **Tree**      | Complete conversation state — every node from live messages and history. Turn tracking (active turn → clientId). | `update` (any structural change), `ably-message` (every raw message), `turn` (start/end) — unfiltered, fires for all changes |
-| **View**      | Pagination window — which history-loaded nodes are visible vs withheld.                                          | Same event names, but **scoped to the visible window** — only fires when the visible output changes                          |
-| **Transport** | Write path (send/regenerate/edit/cancel), channel subscription, stream routing, decode loop.                     | `error` only — all data events moved to Tree/View                                                                            |
+| Component     | Owns                                                                                                           | Events                                                                                                                      |
+| ------------- | -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| **Tree**      | Complete conversation state — every node from live messages and history. Run tracking (active run → clientId). | `update` (any structural change), `ably-message` (every raw message), `run` (start/end) — unfiltered, fires for all changes |
+| **View**      | Pagination window — which history-loaded nodes are visible vs withheld.                                        | Same event names, but **scoped to the visible window** — only fires when the visible output changes                         |
+| **Transport** | Write path (send/regenerate/edit/cancel), channel subscription, stream routing, decode loop.                   | `error` only — all data events moved to Tree/View                                                                           |
 
 The Tree is the source of truth. The View subscribes to Tree events and re-emits them filtered to what's visible. The Transport wires the channel to the Tree and exposes both as `transport.tree` and `transport.view`.
 
@@ -79,17 +79,17 @@ The Tree is the source of truth. The View subscribes to Tree events and re-emits
 The SDK uses composition, not inheritance. For example, a transport is assembled from composable sub-components:
 
 ```
-ClientTransport
+ClientSession
 ├── Codec (encoder + decoder + accumulator)
-├── Tree — branching history, turn tracking, unfiltered events
+├── Tree — branching history, run tracking, unfiltered events
 ├── View — paginated projection over the tree, scoped events
-├── StreamRouter — maps turn-scoped events to ReadableStream controllers
+├── StreamRouter — maps run-scoped events to ReadableStream controllers
 └── (channel subscription + decode loop)
 
-ServerTransport
+AgentSession
 ├── Codec (encoder)
-├── TurnManager — tracks active turns for cancel routing
-└── Turn (per request)
+├── RunManager — tracks active runs for cancel routing
+└── Run (per request)
     ├── Encoder instance
     └── pipeStream — pipes ReadableStream through encoder
 ```
@@ -102,8 +102,8 @@ All dependencies are passed through constructors. There are no singletons or ser
 
 Use ES6 classes with the **Interface + Default Implementation** pattern:
 
-- Define a public **interface** for the contract (e.g. `ClientTransport`, `Tree`, `View`).
-- Implement it with a **`Default*` class** (e.g. `DefaultClientTransport`, `DefaultTree`, `DefaultView`).
+- Define a public **interface** for the contract (e.g. `ClientSession`, `Tree`, `View`).
+- Implement it with a **`Default*` class** (e.g. `DefaultClientSession`, `DefaultTree`, `DefaultView`).
 - Export the interface as public API; the class is internal.
 
 ### Private state
@@ -134,7 +134,7 @@ get messages(): Messages {
 
 ### Factory functions as entry points
 
-Public-facing entry points (e.g. `createClientTransport()`) are factory functions that instantiate and wire up the internal classes. Consumers never call `new Default*` directly.
+Public-facing entry points (e.g. `createClientSession()`) are factory functions that instantiate and wire up the internal classes. Consumers never call `new Default*` directly.
 
 ### When to use classes vs plain functions
 

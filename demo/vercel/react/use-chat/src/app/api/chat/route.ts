@@ -1,12 +1,12 @@
 /**
- * Chat API route — receives messages from the client transport's HTTP POST,
+ * Chat API route — receives messages from the client session's HTTP POST,
  * streams the AI response back over Ably.
  *
  * Supports three tool execution patterns:
  * - Server-executed tools (getWeather): streamText runs them automatically.
  * - Client-executed tools (getLocation): the client runs them, stages the
- *   output via transport.stageEvents, and ships it in the POST body's
- *   `events` field. We publish it via turn.addEvents here and merge it
+ *   output via session.stageEvents, and ships it in the POST body's
+ *   `events` field. We publish it via run.addEvents here and merge it
  *   into the history that feeds convertToModelMessages.
  * - Approval-required tools (getWeatherForecast): useChat's
  *   addToolApprovalResponse patches the assistant message to
@@ -24,79 +24,70 @@ import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
 import {
   applyToolEventsToHistory,
-  createServerTransport,
+  createAgentSession,
   extractApprovalDecisionsFromHistory,
   streamResponseWithApprovalRedirect,
 } from '@ably/ai-transport/vercel';
-import type { EventsNode, MessageNode } from '@ably/ai-transport';
+import type { InvocationData } from '@ably/ai-transport';
+import { Invocation } from '@ably/ai-transport';
 import { tools } from './tools';
-
-/** Shape of the POST body sent by the client transport. */
-interface ChatRequestBody {
-  turnId: string;
-  clientId: string;
-  messages: MessageNode<UIMessage>[];
-  history?: MessageNode<UIMessage>[];
-  events?: EventsNode<UIMessageChunk>[];
-  chatId: string;
-  forkOf?: string;
-  parent?: string;
-}
 
 // Server-side Ably client — uses API key directly (trusted environment).
 const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY! });
 
 export async function POST(req: Request) {
-  const { messages, history, events, chatId, turnId, clientId, forkOf, parent } = (await req.json()) as ChatRequestBody;
-  const channel = ably.channels.get(chatId);
+  const data = (await req.json()) as InvocationData<UIMessageChunk, UIMessage>;
+  const invocation = Invocation.fromJSON(data);
+  const channel = ably.channels.get(invocation.sessionName);
 
-  const transport = createServerTransport({ channel });
-  const turn = transport.newTurn({ turnId, clientId, parent, forkOf, signal: req.signal });
+  const session = createAgentSession({ channel });
+  await session.connect();
+  const run = session.createRun(invocation, { signal: req.signal });
 
-  await turn.start();
+  await run.start();
 
   // Apply client-shipped events (tool outputs from addToolResult +
   // stageEvents). Publishes them as message.update amendments on the
-  // channel so observers and the transport tree see the tool result.
-  if (events && events.length > 0) {
-    await turn.addEvents(events);
+  // channel so observers and the session tree see the tool result.
+  if (invocation.events.length > 0) {
+    await run.addEvents(invocation.events);
   }
 
   // Publish user messages (if any). Fork metadata (parent/forkOf) is
-  // configured at the turn level — addMessages picks it up automatically.
+  // configured at the run level — addMessages picks it up automatically.
   let lastUserMsgId: string | undefined;
-  if (messages.length > 0) {
-    const { msgIds } = await turn.addMessages(messages, { clientId });
+  if (invocation.messages.length > 0) {
+    const { msgIds } = await run.addMessages(invocation.messages, { clientId: invocation.clientId });
     lastUserMsgId = msgIds.at(-1);
   }
 
   // Reconstruct full conversation for the LLM. Merge tool-result events
   // into history so convertToModelMessages sees the tool results this
-  // turn (the client ships them separately to keep history nodes intact).
-  const mergedHistory = applyToolEventsToHistory(events ?? [], history ?? []);
+  // run (the client ships them separately to keep history nodes intact).
+  const mergedHistory = applyToolEventsToHistory(invocation.events, invocation.history);
   const historyMsgs = mergedHistory.map((h) => h.message);
-  const newMsgs = (messages ?? []).map((m) => m.message);
+  const newMsgs = invocation.messages.map((m) => m.message);
   const allMessages = [...historyMsgs, ...newMsgs];
 
   // Derive approval decisions from history — useChat's addToolApprovalResponse
   // flipped matching tool parts to `approval-responded` / `output-denied`.
-  const decisions = extractApprovalDecisionsFromHistory(history ?? []);
+  const decisions = extractApprovalDecisionsFromHistory(invocation.history);
 
   const result = streamText({
     model: anthropic('claude-sonnet-4-6'),
     system: `You are a helpful assistant. When the user asks about weather, use the getWeather tool. If they don't specify a location, call getLocation first to get their coordinates, then call getWeather with a description of that location. When the user asks about a weather forecast or upcoming weather, use getWeatherForecast.`,
     messages: await convertToModelMessages(allMessages),
     tools,
-    abortSignal: turn.abortSignal,
+    abortSignal: run.abortSignal,
   });
 
   after(async () => {
-    const { reason } = await streamResponseWithApprovalRedirect(turn, result.toUIMessageStream(), {
+    const { reason } = await streamResponseWithApprovalRedirect(run, result.toUIMessageStream(), {
       parent: lastUserMsgId,
       decisions,
     });
-    await turn.end(reason);
-    transport.close();
+    await run.end(reason);
+    session.close();
   });
 
   return new Response(null, { status: 200 });

@@ -8,21 +8,21 @@ Without multi-client support, sharing a conversation across browser tabs, device
 
 All clients subscribe to the same Ably channel. The transport distinguishes between:
 
-- **Own turns** - turns this client initiated via `send()`, `regenerate()`, or `edit()`. Events route to the `ActiveTurn`'s stream.
-- **Observer turns** - turns from other clients. Events are decoded, accumulated via the codec's `MessageAccumulator`, and inserted into the conversation tree.
+- **Own runs** - runs this client initiated via `send()`, `regenerate()`, or `edit()`. Events route to the `ActiveRun`'s stream.
+- **Observer runs** - runs from other clients. Events are decoded, accumulated via the codec's `MessageAccumulator`, and inserted into the conversation tree.
 
 No special API is needed. Connect two clients to the same channel name, and messages sync automatically:
 
 ```tsx
 // Client A — in its own browser tab
-<TransportProvider channelName="ai:demo" codec={UIMessageCodec} clientId="user-a" api="/api/chat">
+<ClientSessionProvider channelName="ai:demo" codec={UIMessageCodec} clientId="user-a" api="/api/chat">
   <Chat />
-</TransportProvider>
+</ClientSessionProvider>
 
 // Client B — in a different browser tab, device, or user session
-<TransportProvider channelName="ai:demo" codec={UIMessageCodec} clientId="user-b" api="/api/chat">
+<ClientSessionProvider channelName="ai:demo" codec={UIMessageCodec} clientId="user-b" api="/api/chat">
   <Chat />
-</TransportProvider>
+</ClientSessionProvider>
 
 // When Client A sends a message and the server streams a response,
 // Client B sees both the user message and the assistant response
@@ -31,38 +31,38 @@ No special API is needed. Connect two clients to the same channel name, and mess
 
 ## Observer message flow
 
-When another client's turn streams a response:
+When another client's run streams a response:
 
 1. The transport receives Ably messages from the channel subscription
 2. The decoder produces domain events from the raw Ably messages
-3. A per-turn accumulator builds domain messages from the events
+3. A per-run accumulator builds domain messages from the events
 4. Accumulated messages are upserted into the conversation tree
 5. An `'update'` notification fires on the view, updating React state
 
-This happens for every event - observer messages stream in real time, not just at turn completion.
+This happens for every event - observer messages stream in real time, not just at run completion.
 
 ## Seeing who's active
 
-`useActiveTurns()` tracks all active turns from all clients:
+`useActiveRuns()` tracks all active runs from all clients:
 
 ```typescript
-import { useActiveTurns } from '@ably/ai-transport/react';
+import { useActiveRuns } from '@ably/ai-transport/react';
 
-const activeTurns = useActiveTurns(transport);
+const activeRuns = useActiveRuns(transport);
 
-// activeTurns is Map<clientId, Set<turnId>>
-// Show which users have active turns:
-for (const [clientId, turnIds] of activeTurns) {
-  console.log(`${clientId} has ${turnIds.size} active turn(s)`);
+// activeRuns is Map<clientId, Set<runId>>
+// Show which users have active runs:
+for (const [clientId, runIds] of activeRuns) {
+  console.log(`${clientId} has ${runIds.size} active run(s)`);
 }
 ```
 
-Turn lifecycle events include the `clientId`:
+Run lifecycle events include the `clientId`:
 
 ```typescript
-transport.tree.on('turn', (event) => {
-  // event.clientId tells you who started or ended the turn
-  // event.type is 'x-ably-turn-start' or 'x-ably-turn-end'
+session.tree.on('run', (event) => {
+  // event.clientId tells you who started or ended the run
+  // event.type is 'x-ably-run-start' or 'x-ably-run-end'
 });
 ```
 
@@ -93,6 +93,6 @@ Without `useMessageSync()`, `useChat()` would only show messages from its own se
 
 ## Identity
 
-Each client is identified by a `clientId` passed to the transport. The transport stamps this on outgoing messages and turn lifecycle events. Clients can use the `clientId` from message headers or turn events to show who sent what.
+Each client is identified by a `clientId` passed to the transport. The transport stamps this on outgoing messages and run lifecycle events. Clients can use the `clientId` from message headers or run events to show who sent what.
 
 Client identity is established through Ably's token authentication - the `clientId` in the JWT token must match. See the [Get Started](../get-started/vercel-use-chat.md) guide for the auth setup.

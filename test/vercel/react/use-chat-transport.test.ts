@@ -6,7 +6,7 @@ import type * as AI from 'ai';
 import { createElement, type ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 
-import type { ClientTransport } from '../../../src/core/transport/types.js';
+import type { ClientSession } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 import type { ChatTransportSlot } from '../../../src/vercel/react/contexts/chat-transport-context.js';
 import { ChatTransportContext } from '../../../src/vercel/react/contexts/chat-transport-context.js';
@@ -28,12 +28,12 @@ const createFakeChatTransport = (): ChatTransport => ({
 });
 
 // Test stub — identity comparison only, methods not exercised.
-// CAST: test stub satisfies ClientTransport structurally; methods are never called.
-const createFakeClientTransport = (): ClientTransport<AI.UIMessageChunk, AI.UIMessage> =>
-  ({}) as unknown as ClientTransport<AI.UIMessageChunk, AI.UIMessage>;
+// CAST: test stub satisfies ClientSession structurally; methods are never called.
+const createFakeClientSession = (): ClientSession<AI.UIMessageChunk, AI.UIMessage> =>
+  ({}) as unknown as ClientSession<AI.UIMessageChunk, AI.UIMessage>;
 
 const createFakeChatTransportSlot = (): ChatTransportSlot => ({
-  transport: createFakeClientTransport(),
+  session: createFakeClientSession(),
   chatTransport: createFakeChatTransport(),
 });
 
@@ -50,7 +50,7 @@ describe('useChatTransport', () => {
       wrapper: withChatTransportContext({ 'ai:test': slot }),
     });
     expect(result.current.chatTransport).toBe(slot.chatTransport);
-    expect(result.current.transport).toBe(slot.transport);
+    expect(result.current.session).toBe(slot.session);
   });
 
   it('returns the transport handle registered under a different channelName', () => {
@@ -59,7 +59,7 @@ describe('useChatTransport', () => {
       wrapper: withChatTransportContext({ 'ai:secondary': slot }),
     });
     expect(result.current.chatTransport).toBe(slot.chatTransport);
-    expect(result.current.transport).toBe(slot.transport);
+    expect(result.current.session).toBe(slot.session);
   });
 
   it('returns the nearest transport handle when no channelName is given', () => {
@@ -68,18 +68,18 @@ describe('useChatTransport', () => {
       wrapper: withChatTransportContext({}, slot),
     });
     expect(result.current.chatTransport).toBe(slot.chatTransport);
-    expect(result.current.transport).toBe(slot.transport);
+    expect(result.current.session).toBe(slot.session);
   });
 
-  it('surfaces slot transportError via chatTransportError', () => {
+  it('surfaces slot sessionError via chatTransportError', () => {
     const slot: ChatTransportSlot = {
       ...createFakeChatTransportSlot(),
-      transportError: new Ably.ErrorInfo('construction failed', ErrorCode.BadRequest, 400),
+      sessionError: new Ably.ErrorInfo('construction failed', ErrorCode.BadRequest, 400),
     };
     const { result } = renderHook(() => useChatTransport({ channelName: 'ai:test' }), {
       wrapper: withChatTransportContext({ 'ai:test': slot }),
     });
-    expect(result.current.transportError).toBe(slot.transportError);
+    expect(result.current.sessionError).toBe(slot.sessionError);
   });
 
   it('sets chatTransportError with BadRequest when channelName given but no matching ChatTransportProvider', () => {
@@ -109,7 +109,7 @@ describe('useChatTransport', () => {
       const { result } = renderHook(() => useChatTransport({ skip: true }));
       expect(result.current).toBeDefined();
       expect(result.current.chatTransport).toBeDefined();
-      expect(result.current.transport).toBeDefined();
+      expect(result.current.session).toBeDefined();
     });
 
     it('stub sendMessages throws ErrorInfo with InvalidArgument', () => {
@@ -157,9 +157,9 @@ describe('useChatTransport', () => {
       );
     });
 
-    it('stub transport.tree getter throws ErrorInfo with InvalidArgument', () => {
+    it('stub session.tree getter throws ErrorInfo with InvalidArgument', () => {
       const { result } = renderHook(() => useChatTransport({ skip: true }));
-      expect(() => result.current.transport.tree).toThrow(
+      expect(() => result.current.session.tree).toThrow(
         expect.objectContaining({ code: ErrorCode.InvalidArgument, statusCode: 400 }),
       );
     });

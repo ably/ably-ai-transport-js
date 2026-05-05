@@ -31,12 +31,12 @@ import { useView } from '@ably/ai-transport/react';
 
 const { regenerate } = useView();
 
-// Fork the assistant message - starts a new turn with no new user messages.
+// Fork the assistant message - starts a new run with no new user messages.
 // nodeId is the x-ably-msg-id (see treeMsgId helper in the quickstart).
 await regenerate(nodeId);
 ```
 
-The transport automatically computes `forkOf` (the assistant message being replaced) and `parent` (the message before it). The server receives these in the POST body and passes them to `newTurn()`.
+The transport automatically computes `forkOf` (the assistant message being replaced) and `parent` (the message before it). The server receives these in the POST body and passes them to `createRun()`.
 
 ## Edit
 
@@ -106,22 +106,24 @@ Calling `select` updates the view's active branch and re-renders with the select
 
 ## Server handling
 
-The server receives `forkOf` and `parent` in the POST body. Pass them through to `newTurn()`:
+The server receives `forkOf` and `parent` in the POST body. Pass them through to `createRun()`:
 
 ```typescript
-const { turnId, clientId, forkOf, parent, messages, history } = await req.json();
+import { Invocation } from '@ably/ai-transport';
 
-const turn = transport.newTurn({ turnId, clientId, parent, forkOf });
-await turn.start();
+const { runId, clientId, forkOf, parent, messages, history } = await req.json();
+
+const run = session.createRun(Invocation.fromJSON({ runId, clientId, parent, forkOf }));
+await run.start();
 
 // Publish user messages to the channel so all clients see them and they persist in history
 if (messages.length > 0) {
-  await turn.addMessages(messages, { clientId });
+  await run.addMessages(messages, { clientId });
 }
 
-const result = streamText({ model, messages: conversationHistory, abortSignal: turn.abortSignal });
-const { reason } = await turn.streamResponse(result.toUIMessageStream());
-await turn.end(reason);
+const result = streamText({ model, messages: conversationHistory, abortSignal: run.abortSignal });
+const { reason } = await run.pipe(result.toUIMessageStream());
+await run.end(reason);
 ```
 
 The transport stamps `x-ably-parent` and `x-ably-fork-of` headers on the published messages. All clients on the channel see these headers and update their local tree.

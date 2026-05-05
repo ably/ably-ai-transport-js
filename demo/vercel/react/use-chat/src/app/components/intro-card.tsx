@@ -44,7 +44,7 @@ const STEPS: DemoStep[] = [
         either tab.
       </>
     ),
-    demonstrates: 'Both tabs share the same Ably channel. Messages, streams, and turn state stay in sync.',
+    demonstrates: 'Both tabs share the same Ably channel. Messages, streams, and run state stay in sync.',
   },
   {
     title: 'Edit (branch)',

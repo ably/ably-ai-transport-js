@@ -1,56 +1,58 @@
 /**
  * Core transport types, parameterized by codec event and message types.
  *
- * These types define the contract for both client and server transport
- * implementations, independent of which codec (Vercel AI SDK, etc.) is used.
+ * These types define the contract for both client and agent (server-side)
+ * session implementations, independent of which codec (Vercel AI SDK, etc.)
+ * is used.
  */
 
 import type * as Ably from 'ably';
 
 import type { Logger } from '../../logger.js';
 import type { Codec, WriteOptions } from '../codec/types.js';
+import type { Invocation } from './invocation.js';
 
 // ---------------------------------------------------------------------------
 // Shared types
 // ---------------------------------------------------------------------------
 
-/** Why a turn ended. */
-export type TurnEndReason = 'complete' | 'cancelled' | 'error';
+/** Why a run ended. */
+export type RunEndReason = 'complete' | 'cancelled' | 'error';
 
 /** Filter for cancel operations. At most one field should be set. */
 export interface CancelFilter {
-  /** Cancel a specific turn by ID. */
-  turnId?: string;
-  /** Cancel all turns belonging to the sender's clientId. */
+  /** Cancel a specific run by ID. */
+  runId?: string;
+  /** Cancel all runs belonging to the sender's clientId. */
   own?: boolean;
-  /** Cancel all turns belonging to a specific clientId. */
+  /** Cancel all runs belonging to a specific clientId. */
   clientId?: string;
-  /** Cancel all turns on the channel. */
+  /** Cancel all runs on the channel. */
   all?: boolean;
 }
 
 /**
- * Passed to the server's `onCancel` hook for authorization decisions.
+ * Passed to a run's `onCancel` hook for authorization decisions.
  * The hook inspects the incoming cancel message and decides whether to
- * allow each matched turn to be aborted.
+ * allow each matched run to be aborted.
  */
 export interface CancelRequest {
   /** The raw Ably message that carried the cancel signal. */
   message: Ably.InboundMessage;
   /** The parsed cancel scope from the message headers. */
   filter: CancelFilter;
-  /** Which active turnIds would be cancelled if allowed. */
-  matchedTurnIds: string[];
-  /** Map of turnId to the ownerClientId for the matched turns. */
-  turnOwners: Map<string, string>;
+  /** Which active runIds would be cancelled if allowed. */
+  matchedRunIds: string[];
+  /** Map of runId to the ownerClientId for the matched runs. */
+  runOwners: Map<string, string>;
 }
 
 // ---------------------------------------------------------------------------
-// Server transport options
+// Agent session options
 // ---------------------------------------------------------------------------
 
-/** Options for creating a server transport. */
-export interface ServerTransportOptions<TEvent, TMessage> {
+/** Options for creating an agent session. */
+export interface AgentSessionOptions<TEvent, TMessage> {
   /** The Ably channel to publish to. Must match the client's channel. */
   channel: Ably.RealtimeChannel;
   /** The codec to use for encoding events and messages. */
@@ -58,7 +60,7 @@ export interface ServerTransportOptions<TEvent, TMessage> {
   /** Logger instance for diagnostic output. */
   logger?: Logger;
   /**
-   * Called with non-fatal transport-level errors not scoped to any turn.
+   * Called with non-fatal session-level errors not scoped to any run.
    * Examples: cancel listener subscription failure, channel attach errors,
    * channel continuity loss (FAILED/SUSPENDED/DETACHED or re-attach with
    * `resumed: false`).
@@ -67,7 +69,7 @@ export interface ServerTransportOptions<TEvent, TMessage> {
 }
 
 // ---------------------------------------------------------------------------
-// Turn options
+// Run options
 // ---------------------------------------------------------------------------
 
 /** Options for addMessages — per-operation overrides for attribution. */
@@ -85,7 +87,7 @@ export interface AddMessagesResult {
 /**
  * A batch of events targeting an existing message.
  * Each node specifies the target message and the events to apply to it.
- * Used for cross-turn updates such as tool result delivery.
+ * Used for cross-run updates such as tool result delivery.
  */
 export interface EventsNode<TEvent> {
   /** Discriminator — identifies this as an events node. */
@@ -100,10 +102,10 @@ export interface EventsNode<TEvent> {
 export type EventNode<TEvent> = EventsNode<TEvent>;
 
 /**
- * Options for streamResponse — per-operation overrides for the assistant message.
+ * Options for `Run.pipe` — per-operation overrides for the assistant message.
  * @template TEvent - The codec event type carried by the stream; used by the `resolveWriteOptions` hook.
  */
-export interface StreamResponseOptions<TEvent> {
+export interface PipeOptions<TEvent> {
   /** The msg-id of the immediately preceding message in this branch. */
   parent?: string;
   /** The msg-id of the message this response replaces (for regeneration). */
@@ -130,53 +132,41 @@ export interface StreamResponseOptions<TEvent> {
 /** The result of streaming a response through the encoder. */
 export interface StreamResult {
   /** Why the stream ended. */
-  reason: TurnEndReason;
+  reason: RunEndReason;
   /**
    * The error that caused the stream to fail, present when `reason` is
    * `'error'`. This is the original error (e.g. from the LLM provider)
    * preserved so the caller can inspect provider-specific fields. The
-   * turn's `onError` callback also fires with a wrapped `Ably.ErrorInfo`
+   * run's `onError` callback also fires with a wrapped `Ably.ErrorInfo`
    * (code `StreamError`) for standardized observability.
    */
   error?: Error;
 }
 
-/** Options passed to newTurn for configuring the turn lifecycle. */
-export interface NewTurnOptions<TEvent> {
-  /** The turn identifier (generated by the client transport or the server). */
-  turnId: string;
-
-  /** The user's clientId for attribution. */
-  clientId?: string;
-
+/** Per-run runtime hooks, signal, and overrides supplied at `createRun()` time. */
+export interface RunRuntime<TEvent> {
   /**
-   * The msg-id of the immediately preceding message in this branch.
-   * Used as the default parent for user messages (via addMessages) and
-   * assistant messages (via streamResponse) when not overridden per-operation.
+   * An external abort signal (typically the HTTP request's `req.signal`) that,
+   * when fired, aborts this run. This allows platform-level cancellation —
+   * request cancellation, serverless function timeout — to stop LLM generation
+   * and stream piping gracefully.
    */
-  parent?: string;
+  signal?: AbortSignal;
 
   /**
-   * The msg-id of the message this turn replaces (creates a fork).
-   * Stamped on user messages (for edits) or assistant messages
-   * (for regeneration).
-   */
-  forkOf?: string;
-
-  /**
-   * Called before each Ably message is published in this turn.
+   * Called before each Ably message is published in this run.
    * Mutate the Ably message in place to add custom extras.headers.
    */
   onMessage?: (message: Ably.Message) => void;
 
   /**
-   * Called when the turn's stream is aborted (by cancel or server).
+   * Called when the run's stream is aborted (by cancel or server).
    * Receives a write function to publish final events before the abort finalises.
    */
   onAbort?: (write: (event: TEvent) => Promise<void>) => void | Promise<void>;
 
   /**
-   * Called when a cancel message arrives matching this turn.
+   * Called when a cancel message arrives matching this run.
    * Return true to allow cancellation (fires abortSignal, stream aborts).
    * Return false to reject (cancel ignored, stream continues).
    * If not provided, all cancels are accepted.
@@ -184,54 +174,59 @@ export interface NewTurnOptions<TEvent> {
   onCancel?: (request: CancelRequest) => Promise<boolean>;
 
   /**
-   * Called with non-fatal turn-scoped errors that have no other delivery
+   * Called with non-fatal run-scoped errors that have no other delivery
    * path. Fires in two scenarios:
-   * - Stream failures in `streamResponse` — the underlying error is also
-   *   returned on `StreamResult.error`, but this callback delivers it
-   *   wrapped as an `Ably.ErrorInfo` (code `StreamError`) for standardized
-   *   observability.
+   * - Stream failures in `pipe` — the underlying error is also returned on
+   *   `StreamResult.error`, but this callback delivers it wrapped as an
+   *   `Ably.ErrorInfo` (code `StreamError`) for standardized observability.
    * - Failures in the `onCancel` handler.
    *
    * Publish failures in `start`, `addMessages`, `addEvents`, and `end`
    * are not delivered here — those methods reject their returned promise
    * with an `Ably.ErrorInfo`, and the caller should handle it at the await
-   * site. Turn errors never render the transport unusable, but the turn
-   * may be in an inconsistent state; the caller should typically `end` it
+   * site. Run errors never render the session unusable, but the run may
+   * be in an inconsistent state; the caller should typically `end` it
    * with reason `'error'`.
    *
    * Channel-wide events (e.g. continuity loss) are delivered via the
-   * transport-level `onError` on {@link ServerTransportOptions}, not here.
+   * session-level `onError` on {@link AgentSessionOptions}, not here.
    */
   onError?: (error: Ably.ErrorInfo) => void;
-
-  /**
-   * An external abort signal (typically the HTTP request's `req.signal`) that,
-   * when fired, aborts this turn. This allows platform-level cancellation —
-   * request cancellation, serverless function timeout — to stop LLM generation
-   * and stream piping gracefully.
-   */
-  signal?: AbortSignal;
 }
 
 // ---------------------------------------------------------------------------
-// Turn interface
+// Run interface
 // ---------------------------------------------------------------------------
 
-/** A server-side turn with explicit lifecycle methods. */
-export interface Turn<TEvent, TMessage> {
-  /** The turn's unique identifier. */
-  readonly turnId: string;
+/**
+ * Read-only view exposed on a {@link Run} of the conversation messages
+ * this run was created with. Mirrors the spec example
+ * `run.view.messages.map(n => n.message)`. A thin facade for now — the
+ * eventual full conversation view is forthcoming.
+ */
+export interface RunView<TMessage> {
+  /** Messages along the selected branch as the agent should see them. */
+  readonly messages: MessageNode<TMessage>[];
+}
 
-  /** Abort signal scoped to this turn. Fires when a cancel event arrives for this turnId. */
+/** A server-side run with explicit lifecycle methods. */
+export interface Run<TEvent, TMessage> {
+  /** The run's unique identifier. */
+  readonly runId: string;
+
+  /** Abort signal scoped to this run. Fires when a cancel event arrives for this runId. */
   readonly abortSignal: AbortSignal;
 
-  /** Publish turn-start event to the channel. Must be called before addMessages or streamResponse. */
+  /** Read-only view of the conversation messages associated with this run. */
+  readonly view: RunView<TMessage>;
+
+  /** Publish run-start event to the channel. Must be called before addMessages or pipe. */
   start(): Promise<void>;
 
   /**
-   * Publish user messages to the channel, scoped to this turn.
+   * Publish user messages to the channel, scoped to this run.
    * Each node's `msgId`, `parentId`, and `forkOf` are used for message identity
-   * and branching. The node's `headers` override transport-generated defaults
+   * and branching. The node's `headers` override session-generated defaults
    * (e.g. for optimistic reconciliation with the client's inserts).
    * @returns The msg-ids of all published messages, in order.
    */
@@ -240,9 +235,9 @@ export interface Turn<TEvent, TMessage> {
   /**
    * Pipe a ReadableStream through the encoder to the channel.
    * Returns when the stream completes, is cancelled, or errors.
-   * Does NOT call end() — the caller must call end() after streamResponse returns.
+   * Does NOT call end() — the caller must call end() after pipe returns.
    */
-  streamResponse(stream: ReadableStream<TEvent>, options?: StreamResponseOptions<TEvent>): Promise<StreamResult>;
+  pipe(stream: ReadableStream<TEvent>, options?: PipeOptions<TEvent>): Promise<StreamResult>;
 
   /**
    * Publish events targeting existing messages in the tree. Each node
@@ -251,38 +246,50 @@ export interface Turn<TEvent, TMessage> {
    * so receiving clients apply them to the existing node rather than
    * creating a new one.
    *
-   * Used for cross-turn updates such as tool result delivery after
+   * Used for cross-run updates such as tool result delivery after
    * approval or client-side tool execution.
    */
   addEvents(nodes: EventsNode<TEvent>[]): Promise<void>;
 
-  /** Publish turn-end event to the channel and clean up. */
-  end(reason: TurnEndReason): Promise<void>;
+  /** Publish run-end event to the channel and clean up. */
+  end(reason: RunEndReason): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
-// Server transport interface
+// Agent session interface
 // ---------------------------------------------------------------------------
 
-/** Server-side transport that manages turn lifecycles over an Ably channel. */
-export interface ServerTransport<TEvent, TMessage> {
+/** Server-side session that manages run lifecycles over an Ably channel. */
+export interface AgentSession<TEvent, TMessage> {
   /**
-   * Create a new turn. Synchronous — no channel activity until start() is called.
-   * The turn is registered for cancel routing immediately so that early cancels
-   * fire the abort signal.
+   * Subscribe to the cancel channel and (implicitly) attach. Idempotent —
+   * subsequent calls return the same promise. All run methods (`start`,
+   * `addMessages`, `addEvents`, `pipe`, `end`) throw `InvalidArgument`
+   * until `connect()` resolves.
    */
-  newTurn(options: NewTurnOptions<TEvent>): Turn<TEvent, TMessage>;
+  connect(): Promise<void>;
 
-  /** Unsubscribe from cancel messages, abort all active turns, and clean up. */
+  /**
+   * Create a new run from an invocation. Synchronous — no channel activity
+   * until start() is called. The run is registered for cancel routing
+   * immediately so that early cancels fire the abort signal.
+   * @param invocation - The {@link Invocation} carrying run identity and
+   *   conversation messages.
+   * @param runtime - Optional runtime hooks and external abort signal
+   *   (e.g. the HTTP request's `req.signal`).
+   */
+  createRun(invocation: Invocation<TEvent, TMessage>, runtime?: RunRuntime<TEvent>): Run<TEvent, TMessage>;
+
+  /** Unsubscribe from cancel messages, abort all active runs, and clean up. */
   close(): void;
 }
 
 // ---------------------------------------------------------------------------
-// Client transport options
+// Client session options
 // ---------------------------------------------------------------------------
 
-/** Options for creating a client transport. */
-export interface ClientTransportOptions<TEvent, TMessage> {
+/** Options for creating a client session. */
+export interface ClientSessionOptions<TEvent, TMessage> {
   /** The Ably channel to receive responses on and publish cancel signals to. */
   channel: Ably.RealtimeChannel;
 
@@ -339,33 +346,33 @@ export interface SendOptions {
 }
 
 // ---------------------------------------------------------------------------
-// Turn lifecycle events
+// Run lifecycle events
 // ---------------------------------------------------------------------------
 
-/** A structured event describing a turn starting or ending. */
-export type TurnLifecycleEvent =
+/** A structured event describing a run starting or ending. */
+export type RunLifecycleEvent =
   | {
-      type: 'x-ably-turn-start';
-      turnId: string;
+      type: 'x-ably-run-start';
+      runId: string;
       clientId: string;
-      /** The msg-id of the parent message, if known. Omitted for root turns. */
+      /** The msg-id of the parent message, if known. Omitted for root runs. */
       parent?: string;
       /** The msg-id being forked/replaced, if this is a regeneration or edit. */
       forkOf?: string;
     }
-  | { type: 'x-ably-turn-end'; turnId: string; clientId: string; reason: TurnEndReason };
+  | { type: 'x-ably-run-end'; runId: string; clientId: string; reason: RunEndReason };
 
 // ---------------------------------------------------------------------------
-// Active turn handle
+// Active run handle
 // ---------------------------------------------------------------------------
 
-/** A handle to an active client-side turn, returned by `send()`, `regenerate()`, and `edit()`. */
-export interface ActiveTurn<TEvent> {
-  /** The decoded event stream for this turn. May error if the delivery guarantee is broken (e.g. POST failure, channel continuity loss). */
+/** A handle to an active client-side run, returned by `send()`, `regenerate()`, and `edit()`. */
+export interface ActiveRun<TEvent> {
+  /** The decoded event stream for this run. May error if the delivery guarantee is broken (e.g. POST failure, channel continuity loss). */
   stream: ReadableStream<TEvent>;
-  /** The turn's unique identifier. */
-  turnId: string;
-  /** Cancel this specific turn. Publishes a cancel message and closes the local stream. */
+  /** The run's unique identifier. */
+  runId: string;
+  /** Cancel this specific run. Publishes a cancel message and closes the local stream. */
   cancel(): Promise<void>;
   /**
    * The msg-ids of optimistically inserted user messages, in order.
@@ -379,9 +386,9 @@ export interface ActiveTurn<TEvent> {
 // Close options
 // ---------------------------------------------------------------------------
 
-/** Options for closing a client transport. */
+/** Options for closing a client session. */
 export interface CloseOptions {
-  /** Cancel in-progress turns before closing. Publishes a cancel message to the channel. */
+  /** Cancel in-progress runs before closing. Publishes a cancel message to the channel. */
   cancel?: CancelFilter;
 }
 
@@ -470,7 +477,7 @@ export interface Tree<TMessage> {
   /** Get the stored headers for a node by msgId, or undefined if not found. */
   getHeaders(msgId: string): Record<string, string> | undefined;
 
-  // --- Mutation (used by the transport, not the UI) ---
+  // --- Mutation (used by the session, not the UI) ---
 
   /**
    * Insert or update a message in the tree. Reads parent/forkOf from the
@@ -485,8 +492,8 @@ export interface Tree<TMessage> {
 
   // --- Events ---
 
-  /** Active turn IDs grouped by clientId (all turns, not just visible). */
-  getActiveTurnIds(): Map<string, Set<string>>;
+  /** Active run IDs grouped by clientId (all runs, not just visible). */
+  getActiveRunIds(): Map<string, Set<string>>;
 
   /** Subscribe to tree structure changes (insert, update, delete). */
   on(event: 'update', handler: () => void): () => void;
@@ -494,8 +501,8 @@ export interface Tree<TMessage> {
   /** Subscribe to raw Ably messages arriving on the channel. */
   on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
 
-  /** Subscribe to turn lifecycle events (start and end). */
-  on(event: 'turn', handler: (event: TurnLifecycleEvent) => void): () => void;
+  /** Subscribe to run lifecycle events (start and end). */
+  on(event: 'run', handler: (event: RunLifecycleEvent) => void): () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -555,44 +562,44 @@ export interface View<TEvent, TMessage> {
   // --- Write operations ---
 
   /**
-   * Send one or more messages and start a new turn. The parent is
+   * Send one or more messages and start a new run. The parent is
    * auto-computed from this view's selected branch unless overridden.
    * The HTTP POST is fire-and-forget — the returned stream is available
    * immediately. If the POST fails, the error is surfaced via the
-   * transport's `on("error")` and the stream is errored.
+   * session's `on("error")` and the stream is errored.
    */
-  send(messages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveTurn<TEvent>>;
+  send(messages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveRun<TEvent>>;
 
   /**
-   * Regenerate an assistant message. Creates a new turn that forks the
+   * Regenerate an assistant message. Creates a new run that forks the
    * target message with no new user messages. Automatically computes
    * `forkOf`, `parent`, and truncated `history` from this view's branch.
    */
-  regenerate(messageId: string, options?: SendOptions): Promise<ActiveTurn<TEvent>>;
+  regenerate(messageId: string, options?: SendOptions): Promise<ActiveRun<TEvent>>;
 
   /**
-   * Edit a user message. Creates a new turn that forks the target message
+   * Edit a user message. Creates a new run that forks the target message
    * with replacement content. Automatically computes `forkOf`, `parent`,
    * and `history` from this view's branch.
    */
-  edit(messageId: string, newMessages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveTurn<TEvent>>;
+  edit(messageId: string, newMessages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveRun<TEvent>>;
 
   /**
-   * Update an existing message and start a continuation turn.
+   * Update an existing message and start a continuation run.
    * The local tree is updated optimistically, then the events are sent
    * to the server in the POST body. The server publishes them to the channel
    * and streams a continuation response.
    * @param msgId - The `x-ably-msg-id` of the existing message to amend.
    * @param events - Events to apply to the target message (e.g. tool output).
    * @param options - Optional send options (body, headers).
-   * @returns An active turn with the continuation response stream.
+   * @returns An active run with the continuation response stream.
    */
-  update(msgId: string, events: TEvent[], options?: SendOptions): Promise<ActiveTurn<TEvent>>;
+  update(msgId: string, events: TEvent[], options?: SendOptions): Promise<ActiveRun<TEvent>>;
 
   // --- Observation ---
 
-  /** Active turn IDs for turns with visible messages, grouped by clientId. */
-  getActiveTurnIds(): Map<string, Set<string>>;
+  /** Active run IDs for runs with visible messages, grouped by clientId. */
+  getActiveRunIds(): Map<string, Set<string>>;
 
   /** The visible message list changed (new visible node, branch switch, window shift). */
   on(event: 'update', handler: () => void): () => void;
@@ -600,8 +607,8 @@ export interface View<TEvent, TMessage> {
   /** A raw Ably message arrived that corresponds to a visible node. */
   on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
 
-  /** A turn event occurred for a turn with visible messages in the window. */
-  on(event: 'turn', handler: (event: TurnLifecycleEvent) => void): () => void;
+  /** A run event occurred for a run with visible messages in the window. */
+  on(event: 'run', handler: (event: RunLifecycleEvent) => void): () => void;
 
   /** Tear down the view — unsubscribe from tree events and clear internal state. */
   close(): void;
@@ -611,20 +618,20 @@ export interface View<TEvent, TMessage> {
 // Internal sub-component types
 // ---------------------------------------------------------------------------
 
-/** Entry in the StreamRouter's turn map. Not part of the public API. */
-export interface TurnEntry<TEvent> {
-  /** The ReadableStream controller for this turn. */
+/** Entry in the StreamRouter's run map. Not part of the public API. */
+export interface RunEntry<TEvent> {
+  /** The ReadableStream controller for this run. */
   controller: ReadableStreamDefaultController<TEvent>;
-  /** The turn's unique identifier. */
-  turnId: string;
+  /** The run's unique identifier. */
+  runId: string;
 }
 
 // ---------------------------------------------------------------------------
-// Client transport interface
+// Client session interface
 // ---------------------------------------------------------------------------
 
-/** Client-side transport that manages conversation state over an Ably channel. */
-export interface ClientTransport<TEvent, TMessage> {
+/** Client-side session that manages conversation state over an Ably channel. */
+export interface ClientSession<TEvent, TMessage> {
   /** The complete conversation tree — all known nodes, events for any change. */
   readonly tree: Tree<TMessage>;
 
@@ -632,21 +639,29 @@ export interface ClientTransport<TEvent, TMessage> {
   readonly view: View<TEvent, TMessage>;
 
   /**
+   * Subscribe to the channel and (implicitly) attach. Idempotent —
+   * subsequent calls return the same promise. `send()`, `regenerate()`,
+   * `edit()`, `update()`, `cancel()`, and `waitForRun()` throw
+   * `InvalidArgument` until `connect()` resolves.
+   */
+  connect(): Promise<void>;
+
+  /**
    * Create an additional view over the same conversation tree.
    * Each view has independent branch selections and pagination state.
    * The caller is responsible for calling `close()` on the returned view
-   * when it is no longer needed, or it will be closed when the transport closes.
+   * when it is no longer needed, or it will be closed when the session closes.
    */
   createView(): View<TEvent, TMessage>;
 
-  /** Cancel turns matching the filter. Defaults to `{ own: true }` (all own turns). */
+  /** Cancel runs matching the filter. Defaults to `{ own: true }` (all own runs). */
   cancel(filter?: CancelFilter): Promise<void>;
 
   /**
    * Apply events to an existing tree message locally and queue them for
    * delivery on the next send.
    *
-   * Use for cross-turn updates where the event value is produced on the
+   * Use for cross-run updates where the event value is produced on the
    * client (e.g. after `addToolResult` resolves a client-executed tool) and
    * must appear in the tree immediately so downstream observers — such as a
    * destructive `setMessages(...)` mirror — cannot wipe it before it lands
@@ -654,7 +669,7 @@ export interface ClientTransport<TEvent, TMessage> {
    *
    * The events are applied to the tree via the codec's accumulator
    * (tree `update` fires once with the merged message) and queued on the
-   * transport. The next send operation flushes the queue into the POST
+   * session. The next send operation flushes the queue into the POST
    * body's `events` field so the server can republish them over the channel.
    *
    * If `msgId` is not present in the tree, the call is a no-op and a
@@ -679,7 +694,7 @@ export interface ClientTransport<TEvent, TMessage> {
    *
    * Runs synchronously. Subsequent tree observers (e.g. useMessageSync)
    * see the patched state on the next tick, so an interleaved
-   * observer-turn sync can't clobber it back.
+   * observer-run sync can't clobber it back.
    *
    * If `msgId` is not present in the tree, the call is a no-op and a
    * warning is logged.
@@ -689,20 +704,20 @@ export interface ClientTransport<TEvent, TMessage> {
   stageMessage(msgId: string, message: TMessage): void;
 
   /**
-   * Returns a promise that resolves when all active turns matching the filter
-   * have completed. Resolves immediately if no matching turns are active.
+   * Returns a promise that resolves when all active runs matching the filter
+   * have completed. Resolves immediately if no matching runs are active.
    * Defaults to `{ own: true }`.
    */
-  waitForTurn(filter?: CancelFilter): Promise<void>;
+  waitForRun(filter?: CancelFilter): Promise<void>;
 
   /**
-   * Subscribe to non-fatal transport errors. These indicate something went
-   * wrong but the transport is still operational. Returns an unsubscribe function.
+   * Subscribe to non-fatal session errors. These indicate something went
+   * wrong but the session is still operational. Returns an unsubscribe function.
    */
   on(event: 'error', handler: (error: Ably.ErrorInfo) => void): () => void;
 
   /**
-   * Tear down the transport: unsubscribe from the channel, close active
+   * Tear down the session: unsubscribe from the channel, close active
    * streams, clear all handlers, and prevent further operations.
    *
    * Pass `cancel` to publish a cancel message before closing. Without it,

@@ -85,6 +85,6 @@ When the [encoder](encoder.md#header-merging) publishes a message, headers are m
 2. **Per-write overrides** - headers passed to individual write calls
 3. **Codec headers** - domain-specific headers from the payload
 
-After merging, the `onMessage` hook runs as a post-processing step for transport-level stamping (turn ID, role, parent).
+After merging, the `onMessage` hook runs as a post-processing step for transport-level stamping (run IDs, role, parent).
 
 See [Wire protocol](wire-protocol.md) for the complete header specification. See [Encoder](encoder.md#header-merging) for the merge implementation. See [Transport components: buildTransportHeaders](transport-components.md#buildtransportheaders) for the transport header builder.

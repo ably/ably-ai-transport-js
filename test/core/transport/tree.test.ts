@@ -424,19 +424,19 @@ describe('Tree', () => {
       expect(handler).not.toHaveBeenCalled();
     });
 
-    it('tracks and exposes active turns', () => {
+    it('tracks and exposes active runs', () => {
       const fullTree = createTree<TestMessage>(silentLogger);
-      fullTree.trackTurn('turn-1', 'client-a');
-      fullTree.trackTurn('turn-2', 'client-a');
-      fullTree.trackTurn('turn-3', 'client-b');
+      fullTree.trackRun('run-1', 'client-a');
+      fullTree.trackRun('run-2', 'client-a');
+      fullTree.trackRun('run-3', 'client-b');
 
-      const active = fullTree.getActiveTurnIds();
-      expect(active.get('client-a')).toEqual(new Set(['turn-1', 'turn-2']));
-      expect(active.get('client-b')).toEqual(new Set(['turn-3']));
+      const active = fullTree.getActiveRunIds();
+      expect(active.get('client-a')).toEqual(new Set(['run-1', 'run-2']));
+      expect(active.get('client-b')).toEqual(new Set(['run-3']));
 
-      fullTree.untrackTurn('turn-1');
-      const after = fullTree.getActiveTurnIds();
-      expect(after.get('client-a')).toEqual(new Set(['turn-2']));
+      fullTree.untrackRun('run-1');
+      const after = fullTree.getActiveRunIds();
+      expect(after.get('client-a')).toEqual(new Set(['run-2']));
     });
   });
 });

@@ -30,8 +30,8 @@ sequenceDiagram
 Optimistic updates are automatic - there is no opt-in or configuration. Every call to `send()`, `edit()`, or `regenerate()` that includes user messages uses the same mechanism.
 
 ```typescript
-const view = transport.view;
-const turn = await view.send(userMessage);
+const view = session.view;
+const run = await view.send(userMessage);
 
 // The user message is already in the view - no waiting for the server
 const messages = view.flattenNodes().map((n) => n.message);
@@ -43,7 +43,7 @@ In React, `useView()` re-renders immediately after `send()` because the optimist
 ```typescript
 import { useView } from '@ably/ai-transport/react';
 
-const { nodes, send } = useView(transport);
+const { nodes, send } = useView(session);
 
 // After send(), messages updates instantly with the new user message
 await send([userMessage]);
@@ -61,7 +61,7 @@ Both changes happen inside a single `upsert()` call on the conversation tree. An
 
 ## Server side
 
-No server-side code is needed. The server transport's `turn.addMessages()` preserves the `x-ably-msg-id` from the client's POST body when relaying user messages onto the channel. This is what allows the sending client to match the relay against its optimistic entry. See [Streaming: server](streaming.md#server) for the standard server turn flow.
+No server-side code is needed. The agent session's `run.addMessages()` preserves the `x-ably-msg-id` from the client's POST body when relaying user messages onto the channel. This is what allows the sending client to match the relay against its optimistic entry. See [Streaming: server](streaming.md#server) for the standard server run flow.
 
 ## Multi-message sends
 
@@ -69,15 +69,15 @@ When `send()` receives an array of messages, each gets its own `x-ably-msg-id` a
 
 ```typescript
 // Both messages appear immediately, chained in order
-const turn = await view.send([questionOne, questionTwo]);
+const run = await view.send([questionOne, questionTwo]);
 ```
 
 ## Edge cases
 
-**POST failure** - if the HTTP POST fails (network error or non-2xx response), the optimistic message remains in the tree but the server never relays it. The error is emitted via `transport.on('error')`. The optimistic entry stays with no serial until the transport is reset. In practice, the developer should handle the error event and update the UI accordingly.
+**POST failure** - if the HTTP POST fails (network error or non-2xx response), the optimistic message remains in the tree but the server never relays it. The error is emitted via `session.on('error')`. The optimistic entry stays with no serial until the transport is reset. In practice, the developer should handle the error event and update the UI accordingly.
 
 **Multi-client ordering** - in a conversation with multiple clients sending concurrently, optimistic messages appear at the end of the local tree until reconciliation. After reconciliation, the serial determines the canonical order, which may differ from the optimistic insertion order. All clients converge on the same order once relays are reconciled.
 
-**Cleanup** - the transport tracks optimistic message IDs per turn. When a [turn](../concepts/turns.md) ends (via `x-ably-turn-end` on the channel), the tracking state for that turn is cleaned up. This prevents stale message IDs from matching against unrelated messages in future turns.
+**Cleanup** - the transport tracks optimistic message IDs per run. When a [run](../concepts/runs.md) ends (via `x-ably-run-end` on the channel), the tracking state for that run is cleaned up. This prevents stale message IDs from matching against unrelated messages in future runs.
 
-For the internal implementation details, see [Client transport: optimistic reconciliation](../internals/client-transport.md#optimistic-reconciliation), [Conversation tree: upsert](../internals/conversation-tree.md#upsert-the-sole-mutation), and [Wire protocol: message identity](../internals/wire-protocol.md#message-identity-x-ably-msg-id).
+For the internal implementation details, see [Client session: optimistic reconciliation](../internals/client-session.md#optimistic-reconciliation), [Conversation tree: upsert](../internals/conversation-tree.md#upsert-the-sole-mutation), and [Wire protocol: message identity](../internals/wire-protocol.md#message-identity-x-ably-msg-id).

@@ -2,11 +2,11 @@
  * Shared constants used by both codec and transport layers.
  *
  * Header constants define the `x-ably-*` wire protocol. Message and event
- * name constants define the transport lifecycle signals on the channel.
+ * name constants define the session lifecycle signals on the channel.
  *
  * These live at the top level (not in codec/ or transport/) because both
  * layers need them — the codec core reads/writes stream and status headers,
- * while the transport layer reads/writes turn, cancel, and role headers.
+ * while the transport layer reads/writes run, cancel, and role headers.
  */
 
 // ---------------------------------------------------------------------------
@@ -26,38 +26,38 @@ export const HEADER_STREAM_ID = 'x-ably-stream-id';
 export const HEADER_DISCRETE = 'x-ably-discrete';
 
 // ---------------------------------------------------------------------------
-// Identity headers (used by transport for turn correlation)
+// Identity headers (used by transport for run correlation)
 // ---------------------------------------------------------------------------
 
-/** Header: turn correlation ID. Set on every message in a turn. */
-export const HEADER_TURN_ID = 'x-ably-turn-id';
+/** Header: run correlation ID. Set on every message in a run. */
+export const HEADER_RUN_ID = 'x-ably-run-id';
 
 /** Header: message identity. Assigned per message (user or assistant). Used for optimistic reconciliation on the client. */
 export const HEADER_MSG_ID = 'x-ably-msg-id';
 
-/** Header: clientId of the user who initiated the turn. Set by the server on stream messages. */
-export const HEADER_TURN_CLIENT_ID = 'x-ably-turn-client-id';
+/** Header: clientId of the user who initiated the run. Set by the server on stream messages. */
+export const HEADER_RUN_CLIENT_ID = 'x-ably-run-client-id';
 
 /** Header: message role (e.g. "user", "assistant"). */
 export const HEADER_ROLE = 'x-ably-role';
 
-/** Header: the msg-id of the existing message this Ably message amends. Present on cross-turn amendment events. */
+/** Header: the msg-id of the existing message this Ably message amends. Present on cross-run amendment events. */
 export const HEADER_AMEND = 'x-ably-amend';
 
 // ---------------------------------------------------------------------------
 // Cancel headers
 // ---------------------------------------------------------------------------
 
-/** Header: cancel a specific turn by ID. */
-export const HEADER_CANCEL_TURN_ID = 'x-ably-cancel-turn-id';
+/** Header: cancel a specific run by ID. */
+export const HEADER_CANCEL_RUN_ID = 'x-ably-cancel-run-id';
 
-/** Header: cancel all turns belonging to the sender's clientId. */
+/** Header: cancel all runs belonging to the sender's clientId. */
 export const HEADER_CANCEL_OWN = 'x-ably-cancel-own';
 
-/** Header: cancel all turns on the channel. */
+/** Header: cancel all runs on the channel. */
 export const HEADER_CANCEL_ALL = 'x-ably-cancel-all';
 
-/** Header: cancel all turns belonging to a specific clientId. */
+/** Header: cancel all runs belonging to a specific clientId. */
 export const HEADER_CANCEL_CLIENT_ID = 'x-ably-cancel-client-id';
 
 // ---------------------------------------------------------------------------
@@ -71,11 +71,11 @@ export const HEADER_PARENT = 'x-ably-parent';
 export const HEADER_FORK_OF = 'x-ably-fork-of';
 
 // ---------------------------------------------------------------------------
-// Turn lifecycle headers
+// Run lifecycle headers
 // ---------------------------------------------------------------------------
 
-/** Header: reason a turn ended (on x-ably-turn-end messages). */
-export const HEADER_TURN_REASON = 'x-ably-turn-reason';
+/** Header: reason a run ended (on x-ably-run-end messages). */
+export const HEADER_RUN_REASON = 'x-ably-run-reason';
 
 // ---------------------------------------------------------------------------
 // Message / event names
@@ -84,11 +84,11 @@ export const HEADER_TURN_REASON = 'x-ably-turn-reason';
 /** Message name: client->server cancel signal. */
 export const EVENT_CANCEL = 'x-ably-cancel';
 
-/** Message name: server publishes this to signal a turn has started. */
-export const EVENT_TURN_START = 'x-ably-turn-start';
+/** Message name: server publishes this to signal a run has started. */
+export const EVENT_RUN_START = 'x-ably-run-start';
 
-/** Message name: server publishes this to signal a turn has ended. */
-export const EVENT_TURN_END = 'x-ably-turn-end';
+/** Message name: server publishes this to signal a run has ended. */
+export const EVENT_RUN_END = 'x-ably-run-end';
 
 /** Message name: transport-level abort signal (stream cancelled). */
 export const EVENT_ABORT = 'x-ably-abort';

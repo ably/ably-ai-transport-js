@@ -96,19 +96,19 @@ Text was streamed via message appends over the wire. The tool call arrived as a 
 
 Note: text deltas may be coalesced by Ably during delivery (e.g. three published deltas arriving as two), but the accumulated result is always the full text.
 
-## Using the codec with a transport
+## Using the codec with a session
 
 The `AgentCodec` implements the same `Codec<TEvent, TMessage>` interface used by the transport layer. To use it with a real Ably channel:
 
 ```ts
-import { createServerTransport, createClientTransport } from '@ably/ai-transport';
+import { createAgentSession, createClientSession } from '@ably/ai-transport';
 import { AgentCodec } from './codec.js';
 
-// Server side
-const serverTransport = createServerTransport(channel, { codec: AgentCodec });
+// Agent side
+const agentSession = createAgentSession(channel, { codec: AgentCodec });
 
 // Client side
-const clientTransport = createClientTransport(channel, {
+const clientSession = createClientSession(channel, {
   codec: AgentCodec,
   sendUrl: '/api/chat',
 });
@@ -116,15 +116,15 @@ const clientTransport = createClientTransport(channel, {
 
 ## How the encoder works
 
-The encoder implements `StreamEncoder<TEvent, TMessage>` (which extends `DiscreteEncoder`). It has five methods — three are called by the transport:
+The encoder implements `StreamEncoder<TEvent, TMessage>` (which extends `DiscreteEncoder`). It has five methods — three are called by the session:
 
-| Method                    | Called by        | Purpose                                                                                                                                                        |
-| ------------------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `appendEvent(event)`      | Server transport | The hot path — called for each chunk from the model's streaming response. Map events to streamed or discrete core operations.                                  |
-| `writeMessages(messages)` | Server transport | Publish one or more `TMessage`s atomically (user prompts, history entries). All messages share one `x-ably-msg-id` and form one node in the conversation tree. |
-| `abort(reason?)`          | Transport        | Close open streams as "aborted" and publish an abort signal.                                                                                                   |
-| `writeEvent(event)`       | Consumer code    | Publish a standalone discrete event outside the streaming flow. Not called by the transport. Throw for streaming-only types.                                   |
-| `close()`                 | Transport        | Flush pending appends and run recovery. Always call this.                                                                                                      |
+| Method                    | Called by     | Purpose                                                                                                                                                        |
+| ------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `appendEvent(event)`      | Agent session | The hot path — called for each chunk from the model's streaming response. Map events to streamed or discrete core operations.                                  |
+| `writeMessages(messages)` | Agent session | Publish one or more `TMessage`s atomically (user prompts, history entries). All messages share one `x-ably-msg-id` and form one node in the conversation tree. |
+| `abort(reason?)`          | Session       | Close open streams as "aborted" and publish an abort signal.                                                                                                   |
+| `writeEvent(event)`       | Consumer code | Publish a standalone discrete event outside the streaming flow. Not called by the session. Throw for streaming-only types.                                     |
+| `close()`                 | Session       | Flush pending appends and run recovery. Always call this.                                                                                                      |
 
 Inside `appendEvent`, you delegate to two encoder core primitives:
 

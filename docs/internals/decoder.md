@@ -109,7 +109,7 @@ type DecoderOutput<TEvent, TMessage> =
   | { kind: 'message'; message: TMessage };
 ```
 
-- `kind: 'event'` - a streaming event that should be routed to a stream (own turn) or accumulated (observer turn)
+- `kind: 'event'` - a streaming event that should be routed to a stream (own run) or accumulated (observer run)
 - `kind: 'message'` - a complete domain message (e.g. a user message from `decodeDiscrete()`)
 
 The transport layer processes these differently: events go to the [stream router](transport-components.md) or accumulator, messages go directly to the [conversation tree](conversation-tree.md).

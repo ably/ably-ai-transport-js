@@ -1,10 +1,10 @@
 /**
- * Vercel chat transport: wraps a core ClientTransport to satisfy the
+ * Vercel chat transport: wraps a core ClientSession to satisfy the
  * ChatTransport interface that useChat expects.
  *
- * This is a thin adapter — the real logic lives in the core transport.
+ * This is a thin adapter — the real logic lives in the core client session.
  * The chat transport maps Vercel's sendMessages/reconnectToStream contract
- * to the core transport's send/cancel methods.
+ * to the core session's send/cancel methods.
  *
  * useChat manages message state before calling sendMessages:
  * - submit-message (new): appends the new user message, passes the full array
@@ -24,7 +24,7 @@
 import * as Ably from 'ably';
 import type * as AI from 'ai';
 
-import type { ClientTransport, CloseOptions, SendOptions } from '../../core/transport/types.js';
+import type { ClientSession, CloseOptions, SendOptions } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
 
 // ---------------------------------------------------------------------------
@@ -133,7 +133,7 @@ export interface ChatTransport {
   /** Close the underlying transport, releasing all resources. */
   close(options?: CloseOptions): Promise<void>;
 
-  /** Whether an own-turn stream is currently being consumed by useChat. */
+  /** Whether an own-run stream is currently being consumed by useChat. */
   readonly streaming: boolean;
 
   /**
@@ -190,7 +190,7 @@ const wrapStreamWithDone = <T>(source: ReadableStream<T>): { stream: ReadableStr
  * - `input-streaming` / `input-available` — tool call emitted, not yet run.
  * - `approval-requested` — waiting for the user.
  *
- * Excludes `approval-responded` (streamText will run the tool this turn)
+ * Excludes `approval-responded` (streamText will run the tool this run)
  * and all terminal `output-*` states.
  * @param msg - The UIMessage to inspect.
  * @returns True when a fork-on-send is warranted to avoid shipping a
@@ -209,22 +209,22 @@ const hasUnresolvedToolCall = (msg: AI.UIMessage): boolean =>
 // ---------------------------------------------------------------------------
 
 /**
- * Create a Vercel ChatTransport from a core ClientTransport.
+ * Create a Vercel ChatTransport from a core ClientSession.
  *
  * Exposes a `streaming` flag and `onStreamingChange` callback so that
- * `useMessageSync` can gate `setMessages` calls during active own-turn
+ * `useMessageSync` can gate `setMessages` calls during active own-run
  * streams, preventing the push/replace ID mismatch in useChat's `write()`.
  *
  * Note: concurrent `sendMessage` calls from the same user are a useChat
  * limitation that cannot be fixed from the transport layer. The
  * developer must respect useChat's `status` and only call `sendMessage`
  * when status is `'ready'`.
- * @param transport - The core client transport to wrap.
+ * @param session - The core client session to wrap.
  * @param chatOptions - Optional hooks for customizing request construction.
  * @returns A {@link ChatTransport} compatible with Vercel's useChat hook.
  */
 export const createChatTransport = (
-  transport: ClientTransport<AI.UIMessageChunk, AI.UIMessage>,
+  session: ClientSession<AI.UIMessageChunk, AI.UIMessage>,
   chatOptions?: ChatTransportOptions,
 ): ChatTransport => {
   // -- Streaming state -------------------------------------------------------
@@ -248,7 +248,7 @@ export const createChatTransport = (
 
   const sendMessages: ChatTransport['sendMessages'] = async (opts) => {
     const { messages, abortSignal, trigger, messageId } = opts;
-    const allNodes = transport.view.flattenNodes();
+    const allNodes = session.view.flattenNodes();
 
     // useChat calls sendMessages in three distinct modes. We disambiguate
     // by (trigger, last-message role) so each mode dispatches correctly:
@@ -266,8 +266,8 @@ export const createChatTransport = (
     // treat messageId as a fork target — useChat v6's sendAutomaticallyWhen
     // path always sets messageId to the last message id regardless.
     //
-    // Client-side tool outputs are expected to be staged on the transport
-    // via transport.stageEvents() before this runs; the core transport
+    // Client-side tool outputs are expected to be staged on the session
+    // via session.stageEvents() before this runs; the core session
     // flushes staged events into the POST body automatically.
     const lastMessage = messages.at(-1);
     const lastMessageNode = lastMessage ? allNodes.find((n) => n.message.id === lastMessage.id) : undefined;
@@ -276,7 +276,7 @@ export const createChatTransport = (
     // Fork-on-unresolved-tool: user sent a new message while the preceding
     // assistant has an unresolved tool call (approval-requested, input-*).
     // Fork the new message off the preceding assistant so the unresolved
-    // tool call stays dormant on a sibling branch. Inference this turn runs
+    // tool call stays dormant on a sibling branch. Inference for this run runs
     // on the clean fork — the LLM never sees the dangling tool_use.
     //
     // Only applies to fresh user-message submits (not continuations, not
@@ -360,7 +360,7 @@ export const createChatTransport = (
       const historyNodes = allNodes.filter((n) => historyIds.has(n.message.id));
       sendBody = {
         history: historyNodes,
-        chatId: opts.chatId,
+        sessionName: opts.chatId,
         trigger,
         ...(messageId !== undefined && { messageId }),
         ...(forkOf !== undefined && { forkOf }),
@@ -374,12 +374,12 @@ export const createChatTransport = (
     if (parent !== undefined) sendOpts.parent = parent;
 
     // A single dispatch path: view.send with the (possibly empty)
-    // newMessages array. Any events staged via transport.stageEvents()
+    // newMessages array. Any events staged via session.stageEvents()
     // flow automatically through _internalSend into the POST body.
-    const turn = await transport.view.send(newMessages, sendOpts);
+    const run = await session.view.send(newMessages, sendOpts);
 
     if (abortSignal) {
-      abortSignal.addEventListener('abort', () => void transport.cancel({ all: true }), {
+      abortSignal.addEventListener('abort', () => void session.cancel({ all: true }), {
         once: true,
       });
     }
@@ -387,7 +387,7 @@ export const createChatTransport = (
     // Wrap the stream to detect completion. The streaming flag gates
     // useMessageSync so that setMessages doesn't interfere with
     // useChat's internal write() during active streams.
-    const { stream, done } = wrapStreamWithDone(turn.stream);
+    const { stream, done } = wrapStreamWithDone(run.stream);
     setStreaming(true);
 
     // Fire-and-forget: clear the streaming flag when the stream ends.
@@ -408,7 +408,7 @@ export const createChatTransport = (
     // eslint-disable-next-line unicorn/no-null, @typescript-eslint/promise-function-async -- null is required by the AI SDK ChatTransport contract; no await needed
     reconnectToStream: () => Promise.resolve(null),
 
-    close: async (options?: CloseOptions) => transport.close(options),
+    close: async (options?: CloseOptions) => session.close(options),
 
     get streaming(): boolean {
       return _streaming;

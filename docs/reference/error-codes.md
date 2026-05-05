@@ -4,17 +4,17 @@ AI Transport uses `Ably.ErrorInfo` as its error type. Each error has a numeric `
 
 ## Error codes
 
-| Code   | Name                         | Status | Description                                                                                                  | Recovery                                                                            |
-| ------ | ---------------------------- | ------ | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
-| 40000  | `BadRequest`                 | 400    | The request was invalid                                                                                      | Check the request parameters                                                        |
-| 40003  | `InvalidArgument`            | 400    | An argument passed to a public method was invalid                                                            | Fix the argument value                                                              |
-| 104000 | `EncoderRecoveryFailed`      | 500    | Encoder recovery failed after flush - `updateMessage` could not recover a failed append pipeline             | Non-fatal; the message may be incomplete on the channel. Check network connectivity |
-| 104001 | `TransportSubscriptionError` | 500    | A channel subscription callback threw unexpectedly                                                           | Non-fatal; the transport is still operational. Check error handler logic            |
-| 104002 | `CancelListenerError`        | 500    | Cancel listener or `onCancel` hook threw while processing a cancel message                                   | Non-fatal; check the `onCancel` hook implementation                                 |
-| 104003 | `TurnLifecycleError`         | 500    | A turn lifecycle event (turn-start or turn-end) failed to publish                                            | Non-fatal; the turn may not be visible to other clients. Check channel permissions  |
-| 104004 | `TransportClosed`            | 400    | An operation was attempted on a closed transport                                                             | Create a new transport instance                                                     |
-| 104005 | `TransportSendFailed`        | 500    | The HTTP POST to the server endpoint failed (network error or non-2xx response)                              | Check server availability and endpoint URL                                          |
-| 104006 | `ChannelContinuityLost`      | 500    | The Ably channel lost message continuity (FAILED, SUSPENDED, DETACHED, or re-attached with `resumed: false`) | Active streams are errored. Check network connectivity and channel state            |
+| Code   | Name                       | Status | Description                                                                                                  | Recovery                                                                            |
+| ------ | -------------------------- | ------ | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| 40000  | `BadRequest`               | 400    | The request was invalid                                                                                      | Check the request parameters                                                        |
+| 40003  | `InvalidArgument`          | 400    | An argument passed to a public method was invalid                                                            | Fix the argument value                                                              |
+| 104000 | `EncoderRecoveryFailed`    | 500    | Encoder recovery failed after flush - `updateMessage` could not recover a failed append pipeline             | Non-fatal; the message may be incomplete on the channel. Check network connectivity |
+| 104001 | `SessionSubscriptionError` | 500    | A channel subscription callback threw unexpectedly                                                           | Non-fatal; the transport is still operational. Check error handler logic            |
+| 104002 | `CancelListenerError`      | 500    | Cancel listener or `onCancel` hook threw while processing a cancel message                                   | Non-fatal; check the `onCancel` hook implementation                                 |
+| 104003 | `RunLifecycleError`        | 500    | A run lifecycle event (run-start or run-end) failed to publish                                               | Non-fatal; the run may not be visible to other clients. Check channel permissions   |
+| 104004 | `SessionClosed`            | 400    | An operation was attempted on a closed transport                                                             | Create a new transport instance                                                     |
+| 104005 | `SessionSendFailed`        | 500    | The HTTP POST to the server endpoint failed (network error or non-2xx response)                              | Check server availability and endpoint URL                                          |
+| 104006 | `ChannelContinuityLost`    | 500    | The Ably channel lost message continuity (FAILED, SUSPENDED, DETACHED, or re-attached with `resumed: false`) | Active streams are errored. Check network connectivity and channel state            |
 
 | 104007 | `ChannelNotReady` | 400 | An operation was attempted but the channel is not ATTACHED or ATTACHING | Check the channel state and why it entered that state |
 
@@ -27,12 +27,12 @@ Use `errorInfoIs` to compare:
 ```typescript
 import { ErrorCode, errorInfoIs } from '@ably/ai-transport';
 
-transport.on('error', (error) => {
-  if (errorInfoIs(error, ErrorCode.TransportSendFailed)) {
+session.on('error', (error) => {
+  if (errorInfoIs(error, ErrorCode.SessionSendFailed)) {
     // The HTTP POST to the server failed
   }
-  if (errorInfoIs(error, ErrorCode.TransportClosed)) {
-    // Transport was used after close()
+  if (errorInfoIs(error, ErrorCode.SessionClosed)) {
+    // Session was used after close()
   }
 });
 ```
@@ -41,15 +41,15 @@ transport.on('error', (error) => {
 
 Errors reach you through different channels depending on context:
 
-| Context                                                                             | Delivery mechanism                                                                    |
-| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| Invalid argument to a public method                                                 | Thrown synchronously                                                                  |
-| HTTP POST failure (send/regenerate/edit)                                            | Emitted via `transport.on('error')` and the turn's stream is errored                  |
-| Channel continuity loss on the client (FAILED, SUSPENDED, DETACHED, resumed: false) | Emitted via `transport.on('error')` and all active turn streams are errored           |
-| Channel continuity loss on the server (FAILED, SUSPENDED, DETACHED, resumed: false) | `onError` callback on `ServerTransportOptions` (in-flight turns are not auto-aborted) |
-| Channel subscription error                                                          | Emitted via `transport.on('error')`                                                   |
-| Server-side turn error                                                              | `onError` callback on `NewTurnOptions`                                                |
-| Transport-level error (not scoped to a turn)                                        | `onError` callback on `ServerTransportOptions`                                        |
+| Context                                                                             | Delivery mechanism                                                                |
+| ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Invalid argument to a public method                                                 | Thrown synchronously                                                              |
+| HTTP POST failure (send/regenerate/edit)                                            | Emitted via `session.on('error')` and the run's stream is errored                 |
+| Channel continuity loss on the client (FAILED, SUSPENDED, DETACHED, resumed: false) | Emitted via `session.on('error')` and all active run streams are errored          |
+| Channel continuity loss on the server (FAILED, SUSPENDED, DETACHED, resumed: false) | `onError` callback on `AgentSessionOptions` (in-flight runs are not auto-aborted) |
+| Channel subscription error                                                          | Emitted via `session.on('error')`                                                 |
+| Server-side run error                                                               | `onError` callback on `NewRunOptions`                                             |
+| Transport-level error (not scoped to a run)                                         | `onError` callback on `AgentSessionOptions`                                       |
 
 ## Error message format
 
@@ -58,6 +58,6 @@ All error messages follow the pattern: `"unable to <operation>; <reason>"`.
 ```typescript
 // Examples:
 // "unable to send message; transport is closed"
-// "unable to publish turn-start; channel publish failed"
+// "unable to publish run-start; channel publish failed"
 // "unable to cancel; cancel listener threw"
 ```

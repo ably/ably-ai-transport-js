@@ -35,22 +35,22 @@ Levels are hierarchical. Setting the level to `Debug` suppresses `Trace` but sho
 Create the logger once at the top-level transport, then propagate it down via constructor injection. Use `withContext` to add identifying metadata at each layer:
 
 ```ts
-// Top level — ClientTransport
+// Top level — ClientSession
 this._logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
-  component: 'ClientTransport',
+  component: 'ClientSession',
 });
 
 // Passed to child components
-this._turnManager = new DefaultTurnManager(channel, this._logger);
+this._runManager = new DefaultRunManager(channel, this._logger);
 
 // Child adds its own context
-this._logger = logger?.withContext({ component: 'TurnManager' });
+this._logger = logger?.withContext({ component: 'RunManager' });
 
-// Server transport — optional logger
-this._logger = options.logger?.withContext({ component: 'ServerTransport' });
+// Agent session — optional logger
+this._logger = options.logger?.withContext({ component: 'AgentSession' });
 ```
 
-Context accumulates — a log call from TurnManager will include the parent's context plus `component: 'TurnManager'` automatically. Context provided in individual log calls overrides matching keys from the parent.
+Context accumulates — a log call from RunManager will include the parent's context plus `component: 'RunManager'` automatically. Context provided in individual log calls overrides matching keys from the parent.
 
 ## Custom Log Handler
 
@@ -72,10 +72,10 @@ Log messages follow the pattern `ClassName.methodName(); <description>`:
 
 ```ts
 // Method entry (trace)
-this._logger.trace('ClientTransport.send();');
+this._logger.trace('ClientSession.send();');
 
 // Successful completion (debug)
-this._logger.debug('DefaultTurnManager.startTurn(); turn started', { turnId });
+this._logger.debug('DefaultRunManager.startRun(); run started', { runId });
 
 // With context object
 this._logger.debug('Tree.upsert(); promoting serial', { msgId, serial });
@@ -90,7 +90,7 @@ this._logger.warn('DefaultDecoderCore.decode(); unexpected message action', {
 });
 
 // Error
-this._logger.error('DefaultServerTransport(); subscribe failed');
+this._logger.error('DefaultAgentSession(); subscribe failed');
 ```
 
 ## When to Log at Each Level
@@ -100,8 +100,8 @@ this._logger.error('DefaultServerTransport(); subscribe failed');
 Every key public or internal method gets a `trace` at entry. This is the baseline for understanding call flow:
 
 ```ts
-this._logger.trace('ClientTransport.send();');
-this._logger.trace('ClientTransport.regenerate();', { messageId });
+this._logger.trace('ClientSession.send();');
+this._logger.trace('ClientSession.regenerate();', { messageId });
 this._logger.trace('DefaultEncoderCore.publishDiscrete();', { name: payload.name });
 this._logger.trace('DefaultDecoderCore.decode();', { action, serial: message.serial, name: message.name });
 ```
@@ -111,9 +111,9 @@ this._logger.trace('DefaultDecoderCore.decode();', { action, serial: message.ser
 Log after an operation completes, when taking a branch, or when state changes:
 
 ```ts
-this._logger.debug('DefaultTurnManager.startTurn(); turn started', { turnId });
-this._logger.debug('DefaultTurnManager.endTurn(); turn ended', { turnId, reason });
-this._logger.debug('StreamRouter.closeStream(); closing stream', { turnId });
+this._logger.debug('DefaultRunManager.startRun(); run started', { runId });
+this._logger.debug('DefaultRunManager.endRun(); run ended', { runId, reason });
+this._logger.debug('StreamRouter.closeStream(); closing stream', { runId });
 this._logger.debug('Tree.select();', { msgId, index });
 ```
 
@@ -122,7 +122,7 @@ this._logger.debug('Tree.select();', { msgId, index });
 Operationally significant but not unexpected:
 
 ```ts
-this._logger.info('ClientTransport.close();');
+this._logger.info('ClientSession.close();');
 ```
 
 ### Warn — potential problems
@@ -141,7 +141,7 @@ this._logger.warn('DefaultDecoderCore.decode(); unrecognized message name', {
 Log immediately before throwing or rejecting. Also use when a developer-provided callback throws:
 
 ```ts
-this._logger.error('DefaultServerTransport(); subscribe failed');
+this._logger.error('DefaultAgentSession(); subscribe failed');
 ```
 
 ```ts
@@ -154,10 +154,10 @@ Pass structured data as the second argument, not interpolated into the message s
 
 ```ts
 // Good — structured context
-this._logger.debug('DefaultTurnManager.endTurn(); turn ended', { turnId, reason });
+this._logger.debug('DefaultRunManager.endRun(); run ended', { runId, reason });
 
 // Bad — data in the message string
-this._logger.debug(`DefaultTurnManager.endTurn(); turn ${turnId} ended with reason ${reason}`);
+this._logger.debug(`DefaultRunManager.endRun(); run ${runId} ended with reason ${reason}`);
 ```
 
 Use context for IDs, counts, states, and parameters. Keep context objects shallow.

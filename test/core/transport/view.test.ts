@@ -1,13 +1,13 @@
 import type * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { HEADER_MSG_ID, HEADER_TURN_ID } from '../../../src/constants.js';
+import { HEADER_MSG_ID, HEADER_RUN_ID } from '../../../src/constants.js';
 import type { Codec } from '../../../src/core/codec/types.js';
 // Vitest hoists vi.mock above imports, so this static import gets the mock.
 import { decodeHistory } from '../../../src/core/transport/decode-history.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
-import type { HistoryPage, MessageNode, SendOptions, TurnLifecycleEvent } from '../../../src/core/transport/types.js';
+import type { HistoryPage, MessageNode, RunLifecycleEvent, SendOptions } from '../../../src/core/transport/types.js';
 import type { SendDelegate } from '../../../src/core/transport/view.js';
 import { DefaultView } from '../../../src/core/transport/view.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
@@ -58,16 +58,16 @@ const createMockSendDelegate = (): SendDelegate<TestEvent, TestMessage> =>
   vi.fn(() =>
     Promise.resolve({
       stream: new ReadableStream(),
-      turnId: 'mock-turn',
+      runId: 'mock-run',
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
       cancel: () => Promise.resolve(),
       optimisticMsgIds: [],
     }),
   );
 
-const makeHeaders = (msgId: string, turnId?: string): Record<string, string> => {
+const makeHeaders = (msgId: string, runId?: string): Record<string, string> => {
   const h: Record<string, string> = { [HEADER_MSG_ID]: msgId };
-  if (turnId) h[HEADER_TURN_ID] = turnId;
+  if (runId) h[HEADER_RUN_ID] = runId;
   return h;
 };
 
@@ -293,7 +293,7 @@ describe('DefaultView', () => {
       expect(handler).not.toHaveBeenCalled();
     });
 
-    it('forwards ably-message without msg-id (turn events)', () => {
+    it('forwards ably-message without msg-id (run events)', () => {
       const handler = vi.fn();
       view.on('ably-message', handler);
 
@@ -305,54 +305,54 @@ describe('DefaultView', () => {
   });
 
   // -------------------------------------------------------------------------
-  // turn event scoping
+  // run event scoping
   // -------------------------------------------------------------------------
 
-  describe('turn events', () => {
-    it('forwards turn events for turns with visible messages', () => {
-      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1', 'turn-1'));
-      tree.trackTurn('turn-1', 'client-a');
+  describe('run events', () => {
+    it('forwards run events for runs with visible messages', () => {
+      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1', 'run-1'));
+      tree.trackRun('run-1', 'client-a');
 
       const handler = vi.fn();
-      view.on('turn', handler);
+      view.on('run', handler);
 
-      const event: TurnLifecycleEvent = { type: 'x-ably-turn-start', turnId: 'turn-1', clientId: 'client-a' };
-      tree.emitTurn(event);
+      const event: RunLifecycleEvent = { type: 'x-ably-run-start', runId: 'run-1', clientId: 'client-a' };
+      tree.emitRun(event);
 
       expect(handler).toHaveBeenCalledOnce();
       expect(handler).toHaveBeenCalledWith(event);
     });
 
-    it('forwards turn-start when no metadata is present (backward compat)', () => {
-      tree.trackTurn('turn-99', 'client-x');
+    it('forwards run-start when no metadata is present (backward compat)', () => {
+      tree.trackRun('run-99', 'client-x');
 
       const handler = vi.fn();
-      view.on('turn', handler);
+      view.on('run', handler);
 
-      const event: TurnLifecycleEvent = { type: 'x-ably-turn-start', turnId: 'turn-99', clientId: 'client-x' };
-      tree.emitTurn(event);
+      const event: RunLifecycleEvent = { type: 'x-ably-run-start', runId: 'run-99', clientId: 'client-x' };
+      tree.emitRun(event);
 
       expect(handler).toHaveBeenCalledOnce();
     });
 
-    it('forwards turn-start when parent is on the visible branch', () => {
+    it('forwards run-start when parent is on the visible branch', () => {
       tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'), 'serial-1');
 
       const handler = vi.fn();
-      view.on('turn', handler);
+      view.on('run', handler);
 
-      const event: TurnLifecycleEvent = {
-        type: 'x-ably-turn-start',
-        turnId: 'turn-2',
+      const event: RunLifecycleEvent = {
+        type: 'x-ably-run-start',
+        runId: 'run-2',
         clientId: 'client-b',
         parent: 'm1',
       };
-      tree.emitTurn(event);
+      tree.emitRun(event);
 
       expect(handler).toHaveBeenCalledOnce();
     });
 
-    it('does not forward turn-start when parent is on a non-visible branch', () => {
+    it('does not forward run-start when parent is on a non-visible branch', () => {
       // Create a fork: m2 and m3 are siblings under m1
       tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
       tree.upsert(
@@ -379,65 +379,65 @@ describe('DefaultView', () => {
       view.select('m2', 0);
 
       const handler = vi.fn();
-      view.on('turn', handler);
+      view.on('run', handler);
 
-      // Turn whose parent is m3 (on the non-selected branch)
-      const event: TurnLifecycleEvent = {
-        type: 'x-ably-turn-start',
-        turnId: 'turn-hidden',
+      // Run whose parent is m3 (on the non-selected branch)
+      const event: RunLifecycleEvent = {
+        type: 'x-ably-run-start',
+        runId: 'run-hidden',
         clientId: 'remote',
         parent: 'm3',
       };
-      tree.emitTurn(event);
+      tree.emitRun(event);
 
       expect(handler).not.toHaveBeenCalled();
     });
 
-    it('forwards turn-start for root turn (no parent)', () => {
+    it('forwards run-start for root run (no parent)', () => {
       const handler = vi.fn();
-      view.on('turn', handler);
+      view.on('run', handler);
 
-      const event: TurnLifecycleEvent = {
-        type: 'x-ably-turn-start',
-        turnId: 'turn-root',
+      const event: RunLifecycleEvent = {
+        type: 'x-ably-run-start',
+        runId: 'run-root',
         clientId: 'client-a',
       };
-      tree.emitTurn(event);
+      tree.emitRun(event);
 
       expect(handler).toHaveBeenCalledOnce();
     });
 
-    it('does not forward turn-end for turns without visible messages', () => {
-      tree.trackTurn('turn-99', 'client-x');
+    it('does not forward run-end for runs without visible messages', () => {
+      tree.trackRun('run-99', 'client-x');
 
       const handler = vi.fn();
-      view.on('turn', handler);
+      view.on('run', handler);
 
-      const event: TurnLifecycleEvent = {
-        type: 'x-ably-turn-end',
-        turnId: 'turn-99',
+      const event: RunLifecycleEvent = {
+        type: 'x-ably-run-end',
+        runId: 'run-99',
         clientId: 'client-x',
         reason: 'complete',
       };
-      tree.emitTurn(event);
+      tree.emitRun(event);
 
       expect(handler).not.toHaveBeenCalled();
     });
   });
 
   // -------------------------------------------------------------------------
-  // getActiveTurnIds (scoped)
+  // getActiveRunIds (scoped)
   // -------------------------------------------------------------------------
 
-  describe('getActiveTurnIds', () => {
-    it('returns all turns when nothing is withheld and all have visible messages', () => {
-      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1', 'turn-1'));
-      tree.upsert('m2', { id: '2', content: 'hi' }, makeHeaders('m2', 'turn-2'));
-      tree.trackTurn('turn-1', 'client-a');
-      tree.trackTurn('turn-2', 'client-a');
+  describe('getActiveRunIds', () => {
+    it('returns all runs when nothing is withheld and all have visible messages', () => {
+      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1', 'run-1'));
+      tree.upsert('m2', { id: '2', content: 'hi' }, makeHeaders('m2', 'run-2'));
+      tree.trackRun('run-1', 'client-a');
+      tree.trackRun('run-2', 'client-a');
 
-      const active = view.getActiveTurnIds();
-      expect(active.get('client-a')).toEqual(new Set(['turn-1', 'turn-2']));
+      const active = view.getActiveRunIds();
+      expect(active.get('client-a')).toEqual(new Set(['run-1', 'run-2']));
     });
   });
 
@@ -847,7 +847,7 @@ describe('DefaultView', () => {
         );
         return Promise.resolve({
           stream: new ReadableStream(),
-          turnId: 'turn-1',
+          runId: 'run-1',
           cancel: vi.fn(),
           optimisticMsgIds: ['m3'],
         });
@@ -885,7 +885,7 @@ describe('DefaultView', () => {
       // the server creates the fork later.
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
       const noopDelegate: SendDelegate<TestEvent, TestMessage> = vi.fn(() =>
-        Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-1', cancel: vi.fn(), optimisticMsgIds: [] }),
+        Promise.resolve({ stream: new ReadableStream(), runId: 'run-1', cancel: vi.fn(), optimisticMsgIds: [] }),
       );
 
       const forkView = new DefaultView<TestEvent, TestMessage>({
@@ -916,7 +916,7 @@ describe('DefaultView', () => {
       const handler = vi.fn();
       forkView.on('update', handler);
 
-      // Server response arrives, creating the fork (stamped with the pending turn's ID)
+      // Server response arrives, creating the fork (stamped with the pending run's ID)
       tree.upsert(
         'm3',
         { id: '3', content: 'regenerated' },
@@ -924,7 +924,7 @@ describe('DefaultView', () => {
           [HEADER_MSG_ID]: 'm3',
           'x-ably-parent': 'm1',
           'x-ably-fork-of': 'm2',
-          'x-ably-turn-id': 'turn-1',
+          'x-ably-run-id': 'run-1',
         },
         'serial-3',
       );
@@ -933,7 +933,7 @@ describe('DefaultView', () => {
       expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
       expect(handler).toHaveBeenCalled();
 
-      // Pending state was consumed — a second fork from a different turn doesn't force re-selection
+      // Pending state was consumed — a second fork from a different run doesn't force re-selection
       handler.mockClear();
       tree.upsert(
         'm4',
@@ -942,7 +942,7 @@ describe('DefaultView', () => {
           [HEADER_MSG_ID]: 'm4',
           'x-ably-parent': 'm1',
           'x-ably-fork-of': 'm2',
-          'x-ably-turn-id': 'turn-other',
+          'x-ably-run-id': 'run-other',
         },
         'serial-4',
       );
@@ -959,7 +959,7 @@ describe('DefaultView', () => {
       // inserted. The view must still defer selection until the server response arrives.
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
       const noopDelegate: SendDelegate<TestEvent, TestMessage> = vi.fn(() =>
-        Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-1', cancel: vi.fn(), optimisticMsgIds: [] }),
+        Promise.resolve({ stream: new ReadableStream(), runId: 'run-1', cancel: vi.fn(), optimisticMsgIds: [] }),
       );
 
       const forkView = new DefaultView<TestEvent, TestMessage>({
@@ -1002,7 +1002,7 @@ describe('DefaultView', () => {
       // Still showing m3 — no new sibling yet
       expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
 
-      // Server response arrives, creating a third sibling (stamped with the pending turn's ID)
+      // Server response arrives, creating a third sibling (stamped with the pending run's ID)
       tree.upsert(
         'm4',
         { id: '4', content: 'asst v3' },
@@ -1010,7 +1010,7 @@ describe('DefaultView', () => {
           [HEADER_MSG_ID]: 'm4',
           'x-ably-parent': 'm1',
           'x-ably-fork-of': 'm2',
-          'x-ably-turn-id': 'turn-1',
+          'x-ably-run-id': 'run-1',
         },
         'serial-4',
       );
@@ -1027,7 +1027,7 @@ describe('DefaultView', () => {
       // _pinVisibleSelections can match it via groupRoot.
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
       const noopDelegate: SendDelegate<TestEvent, TestMessage> = vi.fn(() =>
-        Promise.resolve({ stream: new ReadableStream(), turnId: 'turn-1', cancel: vi.fn(), optimisticMsgIds: [] }),
+        Promise.resolve({ stream: new ReadableStream(), runId: 'run-1', cancel: vi.fn(), optimisticMsgIds: [] }),
       );
 
       const forkView = new DefaultView<TestEvent, TestMessage>({
@@ -1067,7 +1067,7 @@ describe('DefaultView', () => {
       // Regenerate while viewing m3 — forkOf is m3, not the group root m2
       await forkView.send([], { forkOf: 'm3', parent: 'm1' });
 
-      // Server response creates a new sibling (forks from m2 via m3's group, stamped with pending turn)
+      // Server response creates a new sibling (forks from m2 via m3's group, stamped with pending run)
       tree.upsert(
         'm4',
         { id: '4', content: 'asst v3' },
@@ -1075,7 +1075,7 @@ describe('DefaultView', () => {
           [HEADER_MSG_ID]: 'm4',
           'x-ably-parent': 'm1',
           'x-ably-fork-of': 'm3',
-          'x-ably-turn-id': 'turn-1',
+          'x-ably-run-id': 'run-1',
         },
         'serial-4',
       );
@@ -1086,14 +1086,14 @@ describe('DefaultView', () => {
       forkView.close();
     });
 
-    it('pending fork selection is cleaned up on turn-end if server never creates sibling', async () => {
+    it('pending fork selection is cleaned up on run-end if server never creates sibling', async () => {
       // Regression: pending entries must not leak if the server never creates
-      // a fork (e.g. the turn ends without producing any messages for this group).
+      // a fork (e.g. the run ends without producing any messages for this group).
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
       const noopDelegate: SendDelegate<TestEvent, TestMessage> = vi.fn(() =>
         Promise.resolve({
           stream: new ReadableStream(),
-          turnId: 'turn-cleanup',
+          runId: 'run-cleanup',
           cancel: vi.fn(),
           optimisticMsgIds: [],
         }),
@@ -1121,8 +1121,8 @@ describe('DefaultView', () => {
       // Regenerate: deferred auto-select (pending)
       await forkView.send([], { forkOf: 'm2', parent: 'm1' });
 
-      // Turn ends without creating a sibling — pending entry should be cleaned up
-      tree.emitTurn({ type: 'x-ably-turn-end', turnId: 'turn-cleanup', clientId: 'client-a', reason: 'complete' });
+      // Run ends without creating a sibling — pending entry should be cleaned up
+      tree.emitRun({ type: 'x-ably-run-end', runId: 'run-cleanup', clientId: 'client-a', reason: 'complete' });
 
       // A later unrelated fork should NOT be auto-selected (pending was cleaned up)
       tree.upsert(
@@ -1337,21 +1337,21 @@ describe('DefaultView', () => {
     it('clears all emitter listeners on close', () => {
       const updateHandler = vi.fn();
       const ablyHandler = vi.fn();
-      const turnHandler = vi.fn();
+      const runHandler = vi.fn();
       view.on('update', updateHandler);
       view.on('ably-message', ablyHandler);
-      view.on('turn', turnHandler);
+      view.on('run', runHandler);
 
       view.close();
 
       // Trigger tree events — view handlers should not fire
-      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1', 'turn-1'), 'serial-1');
+      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1', 'run-1'), 'serial-1');
       tree.emitAblyMessage({ name: 'test', extras: { headers: { [HEADER_MSG_ID]: 'm1' } } } as Ably.InboundMessage);
-      tree.emitTurn({ type: 'x-ably-turn-end', turnId: 'turn-1', clientId: 'c1', reason: 'complete' });
+      tree.emitRun({ type: 'x-ably-run-end', runId: 'run-1', clientId: 'c1', reason: 'complete' });
 
       expect(updateHandler).not.toHaveBeenCalled();
       expect(ablyHandler).not.toHaveBeenCalled();
-      expect(turnHandler).not.toHaveBeenCalled();
+      expect(runHandler).not.toHaveBeenCalled();
     });
 
     it('is idempotent — double close does not throw', () => {
@@ -1397,7 +1397,7 @@ describe('DefaultView', () => {
 
     it('does not re-walk the tree during a content-only message update', () => {
       tree.upsert('m1', { id: '1', content: 'first' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert('m2', { id: '2', content: 'second' }, makeHeaders('m2', 'turn-1'), 'serial-2');
+      tree.upsert('m2', { id: '2', content: 'second' }, makeHeaders('m2', 'run-1'), 'serial-2');
 
       // Capture the current cached state so the view has a baseline
       view.flattenNodes();
@@ -1406,7 +1406,7 @@ describe('DefaultView', () => {
       spy.mockClear();
 
       // Content-only update: same msgId, different message content, no serial change
-      tree.upsert('m2', { id: '2', content: 'streaming token' }, makeHeaders('m2', 'turn-1'), 'serial-2');
+      tree.upsert('m2', { id: '2', content: 'streaming token' }, makeHeaders('m2', 'run-1'), 'serial-2');
 
       // The view should detect this is a content-only update and skip the
       // full tree walk - using the cached node list instead.

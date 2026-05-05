@@ -1,20 +1,20 @@
 /**
- * useTree — stable structural query callbacks for a ClientTransport's tree.
+ * useTree — stable structural query callbacks for a ClientSession's tree.
  *
  * Returns a {@link TreeHandle} with methods to inspect the tree structure.
- * These are thin `useCallback` wrappers around `transport.tree` — no local
+ * These are thin `useCallback` wrappers around `session.tree` — no local
  * state or subscriptions. Branch navigation (select, getSelectedIndex) is
  * on {@link ViewHandle} from {@link useView}.
  *
- * When `transport` is omitted, defaults to the nearest
- * {@link TransportProvider}'s transport via context.
+ * When `session` is omitted, defaults to the nearest
+ * {@link ClientSessionProvider}'s session via context.
  */
 
 import { useCallback } from 'react';
 
 import type { MessageNode } from '../core/transport/types.js';
-import type { BaseTransportOption } from './internal/use-resolved-transport.js';
-import { useResolvedTransport } from './internal/use-resolved-transport.js';
+import type { BaseSessionOption } from './internal/use-resolved-session.js';
+import { useResolvedSession } from './internal/use-resolved-session.js';
 
 /** Handle for querying the conversation tree structure. */
 export interface TreeHandle<TMessage> {
@@ -27,19 +27,17 @@ export interface TreeHandle<TMessage> {
 }
 
 /** Options for {@link useTree}. */
-export type UseTreeOptions<TEvent, TMessage> = BaseTransportOption<TEvent, TMessage>;
+export type UseTreeOptions<TEvent, TMessage> = BaseSessionOption<TEvent, TMessage>;
 
 /**
- * Provide stable structural query callbacks backed by the transport's tree.
- * When `transport` is omitted, uses the nearest {@link TransportProvider}'s transport via context.
- * @param props - Options including optional `transport`.
- * @param props.transport - Transport to read tree structure from; defaults to the nearest provider.
+ * Provide stable structural query callbacks backed by the session's tree.
+ * When `session` is omitted, uses the nearest {@link ClientSessionProvider}'s session via context.
+ * @param props - Options including optional `session`.
+ * @param props.session - Session to read tree structure from; defaults to the nearest provider.
  * @returns A {@link TreeHandle} with structural query methods.
  */
-export const useTree = <TEvent, TMessage>({
-  transport,
-}: UseTreeOptions<TEvent, TMessage> = {}): TreeHandle<TMessage> => {
-  const resolved = useResolvedTransport({ transport });
+export const useTree = <TEvent, TMessage>({ session }: UseTreeOptions<TEvent, TMessage> = {}): TreeHandle<TMessage> => {
+  const resolved = useResolvedSession({ session });
 
   const getSiblings = useCallback((msgId: string) => resolved?.tree.getSiblings(msgId) ?? [], [resolved]);
 

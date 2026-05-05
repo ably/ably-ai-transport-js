@@ -1,6 +1,6 @@
 # Chat transport
 
-The chat transport (`src/vercel/transport/chat-transport.ts`) is a thin adapter that wraps a core [ClientTransport](client-transport.md) to satisfy the `ChatTransport` interface that Vercel's `useChat()` hook expects. The real logic lives in the core transport - this adapter maps Vercel's `sendMessages()` / `reconnectToStream()` contract to the transport's default [view](client-transport.md)'s `send()` and the transport's `cancel()`.
+The chat transport (`src/vercel/transport/chat-transport.ts`) is a thin adapter that wraps a core [ClientSession](client-session.md) to satisfy the `ChatTransport` interface that Vercel's `useChat()` hook expects. The real logic lives in the core session - this adapter maps Vercel's `sendMessages()` / `reconnectToStream()` contract to the session's default [view](client-session.md)'s `send()` and the session's `cancel()`.
 
 ## Why an adapter
 
@@ -8,8 +8,8 @@ Vercel's `useChat()` manages message state internally. When the user submits a m
 
 1. Determine which messages are new vs history
 2. Compute fork metadata for regeneration
-3. Delegate to the core transport's `send()`
-4. Return the turn stream so `useChat` can drive status and callbacks
+3. Delegate to the core session's `send()`
+4. Return the run stream so `useChat` can drive status and callbacks
 
 ## sendMessages
 
@@ -30,7 +30,7 @@ Without the hook, the adapter builds a default body with `history` (including pe
 
 ### Real stream return
 
-The adapter returns the real turn stream from `sendMessages()`. `useChat` consumes this stream to drive status transitions (`submitted` -> `streaming` -> `ready`), fire callbacks (`onToolCall`, `onData`, `onFinish`), and evaluate `sendAutomaticallyWhen`.
+The adapter returns the real run stream from `sendMessages()`. `useChat` consumes this stream to drive status transitions (`submitted` -> `streaming` -> `ready`), fire callbacks (`onToolCall`, `onData`, `onFinish`), and evaluate `sendAutomaticallyWhen`.
 
 Both `useChat` and `useMessageSync` accumulate messages in parallel: `useChat` builds from the stream, while `useMessageSync` pushes from the transport's message store via `setMessages` (a full replacement). The transport's version is always authoritative - both accumulators produce identical messages from the same chunks, and `setMessages` overwrites `useChat`'s state on every transport event.
 
@@ -38,15 +38,15 @@ The server encoder ensures `messageId` alignment by stamping the transport-assig
 
 ### Abort signal
 
-When `useChat()` provides an `abortSignal` (e.g. the user clicks stop), the adapter wires it to `transport.cancel({ all: true })`. In multi-user scenarios, `cancel({ all: true })` is used rather than per-turnId cancel because any client should be able to stop any active stream.
+When `useChat()` provides an `abortSignal` (e.g. the user clicks stop), the adapter wires it to `session.cancel({ all: true })`. In multi-user scenarios, `cancel({ all: true })` is used rather than per-runId cancel because any client should be able to stop any active stream.
 
 ## reconnectToStream
 
-Returns `null`. The core transport's observer mode handles in-progress streams automatically - the channel subscription is established before attach, so on reconnect the [decoder's first-contact](decoder.md#first-contact) mechanism reconstructs stream state from the next server append.
+Returns `null`. The core session's observer mode handles in-progress streams automatically - the channel subscription is established before attach, so on reconnect the [decoder's first-contact](decoder.md#first-contact) mechanism reconstructs stream state from the next server append.
 
 ## close
 
-Delegates directly to `transport.close(options)`.
+Delegates directly to `session.close(options)`.
 
 ## ChatTransportOptions
 
@@ -66,4 +66,4 @@ The `SendMessagesRequestContext` provides:
 | `forkOf`    | `string?`                                  | The message ID of the message being forked       |
 | `parent`    | `string \| null?`                          | The message ID of the predecessor in the thread  |
 
-See [Client transport](client-transport.md) for the core transport that this adapter wraps. See [Vercel AI SDK framework guide](../frameworks/vercel-ai-sdk.md) for the integration paths. See [Vercel codec](vercel-codec.md) for how events are encoded/decoded.
+See [Client session](client-session.md) for the core session that this adapter wraps. See [Vercel AI SDK framework guide](../frameworks/vercel-ai-sdk.md) for the integration paths. See [Vercel codec](vercel-codec.md) for how events are encoded/decoded.

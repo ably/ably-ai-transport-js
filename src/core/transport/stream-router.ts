@@ -1,7 +1,7 @@
 /**
  * Client-side stream routing.
  *
- * Maintains a map of turnId to ReadableStreamController. Routes decoded events
+ * Maintains a map of runId to ReadableStreamController. Routes decoded events
  * to the correct stream. Closes streams on terminal events, explicit close, or
  * error.
  */
@@ -10,24 +10,24 @@ import * as Ably from 'ably';
 
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
-import type { TurnEntry } from './types.js';
+import type { RunEntry } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Interface
 // ---------------------------------------------------------------------------
 
-/** Routes decoded events to the correct turn's ReadableStream. */
+/** Routes decoded events to the correct run's ReadableStream. */
 export interface StreamRouter<TEvent> {
-  /** Register a new stream for a turnId. Returns the ReadableStream the consumer reads from. */
-  createStream(turnId: string): ReadableStream<TEvent>;
-  /** Close the stream for a turnId. Returns true if a stream existed. */
-  closeStream(turnId: string): boolean;
-  /** Error the stream for a turnId. The consumer's reader will reject with the given error. Returns true if a stream existed. */
-  errorStream(turnId: string, error: Ably.ErrorInfo): boolean;
+  /** Register a new stream for a runId. Returns the ReadableStream the consumer reads from. */
+  createStream(runId: string): ReadableStream<TEvent>;
+  /** Close the stream for a runId. Returns true if a stream existed. */
+  closeStream(runId: string): boolean;
+  /** Error the stream for a runId. The consumer's reader will reject with the given error. Returns true if a stream existed. */
+  errorStream(runId: string, error: Ably.ErrorInfo): boolean;
   /** Enqueue an event to the correct stream. Returns true if routed successfully. */
-  route(turnId: string, event: TEvent): boolean;
-  /** Whether a specific turnId has an active stream. */
-  has(turnId: string): boolean;
+  route(runId: string, event: TEvent): boolean;
+  /** Whether a specific runId has an active stream. */
+  has(runId: string): boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -36,7 +36,7 @@ export interface StreamRouter<TEvent> {
 
 // Spec: AIT-CT14
 class DefaultStreamRouter<TEvent> implements StreamRouter<TEvent> {
-  private readonly _turns = new Map<string, TurnEntry<TEvent>>();
+  private readonly _runs = new Map<string, RunEntry<TEvent>>();
   private readonly _isTerminal: (event: TEvent) => boolean;
   private readonly _logger: Logger;
 
@@ -45,8 +45,8 @@ class DefaultStreamRouter<TEvent> implements StreamRouter<TEvent> {
     this._logger = logger;
   }
 
-  createStream(turnId: string): ReadableStream<TEvent> {
-    this._logger.trace('StreamRouter.createStream();', { turnId });
+  createStream(runId: string): ReadableStream<TEvent> {
+    this._logger.trace('StreamRouter.createStream();', { runId });
 
     // Build stream+controller together. ReadableStream's start() runs synchronously
     // per spec, so the controller is captured before the constructor returns.
@@ -59,64 +59,64 @@ class DefaultStreamRouter<TEvent> implements StreamRouter<TEvent> {
     if (!entry.controller) {
       throw new Ably.ErrorInfo(
         'unable to create stream; ReadableStream start() was not called synchronously',
-        ErrorCode.TransportSubscriptionError,
+        ErrorCode.SessionSubscriptionError,
         500,
       );
     }
-    this._turns.set(turnId, { controller: entry.controller, turnId });
+    this._runs.set(runId, { controller: entry.controller, runId });
     return stream;
   }
 
   // Spec: AIT-CT14b
-  closeStream(turnId: string): boolean {
-    const turn = this._turns.get(turnId);
-    if (!turn) return false;
+  closeStream(runId: string): boolean {
+    const run = this._runs.get(runId);
+    if (!run) return false;
 
-    this._logger.debug('StreamRouter.closeStream(); closing stream', { turnId });
+    this._logger.debug('StreamRouter.closeStream(); closing stream', { runId });
     try {
-      turn.controller.close();
+      run.controller.close();
     } catch {
       /* consumer cancelled the stream */
     }
-    this._turns.delete(turnId);
+    this._runs.delete(runId);
     return true;
   }
 
   // Spec: AIT-CT14c
-  errorStream(turnId: string, error: Ably.ErrorInfo): boolean {
-    const turn = this._turns.get(turnId);
-    if (!turn) return false;
+  errorStream(runId: string, error: Ably.ErrorInfo): boolean {
+    const run = this._runs.get(runId);
+    if (!run) return false;
 
-    this._logger.debug('StreamRouter.errorStream(); erroring stream', { turnId });
+    this._logger.debug('StreamRouter.errorStream(); erroring stream', { runId });
     try {
-      turn.controller.error(error);
+      run.controller.error(error);
     } catch {
       /* consumer cancelled the stream */
     }
-    this._turns.delete(turnId);
+    this._runs.delete(runId);
     return true;
   }
 
   // Spec: AIT-CT14a
-  route(turnId: string, event: TEvent): boolean {
-    const turn = this._turns.get(turnId);
-    if (!turn) return false;
+  route(runId: string, event: TEvent): boolean {
+    const run = this._runs.get(runId);
+    if (!run) return false;
 
     try {
-      turn.controller.enqueue(event);
+      run.controller.enqueue(event);
     } catch {
-      this._turns.delete(turnId);
+      this._runs.delete(runId);
       return false;
     }
 
     if (this._isTerminal(event)) {
-      this.closeStream(turnId);
+      this.closeStream(runId);
     }
     return true;
   }
 
-  has(turnId: string): boolean {
-    return this._turns.has(turnId);
+  has(runId: string): boolean {
+    return this._runs.has(runId);
   }
 }
 
@@ -125,7 +125,7 @@ class DefaultStreamRouter<TEvent> implements StreamRouter<TEvent> {
 // ---------------------------------------------------------------------------
 
 /**
- * Create a StreamRouter that routes decoded events to per-turn ReadableStreams.
+ * Create a StreamRouter that routes decoded events to per-run ReadableStreams.
  * @param isTerminal - Predicate that returns true for events that close the stream.
  * @param logger - Logger for diagnostic output.
  * @returns A new {@link StreamRouter} instance.

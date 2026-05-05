@@ -21,7 +21,7 @@ import type * as Ably from 'ably';
 import { HEADER_FORK_OF, HEADER_PARENT } from '../../constants.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
-import type { MessageNode, Tree, TurnLifecycleEvent } from './types.js';
+import type { MessageNode, RunLifecycleEvent, Tree } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Internal node type
@@ -70,12 +70,12 @@ export interface TreeInternal<TMessage> extends Tree<TMessage> {
 
   /** Forward a raw Ably message event to tree subscribers. */
   emitAblyMessage(msg: Ably.InboundMessage): void;
-  /** Forward a turn lifecycle event to tree subscribers. */
-  emitTurn(event: TurnLifecycleEvent): void;
-  /** Register an active turn. */
-  trackTurn(turnId: string, clientId: string): void;
-  /** Unregister an active turn. */
-  untrackTurn(turnId: string): void;
+  /** Forward a run lifecycle event to tree subscribers. */
+  emitRun(event: RunLifecycleEvent): void;
+  /** Register an active run. */
+  trackRun(runId: string, clientId: string): void;
+  /** Unregister an active run. */
+  untrackRun(runId: string): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -86,7 +86,7 @@ export interface TreeInternal<TMessage> extends Tree<TMessage> {
 interface TreeEventsMap {
   update: undefined;
   'ably-message': Ably.InboundMessage;
-  turn: TurnLifecycleEvent;
+  run: RunLifecycleEvent;
 }
 
 // Spec: AIT-CT13
@@ -110,8 +110,8 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   private readonly _emitter: EventEmitter<TreeEventsMap>;
   private readonly _logger: Logger;
 
-  /** Active turns: turnId → clientId. */
-  private readonly _turnClientIds = new Map<string, string>();
+  /** Active runs: runId → clientId. */
+  private readonly _runClientIds = new Map<string, string>();
 
   /** Monotonically increasing counter for insertion sequence. */
   private _seqCounter = 0;
@@ -463,16 +463,16 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   // -------------------------------------------------------------------------
 
   // Spec: AIT-CT17
-  getActiveTurnIds(): Map<string, Set<string>> {
-    this._logger.trace('DefaultTree.getActiveTurnIds();');
+  getActiveRunIds(): Map<string, Set<string>> {
+    this._logger.trace('DefaultTree.getActiveRunIds();');
     const result = new Map<string, Set<string>>();
-    for (const [turnId, clientId] of this._turnClientIds) {
+    for (const [runId, clientId] of this._runClientIds) {
       let set = result.get(clientId);
       if (!set) {
         set = new Set<string>();
         result.set(clientId, set);
       }
-      set.add(turnId);
+      set.add(runId);
     }
     return result;
   }
@@ -480,10 +480,10 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   // Spec: AIT-CT8b, AIT-CT8e
   on(event: 'update', handler: () => void): () => void;
   on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
-  on(event: 'turn', handler: (event: TurnLifecycleEvent) => void): () => void;
+  on(event: 'run', handler: (event: RunLifecycleEvent) => void): () => void;
   on(
-    event: 'update' | 'ably-message' | 'turn',
-    handler: (() => void) | ((msg: Ably.InboundMessage) => void) | ((event: TurnLifecycleEvent) => void),
+    event: 'update' | 'ably-message' | 'run',
+    handler: (() => void) | ((msg: Ably.InboundMessage) => void) | ((event: RunLifecycleEvent) => void),
   ): () => void {
     // CAST: overload signatures enforce correct handler types per event name.
     const cb = handler as (arg: TreeEventsMap[keyof TreeEventsMap]) => void;
@@ -507,31 +507,31 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   }
 
   /**
-   * Forward a turn lifecycle event to tree subscribers.
-   * @param event - The turn lifecycle event to emit.
+   * Forward a run lifecycle event to tree subscribers.
+   * @param event - The run lifecycle event to emit.
    */
-  emitTurn(event: TurnLifecycleEvent): void {
-    this._logger.trace('DefaultTree.emitTurn();', { turnId: event.turnId });
-    this._emitter.emit('turn', event);
+  emitRun(event: RunLifecycleEvent): void {
+    this._logger.trace('DefaultTree.emitRun();', { runId: event.runId });
+    this._emitter.emit('run', event);
   }
 
   /**
-   * Register an active turn.
-   * @param turnId - The turn's unique identifier.
-   * @param clientId - The client that owns the turn.
+   * Register an active run.
+   * @param runId - The run's unique identifier.
+   * @param clientId - The client that owns the run.
    */
-  trackTurn(turnId: string, clientId: string): void {
-    this._logger.trace('DefaultTree.trackTurn();', { turnId, clientId });
-    this._turnClientIds.set(turnId, clientId);
+  trackRun(runId: string, clientId: string): void {
+    this._logger.trace('DefaultTree.trackRun();', { runId, clientId });
+    this._runClientIds.set(runId, clientId);
   }
 
   /**
-   * Unregister an active turn.
-   * @param turnId - The turn to untrack.
+   * Unregister an active run.
+   * @param runId - The run to untrack.
    */
-  untrackTurn(turnId: string): void {
-    this._logger.trace('DefaultTree.untrackTurn();', { turnId });
-    this._turnClientIds.delete(turnId);
+  untrackRun(runId: string): void {
+    this._logger.trace('DefaultTree.untrackRun();', { runId });
+    this._runClientIds.delete(runId);
   }
 }
 
@@ -543,7 +543,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
  * Create a Tree that materializes branching history from a flat oplog.
  * @param logger - Logger for diagnostic output.
  * @returns A new {@link DefaultTree} instance. The transport uses DefaultTree
- *   directly for internal methods (emitAblyMessage, emitTurn, trackTurn, untrackTurn).
+ *   directly for internal methods (emitAblyMessage, emitRun, trackRun, untrackRun).
  *   Public consumers see the narrower {@link Tree} interface.
  */
 export const createTree = <TMessage>(logger: Logger): DefaultTree<TMessage> => new DefaultTree(logger);

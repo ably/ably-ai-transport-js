@@ -1,11 +1,11 @@
 /**
- * useMessageSync: wires transport message lifecycle events into useChat's setMessages.
+ * useMessageSync: wires session message lifecycle events into useChat's setMessages.
  *
- * Subscribes to the transport view's 'update' event and replaces messages state
+ * Subscribes to the session view's 'update' event and replaces messages state
  * with the view's authoritative message list.
  *
  * When a ChatTransport is provided (resolved from the nearest ChatTransportProvider),
- * setMessages calls are gated during active own-turn streams. This prevents the
+ * setMessages calls are gated during active own-run streams. This prevents the
  * push/replace ID mismatch in useChat's write() function. When the stream finishes,
  * the gate opens and an immediate sync fires to pick up any observer messages that
  * arrived during the stream.
@@ -44,9 +44,9 @@ export interface UseMessageSyncOptions {
 }
 
 /**
- * Wire transport message updates into `useChat()`'s `setMessages` updater.
+ * Wire session message updates into `useChat()`'s `setMessages` updater.
  *
- * Resolves both the transport view and the streaming gate from the nearest
+ * Resolves both the session view and the streaming gate from the nearest
  * `ChatTransportProvider`. Pass `channelName` to target a specific provider.
  * Pass `skip: true` to pause all subscriptions.
  * @param options - Hook options.
@@ -55,11 +55,11 @@ export interface UseMessageSyncOptions {
  * @param options.skip - When `true`, skip all subscriptions.
  */
 export const useMessageSync = ({ setMessages, channelName, skip }: UseMessageSyncOptions): void => {
-  const { transport, chatTransport, chatTransportError } = useChatTransport({ channelName, skip });
+  const { session, chatTransport, chatTransportError } = useChatTransport({ channelName, skip });
 
   // Only use resolved values when a provider was found and skip is false.
   const resolved = !skip && !chatTransportError;
-  const view = resolved ? transport.view : undefined;
+  const view = resolved ? session.view : undefined;
   const resolvedChatTransport = resolved ? chatTransport : undefined;
 
   const [gated, setGated] = useState(false);

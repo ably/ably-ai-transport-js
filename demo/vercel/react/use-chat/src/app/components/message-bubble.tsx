@@ -177,8 +177,8 @@ export function MessageBubble({
   const [isEditing, setIsEditing] = useState(false);
 
   const role = headers?.['x-ably-role'] ?? message.role;
-  const clientId = headers?.['x-ably-turn-client-id'];
-  const turnId = headers?.['x-ably-turn-id'];
+  const clientId = headers?.['x-ably-run-client-id'];
+  const runId = headers?.['x-ably-run-id'];
   const status = headers?.['x-ably-status'];
   const colors = clientId ? clientColor(clientId) : undefined;
 
@@ -268,10 +268,10 @@ export function MessageBubble({
                       color={`bg-zinc-900 ${colors?.text ?? 'text-zinc-500'}`}
                     />
                   )}
-                  {turnId && (
+                  {runId && (
                     <Badge
-                      label="turn"
-                      value={turnId.slice(0, 8)}
+                      label="run"
+                      value={runId.slice(0, 8)}
                       color="bg-zinc-900 text-zinc-500"
                     />
                   )}

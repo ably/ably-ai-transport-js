@@ -3,10 +3,10 @@
  * transport propagate all the way through to useChat's status and onError.
  *
  * These tests exercise the full chain:
- *   ClientTransport (real Ably channel) → ChatTransport adapter → useChat
+ *   ClientSession (real Ably channel) → ChatTransport adapter → useChat
  *
  * Scenarios:
- * - POST failure → stream errors with TransportSendFailed → useChat status: error
+ * - POST failure → stream errors with SessionSendFailed → useChat status: error
  * - Channel detach mid-stream → stream errors with ChannelContinuityLost → useChat status: error
  */
 
@@ -16,29 +16,30 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import type * as AI from 'ai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createClientTransport } from '../../../src/core/transport/client-transport.js';
-import { createServerTransport } from '../../../src/core/transport/server-transport.js';
-import type { ClientTransport, ServerTransport } from '../../../src/core/transport/types.js';
+import { createAgentSession } from '../../../src/core/transport/agent-session.js';
+import { createClientSession } from '../../../src/core/transport/client-session.js';
+import type { AgentSession, ClientSession } from '../../../src/core/transport/types.js';
 import { UIMessageCodec } from '../../../src/vercel/codec/index.js';
 import type { ChatTransport } from '../../../src/vercel/transport/chat-transport.js';
 import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
+import { createRunFromOpts } from '../../helper/run-from-opts.js';
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 describe('useChat error propagation', () => {
-  let serverTransport: ServerTransport<AI.UIMessageChunk, AI.UIMessage> | undefined;
-  let clientTransport: ClientTransport<AI.UIMessageChunk, AI.UIMessage> | undefined;
+  let agentSession: AgentSession<AI.UIMessageChunk, AI.UIMessage> | undefined;
+  let clientSession: ClientSession<AI.UIMessageChunk, AI.UIMessage> | undefined;
   let chatTransport: ChatTransport | undefined;
 
   afterEach(async () => {
-    await clientTransport?.close();
-    clientTransport = undefined;
-    serverTransport?.close();
-    serverTransport = undefined;
+    await clientSession?.close();
+    clientSession = undefined;
+    agentSession?.close();
+    agentSession = undefined;
     chatTransport = undefined;
     closeAllClients();
   });
@@ -48,14 +49,15 @@ describe('useChat error propagation', () => {
     const clientClient = ablyRealtimeClient();
     const clientChannel = clientClient.channels.get(channelName);
 
-    clientTransport = createClientTransport({
+    clientSession = createClientSession({
       channel: clientChannel,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
       api: 'http://localhost:1/nonexistent',
     });
+    await clientSession.connect();
 
-    chatTransport = createChatTransport(clientTransport);
+    chatTransport = createChatTransport(clientSession);
 
     const onError = vi.fn();
 
@@ -96,12 +98,13 @@ describe('useChat error propagation', () => {
     const serverChannel = serverClient.channels.get(channelName);
     const clientChannel = clientClient.channels.get(channelName);
 
-    serverTransport = createServerTransport({
+    agentSession = createAgentSession({
       channel: serverChannel,
       codec: UIMessageCodec,
     });
+    await agentSession.connect();
 
-    // Capture fetch calls so we can extract the turnId from the POST body.
+    // Capture fetch calls so we can extract the runId from the POST body.
     const fetchCalls: RequestInit[] = [];
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- inline mock returns Promise.resolve directly
     const capturingFetch = ((_url: string | URL | Request, init?: RequestInit) => {
@@ -109,15 +112,16 @@ describe('useChat error propagation', () => {
       return Promise.resolve(new Response(undefined, { status: 200 }));
     }) as typeof globalThis.fetch;
 
-    clientTransport = createClientTransport({
+    clientSession = createClientSession({
       channel: clientChannel,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
       api: '/api/chat',
       fetch: capturingFetch,
     });
+    await clientSession.connect();
 
-    chatTransport = createChatTransport(clientTransport);
+    chatTransport = createChatTransport(clientSession);
 
     const onError = vi.fn();
 
@@ -139,7 +143,7 @@ describe('useChat error propagation', () => {
       });
     });
 
-    // Extract turnId from the POST body sent by the transport.
+    // Extract runId from the POST body sent by the session.
     await waitFor(
       () => {
         expect(fetchCalls).toHaveLength(1);
@@ -148,16 +152,16 @@ describe('useChat error propagation', () => {
     );
     const firstCall = fetchCalls[0];
     if (!firstCall) throw new Error('expected fetch to have been called');
-    // CAST: transport serialises the POST body as JSON containing turnId.
-    const { turnId } = JSON.parse(firstCall.body as string) as { turnId: string };
+    // CAST: transport serialises the POST body as JSON containing runId.
+    const { runId } = JSON.parse(firstCall.body as string) as { runId: string };
 
-    // Start a server turn that streams events but doesn't finish.
+    // Start a server run that streams events but doesn't finish.
     // The stream stays open so we can detach the channel mid-stream.
-    const serverTurn = serverTransport.newTurn({
-      turnId,
+    const serverRun = createRunFromOpts(agentSession, {
+      runId,
       clientId: clientClient.auth.clientId,
     });
-    await serverTurn.start();
+    await serverRun.start();
 
     const openStream = new ReadableStream<AI.UIMessageChunk>({
       start: (c) => {
@@ -168,13 +172,13 @@ describe('useChat error propagation', () => {
       },
     });
     // Fire-and-forget — the stream stays open indefinitely
-    void serverTurn.streamResponse(openStream);
+    void serverRun.pipe(openStream);
 
     // Poll the transport tree for streamed events. ChatTransport returns an
     // empty stream to useChat (useMessageSync handles message state separately),
     // so result.current.messages won't reflect streamed data. Polling at 50ms
     // (waitFor's default interval) is fine for an integration test.
-    const ct = clientTransport;
+    const ct = clientSession;
     await waitFor(
       () => {
         const messages = ct.view.flattenNodes().map((n) => n.message);

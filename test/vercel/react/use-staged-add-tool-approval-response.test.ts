@@ -4,7 +4,7 @@ import { renderHook } from '@testing-library/react';
 import type * as AI from 'ai';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ClientTransport, MessageNode } from '../../../src/core/transport/types.js';
+import type { ClientSession, MessageNode } from '../../../src/core/transport/types.js';
 import { useStagedAddToolApprovalResponse } from '../../../src/vercel/react/use-staged-add-tool-approval-response.js';
 
 // ---------------------------------------------------------------------------
@@ -38,13 +38,13 @@ const makeNode = (msgId: string, message: AI.UIMessage): MessageNode<AI.UIMessag
 
 const createMockTransport = (
   nodes: MessageNode<AI.UIMessage>[],
-): ClientTransport<AI.UIMessageChunk, AI.UIMessage> & { stageMessage: ReturnType<typeof vi.fn> } => {
+): ClientSession<AI.UIMessageChunk, AI.UIMessage> & { stageMessage: ReturnType<typeof vi.fn> } => {
   const stageMessage = vi.fn();
   // CAST: only the subset used by useStagedAddToolApprovalResponse is needed.
   return {
     view: { flattenNodes: () => nodes },
     stageMessage,
-  } as unknown as ClientTransport<AI.UIMessageChunk, AI.UIMessage> & { stageMessage: ReturnType<typeof vi.fn> };
+  } as unknown as ClientSession<AI.UIMessageChunk, AI.UIMessage> & { stageMessage: ReturnType<typeof vi.fn> };
 };
 
 // ---------------------------------------------------------------------------
@@ -60,14 +60,14 @@ describe('useStagedAddToolApprovalResponse', () => {
 
     const message = makeAssistantWithApprovalRequest(uiMsgId, toolCallId, approvalId);
     const nodes = [makeNode(msgId, message)];
-    const transport = createMockTransport(nodes);
+    const session = createMockTransport(nodes);
     const raw = vi.fn();
 
-    const { result } = renderHook(() => useStagedAddToolApprovalResponse(transport, raw));
+    const { result } = renderHook(() => useStagedAddToolApprovalResponse(session, raw));
     result.current({ id: approvalId, approved: true });
 
-    expect(transport.stageMessage).toHaveBeenCalledTimes(1);
-    const [stagedMsgId, stagedMessage] = transport.stageMessage.mock.calls[0] as [string, AI.UIMessage];
+    expect(session.stageMessage).toHaveBeenCalledTimes(1);
+    const [stagedMsgId, stagedMessage] = session.stageMessage.mock.calls[0] as [string, AI.UIMessage];
     expect(stagedMsgId).toBe(msgId);
     expect(stagedMessage.parts[0]).toMatchObject({
       type: 'dynamic-tool',
@@ -81,13 +81,13 @@ describe('useStagedAddToolApprovalResponse', () => {
 
   it('propagates approved: false and reason into the patched approval', () => {
     const nodes = [makeNode('tree-1', makeAssistantWithApprovalRequest('ui-1', 'tc-1', 'ap-1'))];
-    const transport = createMockTransport(nodes);
+    const session = createMockTransport(nodes);
     const raw = vi.fn();
 
-    const { result } = renderHook(() => useStagedAddToolApprovalResponse(transport, raw));
+    const { result } = renderHook(() => useStagedAddToolApprovalResponse(session, raw));
     result.current({ id: 'ap-1', approved: false, reason: 'User denied' });
 
-    const [, stagedMessage] = transport.stageMessage.mock.calls[0] as [string, AI.UIMessage];
+    const [, stagedMessage] = session.stageMessage.mock.calls[0] as [string, AI.UIMessage];
     expect(stagedMessage.parts[0]).toMatchObject({
       state: 'approval-responded',
       approval: { id: 'ap-1', approved: false, reason: 'User denied' },
@@ -96,21 +96,21 @@ describe('useStagedAddToolApprovalResponse', () => {
   });
 
   it('tolerates missing approval id — delegates without staging', () => {
-    const transport = createMockTransport([]);
+    const session = createMockTransport([]);
     const raw = vi.fn();
 
-    const { result } = renderHook(() => useStagedAddToolApprovalResponse(transport, raw));
+    const { result } = renderHook(() => useStagedAddToolApprovalResponse(session, raw));
     result.current({ id: 'unknown', approved: true });
 
-    expect(transport.stageMessage).not.toHaveBeenCalled();
+    expect(session.stageMessage).not.toHaveBeenCalled();
     expect(raw).toHaveBeenCalledExactlyOnceWith({ id: 'unknown', approved: true });
   });
 
   it('returns the same wrapped function across re-renders when deps are stable', () => {
-    const transport = createMockTransport([]);
+    const session = createMockTransport([]);
     const raw = vi.fn();
 
-    const { result, rerender } = renderHook(() => useStagedAddToolApprovalResponse(transport, raw));
+    const { result, rerender } = renderHook(() => useStagedAddToolApprovalResponse(session, raw));
     const first = result.current;
     rerender();
     expect(result.current).toBe(first);

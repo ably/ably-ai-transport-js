@@ -4,19 +4,19 @@
  *
  * Skips tool calls that already have a follow-up assistant message — those
  * were resolved in a previous session and don't need re-execution.
- * Only executes for turns initiated by this client (matches x-ably-turn-client-id).
+ * Only executes for runs initiated by this client (matches x-ably-run-client-id).
  *
- * On resolution, stages the tool-output event on the transport before
+ * On resolution, stages the tool-output event on the session before
  * calling addToolResult. Staging applies the event to the conversation tree
  * immediately so any subsequent useMessageSync overwrite (e.g. from an
- * observer turn arriving on the channel) is idempotent — the tool result
+ * observer run arriving on the channel) is idempotent — the tool result
  * won't be wiped from useChat state during the window before
  * sendAutomaticallyWhen fires.
  */
 
 import { useEffect, useRef } from 'react';
 import type { ChatAddToolOutputFunction, DynamicToolUIPart, UIMessage, UIMessageChunk } from 'ai';
-import type { ClientTransport, MessageNode } from '@ably/ai-transport';
+import type { ClientSession, MessageNode } from '@ably/ai-transport';
 
 type ClientToolExecutor = (input: unknown) => Promise<unknown>;
 
@@ -45,7 +45,7 @@ const clientTools: Record<string, ClientToolExecutor> = {
 };
 
 export function useClientTools(
-  transport: ClientTransport<UIMessageChunk, UIMessage>,
+  session: ClientSession<UIMessageChunk, UIMessage>,
   messages: UIMessage[],
   addToolResult: ChatAddToolOutputFunction<UIMessage>,
   nodes: MessageNode<UIMessage>[],
@@ -58,11 +58,11 @@ export function useClientTools(
       const msg = messages[i];
       if (msg.role !== 'assistant') continue;
 
-      // Only execute client tools for turns initiated by this client.
-      // Look up the transport node by message ID to check the turn owner.
+      // Only execute client tools for runs initiated by this client.
+      // Look up the session node by message ID to check the run owner.
       const node = nodes.find((n) => n.message.id === msg.id);
-      const turnClientId = node?.headers['x-ably-turn-client-id'];
-      if (turnClientId && turnClientId !== clientId) continue;
+      const runClientId = node?.headers['x-ably-run-client-id'];
+      if (runClientId && runClientId !== clientId) continue;
 
       // If there's a later assistant message, this tool call was already
       // resolved in a previous session — skip.
@@ -90,7 +90,7 @@ export function useClientTools(
             providerExecuted: false,
             preliminary: false,
           };
-          transport.stageEvents(treeMsgId, [chunk]);
+          session.stageEvents(treeMsgId, [chunk]);
           addToolResult({
             tool: toolPart.toolName,
             toolCallId: toolPart.toolCallId,
@@ -99,5 +99,5 @@ export function useClientTools(
         });
       }
     }
-  }, [transport, messages, addToolResult, nodes, clientId]);
+  }, [session, messages, addToolResult, nodes, clientId]);
 }

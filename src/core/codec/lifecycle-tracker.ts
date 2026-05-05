@@ -1,7 +1,7 @@
 /**
  * Generic lifecycle tracker for codec decoders.
  *
- * Manages per-scope (typically per-turn) tracking of lifecycle phases that
+ * Manages per-scope (typically per-run) tracking of lifecycle phases that
  * must be emitted before content events. When a phase has not been emitted
  * (e.g. mid-stream join), the tracker synthesizes the missing events using
  * codec-provided build functions.
@@ -40,7 +40,7 @@ export interface PhaseConfig<TEvent> {
  * Per-scope lifecycle tracker that ensures required phases are emitted
  * before content events, synthesizing missing ones for mid-stream joins.
  *
- * Scoped by an arbitrary string key (typically a turn ID). Each scope
+ * Scoped by an arbitrary string key (typically a run ID). Each scope
  * tracks independently which phases have been emitted.
  */
 export interface LifecycleTracker<TEvent> {
@@ -48,7 +48,7 @@ export interface LifecycleTracker<TEvent> {
    * Ensure all configured phases have been emitted for the given scope.
    * Returns synthetic events for any phases not yet marked as emitted,
    * then marks them. Returns an empty array if all phases are current.
-   * @param scopeId - The scope to check (e.g. turn ID).
+   * @param scopeId - The scope to check (e.g. run ID).
    * @param context - Key-value pairs passed through to phase build functions.
    * @returns Synthetic events for missing phases, in configuration order.
    */
@@ -57,7 +57,7 @@ export interface LifecycleTracker<TEvent> {
   /**
    * Mark a phase as emitted from the wire (not synthetic). Call this
    * when the real event arrives so the tracker does not re-synthesize it.
-   * @param scopeId - The scope (e.g. turn ID).
+   * @param scopeId - The scope (e.g. run ID).
    * @param phaseKey - The phase key to mark.
    */
   markEmitted(scopeId: string, phaseKey: string): void;
@@ -66,13 +66,13 @@ export interface LifecycleTracker<TEvent> {
    * Reset a phase so it will be re-synthesized on the next
    * {@link ensurePhases} call. Used for repeating phases (e.g. "start-step"
    * resets after "finish-step").
-   * @param scopeId - The scope (e.g. turn ID).
+   * @param scopeId - The scope (e.g. run ID).
    * @param phaseKey - The phase key to reset.
    */
   resetPhase(scopeId: string, phaseKey: string): void;
 
   /**
-   * Remove all tracking state for a scope. Call on turn completion
+   * Remove all tracking state for a scope. Call on run completion
    * (finish, abort) to free memory.
    * @param scopeId - The scope to clear.
    */

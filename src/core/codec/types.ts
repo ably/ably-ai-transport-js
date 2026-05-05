@@ -121,14 +121,14 @@ export interface StreamTrackerState {
 
 /**
  * The subset of encoder operations that are stateless — safe for long-lived
- * reuse across turns. Publishes complete messages and discrete events without
+ * reuse across runs. Publishes complete messages and discrete events without
  * any streaming lifecycle (no trackers, no pending appends, no close).
  *
- * The server transport calls `writeMessages` to publish user messages to the
+ * The agent session calls `writeMessages` to publish user messages to the
  * channel. All messages in a single call are published atomically and share
  * a single `x-ably-msg-id`, forming one node in the conversation tree.
  * `writeEvent` is a public API for consumers to publish standalone discrete
- * events outside the streaming flow — it is not called by the transport internally.
+ * events outside the streaming flow — it is not called by the session internally.
  */
 export interface DiscreteEncoder<TEvent, TMessage> {
   /**
@@ -152,16 +152,16 @@ export interface DiscreteEncoder<TEvent, TMessage> {
 // ---------------------------------------------------------------------------
 
 /**
- * Full streaming encoder with single-turn lifecycle. Extends
+ * Full streaming encoder with single-run lifecycle. Extends
  * `DiscreteEncoder` with stateful streaming operations (`appendEvent` for
- * content streams, `close` to flush). Used by the server transport.
+ * content streams, `close` to flush). Used by the agent session.
  */
 export interface StreamEncoder<TEvent, TMessage> extends DiscreteEncoder<TEvent, TMessage> {
   /** Encode and append a streaming domain event to an in-progress stream (delta semantics). */
   appendEvent(event: TEvent, options?: WriteOptions): Promise<void>;
   /**
    * Abort all in-progress streams and publish a codec-specific abort signal.
-   * Called by the transport when a turn is cancelled. Idempotent — calling
+   * Called by the transport when a run is cancelled. Idempotent — calling
    * abort after all streams are already aborted is a no-op.
    * @param reason - Optional reason string for the abort (e.g. 'cancelled').
    */
@@ -207,7 +207,7 @@ export interface MessageAccumulator<TEvent, TMessage> {
    * Ensure the accumulator is ready to process events for the given message.
    * If not already active, creates internal tracking state from the message.
    * If already active, syncs internal state with the provided message
-   * (picking up external changes like cross-turn amendments).
+   * (picking up external changes like cross-run amendments).
    * Idempotent — safe to call before every processOutputs.
    */
   initMessage(messageId: string, message: TMessage): void;
@@ -248,7 +248,7 @@ export interface EncoderOptions {
  * The complete codec contract that a core transport needs.
  *
  * Combines factory methods (createEncoder, createDecoder, createAccumulator)
- * with protocol knowledge (isTerminal). Transport-level concerns like turn
+ * with protocol knowledge (isTerminal). Transport-level concerns like run
  * correlation, optimistic reconciliation, and cancel signals
  * are handled by the transport layer using standard `x-ably-*` headers.
  */

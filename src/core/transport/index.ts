@@ -1,25 +1,26 @@
 // Shared types
 export type {
-  ActiveTurn,
+  ActiveRun,
   AddMessageOptions,
   AddMessagesResult,
+  AgentSession,
+  AgentSessionOptions,
   CancelFilter,
   CancelRequest,
-  ClientTransport,
-  ClientTransportOptions,
+  ClientSession,
+  ClientSessionOptions,
   CloseOptions,
   EventsNode,
   MessageNode,
-  NewTurnOptions,
+  PipeOptions,
+  Run,
+  RunEndReason,
+  RunLifecycleEvent,
+  RunRuntime,
+  RunView,
   SendOptions,
-  ServerTransport,
-  ServerTransportOptions,
-  StreamResponseOptions,
   StreamResult,
   Tree,
-  Turn,
-  TurnEndReason,
-  TurnLifecycleEvent,
   View,
 } from './types.js';
 
@@ -32,11 +33,15 @@ export type { TreeNode } from './types.js';
 // Internal tree interface (consumed by View implementations)
 export type { TreeInternal } from './tree.js';
 
-// Server transport
-export { createServerTransport } from './server-transport.js';
+// Invocation
+export type { InvocationData } from './invocation.js';
+export { Invocation } from './invocation.js';
 
-// Client transport
-export { createClientTransport } from './client-transport.js';
+// Agent session
+export { createAgentSession } from './agent-session.js';
+
+// Client session
+export { createClientSession } from './client-session.js';
 
 // Header builder
 export { buildTransportHeaders } from './headers.js';

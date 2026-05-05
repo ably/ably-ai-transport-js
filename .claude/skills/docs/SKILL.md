@@ -86,7 +86,7 @@ direct, declarative statement. No preamble, no "In this guide, we'll..."
 
 Cancellation in `@ably/ai` is a channel-level operation - the client publishes
 a cancel signal on the Ably channel, the server receives it and aborts the
-matching turns.
+matching runs.
 
 <!-- Good -->
 
@@ -123,11 +123,11 @@ Use backticks for anything that references code - variable names, function
 names, header names, enum values, type names, file paths. Do not use backticks
 for plain-English concept names.
 
-- **Concept names** are plain text: "message ID", "turn", "cancel signal"
-- **Variable/field names** are backticked: `msgId`, `turnId`, `serial`
-- **Header names** are backticked: `x-ably-msg-id`, `x-ably-turn-id`
+- **Concept names** are plain text: "message ID", "run", "cancel signal"
+- **Variable/field names** are backticked: `msgId`, `runId`, `serial`
+- **Header names** are backticked: `x-ably-msg-id`, `x-ably-run-id`
 - **Functions** always include parentheses: `send()`, `cancel()`, not `send` or `cancel`
-- **Types and interfaces** are backticked: `ClientTransport`, `Codec<TEvent, TMessage>`
+- **Types and interfaces** are backticked: `ClientSession`, `Codec<TEvent, TMessage>`
 - **Enum values** are backticked: `streaming`, `finished`, `aborted`
 
 ```markdown
@@ -149,8 +149,8 @@ its first mention within a page. This applies to:
 
 - **Ably-specific terms:** serial, message actions, channel attach,
   untilAttach, message appends, extras.headers
-- **Architecture terms:** transport layer vs domain layer, own turn vs
-  observer turn, turn ID vs message ID
+- **Architecture terms:** transport layer vs domain layer, own run vs
+  observer run, run IDs vs message ID
 - **Protocol jargon:** terminal event, fire-and-forget, prefix-match,
   first-contact, optimistic reconciliation, serial promotion, codec key
 
@@ -234,10 +234,10 @@ codes, phase behaviors. Tables are scannable and dense. Prefer a table over
 a bullet list when comparing properties across items.
 
 ```markdown
-| Filter                    | Effect                                  | Use case                     |
-| ------------------------- | --------------------------------------- | ---------------------------- |
-| `{ own: true }` (default) | Cancel all turns started by this client | Stop button                  |
-| `{ turnId: "abc" }`       | Cancel one specific turn                | Cancel a specific generation |
+| Filter                    | Effect                                 | Use case                     |
+| ------------------------- | -------------------------------------- | ---------------------------- |
+| `{ own: true }` (default) | Cancel all runs started by this client | Stop button                  |
+| `{ runId: "abc" }`        | Cancel one specific run                | Cancel a specific generation |
 ```
 
 ### Diagrams
@@ -283,9 +283,9 @@ eliminates this class of bugs entirely.
 - **Show the recommended approach first.** The first code block on the page
   should be the thing most developers will actually write.
 - **Real types, real methods.** Use the actual API - `transport.send()`,
-  `turn.cancel()`, not pseudocode.
-- **Comments explain the non-obvious.** Don't comment `// cancel the turn`
-  above `turn.cancel()`. Do comment `// fire-and-forget - POST doesn't block
+  `run.cancel()`, not pseudocode.
+- **Comments explain the non-obvious.** Don't comment `// cancel the run`
+  above `run.cancel()`. Do comment `// fire-and-forget - POST doesn't block
 the stream return`.
 - **TypeScript only** for now (the SDK is TypeScript).
 - **Both sides.** Feature pages show client and server code. Use section
@@ -373,7 +373,7 @@ Follow the existing directory structure:
 ```
 docs/
 ├── index.md          # Overview - orients the developer, routes to next step
-├── concepts/         # Mental models: transport architecture, turns, codec
+├── concepts/         # Mental models: transport architecture, runs, codec
 ├── get-started/      # Quickstarts - working app in minutes, per integration path
 ├── frameworks/       # Framework guides - why AIT + framework X, integration paths
 ├── features/         # Feature pages - one developer intent per page, atomic
@@ -444,7 +444,7 @@ After writing a doc page, verify:
 - [ ] Read each paragraph as an outsider - flag any term that isn't obvious
 - [ ] Ably-specific terms (serial, message actions, channel attach) are
       defined or linked to the glossary at first mention
-- [ ] Architecture terms (own turn, observer turn, transport layer, domain
+- [ ] Architecture terms (own run, observer run, transport layer, domain
       layer) are defined or linked at first mention
 - [ ] Protocol jargon (terminal event, fire-and-forget, prefix-match,
       first-contact, optimistic reconciliation) is defined or linked at first mention

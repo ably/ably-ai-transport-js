@@ -84,7 +84,7 @@ export function Providers({ clientId, children }: { clientId?: string; children:
 
 ## 3. Create the API route
 
-The server endpoint receives the HTTP POST from the client transport, calls the LLM, and streams the response over Ably:
+The server endpoint receives the HTTP POST from the client session, calls the LLM, and streams the response over Ably:
 
 ```typescript
 // app/api/chat/route.ts
@@ -93,11 +93,12 @@ import { streamText, convertToModelMessages } from 'ai';
 import type { UIMessage } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
-import { createServerTransport } from '@ably/ai-transport/vercel';
+import { Invocation } from '@ably/ai-transport';
 import type { MessageNode } from '@ably/ai-transport';
+import { createAgentSession } from '@ably/ai-transport/vercel';
 
 interface ChatRequestBody {
-  turnId: string;
+  runId: string;
   clientId: string;
   messages: MessageNode<UIMessage>[];
   history?: MessageNode<UIMessage>[];
@@ -109,17 +110,17 @@ interface ChatRequestBody {
 const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY! });
 
 export async function POST(req: Request) {
-  const { messages, history, chatId, turnId, clientId, forkOf, parent } = (await req.json()) as ChatRequestBody;
+  const { messages, history, chatId, runId, clientId, forkOf, parent } = (await req.json()) as ChatRequestBody;
   const channel = ably.channels.get(chatId);
 
-  const transport = createServerTransport({ channel });
-  const turn = transport.newTurn({ turnId, clientId, parent, forkOf });
+  const session = createAgentSession({ channel });
+  const run = session.createRun(Invocation.fromJSON({ runId, clientId, parent, forkOf }));
 
-  await turn.start();
+  await run.start();
 
   // Publish user messages to the channel so all clients see them and they persist in history
   if (messages.length > 0) {
-    await turn.addMessages(messages, { clientId });
+    await run.addMessages(messages, { clientId });
   }
 
   const allMessages = [...(history ?? []).map((h) => h.message), ...messages.map((m) => m.message)];
@@ -128,15 +129,15 @@ export async function POST(req: Request) {
     model: anthropic('claude-sonnet-4-6'),
     system: 'You are a helpful assistant.',
     messages: await convertToModelMessages(allMessages),
-    abortSignal: turn.abortSignal,
+    abortSignal: run.abortSignal,
   });
 
   // Stream in the background - don't block the HTTP response.
   // The client receives tokens from the Ably channel subscription, not the HTTP response.
   after(async () => {
-    const { reason } = await turn.streamResponse(result.toUIMessageStream());
-    await turn.end(reason);
-    transport.close();
+    const { reason } = await run.pipe(result.toUIMessageStream());
+    await run.end(reason);
+    session.close();
   });
 
   return new Response(null, { status: 200 });
@@ -147,22 +148,22 @@ The `after()` call is a Next.js API that runs work after the HTTP response is se
 
 ## 4. Create the chat component
 
-Wire up `useChat()` with the AI Transport hooks. `ChatTransportProvider` creates both the `ClientTransport` and `ChatTransport` and wraps children with Ably's `ChannelProvider` internally:
+Wire up `useChat()` with the AI Transport hooks. `ChatTransportProvider` creates both the `ClientSession` and `ChatTransport` and wraps children with Ably's `ChannelProvider` internally:
 
 ```typescript
 // app/chat.tsx
 'use client';
 
 import { useChat } from '@ai-sdk/react';
-import { useActiveTurns, useView } from '@ably/ai-transport/react';
+import { useActiveRuns, useView } from '@ably/ai-transport/react';
 import { ChatTransportProvider, useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
 import { useState } from 'react';
 
 function ChatInner({ chatId }: { chatId: string }) {
   const [input, setInput] = useState('');
 
-  // 1. Read both transports created by ChatTransportProvider
-  const { chatTransport, transport } = useChatTransport();
+  // 1. Read both the chat transport and the session created by ChatTransportProvider
+  const { chatTransport, session } = useChatTransport();
 
   // 2. Use Vercel's useChat with the chat transport adapter
   const { messages, setMessages, sendMessage, stop } = useChat({
@@ -170,12 +171,12 @@ function ChatInner({ chatId }: { chatId: string }) {
     transport: chatTransport,
   });
 
-  // 3. Sync transport messages into useChat's state (for observer messages)
+  // 3. Sync session messages into useChat's state (for observer messages)
   useMessageSync({ setMessages });
 
-  // 4. Track active turns for loading state
-  const activeTurns = useActiveTurns();
-  const isStreaming = activeTurns.size > 0;
+  // 4. Track active runs for loading state
+  const activeRuns = useActiveRuns();
+  const isStreaming = activeRuns.size > 0;
 
   // 5. Load history on mount
   useView({ limit: 30 });
@@ -203,7 +204,7 @@ function ChatInner({ chatId }: { chatId: string }) {
 
 export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
   return (
-    // ChatTransportProvider creates both ClientTransport and ChatTransport,
+    // ChatTransportProvider creates both ClientSession and ChatTransport,
     // and wraps children with ChannelProvider. No codec argument needed.
     <ChatTransportProvider channelName={chatId} clientId={clientId}>
       <ChatInner chatId={chatId} />
@@ -240,15 +241,15 @@ Open `http://localhost:3000`. Type a message - you'll see tokens stream in real 
 
 ## What's happening
 
-1. `ChatTransportProvider` creates a `ClientTransport` (subscribed to the Ably channel before attach — no messages lost) and wraps it in a `ChatTransport`. Both are stored in `ChatTransportContext` for descendants.
+1. `ChatTransportProvider` creates a `ClientSession` (subscribed to the Ably channel before attach — no messages lost) and wraps it in a `ChatTransport`. Both are stored in `ChatTransportContext` for descendants.
 2. `useChatTransport()` reads both transports from `ChatTransportContext` — no arguments needed for the nearest provider.
-3. `chatTransport` satisfies Vercel's `ChatTransport` interface; `transport` is the underlying `ClientTransport` used for `useMessageSync`, `useActiveTurns`, and `useView`.
+3. `chatTransport` satisfies Vercel's `ChatTransport` interface; `session` is the underlying `ClientSession` used for `useMessageSync`, `useActiveRuns`, and `useView`.
 4. When you send a message, `useChat()` calls the chat transport's `sendMessages`, which fires an HTTP POST to `/api/chat` and opens a stream on the Ably channel.
-5. The server creates a turn, publishes user messages, streams the LLM response through the encoder to the channel, and publishes a turn-end event.
-6. The client transport decodes incoming Ably messages through `UIMessageCodec` and routes them to the stream.
-7. `useMessageSync()` syncs messages from the transport (including messages from other clients) into `useChat`'s state.
+5. The server creates a run, publishes user messages, streams the LLM response through the encoder to the channel, and publishes a run-end event.
+6. The client session decodes incoming Ably messages through `UIMessageCodec` and routes them to the stream.
+7. `useMessageSync()` syncs messages from the session (including messages from other clients) into `useChat`'s state.
 
-For the conceptual details, see [Client and server transport](../concepts/transport.md) and [Turns](../concepts/turns.md).
+For the conceptual details, see [Client and agent sessions](../concepts/sessions.md) and [Runs](../concepts/runs.md).
 
 ## Next steps
 

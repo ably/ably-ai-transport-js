@@ -1,7 +1,7 @@
 import type * as AI from 'ai';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ClientTransport, SendOptions, Tree, View } from '../../../src/core/transport/types.js';
+import type { ClientSession, SendOptions, Tree, View } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 import type { ChatTransportOptions } from '../../../src/vercel/transport/chat-transport.js';
 import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
@@ -28,12 +28,12 @@ const makeAssistantWithToolPart = (id: string, part: AI.DynamicToolUIPart): AI.U
   parts: [{ type: 'text', text: 'intro' }, part],
 });
 
-interface MockTurn {
+interface MockRun {
   stream: ReadableStream<AI.UIMessageChunk>;
-  turnId: string;
+  runId: string;
   cancel: ReturnType<typeof vi.fn>;
   optimisticMsgIds: string[];
-  /** Enqueue a chunk into the turn stream. */
+  /** Enqueue a chunk into the run stream. */
   enqueue: (chunk: AI.UIMessageChunk) => void;
   /** Resolve the stream by closing it. */
   close: () => void;
@@ -41,7 +41,7 @@ interface MockTurn {
   error: (reason: unknown) => void;
 }
 
-const createMockTurn = (): MockTurn => {
+const createMockRun = (): MockRun => {
   let controller!: ReadableStreamDefaultController<AI.UIMessageChunk>;
   const stream = new ReadableStream<AI.UIMessageChunk>({
     start: (c) => {
@@ -51,7 +51,7 @@ const createMockTurn = (): MockTurn => {
   const cancel = vi.fn();
   return {
     stream,
-    turnId: 'turn-1',
+    runId: 'run-1',
     cancel,
     optimisticMsgIds: [],
     enqueue: (chunk: AI.UIMessageChunk) => {
@@ -67,17 +67,17 @@ const createMockTurn = (): MockTurn => {
 };
 
 interface MockTransport {
-  transport: ClientTransport<AI.UIMessageChunk, AI.UIMessage>;
+  session: ClientSession<AI.UIMessageChunk, AI.UIMessage>;
   send: ReturnType<typeof vi.fn>;
   cancel: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
-  mockTurn: MockTurn;
+  mockRun: MockRun;
   tree: Tree<AI.UIMessage>;
   view: View<AI.UIMessageChunk, AI.UIMessage>;
 }
 
 const createMockTransport = (): MockTransport => {
-  const mockTurn = createMockTurn();
+  const mockRun = createMockRun();
   const tree: Tree<AI.UIMessage> = {
     getSiblings: vi.fn(() => []),
     hasSiblings: vi.fn(() => false),
@@ -85,13 +85,13 @@ const createMockTransport = (): MockTransport => {
     getHeaders: vi.fn(),
     upsert: vi.fn(),
     delete: vi.fn(),
-    getActiveTurnIds: vi.fn(() => new Map()),
+    getActiveRunIds: vi.fn(() => new Map()),
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
     on: vi.fn(() => () => {}),
   };
 
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-  const send = vi.fn(() => Promise.resolve(mockTurn));
+  const send = vi.fn(() => Promise.resolve(mockRun));
 
   // CAST: mock object satisfies the subset of View methods used by chat-transport tests
   const view = {
@@ -108,7 +108,7 @@ const createMockTransport = (): MockTransport => {
     send,
     regenerate: vi.fn(),
     edit: vi.fn(),
-    getActiveTurnIds: vi.fn(() => new Map()),
+    getActiveRunIds: vi.fn(() => new Map()),
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
     on: vi.fn(() => () => {}),
     close: vi.fn(),
@@ -119,17 +119,17 @@ const createMockTransport = (): MockTransport => {
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const close = vi.fn(() => Promise.resolve());
 
-  const transport = {
+  const session = {
     tree,
     view,
     createView: vi.fn(() => view),
     cancel,
     close,
-    waitForTurn: vi.fn(),
+    waitForRun: vi.fn(),
     on: vi.fn(() => noop),
-  } as unknown as ClientTransport<AI.UIMessageChunk, AI.UIMessage>;
+  } as unknown as ClientSession<AI.UIMessageChunk, AI.UIMessage>;
 
-  return { transport, send, cancel, close, mockTurn, tree, view };
+  return { session, send, cancel, close, mockRun, tree, view };
 };
 
 // ---------------------------------------------------------------------------
@@ -139,8 +139,8 @@ const createMockTransport = (): MockTransport => {
 describe('createChatTransport', () => {
   describe('sendMessages — submit-message', () => {
     it('sends the last message and passes history in body', async () => {
-      const { transport, send, view, mockTurn } = createMockTransport();
-      const chat = createChatTransport(transport);
+      const { session, send, view, mockRun } = createMockTransport();
+      const chat = createChatTransport(session);
 
       const m1 = makeMessage('1');
       const m2 = makeMessage('2');
@@ -160,15 +160,15 @@ describe('createChatTransport', () => {
         abortSignal: undefined,
       });
 
-      // Close the turn stream so the returned stream resolves
-      mockTurn.close();
+      // Close the run stream so the returned stream resolves
+      mockRun.close();
       await streamPromise;
 
       expect(send).toHaveBeenCalledOnce();
       const [msgs, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
       expect(msgs).toEqual([m3]);
       expect(opts.body).toMatchObject({
-        chatId: 'chat-1',
+        sessionName: 'chat-1',
         trigger: 'submit-message',
       });
       // History should include the first two messages
@@ -182,8 +182,8 @@ describe('createChatTransport', () => {
     });
 
     it('throws on empty messages array', async () => {
-      const { transport } = createMockTransport();
-      const chat = createChatTransport(transport);
+      const { session } = createMockTransport();
+      const chat = createChatTransport(session);
 
       await expect(
         chat.sendMessages({
@@ -206,8 +206,8 @@ describe('createChatTransport', () => {
 
   describe('sendMessages — regenerate-message', () => {
     it('sends empty messages with all input as history', async () => {
-      const { transport, send, mockTurn } = createMockTransport();
-      const chat = createChatTransport(transport);
+      const { session, send, mockRun } = createMockTransport();
+      const chat = createChatTransport(session);
 
       const m1 = makeMessage('1');
       const m2 = makeMessage('2', 'assistant');
@@ -220,7 +220,7 @@ describe('createChatTransport', () => {
         abortSignal: undefined,
       });
 
-      mockTurn.close();
+      mockRun.close();
       await streamPromise;
 
       expect(send).toHaveBeenCalledOnce();
@@ -229,7 +229,7 @@ describe('createChatTransport', () => {
     });
 
     it('resolves fork metadata from the conversation tree', async () => {
-      const { transport, send, view, mockTurn } = createMockTransport();
+      const { session, send, view, mockRun } = createMockTransport();
 
       const msg = makeMessage('ui-message-id');
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
@@ -243,7 +243,7 @@ describe('createChatTransport', () => {
         },
       ]);
 
-      const chat = createChatTransport(transport);
+      const chat = createChatTransport(session);
 
       const streamPromise = chat.sendMessages({
         trigger: 'regenerate-message',
@@ -253,7 +253,7 @@ describe('createChatTransport', () => {
         abortSignal: undefined,
       });
 
-      mockTurn.close();
+      mockRun.close();
       await streamPromise;
 
       const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
@@ -262,10 +262,10 @@ describe('createChatTransport', () => {
     });
 
     it('falls back to raw messageId when node not found in tree', async () => {
-      const { transport, send, view, mockTurn } = createMockTransport();
+      const { session, send, view, mockRun } = createMockTransport();
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([]);
 
-      const chat = createChatTransport(transport);
+      const chat = createChatTransport(session);
 
       const streamPromise = chat.sendMessages({
         trigger: 'regenerate-message',
@@ -275,7 +275,7 @@ describe('createChatTransport', () => {
         abortSignal: undefined,
       });
 
-      mockTurn.close();
+      mockRun.close();
       await streamPromise;
 
       const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
@@ -286,7 +286,7 @@ describe('createChatTransport', () => {
 
   describe('sendMessages — submit-message with messageId (edit)', () => {
     it('resolves fork metadata from the conversation tree', async () => {
-      const { transport, send, view, mockTurn } = createMockTransport();
+      const { session, send, view, mockRun } = createMockTransport();
 
       const edited = makeMessage('ui-msg-id');
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
@@ -300,7 +300,7 @@ describe('createChatTransport', () => {
         },
       ]);
 
-      const chat = createChatTransport(transport);
+      const chat = createChatTransport(session);
 
       const streamPromise = chat.sendMessages({
         trigger: 'submit-message',
@@ -310,7 +310,7 @@ describe('createChatTransport', () => {
         abortSignal: undefined,
       });
 
-      mockTurn.close();
+      mockRun.close();
       await streamPromise;
 
       const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
@@ -319,10 +319,10 @@ describe('createChatTransport', () => {
     });
 
     it('falls back to raw messageId when node not found in tree', async () => {
-      const { transport, send, view, mockTurn } = createMockTransport();
+      const { session, send, view, mockRun } = createMockTransport();
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([]);
 
-      const chat = createChatTransport(transport);
+      const chat = createChatTransport(session);
 
       const streamPromise = chat.sendMessages({
         trigger: 'submit-message',
@@ -332,7 +332,7 @@ describe('createChatTransport', () => {
         abortSignal: undefined,
       });
 
-      mockTurn.close();
+      mockRun.close();
       await streamPromise;
 
       const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
@@ -341,7 +341,7 @@ describe('createChatTransport', () => {
     });
 
     it('sends the edited message as new and prior messages as history', async () => {
-      const { transport, send, view, mockTurn } = createMockTransport();
+      const { session, send, view, mockRun } = createMockTransport();
 
       const m1 = makeMessage('1');
       const edited = makeMessage('2');
@@ -351,7 +351,7 @@ describe('createChatTransport', () => {
         { message: edited, msgId: 'n2', parentId: 'n1', forkOf: undefined, headers: {}, serial: undefined },
       ]);
 
-      const chat = createChatTransport(transport);
+      const chat = createChatTransport(session);
 
       const streamPromise = chat.sendMessages({
         trigger: 'submit-message',
@@ -361,7 +361,7 @@ describe('createChatTransport', () => {
         abortSignal: undefined,
       });
 
-      mockTurn.close();
+      mockRun.close();
       await streamPromise;
 
       const [msgs, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
@@ -376,9 +376,9 @@ describe('createChatTransport', () => {
   });
 
   describe('real stream return', () => {
-    it('returns the turn stream with chunks flowing through', async () => {
-      const { transport, mockTurn } = createMockTransport();
-      const chat = createChatTransport(transport);
+    it('returns the run stream with chunks flowing through', async () => {
+      const { session, mockRun } = createMockTransport();
+      const chat = createChatTransport(session);
 
       const stream = await chat.sendMessages({
         trigger: 'regenerate-message',
@@ -388,12 +388,12 @@ describe('createChatTransport', () => {
         abortSignal: undefined,
       });
 
-      // Enqueue chunks into the turn stream
-      mockTurn.enqueue({ type: 'start', messageId: 'msg-1' });
-      mockTurn.enqueue({ type: 'text-start', id: 'text-1' });
-      mockTurn.enqueue({ type: 'text-delta', id: 'text-1', delta: 'Hello' });
-      mockTurn.enqueue({ type: 'finish', finishReason: 'stop' });
-      mockTurn.close();
+      // Enqueue chunks into the run stream
+      mockRun.enqueue({ type: 'start', messageId: 'msg-1' });
+      mockRun.enqueue({ type: 'text-start', id: 'text-1' });
+      mockRun.enqueue({ type: 'text-delta', id: 'text-1', delta: 'Hello' });
+      mockRun.enqueue({ type: 'finish', finishReason: 'stop' });
+      mockRun.close();
 
       // Read the returned stream — should produce the enqueued chunks
       const reader = stream.getReader();
@@ -413,9 +413,9 @@ describe('createChatTransport', () => {
   });
 
   describe('stream error propagation', () => {
-    it('errors the returned stream when the turn stream errors', async () => {
-      const { transport, mockTurn } = createMockTransport();
-      const chat = createChatTransport(transport);
+    it('errors the returned stream when the run stream errors', async () => {
+      const { session, mockRun } = createMockTransport();
+      const chat = createChatTransport(session);
 
       const stream = await chat.sendMessages({
         trigger: 'regenerate-message',
@@ -426,7 +426,7 @@ describe('createChatTransport', () => {
       });
 
       const error = new Error('channel continuity lost');
-      mockTurn.error(error);
+      mockRun.error(error);
 
       const reader = stream.getReader();
       await expect(reader.read()).rejects.toBe(error);
@@ -434,9 +434,9 @@ describe('createChatTransport', () => {
   });
 
   describe('abort signal', () => {
-    it('wires to transport.cancel({ all: true })', async () => {
-      const { transport, cancel, mockTurn } = createMockTransport();
-      const chat = createChatTransport(transport);
+    it('wires to session.cancel({ all: true })', async () => {
+      const { session, cancel, mockRun } = createMockTransport();
+      const chat = createChatTransport(session);
       const abortController = new AbortController();
 
       // sendMessages must resolve before the abort listener is registered
@@ -448,13 +448,13 @@ describe('createChatTransport', () => {
         abortSignal: abortController.signal,
       });
 
-      // Abort — the listener calls `void transport.cancel()` which is fire-and-forget
+      // Abort — the listener calls `void session.cancel()` which is fire-and-forget
       abortController.abort();
 
       expect(cancel).toHaveBeenCalledWith({ all: true });
 
       // Clean up
-      mockTurn.close();
+      mockRun.close();
       const reader = stream.getReader();
       await reader.read();
     });
@@ -462,7 +462,7 @@ describe('createChatTransport', () => {
 
   describe('prepareSendMessagesRequest hook', () => {
     it('uses the hook to customize body and headers', async () => {
-      const { transport, send, mockTurn } = createMockTransport();
+      const { session, send, mockRun } = createMockTransport();
 
       const hook = vi.fn().mockReturnValue({
         body: { custom: 'body' },
@@ -473,7 +473,7 @@ describe('createChatTransport', () => {
         prepareSendMessagesRequest: hook,
       };
 
-      const chat = createChatTransport(transport, chatOptions);
+      const chat = createChatTransport(session, chatOptions);
       const m1 = makeMessage('1');
 
       const streamPromise = chat.sendMessages({
@@ -484,7 +484,7 @@ describe('createChatTransport', () => {
         abortSignal: undefined,
       });
 
-      mockTurn.close();
+      mockRun.close();
       await streamPromise;
 
       // Verify the hook was called with correct context
@@ -506,8 +506,8 @@ describe('createChatTransport', () => {
   });
 
   describe('default body construction', () => {
-    it('includes history nodes from transport.view.flattenNodes', async () => {
-      const { transport, send, view, mockTurn } = createMockTransport();
+    it('includes history nodes from session.view.flattenNodes', async () => {
+      const { session, send, view, mockRun } = createMockTransport();
 
       const m1 = makeMessage('1');
       const m2 = makeMessage('2');
@@ -539,7 +539,7 @@ describe('createChatTransport', () => {
         },
       ]);
 
-      const chat = createChatTransport(transport);
+      const chat = createChatTransport(session);
 
       const streamPromise = chat.sendMessages({
         trigger: 'submit-message',
@@ -549,7 +549,7 @@ describe('createChatTransport', () => {
         abortSignal: undefined,
       });
 
-      mockTurn.close();
+      mockRun.close();
       await streamPromise;
 
       const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
@@ -566,8 +566,8 @@ describe('createChatTransport', () => {
 
   describe('reconnectToStream', () => {
     it('returns null', async () => {
-      const { transport } = createMockTransport();
-      const chat = createChatTransport(transport);
+      const { session } = createMockTransport();
+      const chat = createChatTransport(session);
 
       const result = await chat.reconnectToStream({ chatId: 'chat-1' });
       expect(result).toBeNull();
@@ -575,18 +575,18 @@ describe('createChatTransport', () => {
   });
 
   describe('close', () => {
-    it('delegates to transport.close with options', async () => {
-      const { transport, close } = createMockTransport();
-      const chat = createChatTransport(transport);
+    it('delegates to session.close with options', async () => {
+      const { session, close } = createMockTransport();
+      const chat = createChatTransport(session);
 
       await chat.close({ cancel: { all: true } });
 
       expect(close).toHaveBeenCalledWith({ cancel: { all: true } });
     });
 
-    it('delegates to transport.close without options', async () => {
-      const { transport, close } = createMockTransport();
-      const chat = createChatTransport(transport);
+    it('delegates to session.close without options', async () => {
+      const { session, close } = createMockTransport();
+      const chat = createChatTransport(session);
 
       await chat.close();
 
@@ -596,14 +596,14 @@ describe('createChatTransport', () => {
 
   describe('streaming signal', () => {
     it('streaming is false initially', () => {
-      const { transport } = createMockTransport();
-      const chat = createChatTransport(transport);
+      const { session } = createMockTransport();
+      const chat = createChatTransport(session);
       expect(chat.streaming).toBe(false);
     });
 
     it('streaming becomes true during sendMessages and false after stream closes', async () => {
-      const { transport, mockTurn } = createMockTransport();
-      const chat = createChatTransport(transport);
+      const { session, mockRun } = createMockTransport();
+      const chat = createChatTransport(session);
 
       const streamPromise = chat.sendMessages({
         trigger: 'regenerate-message',
@@ -617,7 +617,7 @@ describe('createChatTransport', () => {
       expect(chat.streaming).toBe(true);
 
       // Close the stream and drain it
-      mockTurn.close();
+      mockRun.close();
       const reader = stream.getReader();
       for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
         // drain
@@ -629,8 +629,8 @@ describe('createChatTransport', () => {
     });
 
     it('onStreamingChange fires on transitions', async () => {
-      const { transport, mockTurn } = createMockTransport();
-      const chat = createChatTransport(transport);
+      const { session, mockRun } = createMockTransport();
+      const chat = createChatTransport(session);
 
       const log: boolean[] = [];
       const unsub = chat.onStreamingChange((s) => log.push(s));
@@ -645,7 +645,7 @@ describe('createChatTransport', () => {
 
       expect(log).toEqual([true]);
 
-      mockTurn.close();
+      mockRun.close();
       const reader = stream.getReader();
       for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
         // drain
@@ -658,8 +658,8 @@ describe('createChatTransport', () => {
     });
 
     it('streaming resets to false when the source stream errors', async () => {
-      const { transport, mockTurn } = createMockTransport();
-      const chat = createChatTransport(transport);
+      const { session, mockRun } = createMockTransport();
+      const chat = createChatTransport(session);
 
       const log: boolean[] = [];
       chat.onStreamingChange((s) => log.push(s));
@@ -675,8 +675,8 @@ describe('createChatTransport', () => {
       expect(chat.streaming).toBe(true);
 
       // Error the source stream instead of closing it cleanly
-      mockTurn.enqueue({ type: 'text-start', id: 'text-1' });
-      mockTurn.close(); // close source so pipeTo finishes (error path is via reader cancel)
+      mockRun.enqueue({ type: 'text-start', id: 'text-1' });
+      mockRun.close(); // close source so pipeTo finishes (error path is via reader cancel)
 
       const reader = stream.getReader();
       await reader.cancel('test cancel');
@@ -688,10 +688,10 @@ describe('createChatTransport', () => {
     });
 
     it('streaming resets to false when sendMessages throws', async () => {
-      const { transport, send } = createMockTransport();
-      const chat = createChatTransport(transport);
+      const { session, send } = createMockTransport();
+      const chat = createChatTransport(session);
 
-      // Make transport.send reject
+      // Make session.send reject
       send.mockRejectedValueOnce(new Error('send failed'));
 
       const log: boolean[] = [];
@@ -720,7 +720,7 @@ describe('createChatTransport', () => {
 
   describe('sendMessages — fork on unresolved tool call', () => {
     it('forks off the preceding assistant when it has approval-requested', async () => {
-      const { transport, send, view, mockTurn } = createMockTransport();
+      const { session, send, view, mockRun } = createMockTransport();
 
       const user1 = makeMessage('u1');
       const assistant = makeAssistantWithToolPart('a1', {
@@ -745,7 +745,7 @@ describe('createChatTransport', () => {
         },
       ]);
 
-      const chat = createChatTransport(transport);
+      const chat = createChatTransport(session);
       const streamPromise = chat.sendMessages({
         trigger: 'submit-message',
         chatId: 'chat-1',
@@ -753,7 +753,7 @@ describe('createChatTransport', () => {
         messages: [user1, assistant, user2],
         abortSignal: undefined,
       });
-      mockTurn.close();
+      mockRun.close();
       await streamPromise;
 
       const [msgs, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
@@ -769,7 +769,7 @@ describe('createChatTransport', () => {
     });
 
     it('forks when the preceding assistant has input-available (client tool pending)', async () => {
-      const { transport, send, view, mockTurn } = createMockTransport();
+      const { session, send, view, mockRun } = createMockTransport();
 
       const user1 = makeMessage('u1');
       const assistant = makeAssistantWithToolPart('a1', {
@@ -793,7 +793,7 @@ describe('createChatTransport', () => {
         },
       ]);
 
-      const chat = createChatTransport(transport);
+      const chat = createChatTransport(session);
       const streamPromise = chat.sendMessages({
         trigger: 'submit-message',
         chatId: 'chat-1',
@@ -801,7 +801,7 @@ describe('createChatTransport', () => {
         messages: [user1, assistant, user2],
         abortSignal: undefined,
       });
-      mockTurn.close();
+      mockRun.close();
       await streamPromise;
 
       const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
@@ -810,7 +810,7 @@ describe('createChatTransport', () => {
     });
 
     it('forks when the preceding assistant has input-streaming', async () => {
-      const { transport, send, view, mockTurn } = createMockTransport();
+      const { session, send, view, mockRun } = createMockTransport();
 
       const user1 = makeMessage('u1');
       const assistant = makeAssistantWithToolPart('a1', {
@@ -834,7 +834,7 @@ describe('createChatTransport', () => {
         },
       ]);
 
-      const chat = createChatTransport(transport);
+      const chat = createChatTransport(session);
       const streamPromise = chat.sendMessages({
         trigger: 'submit-message',
         chatId: 'chat-1',
@@ -842,7 +842,7 @@ describe('createChatTransport', () => {
         messages: [user1, assistant, user2],
         abortSignal: undefined,
       });
-      mockTurn.close();
+      mockRun.close();
       await streamPromise;
 
       const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
@@ -851,7 +851,7 @@ describe('createChatTransport', () => {
     });
 
     it('does NOT fork when the preceding assistant has output-available (resolved)', async () => {
-      const { transport, send, view, mockTurn } = createMockTransport();
+      const { session, send, view, mockRun } = createMockTransport();
 
       const user1 = makeMessage('u1');
       const assistant = makeAssistantWithToolPart('a1', {
@@ -876,7 +876,7 @@ describe('createChatTransport', () => {
         },
       ]);
 
-      const chat = createChatTransport(transport);
+      const chat = createChatTransport(session);
       const streamPromise = chat.sendMessages({
         trigger: 'submit-message',
         chatId: 'chat-1',
@@ -884,7 +884,7 @@ describe('createChatTransport', () => {
         messages: [user1, assistant, user2],
         abortSignal: undefined,
       });
-      mockTurn.close();
+      mockRun.close();
       await streamPromise;
 
       const [msgs, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
@@ -894,7 +894,7 @@ describe('createChatTransport', () => {
     });
 
     it('does NOT fork when the preceding assistant has approval-responded', async () => {
-      const { transport, send, view, mockTurn } = createMockTransport();
+      const { session, send, view, mockRun } = createMockTransport();
 
       const user1 = makeMessage('u1');
       const assistant = makeAssistantWithToolPart('a1', {
@@ -919,7 +919,7 @@ describe('createChatTransport', () => {
         },
       ]);
 
-      const chat = createChatTransport(transport);
+      const chat = createChatTransport(session);
       const streamPromise = chat.sendMessages({
         trigger: 'submit-message',
         chatId: 'chat-1',
@@ -927,7 +927,7 @@ describe('createChatTransport', () => {
         messages: [user1, assistant, user2],
         abortSignal: undefined,
       });
-      mockTurn.close();
+      mockRun.close();
       await streamPromise;
 
       const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
@@ -936,7 +936,7 @@ describe('createChatTransport', () => {
     });
 
     it('does NOT fork in edit mode (messageId takes priority over preceding unresolved tool)', async () => {
-      const { transport, send, view, mockTurn } = createMockTransport();
+      const { session, send, view, mockRun } = createMockTransport();
 
       const user1 = makeMessage('u1');
       const assistant = makeAssistantWithToolPart('a1', {
@@ -962,7 +962,7 @@ describe('createChatTransport', () => {
         { message: edited, msgId: 'wire-u2', parentId: 'wire-a1', forkOf: undefined, headers: {}, serial: undefined },
       ]);
 
-      const chat = createChatTransport(transport);
+      const chat = createChatTransport(session);
       const streamPromise = chat.sendMessages({
         trigger: 'submit-message',
         chatId: 'chat-1',
@@ -970,7 +970,7 @@ describe('createChatTransport', () => {
         messages: [user1, assistant, edited],
         abortSignal: undefined,
       });
-      mockTurn.close();
+      mockRun.close();
       await streamPromise;
 
       const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];

@@ -10,12 +10,12 @@
  *
  * Events are scoped to the visible window — 'update' only fires when the
  * visible output changes, 'ably-message' only for messages corresponding to
- * visible nodes, and 'turn' only for turns with visible messages.
+ * visible nodes, and 'run' only for runs with visible messages.
  */
 
 import * as Ably from 'ably';
 
-import { EVENT_TURN_END, EVENT_TURN_START, HEADER_MSG_ID, HEADER_TURN_ID } from '../../constants.js';
+import { EVENT_RUN_END, EVENT_RUN_START, HEADER_MSG_ID, HEADER_RUN_ID } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
@@ -23,15 +23,7 @@ import { getHeaders } from '../../utils.js';
 import type { Codec } from '../codec/types.js';
 import { decodeHistory } from './decode-history.js';
 import type { TreeInternal } from './tree.js';
-import type {
-  ActiveTurn,
-  EventsNode,
-  HistoryPage,
-  MessageNode,
-  SendOptions,
-  TurnLifecycleEvent,
-  View,
-} from './types.js';
+import type { ActiveRun, EventsNode, HistoryPage, MessageNode, RunLifecycleEvent, SendOptions, View } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Events map
@@ -40,7 +32,7 @@ import type {
 interface ViewEventsMap {
   update: undefined;
   'ably-message': Ably.InboundMessage;
-  turn: TurnLifecycleEvent;
+  run: RunLifecycleEvent;
 }
 
 // ---------------------------------------------------------------------------
@@ -52,14 +44,14 @@ interface ViewEventsMap {
  * The View pre-computes the visible branch history and passes it directly,
  * so the delegate has no back-reference to the View.
  * When `eventNodes` is provided, the transport includes them in the POST body
- * for the server to publish as cross-turn events.
+ * for the server to publish as cross-run events.
  */
 export type SendDelegate<TEvent, TMessage> = (
   input: TMessage | TMessage[],
   options: SendOptions | undefined,
   history: MessageNode<TMessage>[],
   eventNodes?: EventsNode<TEvent>[],
-) => Promise<ActiveTurn<TEvent>>;
+) => Promise<ActiveRun<TEvent>>;
 
 // ---------------------------------------------------------------------------
 // Options
@@ -96,8 +88,8 @@ type BranchSelection =
   | { kind: 'auto'; selectedId: string }
   /** An external fork appeared — pinned to the currently-visible sibling to prevent drift. */
   | { kind: 'pinned'; selectedId: string }
-  /** This view's `regenerate()` is in flight — select newest when turn's response arrives. */
-  | { kind: 'pending'; turnId: string };
+  /** This view's `regenerate()` is in flight — select newest when run's response arrives. */
+  | { kind: 'pending'; runId: string };
 
 // ---------------------------------------------------------------------------
 // Implementation
@@ -130,8 +122,8 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   /** Snapshot of visible message references — used to detect in-place content updates (streaming). */
   private _lastVisibleMessages: TMessage[] = [];
 
-  /** Cached set of turn IDs present on the visible branch — avoids recomputing flattenNodes() on turn events. */
-  private _lastVisibleTurnIds = new Set<string>();
+  /** Cached set of run IDs present on the visible branch — avoids recomputing flattenNodes() on run events. */
+  private _lastVisibleRunIds = new Set<string>();
 
   /** Whether there are more history pages to fetch from the channel. */
   private _hasMoreHistory = false;
@@ -182,8 +174,8 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
       this._tree.on('ably-message', (msg) => {
         this._onTreeAblyMessage(msg);
       }),
-      this._tree.on('turn', (event) => {
-        this._onTreeTurn(event);
+      this._tree.on('run', (event) => {
+        this._onTreeRun(event);
       }),
     );
   }
@@ -312,7 +304,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   // -------------------------------------------------------------------------
 
   // Spec: AIT-CT3, AIT-CT4
-  async send(input: TMessage | TMessage[], options?: SendOptions): Promise<ActiveTurn<TEvent>> {
+  async send(input: TMessage | TMessage[], options?: SendOptions): Promise<ActiveRun<TEvent>> {
     this._logger.trace('DefaultView.send();');
     if (this._closed) {
       throw new Ably.ErrorInfo('unable to send; view is closed', ErrorCode.InvalidArgument, 400);
@@ -344,25 +336,25 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
         // auto-selection until the server response creates the new sibling.
         // Store the group root (not the raw forkOf) so _pinBranchSelections
         // can match it regardless of which sibling is currently visible.
-        this._branchSelections.set(groupRoot, { kind: 'pending', turnId: result.turnId });
+        this._branchSelections.set(groupRoot, { kind: 'pending', runId: result.runId });
         this._logger.debug('DefaultView.send(); deferring fork auto-selection', {
           forkOf: options.forkOf,
           groupRoot,
-          turnId: result.turnId,
+          runId: result.runId,
         });
 
-        // Bound pending entry lifetime to the turn — clean up on turn-end.
-        const turnUnsub = this._tree.on('turn', (evt) => {
-          if (evt.type !== EVENT_TURN_END || evt.turnId !== result.turnId) return;
+        // Bound pending entry lifetime to the run — clean up on run-end.
+        const runUnsub = this._tree.on('run', (evt) => {
+          if (evt.type !== EVENT_RUN_END || evt.runId !== result.runId) return;
           const sel = this._branchSelections.get(groupRoot);
-          if (sel?.kind === 'pending' && sel.turnId === result.turnId) {
+          if (sel?.kind === 'pending' && sel.runId === result.runId) {
             this._branchSelections.delete(groupRoot);
           }
-          turnUnsub();
-          const idx = this._unsubs.indexOf(turnUnsub);
+          runUnsub();
+          const idx = this._unsubs.indexOf(runUnsub);
           if (idx !== -1) this._unsubs.splice(idx, 1);
         });
-        this._unsubs.push(turnUnsub);
+        this._unsubs.push(runUnsub);
       }
     }
 
@@ -370,7 +362,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   }
 
   // Spec: AIT-CT5
-  async regenerate(messageId: string, options?: SendOptions): Promise<ActiveTurn<TEvent>> {
+  async regenerate(messageId: string, options?: SendOptions): Promise<ActiveRun<TEvent>> {
     this._logger.trace('DefaultView.regenerate();', { messageId });
 
     const node = this._tree.getNode(messageId);
@@ -395,11 +387,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   }
 
   // Spec: AIT-CT6
-  async edit(
-    messageId: string,
-    newMessages: TMessage | TMessage[],
-    options?: SendOptions,
-  ): Promise<ActiveTurn<TEvent>> {
+  async edit(messageId: string, newMessages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveRun<TEvent>> {
     this._logger.trace('DefaultView.edit();', { messageId });
 
     const node = this._tree.getNode(messageId);
@@ -423,7 +411,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     });
   }
 
-  async update(msgId: string, events: TEvent[], options?: SendOptions): Promise<ActiveTurn<TEvent>> {
+  async update(msgId: string, events: TEvent[], options?: SendOptions): Promise<ActiveRun<TEvent>> {
     if (this._closed) {
       throw new Ably.ErrorInfo('unable to update; view is closed', ErrorCode.InvalidArgument, 400);
     }
@@ -450,17 +438,17 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   // -------------------------------------------------------------------------
 
   // Spec: AIT-CT17
-  getActiveTurnIds(): Map<string, Set<string>> {
-    this._logger.trace('DefaultView.getActiveTurnIds();');
-    const allTurns = this._tree.getActiveTurnIds();
-    if (this._withheldMsgIds.size === 0) return allTurns;
+  getActiveRunIds(): Map<string, Set<string>> {
+    this._logger.trace('DefaultView.getActiveRunIds();');
+    const allRuns = this._tree.getActiveRunIds();
+    if (this._withheldMsgIds.size === 0) return allRuns;
 
-    // Filter to turns that have at least one visible message
+    // Filter to runs that have at least one visible message
     const result = new Map<string, Set<string>>();
-    for (const [clientId, turnIds] of allTurns) {
+    for (const [clientId, runIds] of allRuns) {
       const filtered = new Set<string>();
-      for (const turnId of turnIds) {
-        if (this._lastVisibleTurnIds.has(turnId)) filtered.add(turnId);
+      for (const runId of runIds) {
+        if (this._lastVisibleRunIds.has(runId)) filtered.add(runId);
       }
       if (filtered.size > 0) result.set(clientId, filtered);
     }
@@ -474,10 +462,10 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   // Spec: AIT-CT8a, AIT-CT8b, AIT-CT8e
   on(event: 'update', handler: () => void): () => void;
   on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
-  on(event: 'turn', handler: (event: TurnLifecycleEvent) => void): () => void;
+  on(event: 'run', handler: (event: RunLifecycleEvent) => void): () => void;
   on(
-    event: 'update' | 'ably-message' | 'turn',
-    handler: (() => void) | ((msg: Ably.InboundMessage) => void) | ((event: TurnLifecycleEvent) => void),
+    event: 'update' | 'ably-message' | 'run',
+    handler: (() => void) | ((msg: Ably.InboundMessage) => void) | ((event: RunLifecycleEvent) => void),
   ): () => void {
     // CAST: overload signatures enforce correct handler types per event name.
     const cb = handler as (arg: ViewEventsMap[keyof ViewEventsMap]) => void;
@@ -623,10 +611,10 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     const resolved = nodes ?? this.flattenNodes();
     this._lastVisibleIds = resolved.map((n) => n.msgId);
     this._lastVisibleMessages = resolved.map((n) => n.message);
-    this._lastVisibleTurnIds = new Set<string>();
+    this._lastVisibleRunIds = new Set<string>();
     for (const n of resolved) {
-      const turnId = n.headers[HEADER_TURN_ID];
-      if (turnId) this._lastVisibleTurnIds.add(turnId);
+      const runId = n.headers[HEADER_RUN_ID];
+      if (runId) this._lastVisibleRunIds.add(runId);
     }
   }
 
@@ -713,18 +701,18 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
       // Spec: AIT-CT13e
       // Check if this fork was initiated by this view (e.g. regenerate).
       // If so, select the newest sibling — but only if it belongs to the
-      // pending turn. Without this check, a sibling from another view's
+      // pending run. Without this check, a sibling from another view's
       // concurrent fork would be incorrectly auto-selected.
       if (existing?.kind === 'pending') {
         const nodes = this._tree.getSiblingNodes(msgId);
         const newest = nodes.at(-1);
         if (newest && newest.msgId !== msgId) {
-          const newestTurnId = newest.headers[HEADER_TURN_ID];
-          if (newestTurnId === existing.turnId) {
+          const newestRunId = newest.headers[HEADER_RUN_ID];
+          if (newestRunId === existing.runId) {
             this._logger.debug('DefaultView._pinBranchSelections(); auto-selecting pending fork', {
               msgId,
               newestId: newest.msgId,
-              turnId: existing.turnId,
+              runId: existing.runId,
             });
             this._branchSelections.set(groupRoot, { kind: 'auto', selectedId: newest.msgId });
           }
@@ -752,12 +740,12 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
       if (nodes.length <= 1) continue;
       const newest = nodes.at(-1);
       if (!newest || newest.msgId === groupRoot) continue;
-      const newestTurnId = newest.headers[HEADER_TURN_ID];
-      if (newestTurnId === sel.turnId) {
+      const newestRunId = newest.headers[HEADER_RUN_ID];
+      if (newestRunId === sel.runId) {
         this._logger.debug('DefaultView._resolvePendingSelections(); resolving off-branch pending', {
           groupRoot,
           newestId: newest.msgId,
-          turnId: sel.turnId,
+          runId: sel.runId,
         });
         this._branchSelections.set(groupRoot, { kind: 'auto', selectedId: newest.msgId });
       }
@@ -769,7 +757,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     const headers = getHeaders(msg);
     const msgId = headers[HEADER_MSG_ID];
     if (!msgId) {
-      // Non-message events (turn-start, turn-end, cancel) — always forward
+      // Non-message events (run-start, run-end, cancel) — always forward
       this._emitter.emit('ably-message', msg);
       return;
     }
@@ -779,35 +767,35 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     }
   }
 
-  private _onTreeTurn(event: TurnLifecycleEvent): void {
-    // Check if any messages for this turn are already on the visible branch.
-    if (this._lastVisibleTurnIds.has(event.turnId)) {
-      this._emitter.emit('turn', event);
+  private _onTreeRun(event: RunLifecycleEvent): void {
+    // Check if any messages for this run are already on the visible branch.
+    if (this._lastVisibleRunIds.has(event.runId)) {
+      this._emitter.emit('run', event);
       return;
     }
 
-    // For turn-start, use branch metadata to predict visibility before
-    // messages arrive. Own turns have optimistic inserts (caught above).
-    // Remote turns carry parent/forkOf from the server.
-    if (event.type === EVENT_TURN_START && this._isTurnStartVisible(event)) {
-      // Track the predicted turnId so the corresponding turn-end is not
+    // For run-start, use branch metadata to predict visibility before
+    // messages arrive. Own runs have optimistic inserts (caught above).
+    // Remote runs carry parent/forkOf from the server.
+    if (event.type === EVENT_RUN_START && this._isRunStartVisible(event)) {
+      // Track the predicted runId so the corresponding run-end is not
       // dropped if it arrives before messages update the snapshot.
-      this._lastVisibleTurnIds.add(event.turnId);
-      this._emitter.emit('turn', event);
+      this._lastVisibleRunIds.add(event.runId);
+      this._emitter.emit('run', event);
     }
   }
 
   /**
-   * Predict whether a turn-start's messages will be visible on this view's branch
+   * Predict whether a run-start's messages will be visible on this view's branch
    * using the parent/forkOf metadata from the event.
-   * @param event - The turn-start lifecycle event with optional branch metadata.
-   * @returns True if the turn's messages are expected to be visible on this view's branch.
+   * @param event - The run-start lifecycle event with optional branch metadata.
+   * @returns True if the run's messages are expected to be visible on this view's branch.
    */
-  private _isTurnStartVisible(event: TurnLifecycleEvent & { type: typeof EVENT_TURN_START }): boolean {
+  private _isRunStartVisible(event: RunLifecycleEvent & { type: typeof EVENT_RUN_START }): boolean {
     const { parent } = event;
 
     // No parent metadata — can't determine branch, forward as default.
-    // This covers root turns (parent omitted) and backward compat.
+    // This covers root runs (parent omitted) and backward compat.
     if (parent === undefined) return true;
 
     // Check if the parent is on the visible branch

@@ -36,36 +36,37 @@ Each stream has a lifecycle tracked by the `x-ably-status` header:
 
 ## Server
 
-Pipe any `ReadableStream` of codec events through the turn's `streamResponse()`:
+Pipe any `ReadableStream` of codec events through the run's `pipe()`:
 
 ```typescript
 import { streamText } from 'ai';
-import { createServerTransport } from '@ably/ai-transport/vercel';
+import { Invocation } from '@ably/ai-transport';
+import { createAgentSession } from '@ably/ai-transport/vercel';
 
-const transport = createServerTransport({ channel });
-const turn = transport.newTurn({ turnId, clientId });
+const session = createAgentSession({ channel });
+const run = session.createRun(Invocation.fromJSON({ runId, clientId }));
 
-await turn.start();
+await run.start();
 
 // Publish user messages to the channel so all clients see them and they persist in history
-await turn.addMessages(userMessages, { clientId });
+await run.addMessages(userMessages, { clientId });
 
-const result = streamText({ model, messages: conversationHistory, abortSignal: turn.abortSignal });
-const { reason } = await turn.streamResponse(result.toUIMessageStream());
-await turn.end(reason);
+const result = streamText({ model, messages: conversationHistory, abortSignal: run.abortSignal });
+const { reason } = await run.pipe(result.toUIMessageStream());
+await run.end(reason);
 
-transport.close();
+session.close();
 ```
 
-`streamResponse()` reads events from the stream and routes them through the encoder. Text deltas become message appends; lifecycle events (finish, error) become discrete messages that close the stream.
+`pipe()` reads events from the stream and routes them through the encoder. Text deltas become message appends; lifecycle events (finish, error) become discrete messages that close the stream.
 
 ## Client
 
 On the client, every streaming event is accumulated into the conversation tree as it arrives. The view updates on every event, so the last assistant message grows token by token:
 
 ```typescript
-const view = transport.view;
-const turn = await view.send(userMessage);
+const view = session.view;
+const run = await view.send(userMessage);
 
 // Subscribe to accumulated messages - updates on every token
 const unsubscribe = view.on('update', () => {
@@ -78,12 +79,12 @@ This is the primary consumption path. In React, the `useView()` hook handles the
 
 ### The event stream
 
-`send()` also returns a `ReadableStream<TEvent>` on the `ActiveTurn`. This exists as an integration seam for framework adapters - Vercel's `useChat()` expects a `ReadableStream` as its transport contract. Most application code should use the view instead, since the accumulator provides the same per-token granularity.
+`send()` also returns a `ReadableStream<TEvent>` on the `ActiveRun`. This exists as an integration seam for framework adapters - Vercel's `useChat()` expects a `ReadableStream` as its transport contract. Most application code should use the view instead, since the accumulator provides the same per-token granularity.
 
 ```typescript
 // Framework adapter usage - most apps won't consume this directly
-const turn = await view.send(userMessage);
-const reader = turn.stream.getReader();
+const run = await view.send(userMessage);
+const reader = run.stream.getReader();
 while (true) {
   const { done, value } = await reader.read();
   if (done) break;
@@ -91,7 +92,7 @@ while (true) {
 }
 ```
 
-For turns started by other clients (observer turns), there is no stream - events are accumulated into messages and the tree updates via `tree.on('ably-message')`. See [Message lifecycle](../internals/message-lifecycle.md#own-turns-vs-observer-turns) for the full routing picture.
+For runs started by other clients (observer runs), there is no stream - events are accumulated into messages and the tree updates via `tree.on('ably-message')`. See [Message lifecycle](../internals/message-lifecycle.md#own-runs-vs-observer-runs) for the full routing picture.
 
 ## Recovery
 
@@ -110,6 +111,6 @@ The transport streams whatever events the codec produces. For the Vercel AI SDK 
 | `finish`          | Discrete message (terminal - closes the stream)            |
 | `error`           | Discrete message (terminal - closes the stream with error) |
 
-Multiple content streams can be active within a single turn (e.g., reasoning + text). Each gets its own message with its own stream ID.
+Multiple content streams can be active within a single run (e.g., reasoning + text). Each gets its own message with its own stream ID.
 
-See [Tool calling](tool-calling.md) for how tool input deltas and results are streamed. See [React hooks reference](../reference/react-hooks.md) for the full `useView()` and `useClientTransport()` API. See [Cancel](cancel.md) for how streams are aborted. For the internal mechanics of message encoding, decoding, and recovery, see the [Encoder](../internals/encoder.md), [Decoder](../internals/decoder.md), and [Wire protocol](../internals/wire-protocol.md) internals pages.
+See [Tool calling](tool-calling.md) for how tool input deltas and results are streamed. See [React hooks reference](../reference/react-hooks.md) for the full `useView()` and `useClientSession()` API. See [Cancel](cancel.md) for how streams are aborted. For the internal mechanics of message encoding, decoding, and recovery, see the [Encoder](../internals/encoder.md), [Decoder](../internals/decoder.md), and [Wire protocol](../internals/wire-protocol.md) internals pages.

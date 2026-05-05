@@ -4,22 +4,22 @@ import { act, renderHook } from '@testing-library/react';
 import { createElement, type ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 
-import type { ClientTransport } from '../../src/core/transport/types.js';
-import { TransportContext } from '../../src/react/contexts/transport-context.js';
+import type { ClientSession } from '../../src/core/transport/types.js';
+import { ClientSessionContext } from '../../src/react/contexts/client-session-context.js';
 import { useCreateView } from '../../src/react/use-create-view.js';
-import { createMockTransport } from './helper/mock-transport.js';
+import { createMockTransport } from './helper/mock-session.js';
 
 describe('useCreateView', () => {
   it('returns empty handle when transport is undefined', () => {
-    const { result } = renderHook(() => useCreateView({ transport: undefined }));
+    const { result } = renderHook(() => useCreateView({ session: undefined }));
 
     expect(result.current.nodes).toEqual([]);
     expect(result.current.messages).toEqual([]);
     expect(result.current.hasOlder).toBe(false);
   });
 
-  it('returns empty handle when transport is undefined', () => {
-    const { result } = renderHook(() => useCreateView({ transport: undefined }));
+  it('returns empty handle when session is null', () => {
+    const { result } = renderHook(() => useCreateView({ session: null })); // eslint-disable-line unicorn/no-null -- testing the null input path
 
     expect(result.current.nodes).toEqual([]);
   });
@@ -27,10 +27,10 @@ describe('useCreateView', () => {
   it('creates a view and returns a populated handle', () => {
     const mock = createMockTransport(['hello']);
 
-    const { result } = renderHook(() => useCreateView({ transport: mock.transport }));
+    const { result } = renderHook(() => useCreateView({ session: mock.session }));
 
     // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
-    expect(mock.transport.createView).toHaveBeenCalledOnce();
+    expect(mock.session.createView).toHaveBeenCalledOnce();
     expect(result.current.nodes).toHaveLength(1);
     expect(result.current.messages).toEqual(['hello']);
   });
@@ -38,7 +38,7 @@ describe('useCreateView', () => {
   it('closes the view on unmount', () => {
     const mock = createMockTransport();
 
-    const { unmount } = renderHook(() => useCreateView({ transport: mock.transport }));
+    const { unmount } = renderHook(() => useCreateView({ session: mock.session }));
 
     // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
     expect(mock.view.close).not.toHaveBeenCalled();
@@ -53,14 +53,14 @@ describe('useCreateView', () => {
     const mock1 = createMockTransport(['first']);
     const mock2 = createMockTransport(['second']);
 
-    const { result, rerender } = renderHook(({ transport }) => useCreateView({ transport }), {
-      initialProps: { transport: mock1.transport as ClientTransport<unknown, string> | undefined },
+    const { result, rerender } = renderHook(({ session }) => useCreateView({ session }), {
+      initialProps: { session: mock1.session as ClientSession<unknown, string> | undefined },
     });
 
     expect(result.current.messages).toEqual(['first']);
 
     act(() => {
-      rerender({ transport: mock2.transport });
+      rerender({ session: mock2.session });
     });
 
     // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
@@ -71,14 +71,14 @@ describe('useCreateView', () => {
   it('closes the view and returns empty handle when transport changes to undefined', () => {
     const mock = createMockTransport(['hello']);
 
-    const { result, rerender } = renderHook(({ transport }) => useCreateView({ transport }), {
-      initialProps: { transport: mock.transport as ClientTransport<unknown, string> | undefined },
+    const { result, rerender } = renderHook(({ session }) => useCreateView({ session }), {
+      initialProps: { session: mock.session as ClientSession<unknown, string> | undefined },
     });
 
     expect(result.current.messages).toEqual(['hello']);
 
     act(() => {
-      rerender({ transport: undefined });
+      rerender({ session: undefined });
     });
 
     // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
@@ -89,7 +89,7 @@ describe('useCreateView', () => {
   it('delegates write operations to the created view', async () => {
     const mock = createMockTransport();
 
-    const { result } = renderHook(() => useCreateView({ transport: mock.transport }));
+    const { result } = renderHook(() => useCreateView({ session: mock.session }));
 
     await act(async () => {
       await result.current.send(['new message']);
@@ -110,10 +110,10 @@ describe('useCreateView', () => {
     const mock = createMockTransport(['hello']);
     const wrapper = ({ children }: { children: ReactNode }): ReactNode =>
       createElement(
-        TransportContext.Provider,
+        ClientSessionContext.Provider,
         {
           value: {
-            nearest: { transport: mock.transport as ClientTransport<unknown, unknown> },
+            nearest: { session: mock.session as ClientSession<unknown, unknown> },
             providers: {},
           },
         },
@@ -123,7 +123,7 @@ describe('useCreateView', () => {
     const { result } = renderHook(() => useCreateView(), { wrapper });
 
     // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
-    expect(mock.transport.createView).toHaveBeenCalledOnce();
+    expect(mock.session.createView).toHaveBeenCalledOnce();
     expect(result.current.nodes).toHaveLength(1);
     expect(result.current.messages).toEqual(['hello']);
   });

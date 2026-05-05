@@ -7,7 +7,7 @@ Without persistent history, page refresh means starting over. With AI Transport,
 ## Loading history
 
 ```typescript
-const view = transport.view;
+const view = session.view;
 await view.loadOlder(30);
 
 // view.flattenNodes() - decoded messages including history, in chronological order
@@ -20,7 +20,7 @@ The `limit` parameter controls how many **complete domain messages** to return, 
 
 ## Gapless continuity
 
-The client transport subscribes to the Ably channel **before** attaching. When you call `loadOlder()`, it uses `untilAttach` mode - fetching messages up to the point of attachment. This means there's no gap between history and the live subscription: every message is accounted for exactly once.
+The client session subscribes to the Ably channel **before** attaching. When you call `loadOlder()`, it uses `untilAttach` mode - fetching messages up to the point of attachment. This means there's no gap between history and the live subscription: every message is accounted for exactly once.
 
 ## React hook
 
@@ -30,7 +30,7 @@ The client transport subscribes to the Ably channel **before** attaching. When y
 import { useView } from '@ably/ai-transport/react';
 
 // Auto-loads first page on mount (passing options = enabled)
-const { nodes, hasOlder, loading, loadOlder } = useView(transport, { limit: 30 });
+const { nodes, hasOlder, loading, loadOlder } = useView(session, { limit: 30 });
 
 // nodes - MessageNode[] for the current branch
 // hasOlder - are there older pages?
@@ -42,7 +42,7 @@ Pass `null` or omit the options to disable auto-load:
 
 ```typescript
 // Manual load only
-const { nodes, hasOlder, loading, loadOlder } = useView(transport);
+const { nodes, hasOlder, loading, loadOlder } = useView(session);
 // ...later:
 await loadOlder(30);
 ```
@@ -52,7 +52,7 @@ await loadOlder(30);
 Combine `useView()` with a scroll sentinel for infinite scroll:
 
 ```typescript
-const { nodes, hasOlder, loading, loadOlder } = useView(transport, { limit: 30 });
+const { nodes, hasOlder, loading, loadOlder } = useView(session, { limit: 30 });
 
 // In your message list
 {hasOlder && (
@@ -72,8 +72,8 @@ See [Conversation branching](branching.md) for the tree model.
 
 ## What history contains
 
-History includes all messages published to the channel: user messages, assistant messages (with fully accumulated text), turn lifecycle events, and cancel signals. The decoder filters and reconstructs domain messages from this raw log.
+History includes all messages published to the channel: user messages, assistant messages (with fully accumulated text), run lifecycle events, and cancel signals. The decoder filters and reconstructs domain messages from this raw log.
 
-Only **completed** messages appear in history results. A message is complete when its terminal event (finish, abort, or error) has been received. Partial messages from in-progress turns are not included in history pages, but will appear through the live subscription when they complete.
+Only **completed** messages appear in history results. A message is complete when its terminal event (finish, abort, or error) has been received. Partial messages from in-progress runs are not included in history pages, but will appear through the live subscription when they complete.
 
-For the internal mechanics of history decoding - including the re-decode strategy, per-turn accumulators, and pagination - see [History hydration](../internals/history.md).
+For the internal mechanics of history decoding - including the re-decode strategy, per-run accumulators, and pagination - see [History hydration](../internals/history.md).

@@ -4,7 +4,7 @@ import { useChat } from '@ai-sdk/react';
 import { lastAssistantMessageIsCompleteWithApprovalResponses, lastAssistantMessageIsCompleteWithToolCalls } from 'ai';
 import {
   useAblyMessages,
-  useActiveTurns,
+  useActiveRuns,
   useChatTransport,
   useMessageSync,
   useView,
@@ -24,8 +24,8 @@ import { clientColor } from './lib/client-color';
 // ---------------------------------------------------------------------------
 
 export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clientId?: string; historyLimit?: number }) {
-  // Transport slot is created by ChatTransportProvider in page.tsx
-  const { chatTransport, transport } = useChatTransport();
+  // ChatTransport slot is created by ChatTransportProvider in page.tsx
+  const { chatTransport, session } = useChatTransport();
 
   // -- Callback & status logging for debug pane ----------------------------
   const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);
@@ -78,24 +78,24 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
   useMessageSync({ setMessages });
 
   // Wrap addToolApprovalResponse so the approval response patches the
-  // transport tree synchronously on click. Eliminates useChat↔tree
-  // divergence and closes the observer-turn race.
-  const stagedApproval = useStagedAddToolApprovalResponse(transport, addToolApprovalResponse);
+  // session tree synchronously on click. Eliminates useChat↔tree
+  // divergence and closes the observer-run race.
+  const stagedApproval = useStagedAddToolApprovalResponse(session, addToolApprovalResponse);
 
   // Track status transitions
   useEffect(() => {
     setStatusLog((prev) => [...prev, { time: Date.now(), status }]);
   }, [status]);
 
-  const activeTurns = useActiveTurns();
-  const hasAnyTurns = activeTurns.size > 0;
+  const activeRuns = useActiveRuns();
+  const hasAnyRuns = activeRuns.size > 0;
 
   // Auto-loads first page on mount
   const { nodes, hasOlder, loading, loadOlder, hasSiblings, getSiblings, getSelectedIndex, select } = useView({
     limit: historyLimit ?? 30,
   });
 
-  useClientTools(transport, chatMessages, addToolResult, nodes, clientId);
+  useClientTools(session, chatMessages, addToolResult, nodes, clientId);
 
   const ablyMessages = useAblyMessages();
 
@@ -134,14 +134,14 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
             inputRef={inputRef}
             onSend={(text) => sendMessage({ text })}
             onStop={stop}
-            hasAnyTurns={hasAnyTurns}
+            hasAnyRuns={hasAnyRuns}
           />
         </div>
       </div>
       <DebugPane
         messages={nodes.map((n) => n.message)}
         ablyMessages={ablyMessages}
-        activeTurns={activeTurns}
+        activeRuns={activeRuns}
         status={status}
         callbackLog={callbackLog}
         statusLog={statusLog}
@@ -233,14 +233,14 @@ function InputBar({
   inputRef,
   onSend,
   onStop,
-  hasAnyTurns,
+  hasAnyRuns,
 }: {
   value: string;
   onChange: (value: string) => void;
   inputRef?: React.RefObject<HTMLInputElement | null>;
   onSend: (text: string) => void;
   onStop: () => void;
-  hasAnyTurns: boolean;
+  hasAnyRuns: boolean;
 }) {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -263,7 +263,7 @@ function InputBar({
         className="flex-1 rounded-md bg-zinc-900 border border-zinc-700 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500"
         autoFocus
       />
-      {hasAnyTurns ? (
+      {hasAnyRuns ? (
         <button
           type="button"
           onClick={onStop}

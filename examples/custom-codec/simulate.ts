@@ -168,7 +168,7 @@ const main = async (): Promise<void> => {
     //
     // The onMessage hook here stamps x-ably-msg-id for accumulator
     // correlation. This is a transport-level concern — when you use the
-    // codec with createServerTransport/createClientTransport, the transport
+    // codec with createAgentSession/createClientSession, the session
     // stamps this header automatically. You only need the onMessage hook
     // when using the codec directly without the transport layer, as we do
     // in this example.

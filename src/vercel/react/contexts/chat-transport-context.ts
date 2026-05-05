@@ -2,18 +2,18 @@ import type * as Ably from 'ably';
 import type * as AI from 'ai';
 import { createContext } from 'react';
 
-import type { ClientTransport } from '../../../core/transport/types.js';
+import type { ClientSession } from '../../../core/transport/types.js';
 import type { ChatTransport } from '../../transport/chat-transport.js';
 
 /**
  * A single entry in the chat transport registry, holding both the
- * underlying {@link ClientTransport} and the {@link ChatTransport} wrapping it.
+ * underlying {@link ClientSession} and the {@link ChatTransport} wrapping it.
  */
 export interface ChatTransportSlot {
-  /** The underlying client transport used to create the chat transport. */
-  readonly transport: ClientTransport<AI.UIMessageChunk, AI.UIMessage>;
-  /** Construction error from the underlying {@link ClientTransport}, or `undefined` on success. */
-  readonly transportError?: Ably.ErrorInfo | undefined;
+  /** The underlying client session used to create the chat transport. */
+  readonly session: ClientSession<AI.UIMessageChunk, AI.UIMessage>;
+  /** Construction error from the underlying {@link ClientSession}, or `undefined` on success. */
+  readonly sessionError?: Ably.ErrorInfo | undefined;
   /** The chat transport adapter for use with Vercel's useChat hook. */
   readonly chatTransport: ChatTransport;
 }

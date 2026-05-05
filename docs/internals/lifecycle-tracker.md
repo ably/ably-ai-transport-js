@@ -25,14 +25,14 @@ const tracker = createLifecycleTracker<UIMessageChunk>([
 ]);
 ```
 
-Phases are scoped by an arbitrary string key - typically a [turn ID](glossary.md#turn-id-vs-message-id). Each scope tracks independently which phases have been emitted.
+Phases are scoped by an arbitrary string key - typically a [run IDs](glossary.md#run-id-vs-message-id). Each scope tracks independently which phases have been emitted.
 
 ### ensurePhases
 
 Called before processing content events. Returns synthetic events for any phases not yet marked as emitted, then marks them. Returns an empty array if all phases are current.
 
 ```
-ensurePhases("turn-1", { messageId: "msg-abc" })
+ensurePhases("run-1", { messageId: "msg-abc" })
   → first call:  [{ type: 'start', messageId: 'msg-abc' }, { type: 'start-step' }]
   → second call: []  (all phases already emitted)
 ```
@@ -43,11 +43,11 @@ Called when the real event arrives from the wire, so the tracker doesn't re-synt
 
 ### resetPhase
 
-Resets a phase so it will be re-synthesized on the next `ensurePhases()` call. Used for repeating phases - the Vercel codec resets `start-step` after each `finish-step`, because multi-step turns require a new `start-step` before each step's content.
+Resets a phase so it will be re-synthesized on the next `ensurePhases()` call. Used for repeating phases - the Vercel codec resets `start-step` after each `finish-step`, because multi-step runs require a new `start-step` before each step's content.
 
 ### clearScope
 
-Removes all tracking state for a scope. Called on turn completion (`finish`, `abort`) to free memory.
+Removes all tracking state for a scope. Called on run completion (`finish`, `abort`) to free memory.
 
 ## Operations
 
@@ -62,11 +62,11 @@ Removes all tracking state for a scope. Called on turn completion (`finish`, `ab
 
 The Vercel decoder creates a lifecycle tracker with two phases: `start` and `start-step`. It composes the tracker into the decoder hooks:
 
-- **Before every streamed event** - `ensurePhases()` is called with the turn ID and a context containing the `messageId` from headers. Any missing lifecycle events are prepended to the decoder output.
-- **On `start` event** - `markEmitted(turnId, 'start')`
-- **On `start-step` event** - `markEmitted(turnId, 'start-step')`
-- **On `finish-step` event** - `resetPhase(turnId, 'start-step')` (next step needs a new start-step)
-- **On `finish` or `abort`** - `clearScope(turnId)`
+- **Before every streamed event** - `ensurePhases()` is called with the run IDs and a context containing the `messageId` from headers. Any missing lifecycle events are prepended to the decoder output.
+- **On `start` event** - `markEmitted(runId, 'start')`
+- **On `start-step` event** - `markEmitted(runId, 'start-step')`
+- **On `finish-step` event** - `resetPhase(runId, 'start-step')` (next step needs a new start-step)
+- **On `finish` or `abort`** - `clearScope(runId)`
 
 This means a mid-stream join produces the sequence: synthetic `start` → synthetic `start-step` → real `text-delta` (from decoder first-contact) - which the accumulator can process correctly.
 

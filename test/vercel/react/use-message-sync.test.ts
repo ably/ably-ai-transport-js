@@ -5,7 +5,7 @@ import type * as AI from 'ai';
 import { createElement, type ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ClientTransport } from '../../../src/core/transport/types.js';
+import type { ClientSession } from '../../../src/core/transport/types.js';
 import type { ChatTransportSlot } from '../../../src/vercel/react/contexts/chat-transport-context.js';
 import { ChatTransportContext } from '../../../src/vercel/react/contexts/chat-transport-context.js';
 import { useMessageSync } from '../../../src/vercel/react/use-message-sync.js';
@@ -59,10 +59,10 @@ const createMockSlot = (): MockSlot => {
     hasOlder: vi.fn(() => false),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     loadOlder: vi.fn(() => Promise.resolve()),
-    getActiveTurnIds: vi.fn(() => new Map()),
-  } as unknown as ClientTransport<AI.UIMessageChunk, AI.UIMessage>['view'];
+    getActiveRunIds: vi.fn(() => new Map()),
+  } as unknown as ClientSession<AI.UIMessageChunk, AI.UIMessage>['view'];
 
-  const transport = {
+  const session = {
     view,
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
     on: vi.fn(() => () => {}),
@@ -71,10 +71,10 @@ const createMockSlot = (): MockSlot => {
     regenerate: vi.fn(),
     edit: vi.fn(),
     cancel: vi.fn(),
-    waitForTurn: vi.fn(),
+    waitForRun: vi.fn(),
     close: vi.fn(),
-    // CAST: mock object satisfies the subset of ClientTransport methods used by useMessageSync
-  } as unknown as ClientTransport<AI.UIMessageChunk, AI.UIMessage>;
+    // CAST: mock object satisfies the subset of ClientSession methods used by useMessageSync
+  } as unknown as ClientSession<AI.UIMessageChunk, AI.UIMessage>;
 
   // --- ChatTransport ---
   const streamingCallbacks = new Set<(s: boolean) => void>();
@@ -111,7 +111,7 @@ const createMockSlot = (): MockSlot => {
     }
   };
 
-  const slot: ChatTransportSlot = { transport, chatTransport };
+  const slot: ChatTransportSlot = { session, chatTransport };
 
   return { slot, emitView, viewFlattenNodes, setStreaming };
 };
@@ -285,7 +285,7 @@ describe('useMessageSync', () => {
       expect(initialUpdater([])).toEqual([userMsg]);
       setMessages.mockClear();
 
-      // Own-turn stream starts — gate closes
+      // Own-run stream starts — gate closes
       act(() => {
         setStreaming(true);
       });
@@ -299,7 +299,7 @@ describe('useMessageSync', () => {
       });
       expect(setMessages).not.toHaveBeenCalled();
 
-      // Own-turn stream ends — gate opens, immediate sync picks up observer message
+      // Own-run stream ends — gate opens, immediate sync picks up observer message
       act(() => {
         setStreaming(false);
       });

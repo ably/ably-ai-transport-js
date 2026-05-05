@@ -1,26 +1,26 @@
 /**
- * ChatTransportProvider: creates a ChatTransport from a ClientTransport and makes it
+ * ChatTransportProvider: creates a ChatTransport from a ClientSession and makes it
  * available to descendants via ChatTransportContext.
  *
- * Wraps children with TransportProvider (using UIMessageCodec) so the Ably channel
- * lifecycle is managed in one place. An inner component reads the ClientTransport
- * from NearestTransportContext and creates the ChatTransport once on first render
+ * Wraps children with ClientSessionProvider (using UIMessageCodec) so the Ably channel
+ * lifecycle is managed in one place. An inner component reads the ClientSession
+ * via useClientSession() and creates the ChatTransport once on first render
  * (via useRef).
  *
- * The ChatTransport is NOT closed on unmount — the underlying ClientTransport
- * lifecycle is managed by the wrapping TransportProvider. Auto-closing would break
- * React Strict Mode, and ChatTransport.close() delegates to ClientTransport.close()
- * which TransportProvider already calls.
+ * The ChatTransport is NOT closed on unmount — the underlying ClientSession
+ * lifecycle is managed by the wrapping ClientSessionProvider. Auto-closing would break
+ * React Strict Mode, and ChatTransport.close() delegates to ClientSession.close()
+ * which ClientSessionProvider already calls.
  *
  * Multiple ChatTransportProviders can be nested using distinct channelNames.
- * Each provider merges its transport into the parent registry, so descendants
- * can access all registered transports via useChatTransport({ channelName }).
+ * Each provider merges its session into the parent registry, so descendants
+ * can access all registered sessions via useChatTransport({ channelName }).
  */
 
 import type * as AI from 'ai';
 import { type PropsWithChildren, type ReactNode, useContext, useMemo } from 'react';
 
-import { createTransportHooks, type TransportProviderProps } from '../../../react/index.js';
+import { type ClientSessionProviderProps, createSessionHooks } from '../../../react/index.js';
 import { UIMessageCodec } from '../../codec/index.js';
 import { type ChatTransportOptions, DEFAULT_VERCEL_API } from '../../transport/index.js';
 import { createChatTransport } from '../../transport/index.js';
@@ -28,25 +28,28 @@ import type { ChatTransportSlot } from './chat-transport-context.js';
 import { ChatTransportContext } from './chat-transport-context.js';
 
 export const {
-  TransportProvider,
+  ClientSessionProvider,
   useAblyMessages,
-  useActiveTurns,
-  useClientTransport,
+  useActiveRuns,
+  useClientSession,
   useCreateView,
   useTree,
   useView,
-} = createTransportHooks<AI.UIMessageChunk, AI.UIMessage>();
+} = createSessionHooks<AI.UIMessageChunk, AI.UIMessage>();
 
-type CoreTransportProviderProps = Omit<TransportProviderProps<AI.UIMessageChunk, AI.UIMessage>, 'codec' | 'api'> &
-  Partial<Pick<TransportProviderProps<AI.UIMessageChunk, AI.UIMessage>, 'api'>>;
+type CoreClientSessionProviderProps = Omit<
+  ClientSessionProviderProps<AI.UIMessageChunk, AI.UIMessage>,
+  'codec' | 'api'
+> &
+  Partial<Pick<ClientSessionProviderProps<AI.UIMessageChunk, AI.UIMessage>, 'api'>>;
 
 /**
  * Props for {@link ChatTransportProvider}.
  *
- * All {@link TransportProviderProps} for Vercel types except `codec` (baked as UIMessageCodec),
+ * All {@link ClientSessionProviderProps} for Vercel types except `codec` (baked as UIMessageCodec),
  * plus `chatOptions` for customizing chat request construction.
  */
-export interface ChatTransportProviderProps extends CoreTransportProviderProps {
+export interface ChatTransportProviderProps extends CoreClientSessionProviderProps {
   /**
    * Optional hooks for customizing chat request construction (e.g. prepareSendMessagesRequest).
    * Must be stable across renders — wrap in `useMemo` or define outside the component.
@@ -64,29 +67,29 @@ const ChatTransportProviderInner = ({
   chatOptions?: ChatTransportOptions;
   children: ReactNode;
 }) => {
-  const { transport, transportError } = useClientTransport();
+  const { session, sessionError } = useClientSession();
   const { providers: parentProviders } = useContext(ChatTransportContext);
-  const chatTransport = useMemo(() => createChatTransport(transport, chatOptions), [transport, chatOptions]);
+  const chatTransport = useMemo(() => createChatTransport(session, chatOptions), [session, chatOptions]);
   const contextValue = useMemo(() => {
-    const slot: ChatTransportSlot = { transport, transportError, chatTransport };
+    const slot: ChatTransportSlot = { session, sessionError, chatTransport };
     return {
       nearest: slot,
       providers: { ...parentProviders, [channelName]: slot },
     };
-  }, [channelName, parentProviders, chatTransport, transport, transportError]);
+  }, [channelName, parentProviders, chatTransport, session, sessionError]);
 
   return <ChatTransportContext.Provider value={contextValue}>{children}</ChatTransportContext.Provider>;
 };
 
 /**
- * Provide a {@link ChatTransport} and its underlying {@link ClientTransport} to descendant components.
+ * Provide a {@link ChatTransport} and its underlying {@link ClientSession} to descendant components.
  *
- * Wraps children with Ably's `ChannelProvider` (via `TransportProvider`) using `channelName`,
- * creates a {@link ClientTransport} with UIMessageCodec, wraps it in a {@link ChatTransport},
+ * Wraps children with Ably's `ChannelProvider` (via `ClientSessionProvider`) using `channelName`,
+ * creates a {@link ClientSession} with UIMessageCodec, wraps it in a {@link ChatTransport},
  * and registers the full slot in `ChatTransportContext` under `channelName`. Descendants call
- * {@link useChatTransport} with the same `channelName` to access both transports.
+ * {@link useChatTransport} with the same `channelName` to access both.
  *
- * `useClientTransport` is also available inside this provider's subtree.
+ * `useClientSession` is also available inside this provider's subtree.
  *
  * ```tsx
  * <ChatTransportProvider channelName="ai:demo">
@@ -94,29 +97,29 @@ const ChatTransportProviderInner = ({
  * </ChatTransportProvider>
  *
  * // Inside Chat:
- * const { chatTransport, transport } = useChatTransport();
- * const { transport } = useClientTransport(); // also available
+ * const { chatTransport, session } = useChatTransport();
+ * const { session } = useClientSession(); // also available
  * ```
- * @param props - Provider configuration including `channelName`, optional `chatOptions`, and all other transport options.
+ * @param props - Provider configuration including `channelName`, optional `chatOptions`, and all other session options.
  * @param props.chatOptions - Optional hooks for customizing chat request construction. Must be stable (memoized) — a new reference recreates the ChatTransport.
- * @param props.children - Descendant components that consume the transport via hooks.
- * @returns A React element wrapping children with ChannelProvider, TransportContext, and ChatTransportContext.
+ * @param props.children - Descendant components that consume the chat transport via hooks.
+ * @returns A React element wrapping children with ChannelProvider, ClientSessionContext, and ChatTransportContext.
  */
 export const ChatTransportProvider = ({
   chatOptions,
   children,
-  ...transportProps
+  ...sessionProps
 }: ChatTransportProviderProps & PropsWithChildren): ReactNode => (
-  <TransportProvider
-    {...transportProps}
-    api={transportProps.api ?? DEFAULT_VERCEL_API}
+  <ClientSessionProvider
+    {...sessionProps}
+    api={sessionProps.api ?? DEFAULT_VERCEL_API}
     codec={UIMessageCodec}
   >
     <ChatTransportProviderInner
-      channelName={transportProps.channelName}
+      channelName={sessionProps.channelName}
       chatOptions={chatOptions}
     >
       {children}
     </ChatTransportProviderInner>
-  </TransportProvider>
+  </ClientSessionProvider>
 );

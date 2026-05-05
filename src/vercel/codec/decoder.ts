@@ -14,7 +14,7 @@
 import type * as Ably from 'ably';
 import type * as AI from 'ai';
 
-import { HEADER_DISCRETE, HEADER_ROLE, HEADER_TURN_ID } from '../../constants.js';
+import { HEADER_DISCRETE, HEADER_ROLE, HEADER_RUN_ID } from '../../constants.js';
 import type { DecoderCore, DecoderCoreHooks, DecoderCoreOptions } from '../../core/codec/decoder.js';
 import { createDecoderCore, eventOutput } from '../../core/codec/decoder.js';
 import type { LifecycleTracker } from '../../core/codec/lifecycle-tracker.js';
@@ -231,22 +231,22 @@ const createVercelLifecycleTracker = (): LifecycleTracker<AI.UIMessageChunk> =>
 /**
  * Run the lifecycle tracker and wrap results as DecoderOutput events.
  * @param lifecycle - The lifecycle tracker instance.
- * @param turnId - The turn scope ID.
+ * @param runId - The run scope ID.
  * @param context - Context passed through to phase build functions.
  * @returns Decoder outputs for any synthesized lifecycle events.
  */
 const ensurePhases = (
   lifecycle: LifecycleTracker<AI.UIMessageChunk>,
-  turnId: string,
+  runId: string,
   context: Record<string, string | undefined>,
-): Out[] => lifecycle.ensurePhases(turnId, context).map((e) => ({ kind: 'event', event: e }));
+): Out[] => lifecycle.ensurePhases(runId, context).map((e) => ({ kind: 'event', event: e }));
 
 // ---------------------------------------------------------------------------
 // Discrete event decoders (one function per event type)
 // ---------------------------------------------------------------------------
 
-const decodeStart = (r: VercelHeaderReader, turnId: string, lifecycle: LifecycleTracker<AI.UIMessageChunk>): Out[] => {
-  lifecycle.markEmitted(turnId, 'start');
+const decodeStart = (r: VercelHeaderReader, runId: string, lifecycle: LifecycleTracker<AI.UIMessageChunk>): Out[] => {
+  lifecycle.markEmitted(runId, 'start');
   return event(
     stripUndefined({
       type: 'start' as const,
@@ -256,18 +256,18 @@ const decodeStart = (r: VercelHeaderReader, turnId: string, lifecycle: Lifecycle
   );
 };
 
-const decodeStartStep = (turnId: string, lifecycle: LifecycleTracker<AI.UIMessageChunk>): Out[] => {
-  lifecycle.markEmitted(turnId, 'start-step');
+const decodeStartStep = (runId: string, lifecycle: LifecycleTracker<AI.UIMessageChunk>): Out[] => {
+  lifecycle.markEmitted(runId, 'start-step');
   return event({ type: 'start-step' });
 };
 
-const decodeFinishStep = (turnId: string, lifecycle: LifecycleTracker<AI.UIMessageChunk>): Out[] => {
-  lifecycle.resetPhase(turnId, 'start-step');
+const decodeFinishStep = (runId: string, lifecycle: LifecycleTracker<AI.UIMessageChunk>): Out[] => {
+  lifecycle.resetPhase(runId, 'start-step');
   return event({ type: 'finish-step' });
 };
 
-const decodeFinish = (r: VercelHeaderReader, turnId: string, lifecycle: LifecycleTracker<AI.UIMessageChunk>): Out[] => {
-  lifecycle.clearScope(turnId);
+const decodeFinish = (r: VercelHeaderReader, runId: string, lifecycle: LifecycleTracker<AI.UIMessageChunk>): Out[] => {
+  lifecycle.clearScope(runId);
   return event(
     stripUndefined({
       type: 'finish' as const,
@@ -277,14 +277,14 @@ const decodeFinish = (r: VercelHeaderReader, turnId: string, lifecycle: Lifecycl
   );
 };
 
-const decodeError = (data: unknown, turnId: string, lifecycle: LifecycleTracker<AI.UIMessageChunk>): Out[] => {
-  lifecycle.clearScope(turnId);
+const decodeError = (data: unknown, runId: string, lifecycle: LifecycleTracker<AI.UIMessageChunk>): Out[] => {
+  lifecycle.clearScope(runId);
   const errorText = typeof data === 'string' ? data : '';
   return event({ type: 'error', errorText });
 };
 
-const decodeAbort = (data: unknown, turnId: string, lifecycle: LifecycleTracker<AI.UIMessageChunk>): Out[] => {
-  lifecycle.clearScope(turnId);
+const decodeAbort = (data: unknown, runId: string, lifecycle: LifecycleTracker<AI.UIMessageChunk>): Out[] => {
+  lifecycle.clearScope(runId);
   const reason = typeof data === 'string' && data ? data : undefined;
   return event(stripUndefined({ type: 'abort' as const, reason }));
 };
@@ -399,10 +399,10 @@ const decodeDataEvent = (name: `data-${string}`, r: VercelHeaderReader, data: un
 const decodeNonStreamingToolInput = (
   r: VercelHeaderReader,
   data: unknown,
-  turnId: string,
+  runId: string,
   lifecycle: LifecycleTracker<AI.UIMessageChunk>,
 ): Out[] => {
-  const outputs = ensurePhases(lifecycle, turnId, { messageId: r.str('messageId') });
+  const outputs = ensurePhases(lifecycle, runId, { messageId: r.str('messageId') });
 
   outputs.push(
     {
@@ -498,7 +498,7 @@ const isDiscreteMessagePart = (name: string, headers: Record<string, string>): b
 const decodeDiscretePayload = (input: MessagePayload, lifecycle: LifecycleTracker<AI.UIMessageChunk>): Out[] => {
   const h = input.headers ?? {};
   const r = headerReader(h);
-  const turnId = h[HEADER_TURN_ID] ?? '';
+  const runId = h[HEADER_RUN_ID] ?? '';
 
   // Discrete message parts from writeMessages (user messages, history entries).
   // Distinguished from lifecycle events by the presence of x-ably-discrete.
@@ -507,27 +507,27 @@ const decodeDiscretePayload = (input: MessagePayload, lifecycle: LifecycleTracke
   }
 
   if (input.name === 'tool-input') {
-    return decodeNonStreamingToolInput(r, input.data, turnId, lifecycle);
+    return decodeNonStreamingToolInput(r, input.data, runId, lifecycle);
   }
 
   switch (input.name) {
     case 'start': {
-      return decodeStart(r, turnId, lifecycle);
+      return decodeStart(r, runId, lifecycle);
     }
     case 'start-step': {
-      return decodeStartStep(turnId, lifecycle);
+      return decodeStartStep(runId, lifecycle);
     }
     case 'finish-step': {
-      return decodeFinishStep(turnId, lifecycle);
+      return decodeFinishStep(runId, lifecycle);
     }
     case 'finish': {
-      return decodeFinish(r, turnId, lifecycle);
+      return decodeFinish(r, runId, lifecycle);
     }
     case 'error': {
-      return decodeError(input.data, turnId, lifecycle);
+      return decodeError(input.data, runId, lifecycle);
     }
     case 'abort': {
-      return decodeAbort(input.data, turnId, lifecycle);
+      return decodeAbort(input.data, runId, lifecycle);
     }
     case 'message-metadata': {
       return decodeMessageMetadata(r);
@@ -570,9 +570,9 @@ const createHooks = (
   lifecycle: LifecycleTracker<AI.UIMessageChunk>,
 ): DecoderCoreHooks<AI.UIMessageChunk, AI.UIMessage> => ({
   buildStartEvents: (tracker: StreamTrackerState): Out[] => {
-    const turnId = tracker.headers[HEADER_TURN_ID] ?? '';
+    const runId = tracker.headers[HEADER_RUN_ID] ?? '';
     const messageId = headerReader(tracker.headers).str('messageId');
-    const outputs = ensurePhases(lifecycle, turnId, { messageId });
+    const outputs = ensurePhases(lifecycle, runId, { messageId });
     outputs.push({ kind: 'event', event: buildStartChunk(tracker) });
     return outputs;
   },

@@ -15,7 +15,7 @@ import type * as Ably from 'ably';
 import type * as AI from 'ai';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { HEADER_MSG_ID, HEADER_TURN_ID } from '../../../src/constants.js';
+import { HEADER_MSG_ID, HEADER_RUN_ID } from '../../../src/constants.js';
 import type { DecoderOutput } from '../../../src/core/codec/types.js';
 import { UIMessageCodec } from '../../../src/vercel/codec/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
@@ -23,17 +23,17 @@ import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-clien
 import { eventsOf, eventTypesOf } from '../../integration/helpers.js';
 
 /**
- * Create an onMessage hook that stamps turn and message ID headers
+ * Create an onMessage hook that stamps run and message ID headers
  * on every outgoing Ably message.
- * @param turnId - The turn ID to stamp.
+ * @param runId - The run ID to stamp.
  * @param messageId - The message ID to stamp.
  * @returns An onMessage callback for encoder options.
  */
-const stampHeaders = (turnId: string, messageId: string) => (msg: Ably.Message) => {
+const stampHeaders = (runId: string, messageId: string) => (msg: Ably.Message) => {
   // CAST: Ably SDK types `extras` as `any`; we trust the encoder always sets it.
   const headers = (msg.extras as { headers?: Record<string, string> } | undefined)?.headers;
   if (headers) {
-    headers[HEADER_TURN_ID] = turnId;
+    headers[HEADER_RUN_ID] = runId;
     headers[HEADER_MSG_ID] = messageId;
   }
 };
@@ -81,7 +81,7 @@ describe('Vercel UIMessageCodec integration', () => {
     });
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
-      onMessage: stampHeaders('turn-1', messageId),
+      onMessage: stampHeaders('run-1', messageId),
     });
 
     await encoder.appendEvent({ type: 'start', messageId });
@@ -154,7 +154,7 @@ describe('Vercel UIMessageCodec integration', () => {
     });
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
-      onMessage: stampHeaders('turn-tool-1', messageId),
+      onMessage: stampHeaders('run-tool-1', messageId),
     });
 
     await encoder.appendEvent({ type: 'start', messageId });
@@ -240,7 +240,7 @@ describe('Vercel UIMessageCodec integration', () => {
     });
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
-      onMessage: stampHeaders('turn-dt-1', messageId),
+      onMessage: stampHeaders('run-dt-1', messageId),
     });
 
     await encoder.appendEvent({ type: 'start', messageId });
@@ -314,7 +314,7 @@ describe('Vercel UIMessageCodec integration', () => {
     });
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
-      onMessage: stampHeaders('turn-abort-1', messageId),
+      onMessage: stampHeaders('run-abort-1', messageId),
     });
 
     await encoder.appendEvent({ type: 'start', messageId });
@@ -353,7 +353,7 @@ describe('Vercel UIMessageCodec integration', () => {
     const textId = 'text-hist-1';
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
-      onMessage: stampHeaders('turn-hist-1', messageId),
+      onMessage: stampHeaders('run-hist-1', messageId),
     });
 
     await encoder.appendEvent({ type: 'start', messageId });
@@ -439,7 +439,7 @@ describe('Vercel UIMessageCodec integration', () => {
     });
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
-      onMessage: stampHeaders('turn-multi-1', messageId),
+      onMessage: stampHeaders('run-multi-1', messageId),
     });
 
     await encoder.appendEvent({ type: 'start', messageId });
@@ -496,7 +496,7 @@ describe('Vercel UIMessageCodec integration', () => {
     });
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
-      onMessage: stampHeaders('turn-reason-1', messageId),
+      onMessage: stampHeaders('run-reason-1', messageId),
     });
 
     await encoder.appendEvent({ type: 'start', messageId });
@@ -565,7 +565,7 @@ describe('Vercel UIMessageCodec integration', () => {
     });
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
-      onMessage: stampHeaders('turn-err-1', messageId),
+      onMessage: stampHeaders('run-err-1', messageId),
     });
 
     await encoder.appendEvent({ type: 'start', messageId });

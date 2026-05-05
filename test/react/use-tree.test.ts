@@ -4,17 +4,17 @@ import { renderHook } from '@testing-library/react';
 import { createElement, type ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ClientTransport } from '../../src/core/transport/types.js';
-import { TransportContext } from '../../src/react/contexts/transport-context.js';
+import type { ClientSession } from '../../src/core/transport/types.js';
+import { ClientSessionContext } from '../../src/react/contexts/client-session-context.js';
 import { useTree } from '../../src/react/use-tree.js';
-import { createMockTransport } from './helper/mock-transport.js';
+import { createMockTransport } from './helper/mock-session.js';
 
 describe('useTree', () => {
   it('delegates getSiblings to tree', () => {
     const mock = createMockTransport([]);
     (mock.tree.getSiblings as ReturnType<typeof vi.fn>).mockReturnValue(['a', 'b']);
 
-    const { result } = renderHook(() => useTree({ transport: mock.transport }));
+    const { result } = renderHook(() => useTree({ session: mock.session }));
 
     expect(result.current.getSiblings('msg-1')).toEqual(['a', 'b']);
     // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
@@ -25,7 +25,7 @@ describe('useTree', () => {
     const mock = createMockTransport([]);
     (mock.tree.hasSiblings as ReturnType<typeof vi.fn>).mockReturnValue(true);
 
-    const { result } = renderHook(() => useTree({ transport: mock.transport }));
+    const { result } = renderHook(() => useTree({ session: mock.session }));
 
     expect(result.current.hasSiblings('msg-1')).toBe(true);
   });
@@ -42,7 +42,7 @@ describe('useTree', () => {
     };
     (mock.tree.getNode as ReturnType<typeof vi.fn>).mockReturnValue(fakeNode);
 
-    const { result } = renderHook(() => useTree({ transport: mock.transport }));
+    const { result } = renderHook(() => useTree({ session: mock.session }));
 
     expect(result.current.getNode('msg-1')).toBe(fakeNode);
   });
@@ -61,10 +61,10 @@ describe('useTree', () => {
 
     const wrapper = ({ children }: { children: ReactNode }): ReactNode =>
       createElement(
-        TransportContext.Provider,
+        ClientSessionContext.Provider,
         {
           value: {
-            nearest: { transport: mock.transport as ClientTransport<unknown, unknown> },
+            nearest: { session: mock.session as ClientSession<unknown, unknown> },
             providers: {},
           },
         },

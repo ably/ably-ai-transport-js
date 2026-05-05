@@ -2,11 +2,11 @@ import type * as AI from 'ai';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { WriteOptions } from '../../src/core/codec/types.js';
-import type { MessageNode, StreamResult, Turn } from '../../src/core/transport/types.js';
+import type { MessageNode, Run, StreamResult } from '../../src/core/transport/types.js';
 import {
   applyToolApprovalsToHistory,
   extractApprovalDecisionsFromHistory,
-  prepareApprovalTurn,
+  prepareApprovalRun,
   streamResponseWithApprovalRedirect,
   type ToolApprovalDecision,
 } from '../../src/vercel/tool-approvals.js';
@@ -133,10 +133,10 @@ describe('applyToolApprovalsToHistory', () => {
 });
 
 // ---------------------------------------------------------------------------
-// prepareApprovalTurn
+// prepareApprovalRun
 // ---------------------------------------------------------------------------
 
-describe('prepareApprovalTurn', () => {
+describe('prepareApprovalRun', () => {
   const tools = {
     getForecast: {
       description: 'Fetch forecast',
@@ -154,13 +154,13 @@ describe('prepareApprovalTurn', () => {
 
   it('returns model messages and unchanged tools when no decisions are passed', async () => {
     const msg = userMessage('hi');
-    const result = await prepareApprovalTurn({ messages: [msg], decisions: undefined, tools });
+    const result = await prepareApprovalRun({ messages: [msg], decisions: undefined, tools });
     expect(result.tools).toBe(tools);
     expect(result.modelMessages).toBeInstanceOf(Array);
   });
 
   it('returns model messages and unchanged tools when decisions is empty', async () => {
-    const result = await prepareApprovalTurn({ messages: [userMessage('hi')], decisions: [], tools });
+    const result = await prepareApprovalRun({ messages: [userMessage('hi')], decisions: [], tools });
     expect(result.tools).toBe(tools);
   });
 
@@ -169,7 +169,7 @@ describe('prepareApprovalTurn', () => {
     const trailingUser = userMessage('Approved: London');
     const messages = [userMessage('forecast for london?'), assistant, trailingUser];
 
-    const result = await prepareApprovalTurn({
+    const result = await prepareApprovalRun({
       messages,
       decisions: [{ toolCallId: 't1', approved: true, targetMsgId: 'm-a1' }],
       tools,
@@ -182,7 +182,7 @@ describe('prepareApprovalTurn', () => {
     const assistant = assistantWithPendingApproval('a1', 't1', 'getForecast', { location: 'London' });
     const messages = [userMessage('forecast for london?'), assistant];
 
-    const result = await prepareApprovalTurn({
+    const result = await prepareApprovalRun({
       messages,
       decisions: [{ toolCallId: 't1', approved: true, targetMsgId: 'm-a1' }],
       tools,
@@ -194,7 +194,7 @@ describe('prepareApprovalTurn', () => {
 
   it('disables needsApproval on approved tools', async () => {
     const assistant = assistantWithPendingApproval('a1', 't1', 'getForecast', { location: 'London' });
-    const result = await prepareApprovalTurn({
+    const result = await prepareApprovalRun({
       messages: [assistant],
       decisions: [{ toolCallId: 't1', approved: true, targetMsgId: 'm-a1' }],
       tools,
@@ -206,7 +206,7 @@ describe('prepareApprovalTurn', () => {
 
   it('leaves needsApproval unchanged on denied tools', async () => {
     const assistant = assistantWithPendingApproval('a1', 't1', 'getForecast', { location: 'London' });
-    const result = await prepareApprovalTurn({
+    const result = await prepareApprovalRun({
       messages: [assistant],
       decisions: [{ toolCallId: 't1', approved: false, targetMsgId: 'm-a1' }],
       tools,
@@ -220,30 +220,30 @@ describe('prepareApprovalTurn', () => {
 // streamResponseWithApprovalRedirect
 // ---------------------------------------------------------------------------
 
-interface MockTurn {
-  turn: Turn<AI.UIMessageChunk, AI.UIMessage>;
-  streamResponseMock: ReturnType<typeof vi.fn>;
+interface MockRun {
+  run: Run<AI.UIMessageChunk, AI.UIMessage>;
+  pipeMock: ReturnType<typeof vi.fn>;
 }
 
-const createMockTurn = (): MockTurn => {
-  const streamResponseMock = vi.fn(
+const createMockRun = (): MockRun => {
+  const pipeMock = vi.fn(
     // eslint-disable-next-line @typescript-eslint/require-await -- mock; stream is not read
     async (): Promise<StreamResult> => ({ reason: 'complete' }),
   );
 
-  const turn = {
-    turnId: 'turn-1',
+  const run = {
+    runId: 'run-1',
     abortSignal: new AbortController().signal,
     // eslint-disable-next-line @typescript-eslint/no-empty-function -- mock
     start: vi.fn(async () => {}),
     addMessages: vi.fn(),
-    streamResponse: streamResponseMock,
+    pipe: pipeMock,
     addEvents: vi.fn(),
     // eslint-disable-next-line @typescript-eslint/no-empty-function -- mock
     end: vi.fn(async () => {}),
-  } as unknown as Turn<AI.UIMessageChunk, AI.UIMessage>;
+  } as unknown as Run<AI.UIMessageChunk, AI.UIMessage>;
 
-  return { turn, streamResponseMock };
+  return { run, pipeMock };
 };
 
 const streamOf = (...chunks: AI.UIMessageChunk[]): ReadableStream<AI.UIMessageChunk> =>
@@ -256,11 +256,11 @@ const streamOf = (...chunks: AI.UIMessageChunk[]): ReadableStream<AI.UIMessageCh
 
 /**
  * Pull the `resolveWriteOptions` hook out of the last `streamResponse` call.
- * @param mock - The mock turn whose last `streamResponse` call to inspect.
+ * @param mock - The mock run whose last `streamResponse` call to inspect.
  * @returns The resolver function passed by the helper, or undefined.
  */
-const lastResolver = (mock: MockTurn): ((event: AI.UIMessageChunk) => WriteOptions | undefined) | undefined => {
-  const call = mock.streamResponseMock.mock.calls.at(-1);
+const lastResolver = (mock: MockRun): ((event: AI.UIMessageChunk) => WriteOptions | undefined) | undefined => {
+  const call = mock.pipeMock.mock.calls.at(-1);
   const opts = call?.[1] as
     | { resolveWriteOptions?: (event: AI.UIMessageChunk) => WriteOptions | undefined }
     | undefined;
@@ -268,33 +268,33 @@ const lastResolver = (mock: MockTurn): ((event: AI.UIMessageChunk) => WriteOptio
 };
 
 describe('streamResponseWithApprovalRedirect', () => {
-  it('delegates straight to turn.streamResponse with no resolver when no approvals are approved', async () => {
-    const mock = createMockTurn();
+  it('delegates straight to run.streamResponse with no resolver when no approvals are approved', async () => {
+    const mock = createMockRun();
 
-    await streamResponseWithApprovalRedirect(mock.turn, streamOf(), {
+    await streamResponseWithApprovalRedirect(mock.run, streamOf(), {
       parent: 'p1',
       forkOf: 'f1',
       decisions: [{ toolCallId: 't1', approved: false, targetMsgId: 'm-a1' }],
     });
 
-    expect(mock.streamResponseMock).toHaveBeenCalledWith(expect.any(ReadableStream), { parent: 'p1', forkOf: 'f1' });
+    expect(mock.pipeMock).toHaveBeenCalledWith(expect.any(ReadableStream), { parent: 'p1', forkOf: 'f1' });
     expect(lastResolver(mock)).toBeUndefined();
   });
 
-  it('delegates straight to turn.streamResponse with no resolver when decisions is absent or empty', async () => {
-    const mock = createMockTurn();
+  it('delegates straight to run.streamResponse with no resolver when decisions is absent or empty', async () => {
+    const mock = createMockRun();
 
-    await streamResponseWithApprovalRedirect(mock.turn, streamOf(), { parent: 'p1', decisions: undefined });
+    await streamResponseWithApprovalRedirect(mock.run, streamOf(), { parent: 'p1', decisions: undefined });
     expect(lastResolver(mock)).toBeUndefined();
 
-    await streamResponseWithApprovalRedirect(mock.turn, streamOf(), { parent: 'p1', decisions: [] });
+    await streamResponseWithApprovalRedirect(mock.run, streamOf(), { parent: 'p1', decisions: [] });
     expect(lastResolver(mock)).toBeUndefined();
   });
 
   it('returns WriteOptions for approved tool-output-available chunks', async () => {
-    const mock = createMockTurn();
+    const mock = createMockRun();
 
-    await streamResponseWithApprovalRedirect(mock.turn, streamOf(), {
+    await streamResponseWithApprovalRedirect(mock.run, streamOf(), {
       parent: 'p1',
       decisions: [{ toolCallId: 't1', approved: true, targetMsgId: 'm-original' }],
     });
@@ -319,9 +319,9 @@ describe('streamResponseWithApprovalRedirect', () => {
   });
 
   it('returns WriteOptions for approved tool-output-error chunks', async () => {
-    const mock = createMockTurn();
+    const mock = createMockRun();
 
-    await streamResponseWithApprovalRedirect(mock.turn, streamOf(), {
+    await streamResponseWithApprovalRedirect(mock.run, streamOf(), {
       parent: 'p1',
       decisions: [{ toolCallId: 't1', approved: true, targetMsgId: 'm-original' }],
     });
@@ -344,9 +344,9 @@ describe('streamResponseWithApprovalRedirect', () => {
   });
 
   it('returns undefined for unapproved tool outputs, denied toolCallIds, and non-tool-output chunks', async () => {
-    const mock = createMockTurn();
+    const mock = createMockRun();
 
-    await streamResponseWithApprovalRedirect(mock.turn, streamOf(), {
+    await streamResponseWithApprovalRedirect(mock.run, streamOf(), {
       parent: 'p1',
       decisions: [
         { toolCallId: 't1', approved: true, targetMsgId: 'm-1' },

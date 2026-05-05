@@ -6,24 +6,24 @@ export type {
   ChatTransport,
   ChatTransportOptions,
   SendMessagesRequestContext,
-  VercelClientTransportOptions,
-  VercelServerTransportOptions,
+  VercelAgentSessionOptions,
+  VercelClientSessionOptions,
 } from './transport/index.js';
-export { createChatTransport, createClientTransport, createServerTransport } from './transport/index.js';
+export { createAgentSession, createChatTransport, createClientSession } from './transport/index.js';
 
 // Server-side tool result merge helper
 export { applyToolEventsToHistory } from './tool-events.js';
 
 // Server-side tool approval helpers
 export type {
-  PrepareApprovalTurnOptions,
-  PrepareApprovalTurnResult,
+  PrepareApprovalRunOptions,
+  PrepareApprovalRunResult,
   StreamResponseWithApprovalRedirectOptions,
   ToolApprovalDecision,
 } from './tool-approvals.js';
 export {
   applyToolApprovalsToHistory,
   extractApprovalDecisionsFromHistory,
-  prepareApprovalTurn,
+  prepareApprovalRun,
   streamResponseWithApprovalRedirect,
 } from './tool-approvals.js';

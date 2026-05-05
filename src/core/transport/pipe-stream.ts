@@ -2,7 +2,7 @@
  * Pure stream piping function.
  *
  * Reads events from a ReadableStream, writes them to a streaming encoder,
- * and handles abort/error. No dependencies on turn state or transport internals.
+ * and handles abort/error. No dependencies on run state or session internals.
  */
 
 import type { Logger } from '../../logger.js';

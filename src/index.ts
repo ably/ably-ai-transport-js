@@ -1,25 +1,27 @@
 // Core transport
 export type {
-  ActiveTurn,
+  ActiveRun,
   AddMessageOptions,
   AddMessagesResult,
+  AgentSession,
+  AgentSessionOptions,
   CancelFilter,
   CancelRequest,
-  ClientTransport,
-  ClientTransportOptions,
+  ClientSession,
+  ClientSessionOptions,
   CloseOptions,
   EventsNode,
+  InvocationData,
   MessageNode,
-  NewTurnOptions,
+  PipeOptions,
+  Run,
+  RunEndReason,
+  RunLifecycleEvent,
+  RunRuntime,
+  RunView,
   SendOptions,
-  ServerTransport,
-  ServerTransportOptions,
-  StreamResponseOptions,
   StreamResult,
   Tree,
-  Turn,
-  TurnEndReason,
-  TurnLifecycleEvent,
   View,
 } from './core/transport/index.js';
 
@@ -28,7 +30,7 @@ export type {
 export type { EventNode } from './core/transport/index.js';
 // eslint-disable-next-line @typescript-eslint/no-deprecated
 export type { TreeNode } from './core/transport/index.js';
-export { buildTransportHeaders, createClientTransport, createServerTransport } from './core/transport/index.js';
+export { buildTransportHeaders, createAgentSession, createClientSession, Invocation } from './core/transport/index.js';
 
 // Core codec
 export type {
@@ -61,22 +63,22 @@ export {
   EVENT_ABORT,
   EVENT_CANCEL,
   EVENT_ERROR,
-  EVENT_TURN_END,
-  EVENT_TURN_START,
+  EVENT_RUN_END,
+  EVENT_RUN_START,
   HEADER_CANCEL_ALL,
   HEADER_CANCEL_CLIENT_ID,
   HEADER_CANCEL_OWN,
-  HEADER_CANCEL_TURN_ID,
+  HEADER_CANCEL_RUN_ID,
   HEADER_FORK_OF,
   HEADER_MSG_ID,
   HEADER_PARENT,
   HEADER_ROLE,
+  HEADER_RUN_CLIENT_ID,
+  HEADER_RUN_ID,
+  HEADER_RUN_REASON,
   HEADER_STATUS,
   HEADER_STREAM,
   HEADER_STREAM_ID,
-  HEADER_TURN_CLIENT_ID,
-  HEADER_TURN_ID,
-  HEADER_TURN_REASON,
 } from './constants.js';
 
 // Utilities

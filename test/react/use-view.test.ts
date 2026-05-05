@@ -5,11 +5,11 @@ import * as Ably from 'ably';
 import { createElement, type ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ClientTransport } from '../../src/core/transport/types.js';
+import type { ClientSession } from '../../src/core/transport/types.js';
 import { ErrorCode } from '../../src/errors.js';
-import { TransportContext } from '../../src/react/contexts/transport-context.js';
+import { ClientSessionContext } from '../../src/react/contexts/client-session-context.js';
 import { useView } from '../../src/react/use-view.js';
-import { createMockTransport } from './helper/mock-transport.js';
+import { createMockTransport } from './helper/mock-session.js';
 
 describe('useView', () => {
   it('returns empty nodes, hasOlder=false, loading=false when no source and no nearest transport', () => {
@@ -21,7 +21,7 @@ describe('useView', () => {
 
   it('returns initial nodes and messages from view on mount', () => {
     const mock = createMockTransport(['hello', 'world']);
-    const { result } = renderHook(() => useView({ transport: mock.transport }));
+    const { result } = renderHook(() => useView({ session: mock.session }));
     expect(result.current.nodes).toHaveLength(2);
     expect(result.current.nodes[0]?.message).toBe('hello');
     expect(result.current.nodes[1]?.message).toBe('world');
@@ -30,7 +30,7 @@ describe('useView', () => {
 
   it('updates nodes and messages when view emits update', () => {
     const mock = createMockTransport(['hello']);
-    const { result } = renderHook(() => useView({ transport: mock.transport }));
+    const { result } = renderHook(() => useView({ session: mock.session }));
     expect(result.current.nodes).toHaveLength(1);
     expect(result.current.messages).toEqual(['hello']);
 
@@ -59,7 +59,7 @@ describe('useView', () => {
     });
     (mock.view.loadOlder as ReturnType<typeof vi.fn>).mockReturnValue(deferred);
 
-    const { result } = renderHook(() => useView({ transport: mock.transport }));
+    const { result } = renderHook(() => useView({ session: mock.session }));
 
     // Start loading
     let loadPromise: Promise<void>;
@@ -86,7 +86,7 @@ describe('useView', () => {
     });
     (mock.view.loadOlder as ReturnType<typeof vi.fn>).mockReturnValue(deferred);
 
-    const { result } = renderHook(() => useView({ transport: mock.transport }));
+    const { result } = renderHook(() => useView({ session: mock.session }));
 
     // First call
     let loadPromise: Promise<void>;
@@ -111,7 +111,7 @@ describe('useView', () => {
   it('auto-loads on mount when limit is provided', () => {
     const mock = createMockTransport();
 
-    renderHook(() => useView({ transport: mock.transport, limit: 50 }));
+    renderHook(() => useView({ session: mock.session, limit: 50 }));
 
     // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
     expect(mock.view.loadOlder).toHaveBeenCalledWith(50);
@@ -120,7 +120,7 @@ describe('useView', () => {
   it('does not auto-load when limit is omitted', () => {
     const mock = createMockTransport();
 
-    renderHook(() => useView({ transport: mock.transport }));
+    renderHook(() => useView({ session: mock.session }));
 
     // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
     expect(mock.view.loadOlder).not.toHaveBeenCalled();
@@ -128,7 +128,7 @@ describe('useView', () => {
 
   it('update calls the view update method', async () => {
     const mock = createMockTransport();
-    const { result } = renderHook(() => useView({ transport: mock.transport }));
+    const { result } = renderHook(() => useView({ session: mock.session }));
 
     const events = ['tool-output'];
 
@@ -144,7 +144,7 @@ describe('useView', () => {
 
   it('unsubscribes on unmount', () => {
     const mock = createMockTransport(['hello']);
-    const { unmount } = renderHook(() => useView({ transport: mock.transport }));
+    const { unmount } = renderHook(() => useView({ session: mock.session }));
 
     unmount();
 
@@ -172,10 +172,10 @@ describe('useView', () => {
     const mock = createMockTransport(['hello']);
     const wrapper = ({ children }: { children: ReactNode }): ReactNode =>
       createElement(
-        TransportContext.Provider,
+        ClientSessionContext.Provider,
         {
           value: {
-            nearest: { transport: mock.transport as ClientTransport<unknown, unknown> },
+            nearest: { session: mock.session as ClientSession<unknown, unknown> },
             providers: {},
           },
         },
@@ -196,7 +196,7 @@ describe('useView', () => {
     const msg1 = 'stable-message';
     const msg2 = 'streaming-message';
     const mock = createMockTransport([msg1, msg2]);
-    const { result } = renderHook(() => useView(mock.transport));
+    const { result } = renderHook(() => useView(mock.session));
 
     // Verify initial messages
     expect(result.current.messages[0]).toBe(msg1);
@@ -223,7 +223,7 @@ describe('useView', () => {
   describe('error', () => {
     it('error is undefined initially', () => {
       const mock = createMockTransport();
-      const { result } = renderHook(() => useView({ transport: mock.transport }));
+      const { result } = renderHook(() => useView({ session: mock.session }));
       expect(result.current.loadError).toBeUndefined();
     });
 
@@ -232,7 +232,7 @@ describe('useView', () => {
       const loadError = new Ably.ErrorInfo('unable to load older messages; network error', ErrorCode.BadRequest, 400);
       (mock.view.loadOlder as ReturnType<typeof vi.fn>).mockReturnValue(Promise.reject(loadError));
 
-      const { result } = renderHook(() => useView({ transport: mock.transport }));
+      const { result } = renderHook(() => useView({ session: mock.session }));
 
       await act(async () => {
         await result.current.loadOlder();
@@ -251,7 +251,7 @@ describe('useView', () => {
       // Second call succeeds
       (mock.view.loadOlder as ReturnType<typeof vi.fn>).mockReturnValueOnce(Promise.resolve());
 
-      const { result } = renderHook(() => useView({ transport: mock.transport }));
+      const { result } = renderHook(() => useView({ session: mock.session }));
 
       await act(async () => {
         await result.current.loadOlder();
@@ -289,7 +289,7 @@ describe('useView', () => {
 
     it('error is undefined when skip is true', () => {
       const mock = createMockTransport();
-      const { result } = renderHook(() => useView({ transport: mock.transport, skip: true }));
+      const { result } = renderHook(() => useView({ session: mock.session, skip: true }));
       expect(result.current.loadError).toBeUndefined();
     });
   });
@@ -297,7 +297,7 @@ describe('useView', () => {
   describe('send', () => {
     it('delegates to view.send', async () => {
       const mock = createMockTransport();
-      const { result } = renderHook(() => useView({ transport: mock.transport }));
+      const { result } = renderHook(() => useView({ session: mock.session }));
 
       await act(async () => {
         await result.current.send(['hello'], { body: { extra: true } });
@@ -308,7 +308,7 @@ describe('useView', () => {
 
     it('returns a stable reference across rerenders', () => {
       const mock = createMockTransport();
-      const { result, rerender } = renderHook(() => useView({ transport: mock.transport }));
+      const { result, rerender } = renderHook(() => useView({ session: mock.session }));
       const first = result.current.send;
       rerender();
       expect(result.current.send).toBe(first);
@@ -329,7 +329,7 @@ describe('useView', () => {
   describe('regenerate', () => {
     it('delegates to view.regenerate', async () => {
       const mock = createMockTransport();
-      const { result } = renderHook(() => useView({ transport: mock.transport }));
+      const { result } = renderHook(() => useView({ session: mock.session }));
 
       await act(async () => {
         await result.current.regenerate('msg-1', { body: { extra: true } });
@@ -340,7 +340,7 @@ describe('useView', () => {
 
     it('returns a stable reference across rerenders', () => {
       const mock = createMockTransport();
-      const { result, rerender } = renderHook(() => useView({ transport: mock.transport }));
+      const { result, rerender } = renderHook(() => useView({ session: mock.session }));
       const first = result.current.regenerate;
       rerender();
       expect(result.current.regenerate).toBe(first);
@@ -361,7 +361,7 @@ describe('useView', () => {
   describe('edit', () => {
     it('delegates to view.edit with a messages array', async () => {
       const mock = createMockTransport();
-      const { result } = renderHook(() => useView({ transport: mock.transport }));
+      const { result } = renderHook(() => useView({ session: mock.session }));
 
       await act(async () => {
         await result.current.edit('msg-1', ['replacement'], { body: { extra: true } });
@@ -372,7 +372,7 @@ describe('useView', () => {
 
     it('delegates to view.edit with a single message', async () => {
       const mock = createMockTransport();
-      const { result } = renderHook(() => useView({ transport: mock.transport }));
+      const { result } = renderHook(() => useView({ session: mock.session }));
 
       await act(async () => {
         await result.current.edit('msg-1', 'single-replacement');
@@ -383,7 +383,7 @@ describe('useView', () => {
 
     it('returns a stable reference across rerenders', () => {
       const mock = createMockTransport();
-      const { result, rerender } = renderHook(() => useView({ transport: mock.transport }));
+      const { result, rerender } = renderHook(() => useView({ session: mock.session }));
       const first = result.current.edit;
       rerender();
       expect(result.current.edit).toBe(first);

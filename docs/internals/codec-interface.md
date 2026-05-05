@@ -1,6 +1,6 @@
 # Codec interface
 
-The codec is the boundary between the [transport layer and domain layer](glossary.md#transport-layer-vs-domain-layer). It defines how domain events (e.g. Vercel's `UIMessageChunk`) map to and from Ably messages. The transport is parameterized by `Codec<TEvent, TMessage>` - swap the codec and the same transport works with a different AI framework.
+The codec is the boundary between the [transport layer and domain layer](glossary.md#transport-layer-vs-domain-layer). It defines how domain events (e.g. Vercel's `UIMessageChunk`) map to and from Ably messages. The session is parameterized by `Codec<TEvent, TMessage>` - swap the codec and the same session works with a different AI framework.
 
 ## The Codec interface
 
@@ -20,7 +20,7 @@ interface Codec<TEvent, TMessage> {
 | `createAccumulator()` | Creates an accumulator that builds complete messages from streaming events                                                                                               |
 | `isTerminal()`        | Returns true if an event signals stream completion (finish, error, abort). Used by the [stream router](transport-components.md#terminal-detection) to auto-close streams |
 
-## How the transport uses the codec
+## How the session uses the codec
 
 ### Agent session
 
@@ -77,7 +77,7 @@ The [decoder core](decoder.md) handles [action dispatch](decoder.md#action-dispa
 
 ## Accumulator
 
-The accumulator assembles complete domain messages (`TMessage`) from streaming decoder outputs (`TEvent`). It exists because the decoder produces individually meaningless fragments - a `text-delta` is not a message - and the assembly logic is codec-specific. The transport is generic and cannot know how to build a `UIMessage` from `UIMessageChunk` events, so the codec provides an accumulator that does.
+The accumulator assembles complete domain messages (`TMessage`) from streaming decoder outputs (`TEvent`). It exists because the decoder produces individually meaningless fragments - a `text-delta` is not a message - and the assembly logic is codec-specific. The session is generic and cannot know how to build a `UIMessage` from `UIMessageChunk` events, so the codec provides an accumulator that does.
 
 See [Message lifecycle](message-lifecycle.md) for how the accumulator fits into the full data flow from wire to UI.
 

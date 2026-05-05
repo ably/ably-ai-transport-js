@@ -9,7 +9,7 @@ import type { ClientSession } from '../../src/core/transport/types.js';
 import { ErrorCode } from '../../src/errors.js';
 import { ClientSessionContext } from '../../src/react/contexts/client-session-context.js';
 import { useClientSession } from '../../src/react/use-client-session.js';
-import { createMockTransport } from './helper/mock-session.js';
+import { createMockSession } from './helper/mock-session.js';
 
 // Wrap renderHook with a ClientSessionContext providing the given channelName-to-session record (no nearest).
 const withClientSessionContext =
@@ -27,14 +27,14 @@ const withClientSessionContext =
     );
 
 // Wrap renderHook with a ClientSessionContext exposing only a nearest slot.
-const withNearestTransport =
+const withNearestSession =
   (session: ClientSession<unknown, unknown>) =>
   ({ children }: { children: ReactNode }) =>
     createElement(ClientSessionContext.Provider, { value: { nearest: { session }, providers: {} } }, children);
 
 describe('useClientSession', () => {
-  it('returns the transport registered under the given channelName', () => {
-    const { session } = createMockTransport();
+  it('returns the session registered under the given channelName', () => {
+    const { session } = createMockSession();
     const { result } = renderHook(() => useClientSession({ channelName: 'ai:test' }), {
       wrapper: withClientSessionContext({ 'ai:test': session }),
     });
@@ -42,8 +42,8 @@ describe('useClientSession', () => {
     expect(result.current.sessionError).toBeUndefined();
   });
 
-  it('returns the transport registered under a different channelName', () => {
-    const { session } = createMockTransport();
+  it('returns the session registered under a different channelName', () => {
+    const { session } = createMockSession();
     const { result } = renderHook(() => useClientSession({ channelName: 'ai:secondary' }), {
       wrapper: withClientSessionContext({ 'ai:secondary': session }),
     });
@@ -51,10 +51,10 @@ describe('useClientSession', () => {
     expect(result.current.sessionError).toBeUndefined();
   });
 
-  it('returns the nearest transport when no channelName is given', () => {
-    const { session } = createMockTransport();
+  it('returns the nearest session when no channelName is given', () => {
+    const { session } = createMockSession();
     const { result } = renderHook(() => useClientSession(), {
-      wrapper: withNearestTransport(session),
+      wrapper: withNearestSession(session),
     });
     expect(result.current.session).toBe(session);
     expect(result.current.sessionError).toBeUndefined();
@@ -81,7 +81,7 @@ describe('useClientSession', () => {
     expect(result.current.sessionError?.message).toContain('no ClientSessionProvider found');
   });
 
-  it('returns a stub transport (not throw) when no provider found', () => {
+  it('returns a stub session (not throw) when no provider found', () => {
     // The hook must not throw during render — check that tree access throws on the stub instead
     const { result } = renderHook(() => useClientSession());
     expect(result.current.sessionError).toBeDefined();
@@ -140,11 +140,11 @@ describe('useClientSession', () => {
   });
 
   describe('onError', () => {
-    it('calls onError when the transport emits an error event', () => {
-      const mock = createMockTransport();
+    it('calls onError when the session emits an error event', () => {
+      const mock = createMockSession();
       const onError = vi.fn();
       renderHook(() => useClientSession({ onError }), {
-        wrapper: withNearestTransport(mock.session),
+        wrapper: withNearestSession(mock.session),
       });
 
       const error = new Ably.ErrorInfo('test error', ErrorCode.BadRequest, 400);
@@ -156,10 +156,10 @@ describe('useClientSession', () => {
     });
 
     it('does not call onError after unmount', () => {
-      const mock = createMockTransport();
+      const mock = createMockSession();
       const onError = vi.fn();
       const { unmount } = renderHook(() => useClientSession({ onError }), {
-        wrapper: withNearestTransport(mock.session),
+        wrapper: withNearestSession(mock.session),
       });
 
       unmount();
@@ -172,10 +172,10 @@ describe('useClientSession', () => {
     });
 
     it('does not subscribe when skip is true', () => {
-      const mock = createMockTransport();
+      const mock = createMockSession();
       const onError = vi.fn();
       renderHook(() => useClientSession({ skip: true, onError }), {
-        wrapper: withNearestTransport(mock.session),
+        wrapper: withNearestSession(mock.session),
       });
 
       act(() => {
@@ -189,7 +189,7 @@ describe('useClientSession', () => {
       const onError = vi.fn();
       renderHook(() => useClientSession({ onError }));
 
-      // No transport to emit on — onError should never fire
+      // No session to emit on — onError should never fire
       expect(onError).not.toHaveBeenCalled();
     });
   });

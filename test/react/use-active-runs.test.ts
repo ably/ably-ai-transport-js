@@ -7,16 +7,16 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ClientSession } from '../../src/core/transport/types.js';
 import { ClientSessionContext } from '../../src/react/contexts/client-session-context.js';
 import { useActiveRuns } from '../../src/react/use-active-runs.js';
-import { createMockTransport, makeRunEvent } from './helper/mock-session.js';
+import { createMockSession, makeRunEvent } from './helper/mock-session.js';
 
 describe('useActiveRuns', () => {
-  it('returns empty map when no transport and no nearest context', () => {
+  it('returns empty map when no session and no nearest context', () => {
     const { result } = renderHook(() => useActiveRuns());
     expect(result.current.size).toBe(0);
   });
 
   it('initializes from tree state', () => {
-    const mock = createMockTransport();
+    const mock = createMockSession();
     const initialRuns = new Map([['client-1', new Set(['run-1'])]]);
     (mock.tree.getActiveRunIds as ReturnType<typeof vi.fn>).mockReturnValue(initialRuns);
 
@@ -25,7 +25,7 @@ describe('useActiveRuns', () => {
   });
 
   it('adds a run on run-start event', () => {
-    const mock = createMockTransport();
+    const mock = createMockSession();
     const { result } = renderHook(() => useActiveRuns({ session: mock.session }));
 
     act(() => {
@@ -36,7 +36,7 @@ describe('useActiveRuns', () => {
   });
 
   it('removes a run on run-end event', () => {
-    const mock = createMockTransport();
+    const mock = createMockSession();
     (mock.tree.getActiveRunIds as ReturnType<typeof vi.fn>).mockReturnValue(
       new Map([['client-1', new Set(['run-1'])]]),
     );
@@ -51,7 +51,7 @@ describe('useActiveRuns', () => {
   });
 
   it('removes clientId entry when last run ends', () => {
-    const mock = createMockTransport();
+    const mock = createMockSession();
     (mock.tree.getActiveRunIds as ReturnType<typeof vi.fn>).mockReturnValue(
       new Map([['client-1', new Set(['run-1', 'run-2'])]]),
     );
@@ -73,7 +73,7 @@ describe('useActiveRuns', () => {
   });
 
   it('does not mutate previous state Set on run-end', () => {
-    const mock = createMockTransport();
+    const mock = createMockSession();
     (mock.tree.getActiveRunIds as ReturnType<typeof vi.fn>).mockReturnValue(
       new Map([['client-1', new Set(['run-1', 'run-2'])]]),
     );
@@ -95,8 +95,8 @@ describe('useActiveRuns', () => {
     expect(setBefore?.size).toBe(2);
   });
 
-  it('uses nearest transport from context when transport is omitted', () => {
-    const mock = createMockTransport();
+  it('uses nearest session from context when session is omitted', () => {
+    const mock = createMockSession();
     const initialRuns = new Map([['client-1', new Set(['run-1'])]]);
     (mock.tree.getActiveRunIds as ReturnType<typeof vi.fn>).mockReturnValue(initialRuns);
 

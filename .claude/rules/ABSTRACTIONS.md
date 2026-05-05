@@ -62,21 +62,21 @@ Implements `UIMessageCodec` and provides convenience factories plus React hooks.
 
 Header/event/message-name constants and Ably message utilities used by both layers.
 
-## Tree / View / Transport split
+## Tree / View / Session split
 
 The client-side architecture separates three concerns:
 
-| Component     | Owns                                                                                                           | Events                                                                                                                      |
-| ------------- | -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| **Tree**      | Complete conversation state — every node from live messages and history. Run tracking (active run → clientId). | `update` (any structural change), `ably-message` (every raw message), `run` (start/end) — unfiltered, fires for all changes |
-| **View**      | Pagination window — which history-loaded nodes are visible vs withheld.                                        | Same event names, but **scoped to the visible window** — only fires when the visible output changes                         |
-| **Transport** | Write path (send/regenerate/edit/cancel), channel subscription, stream routing, decode loop.                   | `error` only — all data events moved to Tree/View                                                                           |
+| Component   | Owns                                                                                                           | Events                                                                                                                      |
+| ----------- | -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| **Tree**    | Complete conversation state — every node from live messages and history. Run tracking (active run → clientId). | `update` (any structural change), `ably-message` (every raw message), `run` (start/end) — unfiltered, fires for all changes |
+| **View**    | Pagination window — which history-loaded nodes are visible vs withheld.                                        | Same event names, but **scoped to the visible window** — only fires when the visible output changes                         |
+| **Session** | Write path (send/regenerate/edit/cancel), channel subscription, stream routing, decode loop.                   | `error` only — all data events moved to Tree/View                                                                           |
 
-The Tree is the source of truth. The View subscribes to Tree events and re-emits them filtered to what's visible. The Transport wires the channel to the Tree and exposes both as `transport.tree` and `transport.view`.
+The Tree is the source of truth. The View subscribes to Tree events and re-emits them filtered to what's visible. The Session wires the channel to the Tree and exposes both as `session.tree` and `session.view`.
 
 ## Composition, Not Inheritance
 
-The SDK uses composition, not inheritance. For example, a transport is assembled from composable sub-components:
+The SDK uses composition, not inheritance. For example, a session is assembled from composable sub-components:
 
 ```
 ClientSession

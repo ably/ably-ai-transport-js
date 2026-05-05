@@ -1,6 +1,6 @@
 # Optimistic updates
 
-When a user sends a message, it appears in the conversation immediately - before the server acknowledges it. The transport inserts the message into the [conversation tree](../internals/conversation-tree.md) optimistically, then reconciles it with the server-assigned identity when the relay arrives from the channel.
+When a user sends a message, it appears in the conversation immediately - before the server acknowledges it. The session inserts the message into the [conversation tree](../internals/conversation-tree.md) optimistically, then reconciles it with the server-assigned identity when the relay arrives from the channel.
 
 Without optimistic insertion, the user would see a gap between pressing "send" and their message appearing - the round trip to the server plus the relay back through the Ably channel. For a chat UI, that delay feels broken.
 
@@ -43,7 +43,7 @@ In React, `useView()` re-renders immediately after `send()` because the optimist
 ```typescript
 import { useView } from '@ably/ai-transport/react';
 
-const { nodes, send } = useView(session);
+const { nodes, send } = useView({ session });
 
 // After send(), messages updates instantly with the new user message
 await send([userMessage]);
@@ -74,10 +74,10 @@ const run = await view.send([questionOne, questionTwo]);
 
 ## Edge cases
 
-**POST failure** - if the HTTP POST fails (network error or non-2xx response), the optimistic message remains in the tree but the server never relays it. The error is emitted via `session.on('error')`. The optimistic entry stays with no serial until the transport is reset. In practice, the developer should handle the error event and update the UI accordingly.
+**POST failure** - if the HTTP POST fails (network error or non-2xx response), the optimistic message remains in the tree but the server never relays it. The error is emitted via `session.on('error')`. The optimistic entry stays with no serial until the session is reset. In practice, the developer should handle the error event and update the UI accordingly.
 
 **Multi-client ordering** - in a conversation with multiple clients sending concurrently, optimistic messages appear at the end of the local tree until reconciliation. After reconciliation, the serial determines the canonical order, which may differ from the optimistic insertion order. All clients converge on the same order once relays are reconciled.
 
-**Cleanup** - the transport tracks optimistic message IDs per run. When a [run](../concepts/runs.md) ends (via `x-ably-run-end` on the channel), the tracking state for that run is cleaned up. This prevents stale message IDs from matching against unrelated messages in future runs.
+**Cleanup** - the session tracks optimistic message IDs per run. When a [run](../concepts/runs.md) ends (via `x-ably-run-end` on the channel), the tracking state for that run is cleaned up. This prevents stale message IDs from matching against unrelated messages in future runs.
 
 For the internal implementation details, see [Client session: optimistic reconciliation](../internals/client-session.md#optimistic-reconciliation), [Conversation tree: upsert](../internals/conversation-tree.md#upsert-the-sole-mutation), and [Wire protocol: message identity](../internals/wire-protocol.md#message-identity-x-ably-msg-id).

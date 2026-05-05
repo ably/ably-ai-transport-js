@@ -85,7 +85,7 @@ In React, `useActiveRuns()` provides this as reactive state:
 ```typescript
 import { useActiveRuns } from '@ably/ai-transport/react';
 
-const activeRuns = useActiveRuns(session);
+const activeRuns = useActiveRuns({ session });
 const isStreaming = activeRuns.size > 0;
 ```
 

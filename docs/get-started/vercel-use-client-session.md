@@ -1,6 +1,6 @@
 # Get Started: Vercel AI SDK with generic hooks
 
-Build a streaming chat app using AI Transport's generic React hooks instead of Vercel's `useChat()`. This path gives you direct access to the transport's conversation tree, individual send/regenerate/edit operations, and full control over message state.
+Build a streaming chat app using AI Transport's generic React hooks instead of Vercel's `useChat()`. This path gives you direct access to the session's conversation tree, individual send/regenerate/edit operations, and full control over message state.
 
 The server code is identical to the [useChat quickstart](vercel-use-chat.md) - only the client differs.
 
@@ -10,7 +10,7 @@ Same as the [useChat quickstart](vercel-use-chat.md#prerequisites). Follow steps
 
 ## Create the chat component
 
-Instead of `useChat()`, compose the generic hooks directly. `ClientSessionProvider` creates the transport and wraps children with Ably's `ChannelProvider` internally:
+Instead of `useChat()`, compose the generic hooks directly. `ClientSessionProvider` creates the session and wraps children with Ably's `ChannelProvider` internally:
 
 ```typescript
 // app/chat.tsx
@@ -33,8 +33,8 @@ function ChatInner({ chatId }: { chatId: string }) {
   const { session } = useClientSession<AI.UIMessageChunk, AI.UIMessage>();
 
   // useView provides message state, navigation, and write operations
-  const { nodes, hasOlder, loading, loadOlder, send, regenerate, hasSiblings, getSiblings, getSelectedIndex, select } = useView(session, { limit: 30 });
-  const activeRuns = useActiveRuns(session);
+  const { nodes, hasOlder, loading, loadOlder, send, regenerate, hasSiblings, getSiblings, getSelectedIndex, select } = useView({ session, limit: 30 });
+  const activeRuns = useActiveRuns({ session });
 
   const isStreaming = activeRuns.size > 0;
 
@@ -132,7 +132,7 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
 | **Observer sync**     | Requires `useMessageSync()`               | Built-in - `useView()` includes all clients           |
 | **Hooks needed**      | `useChatTransport()` + `useMessageSync()` | Individual hooks per operation                        |
 
-Use the **useChat path** when you want the simplest integration and Vercel's `useChat()` handles your needs. Use the **generic hooks path** when you need conversation branching UI, custom message construction, or tighter control over transport operations.
+Use the **useChat path** when you want the simplest integration and Vercel's `useChat()` handles your needs. Use the **generic hooks path** when you need conversation branching UI, custom message construction, or tighter control over session operations.
 
 ## Next steps
 

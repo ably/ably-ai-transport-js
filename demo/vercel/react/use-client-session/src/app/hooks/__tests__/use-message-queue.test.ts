@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { useMessageQueue } from '../use-message-queue';
 
-const createMockTransport = () =>
+const createMockSession = () =>
   ({
     waitForRun: vi.fn(() => Promise.resolve()),
   }) as unknown as ClientSession<UIMessageChunk, UIMessage>;
@@ -15,19 +15,19 @@ const createMockSend = () =>
 
 describe('useMessageQueue', () => {
   it('starts with an empty queue', () => {
-    const transport = createMockTransport();
+    const session = createMockSession();
     const send = createMockSend();
 
-    const { result } = renderHook(() => useMessageQueue(transport, send));
+    const { result } = renderHook(() => useMessageQueue(session, send));
 
     expect(result.current.items).toEqual([]);
   });
 
   it('add() appends an item to the queue', () => {
-    const transport = createMockTransport();
+    const session = createMockSession();
     const send = createMockSend();
 
-    const { result } = renderHook(() => useMessageQueue(transport, send));
+    const { result } = renderHook(() => useMessageQueue(session, send));
 
     act(() => {
       result.current.add('hello');
@@ -38,10 +38,10 @@ describe('useMessageQueue', () => {
   });
 
   it('remove() removes an item by id', () => {
-    const transport = createMockTransport();
+    const session = createMockSession();
     const send = createMockSend();
 
-    const { result } = renderHook(() => useMessageQueue(transport, send));
+    const { result } = renderHook(() => useMessageQueue(session, send));
 
     act(() => {
       result.current.add('first');
@@ -60,10 +60,10 @@ describe('useMessageQueue', () => {
   });
 
   it('clear() removes all items', () => {
-    const transport = createMockTransport();
+    const session = createMockSession();
     const send = createMockSend();
 
-    const { result } = renderHook(() => useMessageQueue(transport, send));
+    const { result } = renderHook(() => useMessageQueue(session, send));
 
     act(() => {
       result.current.add('one');
@@ -80,10 +80,10 @@ describe('useMessageQueue', () => {
   });
 
   it('drain sends queued messages after waitForRun resolves', async () => {
-    const transport = createMockTransport();
+    const session = createMockSession();
     const send = createMockSend();
 
-    const { result } = renderHook(() => useMessageQueue(transport, send));
+    const { result } = renderHook(() => useMessageQueue(session, send));
 
     act(() => {
       result.current.add('queued message');
@@ -93,7 +93,7 @@ describe('useMessageQueue', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(transport.waitForRun).toHaveBeenCalled();
+    expect(session.waitForRun).toHaveBeenCalled();
     expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith(
       expect.arrayContaining([expect.objectContaining({ parts: [{ type: 'text', text: 'queued message' }] })]),
@@ -102,10 +102,10 @@ describe('useMessageQueue', () => {
   });
 
   it('drain batches multiple queued messages', async () => {
-    const transport = createMockTransport();
+    const session = createMockSession();
     const send = createMockSend();
 
-    const { result } = renderHook(() => useMessageQueue(transport, send));
+    const { result } = renderHook(() => useMessageQueue(session, send));
 
     act(() => {
       result.current.add('first');

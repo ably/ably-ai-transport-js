@@ -685,13 +685,13 @@ describe('AgentSession', () => {
       vi.mocked(failChannel.publish).mockRejectedValue(new Error('publish failed'));
       const onError = vi.fn();
 
-      const failTransport = createAgentSession({
+      const failSession = createAgentSession({
         channel: failChannel,
         codec,
         onError,
       });
-      await failTransport.connect();
-      const run = createRunFromOpts(failTransport, {
+      await failSession.connect();
+      const run = createRunFromOpts(failSession, {
         runId: 'run-1',
         onError,
       });
@@ -699,7 +699,7 @@ describe('AgentSession', () => {
       await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.RunLifecycleError);
       expect(onError).not.toHaveBeenCalled();
 
-      failTransport.close();
+      failSession.close();
     });
 
     it('end() throws on publish failure without invoking onError', async () => {
@@ -723,9 +723,9 @@ describe('AgentSession', () => {
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
       vi.mocked(failCodec.createEncoder).mockReturnValue(failEncoder);
 
-      const failTransport = createAgentSession({ channel, codec: failCodec });
-      await failTransport.connect();
-      const run = createRunFromOpts(failTransport, { runId: 'run-1', onError });
+      const failSession = createAgentSession({ channel, codec: failCodec });
+      await failSession.connect();
+      const run = createRunFromOpts(failSession, { runId: 'run-1', onError });
       await run.start();
 
       await expect(run.addMessages([makeNode({ id: 'm1', content: 'hello' })])).rejects.toBeErrorInfoWithCode(
@@ -733,7 +733,7 @@ describe('AgentSession', () => {
       );
       expect(onError).not.toHaveBeenCalled();
 
-      failTransport.close();
+      failSession.close();
     });
 
     it('addEvents() throws on publish failure without invoking onError', async () => {
@@ -745,9 +745,9 @@ describe('AgentSession', () => {
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
       vi.mocked(failCodec.createEncoder).mockReturnValue(failEncoder);
 
-      const failTransport = createAgentSession({ channel, codec: failCodec });
-      await failTransport.connect();
-      const run = createRunFromOpts(failTransport, { runId: 'run-1', onError });
+      const failSession = createAgentSession({ channel, codec: failCodec });
+      await failSession.connect();
+      const run = createRunFromOpts(failSession, { runId: 'run-1', onError });
       await run.start();
 
       await expect(
@@ -755,7 +755,7 @@ describe('AgentSession', () => {
       ).rejects.toBeErrorInfoWithCode(ErrorCode.RunLifecycleError);
       expect(onError).not.toHaveBeenCalled();
 
-      failTransport.close();
+      failSession.close();
     });
 
     it('pipe() calls onError when stream errors', async () => {
@@ -1021,15 +1021,15 @@ describe('AgentSession', () => {
     });
 
     it('does not propagate channel-wide errors to per-run onError', async () => {
-      const transportOnError = vi.fn();
+      const sessionOnError = vi.fn();
       const runOnError = vi.fn();
       const ch = createMockChannel();
       ch.state = 'initialized';
-      const t = createAgentSession({ channel: ch, codec: createMockCodec(), onError: transportOnError });
-      await t.connect();
+      const s = createAgentSession({ channel: ch, codec: createMockCodec(), onError: sessionOnError });
+      await s.connect();
       simulateInitialAttach(ch);
 
-      const run = createRunFromOpts(t, { runId: 'run-1', onError: runOnError });
+      const run = createRunFromOpts(s, { runId: 'run-1', onError: runOnError });
       await run.start();
 
       simulateStateChange(ch, {
@@ -1037,7 +1037,7 @@ describe('AgentSession', () => {
         previous: 'attached',
       } as Ably.ChannelStateChange);
 
-      expect(transportOnError).toHaveBeenCalledTimes(1);
+      expect(sessionOnError).toHaveBeenCalledTimes(1);
       expect(runOnError).not.toHaveBeenCalled();
     });
 

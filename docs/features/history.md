@@ -14,7 +14,7 @@ await view.loadOlder(30);
 // Call loadOlder again to fetch more older messages
 ```
 
-History messages are inserted into the transport's conversation tree and trigger an `'update'` notification on the view. After loading history, `view.flattenNodes().map(n => n.message)` returns the combined history + live messages - flattened along the currently selected branch. If the history contains forks (from regeneration or editing), only the active branch is included. Use the conversation tree to navigate between branches (see [Conversation branching](branching.md)).
+History messages are inserted into the session's conversation tree and trigger an `'update'` notification on the view. After loading history, `view.flattenNodes().map(n => n.message)` returns the combined history + live messages - flattened along the currently selected branch. If the history contains forks (from regeneration or editing), only the active branch is included. Use the conversation tree to navigate between branches (see [Conversation branching](branching.md)).
 
 The `limit` parameter controls how many **complete domain messages** to return, not how many Ably wire messages to fetch. A single assistant message may span dozens of Ably messages (one per append). The implementation pages through Ably history until `limit` complete messages have been assembled.
 
@@ -30,7 +30,7 @@ The client session subscribes to the Ably channel **before** attaching. When you
 import { useView } from '@ably/ai-transport/react';
 
 // Auto-loads first page on mount (passing options = enabled)
-const { nodes, hasOlder, loading, loadOlder } = useView(session, { limit: 30 });
+const { nodes, hasOlder, loading, loadOlder } = useView({ session, limit: 30 });
 
 // nodes - MessageNode[] for the current branch
 // hasOlder - are there older pages?
@@ -42,7 +42,7 @@ Pass `null` or omit the options to disable auto-load:
 
 ```typescript
 // Manual load only
-const { nodes, hasOlder, loading, loadOlder } = useView(session);
+const { nodes, hasOlder, loading, loadOlder } = useView({ session });
 // ...later:
 await loadOlder(30);
 ```
@@ -52,7 +52,7 @@ await loadOlder(30);
 Combine `useView()` with a scroll sentinel for infinite scroll:
 
 ```typescript
-const { nodes, hasOlder, loading, loadOlder } = useView(session, { limit: 30 });
+const { nodes, hasOlder, loading, loadOlder } = useView({ session, limit: 30 });
 
 // In your message list
 {hasOlder && (

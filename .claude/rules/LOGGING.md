@@ -23,7 +23,7 @@ type LogContext = Record<string, any>;
 | -------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `Trace`  | Routine operations — entry point of every key method. The most verbose level.                                          |
 | `Debug`  | Useful for debugging but superfluous in normal operation — successful completions, state transitions, decision points. |
-| `Info`   | Operationally significant but expected — transport open/close, lifecycle events.                                       |
+| `Info`   | Operationally significant but expected — session open/close, lifecycle events.                                         |
 | `Warn`   | Not an error yet, but could cause problems — unexpected but recoverable states.                                        |
 | `Error`  | An operation has failed and cannot be automatically recovered.                                                         |
 | `Silent` | No logging.                                                                                                            |
@@ -32,7 +32,7 @@ Levels are hierarchical. Setting the level to `Debug` suppresses `Trace` but sho
 
 ## Logger Initialization and Propagation
 
-Create the logger once at the top-level transport, then propagate it down via constructor injection. Use `withContext` to add identifying metadata at each layer:
+Create the logger once at the top-level session, then propagate it down via constructor injection. Use `withContext` to add identifying metadata at each layer:
 
 ```ts
 // Top level — ClientSession

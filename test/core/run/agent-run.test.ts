@@ -144,6 +144,44 @@ describe('AgentSession.createRun', () => {
     expect(run.id).toBe('r-1');
   });
 
+  it("waits for invocation.messageId to be visible as a control signal on the run's controlSignals (retry path)", async () => {
+    // Retry happy path: ClientRun.retry() returns an Invocation whose
+    // messageId is the retry signal's wire id. AgentSession.createRun
+    // resolves once the signal is visible on the targeted run, not
+    // before — so the agent doesn't start a fresh step ahead of the
+    // retry being durably observable to other clients.
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    await session.connect();
+    simulateRunStart(channel, 'r-1', 'alice');
+    const invocation = Invocation.fromJSON({ sessionName: 'session-1', runId: 'r-1', messageId: 'sig-1' });
+
+    const promise = session.createRun(invocation);
+    let resolved = false;
+    void promise.then(() => {
+      resolved = true;
+    });
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+
+    channel.simulateMessage({
+      name: WireMessages.Retry,
+      serial: '02',
+      clientId: 'alice',
+      extras: {
+        headers: {
+          [Headers.RunId]: 'r-1',
+          [Headers.MessageId]: 'sig-1',
+          [Headers.Reason]: 'retry',
+        },
+      },
+    } as unknown as Ably.InboundMessage);
+
+    const run = await promise;
+    expect(run.id).toBe('r-1');
+    expect(run.controlSignals.some((s) => s.messageId === 'sig-1' && s.type === 'retry')).toBe(true);
+  });
+
   it('rejects with InvocationPreconditionTimeout when the run-start never lands', async () => {
     const { options } = makeAgentSession();
     const session = createAgentSession(options);

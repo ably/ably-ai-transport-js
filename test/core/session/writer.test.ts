@@ -494,3 +494,56 @@ describe('SessionWriter.abort', () => {
     expect(realtime.channels.release).toHaveBeenCalledWith('session-1');
   });
 });
+
+describe('SessionWriter.retry', () => {
+  it('publishes one x-ably-retry message with run-id, msg-id, and reason headers', async () => {
+    const { options, channel } = makeSession();
+    const session = createClientSession(options);
+    await session.connect();
+
+    const result = await session.writer.retry({ runId: 'r-1' });
+
+    expect(channel.publish).toHaveBeenCalledTimes(1);
+    const [wire] = channel.publishedBatches[0] ?? [];
+    if (!wire) throw new Error('expected one wire message');
+    expect(wire.name).toBe(WireMessages.Retry);
+    const headers = headersOf(wire);
+    expect(headers[Headers.RunId]).toBe('r-1');
+    expect(headers[Headers.Reason]).toBe('retry');
+    expect(headers[Headers.MessageId]).toBeDefined();
+    expect(headers[Headers.StepId]).toBeUndefined();
+    expect(result.messageId).toBe(headers[Headers.MessageId]);
+  });
+
+  it('attaches x-ably-step-id for step-level retry', async () => {
+    const { options, channel } = makeSession();
+    const session = createClientSession(options);
+    await session.connect();
+
+    await session.writer.retry({ runId: 'r-1', stepId: 's-1' });
+
+    const [wire] = channel.publishedBatches[0] ?? [];
+    if (!wire) throw new Error('expected one wire message');
+    expect(headersOf(wire)[Headers.StepId]).toBe('s-1');
+  });
+
+  it('attaches x-ably-client-id when supplied', async () => {
+    const { options, channel } = makeSession();
+    const session = createClientSession(options);
+    await session.connect();
+
+    await session.writer.retry({ runId: 'r-1', clientId: 'end-user-1' });
+
+    const [wire] = channel.publishedBatches[0] ?? [];
+    if (!wire) throw new Error('expected one wire message');
+    expect(headersOf(wire)[Headers.ClientId]).toBe('end-user-1');
+  });
+
+  it('throws SessionClosed after the session has been closed', async () => {
+    const { options } = makeSession();
+    const session = createClientSession(options);
+    await session.close();
+
+    await expect(session.writer.retry({ runId: 'r-1' })).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+  });
+});

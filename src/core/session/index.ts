@@ -4,6 +4,7 @@ export type {
   AbortOptions,
   ControlSignalPublishResult,
   EndRunOptions,
+  RetryOptions,
   SendMessagesOptions,
   SessionWriter,
 } from './writer.js';

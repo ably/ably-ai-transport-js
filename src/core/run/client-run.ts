@@ -46,6 +46,25 @@ export interface ClientRun<C extends AnyCodec> extends Run<CodecMessage<C>> {
   abort(): Promise<Invocation>;
 
   /**
+   * Retry this run by publishing an `x-ably-retry` control signal.
+   * Publishes unconditionally regardless of current status — the
+   * agent processing the signal opens a new step, and that step-start
+   * is what re-activates the run from any prior terminal status.
+   *
+   * The returned {@link Invocation} carries the retry signal's wire
+   * messageId as the precondition the agent waits for, plus the
+   * `stepId` argument when supplied (so the agent can scope checkpoint
+   * state lookup to the targeted step). POST it to wake the agent.
+   * @param options Optional step-id for step-level retry.
+   * @param options.stepId The id of a specific prior step to retry.
+   *   When set, the agent uses it to scope checkpoint state lookup;
+   *   the step's id rides on the signal wire and the produced
+   *   `Invocation`. Omit for run-level retry.
+   * @returns The retry-targeting `Invocation` for the caller to POST.
+   */
+  retry(options?: { stepId?: string }): Promise<Invocation>;
+
+  /**
    * Resolve when the run's status enters any of the targeted set, or
    * reject with {@link ErrorCode.RunClosed} if the underlying session
    * closes first.
@@ -104,7 +123,7 @@ export interface ClientRunOptions<C extends AnyCodec> {
  * Default {@link ClientRun} implementation. Lazy-reads run state from the
  * tree on each getter access (so `status` reflects the latest observed
  * lifecycle wire) and publishes through the session's writer on
- * `abort()`. The instance is constructed by
+ * `abort()` and `retry()`. The instance is constructed by
  * {@link DefaultClientView.send} after a successful run-start; it lives
  * for as long as the calling code holds the reference.
  * @internal
@@ -174,6 +193,20 @@ class DefaultClientRun<C extends AnyCodec> implements ClientRun<C> {
     }
     await this._writer.abort({ runId: this._id });
     return this.toInvocation();
+  }
+
+  async retry(options?: { stepId?: string }): Promise<Invocation> {
+    this._logger.trace('DefaultClientRun.retry();', { stepId: options?.stepId });
+    const { messageId } = await this._writer.retry({
+      runId: this._id,
+      ...(options?.stepId === undefined ? {} : { stepId: options.stepId }),
+    });
+    return InvocationCtor.fromJSON({
+      sessionName: this._sessionName,
+      runId: this._id,
+      messageId,
+      ...(options?.stepId === undefined ? {} : { stepId: options.stepId }),
+    });
   }
 
   async when(statuses: readonly RunStatus[]): Promise<RunStatus> {

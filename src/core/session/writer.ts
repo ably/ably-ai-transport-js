@@ -70,6 +70,28 @@ export interface AbortOptions {
 }
 
 /**
+ * Options for {@link SessionWriter.retry}. Publishes an `x-ably-retry`
+ * control signal targeting the named run. Observation does not move
+ * status; the agent processing the signal publishes a fresh
+ * `x-ably-step-start`, which re-activates the run.
+ */
+export interface RetryOptions {
+  /** The run to retry. */
+  runId: string;
+  /**
+   * Optional step id for step-level retry. When set, the wire carries
+   * `x-ably-step-id`; the receiving agent uses it to scope checkpoint
+   * state lookup to the targeted step.
+   */
+  stepId?: string;
+  /**
+   * Override the attribution clientId sent as `x-ably-client-id`. See
+   * {@link AbortOptions.clientId}.
+   */
+  clientId?: string;
+}
+
+/**
  * Result returned by control-signal publish methods. Carries the wire
  * messageId the writer generated and stamped on the signal — pair this
  * with an {@link Invocation}'s `messageId` precondition when waking an
@@ -137,6 +159,21 @@ export interface SessionWriter<C extends AnyCodec> {
    *   when called after the session has been closed.
    */
   abort(options: AbortOptions): Promise<ControlSignalPublishResult>;
+
+  /**
+   * Publish an `x-ably-retry` control signal for the named run. The wire
+   * carries `x-ably-msg-id`, `x-ably-run-id`, `x-ably-reason: 'retry'`,
+   * and (when supplied) `x-ably-step-id` and `x-ably-client-id`.
+   *
+   * Publishes unconditionally regardless of run status — retry is valid
+   * on any run. Pair the returned messageId with an
+   * {@link Invocation}'s `messageId` precondition when waking the agent.
+   * @param options Per-call wiring; see {@link RetryOptions}.
+   * @returns The wire messageId stamped on the published signal.
+   * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.SessionClosed}
+   *   when called after the session has been closed.
+   */
+  retry(options: RetryOptions): Promise<ControlSignalPublishResult>;
 }
 
 /** Options for constructing a {@link DefaultSessionWriter}. */
@@ -480,6 +517,40 @@ export class DefaultSessionWriter<C extends AnyCodec> implements SessionWriter<C
     });
 
     this._logger.debug('DefaultSessionWriter.abort(); published', { runId: options.runId, messageId });
+    return { messageId };
+  }
+
+  async retry(options: RetryOptions): Promise<ControlSignalPublishResult> {
+    this._logger.trace('DefaultSessionWriter.retry();', { runId: options.runId, stepId: options.stepId });
+
+    if (this._isClosed()) {
+      throw new Ably.ErrorInfo('unable to retry run; session is closed', ErrorCode.SessionClosed, 400);
+    }
+
+    const messageId = generateMessageId();
+    const headers: Record<string, string> = {
+      [Headers.MessageId]: messageId,
+      [Headers.RunId]: options.runId,
+      [Headers.Reason]: 'retry',
+    };
+    if (options.stepId !== undefined) {
+      headers[Headers.StepId] = options.stepId;
+    }
+    if (options.clientId !== undefined) {
+      headers[Headers.ClientId] = options.clientId;
+    }
+
+    const channel = this._channelManager.get();
+    await channel.publish({
+      name: WireMessages.Retry,
+      extras: { headers },
+    });
+
+    this._logger.debug('DefaultSessionWriter.retry(); published', {
+      runId: options.runId,
+      stepId: options.stepId,
+      messageId,
+    });
     return { messageId };
   }
 

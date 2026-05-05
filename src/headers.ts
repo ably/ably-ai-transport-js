@@ -12,10 +12,11 @@ import type * as Ably from 'ably';
 export const Headers = {
   /**
    * Unique message ID. Appears on every chunk of a streaming message and on
-   * every control-signal wire ({@link WireMessages.Abort} today, with the
-   * future pause/resume wires sharing the same slot) so callers can
-   * reference a specific signal as an invocation precondition. SDK-generated
-   * via `crypto.randomUUID()` — never read from `PublishResponse.serials`.
+   * every control-signal wire ({@link WireMessages.Abort},
+   * {@link WireMessages.Retry}, and the future pause/resume wires) so callers
+   * can reference a specific signal as an invocation precondition. SDK
+   * -generated via `crypto.randomUUID()` — never read from
+   * `PublishResponse.serials`.
    */
   MessageId: 'x-ably-msg-id',
   /** Protocol-level role — `'user'` or `'assistant'`. */
@@ -69,8 +70,9 @@ export const Headers = {
   StepId: 'x-ably-step-id',
   /**
    * Reason carried by control-signal wires. For {@link WireMessages.Abort}
-   * the value is `'aborted'`; reserved for the future pause/resume wires
-   * (`'paused'`/`'resumed'`) which share the header slot.
+   * the value is `'aborted'`; for {@link WireMessages.Retry} it is `'retry'`.
+   * Reserved for the future pause/resume wires (`'paused'`/`'resumed'`)
+   * which share the header slot.
    */
   Reason: 'x-ably-reason',
 } as const;
@@ -116,6 +118,18 @@ export const WireMessages = {
    * live agent, the signal sits durably on the channel until one wakes.
    */
   Abort: 'x-ably-abort',
+  /**
+   * Durable control signal requesting that a run be retried. Carries
+   * {@link Headers.RunId} and {@link Headers.MessageId}; may carry
+   * {@link Headers.StepId} for step-level retry, and
+   * {@link Headers.ClientId} when a backend publishes on behalf of an
+   * end-user. Reason header is set to `'retry'`.
+   *
+   * Observation does not mutate run status; the agent processes the signal
+   * and publishes a fresh `x-ably-step-start`, which re-activates the run
+   * from any prior terminal status.
+   */
+  Retry: 'x-ably-retry',
 } as const;
 
 /** Union of SDK-owned wire message names. */

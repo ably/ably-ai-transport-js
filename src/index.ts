@@ -30,6 +30,7 @@ export type {
   ControlSignalPublishResult,
   CreateRunOptions,
   EndRunOptions,
+  RetryOptions,
   SendMessagesOptions,
   SessionOptions,
   SessionWriter,

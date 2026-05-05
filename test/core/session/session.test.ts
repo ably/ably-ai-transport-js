@@ -870,6 +870,38 @@ describe('Session', () => {
       ]);
     });
 
+    it('records x-ably-retry as a control signal with stepId when supplied', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.RunStart,
+          headers: { [Headers.RunId]: 'r-1' },
+          clientId: 'alice',
+        }),
+      );
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '02',
+          name: WireMessages.Retry,
+          headers: {
+            [Headers.RunId]: 'r-1',
+            [Headers.MessageId]: 'sig-1',
+            [Headers.StepId]: 's-1',
+            [Headers.Reason]: 'retry',
+          },
+          clientId: 'alice',
+        }),
+      );
+
+      expect(treeOf(session).runs[0]?.controlSignals).toEqual([
+        { type: 'retry', runId: 'r-1', stepId: 's-1', messageId: 'sig-1', clientId: 'alice' },
+      ]);
+    });
+
     it('skips x-ably-abort without x-ably-run-id', async () => {
       const { options, channel } = makeSession();
       const session = createClientSession(options);

@@ -370,4 +370,70 @@ describe('createClientRun', () => {
       await expect(promise).resolves.toBe('aborted');
     });
   });
+
+  describe('retry', () => {
+    it('publishes x-ably-retry and returns the invocation with the signal messageId', async () => {
+      fixture.tree.applyRunStart({
+        id: 'r-1',
+        status: 'active',
+        controlSignals: [],
+        initiatorClientId: 'alice',
+      } satisfies Run<string>);
+      const run = createClientRun<StubCodec>({ ...baseOptions() });
+
+      const inv = await run.retry();
+
+      expect(fixture.channel.publish).toHaveBeenCalledTimes(1);
+      const [wire] = fixture.channel.publishedBatches[0] ?? [];
+      if (!wire) throw new Error('expected wire');
+      expect(wire.name).toBe(WireMessages.Retry);
+      expect(headersOf(wire)[Headers.RunId]).toBe('r-1');
+      expect(headersOf(wire)[Headers.Reason]).toBe('retry');
+      const wireMessageId = headersOf(wire)[Headers.MessageId];
+      expect(wireMessageId).toBeDefined();
+      expect(inv.messageId).toBe(wireMessageId);
+      expect(inv.runId).toBe('r-1');
+      expect(inv.stepId).toBeUndefined();
+    });
+
+    it('publishes x-ably-step-id when stepId is supplied (step-level retry)', async () => {
+      fixture.tree.applyRunStart({
+        id: 'r-1',
+        status: 'active',
+        controlSignals: [],
+        initiatorClientId: 'alice',
+      } satisfies Run<string>);
+      fixture.tree.applyRunEnd({ runId: 'r-1', status: 'failed' });
+      const run = createClientRun<StubCodec>({ ...baseOptions() });
+
+      const inv = await run.retry({ stepId: 's-1' });
+
+      const [wire] = fixture.channel.publishedBatches[0] ?? [];
+      if (!wire) throw new Error('expected wire');
+      expect(headersOf(wire)[Headers.StepId]).toBe('s-1');
+      expect(inv.stepId).toBe('s-1');
+    });
+
+    it('publishes regardless of run status (including aborted)', async () => {
+      fixture.tree.applyRunStart({
+        id: 'r-1',
+        status: 'active',
+        controlSignals: [],
+        initiatorClientId: 'alice',
+      } satisfies Run<string>);
+      fixture.tree.applyRunEnd({ runId: 'r-1', status: 'aborted' });
+      const run = createClientRun<StubCodec>({ ...baseOptions() });
+
+      await run.retry();
+
+      expect(fixture.channel.publish).toHaveBeenCalledTimes(1);
+    });
+
+    it('propagates writer publish errors', async () => {
+      fixture.channel.publish.mockRejectedValueOnce(new Error('publish failed'));
+      const run = createClientRun<StubCodec>({ ...baseOptions() });
+
+      await expect(run.retry()).rejects.toThrow('publish failed');
+    });
+  });
 });

@@ -101,6 +101,9 @@ const wireMessageNameToControlSignalType = (name: string | undefined): ControlSi
     case WireMessages.Abort: {
       return 'abort';
     }
+    case WireMessages.Retry: {
+      return 'retry';
+    }
     default: {
       return undefined;
     }
@@ -561,7 +564,7 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
       this._handleStepEnd(message);
       return;
     }
-    if (message.name === WireMessages.Abort) {
+    if (message.name === WireMessages.Abort || message.name === WireMessages.Retry) {
       this._handleControlSignal(message);
       return;
     }

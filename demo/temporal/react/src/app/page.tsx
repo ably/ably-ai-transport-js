@@ -24,8 +24,6 @@ function ChatPage() {
       {(handle) => (
         <Chat
           handle={handle}
-          ably={handle.ably}
-          sessionName={sessionName}
           clientId={clientId}
         />
       )}

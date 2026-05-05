@@ -25,11 +25,12 @@
 
 import { anthropic } from '@ai-sdk/anthropic';
 import type * as AI from 'ai';
-import { convertToModelMessages, jsonSchema, stepCountIs, streamText, tool } from 'ai';
+import { convertToModelMessages, stepCountIs, streamText } from 'ai';
 
 import { Invocation, type InvocationData } from '@ably/ai-transport';
 
 import { getSession } from '../../../lib/agent-session';
+import { getBashToolkit } from '../../../lib/bash-session';
 
 const MODEL = process.env.MODEL ?? 'claude-haiku-4-5';
 
@@ -41,22 +42,6 @@ interface AgentRequestBody extends InvocationData {
    */
   simulateFail?: boolean;
 }
-
-const getWeather = tool({
-  description: 'Get the current weather for a city.',
-  inputSchema: jsonSchema<{ city: string }>({
-    type: 'object',
-    properties: { city: { type: 'string', description: 'City name' } },
-    required: ['city'],
-  }),
-  execute: ({ city }) =>
-    Promise.resolve({
-      city,
-      temperatureC: 22,
-      condition: 'sunny',
-      humidity: 0.45,
-    }),
-});
 
 /**
  * Number of `text-delta` chunks to forward before the synthetic failure
@@ -112,6 +97,7 @@ export async function POST(req: Request): Promise<Response> {
   const simulateFail = body.simulateFail === true;
 
   const session = await getSession(invocation.sessionName);
+  const { tools } = await getBashToolkit(invocation.sessionName);
 
   await using run = await session.createRun(invocation, { signal: req.signal });
   await using step = run.createStep();
@@ -130,8 +116,8 @@ export async function POST(req: Request): Promise<Response> {
       model: anthropic(MODEL),
       messages,
       abortSignal: step.signal,
-      tools: { getWeather },
-      stopWhen: stepCountIs(5),
+      tools,
+      stopWhen: stepCountIs(10),
     });
     const source = result.toUIMessageStream();
     await step.pipe(simulateFail ? streamThatFailsAfterPartialText(source) : source);

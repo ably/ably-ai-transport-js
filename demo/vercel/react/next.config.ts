@@ -4,7 +4,7 @@ import type { NextConfig } from 'next';
 const repoRoot = path.resolve(__dirname, '..', '..', '..');
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ['jsonwebtoken', 'ably'],
+  serverExternalPackages: ['jsonwebtoken', 'ably', 'just-bash', 'bash-tool'],
   turbopack: {
     root: repoRoot,
   },

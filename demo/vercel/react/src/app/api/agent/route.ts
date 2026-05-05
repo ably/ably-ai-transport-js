@@ -118,7 +118,14 @@ export async function POST(req: Request): Promise<Response> {
   await step.start({ signal: req.signal, timeoutMs: 60_000 });
 
   try {
-    const messages = await convertToModelMessages(run.view.messages.map((node) => node.message));
+    // Filter out non-canonical nodes — output from retried/abandoned/
+    // superseded prior step attempts that the tree has flagged as no
+    // longer contributing to the run's current state. Without this the
+    // model would see a failed attempt's partial text and try to
+    // continue it. Spec: AIT-CN2.
+    const messages = await convertToModelMessages(
+      run.view.messages.filter((node) => node.canonical).map((node) => node.message),
+    );
     const result = streamText({
       model: anthropic(MODEL),
       messages,

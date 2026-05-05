@@ -23,6 +23,13 @@ interface MessageBubbleProps {
    */
   stepIndex?: number;
   /**
+   * Whether this message contributes to the run's current state.
+   * `false` for failed/aborted/abandoned predecessors of a retry —
+   * the bubble dims and gains a "retried" label so users can tell
+   * historical attempts apart from canonical output. Spec: AIT-CN2.
+   */
+  canonical: boolean;
+  /**
    * When set, render a Retry button on the bubble. Wired by
    * MessageList only on the latest assistant bubble whose run has
    * reached a terminal status.
@@ -30,12 +37,16 @@ interface MessageBubbleProps {
   onRetry?: () => void;
 }
 
-function bubbleClasses(isUser: boolean, streaming: boolean): string {
+function bubbleClasses(isUser: boolean, streaming: boolean, canonical: boolean): string {
   const base = 'rounded-lg px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap';
-  if (isUser) return `${base} bg-zinc-800 text-zinc-200`;
+  // Non-canonical bubbles are historical attempts replaced by a retry.
+  // Dim and de-saturate so they read as "this was tried before" without
+  // disappearing from the conversation. Spec: AIT-CN2.
+  const dim = canonical ? '' : ' opacity-50 grayscale';
+  if (isUser) return `${base}${dim} bg-zinc-800 text-zinc-200`;
   return streaming
-    ? `${base} bg-zinc-900 text-zinc-300 border border-amber-900/40`
-    : `${base} bg-zinc-900 text-zinc-300 border border-zinc-800`;
+    ? `${base}${dim} bg-zinc-900 text-zinc-300 border border-amber-900/40`
+    : `${base}${dim} bg-zinc-900 text-zinc-300 border border-zinc-800`;
 }
 
 function ToolCallCard({ part }: { part: AI.ToolUIPart | AI.DynamicToolUIPart }) {
@@ -74,9 +85,9 @@ const RUN_STATUS_PILL: Record<RunStatus, { label: string; classes: string }> = {
   aborted: { label: 'aborted', classes: 'border-zinc-700 text-zinc-400' },
 };
 
-export function MessageBubble({ message, streaming, runStatus, stepIndex, onRetry }: MessageBubbleProps) {
+export function MessageBubble({ message, streaming, runStatus, stepIndex, canonical, onRetry }: MessageBubbleProps) {
   const isUser = message.role === 'user';
-  const showHeader = !isUser && (runStatus !== undefined || stepIndex !== undefined);
+  const showHeader = !isUser && (runStatus !== undefined || stepIndex !== undefined || !canonical);
   const pill = !isUser && runStatus !== undefined ? RUN_STATUS_PILL[runStatus] : undefined;
 
   return (
@@ -88,9 +99,12 @@ export function MessageBubble({ message, streaming, runStatus, stepIndex, onRetr
             {pill !== undefined && (
               <span className={`rounded-sm border px-1.5 py-0.5 ${pill.classes}`}>{pill.label}</span>
             )}
+            {!canonical && (
+              <span className="rounded-sm border border-zinc-700 px-1.5 py-0.5 text-zinc-500">retried</span>
+            )}
           </div>
         )}
-        <div className={bubbleClasses(isUser, streaming)}>
+        <div className={bubbleClasses(isUser, streaming, canonical)}>
           {message.parts.map((part, i) => {
             if (part.type === 'text') return <span key={i}>{part.text}</span>;
             if (isToolUIPart(part))

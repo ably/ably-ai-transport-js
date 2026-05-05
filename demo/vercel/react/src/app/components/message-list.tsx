@@ -9,13 +9,20 @@ import { MessageBubble } from './message-bubble';
 
 /**
  * Per-message metadata projected from the view (mirrored from chat.tsx
- * — defined here so the bubble can read its run's status and step index
- * without prop-drilling individual fields).
+ * — defined here so the bubble can read its run's status, step index,
+ * and canonical flag without prop-drilling individual fields).
  */
 export interface MessageInfo {
   runId: string;
   runStatus: RunStatus;
   stepIndex: number | undefined;
+  /**
+   * Whether this message contributes to the run's current state. `false`
+   * for failed/aborted/abandoned predecessors of a retry — the SDK keeps
+   * them in the projection so the UI can render them as history rather
+   * than dropping them. Spec: AIT-CN2.
+   */
+  canonical: boolean;
 }
 
 interface MessageListProps {
@@ -59,6 +66,7 @@ export function MessageList({ messages, streamingId, info, retryableMessageId, o
             streaming={message.id === streamingId}
             runStatus={meta?.runStatus}
             stepIndex={meta?.stepIndex}
+            canonical={meta?.canonical ?? true}
             onRetry={message.id === retryableMessageId ? () => onRetry(message.id) : undefined}
           />
         );

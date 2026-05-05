@@ -25,13 +25,17 @@ type Run = ClientRun<typeof UIMessageCodec>;
 /**
  * Per-message metadata projected from the view: which run a node belongs to,
  * the current status of that run (driven entirely by observed lifecycle
- * wires under the symmetric model), and a stable per-run step index so the
- * UI can label `step 1` / `step 2` etc. across retries.
+ * wires under the symmetric model), a stable per-run step index so the UI
+ * can label `step 1` / `step 2` etc. across retries, and the canonical
+ * flag from the underlying tree node so non-canonical bubbles (failed
+ * attempts replaced by a retry, abandoned crash predecessors) render as
+ * historical rather than current. Spec: AIT-CN2.
  */
 interface MessageInfo {
   runId: string;
   runStatus: RunStatus;
   stepIndex: number | undefined;
+  canonical: boolean;
 }
 
 const TERMINAL: ReadonlySet<RunStatus> = new Set<RunStatus>(['complete', 'failed', 'aborted']);
@@ -72,6 +76,7 @@ const projectMessageInfo = (view: ChatHandle['view']): Map<string, MessageInfo> 
       runId: node.runId,
       runStatus: statusByRun.get(node.runId) ?? 'active',
       stepIndex,
+      canonical: node.canonical,
     });
   }
   return result;

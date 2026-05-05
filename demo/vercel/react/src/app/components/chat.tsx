@@ -1,20 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type * as Ably from 'ably';
 import type * as AI from 'ai';
 
-import type { ClientRun } from '@ably/ai-transport';
+import type { ClientRun, RunStatus } from '@ably/ai-transport';
 import type { UIMessageCodec } from '@ably/ai-transport/vercel';
 
 import type { ChatHandle } from '../providers';
-
-// SDK header / wire message names used by the demo. These are part of the
-// public wire format; the SDK itself defines them in its `headers.ts` but
-// does not currently re-export the constants.
-const HEADER_RUN_ID = 'x-ably-run-id';
-const WIRE_RUN_END = 'x-ably-run-end';
-const WIRE_ABORT = 'x-ably-abort';
 import { userMessage } from '../helpers';
 import { Header } from './header';
 import { MessageList } from './message-list';
@@ -29,86 +22,146 @@ interface ChatProps {
 
 type Run = ClientRun<typeof UIMessageCodec>;
 
-export function Chat({ handle, ably, sessionName, clientId }: ChatProps) {
+/**
+ * Per-message metadata projected from the view: which run a node belongs to,
+ * the current status of that run (driven entirely by observed lifecycle
+ * wires under the symmetric model), and a stable per-run step index so the
+ * UI can label `step 1` / `step 2` etc. across retries.
+ */
+interface MessageInfo {
+  runId: string;
+  runStatus: RunStatus;
+  stepIndex: number | undefined;
+}
+
+const TERMINAL: ReadonlySet<RunStatus> = new Set<RunStatus>(['complete', 'failed', 'aborted']);
+
+/**
+ * Build a `messageId -> MessageInfo` map from the view. Step index is
+ * assigned per-run by first-arrival order — the first stepId seen on a
+ * run is `1`, the next is `2`, etc. Messages without a stepId (typically
+ * client user messages) are recorded with `stepIndex: undefined` so they
+ * render without a step badge.
+ * @param view The view to project from.
+ * @returns A map keyed by message id.
+ */
+const projectMessageInfo = (view: ChatHandle['view']): Map<string, MessageInfo> => {
+  const result = new Map<string, MessageInfo>();
+  // Per-run step ordering. Rebuilt on every change — the tree is always
+  // serial-ordered so this projection is stable.
+  const stepIndexByRun = new Map<string, Map<string, number>>();
+  const statusByRun = new Map<string, RunStatus>();
+  for (const run of view.runs) {
+    statusByRun.set(run.id, run.status);
+  }
+  for (const node of view.messages) {
+    let runStepIndex = stepIndexByRun.get(node.runId);
+    if (runStepIndex === undefined) {
+      runStepIndex = new Map();
+      stepIndexByRun.set(node.runId, runStepIndex);
+    }
+    let stepIndex: number | undefined;
+    if (node.stepId !== undefined) {
+      stepIndex = runStepIndex.get(node.stepId);
+      if (stepIndex === undefined) {
+        stepIndex = runStepIndex.size + 1;
+        runStepIndex.set(node.stepId, stepIndex);
+      }
+    }
+    result.set(node.id, {
+      runId: node.runId,
+      runStatus: statusByRun.get(node.runId) ?? 'active',
+      stepIndex,
+    });
+  }
+  return result;
+};
+
+export function Chat({ handle, clientId }: ChatProps) {
   const { view } = handle;
   const [messages, setMessages] = useState<readonly AI.UIMessage[]>([]);
-  // Active runs keyed by id so the Stop button can call abort() on whatever
-  // run is currently in flight. The map is the source of truth — UI flags
-  // (`isRunning`, `streamingId`) are derived from it.
-  const [activeRuns, setActiveRuns] = useState<ReadonlyMap<string, Run>>(new Map());
-  const activeRunsRef = useRef(activeRuns);
-  activeRunsRef.current = activeRuns;
-
-  // Mirror the view's messages into React state, plus track which
-  // assistant message belongs to each run so we can mark it as streaming.
-  const [assistantByRun, setAssistantByRun] = useState<ReadonlyMap<string, string>>(new Map());
+  const [info, setInfo] = useState<ReadonlyMap<string, MessageInfo>>(new Map());
+  // `runs` mirrors the view's run projection. Stable per-id handles are
+  // exposed so the Retry button on a terminated bubble can call
+  // `run.retry()` directly without a separate lookup.
+  const [runs, setRuns] = useState<readonly Run[]>([]);
 
   useEffect(() => {
-    const update = () => {
+    const update = (): void => {
       const next: AI.UIMessage[] = [];
-      const byRun = new Map<string, string>();
       for (const node of view.messages) {
         next.push(node.message);
-        if (node.role === 'assistant') byRun.set(node.runId, node.id);
       }
       setMessages(next);
-      setAssistantByRun(byRun);
+      setInfo(projectMessageInfo(view));
+      setRuns(view.runs);
     };
     update();
     return view.subscribe(update);
   }, [view]);
 
-  // Drop runs from the active map when an `x-ably-run-end` lands on the
-  // channel, or when an `x-ably-abort` is observed (the abort signal is
-  // itself the run terminal — the agent's `run-end (aborted)` confirmation
-  // may follow but isn't required to mark the run done from the UI's
-  // perspective).
-  useEffect(() => {
-    const channel = ably.channels.get(sessionName);
-    const dropRun = (runId: string): void => {
-      setActiveRuns((prev) => {
-        if (!prev.has(runId)) return prev;
-        const next = new Map(prev);
-        next.delete(runId);
-        return next;
-      });
-    };
-    const listener = (message: Ably.InboundMessage) => {
-      // CAST: Ably types `extras` as `any`; narrow to read x-ably-run-id.
-      const headers = (message.extras as { headers?: Record<string, unknown> } | undefined)?.headers;
-      const runId = headers?.[HEADER_RUN_ID];
-      if (typeof runId !== 'string') return;
-      dropRun(runId);
-    };
-    void channel.subscribe(WIRE_RUN_END, listener);
-    void channel.subscribe(WIRE_ABORT, listener);
-    return () => {
-      channel.unsubscribe(WIRE_RUN_END, listener);
-      channel.unsubscribe(WIRE_ABORT, listener);
-    };
-  }, [ably, sessionName]);
+  // Derived: any run whose status is 'active' is in flight. Drives the
+  // input bar's disabled state and the streaming indicator on the
+  // currently-streaming assistant bubble. Under the symmetric model, a
+  // retry on a terminated run flips its status back to 'active' as soon
+  // as the agent's new step-start is observed — this derived set picks
+  // that up automatically without any imperative bookkeeping.
+  const activeRuns = useMemo(() => runs.filter((r) => r.status === 'active'), [runs]);
+  const isRunning = activeRuns.length > 0;
+
+  // The currently-streaming assistant message id: the latest message
+  // belonging to any active run.
+  const streamingId = useMemo(() => {
+    const activeIds = new Set(activeRuns.map((r) => r.id));
+    let id: string | undefined;
+    for (const node of view.messages) {
+      if (node.role === 'assistant' && activeIds.has(node.runId)) {
+        id = node.id;
+      }
+    }
+    return id;
+  }, [activeRuns, view]);
+
+  // The message id of the most recent assistant bubble whose run has
+  // reached a terminal status — this is the candidate for the Retry
+  // button. Only the latest one shows it so the UI doesn't sprout a
+  // button on every prior message.
+  const retryableMessageId = useMemo<string | undefined>(() => {
+    let id: string | undefined;
+    for (const node of view.messages) {
+      if (node.role !== 'assistant') continue;
+      const status = info.get(node.id)?.runStatus;
+      if (status !== undefined && TERMINAL.has(status)) {
+        id = node.id;
+      }
+    }
+    return id;
+  }, [info, view]);
+
+  /**
+   * Resolve a `ClientRun` handle by id, preferring the live projection.
+   * Used by `handleRetry` to find the run a Retry-button click targets.
+   */
+  const findRun = useCallback((runId: string): Run | undefined => runs.find((r) => r.id === runId), [runs]);
 
   const handleSubmit = useCallback(
-    async (text: string) => {
+    async (text: string, simulateFail: boolean) => {
       const run = await view.send(userMessage(text));
-      setActiveRuns((prev) => new Map(prev).set(run.id, run));
       try {
         const response = await fetch('/api/agent', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(run.toInvocation().toJSON()),
+          body: JSON.stringify({ ...run.toInvocation().toJSON(), simulateFail }),
         });
-        if (!response.ok) {
+        // The simulated-failure flow is expected to return HTTP 5xx — the
+        // terminal `run-end (failed)` is already on the channel and the
+        // UI reflects it via the run status. Only surface non-OK
+        // responses as errors when we weren't asking the agent to fail.
+        if (!response.ok && !simulateFail) {
           throw new Error(`agent endpoint returned HTTP ${String(response.status)}`);
         }
       } catch (err) {
         console.error('failed to invoke agent', err);
-        setActiveRuns((prev) => {
-          if (!prev.has(run.id)) return prev;
-          const next = new Map(prev);
-          next.delete(run.id);
-          return next;
-        });
       }
     },
     [view],
@@ -116,23 +169,37 @@ export function Chat({ handle, ably, sessionName, clientId }: ChatProps) {
 
   const handleStop = useCallback(() => {
     // Abort every currently-active run. ClientRun.abort() is a no-op when
-    // the run has already terminated, so calling on a Map that may be
-    // racing with run-end observations is safe.
-    for (const run of activeRunsRef.current.values()) {
+    // the run has already terminated, so calling on a snapshot that may
+    // be racing with run-end observations is safe.
+    for (const run of activeRuns) {
       void run.abort().catch((err: unknown) => {
         console.error('failed to abort run', err);
       });
     }
-  }, []);
+  }, [activeRuns]);
 
-  // The currently-streaming assistant message (if any).
-  let streamingId: string | undefined;
-  for (const runId of activeRuns.keys()) {
-    const id = assistantByRun.get(runId);
-    if (id !== undefined) streamingId = id;
-  }
-
-  const isRunning = activeRuns.size > 0;
+  const handleRetry = useCallback(
+    async (messageId: string) => {
+      const messageInfo = info.get(messageId);
+      if (messageInfo === undefined) return;
+      const run = findRun(messageInfo.runId);
+      if (run === undefined) return;
+      try {
+        const invocation = await run.retry();
+        const response = await fetch('/api/agent', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ...invocation.toJSON(), simulateFail: false }),
+        });
+        if (!response.ok) {
+          throw new Error(`agent endpoint returned HTTP ${String(response.status)}`);
+        }
+      } catch (err) {
+        console.error('failed to retry run', err);
+      }
+    },
+    [info, findRun],
+  );
 
   return (
     <div className="flex h-dvh flex-col">
@@ -140,9 +207,12 @@ export function Chat({ handle, ably, sessionName, clientId }: ChatProps) {
       <MessageList
         messages={messages}
         streamingId={streamingId}
+        info={info}
+        retryableMessageId={isRunning ? undefined : retryableMessageId}
+        onRetry={(messageId) => void handleRetry(messageId)}
       />
       <InputBar
-        onSubmit={(text) => void handleSubmit(text)}
+        onSubmit={(text, simulateFail) => void handleSubmit(text, simulateFail)}
         onStop={isRunning ? handleStop : undefined}
         disabled={isRunning}
       />

@@ -4,15 +4,16 @@ The agent session (`src/core/transport/agent-session.ts`) handles the server-sid
 
 The session exposes a single factory method - `createRun()` - which returns a `Run` object with explicit lifecycle methods: `start()`, `addMessages()`, `pipe()`, and `end()`.
 
-## Construction
+## Construction and connect
 
-On creation, the agent session:
+`createAgentSession()` is synchronous and does no channel I/O - it constructs the [RunManager](transport-components.md#runmanager) bound to the channel and returns. Callers must `await session.connect()` before `createRun()` or any run-lifecycle method; otherwise those methods throw `InvalidArgument`.
 
-1. Creates a [RunManager](transport-components.md#runmanager) bound to the channel
-2. Subscribes to `x-ably-cancel` events on the channel (before attach per [RTL7g](https://sdk.ably.com/builds/ably/specification/main/features/#RTL7g))
-3. Starts routing cancel messages to registered runs
+`connect()`:
 
-The cancel subscription is the session's only channel subscription. All message publishing goes through the RunManager and codec encoder - the session doesn't subscribe to its own output.
+1. Subscribes to `x-ably-cancel` events on the channel (subscribing before attach per [RTL7g](https://sdk.ably.com/builds/ably/specification/main/features/#RTL7g))
+2. Starts routing cancel messages to registered runs
+
+The method is idempotent - a second call returns the same in-flight promise and does not subscribe twice. The cancel subscription is the session's only channel subscription. All message publishing goes through the RunManager and codec encoder - the session doesn't subscribe to its own output.
 
 ## Run lifecycle
 

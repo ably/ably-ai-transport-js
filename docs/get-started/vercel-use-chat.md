@@ -114,6 +114,7 @@ export async function POST(req: Request) {
   const channel = ably.channels.get(chatId);
 
   const session = createAgentSession({ channel });
+  await session.connect();
   const run = session.createRun(Invocation.fromJSON({ runId, clientId, parent, forkOf }));
 
   await run.start();

@@ -623,4 +623,27 @@ describe('Tree', () => {
       expect(tree.messages[0]?.message).toBe('hello world');
     });
   });
+
+  describe('getRun', () => {
+    it('returns the recorded run by id', () => {
+      const tree = makeTree();
+      tree.applyRunStart(makeRun({ id: 'r-1' }));
+
+      expect(tree.getRun('r-1')?.id).toBe('r-1');
+    });
+
+    it('returns undefined for an unknown id', () => {
+      const tree = makeTree();
+
+      expect(tree.getRun('never-started')).toBeUndefined();
+    });
+
+    it('reflects the synthesised aborted status', () => {
+      const tree = makeTree();
+      tree.applyRunStart(makeRun({ id: 'r-1' }));
+      tree.applyAbort({ runId: 'r-1' });
+
+      expect(tree.getRun('r-1')?.status).toBe('aborted');
+    });
+  });
 });

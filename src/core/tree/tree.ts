@@ -7,13 +7,18 @@ import type { StepRecord, StepStatus } from '../step/index.js';
  * plus transport metadata (identity, attribution) and the Ably message
  * serial that ordered it on the channel.
  *
+ * Generic over `TRun` so the projection layer (`ClientView`, `AgentView`)
+ * can attach the codec-typed run handle (`ClientRun<C>` / `AgentRun<C>`)
+ * the consumer expects on `node.run`. Tree-level nodes leave `run`
+ * undefined — the views that project them in fill it in.
+ *
  * Phase 7 subset of the RFC's `MessageNode` — `parentId`, `children`,
- * the typed `run`/`step` references, and `streaming` are deferred and
- * land additively in later phases. `runId` is exposed as a string so
- * `AgentRun` and `AgentView` can filter messages by their owning run
- * before the typed `run` reference lands.
+ * and the typed `step` reference are deferred and land additively in
+ * later phases. `runId` is exposed as a string so `AgentRun` and
+ * `AgentView` can filter messages by their owning run regardless of
+ * whether `run` has been resolved.
  */
-export interface MessageNode<TMessage> {
+export interface MessageNode<TMessage, TRun extends Run<TMessage> = Run<TMessage>> {
   /** Unique message ID (from the `x-ably-msg-id` header). */
   readonly id: string;
 
@@ -41,6 +46,21 @@ export interface MessageNode<TMessage> {
    * `AgentRun.messages` and `AgentView.messages` filter on it.
    */
   readonly runId: string;
+
+  /**
+   * The run this message belongs to, typed to the session variant — a
+   * `ClientRun<C>` on a `ClientView`'s nodes, the plain {@link Run} record
+   * on the tree itself. Filled in by the projecting view; tree-level nodes
+   * leave it undefined.
+   *
+   * Lets UI code drive per-message controls directly from the rendered
+   * node — `node.run?.abort()` rather than a separate lookup through
+   * `view.runs`. Undefined when the node represents a message published
+   * before its run-start was observed (rare; can happen mid-hydration
+   * when out-of-order delivery brings a message ahead of the run-start
+   * for its run).
+   */
+  readonly run?: TRun;
 
   /** The domain message in the codec's representation. */
   readonly message: TMessage;
@@ -98,6 +118,16 @@ export interface Tree<TMessage> {
    * phases transition entries in place to terminal statuses.
    */
   readonly steps: readonly StepRecord[];
+
+  /**
+   * Look up a run record by id. Returns `undefined` when the tree has not
+   * observed an `x-ably-run-start` for that id. Lets the projecting view
+   * resolve the {@link MessageNode.run} reference without scanning
+   * {@link runs} on every node it materialises.
+   * @param id The run id to look up.
+   * @returns The run record, or `undefined` when unknown.
+   */
+  getRun(id: string): Run<TMessage> | undefined;
 
   /**
    * Register a coarse change listener. The handler fires after every
@@ -236,6 +266,10 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
 
   get steps(): readonly StepRecord[] {
     return this._steps;
+  }
+
+  getRun(id: string): Run<TMessage> | undefined {
+    return this._runs.find((run) => run.id === id);
   }
 
   applyMessage(node: MessageNode<TMessage>): void {

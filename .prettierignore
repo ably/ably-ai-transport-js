@@ -5,3 +5,5 @@ src_old/
 test_old/
 demo_old/
 examples_old/
+# Next.js-generated env shim — regenerated on every `next dev`/`next build`.
+**/next-env.d.ts

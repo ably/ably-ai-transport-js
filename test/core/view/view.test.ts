@@ -315,3 +315,193 @@ describe('ClientView.send', () => {
     expect(tree.runs.map((r) => r.id)).toEqual([run.id]);
   });
 });
+
+describe('ClientView.runs', () => {
+  it('reflects the run handle returned by view.send', async () => {
+    const { options } = makeClientSession();
+    const session = createClientSession(options);
+    await session.connect();
+    const view = session.createView();
+
+    const run = await view.send('hello');
+
+    // The same handle view.send returned shows up in view.runs — identity
+    // is the contract that lets `view.runs.includes(run)` work.
+    expect(view.runs).toContain(run);
+  });
+
+  it('returns stable identity across reads (cache by run id)', async () => {
+    const { options } = makeClientSession();
+    const session = createClientSession(options);
+    await session.connect();
+    const view = session.createView();
+
+    await view.send('hello');
+
+    expect(view.runs[0]).toBe(view.runs[0]);
+  });
+
+  it('reads run status lazily from the tree (active → aborted)', async () => {
+    const { options } = makeClientSession();
+    const session = createClientSession(options);
+    await session.connect();
+    const view = session.createView();
+
+    const run = await view.send('hello');
+    expect(run.status).toBe('active');
+
+    // CAST: reach for the tree internals to record the run and an abort.
+    // applyAbort no-ops on unknown runs, so the run-start has to be on
+    // the tree before the abort is observed (mirroring the real wire
+    // ordering — run-start is emitted before any abort).
+    const tree = (
+      session as unknown as {
+        _tree: {
+          applyRunStart: (run: {
+            id: string;
+            status: string;
+            abortRequested: boolean;
+            initiatorClientId: string;
+          }) => void;
+          applyAbort: (o: { runId: string }) => void;
+        };
+      }
+    )._tree;
+    tree.applyRunStart({ id: run.id, status: 'active', abortRequested: false, initiatorClientId: 'alice' });
+    tree.applyAbort({ runId: run.id });
+
+    expect(view.runs[0]?.status).toBe('aborted');
+  });
+
+  it('rebuilds the runs projection after send (cache invalidates)', async () => {
+    const { options } = makeClientSession();
+    const session = createClientSession(options);
+    await session.connect();
+    const view = session.createView();
+
+    // First read populates the memoised projection (empty at this point).
+    const before = view.runs;
+    expect(before).toEqual([]);
+
+    await view.send('hello');
+
+    // After send the projection is invalidated and the next read reflects
+    // the seeded handle.
+    expect(view.runs).not.toBe(before);
+    expect(view.runs).toHaveLength(1);
+  });
+
+  it('preserves run identity across an unrelated tree mutation', async () => {
+    // After a tree change invalidates the projection, the next read
+    // should rebuild the array but reuse the same per-id ClientRun
+    // handles. Locks the cache contract: identity is stable for a given
+    // runId regardless of when the projection was last computed.
+    const { options, channel } = makeClientSession();
+    const session = createClientSession(options);
+    await session.connect();
+    const view = session.createView();
+
+    const run = await view.send('hello');
+    const firstRead = view.runs;
+    expect(firstRead).toHaveLength(1);
+
+    // Drive an unrelated tree change so the memoised projection is
+    // invalidated and the next read rebuilds.
+    const [runStartBatch] = channel.publishedBatches;
+    const runStart = runStartBatch?.[0];
+    if (!runStart) throw new Error('expected run-start wire');
+    channel.simulateMessage({ ...runStart, serial: '01', clientId: 'alice' } as unknown as Ably.InboundMessage);
+
+    expect(view.runs).not.toBe(firstRead);
+    expect(view.runs[0]).toBe(run);
+  });
+});
+
+describe('ClientView.messages with typed run handle', () => {
+  it('attaches node.run to every node whose run-start has been observed', async () => {
+    const { options, channel } = makeClientSession();
+    const session = createClientSession(options);
+    await session.connect();
+    const view = session.createView();
+
+    await view.send('hello');
+
+    // Replay the publishes back through the decode loop so the tree
+    // observes both the run-start and the user message.
+    const [runStartBatch, messageBatch] = channel.publishedBatches;
+    const runStart = runStartBatch?.[0];
+    const message = messageBatch?.[0];
+    if (!runStart || !message) throw new Error('expected run-start and message wires');
+    channel.simulateMessage({ ...runStart, serial: '01', clientId: 'alice' } as unknown as Ably.InboundMessage);
+    channel.simulateMessage({ ...message, serial: '02', clientId: 'alice' } as unknown as Ably.InboundMessage);
+
+    expect(view.messages).toHaveLength(1);
+    const [node] = view.messages;
+    expect(node?.run).toBeDefined();
+    expect(node?.run?.id).toBe(node?.runId);
+  });
+
+  it('node.run identity matches view.runs entries (one shared handle per run)', async () => {
+    const { options, channel } = makeClientSession();
+    const session = createClientSession(options);
+    await session.connect();
+    const view = session.createView();
+
+    const run = await view.send('hello');
+
+    const [runStartBatch, messageBatch] = channel.publishedBatches;
+    const runStart = runStartBatch?.[0];
+    const message = messageBatch?.[0];
+    if (!runStart || !message) throw new Error('expected run-start and message wires');
+    channel.simulateMessage({ ...runStart, serial: '01', clientId: 'alice' } as unknown as Ably.InboundMessage);
+    channel.simulateMessage({ ...message, serial: '02', clientId: 'alice' } as unknown as Ably.InboundMessage);
+
+    expect(view.messages[0]?.run).toBe(run);
+    expect(view.runs[0]).toBe(run);
+  });
+
+  it('messages projection is invalidated when the tree changes', async () => {
+    const { options, channel } = makeClientSession();
+    const session = createClientSession(options);
+    await session.connect();
+    const view = session.createView();
+
+    await view.send('hello');
+
+    const before = view.messages;
+    const [runStartBatch, messageBatch] = channel.publishedBatches;
+    const runStart = runStartBatch?.[0];
+    const message = messageBatch?.[0];
+    if (!runStart || !message) throw new Error('expected run-start and message wires');
+    channel.simulateMessage({ ...runStart, serial: '01', clientId: 'alice' } as unknown as Ably.InboundMessage);
+    channel.simulateMessage({ ...message, serial: '02', clientId: 'alice' } as unknown as Ably.InboundMessage);
+
+    expect(view.messages).not.toBe(before);
+  });
+
+  it('node.run identity survives same-id republish (updateMessage path)', async () => {
+    // The accumulator updates the composed message in place when a
+    // second wire with the same `x-ably-msg-id` arrives. The projection
+    // is invalidated and rebuilt — but the cached run handle should
+    // still be the one returned by view.send, not a fresh synthesis.
+    const { options, channel } = makeClientSession();
+    const session = createClientSession(options);
+    await session.connect();
+    const view = session.createView();
+
+    const run = await view.send('hello');
+
+    const [runStartBatch, messageBatch] = channel.publishedBatches;
+    const runStart = runStartBatch?.[0];
+    const message = messageBatch?.[0];
+    if (!runStart || !message) throw new Error('expected wires');
+    channel.simulateMessage({ ...runStart, serial: '01', clientId: 'alice' } as unknown as Ably.InboundMessage);
+    channel.simulateMessage({ ...message, serial: '02', clientId: 'alice' } as unknown as Ably.InboundMessage);
+    // Replay the same wire under the same msg-id — the stub codec keys
+    // on the routing id, so the accumulator's setMessage path drives an
+    // updateMessage on the tree.
+    channel.simulateMessage({ ...message, serial: '03', clientId: 'alice' } as unknown as Ably.InboundMessage);
+
+    expect(view.messages[0]?.run).toBe(run);
+  });
+});

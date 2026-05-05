@@ -1,6 +1,6 @@
 import type { Logger } from '../../logger.js';
 import type { AnyCodec, CodecMessage } from '../codec/index.js';
-import type { ClientRun } from '../run/index.js';
+import type { ClientRun, Run } from '../run/index.js';
 import { createClientRun } from '../run/index.js';
 import type { DefaultSessionWriter } from '../session/writer.js';
 import type { MessageNode, Tree } from '../tree/index.js';
@@ -10,17 +10,29 @@ import type { MessageNode, Tree } from '../tree/index.js';
  * the consumer should render and a state-oriented subscription for observing
  * changes; both `ClientView` and (eventually) `AgentView` share this contract.
  *
+ * Generic over `TRun` so the projection can attach the codec-typed run
+ * handle on each node (`ClientRun<C>` for a `ClientView`, the plain
+ * {@link Run} record on the base interface). Defaults to `Run<TMessage>`
+ * so the AgentView and tree-level uses do not need to name the parameter.
+ *
  * Phase 2 subset of the RFC `View` interface — branching, pagination, and
  * the codec-typed run variant on each node land in later phases. The shape
  * is a strict subset, so future additions are additive.
  */
-export interface View<TMessage> {
+export interface View<TMessage, TRun extends Run<TMessage> = Run<TMessage>> {
   /**
    * Messages visible in this view. Phase 2 returns the tree's full message
    * list in serial order; later phases project a single selected sibling at
    * each branch point.
+   *
+   * The element type carries the projection's run variant in the optional
+   * `run` slot. Whether it is populated depends on the projection: the
+   * default {@link DefaultView} returns tree-level nodes whose `run` slot
+   * is undefined, while {@link DefaultClientView} attaches the typed
+   * {@link ClientRun} handle so UI code can call `node.run?.abort()`
+   * directly from a rendered node.
    */
-  readonly messages: readonly MessageNode<TMessage>[];
+  readonly messages: readonly MessageNode<TMessage, TRun>[];
 
   /**
    * Subscribe to view state changes. The callback fires whenever the visible
@@ -45,13 +57,6 @@ export interface View<TMessage> {
 }
 
 /**
- * Read projection scoped to the client's UI perspective.
- *
- * Phase 6 subset — exposes `send`, the verb that opens a new run with the
- * supplied user message. `regenerate`, `edit`, `select`, `loadMore`,
- * `runs`, `hasMore`, and `createRun` land additively in later phases.
- */
-/**
  * Read projection scoped to a specific run from the agent's perspective.
  *
  * Phase 7 subset — `extends View<CodecMessage<C>>` with no extra members
@@ -63,7 +68,29 @@ export interface View<TMessage> {
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type -- Phase 7 subset; members added additively in later phases.
 export interface AgentView<C extends AnyCodec> extends View<CodecMessage<C>> {}
 
-export interface ClientView<C extends AnyCodec> extends View<CodecMessage<C>> {
+/**
+ * Read projection scoped to the client's UI perspective.
+ *
+ * Phase 6 subset — exposes `send`, the verb that opens a new run with the
+ * supplied user message, and `runs`, the live list of {@link ClientRun}
+ * handles for runs visible in this view. `regenerate`, `edit`, `select`,
+ * `loadMore`, `hasMore`, and `createRun` land additively in later phases.
+ */
+export interface ClientView<C extends AnyCodec> extends View<CodecMessage<C>, ClientRun<C>> {
+  /**
+   * Live list of {@link ClientRun} handles for runs visible in this view.
+   * Each handle reads its status lazily from the underlying tree, so
+   * iterating `runs` and reading `r.status` reflects the latest observed
+   * lifecycle wires (`x-ably-run-start`, `x-ably-run-end`, `x-ably-abort`)
+   * without the consumer subscribing to them directly.
+   *
+   * Identity is stable per run id — a run that surfaces twice in two reads
+   * returns the same `ClientRun` instance, so React `useMemo`/keyed lists
+   * do not see spurious churn. Subscribe via {@link View.subscribe} to
+   * re-read after each tree change.
+   */
+  readonly runs: readonly ClientRun<C>[];
+
   /**
    * Open a new run at the current branch tip and publish the user
    * message(s) on it. The SDK builds an `x-ably-run-start` and the encoded
@@ -125,6 +152,10 @@ export interface AgentViewOptions<C extends AnyCodec> extends ViewOptions<CodecM
  * `messages` returns `tree.messages` unchanged. The view subscribes to the
  * tree on construction and forwards each notification to its own subscribers
  * so that `close()` can sever the chain without affecting the tree.
+ *
+ * The class is non-generic over `TRun` — the base view does not enrich
+ * `node.run`. {@link DefaultClientView} extends and overrides
+ * {@link messages} to attach the codec-typed run handle.
  * @internal
  */
 export class DefaultView<TMessage> implements View<TMessage> {
@@ -190,25 +221,107 @@ export class DefaultView<TMessage> implements View<TMessage> {
 }
 
 /**
- * Default {@link ClientView} implementation. Adds the publish path
- * (`send`) on top of the base {@link DefaultView}; everything else
- * (`messages`, `subscribe`, `close`) flows through inheritance.
+ * Default {@link ClientView} implementation. Adds:
+ *
+ *   - `send` — publishes a fresh run + user message through the writer.
+ *   - `runs` — projects the underlying tree's runs through a per-id
+ *     `ClientRun` cache so the consumer sees stable handles.
+ *   - `messages` (override) — projects the underlying tree's nodes,
+ *     attaching the typed `ClientRun<C>` handle to each `node.run`.
+ *
+ * The cache is keyed by run id and lives until {@link close}. Subscribe /
+ * close machinery (and the {@link send} writer plumbing) flows through
+ * inheritance from {@link DefaultView}.
  * @internal
  */
 export class DefaultClientView<C extends AnyCodec> extends DefaultView<CodecMessage<C>> implements ClientView<C> {
   private readonly _writer: DefaultSessionWriter<C>;
   private readonly _sessionName: string;
+  /**
+   * Per-id cache of {@link ClientRun} handles keyed by run id, so the
+   * consumer sees a stable `view.runs[i] === view.runs[i]` identity
+   * across reads. Populated lazily as `runs` / `messages` getters
+   * project a tree run for the first time.
+   */
+  private readonly _runHandles = new Map<string, ClientRun<C>>();
+  /**
+   * Memoised projection of `tree.messages` into nodes whose `run` slot
+   * carries the typed {@link ClientRun} handle. Invalidated whenever the
+   * tree fires a change notification — the array identity flips on the
+   * next read so React `useSyncExternalStore` consumers detect the
+   * change without a deep comparison.
+   */
+  private _messagesProjection?: readonly MessageNode<CodecMessage<C>, ClientRun<C>>[];
+  /**
+   * Same memoisation strategy for `runs`. Refreshed when the tree
+   * notifies; null until first read after construction or invalidation.
+   */
+  private _runsProjection?: readonly ClientRun<C>[];
+  /** Unsubscribe handle for the projection-invalidation tree listener. */
+  private readonly _projectionUnsubscribe: () => void;
 
   constructor(options: ClientViewOptions<C>) {
     super({ tree: options.tree, logger: options.logger });
     this._writer = options.writer;
     this._sessionName = options.sessionName;
+    // Invalidate the memoised projections on every tree change so
+    // subsequent reads rebuild from the latest state. The base class's
+    // own subscriber forwards the notification to view subscribers; this
+    // listener runs alongside it for projection bookkeeping only and is
+    // released in close().
+    this._projectionUnsubscribe = this._tree.subscribe(() => {
+      this._messagesProjection = undefined;
+      this._runsProjection = undefined;
+    });
+  }
+
+  override get messages(): readonly MessageNode<CodecMessage<C>, ClientRun<C>>[] {
+    this._messagesProjection ??= this._tree.messages.map((node) => ({
+      ...node,
+      run: this._handleFor(node.runId),
+    }));
+    return this._messagesProjection;
+  }
+
+  get runs(): readonly ClientRun<C>[] {
+    if (this._runsProjection !== undefined) {
+      return this._runsProjection;
+    }
+    // Iterate the tree's runs first so the shared observation order is
+    // preserved across multi-device clients hydrating from the same
+    // channel. Then append any view-seeded handles (e.g. from `send` that
+    // hasn't echoed back yet) whose runId isn't already on the tree —
+    // the user clicking "send" expects the run to surface in `view.runs`
+    // immediately, before the publish round-trips.
+    const seen = new Set<string>();
+    const result: ClientRun<C>[] = [];
+    for (const record of this._tree.runs) {
+      // Records iterated here are observed runs; `_wrapRecord` is the
+      // direct path that always produces a handle.
+      result.push(this._wrapRecord(record));
+      seen.add(record.id);
+    }
+    for (const [runId, handle] of this._runHandles) {
+      if (!seen.has(runId)) {
+        result.push(handle);
+      }
+    }
+    this._runsProjection = result;
+    return this._runsProjection;
+  }
+
+  override close(): void {
+    this._projectionUnsubscribe();
+    super.close();
+    this._runHandles.clear();
+    this._messagesProjection = undefined;
+    this._runsProjection = undefined;
   }
 
   async send(messages: CodecMessage<C> | CodecMessage<C>[]): Promise<ClientRun<C>> {
     this._logger.trace('DefaultClientView.send();');
     const { runId, lastMessageId, initiatorClientId } = await this._writer.startRunWithMessages({ messages });
-    return createClientRun<C>({
+    const run = createClientRun<C>({
       id: runId,
       status: 'active',
       initiatorClientId,
@@ -218,6 +331,75 @@ export class DefaultClientView<C extends AnyCodec> extends DefaultView<CodecMess
       writer: this._writer,
       logger: this._logger,
     });
+    // Seed the cache so a node arriving via the decode loop reuses this
+    // exact handle rather than synthesising a fresh one. Important for
+    // the messageId carried on `toInvocation()` — the node.run reference
+    // and the handle returned by `view.send` are the same object.
+    this._runHandles.set(runId, run);
+    // Invalidate the memoised `runs`/`messages` projections so the next
+    // read includes the freshly seeded handle. The tree subscriber covers
+    // the inbound-echo path; `send` is the local-only path the tree never
+    // observes synchronously.
+    this._runsProjection = undefined;
+    this._messagesProjection = undefined;
+    return run;
+  }
+
+  /**
+   * Resolve a {@link ClientRun} handle by id from the cache or, when not
+   * cached, by looking up the run record on the tree and wrapping it.
+   * Returns `undefined` when the tree has not observed an
+   * `x-ably-run-start` for this id — used by the messages projection,
+   * which surfaces messages whose run-start hasn't landed yet (a
+   * transient gap during out-of-order delivery).
+   *
+   * Note: handles synthesised here have no `messageId` — they are the
+   * "rehydrated from the tree" path, where no specific message was just
+   * published, so an invocation built from them carries the runId only.
+   * Handles seeded by {@link send} take precedence in the cache so their
+   * own `messageId` (the precondition for the agent's first step) is
+   * preserved.
+   * @param runId The run id to resolve.
+   * @returns A stable {@link ClientRun} bound to the tree, or `undefined`
+   *   if the tree has not yet observed the run.
+   */
+  private _handleFor(runId: string): ClientRun<C> | undefined {
+    const cached = this._runHandles.get(runId);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const record = this._tree.getRun(runId);
+    if (record === undefined) {
+      return undefined;
+    }
+    return this._wrapRecord(record);
+  }
+
+  /**
+   * Build (and cache) a {@link ClientRun} handle for the given tree
+   * record. The runs projection feeds tree-iterated records straight
+   * here so the unreachable "record not found" branch does not pollute
+   * the call site. See {@link _handleFor} for the by-id path used by
+   * the messages projection.
+   * @param record The tree-side run record to wrap.
+   * @returns A stable {@link ClientRun} bound to the tree.
+   */
+  private _wrapRecord(record: Run<CodecMessage<C>>): ClientRun<C> {
+    const cached = this._runHandles.get(record.id);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const run = createClientRun<C>({
+      id: record.id,
+      status: record.status,
+      initiatorClientId: record.initiatorClientId,
+      sessionName: this._sessionName,
+      tree: this._tree,
+      writer: this._writer,
+      logger: this._logger,
+    });
+    this._runHandles.set(record.id, run);
+    return run;
   }
 }
 

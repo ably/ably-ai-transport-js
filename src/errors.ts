@@ -78,6 +78,14 @@ export enum ErrorCode {
    * Spec: AIT-AB4, AIT-AB5.
    */
   RunAborted = 104303,
+
+  /**
+   * The session backing a {@link ClientRun} closed before the awaited run
+   * status was reached. Rejection from {@link ClientRun.when} when the
+   * underlying tree's session shuts down while a status promise is still
+   * pending.
+   */
+  RunClosed = 104201,
 }
 
 /**

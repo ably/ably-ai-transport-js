@@ -247,4 +247,114 @@ describe('createClientRun', () => {
       await expect(run.abort()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
     });
   });
+
+  describe('when', () => {
+    it('resolves immediately when the run is already in a targeted status', async () => {
+      fixture.tree.applyRunStart({
+        id: 'r-1',
+        status: 'active',
+        abortRequested: false,
+        initiatorClientId: 'alice',
+      } satisfies Run<string>);
+      fixture.tree.applyRunEnd({ runId: 'r-1', status: 'complete' });
+      const run = createClientRun<StubCodec>({ ...baseOptions() });
+
+      await expect(run.when(['complete', 'aborted', 'failed'])).resolves.toBe('complete');
+    });
+
+    it('resolves when the run transitions into a targeted status', async () => {
+      fixture.tree.applyRunStart({
+        id: 'r-1',
+        status: 'active',
+        abortRequested: false,
+        initiatorClientId: 'alice',
+      } satisfies Run<string>);
+      const run = createClientRun<StubCodec>({ ...baseOptions() });
+
+      const promise = run.when(['complete', 'aborted', 'failed']);
+      fixture.tree.applyAbort({ runId: 'r-1' });
+
+      await expect(promise).resolves.toBe('aborted');
+    });
+
+    it('does not resolve while the status remains outside the targeted set', async () => {
+      fixture.tree.applyRunStart({
+        id: 'r-1',
+        status: 'active',
+        abortRequested: false,
+        initiatorClientId: 'alice',
+      } satisfies Run<string>);
+      const run = createClientRun<StubCodec>({ ...baseOptions() });
+      let settled = false;
+      void run.when(['complete']).then(
+        () => (settled = true),
+        () => (settled = true),
+      );
+
+      // Apply an unrelated tree event — should not satisfy the wait.
+      fixture.tree.applyRunStart({
+        id: 'r-2',
+        status: 'active',
+        abortRequested: false,
+        initiatorClientId: 'alice',
+      } satisfies Run<string>);
+
+      await Promise.resolve();
+      expect(settled).toBe(false);
+    });
+
+    it('rejects with RunClosed when the closeSignal fires before the status target is reached', async () => {
+      fixture.tree.applyRunStart({
+        id: 'r-1',
+        status: 'active',
+        abortRequested: false,
+        initiatorClientId: 'alice',
+      } satisfies Run<string>);
+      const closeController = new AbortController();
+      const run = createClientRun<StubCodec>({
+        ...baseOptions(),
+        closeSignal: closeController.signal,
+      });
+
+      const promise = run.when(['complete']);
+      closeController.abort();
+
+      await expect(promise).rejects.toBeErrorInfoWithCode(ErrorCode.RunClosed);
+    });
+
+    it('rejects with RunClosed when the closeSignal is already aborted on entry', async () => {
+      fixture.tree.applyRunStart({
+        id: 'r-1',
+        status: 'active',
+        abortRequested: false,
+        initiatorClientId: 'alice',
+      } satisfies Run<string>);
+      const closeController = new AbortController();
+      closeController.abort();
+      const run = createClientRun<StubCodec>({
+        ...baseOptions(),
+        closeSignal: closeController.signal,
+      });
+
+      await expect(run.when(['complete'])).rejects.toBeErrorInfoWithCode(ErrorCode.RunClosed);
+    });
+
+    it('still resolves a target hit even when closeSignal is supplied — close path is opt-in', async () => {
+      fixture.tree.applyRunStart({
+        id: 'r-1',
+        status: 'active',
+        abortRequested: false,
+        initiatorClientId: 'alice',
+      } satisfies Run<string>);
+      const run = createClientRun<StubCodec>({
+        ...baseOptions(),
+        closeSignal: new AbortController().signal,
+      });
+
+      const promise = run.when(['aborted']);
+      fixture.tree.applyAbort({ runId: 'r-1' });
+
+      await expect(promise).resolves.toBe('aborted');
+    });
+  });
 });

@@ -316,6 +316,40 @@ describe('ClientView.send', () => {
   });
 });
 
+describe('ClientRun.when threaded from session.close', () => {
+  it('rejects pending when() promises with RunClosed when the session closes', async () => {
+    const { options } = makeClientSession();
+    const session = createClientSession(options);
+    await session.connect();
+    const view = session.createView();
+
+    const run = await view.send('hello');
+    const promise = run.when(['complete', 'failed', 'aborted']);
+    await session.close();
+
+    await expect(promise).rejects.toBeErrorInfoWithCode(ErrorCode.RunClosed);
+  });
+
+  it('rejects pending when() promises across every active run when the session closes', async () => {
+    // Two runs, two pending when() promises, one session.close — both
+    // should reject. Catches a regression where a single AbortSignal
+    // listener wakes only the first awaiter.
+    const { options } = makeClientSession();
+    const session = createClientSession(options);
+    await session.connect();
+    const view = session.createView();
+
+    const runA = await view.send('first');
+    const runB = await view.send('second');
+    const promiseA = runA.when(['complete']);
+    const promiseB = runB.when(['complete']);
+    await session.close();
+
+    await expect(promiseA).rejects.toBeErrorInfoWithCode(ErrorCode.RunClosed);
+    await expect(promiseB).rejects.toBeErrorInfoWithCode(ErrorCode.RunClosed);
+  });
+});
+
 describe('ClientView.runs', () => {
   it('reflects the run handle returned by view.send', async () => {
     const { options } = makeClientSession();

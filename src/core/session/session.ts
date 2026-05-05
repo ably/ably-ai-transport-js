@@ -282,6 +282,13 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
   private readonly _tree: TreeInternal<CodecMessage<C>>;
   private readonly _views = new Set<DefaultView<CodecMessage<C>>>();
   private readonly _writer: DefaultSessionWriter<C>;
+  /**
+   * Aborted in {@link close} so that pending `ClientRun.when` promises
+   * surface a {@link ErrorCode.RunClosed} rejection rather than hanging
+   * after their owning session has shut down. Threaded into every view
+   * created from this session.
+   */
+  private readonly _closeController = new AbortController();
 
   private _decoder?: Decoder<CodecPart<C>, CodecMessage<C>, CodecEvent<C>>;
   private _accumulator?: Accumulator<CodecPart<C>, CodecMessage<C>, CodecEvent<C>>;
@@ -752,6 +759,12 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
     const channelResolved = this._channelManager.isResolved;
     this._closed = true;
 
+    // Wake any pending `ClientRun.when` promises so they reject with
+    // RunClosed rather than hanging after the session has shut down.
+    // Fired before view teardown so the rejection lands while the run
+    // handles still exist.
+    this._closeController.abort();
+
     // Close every view created from this session before tearing down the
     // channel so consumers see a deterministic teardown order.
     for (const view of this._views) {
@@ -807,6 +820,7 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
       logger: this._logger,
       writer: this._writer,
       sessionName: this.sessionName,
+      closeSignal: this._closeController.signal,
     });
     this._views.add(view);
     return view;

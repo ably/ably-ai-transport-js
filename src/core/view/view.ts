@@ -136,6 +136,13 @@ export interface ClientViewOptions<C extends AnyCodec> extends ViewOptions<Codec
   writer: DefaultSessionWriter<C>;
   /** Session name written into the {@link Invocation} produced by `run.toInvocation`. */
   sessionName: string;
+  /**
+   * Signal the view threads into every {@link ClientRun} it produces, so
+   * pending {@link ClientRun.when} promises reject with
+   * {@link ErrorCode.RunClosed} when the owning session closes. Optional
+   * so legacy unit tests can construct a view without a session.
+   */
+  closeSignal?: AbortSignal;
 }
 
 /**
@@ -237,6 +244,7 @@ export class DefaultView<TMessage> implements View<TMessage> {
 export class DefaultClientView<C extends AnyCodec> extends DefaultView<CodecMessage<C>> implements ClientView<C> {
   private readonly _writer: DefaultSessionWriter<C>;
   private readonly _sessionName: string;
+  private readonly _closeSignal?: AbortSignal;
   /**
    * Per-id cache of {@link ClientRun} handles keyed by run id, so the
    * consumer sees a stable `view.runs[i] === view.runs[i]` identity
@@ -264,6 +272,7 @@ export class DefaultClientView<C extends AnyCodec> extends DefaultView<CodecMess
     super({ tree: options.tree, logger: options.logger });
     this._writer = options.writer;
     this._sessionName = options.sessionName;
+    this._closeSignal = options.closeSignal;
     // Invalidate the memoised projections on every tree change so
     // subsequent reads rebuild from the latest state. The base class's
     // own subscriber forwards the notification to view subscribers; this
@@ -329,6 +338,7 @@ export class DefaultClientView<C extends AnyCodec> extends DefaultView<CodecMess
       messageId: lastMessageId,
       tree: this._tree,
       writer: this._writer,
+      closeSignal: this._closeSignal,
       logger: this._logger,
     });
     // Seed the cache so a node arriving via the decode loop reuses this
@@ -396,6 +406,7 @@ export class DefaultClientView<C extends AnyCodec> extends DefaultView<CodecMess
       sessionName: this._sessionName,
       tree: this._tree,
       writer: this._writer,
+      closeSignal: this._closeSignal,
       logger: this._logger,
     });
     this._runHandles.set(record.id, run);

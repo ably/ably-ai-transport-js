@@ -1,3 +1,6 @@
+import * as Ably from 'ably';
+
+import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import type { AnyCodec, CodecMessage } from '../codec/index.js';
 import type { Invocation } from '../invocation/index.js';
@@ -53,6 +56,28 @@ export interface ClientRun<C extends AnyCodec> extends Run<CodecMessage<C>> {
    * @returns The run's `Invocation` for the caller to POST.
    */
   abort(): Promise<Invocation>;
+
+  /**
+   * Resolve when the run's status enters any of the targeted set, or
+   * reject with {@link ErrorCode.RunClosed} if the underlying session
+   * closes first.
+   *
+   * Resolves synchronously (on the next microtask) when the run is
+   * already in one of the targeted states. Otherwise subscribes to the
+   * underlying tree and resolves the moment the run transitions into a
+   * targeted state. Pass `['complete', 'failed', 'aborted']` for the
+   * common "run is over" case.
+   *
+   * The returned promise is single-shot: subscribers are released as
+   * soon as the promise settles. Repeat calls are safe — each gets its
+   * own subscription.
+   * @param statuses The run statuses to wait for. Empty arrays never
+   *   resolve; the caller is responsible for not passing them.
+   * @returns The status the run transitioned into.
+   * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.RunClosed}
+   *   when the session closes before the run reaches a targeted state.
+   */
+  when(statuses: readonly RunStatus[]): Promise<RunStatus>;
 }
 
 /** Options for {@link createClientRun}. */
@@ -75,6 +100,14 @@ export interface ClientRunOptions<C extends AnyCodec> {
   tree: Tree<CodecMessage<C>>;
   /** Writer used to publish `x-ably-abort` from {@link ClientRun.abort}. */
   writer: DefaultSessionWriter<C>;
+  /**
+   * Signal the run watches to detect "session is closed" while a
+   * {@link ClientRun.when} promise is still pending. The owning session
+   * fires this signal in its own `close()`; pending `when` promises
+   * reject with {@link ErrorCode.RunClosed} immediately afterwards.
+   * Optional so unit tests can construct a handle without a session.
+   */
+  closeSignal?: AbortSignal;
   /** Logger inherited from the owning session. */
   logger: Logger;
 }
@@ -96,6 +129,7 @@ class DefaultClientRun<C extends AnyCodec> implements ClientRun<C> {
   private readonly _messageId?: string;
   private readonly _tree: Tree<CodecMessage<C>>;
   private readonly _writer: DefaultSessionWriter<C>;
+  private readonly _closeSignal?: AbortSignal;
   private readonly _logger: Logger;
 
   constructor(options: ClientRunOptions<C>) {
@@ -106,6 +140,7 @@ class DefaultClientRun<C extends AnyCodec> implements ClientRun<C> {
     this._messageId = options.messageId;
     this._tree = options.tree;
     this._writer = options.writer;
+    this._closeSignal = options.closeSignal;
     this._logger = options.logger.withContext({ component: 'ClientRun', runId: options.id });
     this._logger.trace('DefaultClientRun(); initialized');
   }
@@ -150,6 +185,63 @@ class DefaultClientRun<C extends AnyCodec> implements ClientRun<C> {
     }
     await this._writer.abort({ runId: this._id });
     return this.toInvocation();
+  }
+
+  async when(statuses: readonly RunStatus[]): Promise<RunStatus> {
+    this._logger.trace('DefaultClientRun.when();', { statuses });
+
+    // Synchronous check first so the common "already terminal" case
+    // resolves on the next microtask without paying for a subscription.
+    const current = this.status;
+    if (statuses.includes(current)) {
+      this._logger.debug('DefaultClientRun.when(); resolved synchronously', { status: current });
+      return current;
+    }
+
+    // Pre-check the close signal — reject without subscribing if the
+    // session has already closed. The close path otherwise lands as a
+    // subscription event below.
+    if (this._closeSignal?.aborted === true) {
+      this._logger.debug('DefaultClientRun.when(); rejecting — session already closed');
+      throw this._runClosedError();
+    }
+
+    return new Promise<RunStatus>((resolve, reject) => {
+      let unsubscribeTree: (() => void) | undefined;
+      let onClose: (() => void) | undefined;
+      const cleanup = (): void => {
+        unsubscribeTree?.();
+        unsubscribeTree = undefined;
+        if (onClose !== undefined && this._closeSignal !== undefined) {
+          this._closeSignal.removeEventListener('abort', onClose);
+          onClose = undefined;
+        }
+      };
+      unsubscribeTree = this._tree.subscribe(() => {
+        const next = this.status;
+        if (statuses.includes(next)) {
+          cleanup();
+          this._logger.debug('DefaultClientRun.when(); resolved on tree change', { status: next });
+          resolve(next);
+        }
+      });
+      if (this._closeSignal !== undefined) {
+        onClose = (): void => {
+          cleanup();
+          this._logger.warn('DefaultClientRun.when(); rejecting — session closed before status hit');
+          reject(this._runClosedError());
+        };
+        this._closeSignal.addEventListener('abort', onClose, { once: true });
+      }
+    });
+  }
+
+  private _runClosedError(): Ably.ErrorInfo {
+    return new Ably.ErrorInfo(
+      `unable to await run status; session for run ${this._id} closed`,
+      ErrorCode.RunClosed,
+      400,
+    );
   }
 }
 

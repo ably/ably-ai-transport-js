@@ -35,6 +35,7 @@ import { Invocation } from '@ably/ai-transport';
 import { createAgentSession } from '@ably/ai-transport/vercel';
 
 const session = createAgentSession({ channel });
+await session.connect();
 const run = session.createRun(Invocation.fromJSON({ runId, clientId }));
 
 await run.start();

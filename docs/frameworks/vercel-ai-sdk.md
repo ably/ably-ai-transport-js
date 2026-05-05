@@ -113,6 +113,7 @@ import { createAgentSession } from '@ably/ai-transport/vercel';
 import { streamText, convertToModelMessages } from 'ai';
 
 const session = createAgentSession({ channel });
+await session.connect();
 const run = session.createRun(Invocation.fromJSON({ runId, clientId, parent, forkOf }));
 
 await run.start();

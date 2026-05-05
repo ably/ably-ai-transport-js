@@ -27,6 +27,12 @@ sequenceDiagram
 
 The HTTP POST is fire-and-forget from the client's perspective - the response stream is available immediately via the Ably channel subscription, not from the HTTP response body.
 
+## Session lifecycle
+
+Both `createAgentSession()` and `createClientSession()` return synchronously and do not touch the channel. Call `await session.connect()` to subscribe to the channel before any session method is used. `connect()` is idempotent - calling it twice returns the same in-flight promise and triggers a single subscribe.
+
+Run lifecycle methods (`run.start`, `run.addMessages`, `run.addEvents`, `run.pipe`, `run.end`) and client write methods (`session.cancel`, `session.waitForRun`, `view.send`, etc.) throw `InvalidArgument` until `connect()` resolves. In React, `ClientSessionProvider` and `ChatTransportProvider` call `connect()` on mount, so consumers of `useClientSession`/`useChatTransport` don't need to call it explicitly.
+
 ## Agent session
 
 The agent session manages **runs** - discrete request-response cycles on a shared channel. Each run has an explicit lifecycle:
@@ -39,6 +45,7 @@ import { createAgentSession } from '@ably/ai-transport/vercel';
 
 const channel = ably.channels.get(channelName);
 const session = createAgentSession({ channel });
+await session.connect();
 
 const run = session.createRun(Invocation.fromJSON({ runId, clientId }));
 await run.start();
@@ -63,6 +70,7 @@ The client session manages conversation state: the message list, conversation tr
 import { createClientSession } from '@ably/ai-transport/vercel';
 
 const session = createClientSession({ channel, clientId });
+await session.connect();
 const view = session.view;
 
 // Send a message - returns immediately with a run handle

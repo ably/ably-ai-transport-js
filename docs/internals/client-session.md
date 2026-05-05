@@ -16,7 +16,7 @@ DefaultClientSession
 └── per-run state maps    - observer headers, accumulators, relay detection
 ```
 
-All sub-components are created in the constructor and share a single Ably channel. The session subscribes to the channel before attach ([RTL7g](https://sdk.ably.com/builds/ably/specification/main/features/#RTL7g)) to guarantee no messages are missed.
+All sub-components are created in the constructor and share a single Ably channel. Construction is synchronous and does no channel I/O. Callers must `await session.connect()` before any send, cancel, or `waitForRun` call; otherwise those methods throw `InvalidArgument`. `connect()` subscribes to the channel before attach ([RTL7g](https://sdk.ably.com/builds/ably/specification/main/features/#RTL7g)) to guarantee no messages are missed, and is idempotent - a second call returns the same in-flight promise.
 
 ## Send flow
 

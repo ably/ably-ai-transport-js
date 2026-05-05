@@ -28,8 +28,8 @@ export interface InvocationData<TEvent, TMessage> {
   clientId: string;
   /** Logical name of the session (chat) — typically used as the Ably channel name. */
   sessionName: string;
-  /** New user messages to publish at the start of the run. May be empty (e.g. regenerate). */
-  messages: MessageNode<TMessage>[];
+  /** New user messages to publish at the start of the run. Empty array when none supplied (e.g. regenerate). */
+  messages?: MessageNode<TMessage>[];
   /** Prior conversation history along the selected branch. The agent feeds these to the model. */
   history?: MessageNode<TMessage>[];
   /** Cross-run amendment events (e.g. tool outputs produced on the client) to apply before streaming. */
@@ -71,7 +71,7 @@ export class Invocation<TEvent, TMessage> {
     this.sessionName = data.sessionName;
     this.parent = data.parent;
     this.forkOf = data.forkOf;
-    this.messages = data.messages;
+    this.messages = data.messages ?? [];
     this.history = data.history ?? [];
     this.events = data.events ?? [];
   }

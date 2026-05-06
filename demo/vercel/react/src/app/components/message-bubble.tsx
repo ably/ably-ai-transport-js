@@ -84,7 +84,7 @@ const STEP_STATUS_PILL: Record<StepStatus, { label: string; classes: string }> =
   active: { label: 'active', classes: 'border-amber-700/60 text-amber-300' },
   complete: { label: 'complete', classes: 'border-emerald-800/60 text-emerald-300' },
   failed: { label: 'failed', classes: 'border-rose-800/60 text-rose-300' },
-  aborted: { label: 'aborted', classes: 'border-zinc-700 text-zinc-400' },
+  aborted: { label: 'aborted', classes: 'border-sky-800/60 text-sky-300' },
   abandoned: { label: 'abandoned', classes: 'border-zinc-700 text-zinc-500' },
 };
 

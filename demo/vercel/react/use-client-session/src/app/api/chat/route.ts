@@ -37,8 +37,7 @@ export async function POST(req: Request) {
   const { toolApprovals } = data;
   const invocation = Invocation.fromJSON(data);
 
-  const channel = ably.channels.get(invocation.sessionName);
-  const session = createAgentSession({ channel });
+  const session = createAgentSession({ client: ably, channelName: invocation.sessionName });
   await session.connect();
   const run = session.createRun(invocation, { signal: req.signal });
 

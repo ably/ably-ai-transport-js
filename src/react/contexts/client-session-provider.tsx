@@ -2,17 +2,18 @@
  * ClientSessionProvider: creates a ClientSession and makes it available to
  * descendants via ClientSessionContext.
  *
- * Wraps children with Ably's ChannelProvider so the underlying channel
- * lifecycle is managed in one place. An inner component calls useChannel
- * to get the stable channel reference, creates the session once on first
- * render (via useRef), and calls `await session.connect()` from a
- * `useEffect` so the session is subscribed/attached before the first
- * descendant operation.
+ * Pulls the Ably Realtime client from `useAbly()` (which requires an
+ * `<AblyProvider>` ancestor) and forwards it to `createClientSession`
+ * along with the supplied `channelName`. The session resolves the channel
+ * itself and registers the `ai-transport-js` agent on the client for
+ * usage tracking.
  *
- * If createClientSession throws, the error is stored in the
- * ClientSessionSlot (alongside an undefined session) so that
- * useClientSession can surface it as sessionError without crashing the
- * component tree.
+ * The session is created once on first render (via useRef) and `connect()`
+ * is invoked from a `useEffect` so the session is subscribed/attached
+ * before the first descendant operation. If `createClientSession` throws,
+ * the error is stored in the ClientSessionSlot (alongside an undefined
+ * session) so that useClientSession can surface it as `sessionError`
+ * without crashing the component tree.
  *
  * The session is closed when the provider truly unmounts. The close is
  * scheduled as a microtask so that React Strict Mode's synchronous
@@ -25,7 +26,7 @@
  */
 
 import * as Ably from 'ably';
-import { ChannelProvider, useChannel } from 'ably/react';
+import { useAbly } from 'ably/react';
 import { type PropsWithChildren, type ReactNode, useContext, useEffect, useMemo, useRef } from 'react';
 
 import { createClientSession } from '../../core/transport/client-session.js';
@@ -37,22 +38,59 @@ import { ClientSessionContext } from './client-session-context.js';
 /**
  * Props for {@link ClientSessionProvider}.
  *
- * All {@link ClientSessionOptions} except `channel` (managed internally) plus `channelName`.
+ * All {@link ClientSessionOptions} except `client` (read from the surrounding
+ * `<AblyProvider>` via `useAbly()`).
  */
 export interface ClientSessionProviderProps<TEvent, TMessage>
-  extends Omit<ClientSessionOptions<TEvent, TMessage>, 'channel'>, PropsWithChildren {
-  /** The Ably channel name to subscribe to. Also used as the context registry key. */
-  channelName: string;
-}
+  extends Omit<ClientSessionOptions<TEvent, TMessage>, 'client'>, PropsWithChildren {}
 
-// Inner component: rendered inside ChannelProvider so useChannel resolves to
-// the channel created by the outer wrapper.
-const ClientSessionProviderInner = <TEvent, TMessage>({
-  channelName,
+/**
+ * Provide a {@link ClientSession} to descendant components.
+ *
+ * Reads the Ably Realtime client from the surrounding `<AblyProvider>` via
+ * `useAbly()`, creates a session bound to `channelName`, calls `connect()`
+ * on mount, and registers it in `ClientSessionContext` under `channelName`.
+ * Descendants call {@link useClientSession} with the same `channelName` to
+ * access the session.
+ *
+ * If `createClientSession` throws during construction, the error is surfaced
+ * through `useClientSession` as `sessionError` — the component tree does not
+ * crash and children are still rendered.
+ *
+ * ```tsx
+ * <AblyProvider client={ably}>
+ *   <ClientSessionProvider channelName="ai:demo" codec={UIMessageCodec}>
+ *     <Chat />
+ *   </ClientSessionProvider>
+ * </AblyProvider>
+ *
+ * // Inside Chat:
+ * const { session, sessionError } = useClientSession({ channelName: 'ai:demo' });
+ * ```
+ *
+ * For multiple sessions, nest providers with distinct channelNames:
+ *
+ * ```tsx
+ * <ClientSessionProvider channelName="ai:main" codec={UIMessageCodec}>
+ *   <ClientSessionProvider channelName="ai:aux" codec={UIMessageCodec}>
+ *     <App />
+ *   </ClientSessionProvider>
+ * </ClientSessionProvider>
+ *
+ * // Inside App:
+ * const { session: main } = useClientSession({ channelName: 'ai:main' });
+ * const { session: aux }  = useClientSession({ channelName: 'ai:aux' });
+ * ```
+ * @param props - Provider configuration including `channelName`, `codec`, and all other {@link ClientSessionOptions} except `client`.
+ * @param props.children - Descendant components that consume the session via {@link useClientSession}.
+ * @returns A React element wrapping children with ClientSessionContext.
+ */
+export const ClientSessionProvider = <TEvent, TMessage>({
   children,
   ...sessionOptions
-}: ClientSessionProviderProps<TEvent, TMessage>) => {
-  const { channel } = useChannel({ channelName });
+}: ClientSessionProviderProps<TEvent, TMessage>): ReactNode => {
+  const client = useAbly();
+  const { channelName } = sessionOptions;
   const sessionRef = useRef<ClientSession<TEvent, TMessage> | undefined>(undefined);
   const sessionChannelRef = useRef<string>(channelName);
   const sessionsToDisposeRef = useRef<ClientSession<unknown, unknown>[]>([]);
@@ -65,7 +103,7 @@ const ClientSessionProviderInner = <TEvent, TMessage>({
     sessionChannelRef.current = channelName;
     if (sessionRef.current) sessionsToDisposeRef.current.push(sessionRef.current);
     try {
-      sessionRef.current = createClientSession({ ...sessionOptions, channel });
+      sessionRef.current = createClientSession({ ...sessionOptions, client });
       constructionErrorRef.current = undefined;
     } catch (error) {
       sessionRef.current = undefined;
@@ -129,49 +167,3 @@ const ClientSessionProviderInner = <TEvent, TMessage>({
 
   return <ClientSessionContext.Provider value={contextValue}>{children}</ClientSessionContext.Provider>;
 };
-
-/**
- * Provide a {@link ClientSession} to descendant components.
- *
- * Wraps children with Ably's `ChannelProvider` using `channelName`, creates a
- * session from the resolved channel and the remaining options, calls
- * `connect()` on mount, and registers it in `ClientSessionContext` under
- * `channelName`. Descendants call {@link useClientSession} with the same
- * `channelName` to access the session.
- *
- * If `createClientSession` throws during construction, the error is surfaced
- * through `useClientSession` as `sessionError` — the component tree does not
- * crash and children are still rendered.
- *
- * ```tsx
- * <ClientSessionProvider channelName="ai:demo" codec={UIMessageCodec}>
- *   <Chat />
- * </ClientSessionProvider>
- *
- * // Inside Chat:
- * const { session, sessionError } = useClientSession({ channelName: 'ai:demo' });
- * ```
- *
- * For multiple sessions, nest providers with distinct channelNames:
- *
- * ```tsx
- * <ClientSessionProvider channelName="ai:main" codec={UIMessageCodec}>
- *   <ClientSessionProvider channelName="ai:aux" codec={UIMessageCodec}>
- *     <App />
- *   </ClientSessionProvider>
- * </ClientSessionProvider>
- *
- * // Inside App:
- * const { session: main } = useClientSession({ channelName: 'ai:main' });
- * const { session: aux }  = useClientSession({ channelName: 'ai:aux' });
- * ```
- * @param props - Provider configuration including `channelName`, `codec`, and all other {@link ClientSessionOptions}.
- * @returns A React element wrapping children with ChannelProvider and ClientSessionContext.
- */
-export const ClientSessionProvider = <TEvent, TMessage>(
-  props: ClientSessionProviderProps<TEvent, TMessage>,
-): ReactNode => (
-  <ChannelProvider channelName={props.channelName}>
-    <ClientSessionProviderInner {...props} />
-  </ChannelProvider>
-);

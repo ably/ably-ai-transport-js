@@ -540,7 +540,7 @@ class AgentAccumulator implements MessageAccumulator<AgentEvent, AgentMessage> {
  * import { createAgentSession } from '@ably/ai-transport';
  * import { AgentCodec } from './codec.js';
  *
- * const session = createAgentSession(channel, { codec: AgentCodec });
+ * const session = createAgentSession({ client: ably, channelName, codec: AgentCodec });
  * ```
  */
 export const AgentCodec: Codec<AgentEvent, AgentMessage> = {

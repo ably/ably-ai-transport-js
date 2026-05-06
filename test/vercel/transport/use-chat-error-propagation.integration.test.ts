@@ -47,10 +47,10 @@ describe('useChat error propagation', () => {
   it('transitions to status: error and calls onError when POST fails', async () => {
     const channelName = uniqueChannelName('uc-post-fail');
     const clientClient = ablyRealtimeClient();
-    const clientChannel = clientClient.channels.get(channelName);
 
     clientSession = createClientSession({
-      channel: clientChannel,
+      client: clientClient,
+      channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
       api: 'http://localhost:1/nonexistent',
@@ -95,11 +95,11 @@ describe('useChat error propagation', () => {
     const serverClient = ablyRealtimeClient();
     const clientClient = ablyRealtimeClient();
 
-    const serverChannel = serverClient.channels.get(channelName);
     const clientChannel = clientClient.channels.get(channelName);
 
     agentSession = createAgentSession({
-      channel: serverChannel,
+      client: serverClient,
+      channelName,
       codec: UIMessageCodec,
     });
     await agentSession.connect();
@@ -113,7 +113,8 @@ describe('useChat error propagation', () => {
     }) as typeof globalThis.fetch;
 
     clientSession = createClientSession({
-      channel: clientChannel,
+      client: clientClient,
+      channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
       api: '/api/chat',

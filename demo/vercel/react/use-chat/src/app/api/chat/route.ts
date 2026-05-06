@@ -38,9 +38,8 @@ const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY! });
 export async function POST(req: Request) {
   const data = (await req.json()) as InvocationData<UIMessageChunk, UIMessage>;
   const invocation = Invocation.fromJSON(data);
-  const channel = ably.channels.get(invocation.sessionName);
 
-  const session = createAgentSession({ channel });
+  const session = createAgentSession({ client: ably, channelName: invocation.sessionName });
   await session.connect();
   const run = session.createRun(invocation, { signal: req.signal });
 

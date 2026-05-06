@@ -2,6 +2,7 @@ import type * as Ably from 'ably';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createAgentSession, createClientSession } from '../../../src/vercel/transport/index.js';
+import { createMockClient } from '../../helper/mock-client.js';
 import { createRunFromOpts } from '../../helper/run-from-opts.js';
 
 // ---------------------------------------------------------------------------
@@ -51,7 +52,7 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
 describe('Vercel createClientSession', () => {
   it('returns a functional ClientSession with UIMessageCodec pre-bound', async () => {
     const channel = createMockChannel();
-    const session = createClientSession({ channel });
+    const session = createClientSession({ client: createMockClient(channel), channelName: 'test-channel' });
 
     // view.flattenNodes works without error — proves the codec is wired up
     expect(session.view.flattenNodes()).toEqual([]);
@@ -64,7 +65,8 @@ describe('Vercel createClientSession', () => {
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     const mockFetch = vi.fn(() => Promise.resolve(new Response(undefined, { status: 200 })));
     const session = createClientSession({
-      channel,
+      client: createMockClient(channel),
+      channelName: 'test-channel',
       fetch: mockFetch as unknown as typeof globalThis.fetch,
     });
     await session.connect();
@@ -86,7 +88,8 @@ describe('Vercel createClientSession', () => {
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     const mockFetch = vi.fn(() => Promise.resolve(new Response(undefined, { status: 200 })));
     const session = createClientSession({
-      channel,
+      client: createMockClient(channel),
+      channelName: 'test-channel',
       clientId: 'user-1',
       api: '/api/custom',
       headers: { Authorization: 'Bearer token' },
@@ -123,7 +126,7 @@ describe('Vercel createClientSession', () => {
 describe('Vercel createAgentSession', () => {
   it('returns a functional AgentSession with UIMessageCodec pre-bound', async () => {
     const channel = createMockChannel();
-    const session = createAgentSession({ channel });
+    const session = createAgentSession({ client: createMockClient(channel), channelName: 'test-channel' });
     await session.connect();
 
     const run = createRunFromOpts(session, { runId: 'test-run' });
@@ -135,7 +138,7 @@ describe('Vercel createAgentSession', () => {
   it('passes through options to the core factory', async () => {
     const channel = createMockChannel();
     const onError = vi.fn();
-    const session = createAgentSession({ channel, onError });
+    const session = createAgentSession({ client: createMockClient(channel), channelName: 'test-channel', onError });
     await session.connect();
 
     // Session was created without error — proves options were forwarded

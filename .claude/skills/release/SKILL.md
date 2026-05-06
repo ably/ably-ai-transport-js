@@ -1,14 +1,14 @@
 ---
 name: release
-description: Cut a new release - create release branch, bump version in package.json, refresh root and demo lockfiles, regenerate CHANGELOG, and stage for review. Usage: /release patch|minor|major or /release <exact-version>.
+description: Cut a new release - create release branch, bump version in package.json and src/version.ts, refresh root and demo lockfiles, regenerate CHANGELOG, and stage for review. Usage: /release patch|minor|major or /release <exact-version>.
 allowed-tools: Bash(git checkout *), Bash(git branch *), Bash(git status *), Bash(git diff *), Bash(git add *), Bash(git log *), Bash(npm install *), Bash(npm run *), Bash(rm *), Bash(ls *), Read, Edit, Glob, Grep, Skill, AskUserQuestion
 ---
 
 # Release: Cut a New Release Branch
 
-Create a `release/NEW_VERSION` branch, bump the version in `package.json`,
-refresh lockfiles, regenerate the `CHANGELOG.md` entry for the new version,
-and stage everything for review. Do **not** commit — committing and pushing
+Create a `release/NEW_VERSION` branch, bump the version in `package.json`
+and `src/version.ts`, refresh lockfiles, regenerate the `CHANGELOG.md`
+entry for the new version, and stage everything for review. Do **not** commit — committing and pushing
 remain human actions per `CLAUDE.md` workflow rules.
 
 ## Step 1: Pre-flight checks
@@ -68,10 +68,16 @@ git checkout -b release/NEW_VERSION
 If the branch already exists, stop and ask the user to delete it or pick a
 different version — never `--force` over an existing branch.
 
-## Step 5: Bump the version in package.json
+## Step 5: Bump the version in package.json and src/version.ts
 
-Use **Edit** to change the `version` field only. Do NOT use `npm version`
-— it creates a tag and commit, and we want the human to control both.
+Use **Edit** to change the `version` field in `package.json` only. Do NOT
+use `npm version` — it creates a tag and commit, and we want the human to
+control both.
+
+Then use **Edit** to update the `VERSION` constant in `src/version.ts` to
+the same `NEW_VERSION` string. This file is the source of the
+`ai-transport-js` agent identifier value sent to Ably for SDK usage
+tracking — it must stay in lockstep with `package.json`.
 
 ## Step 6: Refresh the root lockfile
 
@@ -121,8 +127,9 @@ If the changelog skill reports no PRs found (placeholder `-` bullet),
 note this in the final summary and remind the user to fill it in.
 
 **Contract after this step:** `CHANGELOG.md` is modified but not staged.
-The working tree also contains the `package.json` edit from Step 5 and
-the lockfile changes from Steps 6-7, all unstaged. Step 10 stages them.
+The working tree also contains the `package.json` and `src/version.ts`
+edits from Step 5 and the lockfile changes from Steps 6-7, all unstaged.
+Step 10 stages them.
 
 ## Step 9: Validate
 
@@ -137,7 +144,7 @@ Run `npm run precommit` (format:check + lint + typecheck).
 
 Stage the files this skill modified:
 
-1. Always stage: `git add package.json package-lock.json CHANGELOG.md`
+1. Always stage: `git add package.json package-lock.json src/version.ts CHANGELOG.md`
 2. For each demo app directory recorded in Step 7, stage its lockfile
    explicitly using its path — for example
    `git add demo/vercel/react/use-chat/package-lock.json`. Do **not**

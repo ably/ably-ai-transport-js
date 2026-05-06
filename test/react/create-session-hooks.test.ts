@@ -12,10 +12,10 @@ import { createMockSession } from './helper/mock-session.js';
 // Mocks
 // ---------------------------------------------------------------------------
 
+// Stand-in Realtime client returned by the mocked `useAbly()`. Only its
+// shape needs to satisfy TypeScript; createClientSession is also mocked.
 vi.mock('ably/react', () => ({
-  // ChannelProvider is a pass-through wrapper in tests; explicit return type avoids promise-function-async
-  ChannelProvider: ({ children }: { children: ReactNode }): ReactNode => children,
-  useChannel: ({ channelName }: { channelName: string }) => ({ channel: { name: channelName } }),
+  useAbly: () => ({ options: {} }),
 }));
 
 // Typed with explicit parameter signature so mock.calls[0] is [unknown], enabling assertions

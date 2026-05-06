@@ -105,12 +105,14 @@ import { createAgentSession, createClientSession } from '@ably/ai-transport';
 import { AgentCodec } from './codec.js';
 
 // Agent side
-const agentSession = createAgentSession(channel, { codec: AgentCodec });
+const agentSession = createAgentSession({ client: ably, channelName, codec: AgentCodec });
 
 // Client side
-const clientSession = createClientSession(channel, {
+const clientSession = createClientSession({
+  client: ably,
+  channelName,
   codec: AgentCodec,
-  sendUrl: '/api/chat',
+  api: '/api/chat',
 });
 ```
 

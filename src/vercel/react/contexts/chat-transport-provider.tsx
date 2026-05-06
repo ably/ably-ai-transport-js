@@ -2,10 +2,11 @@
  * ChatTransportProvider: creates a ChatTransport from a ClientSession and makes it
  * available to descendants via ChatTransportContext.
  *
- * Wraps children with ClientSessionProvider (using UIMessageCodec) so the Ably channel
- * lifecycle is managed in one place. An inner component reads the ClientSession
- * via useClientSession() and creates the ChatTransport once on first render
- * (via useRef).
+ * Wraps children with ClientSessionProvider (using UIMessageCodec). The
+ * surrounding `<AblyProvider>` supplies the Realtime client; the session
+ * resolves the channel from `channelName` itself. An inner component reads
+ * the ClientSession via useClientSession() and creates the ChatTransport
+ * once on first render (via useRef).
  *
  * The ChatTransport is NOT closed on unmount — the underlying ClientSession
  * lifecycle is managed by the wrapping ClientSessionProvider. Auto-closing would break
@@ -84,8 +85,9 @@ const ChatTransportProviderInner = ({
 /**
  * Provide a {@link ChatTransport} and its underlying {@link ClientSession} to descendant components.
  *
- * Wraps children with Ably's `ChannelProvider` (via `ClientSessionProvider`) using `channelName`,
- * creates a {@link ClientSession} with UIMessageCodec, wraps it in a {@link ChatTransport},
+ * Wraps children with `ClientSessionProvider` using `channelName` (the Realtime
+ * client is read from the surrounding `<AblyProvider>`), creates a
+ * {@link ClientSession} with UIMessageCodec, wraps it in a {@link ChatTransport},
  * and registers the full slot in `ChatTransportContext` under `channelName`. Descendants call
  * {@link useChatTransport} with the same `channelName` to access both.
  *
@@ -103,7 +105,7 @@ const ChatTransportProviderInner = ({
  * @param props - Provider configuration including `channelName`, optional `chatOptions`, and all other session options.
  * @param props.chatOptions - Optional hooks for customizing chat request construction. Must be stable (memoized) — a new reference recreates the ChatTransport.
  * @param props.children - Descendant components that consume the chat transport via hooks.
- * @returns A React element wrapping children with ChannelProvider, ClientSessionContext, and ChatTransportContext.
+ * @returns A React element wrapping children with ClientSessionContext and ChatTransportContext.
  */
 export const ChatTransportProvider = ({
   chatOptions,

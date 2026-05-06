@@ -38,7 +38,13 @@ interface MessageInfo {
   canonical: boolean;
 }
 
-const TERMINAL: ReadonlySet<RunStatus> = new Set<RunStatus>(['complete', 'failed', 'aborted']);
+/**
+ * Run statuses the retry button should appear under. Completed runs are
+ * intentionally excluded — there is nothing to retry once the agent
+ * reached a clean finish. Failed and aborted runs both surface retry so
+ * the user can re-run after a crash or after they hit Stop.
+ */
+const RETRYABLE: ReadonlySet<RunStatus> = new Set<RunStatus>(['failed', 'aborted']);
 
 /**
  * Build a `messageId -> MessageInfo` map from the view. Step index is
@@ -128,15 +134,16 @@ export function Chat({ handle, clientId }: ChatProps) {
   }, [activeRuns, view]);
 
   // The message id of the most recent assistant bubble whose run has
-  // reached a terminal status — this is the candidate for the Retry
-  // button. Only the latest one shows it so the UI doesn't sprout a
-  // button on every prior message.
+  // reached a retryable terminal status (failed or aborted) — this is
+  // the candidate for the Retry button. Completed runs are excluded
+  // because there is nothing to redo. Only the latest one shows the
+  // button so the UI doesn't sprout one on every prior message.
   const retryableMessageId = useMemo<string | undefined>(() => {
     let id: string | undefined;
     for (const node of view.messages) {
       if (node.role !== 'assistant') continue;
       const status = info.get(node.id)?.runStatus;
-      if (status !== undefined && TERMINAL.has(status)) {
+      if (status !== undefined && RETRYABLE.has(status)) {
         id = node.id;
       }
     }

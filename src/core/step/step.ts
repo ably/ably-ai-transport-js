@@ -11,12 +11,15 @@ import type { ControlSignal, Tree } from '../tree/index.js';
 /**
  * Terminal status accepted by step-end wire messages.
  *
- * Phase 10 subset of the RFC's `StepEndStatus` — `'aborted'`, `'paused'`,
- * and `'superseded'` join the union additively in later phases (`'aborted'`
- * alongside `step.signal` in phase 11; `'superseded'` alongside the
- * supersession race in phase 12).
+ * The classifier in {@link Step.end} picks among these from the step's
+ * local signal state and the caught error: `'aborted'` when
+ * {@link Step.signal} fired during the step's lifetime, otherwise
+ * `'complete'` (no error) or `'failed'` (any other error). `'paused'`
+ * and `'superseded'` join the union additively in later phases —
+ * `'paused'` alongside durable pause control signals, `'superseded'`
+ * alongside supersession race detection.
  */
-export type StepEndStatus = 'complete' | 'failed';
+export type StepEndStatus = 'complete' | 'failed' | 'aborted';
 
 /**
  * Lifecycle status of a step recorded on the tree.
@@ -129,8 +132,9 @@ export interface Step<C extends AnyCodec> {
    * until {@link Step.start} resolves, at which point the tree has
    * recorded the matching {@link StepRecord} and the handle reports
    * `'active'`. After {@link Step.end} resolves the handle reports the
-   * terminal status (`'complete'` on the happy path; `'failed'` when
-   * `end(error)` was called).
+   * terminal status the classifier picked (`'complete'` on the happy
+   * path, `'aborted'` when `end(error)` was called with a signal-driven
+   * error, `'failed'` for any other error).
    */
   readonly status: StepStatus;
 
@@ -148,12 +152,10 @@ export interface Step<C extends AnyCodec> {
    *
    * Wire into your model call as `abortSignal: step.signal` for the
    * common case ("any cancellation interrupts the stream"). The
-   * terminal-status classifier in {@link AgentRun.end} reads
-   * `signal.reason` to pick `'aborted'` vs `'failed'`.
-   *
-   * Phase 11 only wires caller-supplied signal + start-timeout sources;
-   * later phases extend the same signal with channel-level
-   * `x-ably-abort`/`x-ably-pause` control signals.
+   * terminal-status classifiers in {@link Step.end} and
+   * {@link AgentRun.end} both inspect the caught error — when
+   * `step.signal` fires, the model SDK throws a web-standard
+   * `AbortError` and both classifiers pick `'aborted'` over `'failed'`.
    *
    * The signal object is stable for the lifetime of the step — it is
    * created at construction and exposed via this getter. The `ABORTED`
@@ -212,10 +214,22 @@ export interface Step<C extends AnyCodec> {
   pipe(readable: ReadableStream<CodecPart<C>>): Promise<void>;
 
   /**
-   * Finalise the step. Phase 10 subset of the RFC's classifier — no error
-   * → publishes `x-ably-step-end` with status `'complete'`; an error →
-   * publishes status `'failed'`. The full classifier (with `'aborted'`
-   * and `'paused'` rows reading `step.signal.reason`) lands in phase 11.
+   * Finalise the step. Classifies the wire status for `x-ably-step-end`
+   * from the step's local signal state and the supplied error:
+   *
+   *   - {@link Step.signal} aborted (caller signal, start-timeout, or
+   *     `x-ably-abort` observed during the step's lifetime) →
+   *     `'aborted'`, regardless of whether the model SDK threw, the
+   *     caller passed an error, or the pipe closed cleanly via the
+   *     SDK's clean-abort path.
+   *   - Error not supplied and signal not aborted (happy path /
+   *     disposer) → `'complete'`.
+   *   - Error supplied otherwise → `'failed'`.
+   *
+   * Reads only step-local state — the channel's observed control
+   * signals are not consulted directly here; `x-ably-abort` is covered
+   * because the control-signal handler folds that observation into the
+   * same composed signal.
    *
    * Flushes the codec encoder before publishing — any in-flight streaming
    * state opened by {@link Step.pipe} is closed (status:`'aborted'` on
@@ -239,10 +253,10 @@ export interface Step<C extends AnyCodec> {
    * await using step = run.createStep();
    * ```
    *
-   * Phase 10 always classifies a non-explicit dispose as `'complete'` —
-   * the RFC's pessimistic-safety branches that publish `'aborted'` or
-   * `'failed'` based on `step.signal.aborted` land in phase 11.
-   * Idempotent.
+   * Always classifies a non-explicit dispose as `'complete'` — the
+   * disposer has no error to pass to the classifier. Pair with an
+   * explicit `await step.end(error)` in a catch block when failure or
+   * abort classification matters. Idempotent.
    */
   [Symbol.asyncDispose](): Promise<void>;
 }
@@ -475,7 +489,7 @@ export class DefaultStep<C extends AnyCodec> implements Step<C> {
       this._controlSignalHandler = undefined;
     }
 
-    const status: StepEndStatus = error === undefined ? 'complete' : 'failed';
+    const status = this._classifyEndStatus(error);
     this._localStatus = status;
 
     // Flush any open encoder streams first so receivers see a clean stream
@@ -528,5 +542,36 @@ export class DefaultStep<C extends AnyCodec> implements Step<C> {
   private _getEncoder(): Encoder<CodecPart<C>, CodecMessage<C>, CodecEvent<C>> {
     this._encoder ??= this._writer.buildEncoder();
     return this._encoder;
+  }
+
+  /**
+   * Pick the wire status for `x-ably-step-end` from the input error and
+   * the step's local signal state.
+   *
+   *   - {@link Step.signal} aborted (caller signal, start-timeout, or
+   *     observed `x-ably-abort`) → `'aborted'`. The step's bound
+   *     signal is the authoritative answer to "was this step
+   *     cancelled?", regardless of whether the model SDK threw, the
+   *     caller passed an error, or the pipe closed cleanly via the
+   *     SDK's clean-abort path.
+   *   - Error not supplied and signal not aborted (happy path /
+   *     disposer) → `'complete'`.
+   *   - Error supplied otherwise → `'failed'`.
+   *
+   * Reads only step-local state (`this._abortController.signal.aborted`)
+   * — the channel's observed control signals are not consulted; the
+   * signal-aborted check covers `x-ably-abort` because the control-
+   * signal handler folds that observation into the same controller.
+   * @param error The error supplied to {@link end}, or `undefined`.
+   * @returns The wire status to publish on the step-end.
+   */
+  private _classifyEndStatus(error: unknown): StepEndStatus {
+    if (this._abortController.signal.aborted) {
+      return 'aborted';
+    }
+    if (error === undefined) {
+      return 'complete';
+    }
+    return 'failed';
   }
 }

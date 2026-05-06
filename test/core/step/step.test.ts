@@ -629,6 +629,60 @@ describe('Step.end', () => {
     expect(headersOf(wire)[Headers.Status]).toBe('failed');
   });
 
+  it("publishes status='aborted' when step.signal fired during the step (clean end)", async () => {
+    // After the SDK's clean-abort path (the model SDK observed its
+    // bound abortSignal, emitted an abort chunk, and closed the stream)
+    // step.pipe completes without throwing and the agent calls end()
+    // with no error. The classifier still reads step.signal.aborted as
+    // the authoritative answer to "was this step cancelled?" and
+    // publishes 'aborted'.
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    const run = await connectAndCreateRun(session, channel);
+    const step = run.createStep();
+    const ac = new AbortController();
+
+    const startPromise = step.start({ signal: ac.signal });
+    await Promise.resolve();
+    simulateStepStart(channel, 'r-1', step.id);
+    await startPromise;
+
+    ac.abort();
+    await step.end();
+
+    const lastBatch = channel.publishedBatches.at(-1) ?? [];
+    const [wire] = lastBatch;
+    if (!wire) throw new Error('expected step-end wire');
+    expect(wire.name).toBe(WireMessages.StepEnd);
+    expect(headersOf(wire)[Headers.Status]).toBe('aborted');
+  });
+
+  it("publishes status='aborted' when step.signal fired during the step, regardless of the error type", async () => {
+    // Some abort sources surface as non-AbortError throws (e.g. the
+    // model SDK rejects with the signal's reason directly, or wraps it
+    // in a non-AbortError class). The signal-based classifier catches
+    // these too — once step.signal fires, the step is aborted no
+    // matter what the model's catch boundary surfaces.
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    const run = await connectAndCreateRun(session, channel);
+    const step = run.createStep();
+    const ac = new AbortController();
+
+    const startPromise = step.start({ signal: ac.signal });
+    await Promise.resolve();
+    simulateStepStart(channel, 'r-1', step.id);
+    await startPromise;
+
+    ac.abort();
+    await step.end(new Error('non-abort-shaped error'));
+
+    const lastBatch = channel.publishedBatches.at(-1) ?? [];
+    const [wire] = lastBatch;
+    if (!wire) throw new Error('expected step-end wire');
+    expect(headersOf(wire)[Headers.Status]).toBe('aborted');
+  });
+
   it('is idempotent — a second call publishes nothing', async () => {
     const { options, channel } = makeAgentSession();
     const session = createAgentSession(options);

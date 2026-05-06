@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { SessionOptions, SessionWriter } from '../../../src/core/session/index.js';
 import { createAgentSession, createClientSession } from '../../../src/core/session/index.js';
+import type { StepEndStatus } from '../../../src/core/step/index.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { Headers, WireMessages } from '../../../src/headers.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
@@ -295,9 +296,9 @@ const reachStartStep = (
  */
 const reachEndStep = (
   session: ReturnType<typeof createClientSession<StubCodec>>,
-): ((options: { runId: string; stepId: string; status: 'complete' | 'failed' }) => Promise<void>) => {
+): ((options: { runId: string; stepId: string; status: StepEndStatus }) => Promise<void>) => {
   const internals = session as unknown as {
-    writer: { endStep: (options: { runId: string; stepId: string; status: 'complete' | 'failed' }) => Promise<void> };
+    writer: { endStep: (options: { runId: string; stepId: string; status: StepEndStatus }) => Promise<void> };
   };
   return internals.writer.endStep.bind(internals.writer);
 };

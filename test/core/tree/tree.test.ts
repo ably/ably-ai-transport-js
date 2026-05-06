@@ -674,6 +674,31 @@ describe('Tree', () => {
     });
   });
 
+  describe('getStep', () => {
+    it('returns the recorded step by id', () => {
+      const tree = makeTree();
+      tree.applyRunStart(makeRun({ id: 'r-1' }));
+      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
+
+      expect(tree.getStep('s-1')?.id).toBe('s-1');
+    });
+
+    it('returns undefined for an unknown id', () => {
+      const tree = makeTree();
+
+      expect(tree.getStep('never-started')).toBeUndefined();
+    });
+
+    it('reflects the latest lifecycle status', () => {
+      const tree = makeTree();
+      tree.applyRunStart(makeRun({ id: 'r-1' }));
+      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: 's-1', canonical: true });
+      tree.applyStepEnd({ stepId: 's-1', status: 'complete' });
+
+      expect(tree.getStep('s-1')?.status).toBe('complete');
+    });
+  });
+
   describe('applyStepStart re-activation', () => {
     it("re-activates a 'failed' run when a fresh step-start lands", () => {
       const tree = makeTree();

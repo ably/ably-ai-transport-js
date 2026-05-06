@@ -76,6 +76,23 @@ export interface MessageNode<TMessage, TRun extends Run<TMessage> = Run<TMessage
    */
   readonly run?: TRun;
 
+  /**
+   * The step this message was published into, mirroring the
+   * {@link StepRecord} on the tree. Filled in by the projecting view;
+   * tree-level nodes leave it undefined.
+   *
+   * Lets UI code drive per-message rendering decisions directly from the
+   * rendered node — `node.step?.status` rather than a separate lookup
+   * through {@link View.steps}. Undefined when:
+   *
+   *   - The message has no `stepId` (user messages and other client
+   *     publishes outside any step).
+   *   - The message arrived before its owning step's `x-ably-step-start`
+   *     was observed (rare; can happen mid-hydration when out-of-order
+   *     delivery brings a message ahead of the step-start for its step).
+   */
+  readonly step?: StepRecord;
+
   /** The domain message in the codec's representation. */
   readonly message: TMessage;
 
@@ -182,6 +199,16 @@ export interface Tree<TMessage> {
    * @returns The run record, or `undefined` when unknown.
    */
   getRun(id: string): Run<TMessage> | undefined;
+
+  /**
+   * Look up a step record by id. Returns `undefined` when the tree has not
+   * observed an `x-ably-step-start` for that id. Lets the projecting view
+   * resolve the {@link MessageNode.step} reference without scanning
+   * {@link steps} on every node it materialises.
+   * @param id The step id to look up.
+   * @returns The step record, or `undefined` when unknown.
+   */
+  getStep(id: string): StepRecord | undefined;
 
   /**
    * Register a coarse change listener. The handler fires after every
@@ -367,6 +394,10 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
 
   getRun(id: string): Run<TMessage> | undefined {
     return this._runs.find((run) => run.id === id);
+  }
+
+  getStep(id: string): StepRecord | undefined {
+    return this._steps.find((step) => step.id === id);
   }
 
   applyMessage(node: MessageNode<TMessage>): void {

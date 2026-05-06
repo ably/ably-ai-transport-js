@@ -13,7 +13,7 @@ AI Transport uses `Ably.ErrorInfo` as its error type. Each error has a numeric `
 | 104002 | `CancelListenerError`      | 500    | Cancel listener or `onCancel` hook threw while processing a cancel message                                   | Non-fatal; check the `onCancel` hook implementation                                 |
 | 104003 | `RunLifecycleError`        | 500    | A run lifecycle event (run-start or run-end) failed to publish                                               | Non-fatal; the run may not be visible to other clients. Check channel permissions   |
 | 104004 | `SessionClosed`            | 400    | An operation was attempted on a closed session                                                               | Create a new session instance                                                       |
-| 104005 | `SessionSendFailed`        | 500    | The HTTP POST to the server endpoint failed (network error or non-2xx response)                              | Check server availability and endpoint URL                                          |
+| 104005 | `SessionSendFailed`        | 500    | The HTTP POST to the agent endpoint failed (network error or non-2xx response)                               | Check agent availability and endpoint URL                                           |
 | 104006 | `ChannelContinuityLost`    | 500    | The Ably channel lost message continuity (FAILED, SUSPENDED, DETACHED, or re-attached with `resumed: false`) | Active streams are errored. Check network connectivity and channel state            |
 
 | 104007 | `ChannelNotReady` | 400 | An operation was attempted but the channel is not ATTACHED or ATTACHING | Check the channel state and why it entered that state |
@@ -29,7 +29,7 @@ import { ErrorCode, errorInfoIs } from '@ably/ai-transport';
 
 session.on('error', (error) => {
   if (errorInfoIs(error, ErrorCode.SessionSendFailed)) {
-    // The HTTP POST to the server failed
+    // The HTTP POST to the agent failed
   }
   if (errorInfoIs(error, ErrorCode.SessionClosed)) {
     // Session was used after close()
@@ -48,7 +48,7 @@ Errors reach you through different channels depending on context:
 | Channel continuity loss on the client (FAILED, SUSPENDED, DETACHED, resumed: false) | Emitted via `session.on('error')` and all active run streams are errored          |
 | Channel continuity loss on the server (FAILED, SUSPENDED, DETACHED, resumed: false) | `onError` callback on `AgentSessionOptions` (in-flight runs are not auto-aborted) |
 | Channel subscription error                                                          | Emitted via `session.on('error')`                                                 |
-| Server-side run error                                                               | `onError` callback on `NewRunOptions`                                             |
+| Server-side run error                                                               | `onError` callback on `RunRuntime`                                                |
 | Session-level error (not scoped to a run)                                           | `onError` callback on `AgentSessionOptions`                                       |
 
 ## Error message format

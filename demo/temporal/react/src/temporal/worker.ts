@@ -2,11 +2,12 @@
  * Temporal worker entry point. Run with `npm run worker` alongside
  * `npm run dev`.
  *
- * Pre-warms the {@link AgentSession} for the configured session name
- * before the worker starts polling, so the channel is attached and
- * subscribed before any client publishes onto it. Without this, the
- * first user message can race the worker's first activity execution
- * and land before the agent subscribes.
+ * The worker registers the demo's activities — `openRun`, `streamStep`,
+ * `endRun` — and polls the configured task queue. The {@link AgentSession}
+ * for the session name is pre-warmed before the worker starts polling, so
+ * the channel is attached and subscribed before any client publishes onto
+ * it. Without this, the first user message can race the worker's first
+ * activity execution and land before the agent subscribes.
  */
 
 import { NativeConnection, Worker } from '@temporalio/worker';

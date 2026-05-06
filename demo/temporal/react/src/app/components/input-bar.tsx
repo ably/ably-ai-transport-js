@@ -3,7 +3,13 @@
 import { useCallback, useState } from 'react';
 
 interface InputBarProps {
-  onSubmit: (text: string) => void;
+  /**
+   * Submit a user message. The second argument is the current state of
+   * the simulate-failure toggle — when true, the agent endpoint throws
+   * mid-stream so the run lands as `'failed'` and the Retry button
+   * becomes available on the resulting assistant bubble.
+   */
+  onSubmit: (text: string, simulateFail: boolean) => void;
   /** Invoked when the user clicks Stop while a run is in flight. */
   onStop?: () => void;
   disabled: boolean;
@@ -11,13 +17,14 @@ interface InputBarProps {
 
 export function InputBar({ onSubmit, onStop, disabled }: InputBarProps) {
   const [input, setInput] = useState('');
+  const [simulateFail, setSimulateFail] = useState(false);
 
   const submit = useCallback(() => {
     const text = input.trim();
     if (text.length === 0 || disabled) return;
-    onSubmit(text);
+    onSubmit(text, simulateFail);
     setInput('');
-  }, [input, disabled, onSubmit]);
+  }, [input, disabled, simulateFail, onSubmit]);
 
   const showStop = disabled && onStop !== undefined;
 
@@ -57,6 +64,16 @@ export function InputBar({ onSubmit, onStop, disabled }: InputBarProps) {
           </button>
         )}
       </div>
+      <label className="mt-2 flex items-center gap-2 text-xs text-zinc-500">
+        <input
+          type="checkbox"
+          checked={simulateFail}
+          onChange={(e) => setSimulateFail(e.target.checked)}
+          disabled={disabled}
+          className="h-3.5 w-3.5 cursor-pointer accent-rose-700 disabled:cursor-not-allowed"
+        />
+        <span>Simulate agent failure (next message)</span>
+      </label>
     </div>
   );
 }

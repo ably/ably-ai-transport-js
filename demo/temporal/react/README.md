@@ -1,59 +1,91 @@
 # Ably AI Transport — Temporal + React basic chat demo
 
-A minimal chat UI that streams an Anthropic response over Ably using the AI
-Transport SDK, with the agent invocation orchestrated by a [Temporal][1]
-workflow.
-
-This is a port of `demo/vercel/react`. The browser, Ably channel, and codec
-behaviour are identical — the only difference is that the `/api/agent` HTTP
-handler hands the invocation off to a Temporal workflow instead of running
-the streaming exchange inline.
+A chat UI that publishes assistant responses over Ably using the AI
+Transport SDK, with the agent loop driven by a [Temporal][1] workflow.
+The workflow uses the Vercel AI SDK's `streamText` from inside an
+activity — every iteration of the model loop becomes one Temporal
+activity and one AIT step on the Ably channel.
 
 [1]: https://docs.temporal.io/
 
 ## Architecture
 
 ```
-                                         ┌────────────────────────────┐
-                                         │  Temporal worker process   │
-                                         │  (`npm run worker`)        │
-                                         │                            │
-   browser ──── /api/agent ──► Next.js   │   chatTurn workflow        │
-      │           (queue)     server ────┼──►  └─ runAgentTurn        │
-      │                                  │        activity            │
-      │                                  │        ├─ AgentSession     │
-      │                                  │        ├─ streamText       │
-      │                                  │        └─ step.pipe        │
-      │                                  └────────────┬───────────────┘
-      │                                               │
-      └─────────── Ably channel  ◄────────────────────┘
-                  (UIMessageCodec)
+                                         ┌─────────────────────────────────────┐
+                                         │  Temporal worker process            │
+                                         │  (`npm run worker`)                 │
+                                         │                                     │
+                                         │   runAgent workflow                 │
+                                         │     ├─ openRun (activity)           │
+   browser ──── /api/agent ──► Next.js   │     ├─ for each iteration:          │
+      │           (queue)     server ────┤     │    └─ streamStep (activity)   │
+      │                                  │     │         streamText + step.pipe│
+      │                                  │     └─ endRun (activity)            │
+      │                                  └─────────────────┬───────────────────┘
+      │                                                    │
+      └──────────────  Ably channel  ◄─────────────────────┘
+                       (UIMessageCodec)
 ```
 
-- The **Next.js process** serves the React UI, an Ably JWT endpoint, and the
-  `/api/agent` route. The route validates the `Invocation`, starts a Temporal
-  workflow, and returns `202 Accepted`. It does **not** open an Ably session.
-- The **Temporal worker process** hosts the `chatTurn` workflow and the
-  `runAgentTurn` activity. It owns the long-lived `AgentSession` that the
-  agent uses to publish onto the Ably channel. The worker pre-warms the
-  session at startup so the channel is attached before the first user
-  message can land on it.
-- The streaming response travels over **Ably**, not HTTP — the browser is
-  already subscribed to the session channel and renders chunks as they land.
+- The **Next.js process** serves the React UI, an Ably JWT endpoint, and
+  the `/api/agent` route. The route validates the `Invocation`, starts a
+  `runAgent` workflow, and returns `202 Accepted`. It does **not** open
+  an Ably session.
+- The **Temporal worker process** registers the demo's three activities
+  (`openRun`, `streamStep`, `endRun`). The worker pre-warms the
+  {@link AgentSession} for the default session at startup so the channel
+  is attached before the first user message can land.
+- The **streaming response** travels over Ably, not HTTP — the browser
+  is already subscribed to the session channel and renders chunks as
+  they arrive.
+
+### What the workflow looks like
+
+```ts
+import { proxyActivities } from '@temporalio/workflow';
+
+const { openRun, streamStep, endRun } = proxyActivities<typeof activities>({
+  startToCloseTimeout: '5 minutes',
+});
+
+export async function runAgent(input: RunAgentInput) {
+  await openRun(input);
+
+  try {
+    for (let i = 0; i < MAX_ITERATIONS; i++) {
+      const { finishReason } = await streamStep({
+        runId: input.runId,
+        sessionName: input.sessionName,
+      });
+      if (finishReason !== 'tool-calls') break;
+    }
+    await endRun({ runId: input.runId });
+  } catch (error) {
+    await endRun({ runId: input.runId, errorMessage: String(error) });
+    throw error;
+  }
+}
+```
+
+`streamStep` calls `streamText` from the Vercel AI SDK, pipes the
+resulting `UIMessageChunk` stream through `step.pipe(...)`, and returns
+the iteration's finish reason. Each iteration reads the canonical
+conversation history from the run's view after `step.start()` lands —
+that ordering is what excludes retried or aborted predecessors from the
+model context (Spec: AIT-CN2/CN3). The workflow loop keeps going while
+the model keeps calling tools.
 
 ## Why Temporal?
 
-The AI Transport SDK's `AgentSession` / `createRun` / `createStep` API is
-already a clean async function. Wrapping it in a Temporal workflow gives:
+Wrapping the agent loop in a Temporal workflow gives:
 
-- **Durability** — if the worker crashes mid-stream, Temporal records the
-  workflow input. (Note: the demo doesn't checkpoint streamed chunks; a
-  retried activity starts the model call from scratch. The forking semantics
-  in the AI Transport SDK make a dropped run safe to redo.)
-- **Idempotency** — `workflowId = chat-turn-${runId}-${stepId | uuid}` lets
-  Temporal de-duplicate accidental double-submits.
-- **Operational visibility** — every agent invocation is a row in Temporal's
-  UI with input, output, retries, and stack traces.
+- **Durability** — every iteration is a Temporal activity. If the
+  worker crashes between iterations, the workflow resumes from the
+  last successful step.
+- **Idempotency** — `workflowId = run-agent-${runId}-${stepId | uuid}`
+  lets Temporal de-duplicate accidental double-submits.
+- **Operational visibility** — every iteration shows up in Temporal's
+  UI as a row with input, output, retries, and stack traces.
 
 ## Prerequisites
 
@@ -95,50 +127,52 @@ In separate terminals:
 # 1. Temporal dev server
 temporal server start-dev
 
-# 2. Temporal worker (hosts the chatTurn workflow + runAgentTurn activity)
+# 2. Temporal worker (registers the demo's activities)
 npm run worker
 
 # 3. Next.js dev server
 npm run dev
 ```
 
-Open <http://localhost:3000>, type a message, and watch the response stream
-back. The same conversation is visible in any other tab pointed at the same
-session — open <http://localhost:3000?session=demo-session> in two browsers
-to confirm.
+Open <http://localhost:3000>, type a message, and watch the response
+land. The same conversation is visible in any other tab pointed at the
+same session — open <http://localhost:3000?session=demo-session> in two
+browsers to confirm.
 
 You can inspect each agent invocation in the Temporal Web UI at
-<http://localhost:8233>.
+<http://localhost:8233> — drill into a workflow to see the
+`openRun`, `streamStep`, and `endRun` activities for each run.
 
 ## Files of interest
 
-| File                         | Purpose                                                                    |
-| ---------------------------- | -------------------------------------------------------------------------- |
-| `src/app/api/agent/route.ts` | Validates the invocation and starts the `chatTurn` workflow.               |
-| `src/temporal/workflows.ts`  | Workflow definition. Calls `runAgentTurn` and waits for it to finish.      |
-| `src/temporal/activities.ts` | Activity that drives the run/step/pipe lifecycle through `AgentSession`.   |
-| `src/temporal/worker.ts`     | Worker entry point. Pre-warms the `AgentSession` and registers activities. |
-| `src/lib/agent-session.ts`   | Cached `AgentSession` factory used inside the worker.                      |
-| `src/lib/temporal-client.ts` | Cached Temporal `Client` used by the API route.                            |
+| File                         | Purpose                                                                 |
+| ---------------------------- | ----------------------------------------------------------------------- |
+| `src/temporal/workflows.ts`  | `runAgent` workflow that drives the iteration loop.                     |
+| `src/temporal/activities.ts` | `openRun` / `streamStep` / `endRun` AIT activities.                     |
+| `src/temporal/worker.ts`     | Worker entry point — registers the activities and polls the task queue. |
+| `src/lib/agent-session.ts`   | Cached `AgentSession` factory used inside the worker.                   |
+| `src/lib/bash-session.ts`    | Cached `BashToolkit` factory — the agent's only tool.                   |
+| `src/lib/run-cache.ts`       | Process-local cache of `AgentRun` handles keyed by runId.               |
+| `src/lib/temporal-client.ts` | Cached Temporal `Client` used by the API route.                         |
+| `src/app/api/agent/route.ts` | Validates the invocation and starts the `runAgent` workflow.            |
 
 ## Differences from `demo/vercel/react`
 
-- `instrumentation.ts` is gone — the agent lives in the worker, so Next.js
-  doesn't pre-warm anything.
-- The `/api/agent` handler does not open an `AgentSession`; it submits a
-  workflow and returns 202.
-- A new process (`npm run worker`) hosts the actual agent. The `AgentSession`
-  cache lives in this process.
-- A new dependency on `@temporalio/{client,worker,workflow,activity}`.
-
-The browser code, the Ably JWT route, and the `UIMessageCodec` integration
-are unchanged.
+- The agent loop runs inside a Temporal workflow. Each iteration is a
+  Temporal activity (`streamStep`).
+- The `/api/agent` handler does not open an `AgentSession`; it submits
+  a workflow and returns 202.
+- A new process (`npm run worker`) hosts the workflow + activities.
+- New dependencies on `@temporalio/{client,worker,workflow,activity}`.
+- The browser code, the Ably JWT route, the bash tool, and the
+  `UIMessageCodec` integration are unchanged.
 
 ## Caveats
 
-- The activity does not heartbeat, so workflow cancellation does **not**
-  abort an in-flight stream. Client-initiated cancellation through the
-  AI Transport SDK still works — `step.signal` is wired via the Ably
-  channel, independent of Temporal.
-- The worker holds a single `Ably.Realtime` connection shared across all
-  sessions. Restart the worker if you change `ABLY_API_KEY`.
+- The {@link AgentRun} for a run is cached in the worker process by
+  runId. If the worker restarts mid-run, in-flight activities won't
+  find the cached handle and will throw — the workflow's catch path
+  publishes a failed run-end. The user's retry button replays the run
+  cleanly.
+- The worker holds a single `Ably.Realtime` connection shared across
+  all sessions. Restart the worker if you change `ABLY_API_KEY`.

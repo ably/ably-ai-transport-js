@@ -3,6 +3,7 @@ import type { AnyCodec, CodecMessage } from '../codec/index.js';
 import type { ClientRun, Run } from '../run/index.js';
 import { createClientRun } from '../run/index.js';
 import type { DefaultSessionWriter } from '../session/writer.js';
+import type { StepRecord } from '../step/index.js';
 import type { MessageNode, Tree } from '../tree/index.js';
 
 /**
@@ -33,6 +34,21 @@ export interface View<TMessage, TRun extends Run<TMessage> = Run<TMessage>> {
    * directly from a rendered node.
    */
   readonly messages: readonly MessageNode<TMessage, TRun>[];
+
+  /**
+   * Steps visible in this view, in the order their `x-ably-step-start`
+   * arrived on the channel. Mirrors the underlying tree's step list and
+   * transitions entries in place — a step recorded as `'active'` becomes
+   * `'complete'` (or `'failed'` / `'aborted'` / `'abandoned'`) on the
+   * same record once the corresponding wire (or canonical-step retire)
+   * lands.
+   *
+   * Consumers correlate these against {@link MessageNode.step} (which
+   * points at the same record) when rendering per-message UI; they
+   * iterate this list when reasoning about steps in aggregate (counting,
+   * filtering by canonical, ordering).
+   */
+  readonly steps: readonly StepRecord[];
 
   /**
    * Subscribe to view state changes. The callback fires whenever the visible
@@ -185,6 +201,10 @@ export class DefaultView<TMessage> implements View<TMessage> {
     return this._tree.messages;
   }
 
+  get steps(): readonly StepRecord[] {
+    return this._tree.steps;
+  }
+
   subscribe(callback: () => void): () => void {
     this._logger.trace('DefaultView.subscribe();');
     if (this._closed) {
@@ -234,7 +254,8 @@ export class DefaultView<TMessage> implements View<TMessage> {
  *   - `runs` — projects the underlying tree's runs through a per-id
  *     `ClientRun` cache so the consumer sees stable handles.
  *   - `messages` (override) — projects the underlying tree's nodes,
- *     attaching the typed `ClientRun<C>` handle to each `node.run`.
+ *     attaching the typed `ClientRun<C>` handle to each `node.run` and
+ *     resolving the matching {@link StepRecord} into each `node.step`.
  *
  * The cache is keyed by run id and lives until {@link close}. Subscribe /
  * close machinery (and the {@link send} writer plumbing) flows through
@@ -288,6 +309,7 @@ export class DefaultClientView<C extends AnyCodec> extends DefaultView<CodecMess
     this._messagesProjection ??= this._tree.messages.map((node) => ({
       ...node,
       run: this._handleFor(node.runId),
+      step: node.stepId === undefined ? undefined : this._tree.getStep(node.stepId),
     }));
     return this._messagesProjection;
   }

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { SessionOptions } from '../../../src/core/session/index.js';
 import { createClientSession } from '../../../src/core/session/index.js';
+import type { TreeInternal } from '../../../src/core/tree/index.js';
 import { DefaultTree } from '../../../src/core/tree/index.js';
 import { DefaultView } from '../../../src/core/view/index.js';
 import { ErrorCode } from '../../../src/errors.js';
@@ -10,6 +11,21 @@ import { Headers, WireMessages } from '../../../src/headers.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 import { createMockChannel, createMockRealtime } from '../../helper/mock-realtime.js';
 import { type StubCodec, stubCodec } from '../../helper/stub-codec.js';
+
+/**
+ * Reach into a session's internal tree so projection-level tests can poke
+ * tree state directly. Mirrors the `treeOf` helper used in session tests —
+ * the public tree accessor is deferred to a later phase, so until then
+ * tests reach in via a structural cast.
+ * @param session A session created via `createClientSession`.
+ * @returns The session's internal tree, typed for direct write access.
+ */
+const treeOf = (session: object): TreeInternal<string> => {
+  // CAST: tests reach into a private member to drive projection-level
+  // assertions; the accessor will become public later.
+  const internals = session as { _tree: TreeInternal<string> };
+  return internals._tree;
+};
 
 const makeLog = () => makeLogger({ logLevel: LogLevel.Silent });
 
@@ -34,6 +50,30 @@ describe('View', () => {
       tree.applyMessage(makeNode('b', '02'));
 
       expect(view.messages.map((n) => n.id)).toEqual(['a', 'b']);
+    });
+  });
+
+  describe('steps', () => {
+    it('mirrors the tree steps live', () => {
+      const tree = new DefaultTree<string>({ logger: makeLog() });
+      const view = new DefaultView<string>({ tree, logger: makeLog() });
+
+      tree.applyRunStart({ id: 'r-1', status: 'active', initiatorClientId: 'client-1', controlSignals: [] });
+      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: '01', canonical: true });
+      tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active', serial: '02', canonical: true });
+
+      expect(view.steps.map((s) => s.id)).toEqual(['s-1', 's-2']);
+    });
+
+    it('reflects the latest step status', () => {
+      const tree = new DefaultTree<string>({ logger: makeLog() });
+      const view = new DefaultView<string>({ tree, logger: makeLog() });
+
+      tree.applyRunStart({ id: 'r-1', status: 'active', initiatorClientId: 'client-1', controlSignals: [] });
+      tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: '01', canonical: true });
+      tree.applyStepEnd({ stepId: 's-1', status: 'complete' });
+
+      expect(view.steps[0]?.status).toBe('complete');
     });
   });
 
@@ -537,5 +577,109 @@ describe('ClientView.messages with typed run handle', () => {
     channel.simulateMessage({ ...message, serial: '03', clientId: 'alice' } as unknown as Ably.InboundMessage);
 
     expect(view.messages[0]?.run).toBe(run);
+  });
+});
+
+describe('ClientView.messages with step record', () => {
+  it('attaches node.step to a node whose stepId is recorded on the tree', async () => {
+    const { options } = makeClientSession();
+    const session = createClientSession(options);
+    await session.connect();
+    const view = session.createView();
+    const tree = treeOf(session);
+
+    tree.applyRunStart({ id: 'r-1', status: 'active', initiatorClientId: 'agent-1', controlSignals: [] });
+    tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: '01', canonical: true });
+    tree.applyMessage({
+      id: 'm-1',
+      role: 'assistant',
+      clientId: 'agent-1',
+      runId: 'r-1',
+      stepId: 's-1',
+      message: 'hello',
+      streaming: false,
+      serial: '02',
+      canonical: true,
+    });
+
+    const [node] = view.messages;
+    expect(node?.step?.id).toBe('s-1');
+    expect(node?.step?.status).toBe('active');
+  });
+
+  it('leaves node.step undefined when the message has no stepId', async () => {
+    const { options, channel } = makeClientSession();
+    const session = createClientSession(options);
+    await session.connect();
+    const view = session.createView();
+
+    await view.send('hello');
+
+    const [runStartBatch, messageBatch] = channel.publishedBatches;
+    const runStart = runStartBatch?.[0];
+    const message = messageBatch?.[0];
+    if (!runStart || !message) throw new Error('expected run-start and message wires');
+    channel.simulateMessage({ ...runStart, serial: '01', clientId: 'alice' } as unknown as Ably.InboundMessage);
+    channel.simulateMessage({ ...message, serial: '02', clientId: 'alice' } as unknown as Ably.InboundMessage);
+
+    expect(view.messages[0]?.stepId).toBeUndefined();
+    expect(view.messages[0]?.step).toBeUndefined();
+  });
+
+  it('leaves node.step undefined when the step-start has not been observed yet', async () => {
+    const { options } = makeClientSession();
+    const session = createClientSession(options);
+    await session.connect();
+    const view = session.createView();
+    const tree = treeOf(session);
+
+    // Out-of-order delivery: the message arrives before the step-start.
+    // The projection resolves to undefined, mirroring how `node.run`
+    // stays undefined while waiting on its run-start.
+    tree.applyRunStart({ id: 'r-1', status: 'active', initiatorClientId: 'agent-1', controlSignals: [] });
+    tree.applyMessage({
+      id: 'm-1',
+      role: 'assistant',
+      clientId: 'agent-1',
+      runId: 'r-1',
+      stepId: 's-1',
+      message: 'hello',
+      streaming: false,
+      serial: '02',
+      canonical: true,
+    });
+
+    expect(view.messages[0]?.stepId).toBe('s-1');
+    expect(view.messages[0]?.step).toBeUndefined();
+  });
+
+  it('reflects the latest step status on subsequent reads after step-end', async () => {
+    const { options } = makeClientSession();
+    const session = createClientSession(options);
+    await session.connect();
+    const view = session.createView();
+    const tree = treeOf(session);
+
+    tree.applyRunStart({ id: 'r-1', status: 'active', initiatorClientId: 'agent-1', controlSignals: [] });
+    tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: '01', canonical: true });
+    tree.applyMessage({
+      id: 'm-1',
+      role: 'assistant',
+      clientId: 'agent-1',
+      runId: 'r-1',
+      stepId: 's-1',
+      message: 'hello',
+      streaming: false,
+      serial: '02',
+      canonical: true,
+    });
+
+    expect(view.messages[0]?.step?.status).toBe('active');
+
+    tree.applyStepEnd({ stepId: 's-1', status: 'complete' });
+
+    // Projection is invalidated by tree change, so the next read returns
+    // a fresh array whose node carries the updated step record.
+    expect(view.messages[0]?.step?.status).toBe('complete');
   });
 });

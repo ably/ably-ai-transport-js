@@ -3,7 +3,7 @@ import * as Ably from 'ably';
 import { ErrorCode } from '../../errors.js';
 import { Headers } from '../../headers.js';
 import type { Logger } from '../../logger.js';
-import { ABORTED } from '../../signal-reason.js';
+import { abortReason } from '../../signal-reason.js';
 import type { AnyCodec, CodecEvent, CodecMessage, CodecPart, Encoder } from '../codec/index.js';
 import type { DefaultSessionWriter } from '../session/writer.js';
 import type { ControlSignal, Tree } from '../tree/index.js';
@@ -323,7 +323,7 @@ export class DefaultStep<C extends AnyCodec> implements Step<C> {
     // composed signal aborted and reject without touching the channel — the
     // RFC contract is that a rejected start() leaves the wire untouched.
     if (options?.signal?.aborted === true) {
-      this._abortController.abort(ABORTED);
+      this._abortController.abort(abortReason());
       throw this._stepStartAbortedError('caller signal already aborted');
     }
 
@@ -334,7 +334,7 @@ export class DefaultStep<C extends AnyCodec> implements Step<C> {
     // lifetime.
     const onCallerAbort = (): void => {
       if (!this._abortController.signal.aborted) {
-        this._abortController.abort(ABORTED);
+        this._abortController.abort(abortReason());
       }
     };
     options?.signal?.addEventListener('abort', onCallerAbort);
@@ -343,7 +343,7 @@ export class DefaultStep<C extends AnyCodec> implements Step<C> {
     if (options?.timeoutMs !== undefined) {
       timeoutHandle = setTimeout(() => {
         if (!this._abortController.signal.aborted) {
-          this._abortController.abort(ABORTED);
+          this._abortController.abort(abortReason());
         }
       }, options.timeoutMs);
     }
@@ -420,7 +420,7 @@ export class DefaultStep<C extends AnyCodec> implements Step<C> {
         this._logger.debug('DefaultStep(); firing step.signal from observed abort signal', {
           messageId: signal.messageId,
         });
-        this._abortController.abort(ABORTED);
+        this._abortController.abort(abortReason());
       }
     };
     this._tree.on('control-signal', this._controlSignalHandler);

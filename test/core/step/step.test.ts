@@ -190,7 +190,9 @@ describe('Step.start', () => {
 
     expect(channel.publish).not.toHaveBeenCalled();
     expect(step.signal.aborted).toBe(true);
-    expect(step.signal.reason).toBe(ABORTED);
+    expect(step.signal.reason).toBeInstanceOf(DOMException);
+    expect((step.signal.reason as DOMException).name).toBe('AbortError');
+    expect((step.signal.reason as DOMException).message).toBe(ABORTED);
   });
 
   it('rejects with StepStartAborted when the caller signal fires before the tree observes the publish', async () => {
@@ -209,7 +211,9 @@ describe('Step.start', () => {
 
     await expect(startPromise).rejects.toBeErrorInfoWithCode(ErrorCode.StepStartAborted);
     expect(step.signal.aborted).toBe(true);
-    expect(step.signal.reason).toBe(ABORTED);
+    expect(step.signal.reason).toBeInstanceOf(DOMException);
+    expect((step.signal.reason as DOMException).name).toBe('AbortError');
+    expect((step.signal.reason as DOMException).message).toBe(ABORTED);
   });
 
   it('rejects with StepStartAborted when timeoutMs elapses before the tree observes the publish', async () => {
@@ -224,7 +228,9 @@ describe('Step.start', () => {
     // start() promise rejects.
     await expect(step.start({ timeoutMs: 5 })).rejects.toBeErrorInfoWithCode(ErrorCode.StepStartAborted);
     expect(step.signal.aborted).toBe(true);
-    expect(step.signal.reason).toBe(ABORTED);
+    expect(step.signal.reason).toBeInstanceOf(DOMException);
+    expect((step.signal.reason as DOMException).name).toBe('AbortError');
+    expect((step.signal.reason as DOMException).message).toBe(ABORTED);
   });
 
   it('clears the timeout when the step-start lands before timeoutMs elapses', async () => {
@@ -260,7 +266,9 @@ describe('Step.start', () => {
     ac.abort();
 
     expect(step.signal.aborted).toBe(true);
-    expect(step.signal.reason).toBe(ABORTED);
+    expect(step.signal.reason).toBeInstanceOf(DOMException);
+    expect((step.signal.reason as DOMException).name).toBe('AbortError');
+    expect((step.signal.reason as DOMException).message).toBe(ABORTED);
   });
 
   it('start() resolves even when an abort signal landed before start (symmetric model — signals never terminate)', async () => {
@@ -318,7 +326,9 @@ describe('Step.start', () => {
     } as unknown as Ably.InboundMessage);
 
     expect(step.signal.aborted).toBe(true);
-    expect(step.signal.reason).toBe(ABORTED);
+    expect(step.signal.reason).toBeInstanceOf(DOMException);
+    expect((step.signal.reason as DOMException).name).toBe('AbortError');
+    expect((step.signal.reason as DOMException).message).toBe(ABORTED);
   });
 
   it('does not fire step.signal for an abort targeting a different run', async () => {
@@ -446,7 +456,9 @@ describe('Step.start', () => {
     } as unknown as Ably.InboundMessage);
 
     expect(step.signal.aborted).toBe(true);
-    expect(step.signal.reason).toBe(ABORTED);
+    expect(step.signal.reason).toBeInstanceOf(DOMException);
+    expect((step.signal.reason as DOMException).name).toBe('AbortError');
+    expect((step.signal.reason as DOMException).message).toBe(ABORTED);
   });
 });
 

@@ -3,19 +3,20 @@
 import type * as AI from 'ai';
 import { getToolName, isToolUIPart } from 'ai';
 
-import type { RunStatus } from '@ably/ai-transport';
+import type { StepStatus } from '@ably/ai-transport';
 
 interface MessageBubbleProps {
   message: AI.UIMessage;
   streaming: boolean;
   /**
-   * Current status of the run this message belongs to. Driven by the
-   * symmetric state machine — only lifecycle wires (run-start /
-   * step-start / run-end) move it. Drives the run status pill on
-   * assistant bubbles. Undefined for the rare transient case where the
-   * run has not yet been observed in the view.
+   * Status of the step that produced this message, read from
+   * `node.step?.status`. Drives the per-bubble status pill so the
+   * header reflects the individual step's lifecycle (active /
+   * complete / failed / aborted / abandoned / pending) rather than the
+   * coarser run-level status. Undefined for user messages and other
+   * client publishes that have no owning step.
    */
-  runStatus?: RunStatus;
+  stepStatus?: StepStatus;
   /**
    * 1-based index of the step within the run that produced this
    * message. Drives the `step N` badge so users can see retry produce
@@ -78,17 +79,19 @@ function ToolCallCard({ part }: { part: AI.ToolUIPart | AI.DynamicToolUIPart }) 
   );
 }
 
-const RUN_STATUS_PILL: Record<RunStatus, { label: string; classes: string }> = {
+const STEP_STATUS_PILL: Record<StepStatus, { label: string; classes: string }> = {
+  pending: { label: 'pending', classes: 'border-zinc-700 text-zinc-400' },
   active: { label: 'active', classes: 'border-amber-700/60 text-amber-300' },
   complete: { label: 'complete', classes: 'border-emerald-800/60 text-emerald-300' },
   failed: { label: 'failed', classes: 'border-rose-800/60 text-rose-300' },
   aborted: { label: 'aborted', classes: 'border-zinc-700 text-zinc-400' },
+  abandoned: { label: 'abandoned', classes: 'border-zinc-700 text-zinc-500' },
 };
 
-export function MessageBubble({ message, streaming, runStatus, stepIndex, canonical, onRetry }: MessageBubbleProps) {
+export function MessageBubble({ message, streaming, stepStatus, stepIndex, canonical, onRetry }: MessageBubbleProps) {
   const isUser = message.role === 'user';
-  const showHeader = !isUser && (runStatus !== undefined || stepIndex !== undefined || !canonical);
-  const pill = !isUser && runStatus !== undefined ? RUN_STATUS_PILL[runStatus] : undefined;
+  const showHeader = !isUser && (stepStatus !== undefined || stepIndex !== undefined || !canonical);
+  const pill = !isUser && stepStatus !== undefined ? STEP_STATUS_PILL[stepStatus] : undefined;
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>

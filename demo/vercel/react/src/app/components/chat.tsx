@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type * as Ably from 'ably';
 import type * as AI from 'ai';
 
-import type { ClientRun, RunStatus } from '@ably/ai-transport';
+import type { ClientRun, RunStatus, StepStatus } from '@ably/ai-transport';
 import type { UIMessageCodec } from '@ably/ai-transport/vercel';
 
 import type { ChatHandle } from '../providers';
@@ -23,17 +23,20 @@ interface ChatProps {
 type Run = ClientRun<typeof UIMessageCodec>;
 
 /**
- * Per-message metadata projected from the view: which run a node belongs to,
- * the current status of that run (driven entirely by observed lifecycle
- * wires under the symmetric model), a stable per-run step index so the UI
- * can label `step 1` / `step 2` etc. across retries, and the canonical
- * flag from the underlying tree node so non-canonical bubbles (failed
- * attempts replaced by a retry, abandoned crash predecessors) render as
+ * Per-message metadata projected from the view: which run a node belongs
+ * to, the run's current status (used for the retry filter — the per-bubble
+ * status pill is now step-level), the per-step status read from
+ * `node.step?.status` for the pill rendered on each assistant bubble, a
+ * stable per-run step index so the UI can label `step 1` / `step 2` etc.
+ * across iterations and retries, and the canonical flag from the
+ * underlying tree node so non-canonical bubbles (failed attempts
+ * replaced by a retry, abandoned crash predecessors) render as
  * historical rather than current. Spec: AIT-CN2.
  */
 interface MessageInfo {
   runId: string;
   runStatus: RunStatus;
+  stepStatus: StepStatus | undefined;
   stepIndex: number | undefined;
   canonical: boolean;
 }
@@ -81,6 +84,7 @@ const projectMessageInfo = (view: ChatHandle['view']): Map<string, MessageInfo> 
     result.set(node.id, {
       runId: node.runId,
       runStatus: statusByRun.get(node.runId) ?? 'active',
+      stepStatus: node.step?.status,
       stepIndex,
       canonical: node.canonical,
     });

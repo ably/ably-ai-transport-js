@@ -3,18 +3,26 @@
 import { useEffect, useRef } from 'react';
 import type * as AI from 'ai';
 
-import type { RunStatus } from '@ably/ai-transport';
+import type { RunStatus, StepStatus } from '@ably/ai-transport';
 
 import { MessageBubble } from './message-bubble';
 
 /**
  * Per-message metadata projected from the view (mirrored from chat.tsx
- * — defined here so the bubble can read its run's status, step index,
+ * — defined here so the bubble can read its step's status, step index,
  * and canonical flag without prop-drilling individual fields).
  */
 export interface MessageInfo {
   runId: string;
   runStatus: RunStatus;
+  /**
+   * Status of the step that produced this message, read from
+   * `node.step?.status`. Drives the per-bubble status pill so each step
+   * carries its own header rather than mirroring the run-level status
+   * across every iteration. Undefined for messages without a stepId
+   * (user messages and other client publishes outside any step).
+   */
+  stepStatus: StepStatus | undefined;
   stepIndex: number | undefined;
   /**
    * Whether this message contributes to the run's current state. `false`
@@ -64,7 +72,7 @@ export function MessageList({ messages, streamingId, info, retryableMessageId, o
             key={message.id}
             message={message}
             streaming={message.id === streamingId}
-            runStatus={meta?.runStatus}
+            stepStatus={meta?.stepStatus}
             stepIndex={meta?.stepIndex}
             canonical={meta?.canonical ?? true}
             onRetry={message.id === retryableMessageId ? () => onRetry(message.id) : undefined}

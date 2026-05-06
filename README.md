@@ -98,8 +98,7 @@ export async function POST(req: Request) {
   const data = (await req.json()) as InvocationData<UIMessageChunk, UIMessage>;
   const invocation = Invocation.fromJSON(data);
 
-  const channel = ably.channels.get(invocation.sessionName);
-  const session = createAgentSession({ channel });
+  const session = createAgentSession({ client: ably, channelName: invocation.sessionName });
   await session.connect();
   const run = session.createRun(invocation, { signal: req.signal });
 
@@ -237,7 +236,8 @@ import { createClientSession } from '@ably/ai-transport';
 import { myCodec } from './my-codec';
 
 const session = createClientSession({
-  channel, // Ably RealtimeChannel
+  client: ably, // Ably.Realtime
+  channelName: 'ai:demo',
   codec: myCodec,
   clientId: 'user-123',
   api: '/api/chat',
@@ -261,7 +261,7 @@ while (true) {
 import { createAgentSession, Invocation } from '@ably/ai-transport';
 import { myCodec } from './my-codec';
 
-const session = createAgentSession({ channel, codec: myCodec });
+const session = createAgentSession({ client: ably, channelName: 'ai:demo', codec: myCodec });
 await session.connect();
 const run = session.createRun(invocation);
 

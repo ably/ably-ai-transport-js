@@ -53,8 +53,16 @@ export interface CancelRequest {
 
 /** Options for creating an agent session. */
 export interface AgentSessionOptions<TEvent, TMessage> {
-  /** The Ably channel to publish to. Must match the client's channel. */
-  channel: Ably.RealtimeChannel;
+  /**
+   * The Ably Realtime client. The session calls `client.channels.get(channelName)`
+   * internally and registers the `ai-transport-js` agent on the client's
+   * `options.agents` map for usage tracking. The caller owns the client's
+   * lifecycle — `session.close()` does not close the client or release the
+   * channel.
+   */
+  client: Ably.Realtime;
+  /** The name of the channel to publish to. Resolved via `client.channels.get(channelName)`. */
+  channelName: string;
   /** The codec to use for encoding events and messages. */
   codec: Codec<TEvent, TMessage>;
   /** Logger instance for diagnostic output. */
@@ -290,8 +298,17 @@ export interface AgentSession<TEvent, TMessage> {
 
 /** Options for creating a client session. */
 export interface ClientSessionOptions<TEvent, TMessage> {
-  /** The Ably channel to receive responses on and publish cancel signals to. */
-  channel: Ably.RealtimeChannel;
+  /**
+   * The Ably Realtime client. The session calls `client.channels.get(channelName)`
+   * internally and registers the `ai-transport-js` agent on the client's
+   * `options.agents` map for usage tracking. The caller owns the client's
+   * lifecycle — `session.close()` does not close the client or release the
+   * channel.
+   */
+  client: Ably.Realtime;
+
+  /** The name of the channel to subscribe to and publish cancel signals on. */
+  channelName: string;
 
   /** The codec to use for encoding/decoding. */
   codec: Codec<TEvent, TMessage>;

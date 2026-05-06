@@ -43,8 +43,7 @@ import { streamText } from 'ai';
 import { Invocation } from '@ably/ai-transport';
 import { createAgentSession } from '@ably/ai-transport/vercel';
 
-const channel = ably.channels.get(channelName);
-const session = createAgentSession({ channel });
+const session = createAgentSession({ client: ably, channelName });
 await session.connect();
 
 const run = session.createRun(Invocation.fromJSON({ runId, clientId }));
@@ -69,7 +68,7 @@ The client session manages conversation state: the message list, conversation tr
 ```typescript
 import { createClientSession } from '@ably/ai-transport/vercel';
 
-const session = createClientSession({ channel, clientId });
+const session = createClientSession({ client: ably, channelName, clientId });
 await session.connect();
 const view = session.view;
 

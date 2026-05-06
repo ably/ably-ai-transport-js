@@ -2,8 +2,9 @@
  * useChatTransport: reads a ChatTransport and its underlying ClientSession from
  * the nearest ChatTransportProvider.
  *
- * The chat transport is created by ChatTransportProvider, which also wraps the subtree
- * with ClientSessionProvider and Ably's ChannelProvider. This hook is a thin context
+ * The chat transport is created by ChatTransportProvider, which wraps the subtree
+ * with ClientSessionProvider. The Ably Realtime client is read from the
+ * surrounding `<AblyProvider>` via `useAbly()`. This hook is a thin context
  * reader — it does not create or manage any session/transport state.
  *
  * Pass `channelName` to look up a specific provider by name. Omit to use the nearest

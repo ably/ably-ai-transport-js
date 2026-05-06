@@ -7,7 +7,7 @@
  * ```ts
  * import { createClientSession } from '@ably/ai-transport/vercel';
  *
- * const session = createClientSession({ channel });
+ * const session = createClientSession({ client, channelName: 'ai:demo' });
  * await session.connect();
  * ```
  */

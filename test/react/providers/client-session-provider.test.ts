@@ -24,10 +24,13 @@ import { createMockSession } from '../helper/mock-session.js';
 // Mocks
 // ---------------------------------------------------------------------------
 
+// Stand-in Realtime client returned by the mocked `useAbly()`. The provider
+// passes it straight through to createClientSession (which is itself mocked),
+// so the shape only needs to satisfy TypeScript.
+const fakeAblyClient = { options: {} } as unknown as Ably.Realtime;
+
 vi.mock('ably/react', () => ({
-  // ChannelProvider is a pass-through wrapper in tests; explicit return type avoids promise-function-async
-  ChannelProvider: ({ children }: { children: ReactNode }): ReactNode => children,
-  useChannel: ({ channelName }: { channelName: string }) => ({ channel: { name: channelName } }),
+  useAbly: () => fakeAblyClient,
 }));
 
 // Typed with explicit parameter signature so mock.calls[0] is [unknown], enabling assertions
@@ -94,12 +97,13 @@ describe('ClientSessionProvider', () => {
     expect(createClientSessionMock).toHaveBeenCalledTimes(1);
   });
 
-  it('passes channelName to createClientSession via useChannel', () => {
+  it('passes channelName and the Ably client to createClientSession', () => {
     renderHook(() => useClientSession({ channelName: 'ai:demo' }), { wrapper: wrapDemo });
 
     // CAST: wire-boundary assertion — vitest types mock args as unknown
-    const callArgs = createClientSessionMock.mock.calls[0]?.[0] as { channel: { name: string } };
-    expect(callArgs.channel.name).toBe('ai:demo');
+    const callArgs = createClientSessionMock.mock.calls[0]?.[0] as { channelName: string; client: Ably.Realtime };
+    expect(callArgs.channelName).toBe('ai:demo');
+    expect(callArgs.client).toBe(fakeAblyClient);
   });
 
   it('registers the session under channelName', () => {

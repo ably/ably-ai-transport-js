@@ -150,17 +150,16 @@ describe('ClientSession integration', () => {
     const serverClient = ablyRealtimeClient();
     const clientClient = ablyRealtimeClient();
 
-    const serverChannel = serverClient.channels.get(channelName);
-    const clientChannel = clientClient.channels.get(channelName);
-
     agentSession = createAgentSession({
-      channel: serverChannel,
+      client: serverClient,
+      channelName,
       codec: UIMessageCodec,
     });
     await agentSession.connect();
 
     clientSession = createClientSession({
-      channel: clientChannel,
+      client: clientClient,
+      channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
       fetch: noopFetch as typeof globalThis.fetch,
@@ -226,17 +225,16 @@ describe('ClientSession integration', () => {
     const serverClient = ablyRealtimeClient();
     const clientClient = ablyRealtimeClient();
 
-    const serverChannel = serverClient.channels.get(channelName);
-    const clientChannel = clientClient.channels.get(channelName);
-
     agentSession = createAgentSession({
-      channel: serverChannel,
+      client: serverClient,
+      channelName,
       codec: UIMessageCodec,
     });
     await agentSession.connect();
 
     clientSession = createClientSession({
-      channel: clientChannel,
+      client: clientClient,
+      channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
       fetch: noopFetch as typeof globalThis.fetch,
@@ -283,17 +281,16 @@ describe('ClientSession integration', () => {
     const serverClient = ablyRealtimeClient();
     const clientClient = ablyRealtimeClient();
 
-    const serverChannel = serverClient.channels.get(channelName);
-    const clientChannel = clientClient.channels.get(channelName);
-
     agentSession = createAgentSession({
-      channel: serverChannel,
+      client: serverClient,
+      channelName,
       codec: UIMessageCodec,
     });
     await agentSession.connect();
 
     clientSession = createClientSession({
-      channel: clientChannel,
+      client: clientClient,
+      channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
       fetch: noopFetch as typeof globalThis.fetch,
@@ -350,17 +347,16 @@ describe('ClientSession integration', () => {
     const serverClient = ablyRealtimeClient();
     const clientClient = ablyRealtimeClient();
 
-    const serverChannel = serverClient.channels.get(channelName);
-    const clientChannel = clientClient.channels.get(channelName);
-
     agentSession = createAgentSession({
-      channel: serverChannel,
+      client: serverClient,
+      channelName,
       codec: UIMessageCodec,
     });
     await agentSession.connect();
 
     clientSession = createClientSession({
-      channel: clientChannel,
+      client: clientClient,
+      channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
       fetch: noopFetch as typeof globalThis.fetch,
@@ -417,17 +413,16 @@ describe('ClientSession integration', () => {
     const serverClient = ablyRealtimeClient();
     const clientClient = ablyRealtimeClient();
 
-    const serverChannel = serverClient.channels.get(channelName);
-    const clientChannel = clientClient.channels.get(channelName);
-
     agentSession = createAgentSession({
-      channel: serverChannel,
+      client: serverClient,
+      channelName,
       codec: UIMessageCodec,
     });
     await agentSession.connect();
 
     clientSession = createClientSession({
-      channel: clientChannel,
+      client: clientClient,
+      channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
       fetch: noopFetch as typeof globalThis.fetch,
@@ -490,11 +485,11 @@ describe('ClientSession integration', () => {
     const serverClient = ablyRealtimeClient();
     const observerClient = ablyRealtimeClient();
 
-    const serverChannel = serverClient.channels.get(channelName);
     const observerChannel = observerClient.channels.get(channelName);
 
     agentSession = createAgentSession({
-      channel: serverChannel,
+      client: serverClient,
+      channelName,
       codec: UIMessageCodec,
     });
     await agentSession.connect();
@@ -528,10 +523,10 @@ describe('ClientSession integration', () => {
 
     // New client connects and loads history
     const historyClient = ablyRealtimeClient();
-    const historyChannel = historyClient.channels.get(channelName);
 
     clientSession = createClientSession({
-      channel: historyChannel,
+      client: historyClient,
+      channelName,
       codec: UIMessageCodec,
       clientId: historyClient.auth.clientId,
       fetch: noopFetch as typeof globalThis.fetch,
@@ -563,17 +558,16 @@ describe('ClientSession integration', () => {
     const serverClient = ablyRealtimeClient();
     const clientClient = ablyRealtimeClient();
 
-    const serverChannel = serverClient.channels.get(channelName);
-    const clientChannel = clientClient.channels.get(channelName);
-
     agentSession = createAgentSession({
-      channel: serverChannel,
+      client: serverClient,
+      channelName,
       codec: UIMessageCodec,
     });
     await agentSession.connect();
 
     clientSession = createClientSession({
-      channel: clientChannel,
+      client: clientClient,
+      channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
       fetch: noopFetch as typeof globalThis.fetch,
@@ -625,17 +619,16 @@ describe('ClientSession integration', () => {
     const serverClient = ablyRealtimeClient();
     const clientClient = ablyRealtimeClient();
 
-    const serverChannel = serverClient.channels.get(channelName);
-    const clientChannel = clientClient.channels.get(channelName);
-
     agentSession = createAgentSession({
-      channel: serverChannel,
+      client: serverClient,
+      channelName,
       codec: UIMessageCodec,
     });
     await agentSession.connect();
 
     clientSession = createClientSession({
-      channel: clientChannel,
+      client: clientClient,
+      channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
       fetch: noopFetch as typeof globalThis.fetch,

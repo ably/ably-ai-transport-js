@@ -111,9 +111,8 @@ const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY! });
 
 export async function POST(req: Request) {
   const { messages, history, chatId, runId, clientId, forkOf, parent } = (await req.json()) as ChatRequestBody;
-  const channel = ably.channels.get(chatId);
 
-  const session = createAgentSession({ channel });
+  const session = createAgentSession({ client: ably, channelName: chatId });
   await session.connect();
   const run = session.createRun(Invocation.fromJSON({ runId, clientId, parent, forkOf }));
 
@@ -149,7 +148,7 @@ The `after()` call is a Next.js API that runs work after the HTTP response is se
 
 ## 4. Create the chat component
 
-Wire up `useChat()` with the AI Transport hooks. `ChatTransportProvider` creates both the `ClientSession` and `ChatTransport` and wraps children with Ably's `ChannelProvider` internally:
+Wire up `useChat()` with the AI Transport hooks. `ChatTransportProvider` creates both the `ClientSession` and `ChatTransport`. The Ably Realtime client is read from the surrounding `<AblyProvider>` via `useAbly()`; the session resolves the channel from `channelName` itself.
 
 ```typescript
 // app/chat.tsx
@@ -205,8 +204,9 @@ function ChatInner({ chatId }: { chatId: string }) {
 
 export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
   return (
-    // ChatTransportProvider creates both ClientSession and ChatTransport,
-    // and wraps children with ChannelProvider. No codec argument needed.
+    // ChatTransportProvider creates both ClientSession and ChatTransport.
+    // The Realtime client is read from the surrounding <AblyProvider>; the
+    // session resolves the channel from channelName itself. No codec argument needed.
     <ChatTransportProvider channelName={chatId} clientId={clientId}>
       <ChatInner chatId={chatId} />
     </ChatTransportProvider>

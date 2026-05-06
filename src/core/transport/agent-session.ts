@@ -22,6 +22,7 @@ import {
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import { getHeaders, mergeHeaders } from '../../utils.js';
+import { registerAgent } from '../agent.js';
 import { buildTransportHeaders } from './headers.js';
 import { Invocation } from './invocation.js';
 import { pipeStream } from './pipe-stream.js';
@@ -93,7 +94,10 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
   private readonly _onChannelStateChange: Ably.channelEventCallback;
 
   constructor(options: AgentSessionOptions<TEvent, TMessage>) {
-    this._channel = options.channel;
+    // Spec: AIT-ST1a — register the SDK's agent identifier on the supplied
+    // Realtime client for usage tracking. Idempotent across sessions.
+    registerAgent(options.client);
+    this._channel = options.client.channels.get(options.channelName);
     this._codec = options.codec;
     this._logger = options.logger?.withContext({ component: 'AgentSession' });
     this._onError = options.onError;
@@ -638,7 +642,10 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
 // ---------------------------------------------------------------------------
 
 /**
- * Create an agent (server-side) session bound to the given channel and codec.
+ * Create an agent (server-side) session bound to the given Realtime client
+ * and channel name. The session resolves the channel via
+ * `client.channels.get(channelName)` and registers the `ai-transport-js`
+ * agent identifier on the client for usage tracking.
  * @param options - Session configuration.
  * @returns A new {@link AgentSession} instance.
  */

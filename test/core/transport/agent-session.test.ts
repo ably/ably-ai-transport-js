@@ -21,6 +21,7 @@ import type { Codec, StreamEncoder } from '../../../src/core/codec/types.js';
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
 import type { AgentSession, MessageNode } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
+import { createMockClient } from '../../helper/mock-client.js';
 import { createRunFromOpts } from '../../helper/run-from-opts.js';
 
 // ---------------------------------------------------------------------------
@@ -205,7 +206,7 @@ describe('AgentSession', () => {
   beforeEach(async () => {
     channel = createMockChannel();
     codec = createMockCodec();
-    session = createAgentSession({ channel, codec });
+    session = createAgentSession({ client: createMockClient(channel), channelName: 'test-channel', codec });
     await session.connect();
   });
 
@@ -217,7 +218,7 @@ describe('AgentSession', () => {
     it('subscribes to cancel events', async () => {
       const ch = createMockChannel();
       const c = createMockCodec();
-      const s = createAgentSession({ channel: ch, codec: c });
+      const s = createAgentSession({ client: createMockClient(ch), channelName: 'test-channel', codec: c });
       await s.connect();
       expect(ch.subscribe).toHaveBeenCalledWith(EVENT_CANCEL, expect.any(Function));
       s.close();
@@ -226,7 +227,7 @@ describe('AgentSession', () => {
     it('is idempotent — multiple calls return the same subscribe', async () => {
       const ch = createMockChannel();
       const c = createMockCodec();
-      const s = createAgentSession({ channel: ch, codec: c });
+      const s = createAgentSession({ client: createMockClient(ch), channelName: 'test-channel', codec: c });
       const p1 = s.connect();
       const p2 = s.connect();
       expect(p1).toBe(p2);
@@ -238,7 +239,7 @@ describe('AgentSession', () => {
     it('rejects when called after close()', async () => {
       const ch = createMockChannel();
       const c = createMockCodec();
-      const s = createAgentSession({ channel: ch, codec: c });
+      const s = createAgentSession({ client: createMockClient(ch), channelName: 'test-channel', codec: c });
       s.close();
       await expect(s.connect()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
     });
@@ -248,7 +249,7 @@ describe('AgentSession', () => {
     it('start() throws InvalidArgument if connect() was not called', async () => {
       const ch = createMockChannel();
       const c = createMockCodec();
-      const s = createAgentSession({ channel: ch, codec: c });
+      const s = createAgentSession({ client: createMockClient(ch), channelName: 'test-channel', codec: c });
       const run = createRunFromOpts(s, { runId: 'run-1' });
       await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
       s.close();
@@ -257,7 +258,7 @@ describe('AgentSession', () => {
     it('addMessages() throws InvalidArgument if connect() was not called', async () => {
       const ch = createMockChannel();
       const c = createMockCodec();
-      const s = createAgentSession({ channel: ch, codec: c });
+      const s = createAgentSession({ client: createMockClient(ch), channelName: 'test-channel', codec: c });
       const run = createRunFromOpts(s, { runId: 'run-1' });
       await expect(run.addMessages([makeNode({ id: 'm', content: 'hi' })])).rejects.toBeErrorInfoWithCode(
         ErrorCode.InvalidArgument,
@@ -268,7 +269,7 @@ describe('AgentSession', () => {
     it('addEvents() throws InvalidArgument if connect() was not called', async () => {
       const ch = createMockChannel();
       const c = createMockCodec();
-      const s = createAgentSession({ channel: ch, codec: c });
+      const s = createAgentSession({ client: createMockClient(ch), channelName: 'test-channel', codec: c });
       const run = createRunFromOpts(s, { runId: 'run-1' });
       await expect(
         run.addEvents([{ kind: 'event', msgId: 'target-1', events: [{ type: 'ev' }] }]),
@@ -279,7 +280,7 @@ describe('AgentSession', () => {
     it('pipe() throws InvalidArgument if connect() was not called', async () => {
       const ch = createMockChannel();
       const c = createMockCodec();
-      const s = createAgentSession({ channel: ch, codec: c });
+      const s = createAgentSession({ client: createMockClient(ch), channelName: 'test-channel', codec: c });
       const run = createRunFromOpts(s, { runId: 'run-1' });
       const stream = new ReadableStream<TestEvent>({
         start: (controller) => {
@@ -293,7 +294,7 @@ describe('AgentSession', () => {
     it('end() throws InvalidArgument if connect() was not called', async () => {
       const ch = createMockChannel();
       const c = createMockCodec();
-      const s = createAgentSession({ channel: ch, codec: c });
+      const s = createAgentSession({ client: createMockClient(ch), channelName: 'test-channel', codec: c });
       const run = createRunFromOpts(s, { runId: 'run-1' });
       await expect(run.end('complete')).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
       s.close();
@@ -686,7 +687,8 @@ describe('AgentSession', () => {
       const onError = vi.fn();
 
       const failSession = createAgentSession({
-        channel: failChannel,
+        client: createMockClient(failChannel),
+        channelName: 'test-channel',
         codec,
         onError,
       });
@@ -723,7 +725,11 @@ describe('AgentSession', () => {
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
       vi.mocked(failCodec.createEncoder).mockReturnValue(failEncoder);
 
-      const failSession = createAgentSession({ channel, codec: failCodec });
+      const failSession = createAgentSession({
+        client: createMockClient(channel),
+        channelName: 'test-channel',
+        codec: failCodec,
+      });
       await failSession.connect();
       const run = createRunFromOpts(failSession, { runId: 'run-1', onError });
       await run.start();
@@ -745,7 +751,11 @@ describe('AgentSession', () => {
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
       vi.mocked(failCodec.createEncoder).mockReturnValue(failEncoder);
 
-      const failSession = createAgentSession({ channel, codec: failCodec });
+      const failSession = createAgentSession({
+        client: createMockClient(channel),
+        channelName: 'test-channel',
+        codec: failCodec,
+      });
       await failSession.connect();
       const run = createRunFromOpts(failSession, { runId: 'run-1', onError });
       await run.start();
@@ -911,7 +921,12 @@ describe('AgentSession', () => {
         const onError = vi.fn();
         const ch = createMockChannel();
         ch.state = 'initialized';
-        createAgentSession({ channel: ch, codec: createMockCodec(), onError });
+        createAgentSession({
+          client: createMockClient(ch),
+          channelName: 'test-channel',
+          codec: createMockCodec(),
+          onError,
+        });
         simulateInitialAttach(ch);
 
         simulateStateChange(ch, {
@@ -932,7 +947,12 @@ describe('AgentSession', () => {
       const onError = vi.fn();
       const ch = createMockChannel();
       ch.state = 'initialized';
-      createAgentSession({ channel: ch, codec: createMockCodec(), onError });
+      createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: createMockCodec(),
+        onError,
+      });
       simulateInitialAttach(ch);
 
       simulateStateChange(ch, {
@@ -949,7 +969,12 @@ describe('AgentSession', () => {
       const onError = vi.fn();
       const ch = createMockChannel();
       ch.state = 'initialized';
-      createAgentSession({ channel: ch, codec: createMockCodec(), onError });
+      createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: createMockCodec(),
+        onError,
+      });
       simulateInitialAttach(ch);
 
       // Simulate the channel losing connection and re-attaching without resume.
@@ -975,7 +1000,12 @@ describe('AgentSession', () => {
       const onError = vi.fn();
       const ch = createMockChannel();
       ch.state = 'initialized';
-      createAgentSession({ channel: ch, codec: createMockCodec(), onError });
+      createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: createMockCodec(),
+        onError,
+      });
 
       simulateStateChange(ch, {
         current: 'attached',
@@ -990,7 +1020,12 @@ describe('AgentSession', () => {
       const onError = vi.fn();
       const ch = createMockChannel();
       ch.state = 'initialized';
-      createAgentSession({ channel: ch, codec: createMockCodec(), onError });
+      createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: createMockCodec(),
+        onError,
+      });
       simulateInitialAttach(ch);
 
       simulateStateChange(ch, {
@@ -1006,7 +1041,12 @@ describe('AgentSession', () => {
       const onError = vi.fn();
       const ch = createMockChannel();
       ch.state = 'attached';
-      createAgentSession({ channel: ch, codec: createMockCodec(), onError });
+      createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: createMockCodec(),
+        onError,
+      });
 
       // UPDATE with resumed: false — should be treated as a real discontinuity
       // even though no initial ATTACHING → ATTACHED transition was observed.
@@ -1025,7 +1065,12 @@ describe('AgentSession', () => {
       const runOnError = vi.fn();
       const ch = createMockChannel();
       ch.state = 'initialized';
-      const s = createAgentSession({ channel: ch, codec: createMockCodec(), onError: sessionOnError });
+      const s = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: createMockCodec(),
+        onError: sessionOnError,
+      });
       await s.connect();
       simulateInitialAttach(ch);
 
@@ -1045,7 +1090,12 @@ describe('AgentSession', () => {
       const onError = vi.fn();
       const ch = createMockChannel();
       ch.state = 'initialized';
-      const t = createAgentSession({ channel: ch, codec: createMockCodec(), onError });
+      const t = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: createMockCodec(),
+        onError,
+      });
       simulateInitialAttach(ch);
 
       t.close();
@@ -1061,7 +1111,7 @@ describe('AgentSession', () => {
     it('does not crash when no onError callback is supplied', () => {
       const ch = createMockChannel();
       ch.state = 'initialized';
-      createAgentSession({ channel: ch, codec: createMockCodec() });
+      createAgentSession({ client: createMockClient(ch), channelName: 'test-channel', codec: createMockCodec() });
       simulateInitialAttach(ch);
 
       expect(() => {

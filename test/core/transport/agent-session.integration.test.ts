@@ -110,11 +110,11 @@ describe('AgentSession integration', () => {
     const serverClient = ablyRealtimeClient();
     const subClient = ablyRealtimeClient();
 
-    const serverChannel = serverClient.channels.get(channelName);
     const subChannel = subClient.channels.get(channelName);
 
     session = createAgentSession({
-      channel: serverChannel,
+      client: serverClient,
+      channelName,
       codec: UIMessageCodec,
     });
     await session.connect();
@@ -167,11 +167,11 @@ describe('AgentSession integration', () => {
     const serverClient = ablyRealtimeClient();
     const subClient = ablyRealtimeClient();
 
-    const serverChannel = serverClient.channels.get(channelName);
     const subChannel = subClient.channels.get(channelName);
 
     session = createAgentSession({
-      channel: serverChannel,
+      client: serverClient,
+      channelName,
       codec: UIMessageCodec,
     });
     await session.connect();
@@ -221,11 +221,11 @@ describe('AgentSession integration', () => {
     const serverClient = ablyRealtimeClient();
     const cancelClient = ablyRealtimeClient();
 
-    const serverChannel = serverClient.channels.get(channelName);
     const cancelChannel = cancelClient.channels.get(channelName);
 
     session = createAgentSession({
-      channel: serverChannel,
+      client: serverClient,
+      channelName,
       codec: UIMessageCodec,
     });
     await session.connect();
@@ -274,11 +274,11 @@ describe('AgentSession integration', () => {
     const serverClient = ablyRealtimeClient();
     const subClient = ablyRealtimeClient();
 
-    const serverChannel = serverClient.channels.get(channelName);
     const subChannel = subClient.channels.get(channelName);
 
     session = createAgentSession({
-      channel: serverChannel,
+      client: serverClient,
+      channelName,
       codec: UIMessageCodec,
     });
     await session.connect();
@@ -330,11 +330,11 @@ describe('AgentSession integration', () => {
     const serverClient = ablyRealtimeClient();
     const subClient = ablyRealtimeClient();
 
-    const serverChannel = serverClient.channels.get(channelName);
     const subChannel = subClient.channels.get(channelName);
 
     session = createAgentSession({
-      channel: serverChannel,
+      client: serverClient,
+      channelName,
       codec: UIMessageCodec,
     });
     await session.connect();
@@ -391,11 +391,11 @@ describe('AgentSession integration', () => {
     const serverClient = ablyRealtimeClient();
     const subClient = ablyRealtimeClient();
 
-    const serverChannel = serverClient.channels.get(channelName);
     const subChannel = subClient.channels.get(channelName);
 
     session = createAgentSession({
-      channel: serverChannel,
+      client: serverClient,
+      channelName,
       codec: UIMessageCodec,
     });
     await session.connect();
@@ -450,12 +450,12 @@ describe('AgentSession integration', () => {
     const sub1Client = ablyRealtimeClient();
     const sub2Client = ablyRealtimeClient();
 
-    const serverChannel = serverClient.channels.get(channelName);
     const sub1Channel = sub1Client.channels.get(channelName);
     const sub2Channel = sub2Client.channels.get(channelName);
 
     session = createAgentSession({
-      channel: serverChannel,
+      client: serverClient,
+      channelName,
       codec: UIMessageCodec,
     });
     await session.connect();
@@ -490,11 +490,11 @@ describe('AgentSession integration', () => {
     const serverClient = ablyRealtimeClient();
     const subClient = ablyRealtimeClient();
 
-    const serverChannel = serverClient.channels.get(channelName);
     const subChannel = subClient.channels.get(channelName);
 
     session = createAgentSession({
-      channel: serverChannel,
+      client: serverClient,
+      channelName,
       codec: UIMessageCodec,
     });
     await session.connect();
@@ -574,12 +574,12 @@ describe('AgentSession integration', () => {
   it('invokes onError with ChannelContinuityLost when the channel detaches', async () => {
     const channelName = uniqueChannelName('st-continuity');
     const serverClient = ablyRealtimeClient();
-    const serverChannel = serverClient.channels.get(channelName);
 
     const errors: Ably.ErrorInfo[] = [];
 
     session = createAgentSession({
-      channel: serverChannel,
+      client: serverClient,
+      channelName,
       codec: UIMessageCodec,
       onError: (err) => errors.push(err),
     });
@@ -590,7 +590,7 @@ describe('AgentSession integration', () => {
 
     // Channel is ATTACHED after start() — any subsequent transition that
     // breaks continuity must surface via onError.
-    await serverChannel.detach();
+    await serverClient.channels.get(channelName).detach();
 
     await vi.waitFor(
       () => {
@@ -617,11 +617,11 @@ describe('AgentSession integration', () => {
     const serverClient = ablyRealtimeClient();
     const subClient = ablyRealtimeClient();
 
-    const serverChannel = serverClient.channels.get(channelName);
     const subChannel = subClient.channels.get(channelName);
 
     session = createAgentSession({
-      channel: serverChannel,
+      client: serverClient,
+      channelName,
       codec: UIMessageCodec,
     });
     await session.connect();

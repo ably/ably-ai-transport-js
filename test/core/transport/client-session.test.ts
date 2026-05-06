@@ -18,6 +18,7 @@ import type { Codec, DecoderOutput, MessageAccumulator, StreamDecoder } from '..
 import { createClientSession } from '../../../src/core/transport/client-session.js';
 import type { ClientSession, RunLifecycleEvent } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
+import { createMockClient } from '../../helper/mock-client.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -275,7 +276,8 @@ const createSeededSession = async (
 ): Promise<ClientSession<TestEvent, TestMessage>> => {
   const ch = createMockChannel();
   const session = createClientSession({
-    channel: ch,
+    client: createMockClient(ch),
+    channelName: 'test-channel',
     codec,
     clientId: 'client-1',
     api: '/test',
@@ -313,7 +315,8 @@ describe('ClientSession', () => {
     codec = createMockCodec(decoder);
     mockFetch = createMockFetch();
     session = createClientSession({
-      channel,
+      client: createMockClient(channel),
+      channelName: 'test-channel',
       codec,
       clientId: 'client-1',
       api: '/api/chat',
@@ -334,7 +337,8 @@ describe('ClientSession', () => {
     it('connect() is idempotent — multiple calls return the same subscribe', async () => {
       const ch = createMockChannel();
       const s = createClientSession({
-        channel: ch,
+        client: createMockClient(ch),
+        channelName: 'test-channel',
         codec,
         api: '/api/chat',
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
@@ -352,7 +356,8 @@ describe('ClientSession', () => {
     it('send() throws InvalidArgument if connect() was not called', async () => {
       const ch = createMockChannel();
       const s = createClientSession({
-        channel: ch,
+        client: createMockClient(ch),
+        channelName: 'test-channel',
         codec,
         clientId: 'client-1',
         api: '/api/chat',
@@ -365,7 +370,8 @@ describe('ClientSession', () => {
     it('cancel() throws InvalidArgument if connect() was not called', async () => {
       const ch = createMockChannel();
       const s = createClientSession({
-        channel: ch,
+        client: createMockClient(ch),
+        channelName: 'test-channel',
         codec,
         clientId: 'client-1',
         api: '/api/chat',
@@ -378,7 +384,8 @@ describe('ClientSession', () => {
     it('waitForRun() throws InvalidArgument if connect() was not called', async () => {
       const ch = createMockChannel();
       const s = createClientSession({
-        channel: ch,
+        client: createMockClient(ch),
+        channelName: 'test-channel',
         codec,
         clientId: 'client-1',
         api: '/api/chat',
@@ -405,7 +412,8 @@ describe('ClientSession', () => {
 
     it('seeds initial messages into the tree', () => {
       const seeded = createClientSession({
-        channel: createMockChannel(),
+        client: createMockClient(createMockChannel()),
+        channelName: 'test-channel',
         codec,
         api: '/test',
         messages: [
@@ -423,7 +431,8 @@ describe('ClientSession', () => {
 
     it('seeded messages form a parent chain in the tree', () => {
       const seeded = createClientSession({
-        channel: createMockChannel(),
+        client: createMockClient(createMockChannel()),
+        channelName: 'test-channel',
         codec,
         api: '/test',
         messages: [
@@ -440,7 +449,8 @@ describe('ClientSession', () => {
 
     it('works with no initial messages', async () => {
       const empty = createClientSession({
-        channel: createMockChannel(),
+        client: createMockClient(createMockChannel()),
+        channelName: 'test-channel',
         codec,
         api: '/test',
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
@@ -472,7 +482,8 @@ describe('ClientSession', () => {
 
     it('auto-computes parent from the last message in the tree', async () => {
       const seeded = createClientSession({
-        channel: createMockChannel(),
+        client: createMockClient(createMockChannel()),
+        channelName: 'test-channel',
         codec,
         clientId: 'client-1',
         api: '/test',
@@ -538,7 +549,8 @@ describe('ClientSession', () => {
           }),
       );
       const blockSession = createClientSession({
-        channel: createMockChannel(),
+        client: createMockClient(createMockChannel()),
+        channelName: 'test-channel',
         codec,
         api: '/test',
         fetch: blockingFetch as unknown as typeof globalThis.fetch,
@@ -588,7 +600,8 @@ describe('ClientSession', () => {
     it('fires error event when POST fails with non-OK status', async () => {
       const failFetch = createMockFetch(500);
       const failSession = createClientSession({
-        channel: createMockChannel(),
+        client: createMockClient(createMockChannel()),
+        channelName: 'test-channel',
         codec,
         api: '/test',
         fetch: failFetch.fn as unknown as typeof globalThis.fetch,
@@ -612,7 +625,8 @@ describe('ClientSession', () => {
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.reject directly
       const errorFetch = vi.fn(() => Promise.reject(new Error('network down')));
       const errorSession = createClientSession({
-        channel: createMockChannel(),
+        client: createMockClient(createMockChannel()),
+        channelName: 'test-channel',
         codec,
         api: '/test',
         fetch: errorFetch as unknown as typeof globalThis.fetch,
@@ -635,7 +649,8 @@ describe('ClientSession', () => {
     it('errors the stream when POST fails', async () => {
       const failFetch = createMockFetch(500);
       const failSession = createClientSession({
-        channel: createMockChannel(),
+        client: createMockClient(createMockChannel()),
+        channelName: 'test-channel',
         codec,
         api: '/test',
         fetch: failFetch.fn as unknown as typeof globalThis.fetch,
@@ -660,7 +675,8 @@ describe('ClientSession', () => {
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.reject directly
       const errorFetch = vi.fn(() => Promise.reject(new Error('network down')));
       const errorSession = createClientSession({
-        channel: createMockChannel(),
+        client: createMockClient(createMockChannel()),
+        channelName: 'test-channel',
         codec,
         api: '/test',
         fetch: errorFetch as unknown as typeof globalThis.fetch,
@@ -715,7 +731,8 @@ describe('ClientSession', () => {
 
     it('merges dynamic options.headers and options.body', async () => {
       const dynSession = createClientSession({
-        channel: createMockChannel(),
+        client: createMockClient(createMockChannel()),
+        channelName: 'test-channel',
         codec,
         api: '/test',
         headers: () => ({ 'X-Auth': 'bearer-token' }),
@@ -738,7 +755,8 @@ describe('ClientSession', () => {
 
     it('includes credentials option in fetch when configured', async () => {
       const credSession = createClientSession({
-        channel: createMockChannel(),
+        client: createMockClient(createMockChannel()),
+        channelName: 'test-channel',
         codec,
         api: '/test',
         credentials: 'include',
@@ -778,7 +796,8 @@ describe('ClientSession', () => {
 
     it('does not auto-compute parent when forkOf is set', async () => {
       const seeded = createClientSession({
-        channel: createMockChannel(),
+        client: createMockClient(createMockChannel()),
+        channelName: 'test-channel',
         codec,
         api: '/test',
         messages: [{ id: 'seed-1', content: 'first' }],
@@ -2307,7 +2326,8 @@ describe('ClientSession', () => {
 
     it('returns seeded messages', () => {
       const seeded = createClientSession({
-        channel: createMockChannel(),
+        client: createMockClient(createMockChannel()),
+        channelName: 'test-channel',
         codec,
         api: '/test',
         messages: [{ id: 'a', content: 'alpha' }],
@@ -2401,7 +2421,8 @@ describe('ClientSession', () => {
 
     it('returns conversation nodes with headers and msgId', () => {
       const seeded = createClientSession({
-        channel: createMockChannel(),
+        client: createMockClient(createMockChannel()),
+        channelName: 'test-channel',
         codec,
         api: '/test',
         messages: [{ id: 'msg-1', content: 'hi' }],
@@ -2446,7 +2467,8 @@ describe('ClientSession', () => {
 
     it('has messages before close', async () => {
       const seeded = createClientSession({
-        channel: createMockChannel(),
+        client: createMockClient(createMockChannel()),
+        channelName: 'test-channel',
         codec,
         api: '/test',
         messages: [{ id: 'msg-1', content: 'hi' }],
@@ -2497,7 +2519,8 @@ describe('ClientSession', () => {
       preAttachedChannel.state = 'attached';
 
       const preAttachedSession = createClientSession({
-        channel: preAttachedChannel,
+        client: createMockClient(preAttachedChannel),
+        channelName: 'test-channel',
         codec,
         api: '/test',
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
@@ -2526,7 +2549,8 @@ describe('ClientSession', () => {
       uninitChannel.state = 'initialized';
 
       const uninitSession = createClientSession({
-        channel: uninitChannel,
+        client: createMockClient(uninitChannel),
+        channelName: 'test-channel',
         codec,
         api: '/test',
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
@@ -2553,7 +2577,8 @@ describe('ClientSession', () => {
       uninitChannel.state = 'initialized';
 
       const uninitSession = createClientSession({
-        channel: uninitChannel,
+        client: createMockClient(uninitChannel),
+        channelName: 'test-channel',
         codec,
         api: '/test',
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
@@ -3069,7 +3094,8 @@ describe('ClientSession', () => {
       vi.mocked(histChannel.history).mockResolvedValueOnce(histPage);
 
       const histSession = createClientSession({
-        channel: histChannel as unknown as Ably.RealtimeChannel,
+        client: createMockClient(histChannel as unknown as Ably.RealtimeChannel),
+        channelName: 'test-channel',
         codec,
         api: '/test',
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
@@ -3102,7 +3128,8 @@ describe('ClientSession', () => {
       );
 
       const pendingSession = createClientSession({
-        channel: pendingChannel as unknown as Ably.RealtimeChannel,
+        client: createMockClient(pendingChannel as unknown as Ably.RealtimeChannel),
+        channelName: 'test-channel',
         codec,
         api: '/test',
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
@@ -3132,7 +3159,8 @@ describe('ClientSession', () => {
       );
 
       const pendingTransport = createClientSession({
-        channel: pendingChannel as unknown as Ably.RealtimeChannel,
+        client: createMockClient(pendingChannel as unknown as Ably.RealtimeChannel),
+        channelName: 'test-channel',
         codec,
         api: '/test',
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
@@ -3159,7 +3187,8 @@ describe('ClientSession', () => {
       );
 
       const pendingTransport = createClientSession({
-        channel: pendingChannel as unknown as Ably.RealtimeChannel,
+        client: createMockClient(pendingChannel as unknown as Ably.RealtimeChannel),
+        channelName: 'test-channel',
         codec,
         api: '/test',
         fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
@@ -3280,7 +3309,8 @@ describe('ClientSession', () => {
       const handler = vi.fn();
       const ch = createMockChannel();
       const seeded = createClientSession({
-        channel: ch as unknown as Ably.RealtimeChannel,
+        client: createMockClient(ch as unknown as Ably.RealtimeChannel),
+        channelName: 'test-channel',
         codec,
         api: '/test',
         messages: [{ id: 'seed-1', content: 'hi' }],

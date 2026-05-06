@@ -47,6 +47,7 @@ export interface InvocationData<TEvent, TMessage> {
  * @template TEvent - Codec event type carried in cross-run amendments.
  * @template TMessage - Codec domain message type for messages and history.
  */
+// Spec: AIT-ST13
 export class Invocation<TEvent, TMessage> {
   /** Identifier for the run this invocation creates. */
   readonly runId: string;

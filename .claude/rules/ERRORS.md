@@ -70,8 +70,8 @@ export enum ErrorCode {
   BadRequest = 40000,
   InvalidArgument = 40003,
   // Custom SDK-specific codes (104xxx range)
-  TransportSendFailed = 104000,
-  TransportSubscriptionError = 104001,
+  SessionSendFailed = 104000,
+  SessionSubscriptionError = 104001,
   // ...
 }
 ```

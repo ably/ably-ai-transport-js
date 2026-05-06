@@ -3,14 +3,23 @@
  * retry demo.
  *
  * Inspired by `rfc/types/examples/vercel-serverless/basic-chat/agent.ts`.
- * One invocation = one run = one step. The handler reads the
- * {@link Invocation} from the request body, binds an {@link AgentRun}
- * to it, opens a step, pipes the model's UI message stream through it,
- * and ends the run.
+ * One invocation = one run, with one AIT step per model+tool-call
+ * iteration. The handler reads the {@link Invocation} from the request
+ * body, binds an {@link AgentRun} to it, then drives the model loop
+ * manually: each iteration opens a fresh step, calls `streamText` with
+ * `stepCountIs(1)` (one model call per step), pipes the resulting UI
+ * message stream through the step, and continues until the model
+ * returns a non-`tool-calls` finish reason or the iteration cap is hit.
+ *
+ * Driving the loop manually (rather than letting `streamText` handle
+ * multiple iterations internally inside one step) makes the
+ * iteration→step mapping explicit on the wire: every iteration carries
+ * its own `step-start`/`step-end` lifecycle and its own `step.signal`
+ * (caller signal + per-step timeout + AIT control signals).
  *
  * The request body extends {@link InvocationData} with an optional
- * `simulateFail` flag. When true, the handler throws after a few
- * stream chunks land so the catch path publishes
+ * `simulateFail` flag. When true, the first iteration throws after a
+ * few stream chunks land so the catch path publishes
  * `step-end (failed)` + `run-end (failed)` and the response is HTTP 5xx.
  * The client opts in to that flag and treats the resulting error
  * response as expected. The user can then click Retry on the failed
@@ -33,6 +42,14 @@ import { getSession } from '../../../lib/agent-session';
 import { getBashToolkit } from '../../../lib/bash-session';
 
 const MODEL = process.env.MODEL ?? 'claude-haiku-4-5';
+
+/**
+ * Hard cap on iterations per run. Each iteration is one model call (with
+ * any tool calls it returns executed before the next iteration begins).
+ * Mirrors the `stepCountIs(10)` cap the previous single-step
+ * implementation passed to `streamText`.
+ */
+const MAX_ITERATIONS = 10;
 
 interface AgentRequestBody extends InvocationData {
   /**
@@ -100,40 +117,59 @@ export async function POST(req: Request): Promise<Response> {
   const { tools } = await getBashToolkit(invocation.sessionName);
 
   await using run = await session.createRun(invocation, { signal: req.signal });
-  await using step = run.createStep();
-  await step.start({ signal: req.signal, timeoutMs: 60_000 });
 
-  try {
-    // Filter out non-canonical nodes — output from retried/abandoned/
-    // superseded prior step attempts that the tree has flagged as no
-    // longer contributing to the run's current state. Without this the
-    // model would see a failed attempt's partial text and try to
-    // continue it. Spec: AIT-CN2.
-    const messages = await convertToModelMessages(
-      run.view.messages.filter((node) => node.canonical).map((node) => node.message),
-    );
-    const result = streamText({
-      model: anthropic(MODEL),
-      messages,
-      abortSignal: step.signal,
-      tools,
-      stopWhen: stepCountIs(10),
-    });
-    const source = result.toUIMessageStream();
-    await step.pipe(simulateFail ? streamThatFailsAfterPartialText(source) : source);
-    await step.end();
-    await run.end();
-  } catch (error) {
-    await step.end(error);
-    await run.end(error);
-    // Re-throw so the framework returns 5xx — that signals HTTP delivery
-    // failure to the caller, including the demo's simulated failure (the
-    // client opts in via `simulateFail` and handles the expected error).
-    // The one suppressed case is aborts: the client cancelled the run,
-    // the channel already carries the aborted terminal, and HTTP 202 is
-    // the correct response.
-    if (!step.signal.aborted) throw error;
+  // Filter out non-canonical nodes — output from retried/abandoned/
+  // superseded prior step attempts that the tree has flagged as no
+  // longer contributing to the run's current state. Without this the
+  // model would see a failed attempt's partial text and try to
+  // continue it. Spec: AIT-CN2.
+  let messages = await convertToModelMessages(
+    run.view.messages.filter((node) => node.canonical).map((node) => node.message),
+  );
+
+  for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+    await using step = run.createStep();
+    await step.start({ signal: req.signal, timeoutMs: 60_000 });
+
+    try {
+      // One model call per AIT step. `streamText` still executes any
+      // tool calls the model returns before the stream ends, so the
+      // step's encoded output covers both the assistant turn and its
+      // tool results.
+      const result = streamText({
+        model: anthropic(MODEL),
+        messages,
+        abortSignal: step.signal,
+        tools,
+        stopWhen: stepCountIs(1),
+      });
+      const source = result.toUIMessageStream();
+      // Only fail the first iteration so the demo produces a single
+      // failed step the user can retry, regardless of how many
+      // iterations a successful run would have taken.
+      const simulate = simulateFail && iteration === 0;
+      await step.pipe(simulate ? streamThatFailsAfterPartialText(source) : source);
+      await step.end();
+
+      // Stop the loop if the model didn't request more tool calls.
+      // Otherwise feed the iteration's response (assistant turn + tool
+      // results) forward as input to the next model call.
+      if ((await result.finishReason) !== 'tool-calls') break;
+      messages = [...messages, ...(await result.response).messages];
+    } catch (error) {
+      await step.end(error);
+      await run.end(error);
+      // Re-throw so the framework returns 5xx — that signals HTTP
+      // delivery failure to the caller, including the demo's simulated
+      // failure (the client opts in via `simulateFail` and handles the
+      // expected error). The one suppressed case is aborts: the client
+      // cancelled the run, the channel already carries the aborted
+      // terminal, and HTTP 202 is the correct response.
+      if (!step.signal.aborted) throw error;
+      return new Response(null, { status: 202 });
+    }
   }
 
+  await run.end();
   return new Response(null, { status: 202 });
 }

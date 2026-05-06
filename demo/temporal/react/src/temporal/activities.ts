@@ -45,7 +45,11 @@ const STEP_TIMEOUT_MS = 60_000;
 /**
  * Number of `text-delta` chunks to forward before the synthetic failure
  * fires. Mirrors the vercel demo's behaviour so the user sees a partial
- * assistant bubble before the catch path lands the failed terminal.
+ * assistant bubble before the catch path lands a failed step-end.
+ *
+ * Only applied on the activity's first attempt — see `streamStep` below.
+ * Temporal's retry of the activity then succeeds and the run completes
+ * normally, demonstrating automatic recovery from a transient failure.
  */
 const FAIL_AFTER_TEXT_DELTAS = 3;
 
@@ -95,8 +99,12 @@ export interface StreamStepArgs {
   /** Session name — used to resolve the bash toolkit for this run. */
   sessionName: string;
   /**
-   * When true, the step publishes a few text-delta chunks then errors so
-   * the catch path lands a failed step-end + run-end on the channel.
+   * When true on the activity's first attempt, the step publishes a few
+   * text-delta chunks then errors so the catch path lands a failed
+   * step-end on the channel. The activity throws, Temporal retries it,
+   * and the second attempt ignores the flag and runs normally — so the
+   * run ultimately completes successfully after a visible transient
+   * failure. The flag is effectively self-clearing across retries.
    */
   simulateFail?: boolean;
 }
@@ -146,7 +154,12 @@ export async function streamStep(args: StreamStepArgs): Promise<StreamStepResult
       stopWhen: stepCountIs(1),
     });
     const source = result.toUIMessageStream();
-    const stream = args.simulateFail === true ? streamThatFailsAfterPartialText(source) : source;
+    // Only fail on the first attempt. When Temporal retries the activity
+    // the simulated-failure wrapper is skipped so the run recovers
+    // automatically — this is what makes the demo show Temporal's retry
+    // behaviour rather than a permanently-failed run.
+    const failThisAttempt = args.simulateFail === true && Context.current().info.attempt === 1;
+    const stream = failThisAttempt ? streamThatFailsAfterPartialText(source) : source;
     await step.pipe(stream);
     await step.end();
 

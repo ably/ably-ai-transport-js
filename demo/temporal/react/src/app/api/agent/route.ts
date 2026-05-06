@@ -23,9 +23,10 @@ const TASK_QUEUE = process.env.TEMPORAL_TASK_QUEUE ?? 'ai-transport-chat';
 interface AgentRequestBody extends InvocationData {
   /**
    * When true, the workflow's first iteration publishes a few text-delta
-   * chunks then errors so the run lands as `'failed'`. Used by the retry
-   * demo to produce a deterministic failed run without needing the model
-   * to actually error.
+   * chunks then errors on the activity's first attempt. Temporal retries
+   * the activity and the second attempt succeeds, so the run completes
+   * as `'success'` after a visible transient failure — the demo exists
+   * to show Temporal's automatic recovery, not a permanently-failed run.
    */
   simulateFail?: boolean;
 }

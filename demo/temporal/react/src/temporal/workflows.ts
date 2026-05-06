@@ -38,8 +38,10 @@ const { openRun, streamStep, endRun } = proxyActivities<typeof activities>({
 /**
  * Workflow input — extends {@link InvocationData} with the demo's
  * simulate-failure switch. When `simulateFail` is true the first
- * iteration's `streamStep` errors mid-stream, exercising the
- * `run-end (failed)` path on the AIT channel.
+ * iteration's `streamStep` errors mid-stream on its first activity
+ * attempt; Temporal then retries the activity and the second attempt
+ * succeeds, so the user sees a transient failed step followed by a
+ * successful run rather than a permanently-failed run.
  */
 export interface RunAgentInput extends InvocationData {
   simulateFail?: boolean;

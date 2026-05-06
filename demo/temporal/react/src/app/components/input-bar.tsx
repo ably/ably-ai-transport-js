@@ -6,8 +6,8 @@ interface InputBarProps {
   /**
    * Submit a user message. The second argument is the current state of
    * the simulate-failure toggle — when true, the agent endpoint throws
-   * mid-stream so the run lands as `'failed'` and the Retry button
-   * becomes available on the resulting assistant bubble.
+   * mid-stream on the activity's first attempt and Temporal's retry
+   * succeeds, so the run completes after a visible transient failure.
    */
   onSubmit: (text: string, simulateFail: boolean) => void;
   /** Invoked when the user clicks Stop while a run is in flight. */

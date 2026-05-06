@@ -125,12 +125,11 @@ export function Chat({ handle, clientId }: ChatProps) {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ ...run.toInvocation().toJSON(), simulateFail }),
         });
-        // The simulated-failure flow is expected to land its terminal
-        // run-end (failed) on the channel via the workflow's catch
-        // path — the API call itself returns 202 either way (the
-        // workflow has been queued). Surface non-2xx as errors only
-        // when we weren't asking the agent to fail.
-        if (!response.ok && !simulateFail) {
+        // The simulated-failure flow fails the activity's first attempt
+        // and recovers on Temporal's automatic retry — the run-end on
+        // the channel is `'success'`, not `'failed'`. The API call
+        // returns 202 either way (the workflow has been queued).
+        if (!response.ok) {
           throw new Error(`agent endpoint returned HTTP ${String(response.status)}`);
         }
       } catch (err) {

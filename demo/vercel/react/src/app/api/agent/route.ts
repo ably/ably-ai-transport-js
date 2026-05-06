@@ -118,18 +118,26 @@ export async function POST(req: Request): Promise<Response> {
 
   await using run = await session.createRun(invocation, { signal: req.signal });
 
-  // Filter out non-canonical nodes — output from retried/abandoned/
-  // superseded prior step attempts that the tree has flagged as no
-  // longer contributing to the run's current state. Without this the
-  // model would see a failed attempt's partial text and try to
-  // continue it. Spec: AIT-CN2.
-  let messages = await convertToModelMessages(
-    run.view.messages.filter((node) => node.canonical).map((node) => node.message),
-  );
+  let messages: AI.ModelMessage[] = [];
 
   for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
     await using step = run.createStep();
     await step.start({ signal: req.signal, timeoutMs: 60_000 });
+
+    if (iteration === 0) {
+      // Filter out non-canonical nodes — output from retried/abandoned/
+      // superseded prior step attempts the tree has flagged as no
+      // longer contributing to the run's current state (Spec: AIT-CN2).
+      // Reading after the first step.start() ensures any retire of a
+      // prior failed/aborted step in this run has happened: AIT-CN3
+      // flips the predecessor's canonical flag when our new step-start
+      // lands, so its partial output is excluded from the model
+      // context. Subsequent iterations skip this and feed forward the
+      // previous iteration's response messages instead.
+      messages = await convertToModelMessages(
+        run.view.messages.filter((node) => node.canonical).map((node) => node.message),
+      );
+    }
 
     try {
       // One model call per AIT step. `streamText` still executes any

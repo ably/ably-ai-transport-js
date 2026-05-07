@@ -1,5 +1,6 @@
 import * as Ably from 'ably';
 
+import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import { isAbortSignalError } from '../abort-error.js';
 import type { AnyCodec, CodecMessage } from '../codec/index.js';
@@ -12,11 +13,10 @@ import { DefaultAgentView } from '../view/index.js';
 import type { Run, RunEndStatus, RunStatus } from './run.js';
 
 /**
- * Run as seen from an {@link AgentSession}. Phase 9 subset of the RFC's
- * `AgentRun<C>` — adds `view`, `messages`, `end`, the async disposer, and
- * `createStep` on top of the base {@link Run}. `suspend`, `lastStep`,
- * `when`, and run-level `sendMessages`/`sendParts`/`sendEvents` land in
- * later phases.
+ * Run as seen from an {@link AgentSession}. Adds `view`, `messages`,
+ * `end`, `suspend`, the async disposer, and `createStep` on top of the
+ * base {@link Run}. `lastStep`, `when`, and run-level
+ * `sendMessages`/`sendParts`/`sendEvents` land in later phases.
  *
  * Returned by {@link AgentSession.createRun}.
  */
@@ -73,6 +73,31 @@ export interface AgentRun<C extends AnyCodec> extends Run<CodecMessage<C>> {
    *   immediately when the run is already terminal locally).
    */
   end(error?: unknown): Promise<void>;
+
+  /**
+   * Suspend the run. Publishes `x-ably-run-suspend` carrying
+   * `x-ably-status: 'paused'`. Receivers transition the run to
+   * `'suspended'`; a later `x-ably-step-start` re-activates it.
+   *
+   * Independent of {@link Run.pauseRequested} — the agent may suspend
+   * a run that has not received a pause request (orchestrator-driven
+   * suspend), and may complete the run normally despite a pending
+   * pause request. {@link end} never auto-routes to suspend.
+   *
+   * Throws {@link ErrorCode.RunAlreadySuspended} when called on a run
+   * already in `'suspended'`, and {@link ErrorCode.RunAlreadyTerminal}
+   * when called on a terminal run. Suspend is forward motion; both
+   * states make the call meaningless and are flagged loudly so the
+   * orchestration bug is visible.
+   * @returns Resolves once Ably has acknowledged the publish.
+   * @throws An `Ably.ErrorInfo` with code
+   *   {@link ErrorCode.RunAlreadySuspended} when the run is already
+   *   suspended.
+   * @throws An `Ably.ErrorInfo` with code
+   *   {@link ErrorCode.RunAlreadyTerminal} when the run is already
+   *   terminal (`'complete'`/`'failed'`/`'aborted'`).
+   */
+  suspend(): Promise<void>;
 
   /**
    * Release the run handle: call {@link end} if the run hasn't been ended
@@ -145,6 +170,7 @@ export class DefaultAgentRun<C extends AnyCodec> implements AgentRun<C> {
   private readonly _logger: Logger;
   private readonly _view: DefaultAgentView<C>;
   private _ended = false;
+  private _suspended = false;
 
   constructor(options: AgentRunOptions<C>) {
     this._runId = options.runId;
@@ -176,6 +202,10 @@ export class DefaultAgentRun<C extends AnyCodec> implements AgentRun<C> {
 
   get controlSignals(): readonly ControlSignal[] {
     return this._tree.runs.find((run) => run.id === this._runId)?.controlSignals ?? [];
+  }
+
+  get pauseRequested(): boolean {
+    return this._tree.runs.find((run) => run.id === this._runId)?.pauseRequested ?? false;
   }
 
   get view(): AgentView<C> {
@@ -216,9 +246,59 @@ export class DefaultAgentRun<C extends AnyCodec> implements AgentRun<C> {
     this._logger.debug('DefaultAgentRun.end(); published', { status });
   }
 
+  async suspend(): Promise<void> {
+    // Spec: AIT-RS5, AIT-RS6.
+    this._logger.trace('DefaultAgentRun.suspend();');
+
+    if (this._ended) {
+      throw new Ably.ErrorInfo(
+        'unable to suspend run; run.end() has already been called',
+        ErrorCode.RunAlreadyTerminal,
+        400,
+      );
+    }
+    if (this._suspended) {
+      throw new Ably.ErrorInfo('unable to suspend run; run is already suspended', ErrorCode.RunAlreadySuspended, 400);
+    }
+    const status = this.status;
+    if (status === 'suspended') {
+      throw new Ably.ErrorInfo('unable to suspend run; run is already suspended', ErrorCode.RunAlreadySuspended, 400);
+    }
+    if (status === 'complete' || status === 'failed' || status === 'aborted') {
+      throw new Ably.ErrorInfo(`unable to suspend run; run is already ${status}`, ErrorCode.RunAlreadyTerminal, 400);
+    }
+
+    try {
+      await this._writer.suspendRun({ runId: this._runId });
+    } catch (publishError) {
+      if (publishError instanceof Ably.ErrorInfo) {
+        throw new Ably.ErrorInfo(
+          `unable to suspend run; ${publishError.message}`,
+          publishError.code,
+          publishError.statusCode,
+          publishError,
+        );
+      }
+      throw publishError;
+    }
+
+    // Set _suspended *after* the publish resolves so a failed publish
+    // leaves the handle re-callable: nothing reached the channel, so the
+    // caller can retry suspend() without seeing a stale RunAlreadySuspended
+    // throw. Disposer behaviour is preserved — close() inspects this flag
+    // only once the suspend publish succeeded.
+    this._suspended = true;
+    this._logger.debug('DefaultAgentRun.suspend(); published');
+  }
+
   async close(): Promise<void> {
     this._logger.trace('DefaultAgentRun.close();');
-    if (!this._ended) {
+    // Skip the implicit end() when the run was suspended explicitly —
+    // run-suspend is the lifecycle wire the agent already published, and
+    // an automatic end() here would clobber it with run-end. The agent
+    // can still call end() explicitly after suspend if it wants to
+    // forcibly terminate. Spec: AIT-RS7.
+    if (!this._ended && !this._suspended) {
       try {
         await this.end();
       } catch (error) {

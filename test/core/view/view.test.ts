@@ -58,7 +58,13 @@ describe('View', () => {
       const tree = new DefaultTree<string>({ logger: makeLog() });
       const view = new DefaultView<string>({ tree, logger: makeLog() });
 
-      tree.applyRunStart({ id: 'r-1', status: 'active', initiatorClientId: 'client-1', controlSignals: [] });
+      tree.applyRunStart({
+        id: 'r-1',
+        status: 'active',
+        initiatorClientId: 'client-1',
+        controlSignals: [],
+        pauseRequested: false,
+      });
       tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: '01', canonical: true });
       tree.applyStepStart({ id: 's-2', runId: 'r-1', status: 'active', serial: '02', canonical: true });
 
@@ -69,7 +75,13 @@ describe('View', () => {
       const tree = new DefaultTree<string>({ logger: makeLog() });
       const view = new DefaultView<string>({ tree, logger: makeLog() });
 
-      tree.applyRunStart({ id: 'r-1', status: 'active', initiatorClientId: 'client-1', controlSignals: [] });
+      tree.applyRunStart({
+        id: 'r-1',
+        status: 'active',
+        initiatorClientId: 'client-1',
+        controlSignals: [],
+        pauseRequested: false,
+      });
       tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: '01', canonical: true });
       tree.applyStepEnd({ stepId: 's-1', status: 'complete' });
 
@@ -436,15 +448,61 @@ describe('ClientView.runs', () => {
             status: string;
             controlSignals: readonly never[];
             initiatorClientId: string;
+            pauseRequested: boolean;
           }) => void;
           applyRunEnd: (o: { runId: string; status: 'aborted' }) => void;
         };
       }
     )._tree;
-    tree.applyRunStart({ id: run.id, status: 'active', initiatorClientId: 'alice', controlSignals: [] });
+    tree.applyRunStart({
+      id: run.id,
+      status: 'active',
+      initiatorClientId: 'alice',
+      controlSignals: [],
+      pauseRequested: false,
+    });
     tree.applyRunEnd({ runId: run.id, status: 'aborted' });
 
     expect(view.runs[0]?.status).toBe('aborted');
+  });
+
+  it("surfaces suspended runs with status === 'suspended' alongside active and terminal entries", async () => {
+    const { options } = makeClientSession();
+    const session = createClientSession(options);
+    await session.connect();
+    const view = session.createView();
+
+    // Drive a run-start onto the tree directly so the view's projection
+    // sees the run record, then apply run-suspend. (View.send publishes
+    // outbound but the mock channel does not echo, so the tree would
+    // otherwise stay empty.)
+    const tree = (
+      session as unknown as {
+        _tree: {
+          applyRunStart: (run: {
+            id: string;
+            status: 'active';
+            initiatorClientId: string;
+            controlSignals: readonly never[];
+            pauseRequested: boolean;
+          }) => void;
+          applyRunSuspend: (o: { runId: string }) => void;
+        };
+      }
+    )._tree;
+    tree.applyRunStart({
+      id: 'r-1',
+      status: 'active',
+      initiatorClientId: 'alice',
+      controlSignals: [],
+      pauseRequested: false,
+    });
+    tree.applyRunSuspend({ runId: 'r-1' });
+
+    // The view's run list still contains the suspended run — UI projections
+    // can filter by status === 'suspended' to render a "Resume" affordance.
+    expect(view.runs[0]?.status).toBe('suspended');
+    expect(view.runs.some((r) => r.status === 'suspended')).toBe(true);
   });
 
   it('rebuilds the runs projection after send (cache invalidates)', async () => {
@@ -588,7 +646,13 @@ describe('ClientView.messages with step record', () => {
     const view = session.createView();
     const tree = treeOf(session);
 
-    tree.applyRunStart({ id: 'r-1', status: 'active', initiatorClientId: 'agent-1', controlSignals: [] });
+    tree.applyRunStart({
+      id: 'r-1',
+      status: 'active',
+      initiatorClientId: 'agent-1',
+      controlSignals: [],
+      pauseRequested: false,
+    });
     tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: '01', canonical: true });
     tree.applyMessage({
       id: 'm-1',
@@ -636,7 +700,13 @@ describe('ClientView.messages with step record', () => {
     // Out-of-order delivery: the message arrives before the step-start.
     // The projection resolves to undefined, mirroring how `node.run`
     // stays undefined while waiting on its run-start.
-    tree.applyRunStart({ id: 'r-1', status: 'active', initiatorClientId: 'agent-1', controlSignals: [] });
+    tree.applyRunStart({
+      id: 'r-1',
+      status: 'active',
+      initiatorClientId: 'agent-1',
+      controlSignals: [],
+      pauseRequested: false,
+    });
     tree.applyMessage({
       id: 'm-1',
       role: 'assistant',
@@ -660,7 +730,13 @@ describe('ClientView.messages with step record', () => {
     const view = session.createView();
     const tree = treeOf(session);
 
-    tree.applyRunStart({ id: 'r-1', status: 'active', initiatorClientId: 'agent-1', controlSignals: [] });
+    tree.applyRunStart({
+      id: 'r-1',
+      status: 'active',
+      initiatorClientId: 'agent-1',
+      controlSignals: [],
+      pauseRequested: false,
+    });
     tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: '01', canonical: true });
     tree.applyMessage({
       id: 'm-1',

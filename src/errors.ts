@@ -76,6 +76,21 @@ export enum ErrorCode {
    * pending.
    */
   RunClosed = 104201,
+
+  /**
+   * `AgentRun.suspend` was called on a run already in `'suspended'` status.
+   * Loud rather than silent because suspend is forward motion — the
+   * caller's expectation that the call advances run state cannot be
+   * satisfied from an already-suspended state.
+   */
+  RunAlreadySuspended = 104202,
+
+  /**
+   * `AgentRun.suspend` was called on a run that is already terminal
+   * (`'complete'`, `'failed'`, or `'aborted'`). Suspending a terminal
+   * run is an impossible transition.
+   */
+  RunAlreadyTerminal = 104203,
 }
 
 /**

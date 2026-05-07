@@ -2,11 +2,6 @@
  * The four SDK-defined control signals. Shape is fixed by the wire
  * protocol (`x-ably-abort`, `x-ably-pause`, `x-ably-resume`,
  * `x-ably-retry`) and does not depend on the codec.
- *
- * Only `'abort'` and `'retry'` have writer/client surfaces today; the
- * pause/resume strings are reserved so the dispatcher and apply path
- * route them through the same code when external publishers land them
- * on the channel ahead of the SDK surfacing them.
  */
 export type ControlSignalType = 'abort' | 'pause' | 'resume' | 'retry';
 
@@ -28,8 +23,8 @@ export interface ControlSignal {
 
   /**
    * The step the signal targets, when present. Carried by `'retry'`
-   * (and the future `'resume'`) for step-level scoping; never present
-   * on `'abort'` or `'pause'`.
+   * for step-level scoping; never present on `'abort'`, `'pause'`, or
+   * `'resume'` (resume always picks up from the last observed step).
    */
   readonly stepId?: string;
 

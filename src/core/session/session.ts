@@ -9,7 +9,7 @@ import type { RealtimeWithOptions } from '../../realtime-extensions.js';
 import { VERSION } from '../../version.js';
 import type { Accumulator, AnyCodec, CodecEvent, CodecMessage, CodecPart, Decoder } from '../codec/index.js';
 import type { Invocation } from '../invocation/index.js';
-import type { AgentRun, Run, RunStatus } from '../run/index.js';
+import type { AgentRun, Run, RunStatus, RunSuspendStatus } from '../run/index.js';
 import { DefaultAgentRun } from '../run/index.js';
 import type { StepStatus } from '../step/index.js';
 import type { ControlSignalType, MessageNode, TreeInternal } from '../tree/index.js';
@@ -66,15 +66,23 @@ interface SessionEvents {
 
 /**
  * Narrow a wire `x-ably-status` value to a {@link RunStatus} the tree can
- * transition into via `applyRunEnd`. Phase 11 accepts `'complete'`,
- * `'failed'`, and `'aborted'` — the abort row of {@link AgentRun.end}'s
- * classifier produces `'aborted'` when the bound step's `signal.reason`
- * is `ABORTED`.
+ * transition into via `applyRunEnd`. Accepts `'complete'`, `'failed'`,
+ * and `'aborted'` — the abort row of {@link AgentRun.end}'s classifier
+ * produces `'aborted'` when the bound step's `signal.reason` is `ABORTED`.
  * @param value The raw header value.
  * @returns True when `value` is a recognised run-end status.
  */
 const isRunEndStatus = (value: string | undefined): value is RunStatus =>
   value === 'complete' || value === 'failed' || value === 'aborted';
+
+/**
+ * Narrow a wire `x-ably-status` value to the suspend reasons accepted on
+ * `x-ably-run-suspend`. Only `'paused'` is supported in this iteration;
+ * `'awaiting-input'` lands additively when HITL is implemented.
+ * @param value The raw header value.
+ * @returns True when `value` is a recognised run-suspend status.
+ */
+const isRunSuspendStatus = (value: string | undefined): value is RunSuspendStatus => value === 'paused';
 
 /**
  * Narrow a wire `x-ably-status` value to a {@link StepStatus} the tree can
@@ -100,6 +108,12 @@ const wireMessageNameToControlSignalType = (name: string | undefined): ControlSi
   switch (name) {
     case WireMessages.Abort: {
       return 'abort';
+    }
+    case WireMessages.Pause: {
+      return 'pause';
+    }
+    case WireMessages.Resume: {
+      return 'resume';
     }
     case WireMessages.Retry: {
       return 'retry';
@@ -552,6 +566,10 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
       this._handleRunStart(message);
       return;
     }
+    if (message.name === WireMessages.RunSuspend) {
+      this._handleRunSuspend(message);
+      return;
+    }
     if (message.name === WireMessages.RunEnd) {
       this._handleRunEnd(message);
       return;
@@ -564,7 +582,12 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
       this._handleStepEnd(message);
       return;
     }
-    if (message.name === WireMessages.Abort || message.name === WireMessages.Retry) {
+    if (
+      message.name === WireMessages.Abort ||
+      message.name === WireMessages.Pause ||
+      message.name === WireMessages.Resume ||
+      message.name === WireMessages.Retry
+    ) {
       this._handleControlSignal(message);
       return;
     }
@@ -701,8 +724,32 @@ class DefaultSession<C extends AnyCodec> implements ClientSession<C>, AgentSessi
       status: 'active',
       initiatorClientId,
       controlSignals: [],
+      pauseRequested: false,
     };
     this._tree.applyRunStart(run);
+  }
+
+  private _handleRunSuspend(message: Ably.InboundMessage): void {
+    // Spec: AIT-RS1, AIT-RS2.
+    const runId = readHeader(message, Headers.RunId);
+    if (runId === undefined) {
+      this._logger.warn('DefaultSession._handleRunSuspend(); missing x-ably-run-id', {
+        serial: message.serial,
+      });
+      return;
+    }
+
+    const status = readHeader(message, Headers.Status);
+    if (!isRunSuspendStatus(status)) {
+      this._logger.warn('DefaultSession._handleRunSuspend(); invalid x-ably-status', {
+        runId,
+        status,
+        serial: message.serial,
+      });
+      return;
+    }
+
+    this._tree.applyRunSuspend({ runId });
   }
 
   private _handleStepEnd(message: Ably.InboundMessage): void {

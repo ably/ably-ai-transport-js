@@ -4,7 +4,10 @@ export type {
   AbortOptions,
   ControlSignalPublishResult,
   EndRunOptions,
+  PauseOptions,
+  ResumeOptions,
   RetryOptions,
   SendMessagesOptions,
   SessionWriter,
+  SuspendRunOptions,
 } from './writer.js';

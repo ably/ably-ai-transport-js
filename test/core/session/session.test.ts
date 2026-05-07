@@ -684,7 +684,7 @@ describe('Session', () => {
 
       const tree = treeOf(session);
       expect(tree.runs).toEqual<Run<string>[]>([
-        { id: 'r-1', status: 'active', initiatorClientId: 'alice', controlSignals: [] },
+        { id: 'r-1', status: 'active', initiatorClientId: 'alice', controlSignals: [], pauseRequested: false },
       ]);
     });
 
@@ -996,6 +996,181 @@ describe('Session', () => {
       expect(treeOf(session).runs[0]?.status).toBe('aborted');
     });
 
+    it("transitions a run to 'suspended' on x-ably-run-suspend", async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.RunStart,
+          headers: { [Headers.RunId]: 'r-1' },
+          clientId: 'alice',
+        }),
+      );
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '02',
+          name: WireMessages.RunSuspend,
+          headers: { [Headers.RunId]: 'r-1', [Headers.Status]: 'paused' },
+          clientId: 'alice',
+        }),
+      );
+
+      expect(treeOf(session).runs[0]?.status).toBe('suspended');
+    });
+
+    it('re-activates a suspended run on x-ably-step-start (resume mechanic)', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.RunStart,
+          headers: { [Headers.RunId]: 'r-1' },
+          clientId: 'alice',
+        }),
+      );
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '02',
+          name: WireMessages.RunSuspend,
+          headers: { [Headers.RunId]: 'r-1', [Headers.Status]: 'paused' },
+          clientId: 'alice',
+        }),
+      );
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '03',
+          name: WireMessages.StepStart,
+          headers: { [Headers.RunId]: 'r-1', [Headers.StepId]: 's-1' },
+          clientId: 'agent-1',
+        }),
+      );
+
+      expect(treeOf(session).runs[0]?.status).toBe('active');
+    });
+
+    it('skips x-ably-run-suspend without x-ably-run-id', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.RunStart,
+          headers: { [Headers.RunId]: 'r-1' },
+          clientId: 'alice',
+        }),
+      );
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '02',
+          name: WireMessages.RunSuspend,
+          headers: { [Headers.Status]: 'paused' },
+          clientId: 'alice',
+        }),
+      );
+
+      expect(treeOf(session).runs[0]?.status).toBe('active');
+    });
+
+    it("skips x-ably-run-suspend with an unrecognised status (only 'paused' accepted)", async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.RunStart,
+          headers: { [Headers.RunId]: 'r-1' },
+          clientId: 'alice',
+        }),
+      );
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '02',
+          name: WireMessages.RunSuspend,
+          headers: { [Headers.RunId]: 'r-1', [Headers.Status]: 'awaiting-input' },
+          clientId: 'alice',
+        }),
+      );
+
+      expect(treeOf(session).runs[0]?.status).toBe('active');
+    });
+
+    it('records x-ably-pause as a control signal and flips pauseRequested', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.RunStart,
+          headers: { [Headers.RunId]: 'r-1' },
+          clientId: 'alice',
+        }),
+      );
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '02',
+          name: WireMessages.Pause,
+          headers: {
+            [Headers.RunId]: 'r-1',
+            [Headers.MessageId]: 'sig-1',
+            [Headers.Reason]: 'paused',
+          },
+          clientId: 'alice',
+        }),
+      );
+
+      expect(treeOf(session).runs[0]?.status).toBe('active');
+      expect(treeOf(session).runs[0]?.pauseRequested).toBe(true);
+      expect(treeOf(session).runs[0]?.controlSignals).toEqual([
+        { type: 'pause', runId: 'r-1', messageId: 'sig-1', clientId: 'alice' },
+      ]);
+    });
+
+    it('records x-ably-resume as a control signal and clears pauseRequested', async () => {
+      const { options, channel } = makeSession();
+      const session = createClientSession(options);
+      await session.connect();
+
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '01',
+          name: WireMessages.RunStart,
+          headers: { [Headers.RunId]: 'r-1' },
+          clientId: 'alice',
+        }),
+      );
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '02',
+          name: WireMessages.Pause,
+          headers: { [Headers.RunId]: 'r-1', [Headers.MessageId]: 'sig-1', [Headers.Reason]: 'paused' },
+          clientId: 'alice',
+        }),
+      );
+      channel.simulateMessage(
+        makeRunInbound({
+          serial: '03',
+          name: WireMessages.Resume,
+          headers: { [Headers.RunId]: 'r-1', [Headers.MessageId]: 'sig-2', [Headers.Reason]: 'resumed' },
+          clientId: 'alice',
+        }),
+      );
+
+      expect(treeOf(session).runs[0]?.pauseRequested).toBe(false);
+      expect(treeOf(session).runs[0]?.controlSignals.map((s) => s.type)).toEqual(['pause', 'resume']);
+    });
+
     it('latest lifecycle wire wins — x-ably-run-end (complete) after x-ably-abort lands as complete', async () => {
       // Symmetric model: signals never mutate status. The run-end is the
       // only thing that can. If an agent (perhaps acting on a different
@@ -1229,7 +1404,7 @@ describe('Session', () => {
 
       const view = session.createView();
       expect(treeOf(session).runs).toEqual<Run<string>[]>([
-        { id: 'r-1', status: 'active', initiatorClientId: 'alice', controlSignals: [] },
+        { id: 'r-1', status: 'active', initiatorClientId: 'alice', controlSignals: [], pauseRequested: false },
       ]);
       expect(view.messages).toHaveLength(1);
       expect(view.messages[0]?.id).toBe('m-1');

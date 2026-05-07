@@ -65,6 +65,35 @@ export interface ClientRun<C extends AnyCodec> extends Run<CodecMessage<C>> {
   retry(options?: { stepId?: string }): Promise<Invocation>;
 
   /**
+   * Pause this run by publishing an `x-ably-pause` control signal.
+   * Observation of the signal does not change run status on its own —
+   * the agent processing it lets the in-flight step run to completion
+   * (mid-step interruption is not supported in this iteration), then
+   * publishes `x-ably-run-suspend (paused)` which transitions the run
+   * to `'suspended'`.
+   *
+   * Silent no-op when the run is already `'suspended'` or terminal —
+   * publishing a pause then would have no observable effect. The
+   * returned `Invocation` is valid regardless of the no-op path so
+   * callers can blindly POST it to wake an agent.
+   * @returns The run's `Invocation` for the caller to POST.
+   */
+  pause(): Promise<Invocation>;
+
+  /**
+   * Resume this run by publishing an `x-ably-resume` control signal.
+   * Observation of the signal does not change run status on its own —
+   * the agent processing it publishes a fresh `x-ably-step-start`
+   * which transitions the run back to `'active'`.
+   *
+   * Silent no-op when the run is not currently `'suspended'` (i.e.
+   * `'active'` or terminal). The returned `Invocation` is valid
+   * regardless of the no-op path; POST it to wake an offline agent.
+   * @returns The run's `Invocation` for the caller to POST.
+   */
+  resume(): Promise<Invocation>;
+
+  /**
    * Resolve when the run's status enters any of the targeted set, or
    * reject with {@link ErrorCode.RunClosed} if the underlying session
    * closes first.
@@ -173,6 +202,10 @@ class DefaultClientRun<C extends AnyCodec> implements ClientRun<C> {
     return this._tree.runs.find((r) => r.id === this._id)?.controlSignals ?? [];
   }
 
+  get pauseRequested(): boolean {
+    return this._tree.runs.find((r) => r.id === this._id)?.pauseRequested ?? false;
+  }
+
   toInvocation(): Invocation {
     return InvocationCtor.fromJSON({
       sessionName: this._sessionName,
@@ -206,6 +239,53 @@ class DefaultClientRun<C extends AnyCodec> implements ClientRun<C> {
       runId: this._id,
       messageId,
       ...(options?.stepId === undefined ? {} : { stepId: options.stepId }),
+    });
+  }
+
+  async pause(): Promise<Invocation> {
+    // Spec: AIT-CS7a.
+    this._logger.trace('DefaultClientRun.pause();');
+    const status = this.status;
+    if (status !== 'active') {
+      // Pause only advances state from 'active' → 'suspended' (after the
+      // agent observes and publishes run-suspend). Suspended runs have
+      // already paused; terminal runs are done. Either way no signal is
+      // published; the returned Invocation lets the caller blindly POST
+      // without checking state.
+      this._logger.debug('DefaultClientRun.pause(); run is not active — no publish', {
+        runId: this._id,
+        status,
+      });
+      return this.toInvocation();
+    }
+    const { messageId } = await this._writer.pause({ runId: this._id });
+    return InvocationCtor.fromJSON({
+      sessionName: this._sessionName,
+      runId: this._id,
+      messageId,
+    });
+  }
+
+  async resume(): Promise<Invocation> {
+    // Spec: AIT-CS7b.
+    this._logger.trace('DefaultClientRun.resume();');
+    const status = this.status;
+    if (status !== 'suspended') {
+      // Resume only advances state from 'suspended' → 'active'. An already-
+      // active run has nothing to wake; a terminal run is done. Either way
+      // no signal is published; the returned Invocation lets the caller
+      // blindly POST without checking state.
+      this._logger.debug('DefaultClientRun.resume(); run is not suspended — no publish', {
+        runId: this._id,
+        status,
+      });
+      return this.toInvocation();
+    }
+    const { messageId } = await this._writer.resume({ runId: this._id });
+    return InvocationCtor.fromJSON({
+      sessionName: this._sessionName,
+      runId: this._id,
+      messageId,
     });
   }
 

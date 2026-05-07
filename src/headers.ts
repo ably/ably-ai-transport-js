@@ -13,10 +13,10 @@ export const Headers = {
   /**
    * Unique message ID. Appears on every chunk of a streaming message and on
    * every control-signal wire ({@link WireMessages.Abort},
-   * {@link WireMessages.Retry}, and the future pause/resume wires) so callers
-   * can reference a specific signal as an invocation precondition. SDK
-   * -generated via `crypto.randomUUID()` — never read from
-   * `PublishResponse.serials`.
+   * {@link WireMessages.Pause}, {@link WireMessages.Resume},
+   * {@link WireMessages.Retry}) so callers can reference a specific signal
+   * as an invocation precondition. SDK-generated via `crypto.randomUUID()`
+   * — never read from `PublishResponse.serials`.
    */
   MessageId: 'x-ably-msg-id',
   /** Protocol-level role — `'user'` or `'assistant'`. */
@@ -37,8 +37,9 @@ export const Headers = {
   /**
    * Lifecycle status carried by streamed messages and lifecycle wire
    * messages. Streamed creates set `'streaming'`; their closing append sets
-   * `'finished'` or `'aborted'`. Run-end (and later step-end) wires set the
+   * `'finished'` or `'aborted'`. Run-end and step-end wires set the
    * terminal status of the lifecycle they close.
+   * {@link WireMessages.RunSuspend} carries `'paused'` here.
    */
   Status: 'x-ably-status',
   /**
@@ -70,9 +71,9 @@ export const Headers = {
   StepId: 'x-ably-step-id',
   /**
    * Reason carried by control-signal wires. For {@link WireMessages.Abort}
-   * the value is `'aborted'`; for {@link WireMessages.Retry} it is `'retry'`.
-   * Reserved for the future pause/resume wires (`'paused'`/`'resumed'`)
-   * which share the header slot.
+   * the value is `'aborted'`; {@link WireMessages.Pause} carries `'paused'`;
+   * {@link WireMessages.Resume} carries `'resumed'`; and
+   * {@link WireMessages.Retry} carries `'retry'`.
    */
   Reason: 'x-ably-reason',
 } as const;
@@ -92,6 +93,14 @@ export type HeaderName = (typeof Headers)[keyof typeof Headers];
 export const WireMessages = {
   /** Opens a run. Carries {@link Headers.RunId} and optional {@link Headers.ClientId}. */
   RunStart: 'x-ably-run-start',
+  /**
+   * Suspends a run without closing it. Carries {@link Headers.RunId} and
+   * {@link Headers.Status} (`'paused'` only in this iteration; HITL's
+   * `'awaiting-input'` lands additively when HITL is implemented).
+   * Observation transitions the run to `'suspended'`; a later
+   * {@link WireMessages.StepStart} re-activates it.
+   */
+  RunSuspend: 'x-ably-run-suspend',
   /** Closes a run terminally. Carries {@link Headers.RunId} and {@link Headers.Status}. */
   RunEnd: 'x-ably-run-end',
   /**
@@ -118,6 +127,35 @@ export const WireMessages = {
    * live agent, the signal sits durably on the channel until one wakes.
    */
   Abort: 'x-ably-abort',
+  /**
+   * Durable control signal requesting that an active run be paused.
+   * Carries {@link Headers.RunId}, {@link Headers.MessageId}, and
+   * {@link Headers.Reason} (always `'paused'`); may carry
+   * {@link Headers.ClientId} when a backend publishes on behalf of an
+   * end-user.
+   *
+   * Symmetric with the other control signals — observation does **not**
+   * mutate run status; the agent processes the signal and publishes the
+   * `x-ably-run-suspend` that actually transitions the run to
+   * `'suspended'`. With no live agent, the signal sits durably on the
+   * channel until one wakes.
+   *
+   * In this iteration the in-flight step always runs to completion before
+   * the run suspends; mid-step interruption is not supported.
+   */
+  Pause: 'x-ably-pause',
+  /**
+   * Durable control signal requesting that a suspended run be resumed.
+   * Carries {@link Headers.RunId}, {@link Headers.MessageId}, and
+   * {@link Headers.Reason} (always `'resumed'`); may carry
+   * {@link Headers.ClientId} when a backend publishes on behalf of an
+   * end-user.
+   *
+   * Observation does not mutate run status; the agent processes the
+   * signal and publishes a fresh `x-ably-step-start`, which re-activates
+   * the run.
+   */
+  Resume: 'x-ably-resume',
   /**
    * Durable control signal requesting that a run be retried. Carries
    * {@link Headers.RunId} and {@link Headers.MessageId}; may carry

@@ -30,10 +30,13 @@ export type {
   ControlSignalPublishResult,
   CreateRunOptions,
   EndRunOptions,
+  PauseOptions,
+  ResumeOptions,
   RetryOptions,
   SendMessagesOptions,
   SessionOptions,
   SessionWriter,
+  SuspendRunOptions,
 } from './core/session/index.js';
 export { createAgentSession, createClientSession } from './core/session/index.js';
 
@@ -52,6 +55,7 @@ export type {
   Run,
   RunEndStatus,
   RunStatus,
+  RunSuspendStatus,
 } from './core/run/index.js';
 
 // Step

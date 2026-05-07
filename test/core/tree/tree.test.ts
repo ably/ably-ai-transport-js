@@ -24,6 +24,7 @@ const makeRun = (overrides: Partial<Run<string>> & Pick<Run<string>, 'id'>): Run
   status: 'active',
   initiatorClientId: 'client-1',
   controlSignals: [],
+  pauseRequested: false,
   ...overrides,
 });
 
@@ -265,7 +266,9 @@ describe('Tree', () => {
         const tree = makeTree();
         tree.applyRunStart(makeRun({ id: 'r-1' }));
 
-        expect(tree.runs).toEqual([{ id: 'r-1', status: 'active', initiatorClientId: 'client-1', controlSignals: [] }]);
+        expect(tree.runs).toEqual([
+          { id: 'r-1', status: 'active', initiatorClientId: 'client-1', controlSignals: [], pauseRequested: false },
+        ]);
       });
 
       it('appends multiple runs in arrival order', () => {
@@ -288,7 +291,9 @@ describe('Tree', () => {
         tree.applyRunStart(makeRun({ id: 'r-1', initiatorClientId: 'first' }));
         tree.applyRunStart(makeRun({ id: 'r-1', initiatorClientId: 'second' }));
 
-        expect(tree.runs).toEqual([{ id: 'r-1', status: 'active', initiatorClientId: 'first', controlSignals: [] }]);
+        expect(tree.runs).toEqual([
+          { id: 'r-1', status: 'active', initiatorClientId: 'first', controlSignals: [], pauseRequested: false },
+        ]);
       });
 
       it('fires subscribe', () => {
@@ -321,7 +326,13 @@ describe('Tree', () => {
         tree.applyRunEnd({ runId: 'r-1', status: 'complete' });
 
         expect(tree.runs).toEqual([
-          { id: 'r-1', status: 'complete', initiatorClientId: 'client-1', controlSignals: [] },
+          {
+            id: 'r-1',
+            status: 'complete',
+            initiatorClientId: 'client-1',
+            controlSignals: [],
+            pauseRequested: false,
+          },
         ]);
       });
 
@@ -357,6 +368,61 @@ describe('Tree', () => {
         expect(tree.runs.map((r) => r.id)).toEqual(['r-1', 'r-2']);
         expect(tree.runs[0]?.status).toBe('complete');
         expect(tree.runs[1]?.status).toBe('active');
+      });
+    });
+
+    describe('applyRunSuspend', () => {
+      it('transitions a known run to suspended', () => {
+        const tree = makeTree();
+        tree.applyRunStart(makeRun({ id: 'r-1' }));
+
+        tree.applyRunSuspend({ runId: 'r-1' });
+
+        expect(tree.runs[0]?.status).toBe('suspended');
+      });
+
+      it('fires subscribe on transition', () => {
+        const tree = makeTree();
+        tree.applyRunStart(makeRun({ id: 'r-1' }));
+        const handler = vi.fn();
+        tree.subscribe(handler);
+
+        tree.applyRunSuspend({ runId: 'r-1' });
+
+        expect(handler).toHaveBeenCalledTimes(1);
+      });
+
+      it('ignores run-suspend for an unknown run id', () => {
+        const tree = makeTree();
+        const handler = vi.fn();
+        tree.subscribe(handler);
+
+        tree.applyRunSuspend({ runId: 'never-started' });
+
+        expect(tree.runs).toEqual([]);
+        expect(handler).not.toHaveBeenCalled();
+      });
+
+      it('clears streaming on still-streaming nodes for the suspended run', () => {
+        const tree = makeTree();
+        tree.applyRunStart(makeRun({ id: 'r-1' }));
+        tree.applyMessage(makeNode({ id: 'a', runId: 'r-1', serial: '01', streaming: true }));
+
+        tree.applyRunSuspend({ runId: 'r-1' });
+
+        expect(tree.messages[0]?.streaming).toBe(false);
+      });
+    });
+
+    describe('applyStepStart re-activation from suspended', () => {
+      it('transitions a suspended run back to active', () => {
+        const tree = makeTree();
+        tree.applyRunStart(makeRun({ id: 'r-1' }));
+        tree.applyRunSuspend({ runId: 'r-1' });
+
+        tree.applyStepStart({ id: 's-1', runId: 'r-1', status: 'active', serial: '02', canonical: true });
+
+        expect(tree.runs[0]?.status).toBe('active');
       });
     });
 
@@ -454,6 +520,92 @@ describe('Tree', () => {
         tree.applyRunEnd({ runId: 'r-1', status: 'aborted' });
 
         expect(tree.runs[0]?.status).toBe('aborted');
+      });
+
+      describe('pauseRequested', () => {
+        it('defaults to false on a freshly opened run', () => {
+          const tree = makeTree();
+          tree.applyRunStart(makeRun({ id: 'r-1' }));
+
+          expect(tree.runs[0]?.pauseRequested).toBe(false);
+        });
+
+        it('flips to true when a pause signal is observed', () => {
+          const tree = makeTree();
+          tree.applyRunStart(makeRun({ id: 'r-1' }));
+
+          tree.applyControlSignal({ type: 'pause', runId: 'r-1', messageId: 'sig-1', clientId: 'a' });
+
+          expect(tree.runs[0]?.pauseRequested).toBe(true);
+        });
+
+        it('clears back to false when a resume signal is observed', () => {
+          const tree = makeTree();
+          tree.applyRunStart(makeRun({ id: 'r-1' }));
+          tree.applyControlSignal({ type: 'pause', runId: 'r-1', messageId: 'sig-1', clientId: 'a' });
+
+          tree.applyControlSignal({ type: 'resume', runId: 'r-1', messageId: 'sig-2', clientId: 'a' });
+
+          expect(tree.runs[0]?.pauseRequested).toBe(false);
+        });
+
+        it('does not change on abort or retry signals', () => {
+          const tree = makeTree();
+          tree.applyRunStart(makeRun({ id: 'r-1' }));
+          tree.applyControlSignal({ type: 'pause', runId: 'r-1', messageId: 'sig-1', clientId: 'a' });
+
+          tree.applyControlSignal({ type: 'abort', runId: 'r-1', messageId: 'sig-2', clientId: 'a' });
+          tree.applyControlSignal({ type: 'retry', runId: 'r-1', messageId: 'sig-3', clientId: 'a' });
+
+          expect(tree.runs[0]?.pauseRequested).toBe(true);
+        });
+
+        it('tracks the latest of pause/resume across multiple cycles', () => {
+          const tree = makeTree();
+          tree.applyRunStart(makeRun({ id: 'r-1' }));
+
+          tree.applyControlSignal({ type: 'pause', runId: 'r-1', messageId: 's1', clientId: 'a' });
+          expect(tree.runs[0]?.pauseRequested).toBe(true);
+          tree.applyControlSignal({ type: 'resume', runId: 'r-1', messageId: 's2', clientId: 'a' });
+          expect(tree.runs[0]?.pauseRequested).toBe(false);
+          tree.applyControlSignal({ type: 'pause', runId: 'r-1', messageId: 's3', clientId: 'a' });
+          expect(tree.runs[0]?.pauseRequested).toBe(true);
+        });
+
+        it('survives hydration replay: a pause observed before a hypothetical handler subscribes is still on the run', () => {
+          // The tree replays signals through the same applyControlSignal entry
+          // point regardless of live-vs-hydration provenance, so a pause
+          // landed during hydration is on the Run record by the time any
+          // agent or UI inspects it.
+          const tree = makeTree();
+          tree.applyRunStart(makeRun({ id: 'r-1' }));
+          tree.applyControlSignal({ type: 'pause', runId: 'r-1', messageId: 'sig-1', clientId: 'a' });
+
+          // A late subscriber (registered after the signal landed) reads
+          // the same flag the tree carries forward. No handler-registration
+          // race for pauseRequested.
+          expect(tree.runs[0]?.pauseRequested).toBe(true);
+        });
+
+        it('keeps pauseRequested untouched when abort lands after pause (abort dominates terminal, not flag)', () => {
+          // AIT-RS9: abort dominates pause, but observation alone never
+          // mutates status. The run stays active with both flags
+          // recorded; the agent's run.end(error) is what produces the
+          // terminal lifecycle wire and it routes to 'aborted' purely
+          // from the error shape (per AIT-CS11).
+          const tree = makeTree();
+          tree.applyRunStart(makeRun({ id: 'r-1' }));
+          tree.applyControlSignal({ type: 'pause', runId: 'r-1', messageId: 'sig-1', clientId: 'a' });
+
+          tree.applyControlSignal({ type: 'abort', runId: 'r-1', messageId: 'sig-2', clientId: 'a' });
+
+          expect(tree.runs[0]?.status).toBe('active');
+          expect(tree.runs[0]?.pauseRequested).toBe(true);
+
+          tree.applyRunEnd({ runId: 'r-1', status: 'aborted' });
+
+          expect(tree.runs[0]?.status).toBe('aborted');
+        });
       });
     });
 

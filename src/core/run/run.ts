@@ -4,16 +4,25 @@ import type { ControlSignal } from '../tree/control-signal.js';
  * Lifecycle status of a run.
  *
  * Symmetric-state-machine subset — every transition comes from a
- * lifecycle wire (`x-ably-run-start`, `x-ably-step-start`,
- * `x-ably-run-end`). Control signals (abort, retry, future
- * pause/resume) record but do not mutate status. `'suspended'` is
- * deferred and joins this union additively when durable pause control
- * signals land.
+ * lifecycle wire (`x-ably-run-start`, `x-ably-run-suspend`,
+ * `x-ably-step-start`, `x-ably-run-end`). Control signals (abort,
+ * pause, resume, retry) record but do not mutate status.
+ *
+ * `'suspended'` is non-terminal: an observed `x-ably-run-suspend`
+ * transitions an active run into it, and a later `x-ably-step-start`
+ * transitions it back to `'active'`.
  */
-export type RunStatus = 'active' | 'complete' | 'failed' | 'aborted';
+export type RunStatus = 'active' | 'suspended' | 'complete' | 'failed' | 'aborted';
 
 /** Terminal status accepted by run-end wire messages. */
 export type RunEndStatus = 'complete' | 'failed' | 'aborted';
+
+/**
+ * Suspend reason carried on `x-ably-run-suspend`. Only `'paused'` is
+ * supported in this iteration; `'awaiting-input'` lands additively when
+ * HITL is implemented.
+ */
+export type RunSuspendStatus = 'paused';
 
 /**
  * Read-only state of a run, common to both client and agent perspectives.
@@ -29,8 +38,9 @@ export interface Run<TMessage> {
   /**
    * Current status of the run. Driven entirely by observed lifecycle
    * wires — `x-ably-run-start` and `x-ably-step-start` set it to
-   * `'active'` (the latter re-activates from any prior terminal),
-   * `x-ably-run-end` sets it to whichever terminal status the wire
+   * `'active'` (the latter re-activates from any prior terminal or
+   * suspended state), `x-ably-run-suspend` sets it to `'suspended'`,
+   * and `x-ably-run-end` sets it to whichever terminal status the wire
    * carries. Control signals never mutate status.
    */
   readonly status: RunStatus;
@@ -45,9 +55,9 @@ export interface Run<TMessage> {
 
   /**
    * Control signals observed on the channel for this run, in arrival
-   * order. Each entry corresponds to one `x-ably-abort`, `x-ably-retry`
-   * (or future `x-ably-pause`/`x-ably-resume`) wire. Append-only;
-   * never mutated.
+   * order. Each entry corresponds to one `x-ably-abort`,
+   * `x-ably-pause`, `x-ably-resume`, or `x-ably-retry` wire.
+   * Append-only; never mutated.
    *
    * Recorded so observers can reconstruct what the run was asked to do
    * even when no live agent processed the signal — and so an
@@ -55,4 +65,19 @@ export interface Run<TMessage> {
    * control-signal wire can be satisfied via tree visibility.
    */
   readonly controlSignals: readonly ControlSignal[];
+
+  /**
+   * Whether a pause has been observed for this run. Derived from
+   * {@link Run.controlSignals} — `true` once any `'pause'` signal has
+   * been observed and not yet superseded by a `'resume'`. Reset to
+   * `false` when a later `'resume'` signal is observed.
+   *
+   * Reading this between steps is the agent's primary mechanism for
+   * deciding to suspend. Set both for live signals and for signals
+   * observed during hydration: an agent that wakes up to a channel
+   * where pause was already published sees `true` immediately.
+   *
+   * Spec: AIT-CS3b.
+   */
+  readonly pauseRequested: boolean;
 }

@@ -303,6 +303,22 @@ const reachEndStep = (
   return internals.writer.endStep.bind(internals.writer);
 };
 
+/**
+ * `suspendRun` is intentionally not on the public {@link SessionWriter}
+ * interface — it is driven by {@link DefaultAgentRun.suspend} and reached
+ * for tests via the underlying class.
+ * @param session A session whose writer to reach.
+ * @returns A typed view of the writer's `suspendRun` method.
+ */
+const reachSuspendRun = (
+  session: ReturnType<typeof createClientSession<StubCodec>>,
+): ((options: { runId: string }) => Promise<void>) => {
+  const internals = session as unknown as {
+    writer: { suspendRun: (options: { runId: string }) => Promise<void> };
+  };
+  return internals.writer.suspendRun.bind(internals.writer);
+};
+
 describe('SessionWriter.startStep (internal)', () => {
   it('publishes one x-ably-step-start with run-id and step-id headers', async () => {
     const { options, channel } = makeSession();
@@ -546,5 +562,115 @@ describe('SessionWriter.retry', () => {
     await session.close();
 
     await expect(session.writer.retry({ runId: 'r-1' })).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+  });
+});
+
+describe('SessionWriter.pause', () => {
+  it('publishes one x-ably-pause message with run-id, msg-id, and reason=paused headers', async () => {
+    const { options, channel } = makeSession();
+    const session = createClientSession(options);
+    await session.connect();
+
+    const result = await session.writer.pause({ runId: 'r-1' });
+
+    expect(channel.publish).toHaveBeenCalledTimes(1);
+    const [wire] = channel.publishedBatches[0] ?? [];
+    if (!wire) throw new Error('expected one wire message');
+    expect(wire.name).toBe(WireMessages.Pause);
+    const headers = headersOf(wire);
+    expect(headers[Headers.RunId]).toBe('r-1');
+    expect(headers[Headers.Reason]).toBe('paused');
+    expect(headers[Headers.ClientId]).toBeUndefined();
+    expect(headers[Headers.MessageId]).toBeDefined();
+    expect(result.messageId).toBe(headers[Headers.MessageId]);
+  });
+
+  it('attaches x-ably-client-id when supplied', async () => {
+    const { options, channel } = makeSession();
+    const session = createClientSession(options);
+    await session.connect();
+
+    await session.writer.pause({ runId: 'r-1', clientId: 'end-user-1' });
+
+    const [wire] = channel.publishedBatches[0] ?? [];
+    if (!wire) throw new Error('expected one wire message');
+    expect(headersOf(wire)[Headers.ClientId]).toBe('end-user-1');
+  });
+
+  it('throws SessionClosed after the session has been closed', async () => {
+    const { options } = makeSession();
+    const session = createClientSession(options);
+    await session.close();
+
+    await expect(session.writer.pause({ runId: 'r-1' })).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+  });
+});
+
+describe('SessionWriter.resume', () => {
+  it('publishes one x-ably-resume message with run-id, msg-id, and reason=resumed headers', async () => {
+    const { options, channel } = makeSession();
+    const session = createClientSession(options);
+    await session.connect();
+
+    const result = await session.writer.resume({ runId: 'r-1' });
+
+    expect(channel.publish).toHaveBeenCalledTimes(1);
+    const [wire] = channel.publishedBatches[0] ?? [];
+    if (!wire) throw new Error('expected one wire message');
+    expect(wire.name).toBe(WireMessages.Resume);
+    const headers = headersOf(wire);
+    expect(headers[Headers.RunId]).toBe('r-1');
+    expect(headers[Headers.Reason]).toBe('resumed');
+    expect(headers[Headers.ClientId]).toBeUndefined();
+    expect(headers[Headers.MessageId]).toBeDefined();
+    expect(result.messageId).toBe(headers[Headers.MessageId]);
+  });
+
+  it('attaches x-ably-client-id when supplied', async () => {
+    const { options, channel } = makeSession();
+    const session = createClientSession(options);
+    await session.connect();
+
+    await session.writer.resume({ runId: 'r-1', clientId: 'end-user-1' });
+
+    const [wire] = channel.publishedBatches[0] ?? [];
+    if (!wire) throw new Error('expected one wire message');
+    expect(headersOf(wire)[Headers.ClientId]).toBe('end-user-1');
+  });
+
+  it('throws SessionClosed after the session has been closed', async () => {
+    const { options } = makeSession();
+    const session = createClientSession(options);
+    await session.close();
+
+    await expect(session.writer.resume({ runId: 'r-1' })).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+  });
+});
+
+describe('SessionWriter.suspendRun (internal)', () => {
+  it("publishes one x-ably-run-suspend with run-id and status='paused' headers", async () => {
+    const { options, channel } = makeSession();
+    const session = createClientSession(options);
+    await session.connect();
+    const suspendRun = reachSuspendRun(session);
+
+    await suspendRun({ runId: 'r-1' });
+
+    expect(channel.publish).toHaveBeenCalledTimes(1);
+    const [wire] = channel.publishedBatches[0] ?? [];
+    if (!wire) throw new Error('expected one wire message');
+    expect(wire.name).toBe(WireMessages.RunSuspend);
+    const headers = headersOf(wire);
+    expect(headers[Headers.RunId]).toBe('r-1');
+    expect(headers[Headers.Status]).toBe('paused');
+  });
+
+  it('throws SessionClosed after the session has been closed', async () => {
+    const { options } = makeSession();
+    const session = createClientSession(options);
+    const suspendRun = reachSuspendRun(session);
+    await session.close();
+
+    await expect(suspendRun({ runId: 'r-1' })).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
   });
 });

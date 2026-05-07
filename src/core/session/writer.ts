@@ -92,6 +92,50 @@ export interface RetryOptions {
 }
 
 /**
+ * Options for {@link SessionWriter.pause}. Publishes an `x-ably-pause`
+ * control signal targeting the named run. Observation does not move
+ * status; the agent processing the signal publishes
+ * `x-ably-run-suspend (paused)` after its current step completes,
+ * and that lifecycle wire is what transitions the run to `'suspended'`.
+ */
+export interface PauseOptions {
+  /** The run to pause. */
+  runId: string;
+  /**
+   * Override the attribution clientId sent as `x-ably-client-id`. See
+   * {@link AbortOptions.clientId}.
+   */
+  clientId?: string;
+}
+
+/**
+ * Options for {@link SessionWriter.resume}. Publishes an `x-ably-resume`
+ * control signal targeting the named run. Observation does not move
+ * status; the agent processing the signal publishes a fresh
+ * `x-ably-step-start`, which re-activates the run from the suspended
+ * state.
+ */
+export interface ResumeOptions {
+  /** The run to resume. */
+  runId: string;
+  /**
+   * Override the attribution clientId sent as `x-ably-client-id`. See
+   * {@link AbortOptions.clientId}.
+   */
+  clientId?: string;
+}
+
+/**
+ * Options for {@link SessionWriter.suspendRun}. Publishes
+ * `x-ably-run-suspend` carrying `x-ably-status: 'paused'`, transitioning
+ * the targeted run to `'suspended'`.
+ */
+export interface SuspendRunOptions {
+  /** The run to suspend. */
+  runId: string;
+}
+
+/**
  * Result returned by control-signal publish methods. Carries the wire
  * messageId the writer generated and stamped on the signal — pair this
  * with an {@link Invocation}'s `messageId` precondition when waking an
@@ -174,6 +218,41 @@ export interface SessionWriter<C extends AnyCodec> {
    *   when called after the session has been closed.
    */
   retry(options: RetryOptions): Promise<ControlSignalPublishResult>;
+
+  /**
+   * Publish an `x-ably-pause` control signal for the named run. The wire
+   * carries `x-ably-msg-id`, `x-ably-run-id`, `x-ably-reason: 'paused'`,
+   * and (when supplied) `x-ably-client-id`.
+   *
+   * Observation does not transition status — the agent processing the
+   * signal publishes the `x-ably-run-suspend (paused)` that does, after
+   * its current step completes. Idempotence (no-op on suspended/terminal
+   * runs) is enforced at the {@link ClientRun.pause} layer; this writer
+   * method publishes unconditionally so backend orchestrators that hold
+   * the runId directly can publish without a tree lookup.
+   * @param options Per-call wiring; see {@link PauseOptions}.
+   * @returns The wire messageId stamped on the published signal.
+   * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.SessionClosed}
+   *   when called after the session has been closed.
+   */
+  pause(options: PauseOptions): Promise<ControlSignalPublishResult>;
+
+  /**
+   * Publish an `x-ably-resume` control signal for the named run. The
+   * wire carries `x-ably-msg-id`, `x-ably-run-id`,
+   * `x-ably-reason: 'resumed'`, and (when supplied) `x-ably-client-id`.
+   *
+   * Observation does not transition status — the agent processing the
+   * signal publishes a fresh `x-ably-step-start` which re-activates the
+   * run. Idempotence (no-op on non-suspended runs) is enforced at the
+   * {@link ClientRun.resume} layer; this writer method publishes
+   * unconditionally.
+   * @param options Per-call wiring; see {@link ResumeOptions}.
+   * @returns The wire messageId stamped on the published signal.
+   * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.SessionClosed}
+   *   when called after the session has been closed.
+   */
+  resume(options: ResumeOptions): Promise<ControlSignalPublishResult>;
 }
 
 /** Options for constructing a {@link DefaultSessionWriter}. */
@@ -552,6 +631,94 @@ export class DefaultSessionWriter<C extends AnyCodec> implements SessionWriter<C
       messageId,
     });
     return { messageId };
+  }
+
+  async pause(options: PauseOptions): Promise<ControlSignalPublishResult> {
+    this._logger.trace('DefaultSessionWriter.pause();', { runId: options.runId });
+
+    if (this._isClosed()) {
+      throw new Ably.ErrorInfo('unable to pause run; session is closed', ErrorCode.SessionClosed, 400);
+    }
+
+    const messageId = generateMessageId();
+    const headers: Record<string, string> = {
+      [Headers.MessageId]: messageId,
+      [Headers.RunId]: options.runId,
+      [Headers.Reason]: 'paused',
+    };
+    if (options.clientId !== undefined) {
+      headers[Headers.ClientId] = options.clientId;
+    }
+
+    const channel = this._channelManager.get();
+    await channel.publish({
+      name: WireMessages.Pause,
+      extras: { headers },
+    });
+
+    this._logger.debug('DefaultSessionWriter.pause(); published', { runId: options.runId, messageId });
+    return { messageId };
+  }
+
+  async resume(options: ResumeOptions): Promise<ControlSignalPublishResult> {
+    this._logger.trace('DefaultSessionWriter.resume();', { runId: options.runId });
+
+    if (this._isClosed()) {
+      throw new Ably.ErrorInfo('unable to resume run; session is closed', ErrorCode.SessionClosed, 400);
+    }
+
+    const messageId = generateMessageId();
+    const headers: Record<string, string> = {
+      [Headers.MessageId]: messageId,
+      [Headers.RunId]: options.runId,
+      [Headers.Reason]: 'resumed',
+    };
+    if (options.clientId !== undefined) {
+      headers[Headers.ClientId] = options.clientId;
+    }
+
+    const channel = this._channelManager.get();
+    await channel.publish({
+      name: WireMessages.Resume,
+      extras: { headers },
+    });
+
+    this._logger.debug('DefaultSessionWriter.resume(); published', { runId: options.runId, messageId });
+    return { messageId };
+  }
+
+  /**
+   * Publish `x-ably-run-suspend` to the channel, recording that the
+   * named run has suspended with reason `'paused'`. Internal — not on
+   * the {@link SessionWriter} interface; the public
+   * {@link AgentRun.suspend} drives this through {@link DefaultAgentRun}.
+   *
+   * The wire carries {@link Headers.RunId} and
+   * {@link Headers.Status} (`'paused'`).
+   * @param options The run to suspend; see {@link SuspendRunOptions}.
+   * @returns Resolves once Ably has acknowledged the publish.
+   * @throws An `Ably.ErrorInfo` with code {@link ErrorCode.SessionClosed}
+   *   when called after the session has been closed.
+   */
+  async suspendRun(options: SuspendRunOptions): Promise<void> {
+    this._logger.trace('DefaultSessionWriter.suspendRun();', { runId: options.runId });
+
+    if (this._isClosed()) {
+      throw new Ably.ErrorInfo('unable to suspend run; session is closed', ErrorCode.SessionClosed, 400);
+    }
+
+    const channel = this._channelManager.get();
+    await channel.publish({
+      name: WireMessages.RunSuspend,
+      extras: {
+        headers: {
+          [Headers.RunId]: options.runId,
+          [Headers.Status]: 'paused',
+        },
+      },
+    });
+
+    this._logger.debug('DefaultSessionWriter.suspendRun(); published', { runId: options.runId });
   }
 
   /**

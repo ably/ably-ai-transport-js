@@ -468,6 +468,163 @@ describe('AgentRun.end', () => {
   });
 });
 
+describe('AgentRun.suspend', () => {
+  it("publishes x-ably-run-suspend with status='paused'", async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    const run = await connectAndCreateRun(session, channel);
+
+    await run.suspend();
+
+    expect(channel.publish).toHaveBeenCalledTimes(1);
+    const [wire] = channel.publishedBatches[0] ?? [];
+    if (!wire) throw new Error('expected one wire message');
+    expect(wire.name).toBe(WireMessages.RunSuspend);
+    expect(headersOf(wire)[Headers.RunId]).toBe('r-1');
+    expect(headersOf(wire)[Headers.Status]).toBe('paused');
+  });
+
+  it('throws RunAlreadySuspended when the run has already been suspended via this handle', async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    const run = await connectAndCreateRun(session, channel);
+
+    await run.suspend();
+
+    await expect(run.suspend()).rejects.toBeErrorInfoWithCode(ErrorCode.RunAlreadySuspended);
+  });
+
+  it("throws RunAlreadySuspended when the tree shows the run as 'suspended' (multi-handle)", async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    const run = await connectAndCreateRun(session, channel);
+
+    // Simulate another agent's run-suspend landing on the channel.
+    channel.simulateMessage({
+      name: WireMessages.RunSuspend,
+      serial: '02',
+      extras: { headers: { [Headers.RunId]: 'r-1', [Headers.Status]: 'paused' } },
+    } as unknown as Ably.InboundMessage);
+
+    await expect(run.suspend()).rejects.toBeErrorInfoWithCode(ErrorCode.RunAlreadySuspended);
+  });
+
+  it('throws RunAlreadyTerminal when the run is complete', async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    const run = await connectAndCreateRun(session, channel);
+
+    await run.end();
+
+    await expect(run.suspend()).rejects.toBeErrorInfoWithCode(ErrorCode.RunAlreadyTerminal);
+  });
+
+  it('throws RunAlreadyTerminal when the tree shows the run as terminal', async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    const run = await connectAndCreateRun(session, channel);
+
+    channel.simulateMessage({
+      name: WireMessages.RunEnd,
+      serial: '02',
+      extras: { headers: { [Headers.RunId]: 'r-1', [Headers.Status]: 'aborted' } },
+    } as unknown as Ably.InboundMessage);
+
+    await expect(run.suspend()).rejects.toBeErrorInfoWithCode(ErrorCode.RunAlreadyTerminal);
+  });
+
+  it('does not auto-publish run-end on close() after a successful suspend', async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    const run = await connectAndCreateRun(session, channel);
+
+    await run.suspend();
+    await run.close();
+
+    // Only one publish total: the run-suspend. No run-end on close.
+    expect(channel.publish).toHaveBeenCalledTimes(1);
+    const [wire] = channel.publishedBatches[0] ?? [];
+    if (!wire) throw new Error('expected one wire message');
+    expect(wire.name).toBe(WireMessages.RunSuspend);
+  });
+
+  it('still allows explicit run.end() after suspend() to forcibly terminate', async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    const run = await connectAndCreateRun(session, channel);
+
+    await run.suspend();
+    await run.end(new Error('terminate suspended run'));
+
+    expect(channel.publish).toHaveBeenCalledTimes(2);
+    const lastBatch = channel.publishedBatches.at(-1) ?? [];
+    const [wire] = lastBatch;
+    if (!wire) throw new Error('expected run-end wire');
+    expect(wire.name).toBe(WireMessages.RunEnd);
+    expect(headersOf(wire)[Headers.Status]).toBe('failed');
+  });
+
+  it('wraps writer publish errors as Ably.ErrorInfo with the original on cause', async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    const run = await connectAndCreateRun(session, channel);
+
+    channel.publish.mockRejectedValueOnce(new Ably.ErrorInfo('publish failed', 50000, 500));
+
+    await expect(run.suspend()).rejects.toBeErrorInfoWithCauseCode(50000);
+  });
+
+  it('leaves suspend re-callable after a publish failure (handle is not poisoned)', async () => {
+    // _suspended is set only after a successful publish — a failed publish
+    // must leave the handle in a state where a retry succeeds, otherwise
+    // the caller cannot recover from a transient publish failure.
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    const run = await connectAndCreateRun(session, channel);
+
+    channel.publish.mockRejectedValueOnce(new Ably.ErrorInfo('publish failed', 50000, 500));
+    await expect(run.suspend()).rejects.toBeErrorInfoWithCauseCode(50000);
+
+    // Second attempt: must publish successfully, not throw RunAlreadySuspended.
+    await run.suspend();
+
+    // Two publish attempts overall: the failed one and the successful one.
+    expect(channel.publish).toHaveBeenCalledTimes(2);
+    const lastBatch = channel.publishedBatches.at(-1) ?? [];
+    const [wire] = lastBatch;
+    if (!wire) throw new Error('expected run-suspend wire on retry');
+    expect(wire.name).toBe(WireMessages.RunSuspend);
+  });
+});
+
+describe('AgentRun.pauseRequested', () => {
+  it('reflects the tree-derived flag', async () => {
+    const { options, channel } = makeAgentSession();
+    const session = createAgentSession(options);
+    const run = await connectAndCreateRun(session, channel);
+
+    expect(run.pauseRequested).toBe(false);
+
+    channel.simulateMessage({
+      name: WireMessages.Pause,
+      serial: '02',
+      clientId: 'alice',
+      extras: { headers: { [Headers.RunId]: 'r-1', [Headers.MessageId]: 'sig-1', [Headers.Reason]: 'paused' } },
+    } as unknown as Ably.InboundMessage);
+
+    expect(run.pauseRequested).toBe(true);
+
+    channel.simulateMessage({
+      name: WireMessages.Resume,
+      serial: '03',
+      clientId: 'alice',
+      extras: { headers: { [Headers.RunId]: 'r-1', [Headers.MessageId]: 'sig-2', [Headers.Reason]: 'resumed' } },
+    } as unknown as Ably.InboundMessage);
+
+    expect(run.pauseRequested).toBe(false);
+  });
+});
+
 describe('AgentRun.close', () => {
   it('calls end() if the run has not been ended and closes the view', async () => {
     const { options, channel } = makeAgentSession();

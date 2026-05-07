@@ -296,6 +296,23 @@ export interface TreeInternal<TMessage> extends Tree<TMessage> {
   applyRunEnd(options: { runId: string; status: RunStatus }): void;
 
   /**
+   * Transition a known run to `'suspended'` in response to
+   * `x-ably-run-suspend`. The wire's status header is recorded by the
+   * caller; the tree only needs to know the run is suspended.
+   *
+   * If `runId` does not match a recorded run the call is logged and
+   * ignored — a session that subscribed mid-run can legitimately see
+   * run-suspend without prior run-start.
+   *
+   * Suspending also clears `streaming` on every still-streaming node
+   * for the run; any in-flight stream is closed by the agent before it
+   * publishes run-suspend.
+   * @param options Identification of the run to suspend.
+   * @param options.runId The id of the run to suspend.
+   */
+  applyRunSuspend(options: { runId: string }): void;
+
+  /**
    * Record a control signal observed on the channel and emit
    * {@link TreeEvents.control-signal}. Appends to the targeted run's
    * {@link Run.controlSignals} list. Status is **never** mutated — the
@@ -311,11 +328,11 @@ export interface TreeInternal<TMessage> extends Tree<TMessage> {
 
   /**
    * Record a `'active'` step observed via `x-ably-step-start`. If the
-   * step's run is currently in a terminal status (`'failed'`,
-   * `'aborted'`, or `'complete'`), the run transitions back to
-   * `'active'` — this is the retry mechanic: the agent processing a
-   * retry signal publishes a fresh step-start, which re-activates the
-   * run.
+   * step's run is currently in a non-active status (`'failed'`,
+   * `'aborted'`, `'complete'`, or `'suspended'`), the run transitions
+   * back to `'active'` — this is the retry/resume mechanic: the agent
+   * processing a retry or resume signal publishes a fresh step-start,
+   * which re-activates the run.
    *
    * The arrival also retires prior steps in the same run as the
    * canonical-step rule requires (Spec: AIT-CN2, AIT-CN3):
@@ -502,6 +519,26 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
     this._notify();
   }
 
+  applyRunSuspend(options: { runId: string }): void {
+    this._logger.trace('DefaultTree.applyRunSuspend();', { runId: options.runId });
+
+    const index = this._runs.findIndex((run) => run.id === options.runId);
+    const existing = index === -1 ? undefined : this._runs[index];
+    if (existing === undefined) {
+      // Spec: AIT-RS3.
+      this._logger.warn('DefaultTree.applyRunSuspend(); run not found', { runId: options.runId });
+      return;
+    }
+
+    // Spec: AIT-RS2.
+    this._runs[index] = { ...existing, status: 'suspended' };
+    // Suspended runs have no in-flight stream; the agent flushed before
+    // publishing run-suspend. Mirror the run-end clear so consumers see
+    // streaming flags drop coherently with the lifecycle transition.
+    this._clearStreamingForRun(options.runId);
+    this._notify();
+  }
+
   applyControlSignal(signal: ControlSignal): void {
     this._logger.trace('DefaultTree.applyControlSignal();', {
       type: signal.type,
@@ -527,7 +564,22 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
       return;
     }
 
-    const updated: Run<TMessage> = { ...existing, controlSignals: [...existing.controlSignals, signal] };
+    // pauseRequested tracks the latest pause/resume signal: a fresh pause
+    // sets it true, a resume clears it. abort/retry leave it alone. The
+    // caller (agent code) reads this between steps to decide whether to
+    // suspend. Spec: AIT-CS3b.
+    let pauseRequested = existing.pauseRequested;
+    if (signal.type === 'pause') {
+      pauseRequested = true;
+    } else if (signal.type === 'resume') {
+      pauseRequested = false;
+    }
+
+    const updated: Run<TMessage> = {
+      ...existing,
+      controlSignals: [...existing.controlSignals, signal],
+      pauseRequested,
+    };
     this._runs[index] = updated;
     this._notify();
     this._emitter.emit('control-signal', { signal, run: updated });

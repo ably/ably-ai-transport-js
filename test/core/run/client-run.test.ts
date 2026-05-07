@@ -70,6 +70,7 @@ describe('createClientRun', () => {
       id: 'r-1',
       status: 'active',
       controlSignals: [],
+      pauseRequested: false,
       initiatorClientId: 'alice',
     } satisfies Run<string>);
     fixture.tree.applyRunEnd({ runId: 'r-1', status: 'aborted' });
@@ -84,6 +85,7 @@ describe('createClientRun', () => {
       id: 'r-1',
       status: 'active',
       controlSignals: [],
+      pauseRequested: false,
       initiatorClientId: 'alice',
     } satisfies Run<string>);
     fixture.tree.applyControlSignal({ type: 'abort', runId: 'r-1', messageId: 'sig-1', clientId: 'alice' });
@@ -136,6 +138,7 @@ describe('createClientRun', () => {
         id: 'r-1',
         status: 'active',
         controlSignals: [],
+        pauseRequested: false,
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       const run = createClientRun<StubCodec>({ ...baseOptions(), messageId: 'm-1' });
@@ -157,6 +160,7 @@ describe('createClientRun', () => {
         id: 'r-1',
         status: 'active',
         controlSignals: [],
+        pauseRequested: false,
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       fixture.tree.applyRunEnd({ runId: 'r-1', status: 'aborted' });
@@ -173,6 +177,7 @@ describe('createClientRun', () => {
         id: 'r-1',
         status: 'active',
         controlSignals: [],
+        pauseRequested: false,
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       fixture.tree.applyRunEnd({ runId: 'r-1', status: 'complete' });
@@ -188,6 +193,7 @@ describe('createClientRun', () => {
         id: 'r-1',
         status: 'active',
         controlSignals: [],
+        pauseRequested: false,
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       fixture.tree.applyRunEnd({ runId: 'r-1', status: 'failed' });
@@ -203,6 +209,7 @@ describe('createClientRun', () => {
         id: 'r-1',
         status: 'active',
         controlSignals: [],
+        pauseRequested: false,
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       fixture.tree.applyRunEnd({ runId: 'r-1', status: 'complete' });
@@ -218,6 +225,7 @@ describe('createClientRun', () => {
         id: 'r-1',
         status: 'active',
         controlSignals: [],
+        pauseRequested: false,
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       fixture.channel.publish.mockRejectedValueOnce(new Error('publish failed'));
@@ -245,6 +253,7 @@ describe('createClientRun', () => {
         id: 'r-1',
         status: 'active',
         controlSignals: [],
+        pauseRequested: false,
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       const run = createClientRun<StubCodec>({
@@ -267,6 +276,7 @@ describe('createClientRun', () => {
         id: 'r-1',
         status: 'active',
         controlSignals: [],
+        pauseRequested: false,
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       fixture.tree.applyRunEnd({ runId: 'r-1', status: 'complete' });
@@ -280,6 +290,7 @@ describe('createClientRun', () => {
         id: 'r-1',
         status: 'active',
         controlSignals: [],
+        pauseRequested: false,
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       const run = createClientRun<StubCodec>({ ...baseOptions() });
@@ -295,6 +306,7 @@ describe('createClientRun', () => {
         id: 'r-1',
         status: 'active',
         controlSignals: [],
+        pauseRequested: false,
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       const run = createClientRun<StubCodec>({ ...baseOptions() });
@@ -309,6 +321,7 @@ describe('createClientRun', () => {
         id: 'r-2',
         status: 'active',
         controlSignals: [],
+        pauseRequested: false,
         initiatorClientId: 'alice',
       } satisfies Run<string>);
 
@@ -321,6 +334,7 @@ describe('createClientRun', () => {
         id: 'r-1',
         status: 'active',
         controlSignals: [],
+        pauseRequested: false,
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       const closeController = new AbortController();
@@ -340,6 +354,7 @@ describe('createClientRun', () => {
         id: 'r-1',
         status: 'active',
         controlSignals: [],
+        pauseRequested: false,
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       const closeController = new AbortController();
@@ -357,6 +372,7 @@ describe('createClientRun', () => {
         id: 'r-1',
         status: 'active',
         controlSignals: [],
+        pauseRequested: false,
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       const run = createClientRun<StubCodec>({
@@ -377,6 +393,7 @@ describe('createClientRun', () => {
         id: 'r-1',
         status: 'active',
         controlSignals: [],
+        pauseRequested: false,
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       const run = createClientRun<StubCodec>({ ...baseOptions() });
@@ -401,6 +418,7 @@ describe('createClientRun', () => {
         id: 'r-1',
         status: 'active',
         controlSignals: [],
+        pauseRequested: false,
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       fixture.tree.applyRunEnd({ runId: 'r-1', status: 'failed' });
@@ -419,6 +437,7 @@ describe('createClientRun', () => {
         id: 'r-1',
         status: 'active',
         controlSignals: [],
+        pauseRequested: false,
         initiatorClientId: 'alice',
       } satisfies Run<string>);
       fixture.tree.applyRunEnd({ runId: 'r-1', status: 'aborted' });
@@ -434,6 +453,188 @@ describe('createClientRun', () => {
       const run = createClientRun<StubCodec>({ ...baseOptions() });
 
       await expect(run.retry()).rejects.toThrow('publish failed');
+    });
+  });
+
+  describe('pause', () => {
+    it('publishes x-ably-pause and returns an invocation with the signal messageId', async () => {
+      fixture.tree.applyRunStart({
+        id: 'r-1',
+        status: 'active',
+        controlSignals: [],
+        pauseRequested: false,
+        initiatorClientId: 'alice',
+      } satisfies Run<string>);
+      const run = createClientRun<StubCodec>({ ...baseOptions() });
+
+      const inv = await run.pause();
+
+      expect(fixture.channel.publish).toHaveBeenCalledTimes(1);
+      const [wire] = fixture.channel.publishedBatches[0] ?? [];
+      if (!wire) throw new Error('expected wire');
+      expect(wire.name).toBe(WireMessages.Pause);
+      expect(headersOf(wire)[Headers.RunId]).toBe('r-1');
+      expect(headersOf(wire)[Headers.Reason]).toBe('paused');
+      const wireMessageId = headersOf(wire)[Headers.MessageId];
+      expect(wireMessageId).toBeDefined();
+      expect(inv.messageId).toBe(wireMessageId);
+      expect(inv.runId).toBe('r-1');
+    });
+
+    it("is a no-op when the run is already 'suspended'", async () => {
+      fixture.tree.applyRunStart({
+        id: 'r-1',
+        status: 'active',
+        controlSignals: [],
+        pauseRequested: false,
+        initiatorClientId: 'alice',
+      } satisfies Run<string>);
+      fixture.tree.applyRunSuspend({ runId: 'r-1' });
+      const run = createClientRun<StubCodec>({ ...baseOptions() });
+
+      const inv = await run.pause();
+
+      expect(fixture.channel.publish).not.toHaveBeenCalled();
+      expect(inv.runId).toBe('r-1');
+    });
+
+    it("is a no-op when the run is terminal ('complete')", async () => {
+      fixture.tree.applyRunStart({
+        id: 'r-1',
+        status: 'active',
+        controlSignals: [],
+        pauseRequested: false,
+        initiatorClientId: 'alice',
+      } satisfies Run<string>);
+      fixture.tree.applyRunEnd({ runId: 'r-1', status: 'complete' });
+      const run = createClientRun<StubCodec>({ ...baseOptions() });
+
+      await run.pause();
+
+      expect(fixture.channel.publish).not.toHaveBeenCalled();
+    });
+
+    it('returns a valid Invocation even on the no-op terminal path', async () => {
+      fixture.tree.applyRunStart({
+        id: 'r-1',
+        status: 'active',
+        controlSignals: [],
+        pauseRequested: false,
+        initiatorClientId: 'alice',
+      } satisfies Run<string>);
+      fixture.tree.applyRunEnd({ runId: 'r-1', status: 'complete' });
+      const run = createClientRun<StubCodec>({ ...baseOptions(), messageId: 'm-1' });
+
+      const inv = await run.pause();
+
+      expect(inv.toJSON()).toEqual({ sessionName: 's-1', runId: 'r-1', messageId: 'm-1' });
+    });
+
+    it('propagates writer publish errors', async () => {
+      fixture.tree.applyRunStart({
+        id: 'r-1',
+        status: 'active',
+        controlSignals: [],
+        pauseRequested: false,
+        initiatorClientId: 'alice',
+      } satisfies Run<string>);
+      fixture.channel.publish.mockRejectedValueOnce(new Error('publish failed'));
+      const run = createClientRun<StubCodec>({ ...baseOptions() });
+
+      await expect(run.pause()).rejects.toThrow('publish failed');
+    });
+  });
+
+  describe('resume', () => {
+    it('publishes x-ably-resume and returns an invocation with the signal messageId', async () => {
+      fixture.tree.applyRunStart({
+        id: 'r-1',
+        status: 'active',
+        controlSignals: [],
+        pauseRequested: false,
+        initiatorClientId: 'alice',
+      } satisfies Run<string>);
+      fixture.tree.applyRunSuspend({ runId: 'r-1' });
+      const run = createClientRun<StubCodec>({ ...baseOptions() });
+
+      const inv = await run.resume();
+
+      expect(fixture.channel.publish).toHaveBeenCalledTimes(1);
+      const [wire] = fixture.channel.publishedBatches[0] ?? [];
+      if (!wire) throw new Error('expected wire');
+      expect(wire.name).toBe(WireMessages.Resume);
+      expect(headersOf(wire)[Headers.RunId]).toBe('r-1');
+      expect(headersOf(wire)[Headers.Reason]).toBe('resumed');
+      const wireMessageId = headersOf(wire)[Headers.MessageId];
+      expect(wireMessageId).toBeDefined();
+      expect(inv.messageId).toBe(wireMessageId);
+      expect(inv.runId).toBe('r-1');
+    });
+
+    it("is a no-op when the run is 'active' (no in-flight suspend to resume)", async () => {
+      fixture.tree.applyRunStart({
+        id: 'r-1',
+        status: 'active',
+        controlSignals: [],
+        pauseRequested: false,
+        initiatorClientId: 'alice',
+      } satisfies Run<string>);
+      const run = createClientRun<StubCodec>({ ...baseOptions() });
+
+      const inv = await run.resume();
+
+      expect(fixture.channel.publish).not.toHaveBeenCalled();
+      expect(inv.runId).toBe('r-1');
+    });
+
+    it("is a no-op when the run is terminal ('aborted')", async () => {
+      fixture.tree.applyRunStart({
+        id: 'r-1',
+        status: 'active',
+        controlSignals: [],
+        pauseRequested: false,
+        initiatorClientId: 'alice',
+      } satisfies Run<string>);
+      fixture.tree.applyRunEnd({ runId: 'r-1', status: 'aborted' });
+      const run = createClientRun<StubCodec>({ ...baseOptions() });
+
+      await run.resume();
+
+      expect(fixture.channel.publish).not.toHaveBeenCalled();
+    });
+
+    it('propagates writer publish errors', async () => {
+      fixture.tree.applyRunStart({
+        id: 'r-1',
+        status: 'active',
+        controlSignals: [],
+        pauseRequested: false,
+        initiatorClientId: 'alice',
+      } satisfies Run<string>);
+      fixture.tree.applyRunSuspend({ runId: 'r-1' });
+      fixture.channel.publish.mockRejectedValueOnce(new Error('publish failed'));
+      const run = createClientRun<StubCodec>({ ...baseOptions() });
+
+      await expect(run.resume()).rejects.toThrow('publish failed');
+    });
+  });
+
+  describe('pauseRequested', () => {
+    it('reflects the tree-derived flag on the run record', () => {
+      fixture.tree.applyRunStart({
+        id: 'r-1',
+        status: 'active',
+        controlSignals: [],
+        pauseRequested: false,
+        initiatorClientId: 'alice',
+      } satisfies Run<string>);
+      const run = createClientRun<StubCodec>({ ...baseOptions() });
+
+      expect(run.pauseRequested).toBe(false);
+
+      fixture.tree.applyControlSignal({ type: 'pause', runId: 'r-1', messageId: 'sig-1', clientId: 'alice' });
+
+      expect(run.pauseRequested).toBe(true);
     });
   });
 });

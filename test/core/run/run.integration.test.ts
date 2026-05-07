@@ -107,6 +107,7 @@ describe('Run lifecycle (integration)', () => {
       status: 'active',
       initiatorClientId: aClient.auth.clientId,
       controlSignals: [],
+      pauseRequested: false,
     });
 
     await aSession.writer.endRun({ runId: 'r-1', status: 'complete' });

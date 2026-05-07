@@ -13,9 +13,12 @@
  * the demo's `simulateFail` switch (see `chat.tsx` for the client side).
  */
 
+import { WorkflowIdReusePolicy } from '@temporalio/common';
+
 import { Invocation, type InvocationData } from '@ably/ai-transport';
 
 import { getTemporalClient } from '../../../lib/temporal-client';
+import { workflowIdForRun } from '../../../lib/temporal-ids';
 import { runAgent, type RunAgentInput } from '../../../temporal/workflows';
 
 const TASK_QUEUE = process.env.TEMPORAL_TASK_QUEUE ?? 'ai-transport-chat';
@@ -38,10 +41,16 @@ export async function POST(req: Request): Promise<Response> {
 
   const client = await getTemporalClient();
   const input: RunAgentInput = { ...invocation.toJSON(), simulateFail };
+  // Workflow ID is keyed by runId only, so pause/resume route handlers
+  // can find the in-flight workflow without tracking a separate mapping.
+  // ALLOW_DUPLICATE lets a retry start a fresh workflow once the previous
+  // one for the same runId has finished — required because retry creates
+  // a new step against the same run.
   await client.workflow.start(runAgent, {
     taskQueue: TASK_QUEUE,
     args: [input],
-    workflowId: `run-agent-${invocation.runId}-${invocation.stepId ?? crypto.randomUUID()}`,
+    workflowId: workflowIdForRun(invocation.runId),
+    workflowIdReusePolicy: WorkflowIdReusePolicy.ALLOW_DUPLICATE,
   });
 
   return new Response(null, { status: 202 });

@@ -14,12 +14,24 @@
  *      aborted predecessors are excluded from the model context.
  *   3. {@link endRun} activity ends the run.
  *
+ * Pause and resume are exposed to the route handler via Temporal Updates
+ * (`pauseUpdate` / `resumeUpdate`). The client also publishes
+ * `x-ably-pause` / `x-ably-resume` on the AIT channel for observability;
+ * the Update is the in-process wake-up that's reliable for the
+ * long-lived workflow. Between iterations the workflow checks both the
+ * Update-driven flag and the activity-reported `pauseRequested` flag
+ * (read from `run.pauseRequested` after the step ends, as a fallback
+ * when only the channel publish fired). If either is set the workflow
+ * calls a {@link suspendRun} activity which publishes
+ * `x-ably-run-suspend (paused)` on the channel, then awaits a resume
+ * Update before scheduling the next iteration.
+ *
  * Mirrors the iteration loop in `demo/vercel/react`'s `/api/agent`
  * handler — one model call per AIT step, looping while the model keeps
  * calling tools.
  */
 
-import { proxyActivities } from '@temporalio/workflow';
+import { condition, defineUpdate, proxyActivities, setHandler } from '@temporalio/workflow';
 
 import type { InvocationData } from '@ably/ai-transport';
 
@@ -31,9 +43,27 @@ import type * as activities from './activities';
  */
 const MAX_ITERATIONS = 10;
 
-const { openRun, streamStep, endRun } = proxyActivities<typeof activities>({
+const { openRun, streamStep, endRun, suspendRun } = proxyActivities<typeof activities>({
   startToCloseTimeout: '5 minutes',
 });
+
+/**
+ * Update sent to a running workflow when the user pauses the run. The
+ * workflow flips its local `paused` flag; the next iteration boundary
+ * suspends the run on the channel and awaits a {@link resumeUpdate}.
+ *
+ * Updates carry no arguments — the workflow ID is keyed by `runId`, so
+ * the addressing is implicit.
+ */
+export const pauseUpdate = defineUpdate<void, []>('pause');
+
+/**
+ * Update sent to a paused workflow when the user resumes. Flips the
+ * local `paused` flag back to `false`; the workflow's
+ * `condition(() => !paused)` wakes and the next iteration starts a new
+ * AIT step which re-activates the run.
+ */
+export const resumeUpdate = defineUpdate<void, []>('resume');
 
 /**
  * Workflow input — extends {@link InvocationData} with the demo's
@@ -49,11 +79,24 @@ export interface RunAgentInput extends InvocationData {
 
 /**
  * Drive a single agent run. Returns nothing — the work product is the
- * sequence of AIT steps (and finally a `run-end`) published on the
- * session's Ably channel by the activities below.
+ * sequence of AIT steps (and finally a `run-end` or `run-suspend`)
+ * published on the session's Ably channel by the activities below.
  */
 export async function runAgent(input: RunAgentInput): Promise<void> {
   const { simulateFail = false, ...invocationData } = input;
+
+  // Pause/resume state lives in the workflow function so it is fresh
+  // per execution and recovers correctly on workflow replay — Temporal
+  // re-applies Updates from the event history during replay, so the
+  // closure variable ends up at the same value it had on the original
+  // execution.
+  let paused = false;
+  setHandler(pauseUpdate, () => {
+    paused = true;
+  });
+  setHandler(resumeUpdate, () => {
+    paused = false;
+  });
 
   await openRun(invocationData);
 
@@ -67,6 +110,22 @@ export async function runAgent(input: RunAgentInput): Promise<void> {
       });
       // Activity already ended the run (abort path) — no trailing endRun.
       if (result.runEnded === true) return;
+
+      // Suspend if either source signals pause: the Update-driven flag
+      // (the in-process wake-up) or the activity's observation of the
+      // run's pauseRequested flag (read off the channel as a fallback
+      // when only the channel publish fired). Sync `paused` so the
+      // condition wait below holds whichever way we got here.
+      if (paused || result.pauseRequested === true) {
+        paused = true;
+        await suspendRun({ runId: invocationData.runId });
+        await condition(() => !paused);
+        // Resumed — fall through to the next iteration. The next
+        // streamStep starts a fresh AIT step which re-activates the
+        // run from `'suspended'` per AIT-CS5.
+        continue;
+      }
+
       if (result.finishReason !== 'tool-calls') break;
     }
     await endRun({ runId: invocationData.runId });

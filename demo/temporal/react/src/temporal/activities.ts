@@ -118,6 +118,15 @@ export interface StreamStepResult {
    * abort terminal is the only `run-end` published on the channel.
    */
   runEnded?: boolean;
+  /**
+   * True when an `x-ably-pause` signal had been observed on the run by
+   * the time this activity finished. The workflow primarily learns of a
+   * pause via the in-process `pauseUpdate`; this flag is the fallback
+   * for the case where a pause was published to the channel without a
+   * Temporal Update — the activity surfaces it so the workflow can
+   * suspend the run on the next loop boundary. Spec: AIT-CS3b.
+   */
+  pauseRequested?: boolean;
 }
 
 export async function streamStep(args: StreamStepArgs): Promise<StreamStepResult> {
@@ -164,7 +173,11 @@ export async function streamStep(args: StreamStepArgs): Promise<StreamStepResult
     await step.end();
 
     const finishReason = await result.finishReason;
-    return { finishReason };
+    // Read pauseRequested AFTER step.end so any pause signal that landed
+    // during the step's lifetime is reflected in the value the workflow
+    // reads. The flag is sticky until a resume signal lands, so observing
+    // it here is the right shape for "should we suspend the run?".
+    return { finishReason, pauseRequested: run.pauseRequested };
   } catch (error) {
     await step.end(error);
     if (step.signal.aborted) {
@@ -179,6 +192,37 @@ export async function streamStep(args: StreamStepArgs): Promise<StreamStepResult
     }
     throw error;
   }
+}
+
+export interface SuspendRunArgs {
+  runId: string;
+}
+
+/**
+ * Publish `x-ably-run-suspend (paused)` on the run's channel. Called
+ * between iterations once the workflow has decided to pause — the
+ * preceding step has already been ended cleanly, so this activity only
+ * needs to drive the run-suspend lifecycle wire.
+ *
+ * Idempotent against the AIT layer: `AgentRun.suspend()` throws
+ * `RunAlreadySuspended` when called twice in a row, so we early-return
+ * if the run is already suspended on the channel. Temporal retries are
+ * safe because the second activity attempt would otherwise see the run
+ * as suspended and short-circuit.
+ */
+export async function suspendRun(args: SuspendRunArgs): Promise<void> {
+  const run = getRun(args.runId);
+  if (run === undefined) {
+    // Run was already torn down (e.g. a parallel abort path closed it
+    // before the workflow's pause handler ran). Nothing to suspend.
+    return;
+  }
+  if (run.status === 'suspended') {
+    // Another path (Temporal retry, multi-source pause) already
+    // published the run-suspend; don't double-publish.
+    return;
+  }
+  await run.suspend();
 }
 
 export interface EndRunArgs {

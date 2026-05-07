@@ -87,7 +87,10 @@ export function Chat({ handle, clientId }: ChatProps) {
   }, [view]);
 
   const activeRuns = useMemo(() => runs.filter((r) => r.status === 'active'), [runs]);
+  const suspendedRuns = useMemo(() => runs.filter((r) => r.status === 'suspended'), [runs]);
   const isRunning = activeRuns.length > 0;
+  const isSuspended = suspendedRuns.length > 0;
+  const inputState: 'idle' | 'active' | 'suspended' = isRunning ? 'active' : isSuspended ? 'suspended' : 'idle';
 
   // The currently-streaming assistant message id: the latest message
   // belonging to any active run.
@@ -155,6 +158,63 @@ export function Chat({ handle, clientId }: ChatProps) {
     }
   }, [activeRuns]);
 
+  // Pause: publish x-ably-pause on the channel (run.pause()) AND POST to
+  // /api/agent/pause so the workflow's Temporal Update flips its
+  // in-process `paused` flag. Both paths are required per the demo's
+  // long-lived workflow design — the channel publish is the durable
+  // record visible to other observers/devices, the Update is the
+  // reliable in-process wake-up for the workflow.
+  const handlePause = useCallback(() => {
+    for (const run of activeRuns) {
+      void (async () => {
+        try {
+          await run.pause();
+        } catch (err) {
+          console.error('failed to publish pause', err);
+        }
+        try {
+          const response = await fetch('/api/agent/pause', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ runId: run.id }),
+          });
+          if (!response.ok) {
+            console.error(`pause endpoint returned HTTP ${String(response.status)}`);
+          }
+        } catch (err) {
+          console.error('failed to send pause update', err);
+        }
+      })();
+    }
+  }, [activeRuns]);
+
+  // Resume: symmetric with pause. run.resume() publishes x-ably-resume;
+  // the POST sends the Temporal Update that wakes the paused workflow's
+  // condition wait.
+  const handleResume = useCallback(() => {
+    for (const run of suspendedRuns) {
+      void (async () => {
+        try {
+          await run.resume();
+        } catch (err) {
+          console.error('failed to publish resume', err);
+        }
+        try {
+          const response = await fetch('/api/agent/resume', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ runId: run.id }),
+          });
+          if (!response.ok) {
+            console.error(`resume endpoint returned HTTP ${String(response.status)}`);
+          }
+        } catch (err) {
+          console.error('failed to send resume update', err);
+        }
+      })();
+    }
+  }, [suspendedRuns]);
+
   const handleRetry = useCallback(
     async (messageId: string) => {
       const messageInfo = info.get(messageId);
@@ -191,7 +251,9 @@ export function Chat({ handle, clientId }: ChatProps) {
       <InputBar
         onSubmit={(text, simulateFail) => void handleSubmit(text, simulateFail)}
         onStop={isRunning ? handleStop : undefined}
-        disabled={isRunning}
+        onPause={isRunning ? handlePause : undefined}
+        onResume={isSuspended ? handleResume : undefined}
+        state={inputState}
       />
     </div>
   );

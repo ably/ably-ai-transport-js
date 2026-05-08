@@ -21,6 +21,7 @@ import type { Codec, StreamEncoder } from '../../../src/core/codec/types.js';
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
 import type { AgentSession, MessageNode } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
+import { VERSION } from '../../../src/version.js';
 import { createMockClient } from '../../helper/mock-client.js';
 import { createRunFromOpts } from '../../helper/run-from-opts.js';
 
@@ -212,6 +213,44 @@ describe('AgentSession', () => {
 
   afterEach(() => {
     session.close();
+  });
+
+  describe('construction', () => {
+    it('registers the ai-transport-js agent on the client and forwards params.agent to channels.get', () => {
+      const ch = createMockChannel();
+      const client = createMockClient(ch);
+      const c = createMockCodec();
+      const s = createAgentSession({ client, channelName: 'attribution-channel', codec: c });
+      const agents = (client as unknown as { options: { agents?: Record<string, string> } }).options.agents;
+      expect(agents?.['ai-transport-js']).toBe(VERSION);
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- accessing vi mock
+      expect(client.channels.get).toHaveBeenCalledWith('attribution-channel', {
+        params: { agent: `ai-transport-js/${VERSION}` },
+      });
+      s.close();
+    });
+
+    it('does not pollute options.agents when constructing multiple sessions on the same client', () => {
+      const ch1 = createMockChannel();
+      const ch2 = createMockChannel();
+      const client = createMockClient(ch1);
+      const optionsRef = (client as unknown as { options: { agents?: Record<string, string> } }).options;
+      // Seed an unrelated entry so we can assert it survives.
+      optionsRef.agents = { 'some-other-sdk': '9.9.9' };
+      const c = createMockCodec();
+      const s1 = createAgentSession({ client, channelName: 'ch-a', codec: c });
+      // Swap the channel returned by channels.get for the second session so
+      // each session has its own channel mock to publish to.
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked takes a method reference
+      vi.mocked(client.channels.get).mockReturnValue(ch2);
+      const s2 = createAgentSession({ client, channelName: 'ch-b', codec: c });
+      expect(optionsRef.agents).toEqual({
+        'some-other-sdk': '9.9.9',
+        'ai-transport-js': VERSION,
+      });
+      s1.close();
+      s2.close();
+    });
   });
 
   describe('connect()', () => {

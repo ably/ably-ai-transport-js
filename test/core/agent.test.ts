@@ -48,4 +48,10 @@ describe('registerAgent', () => {
     registerAgent(client);
     expect(agentsOf(client)?.['ai-transport-js']).toBe(VERSION);
   });
+
+  it('returns channel options carrying the agent identifier on params', () => {
+    const client = fakeClient();
+    const channelOptions = registerAgent(client);
+    expect(channelOptions).toEqual({ params: { agent: `ai-transport-js/${VERSION}` } });
+  });
 });

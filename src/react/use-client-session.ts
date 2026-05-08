@@ -2,9 +2,8 @@
  * useClientSession — read a ClientSession from the nearest ClientSessionProvider.
  *
  * The session is created by {@link ClientSessionProvider}, which reads the Ably
- * Realtime client from the surrounding `<AblyProvider>` via `useAbly()` and
- * resolves the channel internally. This hook is a thin context reader — it
- * does not create or manage session state.
+ * Realtime client from the surrounding `<AblyProvider>`. This hook is a thin
+ * context reader — it does not create or manage session state.
  *
  * **Provider lookup**
  * - Omit `channelName` to use the innermost `ClientSessionProvider` in the tree.

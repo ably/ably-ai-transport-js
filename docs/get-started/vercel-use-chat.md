@@ -148,7 +148,7 @@ The `after()` call is a Next.js API that runs work after the HTTP response is se
 
 ## 4. Create the chat component
 
-Wire up `useChat()` with the AI Transport hooks. `ChatTransportProvider` creates both the `ClientSession` and `ChatTransport`. The Ably Realtime client is read from the surrounding `<AblyProvider>` via `useAbly()`; the session resolves the channel from `channelName` itself.
+Wire up `useChat()` with the AI Transport hooks. `ChatTransportProvider` creates both the `ClientSession` and `ChatTransport`. The Ably Realtime client is read from the surrounding `<AblyProvider>`; the session is bound to the supplied `channelName`.
 
 ```typescript
 // app/chat.tsx

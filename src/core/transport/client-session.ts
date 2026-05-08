@@ -147,10 +147,11 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
   private _pendingLocalEvents: EventsNode<TEvent>[] = [];
 
   constructor(options: ClientSessionOptions<TEvent, TMessage>) {
-    // Spec: AIT-CT1a — register the SDK's agent identifier on the supplied
-    // Realtime client for usage tracking. Idempotent across sessions.
-    registerAgent(options.client);
-    this._channel = options.client.channels.get(options.channelName);
+    // Spec: AIT-CT1a, AIT-CT1a2 — register this SDK on both the connection
+    // (options.agents) and channel-attach (params.agent) paths. Idempotent
+    // across sessions sharing one client.
+    const channelOptions = registerAgent(options.client);
+    this._channel = options.client.channels.get(options.channelName, channelOptions);
     this._codec = options.codec;
     this._clientId = options.clientId;
     this._api = options.api;
@@ -1016,11 +1017,10 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
 /**
  * Create a client-side session that manages conversation state over an Ably channel.
  *
- * The session resolves the channel via `client.channels.get(channelName)`
- * and registers the `ai-transport-js` agent identifier on the client for
- * usage tracking. The session is created in a not-yet-connected state —
- * callers must `await session.connect()` before `send`, `regenerate`,
- * `edit`, `update`, `cancel`, or `waitForRun`.
+ * The caller owns the client's lifecycle; the session owns its channel.
+ * The session is created in a not-yet-connected state — callers must
+ * `await session.connect()` before `send`, `regenerate`, `edit`, `update`,
+ * `cancel`, or `waitForRun`.
  * @param options - Configuration for the client session.
  * @returns A new {@link ClientSession} instance.
  */

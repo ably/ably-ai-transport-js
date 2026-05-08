@@ -10,7 +10,7 @@ Import from `@ably/ai-transport/react`.
 
 ### ClientSessionProvider
 
-Create a `ClientSession` and make it available to descendant components. The Realtime client is read from the surrounding `<AblyProvider>` via `useAbly()`; the session resolves the channel from `channelName` itself.
+Create a `ClientSession` and make it available to descendant components. The Realtime client is read from the surrounding `<AblyProvider>`; the session is bound to the supplied `channelName`.
 
 ```tsx
 <ClientSessionProvider

@@ -18,6 +18,7 @@ import type { Codec, DecoderOutput, MessageAccumulator, StreamDecoder } from '..
 import { createClientSession } from '../../../src/core/transport/client-session.js';
 import type { ClientSession, RunLifecycleEvent } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
+import { VERSION } from '../../../src/version.js';
 import { createMockClient } from '../../helper/mock-client.js';
 
 // ---------------------------------------------------------------------------
@@ -401,6 +402,56 @@ describe('ClientSession', () => {
   // -------------------------------------------------------------------------
 
   describe('construction', () => {
+    it('registers the ai-transport-js agent on the client and forwards params.agent to channels.get', () => {
+      const ch = createMockChannel();
+      const client = createMockClient(ch);
+      const s = createClientSession({
+        client,
+        channelName: 'attribution-channel',
+        codec,
+        api: '/test',
+        fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
+      });
+      const agents = (client as unknown as { options: { agents?: Record<string, string> } }).options.agents;
+      expect(agents?.['ai-transport-js']).toBe(VERSION);
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- accessing vi mock
+      expect(client.channels.get).toHaveBeenCalledWith('attribution-channel', {
+        params: { agent: `ai-transport-js/${VERSION}` },
+      });
+      void s.close();
+    });
+
+    it('does not pollute options.agents when constructing multiple sessions on the same client', () => {
+      const ch1 = createMockChannel();
+      const ch2 = createMockChannel();
+      const client = createMockClient(ch1);
+      const optionsRef = (client as unknown as { options: { agents?: Record<string, string> } }).options;
+      // Seed an unrelated entry so we can assert it survives.
+      optionsRef.agents = { 'some-other-sdk': '9.9.9' };
+      const s1 = createClientSession({
+        client,
+        channelName: 'ch-a',
+        codec,
+        api: '/test',
+        fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
+      });
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked takes a method reference
+      vi.mocked(client.channels.get).mockReturnValue(ch2);
+      const s2 = createClientSession({
+        client,
+        channelName: 'ch-b',
+        codec,
+        api: '/test',
+        fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
+      });
+      expect(optionsRef.agents).toEqual({
+        'some-other-sdk': '9.9.9',
+        'ai-transport-js': VERSION,
+      });
+      void s1.close();
+      void s2.close();
+    });
+
     it('subscribes to the channel with a callback', () => {
       expect(channel.subscribe).toHaveBeenCalledWith(expect.any(Function));
     });

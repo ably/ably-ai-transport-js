@@ -2,11 +2,8 @@
  * ClientSessionProvider: creates a ClientSession and makes it available to
  * descendants via ClientSessionContext.
  *
- * Pulls the Ably Realtime client from `useAbly()` (which requires an
- * `<AblyProvider>` ancestor) and forwards it to `createClientSession`
- * along with the supplied `channelName`. The session resolves the channel
- * itself and registers the `ai-transport-js` agent on the client for
- * usage tracking.
+ * Reads the Ably Realtime client from the surrounding `<AblyProvider>` and
+ * forwards it to `createClientSession` along with the supplied `channelName`.
  *
  * The session is created once on first render (via useRef) and `connect()`
  * is invoked from a `useEffect` so the session is subscribed/attached
@@ -39,7 +36,7 @@ import { ClientSessionContext } from './client-session-context.js';
  * Props for {@link ClientSessionProvider}.
  *
  * All {@link ClientSessionOptions} except `client` (read from the surrounding
- * `<AblyProvider>` via `useAbly()`).
+ * `<AblyProvider>`).
  */
 export interface ClientSessionProviderProps<TEvent, TMessage>
   extends Omit<ClientSessionOptions<TEvent, TMessage>, 'client'>, PropsWithChildren {}
@@ -47,9 +44,9 @@ export interface ClientSessionProviderProps<TEvent, TMessage>
 /**
  * Provide a {@link ClientSession} to descendant components.
  *
- * Reads the Ably Realtime client from the surrounding `<AblyProvider>` via
- * `useAbly()`, creates a session bound to `channelName`, calls `connect()`
- * on mount, and registers it in `ClientSessionContext` under `channelName`.
+ * Reads the Ably Realtime client from the surrounding `<AblyProvider>`,
+ * creates a session bound to `channelName`, calls `connect()` on mount,
+ * and registers it in `ClientSessionContext` under `channelName`.
  * Descendants call {@link useClientSession} with the same `channelName` to
  * access the session.
  *

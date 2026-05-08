@@ -94,10 +94,11 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
   private readonly _onChannelStateChange: Ably.channelEventCallback;
 
   constructor(options: AgentSessionOptions<TEvent, TMessage>) {
-    // Spec: AIT-ST1a — register the SDK's agent identifier on the supplied
-    // Realtime client for usage tracking. Idempotent across sessions.
-    registerAgent(options.client);
-    this._channel = options.client.channels.get(options.channelName);
+    // Spec: AIT-ST1a, AIT-ST1a2 — register this SDK on both the connection
+    // (options.agents) and channel-attach (params.agent) paths. Idempotent
+    // across sessions sharing one client.
+    const channelOptions = registerAgent(options.client);
+    this._channel = options.client.channels.get(options.channelName, channelOptions);
     this._codec = options.codec;
     this._logger = options.logger?.withContext({ component: 'AgentSession' });
     this._onError = options.onError;
@@ -643,9 +644,8 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
 
 /**
  * Create an agent (server-side) session bound to the given Realtime client
- * and channel name. The session resolves the channel via
- * `client.channels.get(channelName)` and registers the `ai-transport-js`
- * agent identifier on the client for usage tracking.
+ * and channel name. The caller owns the client's lifecycle; the session
+ * owns its channel.
  * @param options - Session configuration.
  * @returns A new {@link AgentSession} instance.
  */

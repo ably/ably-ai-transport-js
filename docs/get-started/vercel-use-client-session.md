@@ -10,7 +10,7 @@ Same as the [useChat quickstart](vercel-use-chat.md#prerequisites). Follow steps
 
 ## Create the chat component
 
-Instead of `useChat()`, compose the generic hooks directly. `ClientSessionProvider` creates the session — it reads the Realtime client from the surrounding `<AblyProvider>` via `useAbly()` and resolves the channel from `channelName` itself.
+Instead of `useChat()`, compose the generic hooks directly. `ClientSessionProvider` creates the session — it reads the Realtime client from the surrounding `<AblyProvider>` and binds the session to the supplied `channelName`.
 
 ```typescript
 // app/chat.tsx

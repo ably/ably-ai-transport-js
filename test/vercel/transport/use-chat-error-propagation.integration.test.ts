@@ -101,6 +101,10 @@ describe('useChat error propagation', () => {
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
+      // Tests use the runId-coordination pattern (invocationId from the
+      // client doesn't reach the test-driven serverRun), so skip the
+      // channel lookup and rely on `invocation.messages` (empty here).
+      promptLookupTimeoutMs: 0,
     });
     await agentSession.connect();
 
@@ -119,6 +123,11 @@ describe('useChat error propagation', () => {
       clientId: clientClient.auth.clientId,
       api: '/api/chat',
       fetch: capturingFetch,
+      // Client and server use independent invocation-ids in this test
+      // (createRunFromOpts mints its own), so the client's
+      // run-start-by-invocation matcher won't resolve. Disable the wait so
+      // send() resolves on publish ack and useChat gets the stream.
+      runStartDeadlineMs: 0,
     });
     await clientSession.connect();
 

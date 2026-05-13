@@ -27,7 +27,9 @@ import type * as Ably from 'ably';
 import {
   HEADER_AMEND,
   HEADER_DISCRETE,
+  HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
+  HEADER_ROLE,
   HEADER_RUN_ID,
   HEADER_STATUS,
   HEADER_STREAM,
@@ -225,6 +227,25 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
 
   const sorted = [...runs.values()].toSorted((a, b) => a.firstSeen - b.firstSeen);
   for (const run of sorted) {
+    // Defensive latest-serial-wins rule: within a runId, the user-message
+    // with the highest Ably serial is canonical. Messages whose serial
+    // precedes the winning user-message's serial belong to a losing
+    // invocation and are dropped from the materialised history.
+    //
+    // Note: only user-messages carry an invocation-id header on the wire.
+    // The owning invocation of an assistant message is determined by serial
+    // position relative to the winning user-message — a serial-window rule.
+    let winningSerial: string | undefined;
+    for (const [mid, hdrs] of run.msgHeaders) {
+      if (hdrs[HEADER_ROLE] !== 'user') continue;
+      if (!hdrs[HEADER_INVOCATION_ID]) continue;
+      const s = run.msgSerials.get(mid);
+      if (!s) continue;
+      if (winningSerial === undefined || s > winningSerial) {
+        winningSerial = s;
+      }
+    }
+
     // Assign headers and serials to each completed message in this run.
     // The run's msgHeaders map is keyed by x-ably-msg-id and ordered by
     // first-seen. Completed messages are matched positionally.
@@ -235,12 +256,13 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
       const entry = headerEntries[headerIdx];
       if (entry) {
         const [mid, hdrs] = entry;
-        completed.push({
-          message: msg,
-          headers: hdrs,
-          serial: run.msgSerials.get(mid) ?? '',
-        });
+        const serial = run.msgSerials.get(mid) ?? '';
         headerIdx++;
+        if (winningSerial !== undefined && serial && serial < winningSerial) {
+          // Loser: belongs to an earlier invocation under this run.
+          continue;
+        }
+        completed.push({ message: msg, headers: hdrs, serial });
       } else {
         completed.push({ message: msg, headers: {}, serial: '' });
       }

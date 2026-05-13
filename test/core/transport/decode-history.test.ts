@@ -4,7 +4,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   HEADER_AMEND,
   HEADER_DISCRETE,
+  HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
+  HEADER_ROLE,
   HEADER_RUN_ID,
   HEADER_STATUS,
   HEADER_STREAM,
@@ -756,5 +758,91 @@ describe('decodeHistory', () => {
 
     expect(page.items).toEqual([]);
     expect(page.hasNext()).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // Latest-serial-wins per run-id
+  // -------------------------------------------------------------------------
+
+  describe('latest-serial-wins on hydration', () => {
+    /**
+     * Build a user-message discrete wire message with invocation-id.
+     * @param msgId - Message identifier stamped in `x-ably-msg-id`.
+     * @param content - User text content placed inside the message body.
+     * @param runId - Run identifier stamped in `x-ably-run-id`.
+     * @param invocationId - Invocation identifier stamped in `x-ably-invocation-id`.
+     * @returns A fully formed Ably InboundMessage representing the user prompt.
+     */
+    const userDiscreteMsg = (
+      msgId: string,
+      content: string,
+      runId: string,
+      invocationId: string,
+      // eslint-disable-next-line unicorn/consistent-function-scoping -- describe-local helper
+    ): Ably.InboundMessage =>
+      withOutputs(
+        ablyMsg({
+          headers: {
+            [HEADER_MSG_ID]: msgId,
+            [HEADER_RUN_ID]: runId,
+            [HEADER_INVOCATION_ID]: invocationId,
+            [HEADER_ROLE]: 'user',
+            [HEADER_STREAM]: 'false',
+            [HEADER_DISCRETE]: 'true',
+          },
+        }),
+        [{ kind: 'message', message: { id: msgId, content } }],
+      );
+
+    it('keeps only the winning invocation when a run has multiple user-messages', async () => {
+      // Chronological order: invocation-1 (user + assistant), then invocation-2 (user + assistant)
+      // History returns newest-first.
+      const u1 = userDiscreteMsg('user-1', 'first ask', 'R1', 'inv-1');
+      const [aFinish, aDelta, aCreate] = streamingRun('R1', 'asst-1', ['answer-1']);
+      const u2 = userDiscreteMsg('user-2', 'second ask', 'R1', 'inv-2');
+      const [bFinish, bDelta, bCreate] = streamingRun('R1', 'asst-2', ['answer-2']);
+      if (!aFinish || !aDelta || !aCreate || !bFinish || !bDelta || !bCreate) {
+        throw new Error('invariant: 3 wire messages per run');
+      }
+
+      // Newest-first: invocation-2's chunks (newest), then invocation-1's chunks (older).
+      const channel = createMockChannel([[bFinish, bDelta, bCreate, u2, aFinish, aDelta, aCreate, u1]]);
+      const codec = createMockCodec();
+
+      const page = await decodeHistory(channel, codec, { limit: 10 }, silentLogger);
+
+      // Only the winning invocation's messages should appear.
+      const ids = page.items.map((i) => i.message.id);
+      expect(ids).toEqual(['user-2', 'asst-2']);
+    });
+
+    it('preserves single-invocation runs unchanged', async () => {
+      const u1 = userDiscreteMsg('user-1', 'ask', 'R1', 'inv-1');
+      const [finish, delta, create] = streamingRun('R1', 'asst-1', ['answer']);
+      if (!finish || !delta || !create) throw new Error('invariant');
+
+      const channel = createMockChannel([[finish, delta, create, u1]]);
+      const codec = createMockCodec();
+
+      const page = await decodeHistory(channel, codec, { limit: 10 }, silentLogger);
+
+      const ids = page.items.map((i) => i.message.id);
+      expect(ids).toEqual(['user-1', 'asst-1']);
+    });
+
+    it('preserves runs that have no user-message with invocation-id (e.g. legacy)', async () => {
+      // No user-message at all under this run — the agent published the user message.
+      // No winning user-message → no filter applied.
+      const [finish, delta, create] = streamingRun('R1', 'asst-1', ['answer']);
+      if (!finish || !delta || !create) throw new Error('invariant');
+
+      const channel = createMockChannel([[finish, delta, create]]);
+      const codec = createMockCodec();
+
+      const page = await decodeHistory(channel, codec, { limit: 10 }, silentLogger);
+
+      const ids = page.items.map((i) => i.message.id);
+      expect(ids).toEqual(['asst-1']);
+    });
   });
 });

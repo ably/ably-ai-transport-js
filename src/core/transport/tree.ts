@@ -18,7 +18,7 @@
 
 import type * as Ably from 'ably';
 
-import { HEADER_FORK_OF, HEADER_PARENT } from '../../constants.js';
+import { HEADER_FORK_OF, HEADER_INVOCATION_ID, HEADER_PARENT, HEADER_ROLE, HEADER_RUN_ID } from '../../constants.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import type { MessageNode, RunLifecycleEvent, Tree } from './types.js';
@@ -87,6 +87,7 @@ interface TreeEventsMap {
   update: undefined;
   'ably-message': Ably.InboundMessage;
   run: RunLifecycleEvent;
+  'winning-change': { runId: string; invocationId: string; serial: string };
 }
 
 // Spec: AIT-CT13
@@ -112,6 +113,13 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
 
   /** Active runs: runId → clientId. */
   private readonly _runClientIds = new Map<string, string>();
+
+  /**
+   * Winning invocation per run-id: runId → { invocationId, serial }.
+   * Updated only when a user-message with a non-null serial is upserted.
+   * The entry replaces an existing one only if the new serial is higher.
+   */
+  private readonly _winningInvocations = new Map<string, { invocationId: string; serial: string }>();
 
   /** Monotonically increasing counter for insertion sequence. */
   private _seqCounter = 0;
@@ -411,6 +419,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
         this._insertSorted(existing);
         this._structuralVersion++;
       }
+      this._maybeUpdateWinningInvocation(headers, serial);
       this._emitter.emit('update');
       return;
     }
@@ -432,7 +441,37 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
     this._addToParentIndex(parentId, msgId);
     this._insertSorted(internal);
     this._structuralVersion++;
+    this._maybeUpdateWinningInvocation(headers, serial);
     this._emitter.emit('update');
+  }
+
+  /**
+   * Update the per-run winning invocation map on user-message upsert.
+   *
+   * Defensive rule: within a run-id, the invocation whose user-message has
+   * the highest Ably channel serial is canonical. We only consider messages
+   * with `role: user` and a non-null serial — optimistic (null-serial)
+   * inserts never win, otherwise a fresh-but-unacked retry would prematurely
+   * supersede the in-flight invocation.
+   * @param headers - Transport headers from the incoming user message.
+   * @param serial - Ably channel serial assigned to the published message.
+   */
+  private _maybeUpdateWinningInvocation(headers: Record<string, string>, serial: string | undefined): void {
+    if (!serial) return;
+    if (headers[HEADER_ROLE] !== 'user') return;
+    const runId = headers[HEADER_RUN_ID];
+    const invocationId = headers[HEADER_INVOCATION_ID];
+    if (!runId || !invocationId) return;
+    const current = this._winningInvocations.get(runId);
+    if (current && current.serial >= serial) return;
+    this._logger.debug('Tree._maybeUpdateWinningInvocation(); winner set', {
+      runId,
+      invocationId,
+      serial,
+      previous: current?.invocationId,
+    });
+    this._winningInvocations.set(runId, { invocationId, serial });
+    this._emitter.emit('winning-change', { runId, invocationId, serial });
   }
 
   delete(msgId: string): void {
@@ -477,13 +516,26 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
     return result;
   }
 
+  getWinningInvocation(runId: string): { invocationId: string; serial: string } | undefined {
+    const entry = this._winningInvocations.get(runId);
+    return entry ? { ...entry } : undefined;
+  }
+
   // Spec: AIT-CT8b, AIT-CT8e
   on(event: 'update', handler: () => void): () => void;
   on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
   on(event: 'run', handler: (event: RunLifecycleEvent) => void): () => void;
   on(
-    event: 'update' | 'ably-message' | 'run',
-    handler: (() => void) | ((msg: Ably.InboundMessage) => void) | ((event: RunLifecycleEvent) => void),
+    event: 'winning-change',
+    handler: (event: { runId: string; invocationId: string; serial: string }) => void,
+  ): () => void;
+  on(
+    event: 'update' | 'ably-message' | 'run' | 'winning-change',
+    handler:
+      | (() => void)
+      | ((msg: Ably.InboundMessage) => void)
+      | ((event: RunLifecycleEvent) => void)
+      | ((event: { runId: string; invocationId: string; serial: string }) => void),
   ): () => void {
     // CAST: overload signatures enforce correct handler types per event name.
     const cb = handler as (arg: TreeEventsMap[keyof TreeEventsMap]) => void;

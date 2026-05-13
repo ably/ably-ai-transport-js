@@ -54,7 +54,7 @@ export interface CancelRequest {
 // ---------------------------------------------------------------------------
 
 /** Options for creating an agent session. */
-export interface AgentSessionOptions<TEvent, TMessage> {
+export interface AgentSessionOptions<TEvent, TProjection, TMessage> {
   /**
    * The Ably Realtime client. The caller owns its lifecycle —
    * `session.close()` does not close the client.
@@ -66,7 +66,7 @@ export interface AgentSessionOptions<TEvent, TMessage> {
    */
   channelName: string;
   /** The codec to use for encoding events and messages. */
-  codec: Codec<TEvent, TMessage>;
+  codec: Codec<TEvent, TProjection, TMessage>;
   /** Logger instance for diagnostic output. */
   logger?: Logger;
   /**
@@ -313,7 +313,8 @@ export interface Run<TEvent, TMessage> {
 // ---------------------------------------------------------------------------
 
 /** Server-side session that manages run lifecycles over an Ably channel. */
-export interface AgentSession<TEvent, TMessage> {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- TProjection is part of the codec generic triple kept symmetric with ClientSession even though AgentSession does not fold events itself
+export interface AgentSession<TEvent, TProjection, TMessage> {
   /**
    * Subscribe to the cancel channel and (implicitly) attach. Idempotent —
    * subsequent calls return the same promise. All run methods (`start`,
@@ -342,7 +343,7 @@ export interface AgentSession<TEvent, TMessage> {
 // ---------------------------------------------------------------------------
 
 /** Options for creating a client session. */
-export interface ClientSessionOptions<TEvent, TMessage> {
+export interface ClientSessionOptions<TEvent, TProjection, TMessage> {
   /**
    * The Ably Realtime client. The caller owns its lifecycle —
    * `session.close()` does not close the client.
@@ -357,7 +358,7 @@ export interface ClientSessionOptions<TEvent, TMessage> {
   channelName: string;
 
   /** The codec to use for encoding/decoding. */
-  codec: Codec<TEvent, TMessage>;
+  codec: Codec<TEvent, TProjection, TMessage>;
 
   /** The client's identity. Sent to the server in the POST body. */
   clientId?: string;
@@ -619,7 +620,8 @@ export interface Tree<TMessage> {
  * `loadOlder()`. Events are scoped to the visible window — subscribers
  * are only notified when the visible output changes.
  */
-export interface View<TEvent, TMessage> {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- TEvent and TProjection are part of the codec generic triple kept symmetric with ClientSession; the View surface itself is message-shape-only
+export interface View<TEvent, TProjection, TMessage> {
   /** The visible domain messages along the selected branch. Shorthand for `flattenNodes().map(n => n.message)`. */
   getMessages(): TMessage[];
 
@@ -686,18 +688,6 @@ export interface View<TEvent, TMessage> {
    */
   edit(messageId: string, newMessages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveRun<TEvent>>;
 
-  /**
-   * Update an existing message and start a continuation run.
-   * The local tree is updated optimistically, then the events are sent
-   * to the server in the POST body. The server publishes them to the channel
-   * and streams a continuation response.
-   * @param msgId - The `x-ably-msg-id` of the existing message to amend.
-   * @param events - Events to apply to the target message (e.g. tool output).
-   * @param options - Optional send options (body, headers).
-   * @returns An active run with the continuation response stream.
-   */
-  update(msgId: string, events: TEvent[], options?: SendOptions): Promise<ActiveRun<TEvent>>;
-
   // --- Observation ---
 
   /** Active run IDs for runs with visible messages, grouped by clientId. */
@@ -735,12 +725,12 @@ export interface RunEntry<TEvent> {
 // ---------------------------------------------------------------------------
 
 /** Client-side session that manages conversation state over an Ably channel. */
-export interface ClientSession<TEvent, TMessage> {
+export interface ClientSession<TEvent, TProjection, TMessage> {
   /** The complete conversation tree — all known nodes, events for any change. */
   readonly tree: Tree<TMessage>;
 
   /** The default paginated, branch-aware view for rendering — events scoped to visible messages. */
-  readonly view: View<TEvent, TMessage>;
+  readonly view: View<TEvent, TProjection, TMessage>;
 
   /**
    * Subscribe to the channel and (implicitly) attach. Idempotent —
@@ -756,56 +746,10 @@ export interface ClientSession<TEvent, TMessage> {
    * The caller is responsible for calling `close()` on the returned view
    * when it is no longer needed, or it will be closed when the session closes.
    */
-  createView(): View<TEvent, TMessage>;
+  createView(): View<TEvent, TProjection, TMessage>;
 
   /** Cancel runs matching the filter. Defaults to `{ own: true }` (all own runs). */
   cancel(filter?: CancelFilter): Promise<void>;
-
-  /**
-   * Apply events to an existing tree message locally and queue them for
-   * delivery on the next send.
-   *
-   * Use for cross-run updates where the event value is produced on the
-   * client (e.g. after `addToolResult` resolves a client-executed tool) and
-   * must appear in the tree immediately so downstream observers — such as a
-   * destructive `setMessages(...)` mirror — cannot wipe it before it lands
-   * on the wire.
-   *
-   * The events are applied to the tree via the codec's accumulator
-   * (tree `update` fires once with the merged message) and queued on the
-   * session. The next send operation flushes the queue into the POST
-   * body's `events` field so the server can republish them over the channel.
-   *
-   * If `msgId` is not present in the tree, the call is a no-op and a
-   * warning is logged.
-   * @param msgId - The x-ably-msg-id of the existing message to amend.
-   * @param events - Events to apply and later ship.
-   */
-  stageEvents(msgId: string, events: TEvent[]): void;
-
-  /**
-   * Replace the tree's copy of an existing message with a caller-provided
-   * version, preserving headers and serial.
-   *
-   * Use for useChat-style state transitions the codec can't express as
-   * chunks — the canonical example is `addToolApprovalResponse`, which
-   * sets `state: 'approval-responded'` on a `dynamic-tool` part directly
-   * on the UIMessage and has no corresponding chunk variant.
-   *
-   * Unlike {@link stageEvents}, staged messages are NOT queued for the
-   * next send: the tree is authoritative for the POST body's history,
-   * so updating it is sufficient.
-   *
-   * Runs synchronously. Subsequent tree observers (e.g. useMessageSync)
-   * see the patched state on the next tick, so an interleaved
-   * observer-run sync can't clobber it back.
-   *
-   * If `msgId` is not present in the tree, the call is a no-op and a
-   * warning is logged.
-   * @param msgId - The x-ably-msg-id of the existing message to replace.
-   * @param message - The patched message to store.
-   */
-  stageMessage(msgId: string, message: TMessage): void;
 
   /**
    * Returns a promise that resolves when all active runs matching the filter

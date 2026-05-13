@@ -3,18 +3,19 @@
  * in the conversation.
  *
  * Watches the view's message list for tool parts in `input-available` state
- * that match a registered client tool. Executes the tool, publishes the result
- * via `view.update()`, which amends the assistant message and starts a
- * continuation run so the model can use the result.
+ * that match a registered client tool. Routing the tool result back into the
+ * run is currently a no-op pending the ChatTransport rework (the previous
+ * `view.update()` API was retired by the event-sourced codec contract).
  *
  * Skips tool calls that already have a follow-up assistant message — those
  * were resolved in a previous session and don't need re-execution.
  */
 
 import { useEffect, useRef } from 'react';
-import type { DynamicToolUIPart, UIMessage, UIMessageChunk } from 'ai';
+import type { DynamicToolUIPart, UIMessage } from 'ai';
 import type { ViewHandle } from '@ably/ai-transport/react';
 import type { MessageNode } from '@ably/ai-transport';
+import type { VercelEvent, VercelProjection } from '@ably/ai-transport/vercel';
 
 type ClientToolExecutor = (input: unknown) => Promise<unknown>;
 
@@ -42,7 +43,10 @@ const clientTools: Record<string, ClientToolExecutor> = {
   },
 };
 
-export function useClientTools(view: ViewHandle<UIMessageChunk, UIMessage>, clientId: string | undefined) {
+export function useClientTools(
+  view: ViewHandle<VercelEvent, VercelProjection, UIMessage>,
+  clientId: string | undefined,
+) {
   // Track which tool calls we've already handled to avoid re-executing
   const handledRef = useRef(new Set<string>());
 
@@ -85,32 +89,20 @@ export function useClientTools(view: ViewHandle<UIMessageChunk, UIMessage>, clie
 }
 
 async function executeClientTool(
-  view: ViewHandle<UIMessageChunk, UIMessage>,
-  node: MessageNode<UIMessage>,
+  _view: ViewHandle<VercelEvent, VercelProjection, UIMessage>,
+  _node: MessageNode<UIMessage>,
   toolPart: DynamicToolUIPart,
 ): Promise<void> {
   const executor = clientTools[toolPart.toolName];
   if (!executor) return;
 
+  // TODO: cross-run tool-output publishing pending the ChatTransport
+  // rework. The retired `view.update(msgId, events)` API was the previous
+  // hook; the new event-sourced contract surfaces it as a typed TEvent
+  // emitted from the client without a stable view-side helper yet.
   try {
-    const output = await executor(toolPart.input);
-
-    // Amend the assistant message with the tool result and start a
-    // continuation run so the model can use it.
-    await view.update(node.msgId, [
-      {
-        type: 'tool-output-available',
-        toolCallId: toolPart.toolCallId,
-        output,
-      } as UIMessageChunk,
-    ]);
+    await executor(toolPart.input);
   } catch {
-    await view.update(node.msgId, [
-      {
-        type: 'tool-output-error',
-        toolCallId: toolPart.toolCallId,
-        errorText: 'Client tool execution failed',
-      } as UIMessageChunk,
-    ]);
+    // swallow — tool output cannot currently be routed back to the run
   }
 }

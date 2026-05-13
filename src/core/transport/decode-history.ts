@@ -36,15 +36,15 @@ import {
 } from '../../constants.js';
 import type { Logger } from '../../logger.js';
 import { getHeaders } from '../../utils.js';
-import type { Codec, DecoderOutput, MessageAccumulator } from '../codec/types.js';
+import type { Codec } from '../codec/types.js';
 import type { HistoryPage, LoadHistoryOptions } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Shared state across pages within one history traversal
 // ---------------------------------------------------------------------------
 
-interface HistoryState<TEvent, TMessage> {
-  codec: Codec<TEvent, TMessage>;
+interface HistoryState<TEvent, TProjection, TMessage> {
+  codec: Codec<TEvent, TProjection, TMessage>;
   /** All raw Ably messages collected so far, in newest-first order (as received from Ably). */
   rawMessages: Ably.InboundMessage[];
   /** How many completed messages have been returned to the consumer so far. */
@@ -103,16 +103,18 @@ interface DecodedItem<TMessage> {
  * @param state - The shared history traversal state.
  * @returns Completed messages in newest-first order.
  */
-const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): DecodedItem<TMessage>[] => {
+const decodeAll = <TEvent, TProjection, TMessage>(
+  state: HistoryState<TEvent, TProjection, TMessage>,
+): DecodedItem<TMessage>[] => {
   // Reverse to chronological (oldest first)
   const chronological = [...state.rawMessages].toReversed();
 
-  // Fresh decoder and per-run accumulators for each full re-decode.
+  // Fresh decoder and per-run projections for each full re-decode.
   const decoder = state.codec.createDecoder();
   const runs = new Map<
     string,
     {
-      accumulator: MessageAccumulator<TEvent, TMessage>;
+      projection: TProjection;
       firstSeen: number;
       /** Headers from the first Ably message per x-ably-msg-id within this run. */
       msgHeaders: Map<string, Record<string, string>>;
@@ -120,52 +122,35 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
       msgSerials: Map<string, string>;
     }
   >();
-  const defaultAccumulator = state.codec.createAccumulator();
+  // Projection for non-run discrete messages (e.g. seed user-messages).
+  let defaultProjection = state.codec.init();
   let orderCounter = 0;
 
   // Headers and serials for non-run discrete messages, keyed by x-ably-msg-id.
+  // Recorded in publication order so messages and headers can be paired
+  // positionally after fold.
+  const discreteMsgIds: string[] = [];
   const discreteHeaders = new Map<string, Record<string, string>>();
   const discreteSerials = new Map<string, string>();
-  // Track which msgId produced each non-run discrete message output (in order).
-  const discreteMsgIds: string[] = [];
-
-  // Cross-run event targets to complete after all events are processed.
-  // Deferred so that finish/abort events that follow the update in serial
-  // order can still process on the active message (e.g. applying messageMetadata).
-  const deferredCompletions: { accumulator: MessageAccumulator<TEvent, TMessage>; messageId: string }[] = [];
 
   for (const msg of chronological) {
-    const outputs: DecoderOutput<TEvent, TMessage>[] = decoder.decode(msg);
+    const events = decoder.decode(msg);
     const headers = getHeaders(msg);
     const runId = headers[HEADER_RUN_ID];
     const msgId = headers[HEADER_MSG_ID];
-    const serial = msg.serial;
-    const amendTarget = headers[HEADER_AMEND];
+    const serial = msg.serial ?? '';
 
-    // Cross-run events target an existing message from a different run.
-    // Route to the owning run's accumulator via initMessage lifecycle.
-    if (amendTarget) {
-      for (const run of runs.values()) {
-        if (run.msgHeaders.has(amendTarget)) {
-          const headerKeys = [...run.msgHeaders.keys()];
-          const msgIndex = headerKeys.indexOf(amendTarget);
-          const currentMsg = msgIndex === -1 ? undefined : run.accumulator.messages[msgIndex];
-          if (currentMsg) {
-            run.accumulator.initMessage(amendTarget, currentMsg);
-          }
-          run.accumulator.processOutputs(outputs);
-          deferredCompletions.push({ accumulator: run.accumulator, messageId: amendTarget });
-          break;
-        }
-      }
-      continue;
-    }
+    // Producer-responsibility model: amend events must carry the target's
+    // `HEADER_RUN_ID`. The reducer routes via `meta.messageId` (using
+    // HEADER_AMEND when present, otherwise HEADER_MSG_ID). Mismatched
+    // run-ids result in orphan drops at the reducer.
+    const routingMsgId = headers[HEADER_AMEND] ?? msgId;
 
     if (runId) {
       let run = runs.get(runId);
       if (!run) {
         run = {
-          accumulator: state.codec.createAccumulator(),
+          projection: state.codec.init(),
           firstSeen: orderCounter++,
           msgHeaders: new Map(),
           msgSerials: new Map(),
@@ -185,38 +170,35 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
           Object.assign(existing, headers);
         }
       }
-      run.accumulator.processOutputs(outputs);
+      for (const event of events) {
+        run.projection = state.codec.fold(run.projection, event, { serial, messageId: routingMsgId });
+      }
     } else {
-      defaultAccumulator.processOutputs(outputs);
-
-      // Capture headers and serial for non-run discrete messages by x-ably-msg-id.
-      for (const output of outputs) {
-        if (output.kind === 'message' && msgId) {
+      const beforeCount = state.codec.getMessages(defaultProjection).length;
+      for (const event of events) {
+        defaultProjection = state.codec.fold(defaultProjection, event, { serial, messageId: routingMsgId });
+      }
+      const afterCount = state.codec.getMessages(defaultProjection).length;
+      // Record headers/serial in publication order for any newly-folded messages.
+      for (let i = beforeCount; i < afterCount; i++) {
+        if (msgId) {
           discreteMsgIds.push(msgId);
-          const existingDiscrete = discreteHeaders.get(msgId);
-          if (!existingDiscrete) {
+          const existing = discreteHeaders.get(msgId);
+          if (!existing) {
             discreteHeaders.set(msgId, { ...headers });
             if (serial) discreteSerials.set(msgId, serial);
           } else if (Object.keys(headers).length > 0) {
-            Object.assign(existingDiscrete, headers);
+            Object.assign(existing, headers);
           }
         }
       }
     }
   }
 
-  // Complete any messages that were re-activated for cross-run updates.
-  // Idempotent — if finish already removed the message from active tracking,
-  // completeMessage is a no-op.
-  for (const { accumulator, messageId } of deferredCompletions) {
-    accumulator.completeMessage(messageId);
-  }
-
-  // Collect completed messages in chronological order (oldest first) by run.
+  // Collect completed messages in chronological order (oldest first).
   const completed: DecodedItem<TMessage>[] = [];
 
-  // Default accumulator messages: pair with their discrete headers by position.
-  for (const [i, msg] of defaultAccumulator.completedMessages.entries()) {
+  for (const [i, msg] of state.codec.getMessages(defaultProjection).entries()) {
     const mid = discreteMsgIds[i];
     completed.push({
       message: msg,
@@ -231,10 +213,6 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
     // with the highest Ably serial is canonical. Messages whose serial
     // precedes the winning user-message's serial belong to a losing
     // invocation and are dropped from the materialised history.
-    //
-    // Note: only user-messages carry an invocation-id header on the wire.
-    // The owning invocation of an assistant message is determined by serial
-    // position relative to the winning user-message — a serial-window rule.
     let winningSerial: string | undefined;
     for (const [mid, hdrs] of run.msgHeaders) {
       if (hdrs[HEADER_ROLE] !== 'user') continue;
@@ -246,13 +224,10 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
       }
     }
 
-    // Assign headers and serials to each completed message in this run.
-    // The run's msgHeaders map is keyed by x-ably-msg-id and ordered by
-    // first-seen. Completed messages are matched positionally.
     const headerEntries = [...run.msgHeaders.entries()];
     let headerIdx = 0;
 
-    for (const msg of run.accumulator.completedMessages) {
+    for (const message of state.codec.getMessages(run.projection)) {
       const entry = headerEntries[headerIdx];
       if (entry) {
         const [mid, hdrs] = entry;
@@ -262,9 +237,9 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
           // Loser: belongs to an earlier invocation under this run.
           continue;
         }
-        completed.push({ message: msg, headers: hdrs, serial });
+        completed.push({ message, headers: hdrs, serial });
       } else {
-        completed.push({ message: msg, headers: {}, serial: '' });
+        completed.push({ message, headers: {}, serial: '' });
       }
     }
   }
@@ -282,7 +257,9 @@ const decodeAll = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): Dec
  * @param state - The shared history traversal state.
  * @returns Completed messages in newest-first order.
  */
-const decodeAllCached = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>): DecodedItem<TMessage>[] => {
+const decodeAllCached = <TEvent, TProjection, TMessage>(
+  state: HistoryState<TEvent, TProjection, TMessage>,
+): DecodedItem<TMessage>[] => {
   if (state.cachedDecode && state.cachedAtRawLength === state.rawMessages.length) {
     return state.cachedDecode;
   }
@@ -337,8 +314,8 @@ const decodeAllCached = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>
  * @param state - The shared history traversal state.
  * @param newMessages - The Ably messages just pushed onto `state.rawMessages`.
  */
-const countNewCompletions = <TEvent, TMessage>(
-  state: HistoryState<TEvent, TMessage>,
+const countNewCompletions = <TEvent, TProjection, TMessage>(
+  state: HistoryState<TEvent, TProjection, TMessage>,
   newMessages: readonly Ably.InboundMessage[],
 ): void => {
   for (const msg of newMessages) {
@@ -385,8 +362,8 @@ const countNewCompletions = <TEvent, TMessage>(
  * @param ablyPage - The current Ably paginated result to start from.
  * @param limit - Target number of completed messages beyond what has already been returned.
  */
-const fetchUntilLimit = async <TEvent, TMessage>(
-  state: HistoryState<TEvent, TMessage>,
+const fetchUntilLimit = async <TEvent, TProjection, TMessage>(
+  state: HistoryState<TEvent, TProjection, TMessage>,
   ablyPage: Ably.PaginatedResult<Ably.InboundMessage>,
   limit: number,
 ): Promise<void> => {
@@ -419,7 +396,10 @@ const fetchUntilLimit = async <TEvent, TMessage>(
  * @param limit - Max messages per page.
  * @returns A page of decoded history with a `next()` cursor.
  */
-const buildResult = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>, limit: number): HistoryPage<TMessage> => {
+const buildResult = <TEvent, TProjection, TMessage>(
+  state: HistoryState<TEvent, TProjection, TMessage>,
+  limit: number,
+): HistoryPage<TMessage> => {
   // allCompleted is newest-first. Slice from returnedCount for this page,
   // then reverse to chronological for display.
   const allCompleted = decodeAllCached(state);
@@ -473,14 +453,14 @@ const buildResult = <TEvent, TMessage>(state: HistoryState<TEvent, TMessage>, li
  * @returns The first page of decoded history.
  */
 // Spec: AIT-CT11, AIT-CT11b
-export const decodeHistory = async <TEvent, TMessage>(
+export const decodeHistory = async <TEvent, TProjection, TMessage>(
   channel: Ably.RealtimeChannel,
-  codec: Codec<TEvent, TMessage>,
+  codec: Codec<TEvent, TProjection, TMessage>,
   options: LoadHistoryOptions | undefined,
   logger: Logger,
 ): Promise<HistoryPage<TMessage>> => {
   const limit = options?.limit ?? 100;
-  const state: HistoryState<TEvent, TMessage> = {
+  const state: HistoryState<TEvent, TProjection, TMessage> = {
     codec,
     rawMessages: [],
     returnedCount: 0,

@@ -23,7 +23,7 @@ import { getHeaders } from '../../utils.js';
 import type { Codec } from '../codec/types.js';
 import { decodeHistory } from './decode-history.js';
 import type { TreeInternal } from './tree.js';
-import type { ActiveRun, EventsNode, HistoryPage, MessageNode, RunLifecycleEvent, SendOptions, View } from './types.js';
+import type { ActiveRun, HistoryPage, MessageNode, RunLifecycleEvent, SendOptions, View } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Events map
@@ -43,8 +43,6 @@ interface ViewEventsMap {
  * Internal delegate function provided by the session for executing sends.
  * The View pre-computes the visible branch history and passes it directly,
  * so the delegate has no back-reference to the View.
- * When `eventNodes` is provided, the session includes them in the POST body
- * for the server to publish as cross-run events.
  * When `republishMsgId` is provided, the delegate publishes the (single)
  * input message under the existing msg-id instead of generating a new one.
  * No new tree node is created.
@@ -53,7 +51,6 @@ export type SendDelegate<TEvent, TMessage> = (
   input: TMessage | TMessage[],
   options: SendOptions | undefined,
   history: MessageNode<TMessage>[],
-  eventNodes?: EventsNode<TEvent>[],
   republishMsgId?: string,
 ) => Promise<ActiveRun<TEvent>>;
 
@@ -62,13 +59,13 @@ export type SendDelegate<TEvent, TMessage> = (
 // ---------------------------------------------------------------------------
 
 /** Options for creating a View. */
-export interface ViewOptions<TEvent, TMessage> {
+export interface ViewOptions<TEvent, TProjection, TMessage> {
   /** The tree to project. */
   tree: TreeInternal<TMessage>;
   /** The Ably channel to load history from. */
   channel: Ably.RealtimeChannel;
   /** The codec for decoding history messages. */
-  codec: Codec<TEvent, TMessage>;
+  codec: Codec<TEvent, TProjection, TMessage>;
   /** Delegate for executing sends through the session. */
   sendDelegate: SendDelegate<TEvent, TMessage>;
   /** Logger for diagnostic output. */
@@ -99,10 +96,10 @@ type BranchSelection =
 // Implementation
 // ---------------------------------------------------------------------------
 
-export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
+export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, TProjection, TMessage> {
   private readonly _tree: TreeInternal<TMessage>;
   private readonly _channel: Ably.RealtimeChannel;
-  private readonly _codec: Codec<TEvent, TMessage>;
+  private readonly _codec: Codec<TEvent, TProjection, TMessage>;
   private readonly _sendDelegate: SendDelegate<TEvent, TMessage>;
   private readonly _logger: Logger;
   private readonly _emitter: EventEmitter<ViewEventsMap>;
@@ -155,7 +152,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
   private _processingHistory = false;
   private _closed = false;
 
-  constructor(options: ViewOptions<TEvent, TMessage>) {
+  constructor(options: ViewOptions<TEvent, TProjection, TMessage>) {
     this._tree = options.tree;
     this._channel = options.channel;
     this._codec = options.codec;
@@ -463,7 +460,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
       ...(parentNode.parentId !== undefined && { parent: parentNode.parentId }),
     };
 
-    const result = await this._sendDelegate([parentNode.message], sendOptions, history, undefined, parentNode.msgId);
+    const result = await this._sendDelegate([parentNode.message], sendOptions, history, parentNode.msgId);
     this._applyForkAutoSelect(result, sendOptions);
     return result;
   }
@@ -491,15 +488,6 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
       forkOf: messageId,
       parent: parentId,
     });
-  }
-
-  async update(msgId: string, events: TEvent[], options?: SendOptions): Promise<ActiveRun<TEvent>> {
-    if (this._closed) {
-      throw new Ably.ErrorInfo('unable to update; view is closed', ErrorCode.InvalidArgument, 400);
-    }
-    this._logger.trace('DefaultView.update();', { msgId, eventCount: events.length });
-    const eventNodes: EventsNode<TEvent>[] = [{ kind: 'event', msgId, events }];
-    return this._sendDelegate([], options, this.flattenNodes(), eventNodes);
   }
 
   private _getHistoryBefore(messageId: string): MessageNode<TMessage>[] {
@@ -906,5 +894,6 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
  * @param options - The tree, channel, codec, and logger to use.
  * @returns A new {@link DefaultView} instance.
  */
-export const createView = <TEvent, TMessage>(options: ViewOptions<TEvent, TMessage>): DefaultView<TEvent, TMessage> =>
-  new DefaultView(options);
+export const createView = <TEvent, TProjection, TMessage>(
+  options: ViewOptions<TEvent, TProjection, TMessage>,
+): DefaultView<TEvent, TProjection, TMessage> => new DefaultView(options);

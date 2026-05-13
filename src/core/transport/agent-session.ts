@@ -84,9 +84,9 @@ import type {
  * @param opts.logger - Optional logger for diagnostic output.
  * @returns The decoded MessageNodes for the matching user prompt, sorted by Ably serial.
  */
-const lookupUserPrompt = async <TEvent, TMessage>(opts: {
+const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
   register: (callback: (msg: Ably.InboundMessage) => void) => () => void;
-  codec: import('../codec/types.js').Codec<TEvent, TMessage>;
+  codec: import('../codec/types.js').Codec<TEvent, TProjection, TMessage>;
   invocationId: string;
   runId: string;
   expectedCount: number;
@@ -103,11 +103,14 @@ const lookupUserPrompt = async <TEvent, TMessage>(opts: {
    */
   const decode = (m: Ably.InboundMessage): MessageNode<TMessage>[] => {
     const decoder = codec.createDecoder();
-    const accumulator = codec.createAccumulator();
-    accumulator.processOutputs(decoder.decode(m));
     const headers = getHeaders(m);
     const msgId = headers[HEADER_MSG_ID] ?? '';
-    return accumulator.completedMessages.map((message) => ({
+    const events = decoder.decode(m);
+    let projection = codec.init();
+    for (const event of events) {
+      projection = codec.fold(projection, event, { serial: m.serial ?? '', messageId: msgId });
+    }
+    return codec.getMessages(projection).map((message) => ({
       kind: 'message' as const,
       message,
       msgId,
@@ -254,9 +257,9 @@ enum RunState {
 // ---------------------------------------------------------------------------
 
 // Spec: AIT-ST1
-class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMessage> {
+class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession<TEvent, TProjection, TMessage> {
   private readonly _channel: Ably.RealtimeChannel;
-  private readonly _codec: AgentSessionOptions<TEvent, TMessage>['codec'];
+  private readonly _codec: AgentSessionOptions<TEvent, TProjection, TMessage>['codec'];
   private readonly _logger: Logger | undefined;
   private readonly _onError: ((error: Ably.ErrorInfo) => void) | undefined;
   private readonly _runManager: RunManager;
@@ -300,7 +303,7 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
   private _hasAttachedOnce: boolean;
   private readonly _onChannelStateChange: Ably.channelEventCallback;
 
-  constructor(options: AgentSessionOptions<TEvent, TMessage>) {
+  constructor(options: AgentSessionOptions<TEvent, TProjection, TMessage>) {
     // Spec: AIT-ST1a, AIT-ST1a2 — register this SDK on both the connection
     // (options.agents) and channel-attach (params.agent) paths. Idempotent
     // across sessions sharing one client.
@@ -791,7 +794,7 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
         //   deadline before erroring out)
         if (viewMessages.length === 0 && invocationUserMessageCount > 0 && promptLookupTimeoutMs > 0) {
           try {
-            const found = await lookupUserPrompt<TEvent, TMessage>({
+            const found = await lookupUserPrompt<TEvent, TProjection, TMessage>({
               register: (callback) => registerPromptListener(invocationId, callback),
               codec,
               invocationId,
@@ -890,7 +893,8 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
               onMessage,
             });
 
-            await encoder.writeMessages([node.message], opts?.clientId ? { clientId: opts.clientId } : undefined);
+            const userEvent = codec.userMessageEvent(node.message);
+            await encoder.publish(userEvent, opts?.clientId ? { clientId: opts.clientId } : undefined);
 
             msgIds.push(node.msgId);
           }
@@ -941,7 +945,7 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
             });
 
             for (const event of node.events) {
-              await encoder.writeEvent(event);
+              await encoder.publish(event);
             }
 
             await encoder.close();
@@ -1061,6 +1065,6 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
  * @param options - Session configuration.
  * @returns A new {@link AgentSession} instance.
  */
-export const createAgentSession = <TEvent, TMessage>(
-  options: AgentSessionOptions<TEvent, TMessage>,
-): AgentSession<TEvent, TMessage> => new DefaultAgentSession(options);
+export const createAgentSession = <TEvent, TProjection, TMessage>(
+  options: AgentSessionOptions<TEvent, TProjection, TMessage>,
+): AgentSession<TEvent, TProjection, TMessage> => new DefaultAgentSession(options);

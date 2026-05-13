@@ -2,7 +2,7 @@
 
 The client session (`src/core/transport/client-session.ts`) manages the full client-side conversation lifecycle over a single Ably channel. It composes a [stream router](transport-components.md#streamrouter), [conversation tree](conversation-tree.md), and codec [decoder](decoder.md)/[accumulator](codec-interface.md#accumulator) to handle receiving streamed responses and managing conversation state. Write operations (`send`, `regenerate`, `edit`) live on the View, which delegates to the session's internal send machinery.
 
-The client never publishes domain messages directly to the channel. Instead, it sends them to the server via HTTP POST. The server publishes user messages and [run lifecycle events](wire-protocol.md#lifecycle-events) on behalf of the client. The channel subscription is the sole source of truth for conversation state.
+The client publishes user messages directly to the channel via the shared codec encoder, and POSTs an HTTP invocation in parallel. The agent correlates the prompt by the `x-ably-invocation-id` header (channel rewind + live subscribe) and publishes [run lifecycle events](wire-protocol.md#lifecycle-events) plus assistant chunks. The channel is the durable session record — agents that weren't running at publish time can resume by reading channel rewind.
 
 ## Composition
 
@@ -20,16 +20,18 @@ All sub-components are created in the constructor and share a single Ably channe
 
 ## Send flow
 
-`view.send()` is the primary entry point for starting a new run. It delegates to the session's internal `_internalSend` (exposed to views via a `SendDelegate`). The send flow handles optimistic insertion, HTTP POST dispatch, and stream creation in a specific order:
+`view.send()` is the primary entry point for starting a new run. It delegates to the session's internal `_internalSend` (exposed to views via a `SendDelegate`). The send flow:
 
-1. **Generate identifiers** - a run IDs and per-message message IDs (`crypto.randomUUID()`)
-2. **Auto-compute parent** - if no explicit `parent` or `forkOf` is provided, reads the last message in the [flattened tree](conversation-tree.md#flatten-producing-the-linear-path) to chain messages into a linear thread
-3. **Optimistic insert** - each user message is inserted into the conversation tree immediately with [transport headers](wire-protocol.md#transport-headers-x-ably) (role, run IDs, message ID, parent). This makes the message visible to the view before the server acknowledges it
-4. **Create stream** - the [stream router](transport-components.md#streamrouter) creates a `ReadableStream` for the run, capturing the controller synchronously
-5. **Fire-and-forget POST** - the HTTP POST is dispatched without `await` so the stream is returned immediately. POST errors are surfaced via the `error` event and the stream is errored (the consumer's reader rejects)
-6. **Return `ActiveRun`** - the caller receives `{ stream, runId, cancel() }` synchronously
+1. **Generate identifiers** — a fresh `runId`, a fresh `invocationId`, and per-message `msgId`s (all `crypto.randomUUID()`).
+2. **Auto-compute parent** — if no explicit `parent` or `forkOf` is provided, reads the last message in the [flattened tree](conversation-tree.md#flatten-producing-the-linear-path) to chain messages into a linear thread.
+3. **Optimistic insert** — each user message is inserted into the conversation tree immediately with [transport headers](wire-protocol.md#transport-headers-x-ably) (`role: "user"`, `run-id`, `invocation-id`, `msg-id`, parent). This makes the message visible to the view before the publish ack lands.
+4. **Create stream** — the [stream router](transport-components.md#streamrouter) creates a `ReadableStream` bound to `(runId, invocationId)`. Events from a different invocation under the same `runId` are dropped.
+5. **Publish on the channel** — the session's shared encoder publishes the user message(s) via `writeMessages`. Capability errors (Ably 401/403) are translated to `MissingPublishCapability` and reject `send()` before exposing the stream.
+6. **POST in parallel** — the HTTP POST is fired in parallel with the publish. The body carries `runId`, `invocationId`, `clientId`, `history` (and `events`, `forkOf`, `parent` when applicable). It does **not** carry a `messages` field — the prompt is on the channel.
+7. **Wait for run-start** — `send()` awaits an `x-ably-run-start` event for the run+invocation, bounded by `runStartDeadlineMs` (default 30 000 ms). Deadline lapse rejects `send()` with `RunStartDeadlineExceeded`. POST failure also rejects.
+8. **Return `ActiveRun`** — once run-start arrives, the caller receives `{ stream, runId, cancel() }`.
 
-The POST body includes `history` (all messages before the optimistic inserts), `messages` (the new messages with headers), `runId`, and `clientId`.
+`regenerate()` and `update()` (which carry no user-message text) skip the encoder publish and the run-start wait — the agent receives the invocation via POST and runs without needing a channel-published prompt.
 
 ### Multi-message chaining
 

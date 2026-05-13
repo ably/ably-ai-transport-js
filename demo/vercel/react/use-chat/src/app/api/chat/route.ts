@@ -43,6 +43,10 @@ export async function POST(req: Request) {
   await session.connect();
   const run = session.createRun(invocation, { signal: req.signal });
 
+  // The client publishes user messages directly on the channel. start()
+  // locates them by invocation-id (channel rewind + live wait) and
+  // populates run.view.messages before run-start is published. The agent
+  // therefore must NOT call addMessages() — that would double-publish.
   await run.start();
 
   // Apply client-shipped events (tool outputs from addToolResult +
@@ -52,20 +56,18 @@ export async function POST(req: Request) {
     await run.addEvents(invocation.events);
   }
 
-  // Publish user messages (if any). Fork metadata (parent/forkOf) is
-  // configured at the run level — addMessages picks it up automatically.
-  let lastUserMsgId: string | undefined;
-  if (invocation.messages.length > 0) {
-    const { msgIds } = await run.addMessages(invocation.messages, { clientId: invocation.clientId });
-    lastUserMsgId = msgIds.at(-1);
-  }
+  // The user-prompt MessageNodes for this run are exposed via run.view.messages
+  // after run.start() resolves. Use the last msg-id as the assistant message's
+  // parent so streamed chunks chain off the prompt.
+  const newNodes = run.view.messages;
+  const lastUserMsgId = newNodes.at(-1)?.msgId;
 
   // Reconstruct full conversation for the LLM. Merge tool-result events
   // into history so convertToModelMessages sees the tool results this
   // run (the client ships them separately to keep history nodes intact).
   const mergedHistory = applyToolEventsToHistory(invocation.events, invocation.history);
   const historyMsgs = mergedHistory.map((h) => h.message);
-  const newMsgs = invocation.messages.map((m) => m.message);
+  const newMsgs = newNodes.map((m) => m.message);
   const allMessages = [...historyMsgs, ...newMsgs];
 
   // Derive approval decisions from history — useChat's addToolApprovalResponse

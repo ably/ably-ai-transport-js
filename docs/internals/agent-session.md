@@ -13,7 +13,16 @@ The session exposes a single factory method - `createRun()` - which returns a `R
 1. Subscribes to `x-ably-cancel` events on the channel (subscribing before attach per [RTL7g](https://sdk.ably.com/builds/ably/specification/main/features/#RTL7g))
 2. Starts routing cancel messages to registered runs
 
-The method is idempotent - a second call returns the same in-flight promise and does not subscribe twice. The cancel subscription is the session's only channel subscription. All message publishing goes through the RunManager and codec encoder - the session doesn't subscribe to its own output.
+The method is idempotent - a second call returns the same in-flight promise and does not subscribe twice. The cancel subscription is the session's primary subscription. `Run.start()` may install a transient unfiltered subscription for the duration of the user-prompt lookup (see _Prompt lookup_ below); it unsubscribes as soon as a match is found or the deadline lapses. All other message publishing goes through the RunManager and codec encoder.
+
+## Prompt lookup
+
+The client publishes the user prompt directly on the channel; the agent locates it by `x-ably-invocation-id`. Inside `Run.start()`:
+
+- If `invocation.messages` is non-empty (legacy / test path), it is used directly and no lookup runs.
+- Otherwise the session scans recent channel history (newest-first) for a matching `(runId, invocationId, role: "user")` message. A match populates `run.view.messages` and the lookup ends.
+- If no historical match is found, a transient channel subscription waits live for an arrival, bounded by `AgentSessionOptions.promptLookupTimeoutMs` (default 30 000 ms). Setting `promptLookupTimeoutMs` to `0` skips the lookup entirely (used by tests and by callers who pre-populate `view.messages`).
+- On deadline lapse the agent publishes an `x-ably-error` event (tagged with `runId` and `invocationId`, error code `PromptNotFound`) and `start()` rejects. Run-start is not published.
 
 ## Run lifecycle
 

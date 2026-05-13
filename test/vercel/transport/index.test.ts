@@ -18,6 +18,7 @@ interface MockChannel {
   attach: ReturnType<typeof vi.fn>;
   history: ReturnType<typeof vi.fn>;
   state: Ably.ChannelState;
+  listener: ((msg: Ably.InboundMessage) => void) | undefined;
 }
 
 const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
@@ -25,10 +26,36 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
     // Default to 'attached' so send() doesn't reject — it requires the
     // channel to be ATTACHED or ATTACHING.
     state: 'attached',
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-    publish: vi.fn(() => Promise.resolve()),
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-    subscribe: vi.fn(() => Promise.resolve()),
+    listener: undefined,
+    // eslint-disable-next-line @typescript-eslint/require-await -- mock fires synthetic run-start side effect; no awaitable work
+    publish: vi.fn(async (msg: Ably.Message | Ably.Message[]) => {
+      // When a client publishes a user message, simulate the agent's
+      // run-start response so `await session.view.send(...)` resolves.
+      const messages = Array.isArray(msg) ? msg : [msg];
+      for (const m of messages) {
+        const headers = (m.extras as { headers?: Record<string, string> } | undefined)?.headers ?? {};
+        if (headers['x-ably-role'] === 'user' && headers['x-ably-run-id'] && mock.listener) {
+          const captured = mock.listener;
+          queueMicrotask(() => {
+            captured({
+              name: 'x-ably-run-start',
+              extras: {
+                headers: {
+                  'x-ably-run-id': headers['x-ably-run-id'] ?? '',
+                  'x-ably-run-client-id': headers['x-ably-run-client-id'] ?? '',
+                  'x-ably-invocation-id': headers['x-ably-invocation-id'] ?? '',
+                },
+              },
+              serial: '01H_run_start_sim',
+            } as unknown as Ably.InboundMessage);
+          });
+        }
+      }
+    }),
+    // eslint-disable-next-line @typescript-eslint/require-await -- mock returns Promise.resolve; the captured listener runs side effects
+    subscribe: vi.fn(async (callback: (m: Ably.InboundMessage) => void) => {
+      mock.listener = callback;
+    }),
     unsubscribe: vi.fn(),
     on: vi.fn(),
     off: vi.fn(),

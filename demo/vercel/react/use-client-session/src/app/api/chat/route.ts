@@ -41,19 +41,18 @@ export async function POST(req: Request) {
   await session.connect();
   const run = session.createRun(invocation, { signal: req.signal });
 
+  // The client publishes user messages directly on the channel. start()
+  // locates them by invocation-id and populates run.view.messages before
+  // run-start is published — do NOT call addMessages here.
   await run.start();
 
   if (invocation.events.length > 0) {
     await run.addEvents(invocation.events);
   }
 
-  let lastUserMsgId: string | undefined;
-  if (invocation.messages.length > 0) {
-    const { msgIds } = await run.addMessages(invocation.messages, { clientId: invocation.clientId });
-    lastUserMsgId = msgIds.at(-1);
-  }
-
-  const allMessages = [...invocation.history.map((h) => h.message), ...invocation.messages.map((m) => m.message)];
+  const newNodes = run.view.messages;
+  const lastUserMsgId = newNodes.at(-1)?.msgId;
+  const allMessages = [...invocation.history.map((h) => h.message), ...newNodes.map((m) => m.message)];
 
   const { modelMessages, tools: effectiveTools } = await prepareApprovalRun({
     messages: allMessages,

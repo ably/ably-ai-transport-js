@@ -36,26 +36,25 @@ export { buildTransportHeaders, createAgentSession, createClientSession, Invocat
 export type {
   ChannelWriter,
   Codec,
+  Decoder,
   DecoderCore,
   DecoderCoreHooks,
   DecoderCoreOptions,
-  DecoderOutput,
-  DiscreteEncoder,
+  Encoder,
   EncoderCore,
   EncoderCoreOptions,
   EncoderOptions,
   Extras,
   LifecycleTracker,
-  MessageAccumulator,
   MessagePayload,
   PhaseConfig,
-  StreamDecoder,
-  StreamEncoder,
+  Reducer,
+  ReducerMeta,
   StreamPayload,
   StreamTrackerState,
   WriteOptions,
 } from './core/codec/index.js';
-export { createDecoderCore, createEncoderCore, createLifecycleTracker, eventOutput } from './core/codec/index.js';
+export { createDecoderCore, createEncoderCore, createLifecycleTracker } from './core/codec/index.js';
 
 // Constants
 export {

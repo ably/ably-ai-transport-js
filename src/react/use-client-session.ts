@@ -26,27 +26,21 @@ import type { ClientSession, Tree, View } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
 import { ClientSessionContext } from './contexts/client-session-context.js';
 
-const SKIPPED_SESSION: ClientSession<unknown, unknown> = {
+const SKIPPED_SESSION: ClientSession<unknown, unknown, unknown> = {
   get tree(): Tree<unknown> {
     throw new Ably.ErrorInfo('unable to access tree; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
-  get view(): View<unknown, unknown> {
+  get view(): View<unknown, unknown, unknown> {
     throw new Ably.ErrorInfo('unable to access view; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   connect: () => {
     throw new Ably.ErrorInfo('unable to connect; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
-  createView: (): View<unknown, unknown> => {
+  createView: (): View<unknown, unknown, unknown> => {
     throw new Ably.ErrorInfo('unable to create view; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   cancel: () => {
     throw new Ably.ErrorInfo('unable to cancel; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  stageEvents: () => {
-    throw new Ably.ErrorInfo('unable to stage events; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  stageMessage: () => {
-    throw new Ably.ErrorInfo('unable to stage message; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   waitForRun: () => {
     throw new Ably.ErrorInfo('unable to wait for run; hook is skipped', ErrorCode.InvalidArgument, 400);
@@ -67,14 +61,14 @@ const SKIPPED_SESSION: ClientSession<unknown, unknown> = {
  * that throws {@link Ably.ErrorInfo} on every access.
  * Check `sessionError` before using `session` to avoid those throws.
  */
-export interface ClientSessionHandle<TEvent, TMessage> {
+export interface ClientSessionHandle<TEvent, TProjection, TMessage> {
   /**
    * The resolved session.
    *
    * A throwing stub when `skip` is `true`, when no matching {@link ClientSessionProvider}
    * was found in the tree, or when session construction failed.
    */
-  session: ClientSession<TEvent, TMessage>;
+  session: ClientSession<TEvent, TProjection, TMessage>;
   /**
    * Set when no matching {@link ClientSessionProvider} was found, when session
    * construction failed, and `skip` is `false`.
@@ -100,7 +94,7 @@ export interface ClientSessionHandle<TEvent, TMessage> {
  * @param props.onError - Called whenever the resolved session emits an error event.
  * @returns `{ session, sessionError }`.
  */
-export const useClientSession = <TEvent, TMessage>({
+export const useClientSession = <TEvent, TProjection, TMessage>({
   channelName,
   skip,
   onError,
@@ -121,7 +115,7 @@ export const useClientSession = <TEvent, TMessage>({
    * automatically removed on unmount or when the session changes.
    */
   onError?: (error: Ably.ErrorInfo) => void;
-} = {}): ClientSessionHandle<TEvent, TMessage> => {
+} = {}): ClientSessionHandle<TEvent, TProjection, TMessage> => {
   const { nearest: nearestSlot, providers } = useContext(ClientSessionContext);
   const errorCallbackRef = useRef(onError);
   errorCallbackRef.current = onError;
@@ -129,7 +123,7 @@ export const useClientSession = <TEvent, TMessage>({
   // Compute the session for the onError subscription *before* any conditional
   // returns to satisfy React's rules of hooks (no hooks in branches).
   // Erased generics — this ref is only used in the useEffect below.
-  const resolvedForEffect: ClientSession<unknown, unknown> | undefined = skip
+  const resolvedForEffect: ClientSession<unknown, unknown, unknown> | undefined = skip
     ? undefined
     : channelName === undefined
       ? nearestSlot?.session
@@ -144,7 +138,7 @@ export const useClientSession = <TEvent, TMessage>({
 
   if (skip) {
     return {
-      session: SKIPPED_SESSION as unknown as ClientSession<TEvent, TMessage>,
+      session: SKIPPED_SESSION as unknown as ClientSession<TEvent, TProjection, TMessage>,
     };
   }
 
@@ -155,17 +149,17 @@ export const useClientSession = <TEvent, TMessage>({
         // CAST: ClientSessionContext stores sessions with erased generics.
         // The caller is responsible for using type parameters matching those of the ClientSessionProvider.
         return {
-          session: slot.session as unknown as ClientSession<TEvent, TMessage>,
+          session: slot.session as unknown as ClientSession<TEvent, TProjection, TMessage>,
         };
       }
       // Provider exists but construction failed.
       return {
-        session: SKIPPED_SESSION as unknown as ClientSession<TEvent, TMessage>,
+        session: SKIPPED_SESSION as unknown as ClientSession<TEvent, TProjection, TMessage>,
         sessionError: slot.sessionError,
       };
     }
     return {
-      session: SKIPPED_SESSION as unknown as ClientSession<TEvent, TMessage>,
+      session: SKIPPED_SESSION as unknown as ClientSession<TEvent, TProjection, TMessage>,
       sessionError: new Ably.ErrorInfo(
         `unable to use session; no ClientSessionProvider found for channelName "${channelName}"`,
         ErrorCode.BadRequest,
@@ -178,18 +172,18 @@ export const useClientSession = <TEvent, TMessage>({
     if (nearestSlot.session) {
       // CAST: ClientSessionContext stores session with erased generics; types fixed at call site.
       return {
-        session: nearestSlot.session as unknown as ClientSession<TEvent, TMessage>,
+        session: nearestSlot.session as unknown as ClientSession<TEvent, TProjection, TMessage>,
       };
     }
     // Nearest provider exists but construction failed.
     return {
-      session: SKIPPED_SESSION as unknown as ClientSession<TEvent, TMessage>,
+      session: SKIPPED_SESSION as unknown as ClientSession<TEvent, TProjection, TMessage>,
       sessionError: nearestSlot.sessionError,
     };
   }
 
   return {
-    session: SKIPPED_SESSION as unknown as ClientSession<TEvent, TMessage>,
+    session: SKIPPED_SESSION as unknown as ClientSession<TEvent, TProjection, TMessage>,
     sessionError: new Ably.ErrorInfo(
       'unable to use session; no ClientSessionProvider found in the tree',
       ErrorCode.BadRequest,

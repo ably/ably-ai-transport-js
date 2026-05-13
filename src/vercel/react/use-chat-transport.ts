@@ -18,30 +18,25 @@ import { useContext } from 'react';
 
 import type { ClientSession, Tree, View } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
+import type { VercelEvent, VercelProjection } from '../codec/index.js';
 import type { ChatTransport } from '../transport/index.js';
 import { ChatTransportContext } from './contexts/chat-transport-context.js';
 
-const SKIPPED_CLIENT_SESSION: ClientSession<AI.UIMessageChunk, AI.UIMessage> = {
+const SKIPPED_CLIENT_SESSION: ClientSession<VercelEvent, VercelProjection, AI.UIMessage> = {
   get tree(): Tree<AI.UIMessage> {
     throw new Ably.ErrorInfo('unable to access tree; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
-  get view(): View<AI.UIMessageChunk, AI.UIMessage> {
+  get view(): View<VercelEvent, VercelProjection, AI.UIMessage> {
     throw new Ably.ErrorInfo('unable to access view; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   connect: () => {
     throw new Ably.ErrorInfo('unable to connect; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
-  createView: (): View<AI.UIMessageChunk, AI.UIMessage> => {
+  createView: (): View<VercelEvent, VercelProjection, AI.UIMessage> => {
     throw new Ably.ErrorInfo('unable to create view; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   cancel: () => {
     throw new Ably.ErrorInfo('unable to cancel; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  stageEvents: () => {
-    throw new Ably.ErrorInfo('unable to stage events; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  stageMessage: () => {
-    throw new Ably.ErrorInfo('unable to stage message; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   waitForRun: () => {
     throw new Ably.ErrorInfo('unable to wait for run; hook is skipped', ErrorCode.InvalidArgument, 400);
@@ -95,7 +90,7 @@ export interface ChatTransportHandle {
    * A throwing stub when `skip` is `true`, when no matching {@link ClientSessionProvider}
    * was found in the tree, or when session construction failed. Check `sessionError` before use.
    */
-  session: ClientSession<AI.UIMessageChunk, AI.UIMessage>;
+  session: ClientSession<VercelEvent, VercelProjection, AI.UIMessage>;
 
   /**
    * The chat transport adapter for use with Vercel's `useChat` hook.

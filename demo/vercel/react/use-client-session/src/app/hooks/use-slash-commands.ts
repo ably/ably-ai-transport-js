@@ -14,7 +14,8 @@
 
 import { useMemo, useCallback } from 'react';
 import type { ClientSession, ActiveRun, SendOptions } from '@ably/ai-transport';
-import type { UIMessageChunk, UIMessage } from 'ai';
+import type { UIMessage } from 'ai';
+import type { VercelEvent, VercelProjection } from '@ably/ai-transport/vercel';
 import { userMessage } from '../helpers';
 
 export interface SlashCommand {
@@ -42,10 +43,10 @@ export interface SlashCommandHandle {
   execute: (input: string) => boolean;
 }
 
-type SendFn = (messages: UIMessage[], options?: SendOptions) => Promise<ActiveRun<UIMessageChunk>>;
+type SendFn = (messages: UIMessage[], options?: SendOptions) => Promise<ActiveRun<VercelEvent>>;
 
 export function useSlashCommands(
-  session: ClientSession<UIMessageChunk, UIMessage>,
+  session: ClientSession<VercelEvent, VercelProjection, UIMessage>,
   activeRuns: Map<string, Set<string>>,
   send: SendFn,
   input: string,

@@ -26,6 +26,7 @@ import type * as AI from 'ai';
 
 import type { ClientSession, CloseOptions, SendOptions } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
+import type { VercelEvent, VercelProjection } from '../codec/index.js';
 
 // ---------------------------------------------------------------------------
 // ChatTransport options
@@ -157,6 +158,26 @@ export interface ChatTransport {
  * @param source - The original stream to wrap.
  * @returns The wrapped stream and a `done` promise that resolves when the stream closes.
  */
+/**
+ * Filter a VercelEvent stream down to its UIMessageChunk variants. Non-chunk
+ * variants (UserMessageEvent / ToolApprovalEvent) only appear on prompt-side
+ * publishes from the client; the assistant stream consumed by useChat is
+ * naturally chunk-only. This filter narrows the TypeScript type and protects
+ * against any unexpected non-chunk leakage at runtime.
+ * @param source - The raw VercelEvent stream from the active run.
+ * @returns A stream of UIMessageChunks suitable for handing to useChat.
+ */
+const filterToChunks = (source: ReadableStream<VercelEvent>): ReadableStream<AI.UIMessageChunk> =>
+  source.pipeThrough(
+    new TransformStream<VercelEvent, AI.UIMessageChunk>({
+      transform: (event, controller) => {
+        if (event.type === 'ait-user-message' || event.type === 'ait-tool-approval') return;
+        // CAST: discriminator above excludes the codec-local variants, leaving UIMessageChunk.
+        controller.enqueue(event);
+      },
+    }),
+  );
+
 const wrapStreamWithDone = <T>(source: ReadableStream<T>): { stream: ReadableStream<T>; done: Promise<void> } => {
   let resolveDone: () => void;
   const done = new Promise<void>((resolve) => {
@@ -224,7 +245,7 @@ const hasUnresolvedToolCall = (msg: AI.UIMessage): boolean =>
  * @returns A {@link ChatTransport} compatible with Vercel's useChat hook.
  */
 export const createChatTransport = (
-  session: ClientSession<AI.UIMessageChunk, AI.UIMessage>,
+  session: ClientSession<VercelEvent, VercelProjection, AI.UIMessage>,
   chatOptions?: ChatTransportOptions,
 ): ChatTransport => {
   // -- Streaming state -------------------------------------------------------
@@ -387,7 +408,7 @@ export const createChatTransport = (
     // Wrap the stream to detect completion. The streaming flag gates
     // useMessageSync so that setMessages doesn't interfere with
     // useChat's internal write() during active streams.
-    const { stream, done } = wrapStreamWithDone(run.stream);
+    const { stream, done } = wrapStreamWithDone(filterToChunks(run.stream));
     setStreaming(true);
 
     // Fire-and-forget: clear the streaming flag when the stream ends.

@@ -16,7 +16,11 @@ import type { BaseSessionOption } from './internal/use-resolved-session.js';
 import { useResolvedSession } from './internal/use-resolved-session.js';
 
 /** Options for {@link useAblyMessages}. */
-export interface UseAblyMessagesOptions<TEvent, TMessage> extends BaseSessionOption<TEvent, TMessage> {
+export interface UseAblyMessagesOptions<TEvent, TProjection, TMessage> extends BaseSessionOption<
+  TEvent,
+  TProjection,
+  TMessage
+> {
   /** When `true`, skip all subscriptions and return an empty array. */
   skip?: boolean;
 }
@@ -29,10 +33,10 @@ export interface UseAblyMessagesOptions<TEvent, TMessage> extends BaseSessionOpt
  * @param props.skip - When `true`, skip all subscriptions and return an empty array.
  * @returns The accumulated raw Ably messages in chronological order.
  */
-export const useAblyMessages = <TEvent, TMessage>({
+export const useAblyMessages = <TEvent, TProjection, TMessage>({
   session,
   skip,
-}: UseAblyMessagesOptions<TEvent, TMessage> = {}): Ably.InboundMessage[] => {
+}: UseAblyMessagesOptions<TEvent, TProjection, TMessage> = {}): Ably.InboundMessage[] => {
   const resolved = useResolvedSession({ session, skip });
 
   const [messages, setMessages] = useState<Ably.InboundMessage[]>([]);

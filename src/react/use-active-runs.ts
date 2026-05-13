@@ -19,7 +19,11 @@ import type { BaseSessionOption } from './internal/use-resolved-session.js';
 import { useResolvedSession } from './internal/use-resolved-session.js';
 
 /** Options for {@link useActiveRuns}. */
-export interface UseActiveRunsOptions<TEvent, TMessage> extends BaseSessionOption<TEvent, TMessage> {
+export interface UseActiveRunsOptions<TEvent, TProjection, TMessage> extends BaseSessionOption<
+  TEvent,
+  TProjection,
+  TMessage
+> {
   /** When `true`, skip all subscriptions and return an empty Map immediately. */
   skip?: boolean;
 }
@@ -34,10 +38,10 @@ export interface UseActiveRunsOptions<TEvent, TMessage> extends BaseSessionOptio
  * @param props.skip - When `true`, skip all subscriptions and return an empty Map.
  * @returns A Map where keys are clientIds and values are Sets of active runIds.
  */
-export const useActiveRuns = <TEvent, TMessage>({ session, skip }: UseActiveRunsOptions<TEvent, TMessage> = {}): Map<
-  string,
-  Set<string>
-> => {
+export const useActiveRuns = <TEvent, TProjection, TMessage>({
+  session,
+  skip,
+}: UseActiveRunsOptions<TEvent, TProjection, TMessage> = {}): Map<string, Set<string>> => {
   const resolved = useResolvedSession({ session, skip });
 
   const [runs, setRuns] = useState<Map<string, Set<string>>>(() => new Map());

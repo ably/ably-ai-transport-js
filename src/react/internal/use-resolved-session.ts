@@ -10,12 +10,12 @@ import { ClientSessionContext } from '../contexts/client-session-context.js';
  * resolution (e.g. when a split pane is collapsed) — the helper returns
  * `undefined` rather than falling back to the nearest provider.
  */
-export interface BaseSessionOption<TEvent, TMessage> {
+export interface BaseSessionOption<TEvent, TProjection, TMessage> {
   /**
    * Session to operate on; defaults to the nearest {@link ClientSessionProvider}.
    * Pass `null` to defer (returns undefined; nearest provider is not used).
    */
-  session?: ClientSession<TEvent, TMessage> | null;
+  session?: ClientSession<TEvent, TProjection, TMessage> | null;
 }
 
 /**
@@ -32,18 +32,18 @@ export interface BaseSessionOption<TEvent, TMessage> {
  * @param root0.skip - When `true`, bypass context and return `undefined` immediately.
  * @returns The resolved session, or `undefined` if none is available or `skip` is `true`.
  */
-export const useResolvedSession = <TEvent, TMessage>({
+export const useResolvedSession = <TEvent, TProjection, TMessage>({
   session,
   skip,
 }: {
   /** Explicit session; takes priority over the nearest provider. `null` to defer. */
-  session?: ClientSession<TEvent, TMessage> | null;
+  session?: ClientSession<TEvent, TProjection, TMessage> | null;
   /** When `true`, bypass context and return `undefined` immediately. */
   skip?: boolean;
-} = {}): ClientSession<TEvent, TMessage> | undefined => {
+} = {}): ClientSession<TEvent, TProjection, TMessage> | undefined => {
   const { nearest } = useContext(ClientSessionContext);
   // CAST: ClientSessionContext stores session with erased generics; types fixed at call site.
-  const nearestSession = nearest?.session as unknown as ClientSession<TEvent, TMessage> | undefined;
+  const nearestSession = nearest?.session as unknown as ClientSession<TEvent, TProjection, TMessage> | undefined;
   if (skip) return undefined;
   if (session === null) return undefined;
   return session ?? nearestSession;

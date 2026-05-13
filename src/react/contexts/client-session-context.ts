@@ -12,7 +12,7 @@ import type { ClientSession } from '../../core/transport/types.js';
  */
 export interface ClientSessionSlot {
   /** The constructed session, or `undefined` if construction failed. */
-  session: ClientSession<unknown, unknown> | undefined;
+  session: ClientSession<unknown, unknown, unknown> | undefined;
   /** Construction error from `createClientSession`, or `undefined` on success. */
   sessionError?: Ably.ErrorInfo | undefined;
 }

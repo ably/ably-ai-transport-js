@@ -1,12 +1,13 @@
 'use client';
 
 import { useRef, useEffect } from 'react';
-import type { UIMessage, UIMessageChunk } from 'ai';
+import type { UIMessage } from 'ai';
 import type { ViewHandle } from '@ably/ai-transport/react';
+import type { VercelEvent, VercelProjection } from '@ably/ai-transport/vercel';
 import { MessageBubble } from './message-bubble';
 
 interface MessageListProps {
-  view: ViewHandle<UIMessageChunk, UIMessage>;
+  view: ViewHandle<VercelEvent, VercelProjection, UIMessage>;
   onRegenerate: (messageId: string) => void;
   onEdit: (messageId: string, newText: string) => void;
   onToolApprove?: (msgId: string, toolCallId: string, input: unknown) => void;

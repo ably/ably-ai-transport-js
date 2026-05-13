@@ -16,13 +16,14 @@ import { MessageList } from './components/message-list';
 import type { CallbackLogEntry } from './components/debug-pane';
 import { DebugPane } from './components/debug-pane';
 import { ImagePresets } from './components/image-presets';
+import { SpeechPresets } from './components/speech-presets';
 import { SuggestionChips } from './components/suggestion-chips';
 import { useClientTools } from './hooks/use-client-tools';
 import { useDemoProgress } from './hooks/use-demo-progress';
 import { clientColor } from './lib/client-color';
 
-type TabId = 'chat' | 'images';
-const TAB_IDS: TabId[] = ['chat', 'images'];
+type TabId = 'chat' | 'images' | 'speech';
+const TAB_IDS: TabId[] = ['chat', 'images', 'speech'];
 
 // ---------------------------------------------------------------------------
 // Chat component
@@ -115,12 +116,12 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
 
   // Active tab is held in the URL so it's shareable and survives reloads.
   // Each tab attaches to its own Ably channel (see page.tsx for the
-  // base + suffix derivation), so the chat and image histories are
-  // independent.
+  // base + suffix derivation), so the chat, image, and speech histories
+  // are independent.
   const router = useRouter();
   const searchParams = useSearchParams();
   const rawTab = searchParams.get('tab');
-  const tab: TabId = rawTab === 'images' ? 'images' : 'chat';
+  const tab: TabId = rawTab === 'images' ? 'images' : rawTab === 'speech' ? 'speech' : 'chat';
   const setTab = useCallback(
     (next: TabId) => {
       const params = new URLSearchParams(searchParams.toString());
@@ -150,19 +151,25 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
           onToolDeny={(approvalId) => stagedApproval({ id: approvalId, approved: false, reason: 'User denied' })}
         />
         <div className="border-t border-zinc-800">
-          {tab === 'chat' ? (
+          {tab === 'chat' && (
             <SuggestionChips
               steps={unfinishedSteps}
               onSelectPrompt={handleSelectPrompt}
             />
-          ) : (
-            <ImagePresets onSelectPrompt={handleSelectPrompt} />
           )}
+          {tab === 'images' && <ImagePresets onSelectPrompt={handleSelectPrompt} />}
+          {tab === 'speech' && <SpeechPresets onSelectPrompt={handleSelectPrompt} />}
           <InputBar
             value={input}
             onChange={setInput}
             inputRef={inputRef}
-            placeholder={tab === 'images' ? 'Describe a small image to generate...' : 'Type a message...'}
+            placeholder={
+              tab === 'images'
+                ? 'Describe a small image to generate...'
+                : tab === 'speech'
+                  ? 'Say something out loud...'
+                  : 'Type a message...'
+            }
             onSend={(text) => sendMessage({ text })}
             onStop={stop}
             hasAnyRuns={hasAnyRuns}

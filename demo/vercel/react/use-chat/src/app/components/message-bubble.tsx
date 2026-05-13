@@ -226,6 +226,16 @@ export function MessageBubble({
                       />
                     );
                   }
+                  if (part.mediaType?.startsWith('audio/')) {
+                    return (
+                      <audio
+                        key={i}
+                        src={part.url}
+                        controls
+                        className="block w-full max-w-[320px] mt-1 first:mt-0"
+                      />
+                    );
+                  }
                   return (
                     <a
                       key={i}

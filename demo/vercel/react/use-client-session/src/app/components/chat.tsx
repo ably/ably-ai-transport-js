@@ -14,12 +14,13 @@ import { MessageQueue } from './message-queue';
 import { InputBar } from './input-bar';
 import { DebugPane } from './debug-pane';
 import { ChatPane } from './chat-pane';
+import { SpeechPresets } from './speech-presets';
 import { SessionHooks } from '../providers';
 
 const { useClientSession, useCreateView, useActiveRuns, useView, useAblyMessages } = SessionHooks;
 
-type TabId = 'chat' | 'images';
-const TAB_IDS: TabId[] = ['chat', 'images'];
+type TabId = 'chat' | 'images' | 'speech';
+const TAB_IDS: TabId[] = ['chat', 'images', 'speech'];
 
 interface ChatProps {
   chatId: string;
@@ -34,12 +35,12 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
 
   // Active tab is held in the URL so it's shareable and survives reloads.
   // Each tab attaches to its own Ably channel (see page.tsx for the
-  // base + suffix derivation), so the chat and image histories are
-  // independent.
+  // base + suffix derivation), so the chat, image, and speech histories
+  // are independent.
   const router = useRouter();
   const searchParams = useSearchParams();
   const rawTab = searchParams.get('tab');
-  const tab: TabId = rawTab === 'images' ? 'images' : 'chat';
+  const tab: TabId = rawTab === 'images' ? 'images' : rawTab === 'speech' ? 'speech' : 'chat';
   const setTab = useCallback(
     (next: TabId) => {
       const params = new URLSearchParams(searchParams.toString());
@@ -128,13 +129,20 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
             />
             <MessageQueue queue={queue} />
             {tab === 'images' && <ImagePresets onSelectPrompt={(prompt) => view.send([userMessage(prompt)])} />}
+            {tab === 'speech' && <SpeechPresets onSelectPrompt={(prompt) => view.send([userMessage(prompt)])} />}
             <InputBar
               session={session}
               send={view.send}
               activeRuns={activeRuns}
               clientId={clientId}
               queue={queue}
-              placeholder={tab === 'images' ? 'Describe a small image, or / for commands...' : undefined}
+              placeholder={
+                tab === 'images'
+                  ? 'Describe a small image, or / for commands...'
+                  : tab === 'speech'
+                    ? 'Say something out loud, or / for commands...'
+                    : undefined
+              }
             />
           </>
         )}

@@ -13,11 +13,16 @@
  *   assistant message via `run.pipe` so the image lands on the channel
  *   as a `file` UIMessagePart. Returns a small ack to the LLM so it can
  *   summarise textually.
+ * - generateSpeech: server-executed. Calls Vercel AI SDK
+ *   `experimental_generateSpeech` (OpenAI tts-1) and publishes the resulting
+ *   MP3 as a fresh assistant message via `run.pipe` so the audio lands on
+ *   the channel as an audio `file` UIMessagePart. The tool caps text length
+ *   to keep the data URL comfortably under the 64 KiB Ably message size cap.
  */
 
 import type { Run } from '@ably/ai-transport';
 import { openai } from '@ai-sdk/openai';
-import { createUIMessageStream, generateImage } from 'ai';
+import { createUIMessageStream, experimental_generateSpeech, generateImage } from 'ai';
 import type { Tool, UIMessage, UIMessageChunk } from 'ai';
 import sharp from 'sharp';
 import { z } from 'zod';
@@ -116,6 +121,34 @@ export const createTools = ({ run }: CreateToolsOptions): Record<string, Tool> =
       await run.pipe(fileStream);
 
       return { ok: true, mediaType: 'image/webp', sizeBytes: webp.byteLength };
+    },
+  },
+
+  generateSpeech: {
+    description:
+      'Generate a short spoken-audio response from a text prompt. The result ships over Ably as an audio file UIMessagePart on its own assistant message. Keep the text under ~25 words to fit the 64 KiB message size cap.',
+    inputSchema: z.object({
+      text: z.string().max(200).describe('What to say, up to 200 characters.'),
+      voice: z.enum(['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer']).optional(),
+    }),
+    execute: async ({ text, voice }: { text: string; voice?: string }) => {
+      const { audio } = await experimental_generateSpeech({
+        model: openai.speech('tts-1'),
+        text,
+        voice: voice ?? 'alloy',
+      });
+      const url = `data:${audio.mediaType};base64,${audio.base64}`;
+
+      const fileStream = createUIMessageStream({
+        execute: ({ writer }) => {
+          writer.write({ type: 'start' });
+          writer.write({ type: 'file', mediaType: audio.mediaType, url });
+          writer.write({ type: 'finish', finishReason: 'stop' });
+        },
+      });
+      await run.pipe(fileStream);
+
+      return { ok: true, mediaType: audio.mediaType, sizeBytes: audio.uint8Array.byteLength };
     },
   },
 });

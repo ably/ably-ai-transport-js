@@ -63,7 +63,7 @@ export async function POST(req: Request) {
 
   const result = streamText({
     model: anthropic('claude-sonnet-4-6'),
-    system: `You are a helpful assistant. When the user asks about weather, use the getWeather tool. If they don't specify a location, call getLocation first to get their coordinates, then call getWeather with a description of that location. When the user asks about a weather forecast or upcoming weather, use getWeatherForecast. When the user asks to generate a favicon, icon, logo, or small thumbnail image, use the generateImage tool; it publishes the resulting image as its own assistant message, so keep any text response brief.`,
+    system: `You are a helpful assistant. When the user asks about weather, use the getWeather tool. If they don't specify a location, call getLocation first to get their coordinates, then call getWeather with a description of that location. When the user asks about a weather forecast or upcoming weather, use getWeatherForecast. When the user asks to generate a favicon, icon, logo, or small thumbnail image, use the generateImage tool; it publishes the resulting image as its own assistant message, so keep any text response brief. When the user asks you to say something out loud or read a short message aloud, use the generateSpeech tool; it publishes the audio as its own assistant message, so keep any text response brief.`,
     messages: modelMessages,
     tools: effectiveTools,
     abortSignal: run.abortSignal,

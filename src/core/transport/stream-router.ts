@@ -18,16 +18,22 @@ import type { RunEntry } from './types.js';
 
 /** Routes decoded events to the correct run's ReadableStream. */
 export interface StreamRouter<TEvent> {
-  /** Register a new stream for a runId. Returns the ReadableStream the consumer reads from. */
-  createStream(runId: string): ReadableStream<TEvent>;
+  /** Register a new stream for a (runId, invocationId). Returns the ReadableStream the consumer reads from. */
+  createStream(runId: string, invocationId: string): ReadableStream<TEvent>;
   /** Close the stream for a runId. Returns true if a stream existed. */
   closeStream(runId: string): boolean;
   /** Error the stream for a runId. The consumer's reader will reject with the given error. Returns true if a stream existed. */
   errorStream(runId: string, error: Ably.ErrorInfo): boolean;
-  /** Enqueue an event to the correct stream. Returns true if routed successfully. */
-  route(runId: string, event: TEvent): boolean;
+  /**
+   * Enqueue an event to the correct stream. Returns true if routed successfully.
+   * Drops the event if no stream is registered for the runId, or if the
+   * registered stream is bound to a different invocationId.
+   */
+  route(runId: string, invocationId: string | undefined, event: TEvent): boolean;
   /** Whether a specific runId has an active stream. */
   has(runId: string): boolean;
+  /** The invocation-id currently bound to the run's stream, if any. */
+  getActiveInvocation(runId: string): string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -45,8 +51,8 @@ class DefaultStreamRouter<TEvent> implements StreamRouter<TEvent> {
     this._logger = logger;
   }
 
-  createStream(runId: string): ReadableStream<TEvent> {
-    this._logger.trace('StreamRouter.createStream();', { runId });
+  createStream(runId: string, invocationId: string): ReadableStream<TEvent> {
+    this._logger.trace('StreamRouter.createStream();', { runId, invocationId });
 
     // Build stream+controller together. ReadableStream's start() runs synchronously
     // per spec, so the controller is captured before the constructor returns.
@@ -63,7 +69,7 @@ class DefaultStreamRouter<TEvent> implements StreamRouter<TEvent> {
         500,
       );
     }
-    this._runs.set(runId, { controller: entry.controller, runId });
+    this._runs.set(runId, { controller: entry.controller, runId, invocationId });
     return stream;
   }
 
@@ -98,9 +104,22 @@ class DefaultStreamRouter<TEvent> implements StreamRouter<TEvent> {
   }
 
   // Spec: AIT-CT14a
-  route(runId: string, event: TEvent): boolean {
+  route(runId: string, invocationId: string | undefined, event: TEvent): boolean {
     const run = this._runs.get(runId);
     if (!run) return false;
+
+    // Drop events whose invocation-id doesn't match the bound stream.
+    // Events with no invocation-id header (e.g. agent-side events that
+    // don't carry it on every message) are routed to the registered
+    // stream — only an explicit mismatch is filtered.
+    if (invocationId !== undefined && invocationId !== run.invocationId) {
+      this._logger.debug('StreamRouter.route(); dropping mismatched-invocation event', {
+        runId,
+        eventInvocationId: invocationId,
+        streamInvocationId: run.invocationId,
+      });
+      return false;
+    }
 
     try {
       run.controller.enqueue(event);
@@ -117,6 +136,10 @@ class DefaultStreamRouter<TEvent> implements StreamRouter<TEvent> {
 
   has(runId: string): boolean {
     return this._runs.has(runId);
+  }
+
+  getActiveInvocation(runId: string): string | undefined {
+    return this._runs.get(runId)?.invocationId;
   }
 }
 

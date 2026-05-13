@@ -96,12 +96,14 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
     upsert: vi.fn(),
     delete: vi.fn(),
     getActiveRunIds: vi.fn(() => new Map<string, Set<string>>()),
+    getWinningInvocation: vi.fn(),
     on: makeTreeOn(treeHandlers),
   };
 
   const mockRun = {
     stream: new ReadableStream(),
     runId: 'run-1',
+    invocationId: 'inv-1',
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     cancel: vi.fn(() => Promise.resolve()),
     optimisticMsgIds: [] as string[],

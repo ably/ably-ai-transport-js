@@ -4,10 +4,11 @@
  *
  * Supports three tool execution patterns:
  * - Server-executed tools (getWeather): streamText runs them automatically.
- * - Client-executed tools (getLocation): the client runs them, stages the
- *   output via session.stageEvents, and ships it in the POST body's
- *   `events` field. We publish it via run.addEvents here and merge it
- *   into the history that feeds convertToModelMessages.
+ * - Client-executed tools (getLocation): the client runs them and ships
+ *   the output in the POST body's `events` field as a typed TEvent. We
+ *   publish it via run.addEvents here. Folding those events back into the
+ *   history snapshot the LLM sees is a follow-up tracked with the
+ *   ChatTransport rework.
  * - Approval-required tools (getWeatherForecast): useChat's
  *   addToolApprovalResponse patches the assistant message to
  *   approval-responded. The client ships the patched state via the history
@@ -23,7 +24,6 @@ import type { UIMessage, UIMessageChunk } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
 import {
-  applyToolEventsToHistory,
   createAgentSession,
   extractApprovalDecisionsFromHistory,
   streamResponseWithApprovalRedirect,
@@ -62,11 +62,11 @@ export async function POST(req: Request) {
   const newNodes = run.view.messages;
   const lastUserMsgId = newNodes.at(-1)?.msgId;
 
-  // Reconstruct full conversation for the LLM. Merge tool-result events
-  // into history so convertToModelMessages sees the tool results this
-  // run (the client ships them separately to keep history nodes intact).
-  const mergedHistory = applyToolEventsToHistory(invocation.events, invocation.history);
-  const historyMsgs = mergedHistory.map((h) => h.message);
+  // Reconstruct full conversation for the LLM. The client publishes tool
+  // outputs as typed TEvents via run.addEvents above; folding those back
+  // into the history snapshot the LLM sees is a follow-up tracked with the
+  // ChatTransport rework.
+  const historyMsgs = invocation.history.map((h) => h.message);
   const newMsgs = newNodes.map((m) => m.message);
   const allMessages = [...historyMsgs, ...newMsgs];
 

@@ -1,16 +1,18 @@
 /**
- * useStagedAddToolApprovalResponse — wrap useChat's `addToolApprovalResponse`
- * so the approval response is also applied to the session's tree
- * synchronously at click time.
+ * useStagedAddToolApprovalResponse — pass-through wrapper around useChat's
+ * `addToolApprovalResponse`.
  *
- * Patching the tree at click time eliminates the useChat↔tree divergence
- * the ChatTransport would otherwise have to reconcile via a history
- * overlay, and closes the observer-run race that could wipe the
- * approval state between `addToolApprovalResponse` and
- * `sendAutomaticallyWhen`'s evaluation.
+ * Previously this hook also staged the approval response onto the session's
+ * tree via `stageMessage` to prevent a useChat↔tree race. With the codec
+ * contract refactor (atomic-#1) `stageMessage` is retired — approvals are
+ * intended to flow as typed `ToolApprovalEvent` TEvents on the active Run,
+ * folded by the reducer.
  *
- * Use this in place of useChat's raw `addToolApprovalResponse` wherever
- * you wire Approve / Deny buttons.
+ * The full tool-approval-as-TEvent flow (publishing the approval event,
+ * matching it against the active run, reconciling useChat's internal state)
+ * is owned by the ChatTransport rework in Tier 4 #12. Until then this hook
+ * remains a thin pass-through so consumers' import paths keep working — the
+ * optimistic tree patch is gone.
  */
 
 import type * as AI from 'ai';
@@ -18,70 +20,23 @@ import type { ChatAddToolApproveResponseFunction } from 'ai';
 import { useCallback } from 'react';
 
 import type { ClientSession } from '../../core/transport/types.js';
+import type { VercelEvent, VercelProjection } from '../codec/index.js';
 
 /**
- * Returns a function with the same signature as useChat's
- * `addToolApprovalResponse`, but additionally applies the approval
- * response to the session's tree via `stageMessage` before delegating.
- *
- * If the tool call identified by `opts.id` isn't found in the tree,
- * the tree update is skipped and the raw function is still called —
- * matches useChat's tolerant behavior for stale approval ids.
- * @param session - The client session whose tree to patch.
+ * Drop-in replacement for useChat's `addToolApprovalResponse` that delegates
+ * directly. The previous optimistic tree-staging behavior was retired with
+ * the codec contract refactor.
+ * @param session - The client session (retained for API compatibility; unused).
  * @param addToolApprovalResponse - The raw function from `useChat()`.
- * @returns A drop-in replacement that patches the tree then delegates.
+ * @returns The same `addToolApprovalResponse`, memoized.
  */
 export const useStagedAddToolApprovalResponse = (
-  session: ClientSession<AI.UIMessageChunk, AI.UIMessage>,
+  session: ClientSession<VercelEvent, VercelProjection, AI.UIMessage>,
   addToolApprovalResponse: ChatAddToolApproveResponseFunction,
-): ChatAddToolApproveResponseFunction =>
-  useCallback<ChatAddToolApproveResponseFunction>(
-    (opts) => {
-      stageApprovalResponseOnTree(session, opts);
-      return addToolApprovalResponse(opts);
-    },
-    [session, addToolApprovalResponse],
+): ChatAddToolApproveResponseFunction => {
+  void session;
+  return useCallback<ChatAddToolApproveResponseFunction>(
+    (opts) => addToolApprovalResponse(opts),
+    [addToolApprovalResponse],
   );
-
-/**
- * Locate the assistant message whose `dynamic-tool` part carries the
- * given `approval.id`, build a patched copy with the part transitioned
- * to `approval-responded`, and stage the patched message on the tree.
- * @param session - The session whose tree to patch.
- * @param opts - The approval response being applied.
- * @param opts.id - The approval id matching a dynamic-tool part in the tree.
- * @param opts.approved - Whether the user approved or denied.
- * @param opts.reason - Optional reason accompanying the response.
- */
-const stageApprovalResponseOnTree = (
-  session: ClientSession<AI.UIMessageChunk, AI.UIMessage>,
-  opts: { id: string; approved: boolean; reason?: string },
-): void => {
-  const nodes = session.view.flattenNodes();
-  for (const node of nodes) {
-    const partIndex = node.message.parts.findIndex((p) => p.type === 'dynamic-tool' && p.approval?.id === opts.id);
-    if (partIndex === -1) continue;
-
-    // CAST: findIndex predicate above narrows this to a dynamic-tool part
-    // with a non-undefined approval.
-    const part = node.message.parts[partIndex] as AI.DynamicToolUIPart;
-
-    // Build the approval-responded variant directly rather than spreading
-    // `part`, which TypeScript narrows to whichever source-state variant
-    // the union discriminator inferred and then rejects when we change
-    // `state` to a variant with different approval/output constraints.
-    const patchedPart: AI.DynamicToolUIPart = {
-      type: 'dynamic-tool',
-      toolName: part.toolName,
-      toolCallId: part.toolCallId,
-      state: 'approval-responded',
-      input: part.input,
-      approval: { id: opts.id, approved: opts.approved, reason: opts.reason },
-    };
-
-    const patchedParts = [...node.message.parts];
-    patchedParts[partIndex] = patchedPart;
-    session.stageMessage(node.msgId, { ...node.message, parts: patchedParts });
-    return;
-  }
 };

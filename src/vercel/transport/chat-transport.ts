@@ -286,10 +286,6 @@ export const createChatTransport = (
     // Continuation mode must NOT publish the assistant as a new message or
     // treat messageId as a fork target — useChat v6's sendAutomaticallyWhen
     // path always sets messageId to the last message id regardless.
-    //
-    // Client-side tool outputs are expected to be staged on the session
-    // via session.stageEvents() before this runs; the core session
-    // flushes staged events into the POST body automatically.
     const lastMessage = messages.at(-1);
     const lastMessageNode = lastMessage ? allNodes.find((n) => n.message.id === lastMessage.id) : undefined;
     const isContinuation = trigger === 'submit-message' && lastMessage?.role === 'assistant' && !!lastMessageNode;
@@ -395,8 +391,7 @@ export const createChatTransport = (
     if (parent !== undefined) sendOpts.parent = parent;
 
     // A single dispatch path: view.send with the (possibly empty)
-    // newMessages array. Any events staged via session.stageEvents()
-    // flow automatically through _internalSend into the POST body.
+    // newMessages array.
     const run = await session.view.send(newMessages, sendOpts);
 
     if (abortSignal) {

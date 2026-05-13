@@ -11,9 +11,6 @@ export type {
 } from './transport/index.js';
 export { createAgentSession, createChatTransport, createClientSession } from './transport/index.js';
 
-// Server-side tool result merge helper
-export { applyToolEventsToHistory } from './tool-events.js';
-
 // Server-side tool approval helpers
 export type {
   PrepareApprovalRunOptions,

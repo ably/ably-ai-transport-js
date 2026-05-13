@@ -6,17 +6,15 @@
  * were resolved in a previous session and don't need re-execution.
  * Only executes for runs initiated by this client (matches x-ably-run-client-id).
  *
- * On resolution, stages the tool-output event on the session before
- * calling addToolResult. Staging applies the event to the conversation tree
- * immediately so any subsequent useMessageSync overwrite (e.g. from an
- * observer run arriving on the channel) is idempotent — the tool result
- * won't be wiped from useChat state during the window before
- * sendAutomaticallyWhen fires.
+ * The previous flow also called `session.stageEvents` to fold the result
+ * into the tree synchronously; that helper was retired by the event-sourced
+ * codec contract. Restoring that path is pending the ChatTransport rework.
  */
 
 import { useEffect, useRef } from 'react';
-import type { ChatAddToolOutputFunction, DynamicToolUIPart, UIMessage, UIMessageChunk } from 'ai';
+import type { ChatAddToolOutputFunction, DynamicToolUIPart, UIMessage } from 'ai';
 import type { ClientSession, MessageNode } from '@ably/ai-transport';
+import type { VercelEvent, VercelProjection } from '@ably/ai-transport/vercel';
 
 type ClientToolExecutor = (input: unknown) => Promise<unknown>;
 
@@ -45,7 +43,7 @@ const clientTools: Record<string, ClientToolExecutor> = {
 };
 
 export function useClientTools(
-  session: ClientSession<UIMessageChunk, UIMessage>,
+  session: ClientSession<VercelEvent, VercelProjection, UIMessage>,
   messages: UIMessage[],
   addToolResult: ChatAddToolOutputFunction<UIMessage>,
   nodes: MessageNode<UIMessage>[],
@@ -80,17 +78,11 @@ export function useClientTools(
 
         handledRef.current.add(toolPart.toolCallId);
 
-        const treeMsgId = node.msgId;
+        // session.stageEvents is retired by the event-sourced codec
+        // contract; addToolResult alone now drives the continuation flow.
+        // Folding the tool output back into the tree synchronously is
+        // pending the ChatTransport rework.
         void clientTools[toolPart.toolName](toolPart.input).then((output) => {
-          const chunk: UIMessageChunk = {
-            type: 'tool-output-available',
-            toolCallId: toolPart.toolCallId,
-            output,
-            dynamic: true,
-            providerExecuted: false,
-            preliminary: false,
-          };
-          session.stageEvents(treeMsgId, [chunk]);
           addToolResult({
             tool: toolPart.toolName,
             toolCallId: toolPart.toolCallId,

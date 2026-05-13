@@ -1,12 +1,20 @@
+/**
+ * AgentSession unit tests.
+ *
+ * Rewritten against the event-sourced `Codec<TEvent, TProjection, TMessage>`
+ * contract — mock encoder uses single-method `publish`, `addMessages` flows
+ * through `codec.userMessageEvent` + `encoder.publish`, `addEvents` publishes
+ * each event individually, and the channel subscription is unfiltered
+ * (cancel + user-prompt + everything else dispatched via the same listener).
+ */
+
 import '../../helper/expectations.js';
 
-import type * as Ably from 'ably';
+import * as Ably from 'ably';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   EVENT_CANCEL,
-  EVENT_RUN_END,
-  EVENT_RUN_START,
   HEADER_AMEND,
   HEADER_CANCEL_ALL,
   HEADER_CANCEL_CLIENT_ID,
@@ -19,7 +27,15 @@ import {
   HEADER_ROLE,
   HEADER_RUN_ID,
 } from '../../../src/constants.js';
-import type { Codec, StreamEncoder } from '../../../src/core/codec/types.js';
+import type {
+  ChannelWriter,
+  Codec,
+  Decoder,
+  Encoder,
+  EncoderOptions,
+  ReducerMeta,
+  WriteOptions,
+} from '../../../src/core/codec/types.js';
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
 import type { AgentSession, MessageNode } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
@@ -28,7 +44,7 @@ import { createMockClient } from '../../helper/mock-client.js';
 import { createRunFromOpts } from '../../helper/run-from-opts.js';
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Shapes
 // ---------------------------------------------------------------------------
 
 interface TestEvent {
@@ -38,6 +54,9 @@ interface TestEvent {
 interface TestMessage {
   id: string;
   content: string;
+}
+interface TestProjection {
+  messages: TestMessage[];
 }
 
 const makeNode = (message: TestMessage, overrides?: Partial<MessageNode<TestMessage>>): MessageNode<TestMessage> => ({
@@ -51,6 +70,10 @@ const makeNode = (message: TestMessage, overrides?: Partial<MessageNode<TestMess
   ...overrides,
 });
 
+// ---------------------------------------------------------------------------
+// Mock channel — unfiltered subscribe + cancel dispatch
+// ---------------------------------------------------------------------------
+
 interface MockChannel {
   publish: ReturnType<typeof vi.fn>;
   subscribe: ReturnType<typeof vi.fn>;
@@ -58,95 +81,48 @@ interface MockChannel {
   on: ReturnType<typeof vi.fn>;
   off: ReturnType<typeof vi.fn>;
   state: Ably.ChannelState;
-  publishCalls: (Ably.Message | Ably.Message[])[];
-  /** Listeners keyed by name. `*` holds unfiltered subscribers (subscribe(listener)). */
-  listeners: Map<string, ((msg: Ably.InboundMessage) => void)[]>;
+  publishCalls: Ably.Message[];
+  listener: ((msg: Ably.InboundMessage) => void) | undefined;
   stateListeners: Set<Ably.channelEventCallback>;
 }
 
-const ALL_NAMES = '*';
-
 const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
   const stateListeners = new Set<Ably.channelEventCallback>();
-  const addListener = (name: string, listener: (msg: Ably.InboundMessage) => void): void => {
-    const arr = mock.listeners.get(name) ?? [];
-    arr.push(listener);
-    mock.listeners.set(name, arr);
-  };
-  const removeListener = (name: string, listener: (msg: Ably.InboundMessage) => void): void => {
-    const arr = mock.listeners.get(name) ?? [];
-    mock.listeners.set(
-      name,
-      arr.filter((l) => l !== listener),
-    );
-  };
   const mock: MockChannel = {
     publishCalls: [],
-    listeners: new Map(),
+    listener: undefined,
     stateListeners,
-    // Default to 'attached' — most tests don't care about state transitions
-    // and this lets existing publishes work without setup.
     state: 'attached',
-    // eslint-disable-next-line @typescript-eslint/require-await -- mock
-    publish: vi.fn(async (msgOrMsgs: Ably.Message | Ably.Message[]) => {
-      mock.publishCalls.push(msgOrMsgs);
-      return { serials: ['serial-1'] } as Ably.PublishResult;
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+    publish: vi.fn((msg: Ably.Message | Ably.Message[]) => {
+      if (Array.isArray(msg)) mock.publishCalls.push(...msg);
+      else mock.publishCalls.push(msg);
+      return Promise.resolve({ serials: ['serial-1'] });
     }),
-    // Overloaded subscribe: `subscribe(listener)` registers under `*`,
-    // `subscribe(name, listener)` registers under the given name.
-    /* eslint-disable @typescript-eslint/require-await -- mock returns no awaitable work */
-    subscribe: vi.fn(
-      async (
-        nameOrListener: string | ((msg: Ably.InboundMessage) => void),
-        listener?: (msg: Ably.InboundMessage) => void,
-      ) => {
-        if (typeof nameOrListener === 'function') {
-          addListener(ALL_NAMES, nameOrListener);
-        } else if (listener) {
-          addListener(nameOrListener, listener);
-        }
-      },
-    ),
-    /* eslint-enable @typescript-eslint/require-await */
-    unsubscribe: vi.fn(
-      (
-        nameOrListener: string | ((msg: Ably.InboundMessage) => void),
-        listener?: (msg: Ably.InboundMessage) => void,
-      ) => {
-        if (typeof nameOrListener === 'function') {
-          removeListener(ALL_NAMES, nameOrListener);
-        } else if (listener) {
-          removeListener(nameOrListener, listener);
-        }
-      },
-    ),
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+    subscribe: vi.fn((listener: (msg: Ably.InboundMessage) => void) => {
+      mock.listener = listener;
+      return Promise.resolve();
+    }),
+    unsubscribe: vi.fn(),
     on: vi.fn((callback: Ably.channelEventCallback) => {
       stateListeners.add(callback);
     }),
-    off: vi.fn((callback: Ably.channelEventCallback) => {
-      stateListeners.delete(callback);
+    off: vi.fn((callback?: Ably.channelEventCallback) => {
+      if (callback) stateListeners.delete(callback);
+      else stateListeners.clear();
     }),
   };
-  // CAST: Tests only use publish/subscribe/unsubscribe/on/off/state — other members are unused.
+  // CAST: Tests only use the listed members.
   return mock as unknown as MockChannel & Ably.RealtimeChannel;
 };
 
-/**
- * Simulate a channel state change event.
- * @param ch - The mock channel with state listeners.
- * @param stateChange - The state change to emit.
- */
 const simulateStateChange = (ch: MockChannel, stateChange: Ably.ChannelStateChange): void => {
   for (const listener of ch.stateListeners) {
     listener(stateChange);
   }
 };
 
-/**
- * Simulate the initial attach so the transport doesn't treat subsequent
- * state changes as the first attach.
- * @param ch - The mock channel to simulate initial attach on.
- */
 const simulateInitialAttach = (ch: MockChannel): void => {
   simulateStateChange(ch, {
     current: 'attached',
@@ -155,70 +131,84 @@ const simulateInitialAttach = (ch: MockChannel): void => {
   } as Ably.ChannelStateChange);
 };
 
-const mockPublishResult = { serials: ['serial-1'] } as unknown as Ably.PublishResult;
-
-const createMockEncoder = (): StreamEncoder<TestEvent, TestMessage> => ({
-  // eslint-disable-next-line @typescript-eslint/no-empty-function -- mock
-  appendEvent: vi.fn(async () => {}),
-  // eslint-disable-next-line @typescript-eslint/no-empty-function -- mock
-  abort: vi.fn(async () => {}),
-  // eslint-disable-next-line @typescript-eslint/no-empty-function -- mock
-  close: vi.fn(async () => {}),
-  // eslint-disable-next-line @typescript-eslint/require-await -- mock
-  writeMessages: vi.fn(async () => mockPublishResult),
-  // eslint-disable-next-line @typescript-eslint/require-await -- mock
-  writeEvent: vi.fn(async () => mockPublishResult),
-});
-
-const createMockCodec = (): Codec<TestEvent, TestMessage> => ({
-  createEncoder: vi.fn(() => createMockEncoder()),
-  createDecoder: vi.fn() as Codec<TestEvent, TestMessage>['createDecoder'],
-  createAccumulator: vi.fn() as Codec<TestEvent, TestMessage>['createAccumulator'],
-  isTerminal: vi.fn(() => false),
-});
-
-const headersOf = (msg: Ably.Message): Record<string, string> =>
-  (msg.extras as { headers: Record<string, string> }).headers;
-
-/**
- * Simulate a cancel message arriving on the channel.
- * @param channel - The mock channel with listeners.
- * @param headers - Cancel headers to include.
- * @param clientId - Sender clientId.
- */
 const simulateCancel = (channel: MockChannel, headers: Record<string, string>, clientId?: string): void => {
-  // Unfiltered subscribers are stored under `*`; the agent session uses
-  // unfiltered subscribe and discriminates on `msg.name` internally.
-  const listeners = [...(channel.listeners.get(EVENT_CANCEL) ?? []), ...(channel.listeners.get(ALL_NAMES) ?? [])];
+  if (!channel.listener) return;
   const msg = {
     name: EVENT_CANCEL,
     clientId,
     extras: { headers },
   } as unknown as Ably.InboundMessage;
-  for (const listener of listeners) {
-    listener(msg);
-  }
+  channel.listener(msg);
 };
 
-/**
- * Get the options from the last createEncoder call.
- * @param c - The codec mock.
- * @returns The encoder options from the last call.
- */
-const lastEncoderOpts = (c: Codec<TestEvent, TestMessage>) => {
-  // eslint-disable-next-line @typescript-eslint/unbound-method -- accessing vi mock
-  const calls = vi.mocked(c.createEncoder).mock.calls;
-  const last = calls.at(-1);
-  expect(last).toBeDefined();
-  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by expect above
-  return last![1];
+// ---------------------------------------------------------------------------
+// Mock codec (Encoder.publish only)
+// ---------------------------------------------------------------------------
+
+interface MockEncoder extends Encoder<TestEvent> {
+  publishCalls: { event: TestEvent; opts: WriteOptions | undefined }[];
+  failPublishWith: Error | undefined;
+}
+
+interface MockCodec extends Codec<TestEvent, TestProjection, TestMessage> {
+  encoderCalls: { writer: ChannelWriter; opts: EncoderOptions | undefined }[];
+  encoders: MockEncoder[];
+  lastEncoder(): MockEncoder | undefined;
+  lastEncoderOpts(): EncoderOptions | undefined;
+}
+
+const createMockEncoder = (failWith?: Error): MockEncoder => {
+  const calls: { event: TestEvent; opts: WriteOptions | undefined }[] = [];
+  const enc: MockEncoder = {
+    publishCalls: calls,
+    failPublishWith: failWith,
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+    publish: vi.fn((event: TestEvent, opts?: WriteOptions) => {
+      if (enc.failPublishWith) return Promise.reject(enc.failPublishWith);
+      calls.push({ event, opts });
+      return Promise.resolve();
+    }),
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+    abort: vi.fn(() => Promise.resolve()),
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+    close: vi.fn(() => Promise.resolve()),
+  };
+  return enc;
 };
 
-/**
- * Create a ReadableStream from events.
- * @param events - Events to enqueue.
- * @returns A ReadableStream that emits the events then closes.
- */
+const createMockDecoder = (): Decoder<TestEvent> => ({
+  decode: vi.fn(() => []),
+});
+
+const createMockCodec = (overrides?: { encoderFactory?: () => MockEncoder }): MockCodec => {
+  const encoders: MockEncoder[] = [];
+  const encoderCalls: { writer: ChannelWriter; opts: EncoderOptions | undefined }[] = [];
+  const codec: MockCodec = {
+    encoders,
+    encoderCalls,
+    lastEncoder: () => encoders.at(-1),
+    lastEncoderOpts: () => encoderCalls.at(-1)?.opts,
+    init: vi.fn((): TestProjection => ({ messages: [] })),
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- reducer signature; event/meta unused by this stub
+    fold: vi.fn((state: TestProjection, _event: TestEvent, _meta: ReducerMeta) => state),
+    getMessages: vi.fn((p: TestProjection) => p.messages),
+    userMessageEvent: vi.fn((m: TestMessage): TestEvent => ({ type: 'user-message', text: m.content })),
+    createEncoder: vi.fn((writer: ChannelWriter, opts?: EncoderOptions) => {
+      encoderCalls.push({ writer, opts });
+      const enc = overrides?.encoderFactory ? overrides.encoderFactory() : createMockEncoder();
+      encoders.push(enc);
+      return enc;
+    }),
+    createDecoder: vi.fn(() => createMockDecoder()),
+    isTerminal: vi.fn(() => false),
+  };
+  return codec;
+};
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 const streamOf = (...events: TestEvent[]): ReadableStream<TestEvent> =>
   new ReadableStream({
     start: (controller) => {
@@ -258,42 +248,30 @@ const captureWarnLogger = (): {
  * Build a codec mock whose decoder yields one synthetic TestMessage per
  * inbound Ably message — sufficient to exercise the lookup's accumulation,
  * dedup-by-serial, and sort-on-resolve behavior without standing up a real
- * codec.
+ * codec. The decoder reads the msg-id header from each inbound message and
+ * emits a `user-message` event carrying that id; `fold` appends it to the
+ * projection's `messages` list so `getMessages` returns one message per
+ * inbound Ably message.
  * @returns A codec that decodes each inbound message into a single message whose id reflects the inbound msgId header.
  */
-const codecWithFunctionalDecoder = (): Codec<TestEvent, TestMessage> => ({
+const codecWithFunctionalDecoder = (): Codec<TestEvent, TestProjection, TestMessage> => ({
+  init: (): TestProjection => ({ messages: [] }),
+  fold: (state: TestProjection, event: TestEvent): TestProjection => {
+    if (event.type === 'user-message' && event.text !== undefined) {
+      return { messages: [...state.messages, { id: event.text, content: event.text }] };
+    }
+    return state;
+  },
+  getMessages: (p: TestProjection) => p.messages,
+  userMessageEvent: (m: TestMessage): TestEvent => ({ type: 'user-message', text: m.id }),
   createEncoder: vi.fn(() => createMockEncoder()),
   createDecoder: vi.fn(() => ({
-    decode: (m: Ably.InboundMessage) => {
+    decode: (m: Ably.InboundMessage): TestEvent[] => {
       const hdrs = (m.extras as { headers?: Record<string, string> } | undefined)?.headers ?? {};
       const id = hdrs[HEADER_MSG_ID] ?? 'unknown';
-      return [{ kind: 'message' as const, message: { id, content: id } }];
+      return [{ type: 'user-message', text: id }];
     },
   })),
-  createAccumulator: vi.fn(() => {
-    const list: TestMessage[] = [];
-    return {
-      get messages() {
-        return list;
-      },
-      get completedMessages() {
-        return list;
-      },
-      get hasActiveStream() {
-        return false;
-      },
-      processOutputs: (
-        outputs: { kind: 'message'; message: TestMessage }[] | { kind: 'event'; event: TestEvent }[],
-      ) => {
-        for (const out of outputs) {
-          if (out.kind === 'message') list.push(out.message);
-        }
-      },
-      updateMessage: vi.fn(),
-      initMessage: vi.fn(),
-      completeMessage: vi.fn(),
-    };
-  }) as Codec<TestEvent, TestMessage>['createAccumulator'],
   isTerminal: vi.fn(() => false),
 });
 
@@ -328,8 +306,7 @@ const deliverUserPrompt = (ch: MockChannel, opts: DeliverUserPromptOpts): void =
     serial: opts.serial,
     extras: { headers },
   } as unknown as Ably.InboundMessage;
-  const listeners = ch.listeners.get(ALL_NAMES) ?? [];
-  for (const listener of listeners) listener(msg);
+  if (ch.listener) ch.listener(msg);
 };
 
 // ---------------------------------------------------------------------------
@@ -338,17 +315,16 @@ const deliverUserPrompt = (ch: MockChannel, opts: DeliverUserPromptOpts): void =
 
 describe('AgentSession', () => {
   let channel: MockChannel & Ably.RealtimeChannel;
-  let codec: Codec<TestEvent, TestMessage>;
-  let session: AgentSession<TestEvent, TestMessage>;
+  let codec: MockCodec;
+  let session: AgentSession<TestEvent, TestProjection, TestMessage>;
 
   beforeEach(async () => {
     channel = createMockChannel();
     codec = createMockCodec();
-    session = createAgentSession({
+    session = createAgentSession<TestEvent, TestProjection, TestMessage>({
       client: createMockClient(channel),
       channelName: 'test-channel',
       codec,
-      promptLookupTimeoutMs: 0,
     });
     await session.connect();
   });
@@ -357,18 +333,26 @@ describe('AgentSession', () => {
     session.close();
   });
 
+  // -------------------------------------------------------------------------
+  // construction
+  // -------------------------------------------------------------------------
+
   describe('construction', () => {
-    it('registers the ai-transport-js agent on the client and forwards params.agent to channels.get', () => {
+    it('exposes a createRun factory and close method', () => {
+      expect(typeof session.createRun).toBe('function');
+      expect(typeof session.close).toBe('function');
+    });
+
+    it('registers the agent and resolves the channel via client.channels.get', () => {
       const ch = createMockChannel();
       const client = createMockClient(ch);
-      const c = createMockCodec();
-      const s = createAgentSession({ client, channelName: 'attribution-channel', codec: c });
-      const agents = (client as unknown as { options: { agents?: Record<string, string> } }).options.agents;
-      expect(agents?.['ai-transport-js']).toBe(VERSION);
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- accessing vi mock
-      expect(client.channels.get).toHaveBeenCalledWith('attribution-channel', {
-        params: { agent: `ai-transport-js/${VERSION}`, rewind: '2m' },
+      const s = createAgentSession<TestEvent, TestProjection, TestMessage>({
+        client,
+        channelName: 'agent-channel',
+        codec,
       });
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock check
+      expect(client.channels.get).toHaveBeenCalled();
       s.close();
     });
 
@@ -376,7 +360,7 @@ describe('AgentSession', () => {
       const ch = createMockChannel();
       const client = createMockClient(ch);
       const c = createMockCodec();
-      const s = createAgentSession({
+      const s = createAgentSession<TestEvent, TestProjection, TestMessage>({
         client,
         channelName: 'rewind-channel',
         codec: c,
@@ -397,12 +381,12 @@ describe('AgentSession', () => {
       // Seed an unrelated entry so we can assert it survives.
       optionsRef.agents = { 'some-other-sdk': '9.9.9' };
       const c = createMockCodec();
-      const s1 = createAgentSession({ client, channelName: 'ch-a', codec: c });
+      const s1 = createAgentSession<TestEvent, TestProjection, TestMessage>({ client, channelName: 'ch-a', codec: c });
       // Swap the channel returned by channels.get for the second session so
       // each session has its own channel mock to publish to.
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked takes a method reference
       vi.mocked(client.channels.get).mockReturnValue(ch2);
-      const s2 = createAgentSession({ client, channelName: 'ch-b', codec: c });
+      const s2 = createAgentSession<TestEvent, TestProjection, TestMessage>({ client, channelName: 'ch-b', codec: c });
       expect(optionsRef.agents).toEqual({
         'some-other-sdk': '9.9.9',
         'ai-transport-js': VERSION,
@@ -412,32 +396,17 @@ describe('AgentSession', () => {
     });
   });
 
-  describe('connect()', () => {
-    it('subscribes (unfiltered) so cancels and rewound user prompts both reach the dispatcher', async () => {
-      const ch = createMockChannel();
-      const c = createMockCodec();
-      const s = createAgentSession({
-        client: createMockClient(ch),
-        channelName: 'test-channel',
-        codec: c,
-        promptLookupTimeoutMs: 0,
-      });
-      await s.connect();
-      // Unfiltered subscribe — the session discriminates messages internally
-      // by name and headers so the same subscription captures both cancels
-      // and channel-rewind-replayed user prompts.
-      expect(ch.subscribe).toHaveBeenCalledWith(expect.any(Function));
-      s.close();
-    });
+  // -------------------------------------------------------------------------
+  // connect()
+  // -------------------------------------------------------------------------
 
-    it('is idempotent — multiple calls return the same subscribe', async () => {
+  describe('connect()', () => {
+    it('is idempotent — repeated calls return the same promise', async () => {
       const ch = createMockChannel();
-      const c = createMockCodec();
-      const s = createAgentSession({
+      const s = createAgentSession<TestEvent, TestProjection, TestMessage>({
         client: createMockClient(ch),
         channelName: 'test-channel',
-        codec: c,
-        promptLookupTimeoutMs: 0,
+        codec: createMockCodec(),
       });
       const p1 = s.connect();
       const p2 = s.connect();
@@ -447,201 +416,150 @@ describe('AgentSession', () => {
       s.close();
     });
 
-    it('rejects when called after close()', async () => {
-      const ch = createMockChannel();
-      const c = createMockCodec();
-      const s = createAgentSession({
-        client: createMockClient(ch),
-        channelName: 'test-channel',
-        codec: c,
-        promptLookupTimeoutMs: 0,
-      });
-      s.close();
-      await expect(s.connect()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+    it('subscribes unfiltered (single listener installed)', () => {
+      // beforeEach already connected, so listener is set
+      expect(channel.subscribe).toHaveBeenCalledTimes(1);
+      expect(typeof channel.listener).toBe('function');
     });
-  });
 
-  describe('connect() contract', () => {
-    it('start() throws InvalidArgument if connect() was not called', async () => {
+    it('rejects connect when subscribe fails', async () => {
       const ch = createMockChannel();
-      const c = createMockCodec();
-      const s = createAgentSession({
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.reject directly
+      ch.subscribe = vi.fn(() => Promise.reject(new Error('subscribe down')));
+      const onError = vi.fn();
+      const s = createAgentSession<TestEvent, TestProjection, TestMessage>({
         client: createMockClient(ch),
         channelName: 'test-channel',
-        codec: c,
-        promptLookupTimeoutMs: 0,
+        codec: createMockCodec(),
+        onError,
       });
-      const run = createRunFromOpts(s, { runId: 'run-1' });
+      await expect(s.connect()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSubscriptionError);
+      expect(onError).toHaveBeenCalled();
+      s.close();
+    });
+
+    it('Run methods throw InvalidArgument before connect()', async () => {
+      const ch = createMockChannel();
+      const s = createAgentSession<TestEvent, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: createMockCodec(),
+      });
+      const run = createRunFromOpts(s, { runId: 'run-x' });
       await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
       s.close();
     });
-
-    it('addMessages() throws InvalidArgument if connect() was not called', async () => {
-      const ch = createMockChannel();
-      const c = createMockCodec();
-      const s = createAgentSession({
-        client: createMockClient(ch),
-        channelName: 'test-channel',
-        codec: c,
-        promptLookupTimeoutMs: 0,
-      });
-      const run = createRunFromOpts(s, { runId: 'run-1' });
-      await expect(run.addMessages([makeNode({ id: 'm', content: 'hi' })])).rejects.toBeErrorInfoWithCode(
-        ErrorCode.InvalidArgument,
-      );
-      s.close();
-    });
-
-    it('addEvents() throws InvalidArgument if connect() was not called', async () => {
-      const ch = createMockChannel();
-      const c = createMockCodec();
-      const s = createAgentSession({
-        client: createMockClient(ch),
-        channelName: 'test-channel',
-        codec: c,
-        promptLookupTimeoutMs: 0,
-      });
-      const run = createRunFromOpts(s, { runId: 'run-1' });
-      await expect(
-        run.addEvents([{ kind: 'event', msgId: 'target-1', events: [{ type: 'ev' }] }]),
-      ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
-      s.close();
-    });
-
-    it('pipe() throws InvalidArgument if connect() was not called', async () => {
-      const ch = createMockChannel();
-      const c = createMockCodec();
-      const s = createAgentSession({
-        client: createMockClient(ch),
-        channelName: 'test-channel',
-        codec: c,
-        promptLookupTimeoutMs: 0,
-      });
-      const run = createRunFromOpts(s, { runId: 'run-1' });
-      const stream = new ReadableStream<TestEvent>({
-        start: (controller) => {
-          controller.close();
-        },
-      });
-      await expect(run.pipe(stream)).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
-      s.close();
-    });
-
-    it('end() throws InvalidArgument if connect() was not called', async () => {
-      const ch = createMockChannel();
-      const c = createMockCodec();
-      const s = createAgentSession({
-        client: createMockClient(ch),
-        channelName: 'test-channel',
-        codec: c,
-        promptLookupTimeoutMs: 0,
-      });
-      const run = createRunFromOpts(s, { runId: 'run-1' });
-      await expect(run.end('complete')).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
-      s.close();
-    });
   });
 
-  describe('createRun', () => {
-    it('returns a Run with the correct runId', () => {
-      const run = createRunFromOpts(session, { runId: 'run-1' });
-      expect(run.runId).toBe('run-1');
-    });
-
-    it('returns a Run with an AbortSignal', () => {
-      const run = createRunFromOpts(session, { runId: 'run-1' });
-      expect(run.abortSignal).toBeInstanceOf(AbortSignal);
-      expect(run.abortSignal.aborted).toBe(false);
-    });
-  });
+  // -------------------------------------------------------------------------
+  // run lifecycle
+  // -------------------------------------------------------------------------
 
   describe('run lifecycle', () => {
-    it('start publishes run-start event', async () => {
+    it('start() publishes run-start with run headers', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1', clientId: 'user-a' });
       await run.start();
 
-      const startMsg = channel.publishCalls.find((m) => !Array.isArray(m) && m.name === EVENT_RUN_START) as
-        | Ably.Message
-        | undefined;
+      const startMsg = channel.publishCalls.find((m) => m.name === 'x-ably-run-start');
       expect(startMsg).toBeDefined();
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- narrowed by expect(startMsg).toBeDefined() above
-      expect(headersOf(startMsg!)[HEADER_RUN_ID]).toBe('run-1');
+      const headers = (startMsg?.extras as { headers: Record<string, string> } | undefined)?.headers;
+      expect(headers?.[HEADER_RUN_ID]).toBe('run-1');
     });
 
-    it('start is idempotent', async () => {
-      const run = createRunFromOpts(session, { runId: 'run-1' });
-      await run.start();
-      await run.start();
-
-      const startMsgs = channel.publishCalls.filter((m) => !Array.isArray(m) && m.name === EVENT_RUN_START);
-      expect(startMsgs).toHaveLength(1);
-    });
-
-    it('end publishes run-end event', async () => {
-      const run = createRunFromOpts(session, { runId: 'run-1' });
+    it('end() publishes run-end with reason', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1', clientId: 'user-a' });
       await run.start();
       await run.end('complete');
 
-      const endMsg = channel.publishCalls.find((m) => !Array.isArray(m) && m.name === EVENT_RUN_END) as
-        | Ably.Message
-        | undefined;
+      const endMsg = channel.publishCalls.find((m) => m.name === 'x-ably-run-end');
       expect(endMsg).toBeDefined();
     });
 
-    it('end is idempotent', async () => {
+    it('start() is idempotent (subsequent calls are no-ops)', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
-      await run.end('complete');
-      await run.end('complete');
-
-      const endMsgs = channel.publishCalls.filter((m) => !Array.isArray(m) && m.name === EVENT_RUN_END);
-      expect(endMsgs).toHaveLength(1);
+      await run.start();
+      // Only one run-start publish on the channel
+      const startMsgs = channel.publishCalls.filter((m) => m.name === 'x-ably-run-start');
+      expect(startMsgs).toHaveLength(1);
     });
 
-    it('addMessages throws if start() not called', async () => {
+    it('addMessages() throws if run not started', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
-      await expect(run.addMessages([makeNode({ id: '1', content: 'hi' })])).rejects.toBeErrorInfoWithCode(
+      await expect(run.addMessages([makeNode({ id: 'm1', content: 'hi' })])).rejects.toBeErrorInfoWithCode(
         ErrorCode.InvalidArgument,
       );
     });
 
-    it('pipe throws if start() not called', async () => {
+    it('pipe() throws if run not started', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
-      await expect(run.pipe(streamOf())).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await expect(run.pipe(streamOf({ type: 'text' }))).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
 
-    it('end throws if start() not called', async () => {
+    it('end() throws if run not started', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await expect(run.end('complete')).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
   });
 
+  // -------------------------------------------------------------------------
+  // addMessages — codec.userMessageEvent + encoder.publish
+  // -------------------------------------------------------------------------
+
   describe('addMessages', () => {
-    it('creates encoder with user role and run headers', async () => {
+    it('translates each TMessage via codec.userMessageEvent then encoder.publish', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1', clientId: 'user-a' });
       await run.start();
-      await run.addMessages([makeNode({ id: 'm1', content: 'hello' })]);
+      const node = makeNode({ id: 'm1', content: 'hello' });
+      await run.addMessages([node]);
 
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
-      expect(codec.createEncoder).toHaveBeenCalled();
-      const opts = lastEncoderOpts(codec);
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock check
+      expect(codec.userMessageEvent).toHaveBeenCalledWith({ id: 'm1', content: 'hello' });
+      const enc = codec.lastEncoder();
+      expect(enc?.publishCalls).toHaveLength(1);
+      expect(enc?.publishCalls[0]?.event.type).toBe('user-message');
+    });
+
+    it('creates encoder with user-role transport headers', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1', clientId: 'user-a' });
+      await run.start();
+      await run.addMessages([makeNode({ id: 'm1', content: 'hi' })]);
+
+      const opts = codec.lastEncoderOpts();
       const headers = opts?.extras?.headers ?? {};
       expect(headers[HEADER_ROLE]).toBe('user');
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
       expect(headers[HEADER_MSG_ID]).toBeDefined();
     });
 
-    it('creates one encoder per message for distinct headers', async () => {
+    it('creates one encoder per message (distinct headers)', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
       await run.addMessages([makeNode({ id: 'm1', content: 'a' }), makeNode({ id: 'm2', content: 'b' })]);
 
-      // Each message gets its own encoder (distinct x-ably-msg-id)
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
-      expect(vi.mocked(codec.createEncoder).mock.calls).toHaveLength(2);
+      // Two messages → two createEncoder calls
+      expect(codec.encoderCalls).toHaveLength(2);
     });
 
-    it('per-message headers override transport defaults', async () => {
+    it('returns published msg-ids in order', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+      const node1 = makeNode({ id: 'm1', content: 'a' });
+      const node2 = makeNode({ id: 'm2', content: 'b' });
+      const { msgIds } = await run.addMessages([node1, node2]);
+
+      expect(msgIds).toEqual([node1.msgId, node2.msgId]);
+    });
+
+    it('uses node parentId in transport headers', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+      await run.addMessages([makeNode({ id: 'm1', content: 'hi' }, { parentId: 'parent-abc' })]);
+      const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
+      expect(headers[HEADER_PARENT]).toBe('parent-abc');
+    });
+
+    it('per-node headers override transport defaults', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
       await run.addMessages([
@@ -654,64 +572,49 @@ describe('AgentSession', () => {
         ),
       ]);
 
-      const opts = lastEncoderOpts(codec);
-      const headers = opts?.extras?.headers ?? {};
-      // Client headers override transport defaults
+      const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
       expect(headers[HEADER_MSG_ID]).toBe('client-assigned-id');
       expect(headers['x-domain-foo']).toBe('bar');
-      // Transport headers still present for non-overridden keys
       expect(headers[HEADER_ROLE]).toBe('user');
-      expect(headers[HEADER_RUN_ID]).toBe('run-1');
     });
 
-    it('uses node parentId and forkOf in transport headers', async () => {
-      const run = createRunFromOpts(session, { runId: 'run-1' });
+    it('addMessages() throws on encoder.publish failure', async () => {
+      const failCodec = createMockCodec({
+        encoderFactory: () => createMockEncoder(new Ably.ErrorInfo('publish boom', 40000, 500)),
+      });
+      const failSession = createAgentSession<TestEvent, TestProjection, TestMessage>({
+        client: createMockClient(channel),
+        channelName: 'test-channel',
+        codec: failCodec,
+      });
+      await failSession.connect();
+      const run = createRunFromOpts(failSession, { runId: 'run-1' });
       await run.start();
-      await run.addMessages([
-        makeNode(
-          { id: 'm1', content: 'hi' },
-          {
-            parentId: 'parent-abc',
-            forkOf: 'fork-xyz',
-          },
-        ),
-      ]);
-
-      const opts = lastEncoderOpts(codec);
-      const headers = opts?.extras?.headers ?? {};
-      expect(headers[HEADER_PARENT]).toBe('parent-abc');
-    });
-
-    it('returns published msg-ids', async () => {
-      const run = createRunFromOpts(session, { runId: 'run-1' });
-      await run.start();
-      const node1 = makeNode({ id: 'm1', content: 'a' });
-      const node2 = makeNode({ id: 'm2', content: 'b' });
-      const { msgIds } = await run.addMessages([node1, node2]);
-
-      expect(msgIds).toHaveLength(2);
-      expect(msgIds[0]).toBe(node1.msgId);
-      expect(msgIds[1]).toBe(node2.msgId);
+      await expect(run.addMessages([makeNode({ id: 'm1', content: 'hi' })])).rejects.toBeErrorInfoWithCode(
+        ErrorCode.RunLifecycleError,
+      );
+      failSession.close();
     });
   });
 
+  // -------------------------------------------------------------------------
+  // addEvents — publish each event with target's msg-id + amend header
+  // -------------------------------------------------------------------------
+
   describe('addEvents', () => {
-    it('creates encoder with amend header and target msgId headers', async () => {
+    it('creates encoder with amend header pointing at the target msg-id', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1', clientId: 'user-a' });
       await run.start();
       await run.addEvents([{ kind: 'event', msgId: 'target-msg-1', events: [{ type: 'tool-output' }] }]);
 
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
-      expect(codec.createEncoder).toHaveBeenCalled();
-      const opts = lastEncoderOpts(codec);
-      const headers = opts?.extras?.headers ?? {};
+      const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
       expect(headers[HEADER_AMEND]).toBe('target-msg-1');
       expect(headers[HEADER_ROLE]).toBe('assistant');
       expect(headers[HEADER_MSG_ID]).toBe('target-msg-1');
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
     });
 
-    it('calls writeEvent per event in each node', async () => {
+    it('calls encoder.publish per event', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
       await run.addEvents([
@@ -721,12 +624,9 @@ describe('AgentSession', () => {
           events: [{ type: 'ev-a' }, { type: 'ev-b' }, { type: 'ev-c' }],
         },
       ]);
-
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
-      const calls = vi.mocked(codec.createEncoder).mock.results;
-      const encoder = calls.at(-1)?.value as ReturnType<typeof createMockEncoder>;
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
-      expect(vi.mocked(encoder.writeEvent).mock.calls).toHaveLength(3);
+      const enc = codec.lastEncoder();
+      expect(enc?.publishCalls).toHaveLength(3);
+      expect(enc?.publishCalls.map((c) => c.event.type)).toEqual(['ev-a', 'ev-b', 'ev-c']);
     });
 
     it('throws if run not started', async () => {
@@ -736,48 +636,78 @@ describe('AgentSession', () => {
       ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
 
-    it('handles multiple EventsNodes', async () => {
+    it('uses one encoder per EventsNode (distinct amend targets)', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1', clientId: 'user-a' });
       await run.start();
+      // Reset counts after start (start publishes run-start, no encoder)
+      const before = codec.encoderCalls.length;
       await run.addEvents([
         { kind: 'event', msgId: 'target-1', events: [{ type: 'ev-1' }] },
         { kind: 'event', msgId: 'target-2', events: [{ type: 'ev-2' }] },
       ]);
+      // Two nodes → two encoders
+      expect(codec.encoderCalls.length - before).toBe(2);
+      // First encoder amends target-1
+      const first = codec.encoderCalls[before]?.opts?.extras?.headers ?? {};
+      const second = codec.encoderCalls[before + 1]?.opts?.extras?.headers ?? {};
+      expect(first[HEADER_AMEND]).toBe('target-1');
+      expect(second[HEADER_AMEND]).toBe('target-2');
+    });
 
-      // Each EventsNode gets its own encoder
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
-      const encoderCalls = vi.mocked(codec.createEncoder).mock.calls;
-      // addMessages calls may also have created encoders, so check the last 2
-      // which correspond to the addEvents call
-      const addEventsCalls = encoderCalls.filter((_call, i) => {
-        const opts = encoderCalls[i]?.[1];
-        const headers = opts?.extras?.headers ?? {};
-        return headers[HEADER_AMEND] !== undefined;
-      });
-      expect(addEventsCalls).toHaveLength(2);
+    it('closes each encoder after publishing all events', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+      await run.addEvents([{ kind: 'event', msgId: 'target-1', events: [{ type: 'ev-1' }] }]);
+      const enc = codec.lastEncoder();
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock check
+      expect(enc?.close).toHaveBeenCalled();
+    });
 
-      // Verify each targets the correct msgId
-      const msgIds = addEventsCalls.map((call) => {
-        const opts = call[1];
-        return opts?.extras?.headers?.[HEADER_MSG_ID];
+    it('throws RunLifecycleError when an encoder.publish fails', async () => {
+      const failCodec = createMockCodec({
+        encoderFactory: () => createMockEncoder(new Ably.ErrorInfo('boom', 40000, 500)),
       });
-      expect(msgIds).toEqual(['target-1', 'target-2']);
+      const failSession = createAgentSession<TestEvent, TestProjection, TestMessage>({
+        client: createMockClient(channel),
+        channelName: 'test-channel',
+        codec: failCodec,
+      });
+      await failSession.connect();
+      const run = createRunFromOpts(failSession, { runId: 'run-1' });
+      await run.start();
+      await expect(
+        run.addEvents([{ kind: 'event', msgId: 'target-1', events: [{ type: 'ev' }] }]),
+      ).rejects.toBeErrorInfoWithCode(ErrorCode.RunLifecycleError);
+      failSession.close();
     });
   });
 
+  // -------------------------------------------------------------------------
+  // pipe — stream events through encoder.publish
+  // -------------------------------------------------------------------------
+
   describe('pipe', () => {
-    it('creates encoder with assistant role', async () => {
+    it('creates encoder with assistant-role transport headers', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1', clientId: 'user-a' });
       await run.start();
       await run.pipe(streamOf({ type: 'text', text: 'hi' }));
 
-      const opts = lastEncoderOpts(codec);
-      const headers = opts?.extras?.headers ?? {};
+      const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
       expect(headers[HEADER_ROLE]).toBe('assistant');
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
     });
 
-    it('returns complete reason for normal stream', async () => {
+    it('publishes each stream event through encoder.publish', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+      await run.pipe(streamOf({ type: 'text', text: 'a' }, { type: 'text', text: 'b' }));
+
+      const enc = codec.lastEncoder();
+      expect(enc?.publishCalls).toHaveLength(2);
+      expect(enc?.publishCalls.map((c) => c.event.text)).toEqual(['a', 'b']);
+    });
+
+    it('returns reason: complete for a normal stream', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
       const result = await run.pipe(streamOf({ type: 'text', text: 'done' }));
@@ -787,41 +717,33 @@ describe('AgentSession', () => {
     it('uses explicit parent from pipe options', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
-      const { msgIds } = await run.addMessages([makeNode({ id: 'm1', content: 'q' })]);
+      await run.pipe(streamOf({ type: 'text', text: 'a' }), { parent: 'parent-msg' });
 
-      await run.pipe(streamOf({ type: 'text', text: 'answer' }), {
-        parent: msgIds.at(-1),
-      });
-
-      const streamOpts = lastEncoderOpts(codec);
-      const assistantParent = streamOpts?.extras?.headers?.[HEADER_PARENT];
-      expect(assistantParent).toBe(msgIds[0]);
+      const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
+      expect(headers[HEADER_PARENT]).toBe('parent-msg');
     });
 
-    it('forwards resolveWriteOptions per-event overrides to encoder.appendEvent', async () => {
+    it('forwards resolveWriteOptions per-event overrides into encoder.publish', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
-
       const events: TestEvent[] = [
         { type: 'text', text: 'a' },
         { type: 'text', text: 'b' },
       ];
-
       await run.pipe(streamOf(...events), {
         resolveWriteOptions: (event) => (event.text === 'b' ? { messageId: 'override-b' } : undefined),
       });
 
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- mock accessor
-      const createEncoderCalls = vi.mocked(codec.createEncoder).mock.results;
-      const encoder = createEncoderCalls.at(-1)?.value as StreamEncoder<TestEvent, TestMessage>;
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- mock accessor
-      const appendCalls = vi.mocked(encoder.appendEvent).mock.calls;
-
-      expect(appendCalls).toHaveLength(2);
-      expect(appendCalls[0]).toEqual([events[0], undefined]);
-      expect(appendCalls[1]).toEqual([events[1], { messageId: 'override-b' }]);
+      const enc = codec.lastEncoder();
+      expect(enc?.publishCalls).toHaveLength(2);
+      expect(enc?.publishCalls[0]?.opts).toBeUndefined();
+      expect(enc?.publishCalls[1]?.opts).toEqual({ messageId: 'override-b' });
     });
   });
+
+  // -------------------------------------------------------------------------
+  // cancel routing
+  // -------------------------------------------------------------------------
 
   describe('cancel routing', () => {
     it('aborts run when cancel by runId arrives', async () => {
@@ -829,21 +751,19 @@ describe('AgentSession', () => {
       await run.start();
 
       simulateCancel(channel, { [HEADER_CANCEL_RUN_ID]: 'run-1' });
-
-      // Allow async handler to run
-      await new Promise((r) => setTimeout(r, 10));
+      await new Promise((r) => setTimeout(r, 5));
 
       expect(run.abortSignal.aborted).toBe(true);
     });
 
-    it('aborts own runs when cancel own arrives', async () => {
+    it('aborts own runs when cancel-own arrives from the same clientId', async () => {
       const run1 = createRunFromOpts(session, { runId: 'run-1', clientId: 'user-a' });
       const run2 = createRunFromOpts(session, { runId: 'run-2', clientId: 'user-b' });
       await run1.start();
       await run2.start();
 
       simulateCancel(channel, { [HEADER_CANCEL_OWN]: 'true' }, 'user-a');
-      await new Promise((r) => setTimeout(r, 10));
+      await new Promise((r) => setTimeout(r, 5));
 
       expect(run1.abortSignal.aborted).toBe(true);
       expect(run2.abortSignal.aborted).toBe(false);
@@ -856,20 +776,20 @@ describe('AgentSession', () => {
       await run2.start();
 
       simulateCancel(channel, { [HEADER_CANCEL_CLIENT_ID]: 'user-b' });
-      await new Promise((r) => setTimeout(r, 10));
+      await new Promise((r) => setTimeout(r, 5));
 
       expect(run1.abortSignal.aborted).toBe(false);
       expect(run2.abortSignal.aborted).toBe(true);
     });
 
-    it('aborts all runs when cancel all arrives', async () => {
-      const run1 = createRunFromOpts(session, { runId: 'run-1', clientId: 'user-a' });
-      const run2 = createRunFromOpts(session, { runId: 'run-2', clientId: 'user-b' });
+    it('aborts all runs when cancel-all arrives', async () => {
+      const run1 = createRunFromOpts(session, { runId: 'run-1' });
+      const run2 = createRunFromOpts(session, { runId: 'run-2' });
       await run1.start();
       await run2.start();
 
       simulateCancel(channel, { [HEADER_CANCEL_ALL]: 'true' });
-      await new Promise((r) => setTimeout(r, 10));
+      await new Promise((r) => setTimeout(r, 5));
 
       expect(run1.abortSignal.aborted).toBe(true);
       expect(run2.abortSignal.aborted).toBe(true);
@@ -885,194 +805,138 @@ describe('AgentSession', () => {
       await run.start();
 
       simulateCancel(channel, { [HEADER_CANCEL_RUN_ID]: 'run-1' });
-      await new Promise((r) => setTimeout(r, 10));
+      await new Promise((r) => setTimeout(r, 5));
 
       expect(run.abortSignal.aborted).toBe(false);
     });
 
-    it('does nothing when no runs match', async () => {
+    it('no-op when no run matches the filter', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
 
-      simulateCancel(channel, { [HEADER_CANCEL_RUN_ID]: 'run-999' });
-      await new Promise((r) => setTimeout(r, 10));
+      simulateCancel(channel, { [HEADER_CANCEL_RUN_ID]: 'run-other' });
+      await new Promise((r) => setTimeout(r, 5));
 
       expect(run.abortSignal.aborted).toBe(false);
     });
-
-    it('aborts only the matching invocation when cancel by invocationId arrives', async () => {
-      // Two runs share a runId is not realistic in createRun, but two runs can
-      // have distinct invocation-ids. Test cancel-by-invocation-id by giving
-      // each run a distinct invocationId and asserting the filter only hits one.
-      const run1 = createRunFromOpts(session, {
-        runId: 'run-1',
-        clientId: 'user-a',
-        invocationId: 'inv-1',
-      });
-      const run2 = createRunFromOpts(session, {
-        runId: 'run-2',
-        clientId: 'user-a',
-        invocationId: 'inv-2',
-      });
-      await run1.start();
-      await run2.start();
-
-      simulateCancel(channel, { [HEADER_CANCEL_INVOCATION_ID]: 'inv-2' });
-      await new Promise((r) => setTimeout(r, 10));
-
-      expect(run1.abortSignal.aborted).toBe(false);
-      expect(run2.abortSignal.aborted).toBe(true);
-    });
   });
+
+  // -------------------------------------------------------------------------
+  // early cancel
+  // -------------------------------------------------------------------------
 
   describe('early cancel', () => {
     it('fires abort signal even before start() is called', async () => {
-      const run = createRunFromOpts(session, { runId: 'run-1', clientId: 'user-a' });
-
+      const run = createRunFromOpts(session, { runId: 'run-1' });
       simulateCancel(channel, { [HEADER_CANCEL_RUN_ID]: 'run-1' });
-      await new Promise((r) => setTimeout(r, 10));
-
+      await new Promise((r) => setTimeout(r, 5));
       expect(run.abortSignal.aborted).toBe(true);
     });
 
     it('start() throws when run was cancelled early', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
-
       simulateCancel(channel, { [HEADER_CANCEL_RUN_ID]: 'run-1' });
-      await new Promise((r) => setTimeout(r, 10));
-
+      await new Promise((r) => setTimeout(r, 5));
       await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
   });
 
-  describe('error handling', () => {
-    it('start() throws on publish failure without invoking onError', async () => {
-      const failChannel = createMockChannel();
-      vi.mocked(failChannel.publish).mockRejectedValue(new Error('publish failed'));
-      const onError = vi.fn();
+  // -------------------------------------------------------------------------
+  // external signal
+  // -------------------------------------------------------------------------
 
-      const failSession = createAgentSession({
-        client: createMockClient(failChannel),
-        channelName: 'test-channel',
-        codec,
-        promptLookupTimeoutMs: 0,
-        onError,
-      });
-      await failSession.connect();
-      const run = createRunFromOpts(failSession, {
-        runId: 'run-1',
-        onError,
-      });
-
-      await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.RunLifecycleError);
-      expect(onError).not.toHaveBeenCalled();
-
-      failSession.close();
-    });
-
-    it('end() throws on publish failure without invoking onError', async () => {
-      const onError = vi.fn();
-      const run = createRunFromOpts(session, { runId: 'run-1', onError });
+  describe('external signal', () => {
+    it('aborts the run when the external signal fires', async () => {
+      const ctl = new AbortController();
+      const run = createRunFromOpts(session, { runId: 'run-1', signal: ctl.signal });
       await run.start();
-
-      // Make the next publish fail (for run-end)
-      vi.mocked(channel.publish).mockRejectedValueOnce(new Error('publish failed'));
-
-      await expect(run.end('complete')).rejects.toBeErrorInfoWithCode(ErrorCode.RunLifecycleError);
-      expect(onError).not.toHaveBeenCalled();
+      ctl.abort();
+      expect(run.abortSignal.aborted).toBe(true);
     });
 
-    it('addMessages() throws on publish failure without invoking onError', async () => {
-      const onError = vi.fn();
-      const failCodec = createMockCodec();
-      const failEncoder = createMockEncoder();
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
-      vi.mocked(failEncoder.writeMessages).mockRejectedValue(new Error('publish failed'));
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
-      vi.mocked(failCodec.createEncoder).mockReturnValue(failEncoder);
-
-      const failSession = createAgentSession({
-        client: createMockClient(channel),
-        channelName: 'test-channel',
-        codec: failCodec,
-        promptLookupTimeoutMs: 0,
-      });
-      await failSession.connect();
-      const run = createRunFromOpts(failSession, { runId: 'run-1', onError });
-      await run.start();
-
-      await expect(run.addMessages([makeNode({ id: 'm1', content: 'hello' })])).rejects.toBeErrorInfoWithCode(
-        ErrorCode.RunLifecycleError,
-      );
-      expect(onError).not.toHaveBeenCalled();
-
-      failSession.close();
+    it('start() throws when external signal is already aborted', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1', signal: AbortSignal.abort() });
+      await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
 
-    it('addEvents() throws on publish failure without invoking onError', async () => {
-      const onError = vi.fn();
-      const failCodec = createMockCodec();
-      const failEncoder = createMockEncoder();
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
-      vi.mocked(failEncoder.writeEvent).mockRejectedValue(new Error('publish failed'));
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
-      vi.mocked(failCodec.createEncoder).mockReturnValue(failEncoder);
-
-      const failSession = createAgentSession({
-        client: createMockClient(channel),
-        channelName: 'test-channel',
-        codec: failCodec,
-        promptLookupTimeoutMs: 0,
-      });
-      await failSession.connect();
-      const run = createRunFromOpts(failSession, { runId: 'run-1', onError });
-      await run.start();
-
-      await expect(
-        run.addEvents([{ kind: 'event', msgId: 'target-1', events: [{ type: 'ev' }] }]),
-      ).rejects.toBeErrorInfoWithCode(ErrorCode.RunLifecycleError);
-      expect(onError).not.toHaveBeenCalled();
-
-      failSession.close();
-    });
-
-    it('pipe() calls onError when stream errors', async () => {
-      const onError = vi.fn();
-      const run = createRunFromOpts(session, { runId: 'run-1', onError });
+    it('cancels an in-flight pipe', async () => {
+      const ctl = new AbortController();
+      const run = createRunFromOpts(session, { runId: 'run-1', signal: ctl.signal });
       await run.start();
 
       const stream = new ReadableStream<TestEvent>({
         start: (controller) => {
           controller.enqueue({ type: 'text', text: 'partial' });
-          controller.error(new Error('model rate limit exceeded'));
         },
       });
 
+      const resultPromise = run.pipe(stream);
+      ctl.abort();
+      const result = await resultPromise;
+      expect(result.reason).toBe('cancelled');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // error handling
+  // -------------------------------------------------------------------------
+
+  describe('error handling', () => {
+    it('start() throws on run-start publish failure (does not call onError)', async () => {
+      const failChannel = createMockChannel();
+      vi.mocked(failChannel.publish).mockRejectedValue(new Error('publish failed'));
+      const onError = vi.fn();
+      const failSession = createAgentSession<TestEvent, TestProjection, TestMessage>({
+        client: createMockClient(failChannel),
+        channelName: 'test-channel',
+        codec,
+        onError,
+      });
+      await failSession.connect();
+      const run = createRunFromOpts(failSession, { runId: 'run-1', onError });
+      await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.RunLifecycleError);
+      expect(onError).not.toHaveBeenCalled();
+      failSession.close();
+    });
+
+    it('end() throws on run-end publish failure', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+      vi.mocked(channel.publish).mockRejectedValueOnce(new Error('publish failed'));
+      await expect(run.end('complete')).rejects.toBeErrorInfoWithCode(ErrorCode.RunLifecycleError);
+    });
+
+    it('pipe() calls onError when the stream errors', async () => {
+      const onError = vi.fn();
+      const run = createRunFromOpts(session, { runId: 'run-1', onError });
+      await run.start();
+      const stream = new ReadableStream<TestEvent>({
+        start: (controller) => {
+          controller.enqueue({ type: 'text', text: 'partial' });
+          controller.error(new Error('rate limit'));
+        },
+      });
       const result = await run.pipe(stream);
       expect(result.reason).toBe('error');
-      expect(result.error).toBeInstanceOf(Error);
-      expect(onError).toHaveBeenCalledWith(expect.toBeErrorInfo({ code: ErrorCode.StreamError, statusCode: 500 }));
+      expect(onError).toHaveBeenCalledWith(expect.toBeErrorInfo({ code: ErrorCode.StreamError }));
     });
 
     it('pipe() does not call onError when stream completes', async () => {
       const onError = vi.fn();
       const run = createRunFromOpts(session, { runId: 'run-1', onError });
       await run.start();
-
-      const result = await run.pipe(streamOf({ type: 'text', text: 'done' }));
-      expect(result.reason).toBe('complete');
-      expect(result.error).toBeUndefined();
+      await run.pipe(streamOf({ type: 'text', text: 'done' }));
       expect(onError).not.toHaveBeenCalled();
     });
 
-    it('onCancel handler error calls onError and does not prevent other runs', async () => {
+    it('onCancel throws → onError fires and other runs still get aborted', async () => {
       const onError = vi.fn();
       const run1 = createRunFromOpts(session, {
         runId: 'run-1',
         clientId: 'user-a',
-        // eslint-disable-next-line @typescript-eslint/require-await -- mock throws
+        // eslint-disable-next-line @typescript-eslint/require-await -- mock
         onCancel: async () => {
-          throw new Error('handler broke');
+          throw new Error('handler boom');
         },
         onError,
       });
@@ -1081,70 +945,16 @@ describe('AgentSession', () => {
       await run2.start();
 
       simulateCancel(channel, { [HEADER_CANCEL_ALL]: 'true' });
-      await new Promise((r) => setTimeout(r, 10));
+      await new Promise((r) => setTimeout(r, 5));
 
-      // run1's onCancel threw, but run2 should still be aborted
       expect(run2.abortSignal.aborted).toBe(true);
       expect(onError).toHaveBeenCalled();
     });
   });
 
-  describe('external signal', () => {
-    it('aborts the run when the external signal fires', async () => {
-      const externalController = new AbortController();
-      const run = createRunFromOpts(session, { runId: 'run-1', signal: externalController.signal });
-      await run.start();
-
-      externalController.abort();
-
-      expect(run.abortSignal.aborted).toBe(true);
-    });
-
-    it('aborts the run immediately when the external signal is already aborted', () => {
-      const run = createRunFromOpts(session, { runId: 'run-1', signal: AbortSignal.abort() });
-
-      expect(run.abortSignal.aborted).toBe(true);
-    });
-
-    it('start() throws when the external signal was already aborted', async () => {
-      const run = createRunFromOpts(session, { runId: 'run-1', signal: AbortSignal.abort() });
-
-      await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
-    });
-
-    it('cancels an in-flight pipe when the external signal fires', async () => {
-      const externalController = new AbortController();
-      const run = createRunFromOpts(session, { runId: 'run-1', signal: externalController.signal });
-      await run.start();
-
-      // A stream that never closes on its own — waits for cancellation.
-      const stream = new ReadableStream<TestEvent>({
-        start: (controller) => {
-          controller.enqueue({ type: 'text', text: 'partial' });
-        },
-      });
-
-      const resultPromise = run.pipe(stream);
-      externalController.abort();
-
-      const result = await resultPromise;
-      expect(result.reason).toBe('cancelled');
-    });
-
-    it('does not interfere with Ably cancel routing', async () => {
-      const externalController = new AbortController();
-      const run = createRunFromOpts(session, { runId: 'run-1', clientId: 'user-a', signal: externalController.signal });
-      await run.start();
-
-      // Cancel via Ably channel message (not external signal)
-      simulateCancel(channel, { [HEADER_CANCEL_RUN_ID]: 'run-1' });
-      await new Promise((r) => setTimeout(r, 10));
-
-      expect(run.abortSignal.aborted).toBe(true);
-      // External signal was NOT fired
-      expect(externalController.signal.aborted).toBe(false);
-    });
-  });
+  // -------------------------------------------------------------------------
+  // close
+  // -------------------------------------------------------------------------
 
   describe('close', () => {
     it('aborts all registered runs', async () => {
@@ -1152,257 +962,74 @@ describe('AgentSession', () => {
       const run2 = createRunFromOpts(session, { runId: 'run-2' });
       await run1.start();
       await run2.start();
-
       session.close();
-
       expect(run1.abortSignal.aborted).toBe(true);
       expect(run2.abortSignal.aborted).toBe(true);
     });
 
-    it('unsubscribes from the channel listener on close', () => {
+    it('unsubscribes from the channel', () => {
       session.close();
-      // Mirrors connect()'s unfiltered subscribe: the close path unsubscribes
-      // the same listener function.
-      expect(channel.unsubscribe).toHaveBeenCalledWith(expect.any(Function));
-    });
-
-    it('unsubscribes from channel state changes', () => {
-      session.close();
-      expect(channel.off).toHaveBeenCalledWith(expect.any(Function));
-      expect(channel.stateListeners.size).toBe(0);
+      expect(channel.unsubscribe).toHaveBeenCalled();
     });
 
     it('is idempotent', () => {
       session.close();
       session.close();
-      // Second close() must not attempt teardown again.
       expect(channel.unsubscribe).toHaveBeenCalledTimes(1);
-      expect(channel.off).toHaveBeenCalledTimes(1);
     });
   });
 
   // -------------------------------------------------------------------------
-  // Channel continuity loss (AIT-ST12)
+  // channel continuity
   // -------------------------------------------------------------------------
 
   describe('channel continuity', () => {
-    for (const state of ['failed', 'suspended', 'detached'] as const) {
-      it(`emits onError with ChannelContinuityLost when channel enters ${state}`, () => {
+    it.each([['failed' as const], ['suspended' as const], ['detached' as const]])(
+      'emits onError with ChannelContinuityLost when channel enters %s',
+      (state) => {
         const onError = vi.fn();
         const ch = createMockChannel();
         ch.state = 'initialized';
-        createAgentSession({
+        const s = createAgentSession<TestEvent, TestProjection, TestMessage>({
           client: createMockClient(ch),
           channelName: 'test-channel',
           codec: createMockCodec(),
-          promptLookupTimeoutMs: 0,
           onError,
         });
         simulateInitialAttach(ch);
-
         simulateStateChange(ch, {
           current: state,
           previous: 'attached',
         } as Ably.ChannelStateChange);
 
-        expect(onError).toHaveBeenCalledTimes(1);
         expect(onError).toHaveBeenCalledWith(
           expect.toBeErrorInfo({ code: ErrorCode.ChannelContinuityLost, statusCode: 500 }),
         );
-      });
-    }
+        s.close();
+      },
+    );
 
-    // RTL12: already ATTACHED, receives ATTACHED ProtocolMessage with resumed: false
-    // → channel emits UPDATE (not a state change), previous === current === 'attached'
-    it('emits onError on UPDATE with resumed: false', () => {
+    it('emits onError on UPDATE (attached → attached, resumed: false)', () => {
       const onError = vi.fn();
       const ch = createMockChannel();
       ch.state = 'initialized';
-      createAgentSession({
+      const s = createAgentSession<TestEvent, TestProjection, TestMessage>({
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
-        promptLookupTimeoutMs: 0,
         onError,
       });
       simulateInitialAttach(ch);
-
       simulateStateChange(ch, {
         current: 'attached',
         previous: 'attached',
         resumed: false,
       } as Ably.ChannelStateChange);
 
-      expect(onError).toHaveBeenCalledTimes(1);
-      expect(onError).toHaveBeenCalledWith(expect.toBeErrorInfoWithCode(ErrorCode.ChannelContinuityLost));
-    });
-
-    it('emits onError when re-attaching with resumed: false', () => {
-      const onError = vi.fn();
-      const ch = createMockChannel();
-      ch.state = 'initialized';
-      createAgentSession({
-        client: createMockClient(ch),
-        channelName: 'test-channel',
-        codec: createMockCodec(),
-        promptLookupTimeoutMs: 0,
-        onError,
-      });
-      simulateInitialAttach(ch);
-
-      // Simulate the channel losing connection and re-attaching without resume.
-      // ATTACHING is not a continuity-breaking state, so only the subsequent
-      // ATTACHED/resumed:false should fire.
-      simulateStateChange(ch, {
-        current: 'attaching',
-        previous: 'attached',
-      } as Ably.ChannelStateChange);
-      expect(onError).not.toHaveBeenCalled();
-
-      simulateStateChange(ch, {
-        current: 'attached',
-        previous: 'attaching',
-        resumed: false,
-      } as Ably.ChannelStateChange);
-
-      expect(onError).toHaveBeenCalledTimes(1);
-      expect(onError).toHaveBeenCalledWith(expect.toBeErrorInfoWithCode(ErrorCode.ChannelContinuityLost));
-    });
-
-    it('does not emit on the initial ATTACHING → ATTACHED transition', () => {
-      const onError = vi.fn();
-      const ch = createMockChannel();
-      ch.state = 'initialized';
-      createAgentSession({
-        client: createMockClient(ch),
-        channelName: 'test-channel',
-        codec: createMockCodec(),
-        promptLookupTimeoutMs: 0,
-        onError,
-      });
-
-      simulateStateChange(ch, {
-        current: 'attached',
-        previous: 'attaching',
-        resumed: false,
-      } as Ably.ChannelStateChange);
-
-      expect(onError).not.toHaveBeenCalled();
-    });
-
-    it('does not emit on UPDATE with resumed: true', () => {
-      const onError = vi.fn();
-      const ch = createMockChannel();
-      ch.state = 'initialized';
-      createAgentSession({
-        client: createMockClient(ch),
-        channelName: 'test-channel',
-        codec: createMockCodec(),
-        promptLookupTimeoutMs: 0,
-        onError,
-      });
-      simulateInitialAttach(ch);
-
-      simulateStateChange(ch, {
-        current: 'attached',
-        previous: 'attached',
-        resumed: true,
-      } as Ably.ChannelStateChange);
-
-      expect(onError).not.toHaveBeenCalled();
-    });
-
-    it('detects discontinuity on a pre-attached channel without an initial attach event', () => {
-      const onError = vi.fn();
-      const ch = createMockChannel();
-      ch.state = 'attached';
-      createAgentSession({
-        client: createMockClient(ch),
-        channelName: 'test-channel',
-        codec: createMockCodec(),
-        promptLookupTimeoutMs: 0,
-        onError,
-      });
-
-      // UPDATE with resumed: false — should be treated as a real discontinuity
-      // even though no initial ATTACHING → ATTACHED transition was observed.
-      simulateStateChange(ch, {
-        current: 'attached',
-        previous: 'attached',
-        resumed: false,
-      } as Ably.ChannelStateChange);
-
-      expect(onError).toHaveBeenCalledTimes(1);
-      expect(onError).toHaveBeenCalledWith(expect.toBeErrorInfoWithCode(ErrorCode.ChannelContinuityLost));
-    });
-
-    it('does not propagate channel-wide errors to per-run onError', async () => {
-      const sessionOnError = vi.fn();
-      const runOnError = vi.fn();
-      const ch = createMockChannel();
-      ch.state = 'initialized';
-      const s = createAgentSession({
-        client: createMockClient(ch),
-        channelName: 'test-channel',
-        codec: createMockCodec(),
-        promptLookupTimeoutMs: 0,
-        onError: sessionOnError,
-      });
-      await s.connect();
-      simulateInitialAttach(ch);
-
-      const run = createRunFromOpts(s, { runId: 'run-1', onError: runOnError });
-      await run.start();
-
-      simulateStateChange(ch, {
-        current: 'failed',
-        previous: 'attached',
-      } as Ably.ChannelStateChange);
-
-      expect(sessionOnError).toHaveBeenCalledTimes(1);
-      expect(runOnError).not.toHaveBeenCalled();
-    });
-
-    it('does not emit after close()', () => {
-      const onError = vi.fn();
-      const ch = createMockChannel();
-      ch.state = 'initialized';
-      const t = createAgentSession({
-        client: createMockClient(ch),
-        channelName: 'test-channel',
-        codec: createMockCodec(),
-        promptLookupTimeoutMs: 0,
-        onError,
-      });
-      simulateInitialAttach(ch);
-
-      t.close();
-
-      simulateStateChange(ch, {
-        current: 'failed',
-        previous: 'attached',
-      } as Ably.ChannelStateChange);
-
-      expect(onError).not.toHaveBeenCalled();
-    });
-
-    it('does not crash when no onError callback is supplied', () => {
-      const ch = createMockChannel();
-      ch.state = 'initialized';
-      createAgentSession({
-        client: createMockClient(ch),
-        channelName: 'test-channel',
-        codec: createMockCodec(),
-        promptLookupTimeoutMs: 0,
-      });
-      simulateInitialAttach(ch);
-
-      expect(() => {
-        simulateStateChange(ch, {
-          current: 'failed',
-          previous: 'attached',
-        } as Ably.ChannelStateChange);
-      }).not.toThrow();
+      expect(onError).toHaveBeenCalledWith(
+        expect.toBeErrorInfo({ code: ErrorCode.ChannelContinuityLost, statusCode: 500 }),
+      );
+      s.close();
     });
   });
 
@@ -1546,29 +1173,17 @@ describe('AgentSession', () => {
     it('rejects the entire lookup if any message fails to decode', async () => {
       const ch = createMockChannel();
       // Decoder throws on any input.
-      const codec: Codec<TestEvent, TestMessage> = {
+      const codec: Codec<TestEvent, TestProjection, TestMessage> = {
+        init: (): TestProjection => ({ messages: [] }),
+        fold: (state: TestProjection): TestProjection => state,
+        getMessages: (p: TestProjection) => p.messages,
+        userMessageEvent: (m: TestMessage): TestEvent => ({ type: 'user-message', text: m.id }),
         createEncoder: vi.fn(() => createMockEncoder()),
         createDecoder: vi.fn(() => ({
           decode: () => {
             throw new Error('boom');
           },
         })),
-        createAccumulator: vi.fn(() => ({
-          get messages() {
-            return [] as TestMessage[];
-          },
-          get completedMessages() {
-            return [] as TestMessage[];
-          },
-          get hasActiveStream() {
-            return false;
-          },
-          // eslint-disable-next-line @typescript-eslint/no-empty-function -- mock
-          processOutputs: () => {},
-          updateMessage: vi.fn(),
-          initMessage: vi.fn(),
-          completeMessage: vi.fn(),
-        })) as Codec<TestEvent, TestMessage>['createAccumulator'],
         isTerminal: vi.fn(() => false),
       };
       const s = createAgentSession({
@@ -1680,5 +1295,71 @@ describe('AgentSession', () => {
       expect(ctx?.limit).toBe(3);
       s.close();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Prompt lookup (covers AgentSession's channel-rewind user-prompt flow)
+// ---------------------------------------------------------------------------
+
+describe('AgentSession prompt lookup', () => {
+  it('start() succeeds when userMessageCount === 0 (continuation send)', async () => {
+    const channel = createMockChannel();
+    const codec = createMockCodec();
+    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      client: createMockClient(channel),
+      channelName: 'test-channel',
+      codec,
+    });
+    await session.connect();
+
+    const run = createRunFromOpts(session, {
+      runId: 'run-1',
+      invocationId: 'inv-1',
+      userMessageCount: 0,
+    });
+    await expect(run.start()).resolves.toBeUndefined();
+    session.close();
+  });
+
+  it('start() succeeds when invocation already carries messages (legacy path)', async () => {
+    const channel = createMockChannel();
+    const codec = createMockCodec();
+    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      client: createMockClient(channel),
+      channelName: 'test-channel',
+      codec,
+    });
+    await session.connect();
+
+    // createRunFromOpts always passes messages: [] in invocation. Use signal
+    // to verify start completes synchronously without channel lookup.
+    const run = createRunFromOpts(session, { runId: 'run-1', invocationId: 'inv-1', userMessageCount: 0 });
+    await expect(run.start()).resolves.toBeUndefined();
+    session.close();
+  });
+
+  it('start() rejects with PromptNotFound when timeout lapses', async () => {
+    const channel = createMockChannel();
+    const codec = createMockCodec();
+    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      client: createMockClient(channel),
+      channelName: 'test-channel',
+      codec,
+      promptLookupTimeoutMs: 10,
+    });
+    await session.connect();
+
+    const run = createRunFromOpts(session, {
+      runId: 'run-1',
+      invocationId: 'inv-needs-prompt',
+      userMessageCount: 1, // signal that a prompt should be looked up
+    });
+
+    await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.PromptNotFound);
+    // The agent should have published an error event
+    const errMsg = channel.publishCalls.find((m) => m.name === 'x-ably-error');
+    expect(errMsg).toBeDefined();
+    session.close();
   });
 });

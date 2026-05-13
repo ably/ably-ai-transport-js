@@ -35,8 +35,8 @@ interface RunOpts<TEvent> {
  * @param opts - Run identity (runId, clientId, parent, forkOf) plus runtime hooks.
  * @returns The created Run.
  */
-export const createRunFromOpts = <TEvent, TMessage>(
-  session: AgentSession<TEvent, TMessage>,
+export const createRunFromOpts = <TEvent, TProjection, TMessage>(
+  session: AgentSession<TEvent, TProjection, TMessage>,
   opts: RunOpts<TEvent>,
 ): Run<TEvent, TMessage> => {
   const invocation = Invocation.fromJSON<TEvent, TMessage>({

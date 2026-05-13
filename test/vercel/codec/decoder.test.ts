@@ -13,6 +13,7 @@ import {
   HEADER_STREAM_ID,
 } from '../../../src/constants.js';
 import { createDecoder } from '../../../src/vercel/codec/decoder.js';
+import type { VercelEvent } from '../../../src/vercel/codec/events.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -26,25 +27,22 @@ const withHeaders = (msg: Partial<Ably.InboundMessage>, headers: Record<string, 
     data: '',
     ...msg,
     extras: { headers },
+    // CAST: Tests construct a minimal Ably.InboundMessage stub; full shape isn't needed.
   }) as Ably.InboundMessage;
 
-interface Output {
-  kind: string;
-  event?: AI.UIMessageChunk;
-  message?: AI.UIMessage;
-}
+// VercelEvent splits into chunks (everything except 'ait-*' variants) and
+// codec-local 'ait-user-message' / 'ait-tool-approval' events. The decoder
+// emits ait-user-message for the multi-part user-message wire format.
 
-const eventsOf = (outputs: Output[]): AI.UIMessageChunk[] =>
+const eventsOf = (outputs: VercelEvent[]): AI.UIMessageChunk[] =>
+  outputs.filter((e): e is AI.UIMessageChunk => e.type !== 'ait-user-message' && e.type !== 'ait-tool-approval');
+
+const eventTypesOf = (outputs: VercelEvent[]): string[] => outputs.map((e) => e.type);
+
+const messagesOf = (outputs: VercelEvent[]): AI.UIMessage[] =>
   outputs
-    .filter((o): o is Output & { event: AI.UIMessageChunk } => o.kind === 'event' && o.event !== undefined)
-    .map((o) => o.event);
-
-const eventTypesOf = (outputs: Output[]): string[] => eventsOf(outputs).map((e) => e.type);
-
-const messagesOf = (outputs: Output[]): AI.UIMessage[] =>
-  outputs
-    .filter((o): o is Output & { message: AI.UIMessage } => o.kind === 'message' && o.message !== undefined)
-    .map((o) => o.message);
+    .filter((e): e is Extract<VercelEvent, { type: 'ait-user-message' }> => e.type === 'ait-user-message')
+    .map((e) => e.message);
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -951,7 +949,7 @@ describe('Vercel decoder', () => {
       expect(messages[0]?.role).toBe('system');
     });
 
-    it('tags message outputs with messageId from x-ably-msg-id', () => {
+    it('decodes a discrete user-message part as an ait-user-message event', () => {
       const decoder = createDecoder();
       const msg = withHeaders(
         { name: 'text', data: 'hi' },
@@ -965,10 +963,8 @@ describe('Vercel decoder', () => {
       );
 
       const outputs = decoder.decode(msg);
-      // Message outputs don't have messageId (only event outputs do),
-      // so this verifies the output is kind: 'message', not kind: 'event'
       expect(outputs).toHaveLength(1);
-      expect(outputs[0]?.kind).toBe('message');
+      expect(outputs[0]?.type).toBe('ait-user-message');
     });
   });
 });

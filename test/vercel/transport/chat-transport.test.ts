@@ -31,6 +31,7 @@ const makeAssistantWithToolPart = (id: string, part: AI.DynamicToolUIPart): AI.U
 interface MockRun {
   stream: ReadableStream<AI.UIMessageChunk>;
   runId: string;
+  invocationId: string;
   cancel: ReturnType<typeof vi.fn>;
   optimisticMsgIds: string[];
   /** Enqueue a chunk into the run stream. */
@@ -52,6 +53,7 @@ const createMockRun = (): MockRun => {
   return {
     stream,
     runId: 'run-1',
+    invocationId: 'inv-1',
     cancel,
     optimisticMsgIds: [],
     enqueue: (chunk: AI.UIMessageChunk) => {
@@ -86,6 +88,7 @@ const createMockSession = (): MockSession => {
     upsert: vi.fn(),
     delete: vi.fn(),
     getActiveRunIds: vi.fn(() => new Map()),
+    getWinningInvocation: vi.fn(),
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
     on: vi.fn(() => () => {}),
   };

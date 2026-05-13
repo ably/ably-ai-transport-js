@@ -23,6 +23,8 @@ export type RunEndReason = 'complete' | 'cancelled' | 'error';
 export interface CancelFilter {
   /** Cancel a specific run by ID. */
   runId?: string;
+  /** Cancel a specific invocation by ID. Targets exactly the run+invocation tuple, leaving other invocations under the same run-id untouched. */
+  invocationId?: string;
   /** Cancel all runs belonging to the sender's clientId. */
   own?: boolean;
   /** Cancel all runs belonging to a specific clientId. */
@@ -74,6 +76,14 @@ export interface AgentSessionOptions<TEvent, TMessage> {
    * `resumed: false`).
    */
   onError?: (error: Ably.ErrorInfo) => void;
+
+  /**
+   * How long `Run.start()` will wait for the user-prompt message tagged with
+   * the run's `invocationId` to arrive on the channel (rewind + live wait)
+   * before publishing an `x-ably-error` with `PromptNotFound` and rejecting.
+   * Default: 30000 (30 seconds).
+   */
+  promptLookupTimeoutMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -335,6 +345,13 @@ export interface ClientSessionOptions<TEvent, TMessage> {
   /** Initial messages to seed the conversation tree with. Forms a linear chain. */
   messages?: TMessage[];
 
+  /**
+   * How long `send()` will wait for the agent's `x-ably-run-start` event for
+   * the run+invocation before rejecting with `RunStartDeadlineExceeded`.
+   * Default: 30000 (30 seconds).
+   */
+  runStartDeadlineMs?: number;
+
   /** Logger instance for diagnostic output. */
   logger?: Logger;
 }
@@ -390,6 +407,14 @@ export interface ActiveRun<TEvent> {
   stream: ReadableStream<TEvent>;
   /** The run's unique identifier. */
   runId: string;
+  /**
+   * The invocation's unique identifier. Stamped on the published user
+   * message and forwarded in the HTTP POST body so the agent's run
+   * lifecycle events (`x-ably-run-start`, `x-ably-run-end`) can echo it
+   * back. The Tree's winning-invocation map and the run-end gate key on
+   * this value.
+   */
+  invocationId: string;
   /** Cancel this specific run. Publishes a cancel message and closes the local stream. */
   cancel(): Promise<void>;
   /**
@@ -513,6 +538,20 @@ export interface Tree<TMessage> {
   /** Active run IDs grouped by clientId (all runs, not just visible). */
   getActiveRunIds(): Map<string, Set<string>>;
 
+  /**
+   * Get the winning invocation-id for a run-id, if known.
+   *
+   * Within a run-id, the invocation whose user-message has the highest Ably
+   * channel serial is canonical. Earlier invocations are losers and their
+   * downstream events should be filtered. Optimistic (null-serial) inserts
+   * never win — the entry only updates once a relayed user-message with a
+   * real serial arrives.
+   * @param runId - The run-id to query.
+   * @returns The winning invocation's id and serial, or undefined if no
+   *   user-message with this run-id has been observed yet.
+   */
+  getWinningInvocation(runId: string): { invocationId: string; serial: string } | undefined;
+
   /** Subscribe to tree structure changes (insert, update, delete). */
   on(event: 'update', handler: () => void): () => void;
 
@@ -521,6 +560,16 @@ export interface Tree<TMessage> {
 
   /** Subscribe to run lifecycle events (start and end). */
   on(event: 'run', handler: (event: RunLifecycleEvent) => void): () => void;
+
+  /**
+   * Subscribe to changes in the per-run winning invocation map. Fires when a
+   * run's winning invocation-id changes (either first observation or
+   * replacement by a higher-serial user-message).
+   */
+  on(
+    event: 'winning-change',
+    handler: (event: { runId: string; invocationId: string; serial: string }) => void,
+  ): () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -642,6 +691,8 @@ export interface RunEntry<TEvent> {
   controller: ReadableStreamDefaultController<TEvent>;
   /** The run's unique identifier. */
   runId: string;
+  /** The invocation-id this stream is bound to. Events from a different invocation under the same runId are dropped. */
+  invocationId: string;
 }
 
 // ---------------------------------------------------------------------------

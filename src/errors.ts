@@ -14,6 +14,12 @@ export enum ErrorCode {
    */
   InvalidArgument = 40003,
 
+  /**
+   * Operation not permitted with the provided capability (Ably 40160).
+   * Used when the Ably channel rejects a publish for a capability reason.
+   */
+  InsufficientCapability = 40160,
+
   // 104000 - 104999 are reserved for AI Transport SDK errors
 
   /**
@@ -66,6 +72,18 @@ export enum ErrorCode {
    * network failure) or an underlying publish failed mid-stream.
    */
   StreamError = 104008,
+
+  /**
+   * The client's send() did not observe `x-ably-run-start` for the run+invocation
+   * within the configured `runStartDeadlineMs`.
+   */
+  RunStartDeadlineExceeded = 104010,
+
+  /**
+   * The agent attached to the channel and waited for the user-prompt message
+   * (rewind + live wait) but `promptLookupTimeoutMs` lapsed without seeing it.
+   */
+  PromptNotFound = 104011,
 }
 
 /**

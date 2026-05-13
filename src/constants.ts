@@ -32,6 +32,9 @@ export const HEADER_DISCRETE = 'x-ably-discrete';
 /** Header: run correlation ID. Set on every message in a run. */
 export const HEADER_RUN_ID = 'x-ably-run-id';
 
+/** Header: invocation correlation ID. Set on the client-published user message; identifies a specific invocation under a run. */
+export const HEADER_INVOCATION_ID = 'x-ably-invocation-id';
+
 /** Header: message identity. Assigned per message (user or assistant). Used for optimistic reconciliation on the client. */
 export const HEADER_MSG_ID = 'x-ably-msg-id';
 
@@ -59,6 +62,9 @@ export const HEADER_CANCEL_ALL = 'x-ably-cancel-all';
 
 /** Header: cancel all runs belonging to a specific clientId. */
 export const HEADER_CANCEL_CLIENT_ID = 'x-ably-cancel-client-id';
+
+/** Header: cancel a specific invocation by ID. */
+export const HEADER_CANCEL_INVOCATION_ID = 'x-ably-cancel-invocation-id';
 
 // ---------------------------------------------------------------------------
 // Fork / branching headers

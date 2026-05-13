@@ -12,9 +12,16 @@ import { Invocation } from '../../src/index.js';
 
 interface RunOpts<TEvent> {
   runId: string;
+  invocationId?: string;
   clientId?: string;
   parent?: string;
   forkOf?: string;
+  /**
+   * Override the invocation's `userMessageCount`. Defaults to 0 (matches
+   * `messages: []`). Set to >0 in tests that want to exercise the agent's
+   * channel prompt-lookup path.
+   */
+  userMessageCount?: number;
   signal?: AbortSignal;
   onMessage?: (message: Ably.Message) => void;
   onAbort?: (write: (event: TEvent) => Promise<void>) => void | Promise<void>;
@@ -34,6 +41,7 @@ export const createRunFromOpts = <TEvent, TMessage>(
 ): Run<TEvent, TMessage> => {
   const invocation = Invocation.fromJSON<TEvent, TMessage>({
     runId: opts.runId,
+    invocationId: opts.invocationId ?? `${opts.runId}-inv`,
     clientId: opts.clientId ?? '',
     sessionName: 'test',
     messages: [],
@@ -41,6 +49,7 @@ export const createRunFromOpts = <TEvent, TMessage>(
     events: [],
     ...(opts.parent !== undefined && { parent: opts.parent }),
     ...(opts.forkOf !== undefined && { forkOf: opts.forkOf }),
+    ...(opts.userMessageCount !== undefined && { userMessageCount: opts.userMessageCount }),
   });
   return session.createRun(invocation, {
     signal: opts.signal,

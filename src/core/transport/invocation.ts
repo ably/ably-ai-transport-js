@@ -24,6 +24,8 @@ import type { EventsNode, MessageNode } from './types.js';
 export interface InvocationData<TEvent, TMessage> {
   /** Identifier for the run this invocation creates. */
   runId: string;
+  /** Identifier for this specific invocation under the run. The agent correlates the user-prompt message on the channel by this id. */
+  invocationId: string;
   /** ClientId of the caller — used for attribution and own-cancel routing. */
   clientId: string;
   /** Logical name of the session (chat) — typically used as the Ably channel name. */
@@ -38,6 +40,13 @@ export interface InvocationData<TEvent, TMessage> {
   parent?: string;
   /** msg-id of the message this run forks (regenerate / edit). */
   forkOf?: string;
+  /**
+   * Number of user messages the client published on the channel for this
+   * invocation. Zero indicates a continuation (e.g. `sendAutomaticallyWhen`
+   * after a tool result) where the agent should NOT block on a channel
+   * prompt lookup — there is no new user prompt to find.
+   */
+  userMessageCount?: number;
 }
 
 /**
@@ -51,6 +60,8 @@ export interface InvocationData<TEvent, TMessage> {
 export class Invocation<TEvent, TMessage> {
   /** Identifier for the run this invocation creates. */
   readonly runId: string;
+  /** Identifier for this specific invocation under the run. */
+  readonly invocationId: string;
   /** ClientId of the caller. */
   readonly clientId: string;
   /** Logical name of the session (chat). */
@@ -59,15 +70,28 @@ export class Invocation<TEvent, TMessage> {
   readonly parent: string | undefined;
   /** msg-id of the forked message (regenerate / edit), or undefined. */
   readonly forkOf: string | undefined;
-  /** New user messages to publish for this run. */
+  /**
+   * New user messages for this run. Empty when the client publishes user
+   * messages directly on the channel — the agent obtains them via channel
+   * rewind keyed by `invocationId`. Populated by legacy callers that thread
+   * messages through the invocation body.
+   */
   readonly messages: MessageNode<TMessage>[];
   /** Prior conversation history. Empty array when none supplied. */
   readonly history: MessageNode<TMessage>[];
   /** Cross-run amendment events. Empty array when none supplied. */
   readonly events: EventsNode<TEvent>[];
+  /**
+   * Number of new user messages the client published on the channel for
+   * this invocation. Zero for continuations (no new user prompt to look up);
+   * positive when the client published one or more user messages and the
+   * agent should locate them via channel rewind.
+   */
+  readonly userMessageCount: number;
 
   private constructor(data: InvocationData<TEvent, TMessage>) {
     this.runId = data.runId;
+    this.invocationId = data.invocationId;
     this.clientId = data.clientId;
     this.sessionName = data.sessionName;
     this.parent = data.parent;
@@ -75,6 +99,10 @@ export class Invocation<TEvent, TMessage> {
     this.messages = data.messages ?? [];
     this.history = data.history ?? [];
     this.events = data.events ?? [];
+    // Default to messages.length so legacy callers that populate
+    // `invocation.messages` directly behave correctly without setting the
+    // count explicitly.
+    this.userMessageCount = data.userMessageCount ?? this.messages.length;
   }
 
   /**

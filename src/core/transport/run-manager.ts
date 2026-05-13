@@ -12,6 +12,7 @@ import {
   EVENT_RUN_END,
   EVENT_RUN_START,
   HEADER_FORK_OF,
+  HEADER_INVOCATION_ID,
   HEADER_PARENT,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
@@ -31,10 +32,10 @@ export interface RunManager {
     runId: string,
     clientId?: string,
     controller?: AbortController,
-    metadata?: { parent?: string; forkOf?: string },
+    metadata?: { parent?: string; forkOf?: string; invocationId?: string },
   ): Promise<AbortSignal>;
   /** End a run. Publishes run-end on the channel. Cleans up internal state. */
-  endRun(runId: string, reason: RunEndReason): Promise<void>;
+  endRun(runId: string, reason: RunEndReason, invocationId?: string): Promise<void>;
   /** Get the AbortSignal for a run. */
   getSignal(runId: string): AbortSignal | undefined;
   /** Get the clientId that owns a run. */
@@ -74,7 +75,7 @@ class DefaultRunManager implements RunManager {
     runId: string,
     clientId?: string,
     externalController?: AbortController,
-    metadata?: { parent?: string; forkOf?: string },
+    metadata?: { parent?: string; forkOf?: string; invocationId?: string },
   ): Promise<AbortSignal> {
     this._logger?.trace('DefaultRunManager.startRun();', { runId, clientId });
 
@@ -92,6 +93,13 @@ class DefaultRunManager implements RunManager {
     if (metadata?.forkOf !== undefined) {
       headers[HEADER_FORK_OF] = metadata.forkOf;
     }
+    // Stamp the invocation-id on run-start so the client's send() promise
+    // can match it against its pending invocation and resolve. Without it
+    // the client's run-start matcher (keyed by invocation-id) never fires
+    // and send() hangs for the full runStartDeadlineMs.
+    if (metadata?.invocationId !== undefined) {
+      headers[HEADER_INVOCATION_ID] = metadata.invocationId;
+    }
 
     await this._channel.publish({
       name: EVENT_RUN_START,
@@ -102,23 +110,29 @@ class DefaultRunManager implements RunManager {
     return controller.signal;
   }
 
-  async endRun(runId: string, reason: RunEndReason): Promise<void> {
+  async endRun(runId: string, reason: RunEndReason, invocationId?: string): Promise<void> {
     this._logger?.trace('DefaultRunManager.endRun();', { runId, reason });
 
     const state = this._activeRuns.get(runId);
     const resolvedClientId = state?.clientId ?? '';
 
+    const headers: Record<string, string> = {
+      [HEADER_RUN_ID]: runId,
+      [HEADER_RUN_CLIENT_ID]: resolvedClientId,
+      [HEADER_RUN_REASON]: reason,
+    };
+    // Mirror startRun: stamp invocation-id so the client's defensive
+    // run-end gating can distinguish winning from losing invocations
+    // under the same run-id.
+    if (invocationId !== undefined) {
+      headers[HEADER_INVOCATION_ID] = invocationId;
+    }
+
     // Publish before deleting local state so that if publish fails,
     // the run remains in the active set and can be retried or cleaned up.
     await this._channel.publish({
       name: EVENT_RUN_END,
-      extras: {
-        headers: {
-          [HEADER_RUN_ID]: runId,
-          [HEADER_RUN_CLIENT_ID]: resolvedClientId,
-          [HEADER_RUN_REASON]: reason,
-        },
-      },
+      extras: { headers },
     });
 
     this._activeRuns.delete(runId);

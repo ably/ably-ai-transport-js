@@ -11,7 +11,15 @@ const createMockSession = () =>
   }) as unknown as ClientSession<UIMessageChunk, UIMessage>;
 
 const createMockSend = () =>
-  vi.fn(() => Promise.resolve({ stream: new ReadableStream(), runId: 'run-1', cancel: vi.fn(), optimisticMsgIds: [] }));
+  vi.fn(() =>
+    Promise.resolve({
+      stream: new ReadableStream(),
+      runId: 'run-1',
+      invocationId: 'inv-1',
+      cancel: vi.fn(),
+      optimisticMsgIds: [],
+    }),
+  );
 
 describe('useSlashCommands', () => {
   it('is inactive when input does not start with /', () => {

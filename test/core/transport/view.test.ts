@@ -1,7 +1,7 @@
 import type * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { HEADER_MSG_ID, HEADER_RUN_ID } from '../../../src/constants.js';
+import { HEADER_INVOCATION_ID, HEADER_MSG_ID, HEADER_ROLE, HEADER_RUN_ID } from '../../../src/constants.js';
 import type { Codec } from '../../../src/core/codec/types.js';
 // Vitest hoists vi.mock above imports, so this static import gets the mock.
 import { decodeHistory } from '../../../src/core/transport/decode-history.js';
@@ -59,6 +59,7 @@ const createMockSendDelegate = (): SendDelegate<TestEvent, TestMessage> =>
     Promise.resolve({
       stream: new ReadableStream(),
       runId: 'mock-run',
+      invocationId: 'mock-inv',
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
       cancel: () => Promise.resolve(),
       optimisticMsgIds: [],
@@ -848,6 +849,7 @@ describe('DefaultView', () => {
         return Promise.resolve({
           stream: new ReadableStream(),
           runId: 'run-1',
+          invocationId: 'inv-1',
           cancel: vi.fn(),
           optimisticMsgIds: ['m3'],
         });
@@ -885,7 +887,13 @@ describe('DefaultView', () => {
       // the server creates the fork later.
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
       const noopDelegate: SendDelegate<TestEvent, TestMessage> = vi.fn(() =>
-        Promise.resolve({ stream: new ReadableStream(), runId: 'run-1', cancel: vi.fn(), optimisticMsgIds: [] }),
+        Promise.resolve({
+          stream: new ReadableStream(),
+          runId: 'run-1',
+          invocationId: 'inv-1',
+          cancel: vi.fn(),
+          optimisticMsgIds: [],
+        }),
       );
 
       const forkView = new DefaultView<TestEvent, TestMessage>({
@@ -959,7 +967,13 @@ describe('DefaultView', () => {
       // inserted. The view must still defer selection until the server response arrives.
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
       const noopDelegate: SendDelegate<TestEvent, TestMessage> = vi.fn(() =>
-        Promise.resolve({ stream: new ReadableStream(), runId: 'run-1', cancel: vi.fn(), optimisticMsgIds: [] }),
+        Promise.resolve({
+          stream: new ReadableStream(),
+          runId: 'run-1',
+          invocationId: 'inv-1',
+          cancel: vi.fn(),
+          optimisticMsgIds: [],
+        }),
       );
 
       const forkView = new DefaultView<TestEvent, TestMessage>({
@@ -1027,7 +1041,13 @@ describe('DefaultView', () => {
       // _pinVisibleSelections can match it via groupRoot.
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
       const noopDelegate: SendDelegate<TestEvent, TestMessage> = vi.fn(() =>
-        Promise.resolve({ stream: new ReadableStream(), runId: 'run-1', cancel: vi.fn(), optimisticMsgIds: [] }),
+        Promise.resolve({
+          stream: new ReadableStream(),
+          runId: 'run-1',
+          invocationId: 'inv-1',
+          cancel: vi.fn(),
+          optimisticMsgIds: [],
+        }),
       );
 
       const forkView = new DefaultView<TestEvent, TestMessage>({
@@ -1094,6 +1114,7 @@ describe('DefaultView', () => {
         Promise.resolve({
           stream: new ReadableStream(),
           runId: 'run-cleanup',
+          invocationId: 'inv-cleanup',
           cancel: vi.fn(),
           optimisticMsgIds: [],
         }),
@@ -1216,21 +1237,29 @@ describe('DefaultView', () => {
       expect(call[1]).toEqual({ parent: 'm1', body: { extra: true } });
     });
 
-    it('regenerate computes forkOf and parent from target node', async () => {
+    it('regenerate republishes the parent user message and sets forkOf to the target', async () => {
       await view.regenerate('m2');
       const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
+      const input = call[0] as TestMessage[];
       const options = call[1] as SendOptions;
-      expect(call[0]).toEqual([]);
+      const republishMsgId = call[4] as string | undefined;
+      // The delegate receives the parent user message (m1) as the message to republish.
+      expect(input).toHaveLength(1);
+      expect(input[0]?.id).toBe('1');
+      expect(republishMsgId).toBe('m1');
+      // forkOf still targets the assistant message being regenerated.
       expect(options.forkOf).toBe('m2');
-      expect(options.parent).toBe('m1'); // parent of m2
+      // parent is m1's tree parentId (m1 is root → undefined).
+      expect(options.parent).toBeUndefined();
     });
 
-    it('regenerate passes truncated history (before target)', async () => {
+    it('regenerate passes history truncated before the republished user message', async () => {
       await view.regenerate('m2');
       const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
       const options = call[1] as { body: { history: MessageNode<TestMessage>[] } };
-      expect(options.body.history).toHaveLength(1);
-      expect(options.body.history[0]?.msgId).toBe('m1');
+      // m1 is the republished user message — excluded from history. No
+      // earlier messages exist.
+      expect(options.body.history).toEqual([]);
     });
 
     it('edit computes forkOf and parent from target node', async () => {
@@ -1475,6 +1504,86 @@ describe('DefaultView', () => {
         // m3 content must reflect the latest token
         expect(snap[2]?.message.content).toBe(token);
       }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Latest-serial-wins filter
+  // -------------------------------------------------------------------------
+
+  describe('latest-serial-wins invocation filter', () => {
+    /**
+     * Build user-message headers carrying run-id and invocation-id.
+     * @param msgId - Message identifier stamped in `x-ably-msg-id`.
+     * @param runId - Run identifier stamped in `x-ably-run-id`.
+     * @param invocationId - Invocation identifier stamped in `x-ably-invocation-id`.
+     * @returns A headers record with role=user and the three identifiers populated.
+     */
+    // eslint-disable-next-line unicorn/consistent-function-scoping -- describe-local helper
+    const userH = (msgId: string, runId: string, invocationId: string): Record<string, string> => ({
+      [HEADER_MSG_ID]: msgId,
+      [HEADER_ROLE]: 'user',
+      [HEADER_RUN_ID]: runId,
+      [HEADER_INVOCATION_ID]: invocationId,
+    });
+
+    /**
+     * Build assistant-message headers (no invocation-id by design).
+     * @param msgId - Message identifier stamped in `x-ably-msg-id`.
+     * @param runId - Run identifier stamped in `x-ably-run-id`.
+     * @returns A headers record with role=assistant and the two identifiers populated.
+     */
+    // eslint-disable-next-line unicorn/consistent-function-scoping -- describe-local helper
+    const assistantH = (msgId: string, runId: string): Record<string, string> => ({
+      [HEADER_MSG_ID]: msgId,
+      [HEADER_ROLE]: 'assistant',
+      [HEADER_RUN_ID]: runId,
+    });
+
+    it('shows the winning invocation and hides the loser', () => {
+      // Two invocations under run-1: inv-2 wins by serial.
+      tree.upsert('m1', { id: '1', content: 'first' }, userH('m1', 'run-1', 'inv-1'), 'serial-005');
+      tree.upsert('m1a', { id: '1a', content: 'asst-1' }, assistantH('m1a', 'run-1'), 'serial-006');
+      tree.upsert('m2', { id: '2', content: 'retry' }, userH('m2', 'run-1', 'inv-2'), 'serial-010');
+      tree.upsert('m2a', { id: '2a', content: 'asst-2' }, assistantH('m2a', 'run-1'), 'serial-011');
+
+      const visibleIds = view.flattenNodes().map((n) => n.msgId);
+      expect(visibleIds).toEqual(['m2', 'm2a']);
+    });
+
+    it('keeps optimistic (null-serial) inserts visible until they ack', () => {
+      // Existing winning invocation under run-1.
+      tree.upsert('m1', { id: '1', content: 'first' }, userH('m1', 'run-1', 'inv-1'), 'serial-005');
+      // Optimistic retry — null serial.
+      tree.upsert('m2', { id: '2', content: 'retry' }, userH('m2', 'run-1', 'inv-2'));
+
+      const visibleIds = view.flattenNodes().map((n) => n.msgId);
+      // Both visible: m1 is current winner, m2 is optimistic.
+      expect(visibleIds).toContain('m1');
+      expect(visibleIds).toContain('m2');
+    });
+
+    it('emits update and re-filters when the winner changes', () => {
+      tree.upsert('m1', { id: '1', content: 'first' }, userH('m1', 'run-1', 'inv-1'), 'serial-005');
+      const handler = vi.fn();
+      view.on('update', handler);
+
+      // Higher-serial retry arrives — winner switches.
+      tree.upsert('m2', { id: '2', content: 'retry' }, userH('m2', 'run-1', 'inv-2'), 'serial-010');
+
+      expect(handler).toHaveBeenCalled();
+      const visibleIds = view.flattenNodes().map((n) => n.msgId);
+      expect(visibleIds).toEqual(['m2']);
+    });
+
+    it('keeps separate runs independent', () => {
+      // run-1 has a clear winner; run-2 is a different run.
+      tree.upsert('m1', { id: '1', content: 'first' }, userH('m1', 'run-1', 'inv-1'), 'serial-005');
+      tree.upsert('m2', { id: '2', content: 'second' }, userH('m2', 'run-2', 'inv-2'), 'serial-010');
+
+      const visibleIds = view.flattenNodes().map((n) => n.msgId);
+      expect(visibleIds).toContain('m1');
+      expect(visibleIds).toContain('m2');
     });
   });
 });

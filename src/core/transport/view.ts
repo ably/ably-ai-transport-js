@@ -45,12 +45,16 @@ interface ViewEventsMap {
  * so the delegate has no back-reference to the View.
  * When `eventNodes` is provided, the session includes them in the POST body
  * for the server to publish as cross-run events.
+ * When `republishMsgId` is provided, the delegate publishes the (single)
+ * input message under the existing msg-id instead of generating a new one.
+ * No new tree node is created.
  */
 export type SendDelegate<TEvent, TMessage> = (
   input: TMessage | TMessage[],
   options: SendOptions | undefined,
   history: MessageNode<TMessage>[],
   eventNodes?: EventsNode<TEvent>[],
+  republishMsgId?: string,
 ) => Promise<ActiveRun<TEvent>>;
 
 // ---------------------------------------------------------------------------
@@ -177,7 +181,28 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
       this._tree.on('run', (event) => {
         this._onTreeRun(event);
       }),
+      this._tree.on('winning-change', () => {
+        this._onTreeWinningChange();
+      }),
     );
+  }
+
+  /**
+   * Re-filter the visible window when a run's winning invocation changes.
+   * Bypasses the structural-version short-circuit because winning-change
+   * does not bump structuralVersion (the underlying nodes are the same;
+   * only their visibility under the latest-serial rule changed).
+   */
+  private _onTreeWinningChange(): void {
+    if (this._processingHistory) return;
+    const nodes = this._computeFlatNodes();
+    const newIds = nodes.map((n) => n.msgId);
+    const newMessages = nodes.map((n) => n.message);
+    if (this._visibleChanged(newIds, newMessages)) {
+      this._cachedNodes = nodes;
+      this._updateVisibleSnapshot(nodes);
+      this._emitter.emit('update');
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -195,15 +220,38 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
 
   /**
    * Walk the tree and compute a fresh visible node list, applying branch
-   * selections and withheld-message filtering. Use this instead of the
-   * public `flattenNodes()` when the cache may be stale (structural
-   * changes, selection changes, history reveal).
+   * selections, withheld-message filtering, and the latest-serial-wins
+   * defensive rule for invocation retries. Use this instead of the public
+   * `flattenNodes()` when the cache may be stale (structural changes,
+   * selection changes, history reveal, winner change).
    * @returns A fresh array of visible nodes.
    */
   private _computeFlatNodes(): MessageNode<TMessage>[] {
     const nodes = this._tree.flattenNodes(this._resolveSelections());
-    if (this._withheldMsgIds.size === 0) return nodes;
-    return nodes.filter((n) => !this._withheldMsgIds.has(n.msgId));
+    return nodes.filter((n) => {
+      if (this._withheldMsgIds.has(n.msgId)) return false;
+      return !this._isLosingInvocationNode(n);
+    });
+  }
+
+  /**
+   * Whether a node belongs to a losing invocation under its run-id.
+   *
+   * Defensive rule: within a run-id, the winning invocation is the one whose
+   * user-message has the highest Ably serial (tracked by Tree). Messages with
+   * a serial *before* the winning user-message's serial are losers and should
+   * be hidden from the view. Optimistic (null-serial) nodes are kept — they
+   * are the just-sent items not yet acked.
+   * @param node - The message node to evaluate.
+   * @returns True if the node's serial precedes the winning invocation's serial.
+   */
+  private _isLosingInvocationNode(node: MessageNode<TMessage>): boolean {
+    const runId = node.headers[HEADER_RUN_ID];
+    if (!runId) return false;
+    const winner = this._tree.getWinningInvocation(runId);
+    if (!winner) return false;
+    if (!node.serial) return false;
+    return node.serial < winner.serial;
   }
 
   hasOlder(): boolean {
@@ -314,51 +362,59 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     // session has no back-reference to the View (one-way dependency).
     const history = this.flattenNodes();
     const result = await this._sendDelegate(input, options, history);
+    this._applyForkAutoSelect(result, options);
+    return result;
+  }
 
+  /**
+   * Auto-select / pin branch selections after a forking send.
+   * @param result - The ActiveRun returned by the delegate.
+   * @param options - The SendOptions passed by the caller.
+   */
+  private _applyForkAutoSelect(result: ActiveRun<TEvent>, options: SendOptions | undefined): void {
     // Spec: AIT-CT13e
-    // Auto-select the new fork in this view when creating a fork.
-    if (options?.forkOf) {
-      const groupRoot = this._tree.getGroupRoot(options.forkOf);
+    if (!options?.forkOf) return;
 
-      if (result.optimisticMsgIds.length > 0) {
-        // The delegate optimistically inserted user messages (edit path).
-        // Auto-select the last optimistic msgId — this is deterministic and
-        // avoids the sibling-count race that exists when inferring from tree state.
-        const lastMsgId = result.optimisticMsgIds.at(-1);
-        if (lastMsgId) {
-          this._branchSelections.set(groupRoot, { kind: 'auto', selectedId: lastMsgId });
-          this._cachedNodes = this._computeFlatNodes();
-          this._updateVisibleSnapshot(this._cachedNodes);
-          this._emitter.emit('update');
-        }
-      } else {
-        // No optimistic insert (e.g. regenerate sends no user messages). Defer
-        // auto-selection until the server response creates the new sibling.
-        // Store the group root (not the raw forkOf) so _pinBranchSelections
-        // can match it regardless of which sibling is currently visible.
-        this._branchSelections.set(groupRoot, { kind: 'pending', runId: result.runId });
-        this._logger.debug('DefaultView.send(); deferring fork auto-selection', {
-          forkOf: options.forkOf,
-          groupRoot,
-          runId: result.runId,
-        });
+    const groupRoot = this._tree.getGroupRoot(options.forkOf);
 
-        // Bound pending entry lifetime to the run — clean up on run-end.
-        const runUnsub = this._tree.on('run', (evt) => {
-          if (evt.type !== EVENT_RUN_END || evt.runId !== result.runId) return;
-          const sel = this._branchSelections.get(groupRoot);
-          if (sel?.kind === 'pending' && sel.runId === result.runId) {
-            this._branchSelections.delete(groupRoot);
-          }
-          runUnsub();
-          const idx = this._unsubs.indexOf(runUnsub);
-          if (idx !== -1) this._unsubs.splice(idx, 1);
-        });
-        this._unsubs.push(runUnsub);
+    if (result.optimisticMsgIds.length > 0) {
+      // The delegate optimistically inserted user messages (edit path).
+      // Auto-select the last optimistic msgId — this is deterministic and
+      // avoids the sibling-count race that exists when inferring from tree state.
+      const lastMsgId = result.optimisticMsgIds.at(-1);
+      if (lastMsgId) {
+        this._branchSelections.set(groupRoot, { kind: 'auto', selectedId: lastMsgId });
+        this._cachedNodes = this._computeFlatNodes();
+        this._updateVisibleSnapshot(this._cachedNodes);
+        this._emitter.emit('update');
       }
+      return;
     }
 
-    return result;
+    // No optimistic insert (e.g. regenerate reuses the existing user
+    // msg-id, so no new node appears upfront). Defer auto-selection until
+    // the server response creates the new assistant sibling. Store the
+    // group root (not the raw forkOf) so _pinBranchSelections can match
+    // regardless of which sibling is currently visible.
+    this._branchSelections.set(groupRoot, { kind: 'pending', runId: result.runId });
+    this._logger.debug('DefaultView._applyForkAutoSelect(); deferring fork auto-selection', {
+      forkOf: options.forkOf,
+      groupRoot,
+      runId: result.runId,
+    });
+
+    // Bound pending entry lifetime to the run — clean up on run-end.
+    const runUnsub = this._tree.on('run', (evt) => {
+      if (evt.type !== EVENT_RUN_END || evt.runId !== result.runId) return;
+      const sel = this._branchSelections.get(groupRoot);
+      if (sel?.kind === 'pending' && sel.runId === result.runId) {
+        this._branchSelections.delete(groupRoot);
+      }
+      runUnsub();
+      const idx = this._unsubs.indexOf(runUnsub);
+      if (idx !== -1) this._unsubs.splice(idx, 1);
+    });
+    this._unsubs.push(runUnsub);
   }
 
   // Spec: AIT-CT5
@@ -375,15 +431,41 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
     }
     const parentId = node.parentId;
 
-    return this.send([], {
+    if (this._closed) {
+      throw new Ably.ErrorInfo('unable to regenerate; view is closed', ErrorCode.InvalidArgument, 400);
+    }
+
+    // Per spec: pure regenerate republishes the parent user message under
+    // the same x-ably-msg-id but new run-id + invocation-id, so the agent's
+    // channel-rewind lookup operates uniformly with send/edit. Find the
+    // parent (user) message and thread it through the delegate.
+    const parentNode = parentId ? this._tree.getNode(parentId) : undefined;
+    if (!parentNode) {
+      throw new Ably.ErrorInfo(
+        `unable to regenerate; parent user message not found for ${messageId}`,
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+
+    // History excludes the parent user message — it's being republished
+    // separately via the channel, so the agent picks it up through the
+    // invocation-id lookup rather than seeing it twice in the POST body.
+    const history = this._getHistoryBefore(parentNode.msgId);
+
+    const sendOptions: SendOptions = {
       ...options,
       body: {
-        history: this._getHistoryBefore(messageId),
+        history,
         ...options?.body,
       },
       forkOf: messageId,
-      parent: parentId,
-    });
+      ...(parentNode.parentId !== undefined && { parent: parentNode.parentId }),
+    };
+
+    const result = await this._sendDelegate([parentNode.message], sendOptions, history, undefined, parentNode.msgId);
+    this._applyForkAutoSelect(result, sendOptions);
+    return result;
   }
 
   // Spec: AIT-CT6

@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { HEADER_FORK_OF, HEADER_PARENT } from '../../../src/constants.js';
+import {
+  HEADER_FORK_OF,
+  HEADER_INVOCATION_ID,
+  HEADER_PARENT,
+  HEADER_ROLE,
+  HEADER_RUN_ID,
+} from '../../../src/constants.js';
 import type { TreeInternal } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
@@ -437,6 +443,92 @@ describe('Tree', () => {
       fullTree.untrackRun('run-1');
       const after = fullTree.getActiveRunIds();
       expect(after.get('client-a')).toEqual(new Set(['run-2']));
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Winning invocation map
+  // -------------------------------------------------------------------------
+
+  describe('winning invocation map', () => {
+    /**
+     * Build user-message headers carrying run-id and invocation-id.
+     * @param runId - Run identifier stamped in `x-ably-run-id`.
+     * @param invocationId - Invocation identifier stamped in `x-ably-invocation-id`.
+     * @returns A headers record with the standard user-message fields populated.
+     */
+    // eslint-disable-next-line unicorn/consistent-function-scoping -- describe-local helper
+    const userH = (runId: string, invocationId: string): Record<string, string> => ({
+      [HEADER_ROLE]: 'user',
+      [HEADER_RUN_ID]: runId,
+      [HEADER_INVOCATION_ID]: invocationId,
+    });
+
+    it('records the first user-message as the winner', () => {
+      tree.upsert('m1', { id: 'a', content: 'hi' }, userH('run-1', 'inv-1'), 'serial-001');
+      expect(tree.getWinningInvocation('run-1')).toEqual({ invocationId: 'inv-1', serial: 'serial-001' });
+    });
+
+    it('returns undefined for an unknown run-id', () => {
+      expect(tree.getWinningInvocation('run-x')).toBeUndefined();
+    });
+
+    it('replaces the winner when a higher-serial user-message arrives', () => {
+      tree.upsert('m1', { id: 'a', content: 'hi' }, userH('run-1', 'inv-1'), 'serial-005');
+      tree.upsert('m2', { id: 'b', content: 'hi' }, userH('run-1', 'inv-2'), 'serial-007');
+      expect(tree.getWinningInvocation('run-1')).toEqual({ invocationId: 'inv-2', serial: 'serial-007' });
+    });
+
+    it('keeps the existing winner when a lower-serial user-message arrives later', () => {
+      tree.upsert('m2', { id: 'b', content: 'hi' }, userH('run-1', 'inv-2'), 'serial-007');
+      tree.upsert('m1', { id: 'a', content: 'hi' }, userH('run-1', 'inv-1'), 'serial-005');
+      expect(tree.getWinningInvocation('run-1')).toEqual({ invocationId: 'inv-2', serial: 'serial-007' });
+    });
+
+    it('ignores optimistic (null-serial) user-messages', () => {
+      tree.upsert('m1', { id: 'a', content: 'hi' }, userH('run-1', 'inv-1'));
+      expect(tree.getWinningInvocation('run-1')).toBeUndefined();
+    });
+
+    it('promotes to winner when an optimistic insert is later relayed with a serial', () => {
+      tree.upsert('m1', { id: 'a', content: 'hi' }, userH('run-1', 'inv-1'));
+      expect(tree.getWinningInvocation('run-1')).toBeUndefined();
+      tree.upsert('m1', { id: 'a', content: 'hi' }, userH('run-1', 'inv-1'), 'serial-010');
+      expect(tree.getWinningInvocation('run-1')).toEqual({ invocationId: 'inv-1', serial: 'serial-010' });
+    });
+
+    it('ignores assistant-role messages', () => {
+      tree.upsert(
+        'm1',
+        { id: 'a', content: 'hi' },
+        { [HEADER_ROLE]: 'assistant', [HEADER_RUN_ID]: 'run-1', [HEADER_INVOCATION_ID]: 'inv-x' },
+        'serial-001',
+      );
+      expect(tree.getWinningInvocation('run-1')).toBeUndefined();
+    });
+
+    it('tracks distinct run-ids independently', () => {
+      tree.upsert('m1', { id: 'a', content: 'hi' }, userH('run-1', 'inv-1'), 'serial-001');
+      tree.upsert('m2', { id: 'b', content: 'hi' }, userH('run-2', 'inv-2'), 'serial-002');
+      expect(tree.getWinningInvocation('run-1')).toEqual({ invocationId: 'inv-1', serial: 'serial-001' });
+      expect(tree.getWinningInvocation('run-2')).toEqual({ invocationId: 'inv-2', serial: 'serial-002' });
+    });
+
+    it('emits winning-change when the winner is set or replaced', () => {
+      const handler = vi.fn();
+      tree.on('winning-change', handler);
+      tree.upsert('m1', { id: 'a', content: 'hi' }, userH('run-1', 'inv-1'), 'serial-005');
+      expect(handler).toHaveBeenCalledWith({ runId: 'run-1', invocationId: 'inv-1', serial: 'serial-005' });
+      handler.mockClear();
+      tree.upsert('m2', { id: 'b', content: 'hi' }, userH('run-1', 'inv-2'), 'serial-007');
+      expect(handler).toHaveBeenCalledWith({ runId: 'run-1', invocationId: 'inv-2', serial: 'serial-007' });
+    });
+
+    it('does not emit winning-change for optimistic inserts', () => {
+      const handler = vi.fn();
+      tree.on('winning-change', handler);
+      tree.upsert('m1', { id: 'a', content: 'hi' }, userH('run-1', 'inv-1'));
+      expect(handler).not.toHaveBeenCalled();
     });
   });
 });

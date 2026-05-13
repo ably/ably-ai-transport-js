@@ -1,8 +1,12 @@
 /**
- * Core codec interfaces as defined in the general codec specification.
+ * Core codec interfaces for the event-sourced model.
  *
- * These types define the contract between domain event streams and Ably's
- * native message primitives (publish, append, update, delete).
+ * The codec describes the wire as a flat stream of TEvent values. A reducer
+ * folds events into an opaque TProjection. The SDK extracts TMessage[] from
+ * the projection to populate the conversation Tree.
+ *
+ * All types are framework-agnostic. Domain codecs (e.g. the Vercel codec)
+ * choose concrete shapes for TEvent / TProjection / TMessage.
  */
 
 import type * as Ably from 'ably';
@@ -36,7 +40,7 @@ export interface ChannelWriter {
 }
 
 // ---------------------------------------------------------------------------
-// WriteOptions — per-write overrides for encoder operations
+// Extras / WriteOptions — per-write overrides for encoder operations
 // ---------------------------------------------------------------------------
 
 /** Shape of the extras object passed through WriteOptions and EncoderOptions. */
@@ -51,20 +55,21 @@ export interface WriteOptions {
   clientId?: string;
   /** Override the default extras for this write. */
   extras?: Extras;
-  /** Message identity for accumulator correlation. Stamped as `x-ably-msg-id`. */
+  /** Message identity for projection routing. Stamped as `x-ably-msg-id`. */
   messageId?: string;
 }
 
 // ---------------------------------------------------------------------------
-// MessagePayload — shared description of a message for encode and decode
+// MessagePayload / StreamPayload — codec-internal wire descriptions
 // ---------------------------------------------------------------------------
 
 /**
  * A codec-agnostic description of a discrete Ably message. Used on both sides:
  * - **Encode:** the domain encoder describes what to publish; the encoder core
  *   handles header merging, clientId resolution, and the actual publish.
- * - **Decode:** the decoder core extracts these fields from an `Ably.InboundMessage`
- *   before calling domain hooks, keeping hooks free of Ably SDK types.
+ * - **Decode:** the decoder core extracts these fields from an
+ *   `Ably.InboundMessage` before calling domain hooks, keeping hooks free of
+ *   Ably SDK types.
  *
  * Data is `unknown` because discrete messages can carry arbitrary payloads
  * (strings, objects, etc.) — Ably handles serialization natively.
@@ -81,9 +86,9 @@ export interface MessagePayload {
 }
 
 /**
- * Payload for streamed messages. Data must be a string because
- * the message append lifecycle uses text append/accumulate semantics —
- * deltas are concatenated for recovery and prefix-matching on the decoder.
+ * Payload for streamed messages. Data must be a string because the message
+ * append lifecycle uses text append/accumulate semantics — deltas are
+ * concatenated for recovery and prefix-matching on the decoder.
  */
 export interface StreamPayload {
   /** Ably message name (e.g. "text", "reasoning", "tool-input"). */
@@ -116,119 +121,60 @@ export interface StreamTrackerState {
 }
 
 // ---------------------------------------------------------------------------
-// DiscreteEncoder — stateless discrete publish operations
+// Reducer — pure event-sourced state machine
 // ---------------------------------------------------------------------------
 
 /**
- * The subset of encoder operations that are stateless — safe for long-lived
- * reuse across runs. Publishes complete messages and discrete events without
- * any streaming lifecycle (no trackers, no pending appends, no close).
+ * Transport-derived metadata passed alongside each TEvent into `fold`. Read
+ * by the SDK from the inbound Ably message and stamped before each fold call.
+ */
+export interface ReducerMeta {
+  /**
+   * Ably channel serial of the message that produced this event. The reducer
+   * uses this for idempotency / dedup: events at or below the projection's
+   * high-water-mark serial must be skipped (no-op return).
+   */
+  serial: string;
+  /**
+   * Optional `x-ably-msg-id` from the inbound Ably message. Reducers use this
+   * to route an event to a target message within the projection (e.g. to
+   * amend an existing message in the same Run).
+   */
+  messageId?: string;
+}
+
+/**
+ * Pure, stateless reducer contract. A reducer folds TEvents into an opaque
+ * TProjection. The same `(state, event, meta)` triple must produce the same
+ * result every time — `fold` is a pure function and the reducer holds no
+ * instance state.
  *
- * The agent session calls `writeMessages` to publish user messages to the
- * channel. All messages in a single call are published atomically and share
- * a single `x-ably-msg-id`, forming one node in the conversation tree.
- * `writeEvent` is a public API for consumers to publish standalone discrete
- * events outside the streaming flow — it is not called by the session internally.
+ * Idempotency: re-folding an event whose serial has already been incorporated
+ * must be a no-op. The reducer is free to store a high-water-mark inside the
+ * projection.
+ *
+ * Mutation: `fold` is allowed to mutate the projection passed in and return
+ * it. The caller treats the projection as single-owner and never retains a
+ * reference to an old state.
  */
-export interface DiscreteEncoder<TEvent, TMessage> {
+export interface Reducer<TEvent, TProjection> {
   /**
-   * Encode and publish one or more domain messages atomically in a single
-   * channel publish. All messages share the encoder's transport headers
-   * (including `x-ably-msg-id`), so they form one logical unit in the
-   * conversation tree.
+   * Build an empty initial projection. Called once per Run before any events
+   * are folded.
    */
-  writeMessages(messages: TMessage[], options?: WriteOptions): Promise<Ably.PublishResult>;
+  init(): TProjection;
   /**
-   * Encode and publish a single domain event as a standalone discrete message.
-   * Available for consumers to publish events outside the streaming flow.
-   * Implementations should throw for event types that are only meaningful
-   * within a stream (e.g. text deltas).
+   * Fold one TEvent into the projection and return the updated projection.
+   * The reducer may mutate `state` in place.
    */
-  writeEvent(event: TEvent, options?: WriteOptions): Promise<Ably.PublishResult>;
+  fold(state: TProjection, event: TEvent, meta: ReducerMeta): TProjection;
 }
 
 // ---------------------------------------------------------------------------
-// StreamEncoder — maps domain events to Ably channel operations
+// Encoder — single-method publication API
 // ---------------------------------------------------------------------------
 
-/**
- * Full streaming encoder with single-run lifecycle. Extends
- * `DiscreteEncoder` with stateful streaming operations (`appendEvent` for
- * content streams, `close` to flush). Used by the agent session.
- */
-export interface StreamEncoder<TEvent, TMessage> extends DiscreteEncoder<TEvent, TMessage> {
-  /** Encode and append a streaming domain event to an in-progress stream (delta semantics). */
-  appendEvent(event: TEvent, options?: WriteOptions): Promise<void>;
-  /**
-   * Abort all in-progress streams and publish a codec-specific abort signal.
-   * Called by the transport when a run is cancelled. Idempotent — calling
-   * abort after all streams are already aborted is a no-op.
-   * @param reason - Optional reason string for the abort (e.g. 'cancelled').
-   */
-  abort(reason?: string): Promise<void>;
-  /** Flush all pending appends and close the encoder. */
-  close(): Promise<void>;
-}
-
-// ---------------------------------------------------------------------------
-// DecoderOutput — unified return type from the decoder
-// ---------------------------------------------------------------------------
-
-/**
- * A single output from the decoder: either a domain event or a complete domain message.
- * Event outputs may carry a `messageId` read from the `x-ably-msg-id` header, which the
- * accumulator uses to route events to the correct in-progress message.
- */
-export type DecoderOutput<TEvent, TMessage> =
-  | { kind: 'event'; event: TEvent; messageId?: string }
-  | { kind: 'message'; message: TMessage };
-
-// ---------------------------------------------------------------------------
-// StreamDecoder — maps Ably messages to decoder outputs
-// ---------------------------------------------------------------------------
-
-/** Decodes Ably messages into domain events and messages. */
-export interface StreamDecoder<TEvent, TMessage> {
-  /** Decode a single Ably message into zero or more domain outputs. */
-  decode(message: Ably.InboundMessage): DecoderOutput<TEvent, TMessage>[];
-}
-
-// ---------------------------------------------------------------------------
-// MessageAccumulator — builds messages from decoder outputs
-// ---------------------------------------------------------------------------
-
-/** Accumulates decoder outputs into a list of domain messages, tracking active streams. */
-export interface MessageAccumulator<TEvent, TMessage> {
-  /** Process a batch of decoder outputs, updating internal message state. */
-  processOutputs(outputs: DecoderOutput<TEvent, TMessage>[]): void;
-  /** Apply an external update to a message (e.g. from an update callback). */
-  updateMessage(message: TMessage): void;
-  /**
-   * Ensure the accumulator is ready to process events for the given message.
-   * If not already active, creates internal tracking state from the message.
-   * If already active, syncs internal state with the provided message
-   * (picking up external changes like cross-run amendments).
-   * Idempotent — safe to call before every processOutputs.
-   */
-  initMessage(messageId: string, message: TMessage): void;
-  /**
-   * Mark a message as completed. Removes it from active tracking so it
-   * appears in {@link completedMessages}. No-op if not active.
-   */
-  completeMessage(messageId: string): void;
-  /** All messages accumulated so far (in-progress and completed). */
-  readonly messages: TMessage[];
-  /** Only messages whose streams have finished. */
-  readonly completedMessages: TMessage[];
-  /** Whether any stream is still actively receiving data. */
-  readonly hasActiveStream: boolean;
-}
-
-// ---------------------------------------------------------------------------
-// Codec — composite interface for transport use
-// ---------------------------------------------------------------------------
-
-/** Options passed to a codec's `createEncoder` factory to configure default identity and message hooks. */
+/** Options passed to a codec's `createEncoder` factory. */
 export interface EncoderOptions {
   /** Default clientId for all writes. */
   clientId?: string;
@@ -237,29 +183,88 @@ export interface EncoderOptions {
   /** Hook called before each Ably message is published. Mutate the message in place to add transport-level headers. */
   onMessage?: (message: Ably.Message) => void;
   /**
-   * Domain-level message identity. Domain encoders use this as a fallback
-   * messageId when a lifecycle chunk (e.g. `start`) does not provide one,
-   * ensuring useChat and the transport accumulator assign the same ID.
+   * Default `x-ably-msg-id` for messages where the event payload doesn't
+   * supply one. Overridden by `WriteOptions.messageId` per-publish.
    */
   messageId?: string;
 }
 
 /**
- * The complete codec contract that a core transport needs.
- *
- * Combines factory methods (createEncoder, createDecoder, createAccumulator)
- * with protocol knowledge (isTerminal). Transport-level concerns like run
- * correlation, optimistic reconciliation, and cancel signals
- * are handled by the transport layer using standard `x-ably-*` headers.
+ * Stateful encoder for a single channel. The codec decides per event type
+ * whether `publish` maps to a streamed wire op (start / append / close) or
+ * a discrete publish. Stream-tracker state lives inside the encoder.
  */
-export interface Codec<TEvent, TMessage> {
-  /** Create a streaming encoder bound to the given channel. */
-  createEncoder(channel: ChannelWriter, options?: EncoderOptions): StreamEncoder<TEvent, TMessage>;
-  /** Create a decoder for converting Ably messages back into domain outputs. */
-  createDecoder(): StreamDecoder<TEvent, TMessage>;
-  /** Create an accumulator for building domain messages from decoder outputs. */
-  createAccumulator(): MessageAccumulator<TEvent, TMessage>;
+export interface Encoder<TEvent> {
+  /**
+   * Encode and publish a single TEvent. Throws synchronously if the codec
+   * cannot encode the given event type (e.g. a chunk variant the encoder
+   * has no routing for).
+   */
+  publish(event: TEvent, options?: WriteOptions): Promise<void>;
+  /**
+   * Abort any in-progress streams and emit a codec-specific abort signal.
+   * Idempotent — safe to call after `abort` or `close`.
+   * @param reason - Optional reason string for the abort (e.g. 'cancelled').
+   */
+  abort(reason?: string): Promise<void>;
+  /** Flush pending appends and release encoder resources. */
+  close(): Promise<void>;
+}
 
-  /** Whether an event signals stream completion (finish, error, abort). */
+// ---------------------------------------------------------------------------
+// Decoder — flat TEvent[] output
+// ---------------------------------------------------------------------------
+
+/**
+ * Stateful decoder for a single channel subscription. Maintains internal
+ * stream-tracker state across messages so that mid-stream join (history
+ * compaction, partial-history page boundary, rewind miss) synthesizes any
+ * missing start events before deltas reach the SDK — the reducer always
+ * sees a clean `(start, delta*, end)` sequence.
+ */
+export interface Decoder<TEvent> {
+  /** Decode one Ably inbound message into zero or more TEvents. */
+  decode(message: Ably.InboundMessage): TEvent[];
+}
+
+// ---------------------------------------------------------------------------
+// Codec — full contract for the transport
+// ---------------------------------------------------------------------------
+
+/**
+ * The codec describes the wire and folds events into a per-Run projection.
+ *
+ * Type parameters:
+ * - `TEvent` — the union of every type of record that flows on the channel
+ *   for this codec. Codec-defined; not constrained to any framework's
+ *   chunk type.
+ * - `TProjection` — the opaque per-Run state the reducer folds events into.
+ *   The SDK never inspects it directly; use {@link Codec.getMessages} to
+ *   extract messages for the conversation Tree.
+ * - `TMessage` — the per-message shape consumed by the Tree. Returned from
+ *   {@link Codec.getMessages}.
+ */
+export interface Codec<TEvent, TProjection, TMessage> extends Reducer<TEvent, TProjection> {
+  /** Create a stateful encoder bound to the given channel. */
+  createEncoder(channel: ChannelWriter, options?: EncoderOptions): Encoder<TEvent>;
+  /** Create a stateful decoder for converting Ably inbound messages into TEvents. */
+  createDecoder(): Decoder<TEvent>;
+  /**
+   * Extract the per-message list from a projection. The SDK uses the result
+   * to upsert per-msgId nodes into the conversation Tree.
+   */
+  getMessages(projection: TProjection): TMessage[];
+  /**
+   * Wrap a TMessage as a TEvent suitable for publishing on the channel as a
+   * user-message. Used by the agent session's `addMessages` to translate
+   * caller-provided TMessages into wire events.
+   */
+  userMessageEvent(message: TMessage): TEvent;
+  /**
+   * Whether an event signals stream/run completion.
+   * @deprecated Temporary bridge. Removed when wire-level `run-end`
+   * LifecycleEvents land (Tier 1 #3). Until then the SDK reads this to
+   * detect Run completion and clean up observer state.
+   */
   isTerminal(event: TEvent): boolean;
 }

@@ -40,7 +40,7 @@ import type { Logger } from '../../logger.js';
 import { LogLevel, makeLogger } from '../../logger.js';
 import { getHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
-import type { DecoderOutput, MessageAccumulator, StreamDecoder, StreamEncoder } from '../codec/types.js';
+import type { Decoder, Encoder, ReducerMeta } from '../codec/types.js';
 import { buildTransportHeaders } from './headers.js';
 import type { StreamRouter } from './stream-router.js';
 import { createStreamRouter } from './stream-router.js';
@@ -90,10 +90,10 @@ interface ClientSessionEventsMap {
 // Per-run observer state — consolidated to avoid parallel-map bookkeeping
 // ---------------------------------------------------------------------------
 
-interface RunObserverState<TEvent, TMessage> {
+interface RunObserverState<TProjection> {
   headers: Record<string, string>;
   serial: string | undefined;
-  accumulator: MessageAccumulator<TEvent, TMessage>;
+  projection: TProjection;
 }
 
 // ---------------------------------------------------------------------------
@@ -101,9 +101,9 @@ interface RunObserverState<TEvent, TMessage> {
 // ---------------------------------------------------------------------------
 
 // Spec: AIT-CT1
-class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TMessage> {
+class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSession<TEvent, TProjection, TMessage> {
   private readonly _channel: Ably.RealtimeChannel;
-  private readonly _codec: ClientSessionOptions<TEvent, TMessage>['codec'];
+  private readonly _codec: ClientSessionOptions<TEvent, TProjection, TMessage>['codec'];
   private readonly _clientId: string | undefined;
   private readonly _api: string;
   private readonly _credentials: RequestCredentials | undefined;
@@ -130,27 +130,27 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
 
   // Per-run observer state: headers, serial, and accumulator in one map.
   // A single .delete(runId) cleans up all three.
-  private readonly _runObservers = new Map<string, RunObserverState<TEvent, TMessage>>();
+  private readonly _runObservers = new Map<string, RunObserverState<TProjection>>();
 
   // Callbacks to resolve pending waitForRun promises on close, preventing leaked subscriptions.
   private readonly _closeResolvers: (() => void)[] = [];
 
   // Sub-components
   private readonly _tree: DefaultTree<TMessage>;
-  private readonly _view: DefaultView<TEvent, TMessage>;
-  private readonly _views = new Set<DefaultView<TEvent, TMessage>>();
+  private readonly _view: DefaultView<TEvent, TProjection, TMessage>;
+  private readonly _views = new Set<DefaultView<TEvent, TProjection, TMessage>>();
   private readonly _router: StreamRouter<TEvent>;
-  private readonly _decoder: StreamDecoder<TEvent, TMessage>;
+  private readonly _decoder: Decoder<TEvent>;
   /**
    * Shared encoder for the lifetime of the session. The client only ever uses
    * `writeMessages` (discrete publish path), so the encoder's stream tracker
    * map stays empty across the session. Closed once on session close.
    */
-  private readonly _encoder: StreamEncoder<TEvent, TMessage>;
+  private readonly _encoder: Encoder<TEvent>;
 
   // Spec: AIT-CT10, AIT-CT10a
   readonly tree: Tree<TMessage>;
-  readonly view: View<TEvent, TMessage>;
+  readonly view: View<TEvent, TProjection, TMessage>;
 
   // Channel subscription is established lazily on connect()
   private _connectPromise: Promise<void> | undefined;
@@ -159,10 +159,6 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
   private _state = ClientSessionState.READY;
   private _hasAttachedOnce: boolean;
   private readonly _onChannelStateChange: Ably.channelEventCallback;
-
-  // Events staged locally via stageEvents(). Flushed into the eventNodes
-  // parameter of _internalSend on the next send operation.
-  private _pendingLocalEvents: EventsNode<TEvent>[] = [];
 
   /** Default deadline for the agent's `x-ably-run-start` to arrive after a `send()`. */
   private readonly _runStartDeadlineMs: number;
@@ -177,7 +173,7 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
     { resolve: () => void; reject: (e: Ably.ErrorInfo) => void; timer: ReturnType<typeof setTimeout> }
   >();
 
-  constructor(options: ClientSessionOptions<TEvent, TMessage>) {
+  constructor(options: ClientSessionOptions<TEvent, TProjection, TMessage>) {
     // Spec: AIT-CT1a, AIT-CT1a2 — register this SDK on both the connection
     // (options.agents) and channel-attach (params.agent) paths. Idempotent
     // across sessions sharing one client.
@@ -212,7 +208,7 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
 
     // Compose sub-components
     this._tree = createTree<TMessage>(this._logger);
-    this._view = createView<TEvent, TMessage>({
+    this._view = createView<TEvent, TProjection, TMessage>({
       tree: this._tree,
       channel: this._channel,
       codec: this._codec,
@@ -220,6 +216,7 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
       logger: this._logger,
       onClose: () => this._views.delete(this._view),
     });
+    // eslint-disable-next-line @typescript-eslint/no-deprecated -- isTerminal is the temporary bridge for terminal detection until LifecycleEvents land
     this._router = createStreamRouter<TEvent>(this._codec.isTerminal.bind(this._codec), this._logger);
     this._decoder = this._codec.createDecoder();
     this._encoder = this._codec.createEncoder(
@@ -425,24 +422,18 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
         return;
       }
 
-      // --- Codec-decoded messages ---
-      const outputs = this._decoder.decode(ablyMessage);
+      // --- Codec-decoded events ---
+      const events = this._decoder.decode(ablyMessage);
       const headers = getHeaders(ablyMessage);
       const serial = ablyMessage.serial;
+      const msgId = headers[HEADER_MSG_ID];
+      // Producer-responsibility amend routing: HEADER_AMEND identifies the
+      // target msg-id; the reducer routes via meta.messageId within the
+      // SAME run's projection. Cross-run amends (mismatched HEADER_RUN_ID)
+      // are silently dropped at the reducer.
+      const routingMsgId = headers[HEADER_AMEND] ?? msgId;
 
-      // Cross-run events target an existing message from a prior run,
-      // bypassing the current run's accumulator.
-      const amendTarget = headers[HEADER_AMEND];
-      if (amendTarget) {
-        for (const output of outputs) {
-          if (output.kind === 'event') {
-            this._handleAmendmentEvent(amendTarget, output);
-          }
-        }
-        return;
-      }
-
-      // Always update observer headers, even when the decoder produces no outputs.
+      // Always update observer headers, even when the decoder produces no events.
       // This ensures header transitions (e.g. x-ably-status: streaming → aborted)
       // are captured for events that the decoder suppresses (AIT-CD8: aborted
       // stream appends emit no events but still carry the updated status header).
@@ -451,12 +442,8 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
         this._updateRunObserverHeaders(runId, headers, serial);
       }
 
-      for (const output of outputs) {
-        if (output.kind === 'message') {
-          this._handleMessageOutput(output.message, headers, serial, ablyMessage.action);
-        } else {
-          this._handleEventOutput(output, headers);
-        }
+      for (const event of events) {
+        this._handleEvent(event, headers, { serial: serial ?? '', messageId: routingMsgId });
       }
 
       // Emit ably-message AFTER decode/upsert so that View subscribers can
@@ -478,54 +465,25 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
   }
 
   /**
-   * Handle a decoded domain message (user message create or relayed own message).
-   * @param message - The decoded domain message.
+   * Handle a decoded TEvent: route to the active stream (own run) and fold into
+   * the observer's projection. Run termination triggers observer cleanup via
+   * the codec's deprecated `isTerminal` bridge.
+   * @param event - The decoded TEvent.
    * @param headers - Ably headers from the wire message.
-   * @param serial - Ably serial for tree ordering.
-   * @param action - Ably message action (e.g. 'message.create').
+   * @param meta - Reducer meta — serial and msg-id for routing.
    */
-  private _handleMessageOutput(
-    message: TMessage,
-    headers: Record<string, string>,
-    serial: string | undefined,
-    action: string | undefined,
-  ): void {
-    // Spec: AIT-CT15
-    const msgId = headers[HEADER_MSG_ID];
-    if (msgId && this._ownMsgIds.has(msgId)) {
-      // Relayed own message — reconcile optimistic entry with server-assigned fields
-      this._upsertAndNotify(message, headers, serial);
-      return;
-    }
-
-    if (action === 'message.create') {
-      this._upsertAndNotify(message, headers, serial);
-    }
-  }
-
-  /**
-   * Handle a decoded streaming event: route to own-run stream or accumulate for observer.
-   * @param output - The decoded event output from the codec.
-   * @param headers - Ably headers from the wire message.
-   */
-  private _handleEventOutput(output: DecoderOutput<TEvent, TMessage>, headers: Record<string, string>): void {
-    if (output.kind !== 'event') return;
-    const event = output.event;
+  private _handleEvent(event: TEvent, headers: Record<string, string>, meta: ReducerMeta): void {
     const runId = headers[HEADER_RUN_ID];
     if (!runId) return;
 
     const invocationId = headers[HEADER_INVOCATION_ID];
 
-    // Observer headers are already updated in _handleMessage (before outputs
-    // are iterated) so that header transitions are captured even when the
-    // decoder produces no outputs (e.g. aborted stream appends per AIT-CD8).
-
     // Active own run — route to the ReadableStream. Events from a different
     // invocation under the same runId (a losing retry) are dropped by the
-    // router, allowing the consumer's stream to remain bound to the winning
-    // invocation it was created for.
+    // router.
     if (this._router.route(runId, invocationId, event)) {
-      this._accumulateAndEmit(runId, output);
+      this._accumulateAndEmit(runId, event, meta);
+      // eslint-disable-next-line @typescript-eslint/no-deprecated -- isTerminal is the temporary bridge for terminal detection until LifecycleEvents land
       if (this._codec.isTerminal(event)) this._runObservers.delete(runId);
       return;
     }
@@ -534,35 +492,10 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
     if (this._ownRunIds.has(runId) && !this._runObservers.has(runId)) return;
 
     // Spec: AIT-CT16
-    // Observer run — accumulate and emit
-    this._accumulateAndEmit(runId, output);
+    // Observer run — fold into projection and emit
+    this._accumulateAndEmit(runId, event, meta);
+    // eslint-disable-next-line @typescript-eslint/no-deprecated -- isTerminal is the temporary bridge for terminal detection until LifecycleEvents land
     if (this._codec.isTerminal(event)) this._runObservers.delete(runId);
-  }
-
-  /**
-   * Handle a cross-run event targeting an existing message from a prior run.
-   * Creates a temporary accumulator, seeds it with the existing message,
-   * processes the event, and upserts the updated message into the tree.
-   * @param targetMsgId - The x-ably-msg-id of the message to update.
-   * @param output - The decoded event output to apply.
-   */
-  private _handleAmendmentEvent(targetMsgId: string, output: DecoderOutput<TEvent, TMessage>): void {
-    this._logger.trace('ClientSession._handleAmendmentEvent();', { targetMsgId });
-
-    const existingNode = this._tree.getNode(targetMsgId);
-    if (!existingNode) {
-      this._logger.debug('ClientSession._handleAmendmentEvent(); target not found, dropping', { targetMsgId });
-      return;
-    }
-
-    const accumulator = this._codec.createAccumulator();
-    accumulator.initMessage(targetMsgId, existingNode.message);
-    accumulator.processOutputs([output]);
-
-    const updatedMsg = accumulator.messages.at(-1);
-    if (updatedMsg) {
-      this._tree.upsert(targetMsgId, updatedMsg, existingNode.headers, existingNode.serial);
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -654,54 +587,64 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
       this._runObservers.set(runId, {
         headers: { ...headers },
         serial,
-        accumulator: this._codec.createAccumulator(),
+        projection: this._codec.init(),
       });
     }
   }
 
   /**
-   * Process a streaming event through the run's accumulator and emit the latest message.
+   * Fold an event into the run's projection and emit the matching message.
+   * Wraps `fold` in try/catch — a throwing reducer is treated as a
+   * developer/codec bug: emit a session-level error, drop the event, leave
+   * projection state unchanged for that event.
    * @param runId - The run this event belongs to.
-   * @param output - The decoded event output to accumulate.
+   * @param event - The decoded TEvent.
+   * @param meta - Reducer meta (serial + msg-id).
    */
-  private _accumulateAndEmit(runId: string, output: DecoderOutput<TEvent, TMessage>): void {
+  private _accumulateAndEmit(runId: string, event: TEvent, meta: ReducerMeta): void {
     const observer = this._runObservers.get(runId);
     if (!observer) return;
 
-    // Sync the accumulator with the tree before processing. If the message
-    // was updated externally (via cross-run events), initMessage syncs the
-    // accumulator's state so the update isn't lost when processing
-    // late run events like finish-step/finish.
-    const msgId = observer.headers[HEADER_MSG_ID];
-    if (msgId) {
-      const treeNode = this._tree.getNode(msgId);
-      if (treeNode) {
-        observer.accumulator.initMessage(msgId, treeNode.message);
-      }
+    try {
+      observer.projection = this._codec.fold(observer.projection, event, meta);
+    } catch (error) {
+      this._logger.error('ClientSession._accumulateAndEmit(); fold threw', { runId, error });
+      this._emitter.emit(
+        'error',
+        new Ably.ErrorInfo(
+          `unable to fold event; ${error instanceof Error ? error.message : String(error)}`,
+          ErrorCode.SessionSubscriptionError,
+          500,
+          error instanceof Ably.ErrorInfo ? error : undefined,
+        ),
+      );
+      return;
     }
 
-    observer.accumulator.processOutputs([output]);
-
-    const messages = observer.accumulator.messages;
+    const messages = this._codec.getMessages(observer.projection);
     if (messages.length === 0) return;
 
-    let message: TMessage | undefined;
+    // Find the message matching the observer's current msg-id; fall back to
+    // the most recent message in the projection.
+    const msgId = observer.headers[HEADER_MSG_ID];
+    const message =
+      msgId === undefined
+        ? messages.at(-1)
+        : (messages.find((m) => (m as { id?: string }).id === msgId) ?? messages.at(-1));
+    if (!message) return;
+
+    let cloned: TMessage;
     try {
-      message = structuredClone(messages.at(-1));
+      cloned = structuredClone(message);
     } catch {
-      // CAST: structuredClone can fail if the message contains non-cloneable
-      // values (e.g. functions). Fall back to the reference — the tree upsert
-      // below copies headers independently, so shared message state is the
-      // only risk. Accumulator messages are replaced on each event, so
-      // mutation between events is not a practical concern.
-      message = messages.at(-1);
+      // structuredClone can fail if the message contains non-cloneable
+      // values (e.g. functions). Fall back to the reference — the tree
+      // upsert below copies headers independently.
+      cloned = message;
     }
 
-    if (message) {
-      const msgId = observer.headers[HEADER_MSG_ID];
-      if (msgId) {
-        this._tree.upsert(msgId, message, { ...observer.headers }, observer.serial);
-      }
+    if (msgId) {
+      this._tree.upsert(msgId, cloned, { ...observer.headers }, observer.serial);
     }
   }
 
@@ -815,12 +758,12 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
   // ---------------------------------------------------------------------------
 
   // Spec: AIT-CT10b
-  createView(): View<TEvent, TMessage> {
+  createView(): View<TEvent, TProjection, TMessage> {
     if (this._state === ClientSessionState.CLOSED) {
       throw new Ably.ErrorInfo('unable to create view; session is closed', ErrorCode.SessionClosed, 400);
     }
     this._logger.trace('DefaultClientSession.createView();');
-    const view = createView<TEvent, TMessage>({
+    const view = createView<TEvent, TProjection, TMessage>({
       tree: this._tree,
       channel: this._channel,
       codec: this._codec,
@@ -840,7 +783,6 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
     input: TMessage | TMessage[],
     sendOptions: SendOptions | undefined,
     history: MessageNode<TMessage>[],
-    eventNodes?: EventsNode<TEvent>[],
     republishMsgId?: string,
   ): Promise<ActiveRun<TEvent>> {
     if (this._state === ClientSessionState.CLOSED) {
@@ -868,21 +810,7 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
     this._ownRunIds.set(runId, invocationId);
     this._tree.trackRun(runId, this._clientId ?? '');
 
-    // Flush any events staged via stageEvents() since the last send. They
-    // have already been applied to the tree, so merge them into the POST
-    // body without re-applying. External eventNodes (e.g. from view.update)
-    // have NOT been applied yet and need the optimistic tree update below.
-    const flushedStaged = this._pendingLocalEvents;
-    this._pendingLocalEvents = [];
-
-    // Optimistic tree updates for external cross-run events — must happen
-    // before capturing history so the POST body includes the updated
-    // message state.
-    if (eventNodes && eventNodes.length > 0) {
-      this._applyEventsToTree(eventNodes);
-    }
-
-    const allEventNodes: EventsNode<TEvent>[] = [...flushedStaged, ...(eventNodes ?? [])];
+    const allEventNodes: EventsNode<TEvent>[] = [];
 
     const msgIds = new Set<string>();
     const postMessages: MessageNode<TMessage>[] = [];
@@ -1059,7 +987,8 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
     const publishPromise = (async () => {
       try {
         for (const node of postMessages) {
-          await this._encoder.writeMessages([node.message], {
+          const userEvent = this._codec.userMessageEvent(node.message);
+          await this._encoder.publish(userEvent, {
             extras: { headers: node.headers },
             messageId: node.msgId,
             ...(this._clientId !== undefined && { clientId: this._clientId }),
@@ -1188,62 +1117,6 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
     this._closeMatchingRunStreams(resolved);
   }
 
-  stageEvents(msgId: string, events: TEvent[]): void {
-    this._logger.trace('ClientSession.stageEvents();', { msgId, eventCount: events.length });
-    if (this._state === ClientSessionState.CLOSED) {
-      this._logger.warn('ClientSession.stageEvents(); session is closed', { msgId });
-      return;
-    }
-    if (!this._tree.getNode(msgId)) {
-      this._logger.warn('ClientSession.stageEvents(); msgId not found in tree', { msgId });
-      return;
-    }
-    if (events.length === 0) return;
-    const node: EventsNode<TEvent> = { kind: 'event', msgId, events };
-    // Apply immediately so any subsequent useMessageSync / tree observer
-    // sees the merged state — no window where the staged event can be
-    // clobbered by an interleaved observer run update.
-    this._applyEventsToTree([node]);
-    this._pendingLocalEvents.push(node);
-  }
-
-  stageMessage(msgId: string, message: TMessage): void {
-    this._logger.trace('ClientSession.stageMessage();', { msgId });
-    if (this._state === ClientSessionState.CLOSED) {
-      this._logger.warn('ClientSession.stageMessage(); session is closed', { msgId });
-      return;
-    }
-    const existing = this._tree.getNode(msgId);
-    if (!existing) {
-      this._logger.warn('ClientSession.stageMessage(); msgId not found in tree', { msgId });
-      return;
-    }
-    // Preserve structural metadata; only the message body changes.
-    this._tree.upsert(msgId, message, existing.headers, existing.serial);
-  }
-
-  // Apply events to the tree using the codec's accumulator. Shared by
-  // stageEvents (local staging) and _internalSend (external eventNodes
-  // arriving via view.update).
-  private _applyEventsToTree(eventNodes: EventsNode<TEvent>[]): void {
-    for (const node of eventNodes) {
-      const existingNode = this._tree.getNode(node.msgId);
-      if (!existingNode) continue;
-      const outputs = node.events.map((event) => ({
-        kind: 'event' as const,
-        event,
-        messageId: node.msgId,
-      }));
-      const accumulator = this._codec.createAccumulator();
-      accumulator.initMessage(node.msgId, existingNode.message);
-      accumulator.processOutputs(outputs);
-      const updatedMsg = accumulator.messages.at(-1);
-      if (updatedMsg) {
-        this._tree.upsert(node.msgId, updatedMsg, existingNode.headers, existingNode.serial);
-      }
-    }
-  }
-
   // Spec: AIT-CT18
   async waitForRun(filter?: CancelFilter): Promise<void> {
     if (this._state === ClientSessionState.CLOSED) return;
@@ -1362,6 +1235,6 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
  * @param options - Configuration for the client session.
  * @returns A new {@link ClientSession} instance.
  */
-export const createClientSession = <TEvent, TMessage>(
-  options: ClientSessionOptions<TEvent, TMessage>,
-): ClientSession<TEvent, TMessage> => new DefaultClientSession(options);
+export const createClientSession = <TEvent, TProjection, TMessage>(
+  options: ClientSessionOptions<TEvent, TProjection, TMessage>,
+): ClientSession<TEvent, TProjection, TMessage> => new DefaultClientSession(options);

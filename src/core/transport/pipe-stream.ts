@@ -1,12 +1,12 @@
 /**
  * Pure stream piping function.
  *
- * Reads events from a ReadableStream, writes them to a streaming encoder,
- * and handles abort/error. No dependencies on run state or session internals.
+ * Reads events from a ReadableStream, writes them to an encoder, and handles
+ * abort/error. No dependencies on run state or session internals.
  */
 
 import type { Logger } from '../../logger.js';
-import type { StreamEncoder, WriteOptions } from '../codec/types.js';
+import type { Encoder, WriteOptions } from '../codec/types.js';
 import type { StreamResult } from './types.js';
 
 /**
@@ -15,16 +15,16 @@ import type { StreamResult } from './types.js';
  * Returns when the stream completes, is cancelled (via signal), or errors.
  * The `reason` field of the result indicates which case occurred.
  * @param stream - The event stream to read from.
- * @param encoder - The streaming encoder to write events through.
+ * @param encoder - The encoder to publish events through.
  * @param signal - Abort signal to monitor for cancellation.
  * @param onAbort - Optional callback invoked when the stream is cancelled, before the stream ends.
- * @param resolveWriteOptions - Optional per-event hook returning {@link WriteOptions} overrides to pass to `encoder.appendEvent`.
+ * @param resolveWriteOptions - Optional per-event hook returning {@link WriteOptions} overrides to pass to `encoder.publish`.
  * @param logger - Optional logger for diagnostic output.
  * @returns The reason the pipe ended.
  */
-export const pipeStream = async <TEvent, TMessage>(
+export const pipeStream = async <TEvent>(
   stream: ReadableStream<TEvent>,
-  encoder: StreamEncoder<TEvent, TMessage>,
+  encoder: Encoder<TEvent>,
   signal: AbortSignal | undefined,
   onAbort?: (write: (event: TEvent) => Promise<void>) => void | Promise<void>,
   resolveWriteOptions?: (event: TEvent) => WriteOptions | undefined,
@@ -63,7 +63,7 @@ export const pipeStream = async <TEvent, TMessage>(
         reason = 'cancelled';
         logger?.debug('pipeStream(); stream cancelled by abort signal');
         if (onAbort) {
-          await onAbort(async (event: TEvent) => encoder.appendEvent(event));
+          await onAbort(async (event: TEvent) => encoder.publish(event));
         }
         await encoder.abort('cancelled');
         break;
@@ -76,7 +76,7 @@ export const pipeStream = async <TEvent, TMessage>(
         break;
       }
 
-      await encoder.appendEvent(value, resolveWriteOptions?.(value));
+      await encoder.publish(value, resolveWriteOptions?.(value));
     }
   } catch (error) {
     reason = 'error';

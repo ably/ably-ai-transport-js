@@ -36,24 +36,30 @@ function ChatPage() {
   const paramChannel = searchParams.get('channel');
   const paramClientId = searchParams.get('clientId') ?? undefined;
   const limit = Number(searchParams.get('limit')) || undefined;
+  const tab = searchParams.get('tab') === 'images' ? 'images' : 'chat';
 
-  const [channelName] = useState(() => paramChannel ?? `${CHANNEL_NAMESPACE}${generateChannelSlug()}`);
+  // Base channel persists across tabs; each tab uses a `-${tab}` suffix so the
+  // chat and image histories live on different Ably channels. The URL keeps
+  // the base name; the effective channel below is what we actually attach to.
+  const [baseChannel] = useState(() => paramChannel ?? `${CHANNEL_NAMESPACE}${generateChannelSlug()}`);
   const [clientId] = useState(() => paramClientId ?? `user-${crypto.randomUUID().slice(0, 8)}`);
+  const effectiveChannel = `${baseChannel}-${tab}`;
 
   useEffect(() => {
     if (paramChannel && paramClientId) return;
     const params = new URLSearchParams(searchParams.toString());
-    if (!paramChannel) params.set('channel', channelName);
+    if (!paramChannel) params.set('channel', baseChannel);
     if (!paramClientId) params.set('clientId', clientId);
     // `:` is valid unencoded in a query string (RFC 3986); un-escape it so the
     // address bar shows "ai:foo" instead of "ai%3Afoo".
     router.replace(`?${params.toString().replaceAll('%3A', ':')}`);
-  }, [paramChannel, paramClientId, channelName, clientId, router, searchParams]);
+  }, [paramChannel, paramClientId, baseChannel, clientId, router, searchParams]);
 
   return (
     <Providers clientId={clientId}>
       <ChatWhenReady
-        channelName={channelName}
+        key={effectiveChannel}
+        channelName={effectiveChannel}
         clientId={clientId}
         limit={limit}
       />

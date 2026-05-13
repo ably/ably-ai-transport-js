@@ -8,9 +8,18 @@
  *   (needsApproval: true). The client sees an approval-requested tool
  *   part; after addToolApprovalResponse, the server runs execute() and
  *   the result is stitched back onto the original assistant message.
+ * - generateImage: server-executed. Calls Vercel AI SDK generateImage,
+ *   downscales the result to a small WebP, and publishes it as a fresh
+ *   assistant message via `run.pipe` so the image lands on the channel
+ *   as a `file` UIMessagePart. Returns a small ack to the LLM so it can
+ *   summarise textually.
  */
 
-import type { Tool } from 'ai';
+import type { Run } from '@ably/ai-transport';
+import { openai } from '@ai-sdk/openai';
+import { createUIMessageStream, generateImage } from 'ai';
+import type { Tool, UIMessage, UIMessageChunk } from 'ai';
+import sharp from 'sharp';
 import { z } from 'zod';
 
 const weatherInput = z.object({
@@ -23,7 +32,11 @@ const locationOutput = z.object({
   error: z.string().optional(),
 });
 
-export const tools: Record<string, Tool> = {
+interface CreateToolsOptions {
+  run: Run<UIMessageChunk, UIMessage>;
+}
+
+export const createTools = ({ run }: CreateToolsOptions): Record<string, Tool> => ({
   getWeather: {
     description: 'Get the current weather for a location. Call this when the user asks about weather.',
     inputSchema: weatherInput,
@@ -74,4 +87,35 @@ export const tools: Record<string, Tool> = {
       };
     },
   },
-};
+
+  generateImage: {
+    description:
+      'Generate an icon, logo, or small thumbnail image from a text prompt. The result is a 256x256 WebP that ships over Ably as a file UIMessagePart on its own assistant message.',
+    inputSchema: z.object({
+      prompt: z.string().describe('What the image should depict, in natural language.'),
+    }),
+    execute: async ({ prompt }: { prompt: string }) => {
+      const { image } = await generateImage({
+        model: openai.image('gpt-image-1'),
+        prompt,
+        size: '1024x1024',
+      });
+      // Downscale to a small WebP so the resulting data URL fits under the
+      // 64 KiB Ably message size cap (gpt-image-1's smallest native output
+      // is 1024x1024).
+      const webp = await sharp(image.uint8Array).resize(256, 256, { fit: 'cover' }).webp({ quality: 70 }).toBuffer();
+      const url = `data:image/webp;base64,${webp.toString('base64')}`;
+
+      const fileStream = createUIMessageStream({
+        execute: ({ writer }) => {
+          writer.write({ type: 'start' });
+          writer.write({ type: 'file', mediaType: 'image/webp', url });
+          writer.write({ type: 'finish', finishReason: 'stop' });
+        },
+      });
+      await run.pipe(fileStream);
+
+      return { ok: true, mediaType: 'image/webp', sizeBytes: webp.byteLength };
+    },
+  },
+});

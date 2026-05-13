@@ -36,14 +36,21 @@ function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; 
 
 function ChatPage() {
   const searchParams = useSearchParams();
-  const channelName = searchParams.get('channel') ?? DEFAULT_CHANNEL;
+  const baseChannel = searchParams.get('channel') ?? DEFAULT_CHANNEL;
   const clientId = searchParams.get('clientId') ?? undefined;
   const limit = Number(searchParams.get('limit')) || undefined;
+  const tab = searchParams.get('tab') === 'images' ? 'images' : 'chat';
+
+  // Each tab uses a `-${tab}` suffix on the base channel so chat and image
+  // histories live on different Ably channels. The URL keeps the base; the
+  // effective channel below is what we actually attach to.
+  const effectiveChannel = `${baseChannel}-${tab}`;
 
   return (
     <Providers clientId={clientId}>
       <ChatWhenReady
-        channelName={channelName}
+        key={effectiveChannel}
+        channelName={effectiveChannel}
         clientId={clientId}
         limit={limit}
       />

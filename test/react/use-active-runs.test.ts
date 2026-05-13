@@ -105,7 +105,7 @@ describe('useActiveRuns', () => {
         ClientSessionContext.Provider,
         {
           value: {
-            nearest: { session: mock.session as ClientSession<unknown, unknown> },
+            nearest: { session: mock.session as ClientSession<unknown, unknown, unknown> },
             providers: {},
           },
         },

@@ -19,7 +19,7 @@ vi.mock('ably/react', () => ({
 }));
 
 // Typed with explicit parameter signature so mock.calls[0] is [unknown], enabling assertions
-const createClientSessionMock = vi.fn<(options: unknown) => ClientSession<unknown, unknown>>();
+const createClientSessionMock = vi.fn<(options: unknown) => ClientSession<unknown, unknown, unknown>>();
 
 vi.mock('../../src/core/transport/client-session.js', () => ({
   createClientSession: (options: unknown) => createClientSessionMock(options),
@@ -40,7 +40,7 @@ describe('createSessionHooks', () => {
   });
 
   it('useClientSession returns the session when wrapped in ClientSessionProvider', () => {
-    const { ClientSessionProvider, useClientSession } = createSessionHooks<unknown, unknown>();
+    const { ClientSessionProvider, useClientSession } = createSessionHooks<unknown, unknown, unknown>();
 
     const wrapper = ({ children }: { children: ReactNode }): ReactNode =>
       createElement(ClientSessionProvider, { channelName: 'ai:test', codec: {} as never, api: '/test' }, children);
@@ -50,7 +50,7 @@ describe('createSessionHooks', () => {
   });
 
   it('useClientSession sets sessionError when no ClientSessionProvider is in the tree', () => {
-    const { useClientSession } = createSessionHooks<unknown, unknown>();
+    const { useClientSession } = createSessionHooks<unknown, unknown, unknown>();
 
     const { result } = renderHook(() => useClientSession({ channelName: 'ai:test' }));
     expect(result.current.sessionError).toMatchObject({ code: 40000 });

@@ -34,7 +34,7 @@ vi.mock('ably/react', () => ({
 }));
 
 // Typed with explicit parameter signature so mock.calls[0] is [unknown], enabling assertions
-const createClientSessionMock = vi.fn<(options: unknown) => ClientSession<unknown, unknown>>();
+const createClientSessionMock = vi.fn<(options: unknown) => ClientSession<unknown, unknown, unknown>>();
 
 vi.mock('../../../src/core/transport/client-session.js', () => ({
   createClientSession: (options: unknown) => createClientSessionMock(options),
@@ -48,7 +48,7 @@ vi.mock('../../../src/core/transport/client-session.js', () => ({
 // ClientSessionProvider on channelName "ai:test".
 const wrapDefault = ({ children }: { children: ReactNode }): ReactNode =>
   createElement(
-    ClientSessionProvider<unknown, unknown>,
+    ClientSessionProvider<unknown, unknown, unknown>,
     { channelName: 'ai:test', codec: {} as never, api: '/test' },
     children,
   );
@@ -56,7 +56,7 @@ const wrapDefault = ({ children }: { children: ReactNode }): ReactNode =>
 // ClientSessionProvider with channelName "ai:demo" for channel-name forwarding test.
 const wrapDemo = ({ children }: { children: ReactNode }): ReactNode =>
   createElement(
-    ClientSessionProvider<unknown, unknown>,
+    ClientSessionProvider<unknown, unknown, unknown>,
     { channelName: 'ai:demo', codec: {} as never, api: '/test' },
     children,
   );
@@ -64,10 +64,10 @@ const wrapDemo = ({ children }: { children: ReactNode }): ReactNode =>
 // Nested outer (channelName="ai:outer") + inner (channelName="ai:inner") ClientSessionProvider pair.
 const wrapNested = ({ children }: { children: ReactNode }): ReactNode =>
   createElement(
-    ClientSessionProvider<unknown, unknown>,
+    ClientSessionProvider<unknown, unknown, unknown>,
     { channelName: 'ai:outer', codec: {} as never, api: '/test' },
     createElement(
-      ClientSessionProvider<unknown, unknown>,
+      ClientSessionProvider<unknown, unknown, unknown>,
       { channelName: 'ai:inner', codec: {} as never, api: '/test' },
       children,
     ),
@@ -75,7 +75,7 @@ const wrapNested = ({ children }: { children: ReactNode }): ReactNode =>
 
 // ClientSessionProvider with a parametric channelName, used by the channel-name change test.
 const renderProviderForChannel = (channelName: string): ReactNode =>
-  createElement(ClientSessionProvider<unknown, unknown>, {
+  createElement(ClientSessionProvider<unknown, unknown, unknown>, {
     channelName,
     codec: {} as never,
     api: '/test',
@@ -228,7 +228,7 @@ describe('ClientSessionProvider', () => {
     // wrapper closes over `logger` — unicorn/consistent-function-scoping does not fire for closures
     const wrapWithLogger = ({ children }: { children: ReactNode }): ReactNode =>
       createElement(
-        ClientSessionProvider<unknown, unknown>,
+        ClientSessionProvider<unknown, unknown, unknown>,
         { channelName: 'ai:test', codec: {} as never, api: '/api/custom', logger },
         children,
       );

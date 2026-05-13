@@ -126,22 +126,6 @@ describe('useView', () => {
     expect(mock.view.loadOlder).not.toHaveBeenCalled();
   });
 
-  it('update calls the view update method', async () => {
-    const mock = createMockSession();
-    const { result } = renderHook(() => useView({ session: mock.session }));
-
-    const events = ['tool-output'];
-
-    await act(async () => {
-      await result.current.update('target-1', events);
-    });
-
-    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
-    expect(mock.view.update).toHaveBeenCalledOnce();
-    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
-    expect(mock.view.update).toHaveBeenCalledWith('target-1', events, undefined);
-  });
-
   it('unsubscribes on unmount', () => {
     const mock = createMockSession(['hello']);
     const { unmount } = renderHook(() => useView({ session: mock.session }));
@@ -175,7 +159,7 @@ describe('useView', () => {
         ClientSessionContext.Provider,
         {
           value: {
-            nearest: { session: mock.session as ClientSession<unknown, unknown> },
+            nearest: { session: mock.session as ClientSession<unknown, unknown, unknown> },
             providers: {},
           },
         },

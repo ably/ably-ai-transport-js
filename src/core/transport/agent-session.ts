@@ -14,10 +14,16 @@ import * as Ably from 'ably';
 
 import {
   EVENT_CANCEL,
+  EVENT_ERROR,
   HEADER_CANCEL_ALL,
   HEADER_CANCEL_CLIENT_ID,
+  HEADER_CANCEL_INVOCATION_ID,
   HEADER_CANCEL_OWN,
   HEADER_CANCEL_RUN_ID,
+  HEADER_INVOCATION_ID,
+  HEADER_MSG_ID,
+  HEADER_ROLE,
+  HEADER_RUN_ID,
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
@@ -46,11 +52,109 @@ import type {
 } from './types.js';
 
 // ---------------------------------------------------------------------------
+// Prompt lookup
+// ---------------------------------------------------------------------------
+
+/**
+ * Wait for a user-prompt message matching `invocationId` to land on the
+ * channel. Uses the session's unfiltered channel dispatcher (registered in
+ * `connect()`) so that messages replayed via channel rewind on attach reach
+ * the lookup — no separate history fetch needed.
+ *
+ * Bounded by `timeoutMs`. The caller's `signal` aborts the wait.
+ * @param opts - Lookup parameters.
+ * @param opts.register - Session-provided registration that delivers user-prompt messages for this invocationId. Returns an unregister function.
+ * @param opts.codec - Codec used to decode the matching message into MessageNodes.
+ * @param opts.invocationId - Invocation identifier the dispatcher keys on.
+ * @param opts.runId - Run identifier (used for logging and error messages).
+ * @param opts.timeoutMs - Maximum time to wait for a matching arrival.
+ * @param opts.signal - AbortSignal that cancels the wait when the run aborts.
+ * @param opts.logger - Optional logger for diagnostic output.
+ * @returns The decoded MessageNodes for the matching user prompt.
+ */
+const lookupUserPrompt = async <TEvent, TMessage>(opts: {
+  register: (callback: (msg: Ably.InboundMessage) => void) => () => void;
+  codec: import('../codec/types.js').Codec<TEvent, TMessage>;
+  invocationId: string;
+  runId: string;
+  timeoutMs: number;
+  signal: AbortSignal;
+  logger: Logger | undefined;
+}): Promise<MessageNode<TMessage>[]> => {
+  const { register, codec, invocationId, runId, timeoutMs, signal, logger } = opts;
+
+  /**
+   * Decode an inbound Ably message into MessageNodes via the codec.
+   * @param m - The inbound Ably message to decode.
+   * @returns The decoded MessageNodes carrying transport headers and serial.
+   */
+  const decode = (m: Ably.InboundMessage): MessageNode<TMessage>[] => {
+    const decoder = codec.createDecoder();
+    const accumulator = codec.createAccumulator();
+    accumulator.processOutputs(decoder.decode(m));
+    const headers = getHeaders(m);
+    const msgId = headers[HEADER_MSG_ID] ?? '';
+    return accumulator.completedMessages.map((message) => ({
+      kind: 'message' as const,
+      message,
+      msgId,
+      parentId: headers['x-ably-parent'],
+      forkOf: headers['x-ably-fork-of'],
+      headers,
+      serial: m.serial,
+    }));
+  };
+
+  return new Promise<MessageNode<TMessage>[]>((resolve, reject) => {
+    let settled = false;
+    const cleanup = (): void => {
+      unregister();
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+    };
+    const unregister = register((m) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      logger?.debug('lookupUserPrompt(); matched user-prompt message', { runId, invocationId });
+      try {
+        resolve(decode(m));
+      } catch (error) {
+        reject(error as Error);
+      }
+    });
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(
+        new Ably.ErrorInfo(
+          `unable to look up user prompt; no matching user-message for invocation ${invocationId} within ${String(timeoutMs)}ms`,
+          ErrorCode.PromptNotFound,
+          504,
+        ),
+      );
+    }, timeoutMs);
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(
+        new Ably.ErrorInfo(`unable to look up user prompt; run ${runId} was aborted`, ErrorCode.InvalidArgument, 400),
+      );
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+};
+
+// ---------------------------------------------------------------------------
 // Internal run record for cancel routing
 // ---------------------------------------------------------------------------
 
 interface RegisteredRun {
   runId: string;
+  /** Invocation-id this run is associated with, sourced from the invocation's `invocationId`. */
+  invocationId: string;
   clientId: string;
   controller: AbortController;
   /** Composite signal that fires when either the internal controller or the external signal aborts. */
@@ -86,7 +190,24 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
   private readonly _onError: ((error: Ably.ErrorInfo) => void) | undefined;
   private readonly _runManager: RunManager;
   private readonly _registeredRuns = new Map<string, RegisteredRun>();
+  /**
+   * Active user-prompt lookups keyed by invocation-id. The channel listener
+   * dispatches matching user messages to these callbacks so that messages
+   * replayed via channel rewind (and live messages alike) reach the right
+   * lookup without each lookup having to subscribe separately.
+   */
+  private readonly _pendingPromptLookups = new Map<string, (msg: Ably.InboundMessage) => void>();
+  /**
+   * User-prompt messages buffered by invocation-id when no lookup callback
+   * was registered at delivery time. Rewind replays user messages on attach
+   * — before `run.start()` runs — so without buffering they would be
+   * dropped. `_registerPromptListener` drains the buffer on registration.
+   * FIFO eviction at `_promptBufferLimit` entries.
+   */
+  private readonly _promptBuffer = new Map<string, Ably.InboundMessage>();
+  private readonly _promptBufferLimit = 200;
   private readonly _channelListener: (msg: Ably.InboundMessage) => void;
+  private readonly _promptLookupTimeoutMs: number;
 
   private _state = SessionState.READY;
   private _connectPromise: Promise<void> | undefined;
@@ -97,12 +218,20 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
     // Spec: AIT-ST1a, AIT-ST1a2 — register this SDK on both the connection
     // (options.agents) and channel-attach (params.agent) paths. Idempotent
     // across sessions sharing one client.
-    const channelOptions = registerAgent(options.client);
+    const registerOptions = registerAgent(options.client);
+    // Attach with a 2-minute rewind so a freshly-constructed agent session
+    // can locate a user prompt that was published before it attached
+    // (closes the lookup race when a per-request agent is spun up after the
+    // client has already POSTed).
+    const channelOptions: Ably.ChannelOptions = {
+      params: { ...registerOptions.params, rewind: '2m' },
+    };
     this._channel = options.client.channels.get(options.channelName, channelOptions);
     this._codec = options.codec;
     this._logger = options.logger?.withContext({ component: 'AgentSession' });
     this._onError = options.onError;
     this._runManager = createRunManager(this._channel, this._logger);
+    this._promptLookupTimeoutMs = options.promptLookupTimeoutMs ?? 30000;
 
     this._channelListener = (msg: Ably.InboundMessage) => {
       this._handleChannelMessage(msg);
@@ -137,14 +266,20 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
     if (this._connectPromise) return this._connectPromise;
 
     this._logger?.trace('DefaultAgentSession.connect();');
-    // Subscribe before attach (RTL7g) — subscribe implicitly attaches the channel.
-    this._connectPromise = this._channel.subscribe(EVENT_CANCEL, this._channelListener).then(
+    // Subscribe unfiltered (before attach, per RTL7g — subscribe implicitly
+    // attaches the channel). An unfiltered subscribe ensures that messages
+    // replayed via channel rewind reach the dispatcher so user-prompt
+    // lookups can match against them; the dispatcher then routes by name
+    // (cancel vs. user-prompt). A name-filtered subscribe would silently
+    // drop replayed user messages because rewind delivers them to listeners
+    // registered at attach time only.
+    this._connectPromise = this._channel.subscribe(this._channelListener).then(
       () => {
         this._logger?.debug('DefaultAgentSession.connect(); subscribed and attached');
       },
       (error: unknown) => {
         const errInfo = new Ably.ErrorInfo(
-          `unable to subscribe to cancel messages; ${error instanceof Error ? error.message : String(error)}`,
+          `unable to subscribe to channel; ${error instanceof Error ? error.message : String(error)}`,
           ErrorCode.SessionSubscriptionError,
           500,
           error instanceof Ably.ErrorInfo ? error : undefined,
@@ -155,6 +290,33 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
       },
     );
     return this._connectPromise;
+  }
+
+  /**
+   * Register a callback to receive user-prompt messages with the given
+   * `invocationId`. Lookups must share the session's unfiltered
+   * subscription rather than registering their own subscribe — Ably's
+   * rewind only delivers to listeners present at attach time.
+   * @param invocationId - The invocation-id this listener cares about.
+   * @param callback - Invoked with the matching Ably message.
+   * @returns Unregister function. Safe to call multiple times.
+   */
+  private _registerPromptListener(invocationId: string, callback: (msg: Ably.InboundMessage) => void): () => void {
+    this._pendingPromptLookups.set(invocationId, callback);
+    // Drain any buffered user-prompt message for this invocation-id —
+    // rewind replays user messages on attach before run.start() can
+    // register the callback. Without this drain, the lookup waits the
+    // full `promptLookupTimeoutMs` for a live arrival that never comes.
+    const buffered = this._promptBuffer.get(invocationId);
+    if (buffered) {
+      this._promptBuffer.delete(invocationId);
+      callback(buffered);
+    }
+    return () => {
+      if (this._pendingPromptLookups.get(invocationId) === callback) {
+        this._pendingPromptLookups.delete(invocationId);
+      }
+    };
   }
 
   // Spec: AIT-ST3
@@ -169,13 +331,15 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
     this._state = SessionState.CLOSED;
     this._logger?.trace('DefaultAgentSession.close();');
     if (this._connectPromise) {
-      this._channel.unsubscribe(EVENT_CANCEL, this._channelListener);
+      this._channel.unsubscribe(this._channelListener);
     }
     this._channel.off(this._onChannelStateChange);
     for (const reg of this._registeredRuns.values()) {
       reg.controller.abort();
     }
     this._registeredRuns.clear();
+    this._pendingPromptLookups.clear();
+    this._promptBuffer.clear();
     this._runManager.close();
     this._logger?.debug('DefaultAgentSession.close(); session closed');
   }
@@ -194,6 +358,9 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
     if (filter.clientId) {
       return runIds.filter((id) => this._registeredRuns.get(id)?.clientId === filter.clientId);
     }
+    if (filter.invocationId) {
+      return runIds.filter((id) => this._registeredRuns.get(id)?.invocationId === filter.invocationId);
+    }
     if (filter.runId && this._registeredRuns.has(filter.runId)) {
       return [filter.runId];
     }
@@ -206,7 +373,9 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
 
     // Spec: AIT-ST8a, AIT-ST8b, AIT-ST8c, AIT-ST8d
     const filter: CancelFilter = {};
-    if (headers[HEADER_CANCEL_RUN_ID]) {
+    if (headers[HEADER_CANCEL_INVOCATION_ID]) {
+      filter.invocationId = headers[HEADER_CANCEL_INVOCATION_ID];
+    } else if (headers[HEADER_CANCEL_RUN_ID]) {
       filter.runId = headers[HEADER_CANCEL_RUN_ID];
     } else if (headers[HEADER_CANCEL_OWN] === 'true') {
       filter.own = true;
@@ -323,6 +492,31 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
           this._logger?.error('DefaultAgentSession._handleChannelMessage(); cancel routing error');
           this._onError?.(errInfo);
         });
+        return;
+      }
+
+      // Dispatch user-prompt messages to any pending lookup keyed by
+      // invocation-id. The lookup itself does the role/runId discrimination
+      // (invocation-ids are unique UUIDs, so the key alone is sufficient in
+      // practice; the callback re-checks defensively).
+      const headers = getHeaders(msg);
+      const invocationId = headers[HEADER_INVOCATION_ID];
+      if (invocationId && headers[HEADER_ROLE] === 'user') {
+        const listener = this._pendingPromptLookups.get(invocationId);
+        if (listener) {
+          listener(msg);
+        } else {
+          // Buffer for a future `_registerPromptListener` call. This is
+          // load-bearing for the "agent attaches after publish" scenario
+          // where channel rewind delivers the user message before
+          // `run.start()` runs.
+          if (this._promptBuffer.size >= this._promptBufferLimit) {
+            // FIFO eviction: drop the oldest entry.
+            const oldestKey = this._promptBuffer.keys().next().value;
+            if (oldestKey !== undefined) this._promptBuffer.delete(oldestKey);
+          }
+          this._promptBuffer.set(invocationId, msg);
+        }
       }
     } catch (error) {
       const errInfo = new Ably.ErrorInfo(
@@ -357,9 +551,11 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
 
   private _createRun(invocation: Invocation<TEvent, TMessage>, runtime: RunRuntime<TEvent>): Run<TEvent, TMessage> {
     const runId = invocation.runId;
+    const invocationId = invocation.invocationId;
     const runClientId = invocation.clientId;
     const runParent = invocation.parent;
     const runForkOf = invocation.forkOf;
+    const promptLookupTimeoutMs = this._promptLookupTimeoutMs;
     const { onMessage, onAbort, onCancel, onError: runOnError, signal: externalSignal } = runtime;
 
     const controller = new AbortController();
@@ -373,6 +569,7 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
     // Spec: AIT-ST3a — register immediately so early cancels can fire the abort signal.
     const registration: RegisteredRun = {
       runId,
+      invocationId: invocation.invocationId,
       clientId: runClientId,
       controller,
       signal,
@@ -389,9 +586,22 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
     const channel = this._channel;
     const registeredRuns = this._registeredRuns;
     const requireConnected = this._requireConnected.bind(this);
+    const registerPromptListener = this._registerPromptListener.bind(this);
+    const invocationUserMessageCount = invocation.userMessageCount;
 
+    // invocation.messages is empty when the client publishes user messages
+    // on the channel. The agent populates this buffer in start() via a
+    // channel rewind+subscribe lookup keyed by invocation-id. Tests and
+    // legacy callers may pre-populate via Invocation.fromJSON; in that case
+    // the lookup step is skipped. The lookup is also skipped when the
+    // invocation reports `userMessageCount === 0` (e.g. a continuation
+    // triggered by `sendAutomaticallyWhen` after a tool result, where no
+    // new user prompt was published).
+    const viewMessages: MessageNode<TMessage>[] = [...invocation.messages];
     const view: RunView<TMessage> = {
-      messages: invocation.messages,
+      get messages() {
+        return viewMessages;
+      },
     };
 
     const run: Run<TEvent, TMessage> = {
@@ -407,7 +617,7 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
 
       // Spec: AIT-ST4, AIT-ST4a, AIT-ST4b
       start: async (): Promise<void> => {
-        logger?.trace('Run.start();', { runId });
+        logger?.trace('Run.start();', { runId, invocationId });
 
         await requireConnected('start');
 
@@ -422,10 +632,60 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
         if (state !== RunState.INITIALIZED) return;
         state = RunState.STARTED;
 
+        // Look up the user prompt on the channel when the invocation
+        // signals a fresh send (userMessageCount > 0) but didn't carry the
+        // messages inline. Skip when:
+        // - viewMessages already populated (legacy / pre-populated path)
+        // - promptLookupTimeoutMs === 0 (tests and in-process drivers)
+        // - userMessageCount === 0 (continuation send: no new user prompt
+        //   was published, so waiting for one would hang for the full
+        //   deadline before erroring out)
+        if (viewMessages.length === 0 && invocationUserMessageCount > 0 && promptLookupTimeoutMs > 0) {
+          try {
+            const found = await lookupUserPrompt<TEvent, TMessage>({
+              register: (callback) => registerPromptListener(invocationId, callback),
+              codec,
+              invocationId,
+              runId,
+              timeoutMs: promptLookupTimeoutMs,
+              signal,
+              logger,
+            });
+            for (const m of found) viewMessages.push(m);
+          } catch (error) {
+            const errInfo =
+              error instanceof Ably.ErrorInfo
+                ? error
+                : new Ably.ErrorInfo(
+                    `unable to look up user prompt; ${error instanceof Error ? error.message : String(error)}`,
+                    ErrorCode.PromptNotFound,
+                    504,
+                  );
+            // Best-effort publish of an error event so the client can see it.
+            try {
+              await channel.publish({
+                name: EVENT_ERROR,
+                extras: {
+                  headers: {
+                    [HEADER_RUN_ID]: runId,
+                    [HEADER_INVOCATION_ID]: invocationId,
+                  },
+                },
+                data: { code: errInfo.code, statusCode: errInfo.statusCode, message: errInfo.message },
+              });
+            } catch {
+              // swallow — best-effort
+            }
+            logger?.error('Run.start(); prompt lookup failed', { runId, invocationId });
+            throw errInfo;
+          }
+        }
+
         try {
           await runManager.startRun(runId, runClientId, controller, {
             parent: runParent,
             forkOf: runForkOf,
+            invocationId,
           });
         } catch (error) {
           const errInfo = new Ably.ErrorInfo(
@@ -438,7 +698,7 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
           throw errInfo;
         }
 
-        logger?.debug('Run.start(); run started', { runId });
+        logger?.debug('Run.start(); run started', { runId, invocationId });
       },
 
       // Spec: AIT-ST5, AIT-ST5a, AIT-ST5b, AIT-ST5c
@@ -469,6 +729,7 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
                 runClientId: opts?.clientId,
                 parent: node.parentId ?? runParent,
                 forkOf: node.forkOf ?? runForkOf,
+                invocationId,
               }),
               node.headers,
             );
@@ -616,7 +877,7 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
         state = RunState.ENDED;
 
         try {
-          await runManager.endRun(runId, reason);
+          await runManager.endRun(runId, reason, invocationId);
         } catch (error) {
           const errInfo = new Ably.ErrorInfo(
             `unable to publish run-end for run ${runId}; ${error instanceof Error ? error.message : String(error)}`,

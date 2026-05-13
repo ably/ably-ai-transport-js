@@ -10,6 +10,7 @@ import {
   HEADER_AMEND,
   HEADER_CANCEL_ALL,
   HEADER_CANCEL_CLIENT_ID,
+  HEADER_CANCEL_INVOCATION_ID,
   HEADER_CANCEL_OWN,
   HEADER_CANCEL_RUN_ID,
   HEADER_MSG_ID,
@@ -57,12 +58,27 @@ interface MockChannel {
   off: ReturnType<typeof vi.fn>;
   state: Ably.ChannelState;
   publishCalls: (Ably.Message | Ably.Message[])[];
+  /** Listeners keyed by name. `*` holds unfiltered subscribers (subscribe(listener)). */
   listeners: Map<string, ((msg: Ably.InboundMessage) => void)[]>;
   stateListeners: Set<Ably.channelEventCallback>;
 }
 
+const ALL_NAMES = '*';
+
 const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
   const stateListeners = new Set<Ably.channelEventCallback>();
+  const addListener = (name: string, listener: (msg: Ably.InboundMessage) => void): void => {
+    const arr = mock.listeners.get(name) ?? [];
+    arr.push(listener);
+    mock.listeners.set(name, arr);
+  };
+  const removeListener = (name: string, listener: (msg: Ably.InboundMessage) => void): void => {
+    const arr = mock.listeners.get(name) ?? [];
+    mock.listeners.set(
+      name,
+      arr.filter((l) => l !== listener),
+    );
+  };
   const mock: MockChannel = {
     publishCalls: [],
     listeners: new Map(),
@@ -75,19 +91,34 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
       mock.publishCalls.push(msgOrMsgs);
       return { serials: ['serial-1'] } as Ably.PublishResult;
     }),
-    // eslint-disable-next-line @typescript-eslint/require-await -- mock
-    subscribe: vi.fn(async (name: string, listener: (msg: Ably.InboundMessage) => void) => {
-      const arr = mock.listeners.get(name) ?? [];
-      arr.push(listener);
-      mock.listeners.set(name, arr);
-    }),
-    unsubscribe: vi.fn((name: string, listener: (msg: Ably.InboundMessage) => void) => {
-      const arr = mock.listeners.get(name) ?? [];
-      mock.listeners.set(
-        name,
-        arr.filter((l) => l !== listener),
-      );
-    }),
+    // Overloaded subscribe: `subscribe(listener)` registers under `*`,
+    // `subscribe(name, listener)` registers under the given name.
+    /* eslint-disable @typescript-eslint/require-await -- mock returns no awaitable work */
+    subscribe: vi.fn(
+      async (
+        nameOrListener: string | ((msg: Ably.InboundMessage) => void),
+        listener?: (msg: Ably.InboundMessage) => void,
+      ) => {
+        if (typeof nameOrListener === 'function') {
+          addListener(ALL_NAMES, nameOrListener);
+        } else if (listener) {
+          addListener(nameOrListener, listener);
+        }
+      },
+    ),
+    /* eslint-enable @typescript-eslint/require-await */
+    unsubscribe: vi.fn(
+      (
+        nameOrListener: string | ((msg: Ably.InboundMessage) => void),
+        listener?: (msg: Ably.InboundMessage) => void,
+      ) => {
+        if (typeof nameOrListener === 'function') {
+          removeListener(ALL_NAMES, nameOrListener);
+        } else if (listener) {
+          removeListener(nameOrListener, listener);
+        }
+      },
+    ),
     on: vi.fn((callback: Ably.channelEventCallback) => {
       stateListeners.add(callback);
     }),
@@ -155,7 +186,9 @@ const headersOf = (msg: Ably.Message): Record<string, string> =>
  * @param clientId - Sender clientId.
  */
 const simulateCancel = (channel: MockChannel, headers: Record<string, string>, clientId?: string): void => {
-  const listeners = channel.listeners.get(EVENT_CANCEL) ?? [];
+  // Unfiltered subscribers are stored under `*`; the agent session uses
+  // unfiltered subscribe and discriminates on `msg.name` internally.
+  const listeners = [...(channel.listeners.get(EVENT_CANCEL) ?? []), ...(channel.listeners.get(ALL_NAMES) ?? [])];
   const msg = {
     name: EVENT_CANCEL,
     clientId,
@@ -207,7 +240,12 @@ describe('AgentSession', () => {
   beforeEach(async () => {
     channel = createMockChannel();
     codec = createMockCodec();
-    session = createAgentSession({ client: createMockClient(channel), channelName: 'test-channel', codec });
+    session = createAgentSession({
+      client: createMockClient(channel),
+      channelName: 'test-channel',
+      codec,
+      promptLookupTimeoutMs: 0,
+    });
     await session.connect();
   });
 
@@ -225,7 +263,7 @@ describe('AgentSession', () => {
       expect(agents?.['ai-transport-js']).toBe(VERSION);
       // eslint-disable-next-line @typescript-eslint/unbound-method -- accessing vi mock
       expect(client.channels.get).toHaveBeenCalledWith('attribution-channel', {
-        params: { agent: `ai-transport-js/${VERSION}` },
+        params: { agent: `ai-transport-js/${VERSION}`, rewind: '2m' },
       });
       s.close();
     });
@@ -254,19 +292,32 @@ describe('AgentSession', () => {
   });
 
   describe('connect()', () => {
-    it('subscribes to cancel events', async () => {
+    it('subscribes (unfiltered) so cancels and rewound user prompts both reach the dispatcher', async () => {
       const ch = createMockChannel();
       const c = createMockCodec();
-      const s = createAgentSession({ client: createMockClient(ch), channelName: 'test-channel', codec: c });
+      const s = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: c,
+        promptLookupTimeoutMs: 0,
+      });
       await s.connect();
-      expect(ch.subscribe).toHaveBeenCalledWith(EVENT_CANCEL, expect.any(Function));
+      // Unfiltered subscribe — the session discriminates messages internally
+      // by name and headers so the same subscription captures both cancels
+      // and channel-rewind-replayed user prompts.
+      expect(ch.subscribe).toHaveBeenCalledWith(expect.any(Function));
       s.close();
     });
 
     it('is idempotent — multiple calls return the same subscribe', async () => {
       const ch = createMockChannel();
       const c = createMockCodec();
-      const s = createAgentSession({ client: createMockClient(ch), channelName: 'test-channel', codec: c });
+      const s = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: c,
+        promptLookupTimeoutMs: 0,
+      });
       const p1 = s.connect();
       const p2 = s.connect();
       expect(p1).toBe(p2);
@@ -278,7 +329,12 @@ describe('AgentSession', () => {
     it('rejects when called after close()', async () => {
       const ch = createMockChannel();
       const c = createMockCodec();
-      const s = createAgentSession({ client: createMockClient(ch), channelName: 'test-channel', codec: c });
+      const s = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: c,
+        promptLookupTimeoutMs: 0,
+      });
       s.close();
       await expect(s.connect()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
     });
@@ -288,7 +344,12 @@ describe('AgentSession', () => {
     it('start() throws InvalidArgument if connect() was not called', async () => {
       const ch = createMockChannel();
       const c = createMockCodec();
-      const s = createAgentSession({ client: createMockClient(ch), channelName: 'test-channel', codec: c });
+      const s = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: c,
+        promptLookupTimeoutMs: 0,
+      });
       const run = createRunFromOpts(s, { runId: 'run-1' });
       await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
       s.close();
@@ -297,7 +358,12 @@ describe('AgentSession', () => {
     it('addMessages() throws InvalidArgument if connect() was not called', async () => {
       const ch = createMockChannel();
       const c = createMockCodec();
-      const s = createAgentSession({ client: createMockClient(ch), channelName: 'test-channel', codec: c });
+      const s = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: c,
+        promptLookupTimeoutMs: 0,
+      });
       const run = createRunFromOpts(s, { runId: 'run-1' });
       await expect(run.addMessages([makeNode({ id: 'm', content: 'hi' })])).rejects.toBeErrorInfoWithCode(
         ErrorCode.InvalidArgument,
@@ -308,7 +374,12 @@ describe('AgentSession', () => {
     it('addEvents() throws InvalidArgument if connect() was not called', async () => {
       const ch = createMockChannel();
       const c = createMockCodec();
-      const s = createAgentSession({ client: createMockClient(ch), channelName: 'test-channel', codec: c });
+      const s = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: c,
+        promptLookupTimeoutMs: 0,
+      });
       const run = createRunFromOpts(s, { runId: 'run-1' });
       await expect(
         run.addEvents([{ kind: 'event', msgId: 'target-1', events: [{ type: 'ev' }] }]),
@@ -319,7 +390,12 @@ describe('AgentSession', () => {
     it('pipe() throws InvalidArgument if connect() was not called', async () => {
       const ch = createMockChannel();
       const c = createMockCodec();
-      const s = createAgentSession({ client: createMockClient(ch), channelName: 'test-channel', codec: c });
+      const s = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: c,
+        promptLookupTimeoutMs: 0,
+      });
       const run = createRunFromOpts(s, { runId: 'run-1' });
       const stream = new ReadableStream<TestEvent>({
         start: (controller) => {
@@ -333,7 +409,12 @@ describe('AgentSession', () => {
     it('end() throws InvalidArgument if connect() was not called', async () => {
       const ch = createMockChannel();
       const c = createMockCodec();
-      const s = createAgentSession({ client: createMockClient(ch), channelName: 'test-channel', codec: c });
+      const s = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: c,
+        promptLookupTimeoutMs: 0,
+      });
       const run = createRunFromOpts(s, { runId: 'run-1' });
       await expect(run.end('complete')).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
       s.close();
@@ -697,6 +778,30 @@ describe('AgentSession', () => {
 
       expect(run.abortSignal.aborted).toBe(false);
     });
+
+    it('aborts only the matching invocation when cancel by invocationId arrives', async () => {
+      // Two runs share a runId is not realistic in createRun, but two runs can
+      // have distinct invocation-ids. Test cancel-by-invocation-id by giving
+      // each run a distinct invocationId and asserting the filter only hits one.
+      const run1 = createRunFromOpts(session, {
+        runId: 'run-1',
+        clientId: 'user-a',
+        invocationId: 'inv-1',
+      });
+      const run2 = createRunFromOpts(session, {
+        runId: 'run-2',
+        clientId: 'user-a',
+        invocationId: 'inv-2',
+      });
+      await run1.start();
+      await run2.start();
+
+      simulateCancel(channel, { [HEADER_CANCEL_INVOCATION_ID]: 'inv-2' });
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(run1.abortSignal.aborted).toBe(false);
+      expect(run2.abortSignal.aborted).toBe(true);
+    });
   });
 
   describe('early cancel', () => {
@@ -729,6 +834,7 @@ describe('AgentSession', () => {
         client: createMockClient(failChannel),
         channelName: 'test-channel',
         codec,
+        promptLookupTimeoutMs: 0,
         onError,
       });
       await failSession.connect();
@@ -768,6 +874,7 @@ describe('AgentSession', () => {
         client: createMockClient(channel),
         channelName: 'test-channel',
         codec: failCodec,
+        promptLookupTimeoutMs: 0,
       });
       await failSession.connect();
       const run = createRunFromOpts(failSession, { runId: 'run-1', onError });
@@ -794,6 +901,7 @@ describe('AgentSession', () => {
         client: createMockClient(channel),
         channelName: 'test-channel',
         codec: failCodec,
+        promptLookupTimeoutMs: 0,
       });
       await failSession.connect();
       const run = createRunFromOpts(failSession, { runId: 'run-1', onError });
@@ -930,9 +1038,11 @@ describe('AgentSession', () => {
       expect(run2.abortSignal.aborted).toBe(true);
     });
 
-    it('unsubscribes from cancel messages', () => {
+    it('unsubscribes from the channel listener on close', () => {
       session.close();
-      expect(channel.unsubscribe).toHaveBeenCalledWith(EVENT_CANCEL, expect.any(Function));
+      // Mirrors connect()'s unfiltered subscribe: the close path unsubscribes
+      // the same listener function.
+      expect(channel.unsubscribe).toHaveBeenCalledWith(expect.any(Function));
     });
 
     it('unsubscribes from channel state changes', () => {
@@ -964,6 +1074,7 @@ describe('AgentSession', () => {
           client: createMockClient(ch),
           channelName: 'test-channel',
           codec: createMockCodec(),
+          promptLookupTimeoutMs: 0,
           onError,
         });
         simulateInitialAttach(ch);
@@ -990,6 +1101,7 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
+        promptLookupTimeoutMs: 0,
         onError,
       });
       simulateInitialAttach(ch);
@@ -1012,6 +1124,7 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
+        promptLookupTimeoutMs: 0,
         onError,
       });
       simulateInitialAttach(ch);
@@ -1043,6 +1156,7 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
+        promptLookupTimeoutMs: 0,
         onError,
       });
 
@@ -1063,6 +1177,7 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
+        promptLookupTimeoutMs: 0,
         onError,
       });
       simulateInitialAttach(ch);
@@ -1084,6 +1199,7 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
+        promptLookupTimeoutMs: 0,
         onError,
       });
 
@@ -1108,6 +1224,7 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
+        promptLookupTimeoutMs: 0,
         onError: sessionOnError,
       });
       await s.connect();
@@ -1133,6 +1250,7 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
+        promptLookupTimeoutMs: 0,
         onError,
       });
       simulateInitialAttach(ch);
@@ -1150,7 +1268,12 @@ describe('AgentSession', () => {
     it('does not crash when no onError callback is supplied', () => {
       const ch = createMockChannel();
       ch.state = 'initialized';
-      createAgentSession({ client: createMockClient(ch), channelName: 'test-channel', codec: createMockCodec() });
+      createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: createMockCodec(),
+        promptLookupTimeoutMs: 0,
+      });
       simulateInitialAttach(ch);
 
       expect(() => {

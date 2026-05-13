@@ -6,6 +6,7 @@ import {
   EVENT_RUN_START,
   HEADER_AMEND,
   HEADER_FORK_OF,
+  HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
   HEADER_PARENT,
   HEADER_ROLE,
@@ -220,8 +221,70 @@ const createMockAccumulator = (): MessageAccumulator<TestEvent, TestMessage> => 
   hasActiveStream: false,
 });
 
+/**
+ * Build a mock encoder bound to a channel-like object. On every writeMessages
+ * call the mock immediately delivers a synthetic `x-ably-run-start` event back
+ * to the channel's listener — emulating the agent's response so the tests'
+ * `await session.view.send(...)` paths resolve. This keeps the
+ * run-start-deadline contract intact while making unit tests deterministic.
+ * @param channel - Mock channel container holding the active subscription listener.
+ * @param channel.listener - The current `subscribe()` callback, invoked with synthetic run-start events.
+ * @returns A mock encoder that records writes and stamps responses on the channel listener.
+ */
+const createMockEncoder = (channel: {
+  listener: ((msg: Ably.InboundMessage) => void) | undefined;
+}): {
+  writeMessages: ReturnType<typeof vi.fn>;
+  writeEvent: ReturnType<typeof vi.fn>;
+  appendEvent: ReturnType<typeof vi.fn>;
+  abort: ReturnType<typeof vi.fn>;
+  close: ReturnType<typeof vi.fn>;
+} => ({
+  // eslint-disable-next-line @typescript-eslint/require-await -- mock fires synthetic run-start side effect; no awaitable work
+  writeMessages: vi.fn(async (_msgs: unknown, opts?: { extras?: { headers?: Record<string, string> } }) => {
+    const headers = opts?.extras?.headers ?? {};
+    const runId = headers[HEADER_RUN_ID];
+    const runClientId = headers[HEADER_RUN_CLIENT_ID];
+    const invocationId = headers['x-ably-invocation-id'];
+    if (runId && channel.listener) {
+      // Defer one microtask so the publish promise resolves before the
+      // synthetic run-start lands — keeps the publish-then-run-start ordering
+      // realistic for tests that observe both events.
+      queueMicrotask(() => {
+        channel.listener?.({
+          name: EVENT_RUN_START,
+          extras: {
+            headers: {
+              [HEADER_RUN_ID]: runId,
+              ...(runClientId !== undefined && { [HEADER_RUN_CLIENT_ID]: runClientId }),
+              ...(invocationId !== undefined && { 'x-ably-invocation-id': invocationId }),
+            },
+          },
+          serial: '01H_run_start_sim',
+        } as unknown as Ably.InboundMessage);
+      });
+    }
+    return { ablyMessages: [] };
+  }),
+  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+  writeEvent: vi.fn(() => Promise.resolve({ ablyMessages: [] })),
+  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+  appendEvent: vi.fn(() => Promise.resolve()),
+  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+  abort: vi.fn(() => Promise.resolve()),
+  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+  close: vi.fn(() => Promise.resolve()),
+});
+
 const createMockCodec = (decoderInstance: ReturnType<typeof createMockDecoder>): Codec<TestEvent, TestMessage> => ({
-  createEncoder: vi.fn(),
+  // CAST: mock encoder satisfies the StreamEncoder shape used in tests. The
+  // first arg passed to createEncoder by DefaultClientSession is the channel.
+  createEncoder: vi.fn(
+    (channel: unknown) =>
+      createMockEncoder(
+        channel as { listener: ((msg: Ably.InboundMessage) => void) | undefined },
+      ) as unknown as ReturnType<Codec<TestEvent, TestMessage>['createEncoder']>,
+  ),
   createDecoder: vi.fn(() => decoderInstance),
   createAccumulator: vi.fn(() => createMockAccumulator()),
   isTerminal: vi.fn((event: TestEvent) => event.type === 'finish'),
@@ -563,10 +626,13 @@ describe('ClientSession', () => {
       expect(mockFetch.calls[0]?.url).toBe('/api/chat');
       const body = mockFetch.body(0);
       expect(body.runId).toBe(run.runId);
+      expect(body.invocationId).toBeDefined();
+      expect(typeof body.invocationId).toBe('string');
       expect(body.clientId).toBe('client-1');
-      expect(body.messages).toBeDefined();
       expect(body.history).toBeDefined();
-      expect(Array.isArray(body.messages)).toBe(true);
+      // `messages` is not in the POST body; the client publishes user
+      // messages on the channel and the agent reads them via rewind.
+      expect(body.messages).toBeUndefined();
     });
 
     it('does not include the new message in history (avoids duplication)', async () => {
@@ -575,12 +641,10 @@ describe('ClientSession', () => {
 
       const body = mockFetch.body(0);
       const historyIds = (body.history as { message: { id: string } }[]).map((h) => h.message.id);
-      const messageIds = (body.messages as { message: { id: string } }[]).map((m) => m.message.id);
 
-      // The new message should only appear in messages, not in history
-      for (const id of messageIds) {
-        expect(historyIds).not.toContain(id);
-      }
+      // The just-sent user message must not appear in history (the history
+      // window is computed before the optimistic insert).
+      expect(historyIds).not.toContain('user-1');
     });
 
     it('includes Content-Type header in POST', async () => {
@@ -614,14 +678,29 @@ describe('ClientSession', () => {
       await blockSession.close();
     });
 
-    it('POST body messages include msg-id and role headers', async () => {
+    it('publishes user messages on the channel with msg-id, role, and invocation-id headers', async () => {
       await session.view.send({ id: 'user-1', content: 'hello' });
       await mockFetch.waitForCalls(1);
 
-      const body = mockFetch.body(0);
-      const messages = body.messages as { message: TestMessage; headers: Record<string, string> }[];
-      expect(messages[0]?.headers['x-ably-msg-id']).toBeDefined();
-      expect(messages[0]?.headers['x-ably-role']).toBe('user');
+      // The client publishes user messages via the encoder. The headers on
+      // those publishes carry msg-id, role, run-id, and invocation-id.
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      const createEncoder = vi.mocked(codec.createEncoder);
+      expect(createEncoder).toHaveBeenCalled();
+      // Find the encoder mock returned from the most recent createEncoder call
+      // and verify its writeMessages invocation captured the right headers.
+      const encoderResult = createEncoder.mock.results.at(0)?.value as {
+        writeMessages: ReturnType<typeof vi.fn>;
+      };
+      expect(encoderResult.writeMessages).toHaveBeenCalled();
+      const writeArgs = encoderResult.writeMessages.mock.calls.at(-1) as [
+        unknown,
+        { extras?: { headers?: Record<string, string> } },
+      ];
+      const headers = writeArgs[1].extras?.headers ?? {};
+      expect(headers['x-ably-msg-id']).toBeDefined();
+      expect(headers['x-ably-role']).toBe('user');
+      expect(headers['x-ably-invocation-id']).toBeDefined();
     });
 
     it('merges sendOptions.body into the POST body', async () => {
@@ -831,9 +910,14 @@ describe('ClientSession', () => {
       ]);
       await mockFetch.waitForCalls(1);
 
-      const body = mockFetch.body(0);
-      const messages = body.messages as { message: TestMessage }[];
-      expect(messages).toHaveLength(2);
+      // Messages are published on the channel via the encoder, not in the
+      // POST body. Verify the encoder's writeMessages was called twice.
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      const createEncoder = vi.mocked(codec.createEncoder);
+      const encoderResult = createEncoder.mock.results.at(0)?.value as {
+        writeMessages: ReturnType<typeof vi.fn>;
+      };
+      expect(encoderResult.writeMessages).toHaveBeenCalledTimes(2);
       expect(run.runId).toBeDefined();
     });
 
@@ -921,6 +1005,77 @@ describe('ClientSession', () => {
       const activeRuns = session.tree.getActiveRunIds();
       const clientRuns = activeRuns.get('client-1');
       expect(clientRuns?.has('run-1')).toBe(true);
+    });
+
+    it('ignores a losing-invocation run-end on an observed run (Tree winner gates)', () => {
+      const runId = 'run-shared';
+      const losingInvocation = 'inv-loser';
+      const winningInvocation = 'inv-winner';
+
+      // Observed run: two invocations under the same runId. The Tree's
+      // winning invocation is keyed by user-message serial, so we seed it
+      // by upserting a user message with the winning invocationId at a
+      // higher serial than the loser's.
+      session.tree.upsert(
+        'msg-loser',
+        { id: 'msg-loser', content: 'older' },
+        {
+          [HEADER_MSG_ID]: 'msg-loser',
+          [HEADER_RUN_ID]: runId,
+          'x-ably-invocation-id': losingInvocation,
+          'x-ably-role': 'user',
+        },
+        'serial-001',
+      );
+      session.tree.upsert(
+        'msg-winner',
+        { id: 'msg-winner', content: 'newer' },
+        {
+          [HEADER_MSG_ID]: 'msg-winner',
+          [HEADER_RUN_ID]: runId,
+          'x-ably-invocation-id': winningInvocation,
+          'x-ably-role': 'user',
+        },
+        'serial-002',
+      );
+
+      // Start the run, then deliver the losing-invocation's run-end first.
+      simulateMessage(
+        channel,
+        ablyMsg(EVENT_RUN_START, {
+          [HEADER_RUN_ID]: runId,
+          [HEADER_RUN_CLIENT_ID]: 'remote-client',
+          'x-ably-invocation-id': winningInvocation,
+        }),
+      );
+      // The loser run-end must be ignored — the Tree has winningInvocation
+      // as the canonical winner, so untrackRun should NOT fire.
+      simulateMessage(
+        channel,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: runId,
+          [HEADER_RUN_CLIENT_ID]: 'remote-client',
+          'x-ably-invocation-id': losingInvocation,
+          [HEADER_RUN_REASON]: 'complete',
+        }),
+      );
+
+      let activeRuns = session.tree.getActiveRunIds();
+      expect(activeRuns.get('remote-client')?.has(runId)).toBe(true);
+
+      // The winning invocation's run-end should terminate the run.
+      simulateMessage(
+        channel,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: runId,
+          [HEADER_RUN_CLIENT_ID]: 'remote-client',
+          'x-ably-invocation-id': winningInvocation,
+          [HEADER_RUN_REASON]: 'complete',
+        }),
+      );
+
+      activeRuns = session.tree.getActiveRunIds();
+      expect(activeRuns.size).toBe(0);
     });
 
     it('handles run-end event by removing from active runs', () => {
@@ -1050,9 +1205,17 @@ describe('ClientSession', () => {
       const run = await session.view.send({ id: 'u1', content: 'hello' });
       await mockFetch.waitForCalls(1);
 
-      const body = mockFetch.body(0);
-      const postMessages = body.messages as { headers: Record<string, string> }[];
-      const msgId = postMessages[0]?.headers['x-ably-msg-id'] ?? '';
+      // Recover the optimistic msg-id from the encoder publish call.
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      const createEncoder = vi.mocked(codec.createEncoder);
+      const encoderResult = createEncoder.mock.results.at(0)?.value as {
+        writeMessages: ReturnType<typeof vi.fn>;
+      };
+      const writeArgs = encoderResult.writeMessages.mock.calls.at(-1) as [
+        unknown,
+        { extras?: { headers?: Record<string, string> } },
+      ];
+      const msgId = writeArgs[1].extras?.headers?.['x-ably-msg-id'] ?? '';
 
       decoder.outputs.push({ kind: 'message', message: { id: 'u1', content: 'hello-from-server' } });
       simulateMessage(
@@ -1168,6 +1331,39 @@ describe('ClientSession', () => {
 
       const items = await drain(run.stream);
       expect(items).toEqual([{ type: 'text', text: 'data' }]);
+    });
+
+    it('ignores a run-end carrying a losing invocation-id (different invocation under same runId)', async () => {
+      const run = await session.view.send({ id: 'u1', content: 'hi' });
+      await mockFetch.waitForCalls(1);
+
+      // run-end from a stale/losing invocation under the same runId should be
+      // dropped. The local stream and run state remain active.
+      simulateMessage(
+        channel,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: run.runId,
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+          [HEADER_INVOCATION_ID]: 'losing-invocation-id',
+        }),
+      );
+
+      // Run is still tracked; stream is still open and accepts events.
+      expect(session.tree.getActiveRunIds().size).toBeGreaterThan(0);
+      decoder.outputs.push({ kind: 'event', event: { type: 'text', text: 'after-loser-end' } });
+      simulateMessage(channel, ablyMsg('codec-msg', { [HEADER_RUN_ID]: run.runId }));
+
+      // Now deliver the run-end without an invocation-id (matches active by default).
+      simulateMessage(
+        channel,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: run.runId,
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+        }),
+      );
+
+      const items = await drain(run.stream);
+      expect(items).toEqual([{ type: 'text', text: 'after-loser-end' }]);
     });
 
     it('accumulates observer run events into messages via on("message")', () => {
@@ -1382,11 +1578,16 @@ describe('ClientSession', () => {
       ]);
       await mockFetch.waitForCalls(1);
 
-      // Retrieve the client-generated msg IDs from the POST body
-      const body = mockFetch.body(0);
-      const postMessages = body.messages as { headers: Record<string, string> }[];
-      const msg1Id = postMessages[0]?.headers[HEADER_MSG_ID] ?? '';
-      const msg2Id = postMessages[1]?.headers[HEADER_MSG_ID] ?? '';
+      // Retrieve the client-generated msg IDs from the encoder publish calls.
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      const encMock = vi.mocked(codec.createEncoder);
+      const encResult = encMock.mock.results.at(0)?.value as { writeMessages: ReturnType<typeof vi.fn> };
+      const calls = encResult.writeMessages.mock.calls as [
+        unknown,
+        { extras?: { headers?: Record<string, string> } },
+      ][];
+      const msg1Id = calls.at(-2)?.[1].extras?.headers?.[HEADER_MSG_ID] ?? '';
+      const msg2Id = calls.at(-1)?.[1].extras?.headers?.[HEADER_MSG_ID] ?? '';
 
       // --- simulate server run-start ---
       simulateMessage(
@@ -1511,14 +1712,22 @@ describe('ClientSession', () => {
       ]);
       await mockFetch.waitForCalls(1);
 
-      const body = mockFetch.body(0);
-      const postMsgs = body.messages as { headers: Record<string, string> }[];
-      const msg1Id = postMsgs[0]?.headers[HEADER_MSG_ID] ?? '';
-      const msg2Id = postMsgs[1]?.headers[HEADER_MSG_ID] ?? '';
+      // Recover msg-ids and parent headers from the encoder publish calls.
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      const encMock2 = vi.mocked(codec.createEncoder);
+      const encResult2 = encMock2.mock.results.at(0)?.value as { writeMessages: ReturnType<typeof vi.fn> };
+      const writeCalls2 = encResult2.writeMessages.mock.calls as [
+        unknown,
+        { extras?: { headers?: Record<string, string> } },
+      ][];
+      const msg1Headers = writeCalls2.at(-2)?.[1]?.extras?.headers ?? {};
+      const msg2Headers = writeCalls2.at(-1)?.[1]?.extras?.headers ?? {};
+      const msg1Id = msg1Headers[HEADER_MSG_ID] ?? '';
+      const msg2Id = msg2Headers[HEADER_MSG_ID] ?? '';
 
       // Verify chaining: msg1 parents off prev, msg2 parents off msg1
-      expect(postMsgs[0]?.headers[HEADER_PARENT]).toBe('prev');
-      expect(postMsgs[1]?.headers[HEADER_PARENT]).toBe(msg1Id);
+      expect(msg1Headers[HEADER_PARENT]).toBe('prev');
+      expect(msg2Headers[HEADER_PARENT]).toBe(msg1Id);
 
       // Verify optimistic tree structure
       const msg2Node = tree.getNode(msg2Id);
@@ -1589,14 +1798,19 @@ describe('ClientSession', () => {
       await seeded.close();
     });
 
-    it('sends with empty messages array', async () => {
-      const seeded = await createSeededSession(codec, mockFetch, [{ id: 'msg-1', content: 'hi' }]);
+    it('sends without messages in the POST body (regenerate republishes via channel, not via POST)', async () => {
+      const seeded = await createSeededSession(codec, mockFetch, [
+        { id: 'user-msg', content: 'question' },
+        { id: 'asst-msg', content: 'answer' },
+      ]);
 
-      await seeded.view.regenerate('msg-1');
+      await seeded.view.regenerate('asst-msg');
       await mockFetch.waitForCalls(1);
 
       const body = mockFetch.body(0);
-      expect(body.messages).toEqual([]);
+      // `messages` is not in the POST body — the user message is
+      // republished on the channel instead (with the original msg-id).
+      expect(body.messages).toBeUndefined();
 
       await seeded.close();
     });
@@ -1619,28 +1833,63 @@ describe('ClientSession', () => {
       await seeded.close();
     });
 
-    it('sets parent from the tree node', async () => {
+    it('sets the POST body parent to the republished user message parent (its tree parentId)', async () => {
+      // Three-message thread: q0 (root user) → a0 (assistant) → q1 (user) → a1 (assistant).
+      // Regenerating a1 republishes q1, so body.parent should be q1's parent = a0.
       const seeded = await createSeededSession(codec, mockFetch, [
-        { id: 'q1', content: 'question' },
-        { id: 'a1', content: 'answer' },
+        { id: 'q0', content: 'first question' },
+        { id: 'a0', content: 'first answer' },
+        { id: 'q1', content: 'follow-up' },
+        { id: 'a1', content: 'follow-up answer' },
       ]);
 
       await seeded.view.regenerate('a1');
       await mockFetch.waitForCalls(1);
 
       const body = mockFetch.body(0);
-      // a1's parent is q1 in the tree, so regenerate should set parent to q1
-      expect(body.parent).toBe('q1');
+      expect(body.parent).toBe('a0');
 
       await seeded.close();
     });
 
     it('returns an ActiveRun', async () => {
-      const seeded = await createSeededSession(codec, mockFetch, [{ id: 'msg-1', content: 'hi' }]);
+      const seeded = await createSeededSession(codec, mockFetch, [
+        { id: 'user-msg', content: 'q' },
+        { id: 'asst-msg', content: 'a' },
+      ]);
 
-      const run = await seeded.view.regenerate('msg-1');
+      const run = await seeded.view.regenerate('asst-msg');
       expect(run.stream).toBeInstanceOf(ReadableStream);
       expect(typeof run.runId).toBe('string');
+
+      await seeded.close();
+    });
+
+    it('republishes the user-prompt under its original msg-id with a fresh invocation-id', async () => {
+      const seeded = await createSeededSession(codec, mockFetch, [
+        { id: 'user-msg', content: 'question' },
+        { id: 'asst-msg', content: 'answer' },
+      ]);
+
+      await seeded.view.regenerate('asst-msg');
+      await mockFetch.waitForCalls(1);
+
+      // The seeded session's encoder is the most recent createEncoder result.
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      const enc = vi.mocked(codec.createEncoder);
+      const encResult = enc.mock.results.at(-1)?.value as { writeMessages: ReturnType<typeof vi.fn> };
+      expect(encResult.writeMessages).toHaveBeenCalledTimes(1);
+
+      const call = encResult.writeMessages.mock.calls[0] as
+        | [unknown, { extras?: { headers?: Record<string, string> }; messageId?: string }]
+        | undefined;
+      // The republish uses the original user message's msg-id.
+      expect(call?.[1]?.messageId).toBe('user-msg');
+      // ...and a fresh invocation-id.
+      const headers = call?.[1]?.extras?.headers ?? {};
+      expect(headers['x-ably-invocation-id']).toBeTruthy();
+      expect(headers['x-ably-msg-id']).toBe('user-msg');
+      expect(headers['x-ably-role']).toBe('user');
 
       await seeded.close();
     });
@@ -1663,7 +1912,7 @@ describe('ClientSession', () => {
       await seeded.close();
     });
 
-    it('sends replacement messages in the POST body', async () => {
+    it('publishes the replacement user messages on the channel via the encoder', async () => {
       const seeded = await createSeededSession(codec, mockFetch, [{ id: 'user-msg', content: 'original' }]);
 
       await seeded.view.edit('user-msg', [
@@ -1672,9 +1921,11 @@ describe('ClientSession', () => {
       ]);
       await mockFetch.waitForCalls(1);
 
-      const body = mockFetch.body(0);
-      const messages = body.messages as { message: TestMessage }[];
-      expect(messages).toHaveLength(2);
+      // The seeded session's encoder is the most recent createEncoder result.
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
+      const enc = vi.mocked(codec.createEncoder);
+      const encResult = enc.mock.results.at(-1)?.value as { writeMessages: ReturnType<typeof vi.fn> };
+      expect(encResult.writeMessages).toHaveBeenCalledTimes(2);
 
       await seeded.close();
     });
@@ -3380,6 +3631,334 @@ describe('ClientSession', () => {
       expect(handler).toHaveBeenCalled();
 
       void seeded.close();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // send() failure paths
+  // -------------------------------------------------------------------------
+
+  describe('send() rejection paths', () => {
+    it('rejects with InsufficientCapability when the encoder publish fails with a permission error', async () => {
+      // Build a codec whose encoder rejects writeMessages with a 403 ErrorInfo.
+      const failingCodec: Codec<TestEvent, TestMessage> = {
+        // CAST: stub encoder shape
+        createEncoder: vi.fn(() => ({
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          writeMessages: vi.fn(() =>
+            Promise.reject(
+              new Ably.ErrorInfo('forbidden: publish capability missing', ErrorCode.InsufficientCapability, 403),
+            ),
+          ),
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          writeEvent: vi.fn(() => Promise.resolve({ ablyMessages: [] })),
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          appendEvent: vi.fn(() => Promise.resolve()),
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          abort: vi.fn(() => Promise.resolve()),
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          close: vi.fn(() => Promise.resolve()),
+          // CAST: ad-hoc encoder mock satisfies the StreamEncoder contract used in tests.
+        })) as unknown as Codec<TestEvent, TestMessage>['createEncoder'],
+        createDecoder: vi.fn(() => createMockDecoder()),
+        createAccumulator: vi.fn(() => createMockAccumulator()),
+        isTerminal: vi.fn((event: TestEvent) => event.type === 'finish'),
+      };
+
+      const ch = createMockChannel();
+      const sess = createClientSession({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: failingCodec,
+        clientId: 'client-1',
+        api: '/test',
+        fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
+      });
+      await sess.connect();
+
+      await expect(sess.view.send({ id: 'u1', content: 'hi' })).rejects.toMatchObject({
+        code: ErrorCode.InsufficientCapability,
+      });
+
+      await sess.close();
+    });
+
+    it('rejects with the agent error code when x-ably-error arrives before run-start', async () => {
+      // Use a silent encoder so no synthetic run-start is fired — leaving
+      // the pending run-start tracker open for the simulated x-ably-error
+      // to settle.
+      const silentCodec: Codec<TestEvent, TestMessage> = {
+        createEncoder: vi.fn(() => ({
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          writeMessages: vi.fn(() => Promise.resolve({ ablyMessages: [] })),
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          writeEvent: vi.fn(() => Promise.resolve({ ablyMessages: [] })),
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          appendEvent: vi.fn(() => Promise.resolve()),
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          abort: vi.fn(() => Promise.resolve()),
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          close: vi.fn(() => Promise.resolve()),
+        })) as unknown as Codec<TestEvent, TestMessage>['createEncoder'],
+        createDecoder: vi.fn(() => createMockDecoder()),
+        createAccumulator: vi.fn(() => createMockAccumulator()),
+        isTerminal: vi.fn((event: TestEvent) => event.type === 'finish'),
+      };
+
+      const ch = createMockChannel();
+      const sess = createClientSession({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: silentCodec,
+        clientId: 'client-1',
+        api: '/test',
+        // Generous deadline so we know the rejection came from x-ably-error,
+        // not from the deadline timer.
+        runStartDeadlineMs: 5000,
+        fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
+      });
+      await sess.connect();
+
+      const sendPromise = sess.view.send({ id: 'u1', content: 'hi' });
+
+      // Wait for the pending run-start tracker to be registered (publish
+      // resolves first; tracker is armed before send awaits it).
+      await flushMicrotasks();
+
+      // Discover the invocationId the SDK generated by inspecting the
+      // headers passed to writeMessages.
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- accessing vi mock
+      const createEncoderMock = vi.mocked(silentCodec.createEncoder);
+      const writeCall = createEncoderMock.mock.results[0]?.value as unknown as {
+        writeMessages: ReturnType<typeof vi.fn>;
+      };
+      const callArgs = writeCall.writeMessages.mock.calls[0] as
+        | [unknown, { extras?: { headers?: Record<string, string> } }]
+        | undefined;
+      const invocationId = callArgs?.[1]?.extras?.headers?.['x-ably-invocation-id'];
+      expect(invocationId).toBeDefined();
+
+      // Simulate the agent's x-ably-error arrival with PromptNotFound.
+      simulateMessage(
+        ch,
+        ablyMsg(
+          'x-ably-error',
+          {
+            [HEADER_RUN_ID]: 'run-irrelevant',
+            // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by expect above
+            'x-ably-invocation-id': invocationId!,
+          },
+          { code: ErrorCode.PromptNotFound, statusCode: 504, message: 'no prompt' },
+        ),
+      );
+
+      await expect(sendPromise).rejects.toMatchObject({
+        code: ErrorCode.PromptNotFound,
+        statusCode: 504,
+      });
+
+      await sess.close();
+    });
+
+    it('cleans up optimistic tree state and active-run maps when the publish leg fails', async () => {
+      const failingCodec: Codec<TestEvent, TestMessage> = {
+        createEncoder: vi.fn(() => ({
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          writeMessages: vi.fn(() =>
+            Promise.reject(
+              new Ably.ErrorInfo('forbidden: publish capability missing', ErrorCode.InsufficientCapability, 403),
+            ),
+          ),
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          writeEvent: vi.fn(() => Promise.resolve({ ablyMessages: [] })),
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          appendEvent: vi.fn(() => Promise.resolve()),
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          abort: vi.fn(() => Promise.resolve()),
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          close: vi.fn(() => Promise.resolve()),
+        })) as unknown as Codec<TestEvent, TestMessage>['createEncoder'],
+        createDecoder: vi.fn(() => createMockDecoder()),
+        createAccumulator: vi.fn(() => createMockAccumulator()),
+        isTerminal: vi.fn((event: TestEvent) => event.type === 'finish'),
+      };
+
+      const ch = createMockChannel();
+      const sess = createClientSession({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: failingCodec,
+        clientId: 'client-1',
+        api: '/test',
+        fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
+      });
+      // Swallow the session error emitted from the failed publish — otherwise
+      // it surfaces as an unhandled error.
+      sess.on('error', () => {
+        /* swallow */
+      });
+      await sess.connect();
+
+      await expect(sess.view.send({ id: 'u-fail', content: 'hi' })).rejects.toMatchObject({
+        code: ErrorCode.InsufficientCapability,
+      });
+
+      // Optimistic node should be gone from the tree (publish never landed).
+      expect(sess.tree.getNode('u-fail')).toBeUndefined();
+      // Active run state cleaned up — no in-flight runs.
+      expect(sess.tree.getActiveRunIds().size).toBe(0);
+
+      await sess.close();
+    });
+
+    it('cleans up active-run maps but keeps optimistic node when only POST fails', async () => {
+      // Local encoder mock that resolves writeMessages with a server-assigned
+      // serial via the channel listener (mimicking the channel echo).
+      const localCodec: Codec<TestEvent, TestMessage> = {
+        createEncoder: vi.fn(() => ({
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          writeMessages: vi.fn(() => Promise.resolve({ ablyMessages: [] })),
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          writeEvent: vi.fn(() => Promise.resolve({ ablyMessages: [] })),
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          appendEvent: vi.fn(() => Promise.resolve()),
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          abort: vi.fn(() => Promise.resolve()),
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          close: vi.fn(() => Promise.resolve()),
+        })) as unknown as Codec<TestEvent, TestMessage>['createEncoder'],
+        createDecoder: vi.fn(() => createMockDecoder()),
+        createAccumulator: vi.fn(() => createMockAccumulator()),
+        isTerminal: vi.fn((event: TestEvent) => event.type === 'finish'),
+      };
+
+      const failingFetch: MockFetch = createMockFetch();
+      // Force the POST to fail with a network error.
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.reject directly
+      failingFetch.fn = vi.fn(() => Promise.reject(new Error('network down'))) as unknown as MockFetch['fn'];
+
+      const ch = createMockChannel();
+      const sess = createClientSession({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: localCodec,
+        clientId: 'client-1',
+        api: '/test',
+        runStartDeadlineMs: 0,
+        fetch: failingFetch.fn as unknown as typeof globalThis.fetch,
+      });
+      sess.on('error', () => {
+        /* swallow */
+      });
+      await sess.connect();
+
+      // POST failure surfaces as a fire-and-forget side effect. The publish
+      // succeeded and runStartDeadlineMs is 0 so send() resolves; we wait
+      // for the POST .catch to run.
+      const run = await sess.view.send({ id: 'u-keep', content: 'hi' });
+      expect(run).toBeDefined();
+      const optimisticMsgId = run.optimisticMsgIds[0];
+      expect(optimisticMsgId).toBeDefined();
+      await flushMicrotasks();
+      await flushMicrotasks();
+
+      // Optimistic node remains (publish succeeded, channel has it).
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by expect above
+      expect(sess.tree.getNode(optimisticMsgId!)).toBeDefined();
+      // Active run state cleaned up — the run will never start.
+      expect(sess.tree.getActiveRunIds().size).toBe(0);
+
+      await sess.close();
+    });
+
+    it('rejects regenerate() with RunStartDeadlineExceeded when no run-start arrives', async () => {
+      const silentCodec: Codec<TestEvent, TestMessage> = {
+        createEncoder: vi.fn(() => ({
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          writeMessages: vi.fn(() => Promise.resolve({ ablyMessages: [] })),
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          writeEvent: vi.fn(() => Promise.resolve({ ablyMessages: [] })),
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          appendEvent: vi.fn(() => Promise.resolve()),
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          abort: vi.fn(() => Promise.resolve()),
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          close: vi.fn(() => Promise.resolve()),
+        })) as unknown as Codec<TestEvent, TestMessage>['createEncoder'],
+        createDecoder: vi.fn(() => createMockDecoder()),
+        createAccumulator: vi.fn(() => createMockAccumulator()),
+        isTerminal: vi.fn((event: TestEvent) => event.type === 'finish'),
+      };
+
+      const ch = createMockChannel();
+      const sess = createClientSession({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: silentCodec,
+        clientId: 'client-1',
+        api: '/test',
+        runStartDeadlineMs: 25,
+        fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
+      });
+      sess.on('error', () => {
+        /* swallow */
+      });
+      await sess.connect();
+
+      // Seed a minimal user→assistant pair so regenerate has a parent to republish.
+      const tree = sess.tree;
+      tree.upsert('user-msg', { id: 'user-msg', content: 'q' } as TestMessage, {
+        [HEADER_MSG_ID]: 'user-msg',
+      });
+      tree.upsert('asst-msg', { id: 'asst-msg', content: 'a' } as TestMessage, {
+        [HEADER_MSG_ID]: 'asst-msg',
+        [HEADER_PARENT]: 'user-msg',
+      });
+
+      await expect(sess.view.regenerate('asst-msg')).rejects.toMatchObject({
+        code: ErrorCode.RunStartDeadlineExceeded,
+      });
+
+      await sess.close();
+    });
+
+    it('rejects with RunStartDeadlineExceeded when no run-start arrives within the deadline', async () => {
+      // Build a non-firing encoder — it does NOT auto-deliver a run-start.
+      const silentCodec: Codec<TestEvent, TestMessage> = {
+        createEncoder: vi.fn(() => ({
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          writeMessages: vi.fn(() => Promise.resolve({ ablyMessages: [] })),
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          writeEvent: vi.fn(() => Promise.resolve({ ablyMessages: [] })),
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          appendEvent: vi.fn(() => Promise.resolve()),
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          abort: vi.fn(() => Promise.resolve()),
+          // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+          close: vi.fn(() => Promise.resolve()),
+        })) as unknown as Codec<TestEvent, TestMessage>['createEncoder'],
+        createDecoder: vi.fn(() => createMockDecoder()),
+        createAccumulator: vi.fn(() => createMockAccumulator()),
+        isTerminal: vi.fn((event: TestEvent) => event.type === 'finish'),
+      };
+
+      const ch = createMockChannel();
+      const sess = createClientSession({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: silentCodec,
+        clientId: 'client-1',
+        api: '/test',
+        runStartDeadlineMs: 25,
+        fetch: mockFetch.fn as unknown as typeof globalThis.fetch,
+      });
+      await sess.connect();
+
+      await expect(sess.view.send({ id: 'u1', content: 'hi' })).rejects.toMatchObject({
+        code: ErrorCode.RunStartDeadlineExceeded,
+      });
+
+      await sess.close();
     });
   });
 });

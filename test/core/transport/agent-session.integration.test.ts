@@ -18,10 +18,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   EVENT_CANCEL,
+  EVENT_ERROR,
   EVENT_RUN_END,
   EVENT_RUN_START,
   HEADER_AMEND,
   HEADER_CANCEL_RUN_ID,
+  HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
   HEADER_PARENT,
   HEADER_ROLE,
@@ -30,6 +32,7 @@ import {
 } from '../../../src/constants.js';
 import type { DecoderOutput } from '../../../src/core/codec/types.js';
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
+import { buildTransportHeaders } from '../../../src/core/transport/headers.js';
 import type { AgentSession } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { getHeaders } from '../../../src/utils.js';
@@ -116,6 +119,7 @@ describe('AgentSession integration', () => {
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
+      promptLookupTimeoutMs: 0,
     });
     await session.connect();
 
@@ -173,6 +177,7 @@ describe('AgentSession integration', () => {
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
+      promptLookupTimeoutMs: 0,
     });
     await session.connect();
 
@@ -227,6 +232,7 @@ describe('AgentSession integration', () => {
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
+      promptLookupTimeoutMs: 0,
     });
     await session.connect();
 
@@ -280,6 +286,7 @@ describe('AgentSession integration', () => {
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
+      promptLookupTimeoutMs: 0,
     });
     await session.connect();
 
@@ -336,6 +343,7 @@ describe('AgentSession integration', () => {
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
+      promptLookupTimeoutMs: 0,
     });
     await session.connect();
 
@@ -397,6 +405,7 @@ describe('AgentSession integration', () => {
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
+      promptLookupTimeoutMs: 0,
     });
     await session.connect();
 
@@ -457,6 +466,7 @@ describe('AgentSession integration', () => {
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
+      promptLookupTimeoutMs: 0,
     });
     await session.connect();
 
@@ -496,6 +506,7 @@ describe('AgentSession integration', () => {
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
+      promptLookupTimeoutMs: 0,
     });
     await session.connect();
 
@@ -581,6 +592,7 @@ describe('AgentSession integration', () => {
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
+      promptLookupTimeoutMs: 0,
       onError: (err) => errors.push(err),
     });
     await session.connect();
@@ -623,6 +635,7 @@ describe('AgentSession integration', () => {
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
+      promptLookupTimeoutMs: 0,
     });
     await session.connect();
 
@@ -678,6 +691,130 @@ describe('AgentSession integration', () => {
     // Discrete publish: hook overrode msg-id and added amend header.
     expect(toolHeaders[HEADER_MSG_ID]).toBe('target-msg-id');
     expect(toolHeaders[HEADER_AMEND]).toBe('target-msg-id');
+
+    await run.end('complete');
+  });
+
+  /**
+   * Scenario: prompt-not-found error propagation.
+   *
+   * When the agent's `lookupUserPrompt` deadline lapses without seeing a
+   * matching user message, `run.start()` must reject with a PromptNotFound
+   * `ErrorInfo` and publish a corresponding `x-ably-error` event on the
+   * channel carrying both `x-ably-run-id` and `x-ably-invocation-id` so
+   * clients can correlate the failure.
+   */
+  it('rejects start() and emits x-ably-error when the user prompt is not found within the lookup deadline', async () => {
+    const channelName = uniqueChannelName('st-prompt-not-found');
+    const serverClient = ablyRealtimeClient();
+    const subClient = ablyRealtimeClient();
+    const subChannel = subClient.channels.get(channelName);
+
+    session = createAgentSession({
+      client: serverClient,
+      channelName,
+      codec: UIMessageCodec,
+      promptLookupTimeoutMs: 200,
+    });
+    await session.connect();
+
+    const errorMessages: Ably.InboundMessage[] = [];
+    await subChannel.subscribe(EVENT_ERROR, (msg) => {
+      errorMessages.push(msg);
+    });
+
+    const runId = crypto.randomUUID();
+    const invocationId = crypto.randomUUID();
+
+    const run = createRunFromOpts(session, {
+      runId,
+      invocationId,
+      clientId: 'prompt-not-found-client',
+      // Signal that the client published a user message — the agent will
+      // then wait for it on the channel. We never publish one, so the wait
+      // hits promptLookupTimeoutMs and emits PromptNotFound.
+      userMessageCount: 1,
+    });
+
+    // start() must reject — the invocation has no matching user message on
+    // the channel and `invocation.messages` is empty (createRunFromOpts).
+    await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.PromptNotFound);
+
+    // Poll briefly for the x-ably-error message to land. Real Ably has a
+    // small propagation lag from publish to subscriber callback.
+    for (let i = 0; i < 30 && errorMessages.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+
+    expect(errorMessages.length).toBeGreaterThanOrEqual(1);
+    const errMsg = errorMessages[0];
+    expect(errMsg).toBeDefined();
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded above
+    const headers = getHeaders(errMsg!);
+    expect(headers[HEADER_RUN_ID]).toBe(runId);
+    expect(headers[HEADER_INVOCATION_ID]).toBe(invocationId);
+    // The payload carries the error code so clients can dispatch on it.
+    const data = errMsg?.data as { code?: number } | undefined;
+    expect(data?.code).toBe(ErrorCode.PromptNotFound);
+  });
+
+  /**
+   * Scenario: agent-not-running-at-publish (rewind buffer).
+   *
+   * The client publishes a user message before any agent is listening.
+   * A fresh AgentSession attaches with a 2-minute rewind. The rewind
+   * replays the user message through the session's unfiltered listener
+   * before* `run.start()` registers a per-invocation prompt callback —
+   * so the session must buffer the message by invocation-id and drain
+   * the buffer when the callback is registered. Without the buffer the
+   * lookup would wait the full `promptLookupTimeoutMs` for a live
+   * arrival that never comes.
+   */
+  it('finds a rewind-replayed user prompt published before the agent attached', async () => {
+    const channelName = uniqueChannelName('st-rewind-prompt');
+    const publisherClient = ablyRealtimeClient();
+    const publisherChannel = publisherClient.channels.get(channelName);
+    await publisherChannel.attach();
+
+    const runId = crypto.randomUUID();
+    const invocationId = crypto.randomUUID();
+    const msgId = crypto.randomUUID();
+    const text = 'Hello from the past';
+
+    // Publish the user message before any agent session exists.
+    const headers = buildTransportHeaders({ role: 'user', runId, msgId, invocationId });
+    const encoder = UIMessageCodec.createEncoder(publisherChannel, { extras: { headers } });
+    await encoder.writeMessages([{ id: msgId, role: 'user', parts: [{ type: 'text', text }] }]);
+
+    // Now create the agent session — it attaches with rewind '2m' and
+    // should pick up the prior publish.
+    const serverClient = ablyRealtimeClient();
+    session = createAgentSession({
+      client: serverClient,
+      channelName,
+      codec: UIMessageCodec,
+      promptLookupTimeoutMs: 5000,
+    });
+    await session.connect();
+
+    const run = createRunFromOpts(session, {
+      runId,
+      invocationId,
+      clientId: 'rewind-client',
+      userMessageCount: 1,
+    });
+
+    await run.start();
+
+    expect(run.view.messages.length).toBe(1);
+    const found = run.view.messages[0];
+    expect(found).toBeDefined();
+    expect(found?.msgId).toBe(msgId);
+    expect(found?.headers[HEADER_INVOCATION_ID]).toBe(invocationId);
+    const message = found?.message;
+    expect(message?.id).toBe(msgId);
+    expect(message?.role).toBe('user');
+    expect(message?.parts[0]).toEqual({ type: 'text', text });
 
     await run.end('complete');
   });

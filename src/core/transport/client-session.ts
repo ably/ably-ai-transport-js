@@ -5,23 +5,29 @@
  * `connect()` subscribes to the Ably channel (which implicitly attaches it).
  * The same subscription, decoder, and channel are reused across runs.
  *
- * The client never publishes user messages directly. Instead, it sends them
- * to the agent via HTTP POST. The agent publishes user messages and run
- * lifecycle events (run-start, run-end) on behalf of the client.
+ * The client publishes user messages directly to the channel via the shared
+ * codec encoder, and POSTs an HTTP invocation in parallel. The agent
+ * correlates the prompt by the `x-ably-invocation-id` header and publishes
+ * run lifecycle events (run-start, run-end) plus assistant chunks. The
+ * channel is the durable session record; agents that weren't running at
+ * publish time can resume by reading channel rewind.
  */
 
 import * as Ably from 'ably';
 
 import {
   EVENT_CANCEL,
+  EVENT_ERROR,
   EVENT_RUN_END,
   EVENT_RUN_START,
   HEADER_AMEND,
   HEADER_CANCEL_ALL,
   HEADER_CANCEL_CLIENT_ID,
+  HEADER_CANCEL_INVOCATION_ID,
   HEADER_CANCEL_OWN,
   HEADER_CANCEL_RUN_ID,
   HEADER_FORK_OF,
+  HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
   HEADER_PARENT,
   HEADER_RUN_CLIENT_ID,
@@ -34,7 +40,7 @@ import type { Logger } from '../../logger.js';
 import { LogLevel, makeLogger } from '../../logger.js';
 import { getHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
-import type { DecoderOutput, MessageAccumulator, StreamDecoder } from '../codec/types.js';
+import type { DecoderOutput, MessageAccumulator, StreamDecoder, StreamEncoder } from '../codec/types.js';
 import { buildTransportHeaders } from './headers.js';
 import type { StreamRouter } from './stream-router.js';
 import { createStreamRouter } from './stream-router.js';
@@ -111,7 +117,13 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
 
   // Relay detection — tracks msg-ids of optimistic inserts for reconciliation
   private readonly _ownMsgIds = new Set<string>();
-  private readonly _ownRunIds = new Set<string>();
+  /**
+   * Active runs initiated by this session: runId → most-recent invocationId.
+   * Cleared on run-end. Used by the auto-cancel-duplicate path to identify
+   * the prior invocation when the developer manually retries under the same
+   * runId.
+   */
+  private readonly _ownRunIds = new Map<string, string>();
 
   // Track msgIds per run for cleanup on run-end
   private readonly _runMsgIds = new Map<string, Set<string>>();
@@ -129,6 +141,12 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
   private readonly _views = new Set<DefaultView<TEvent, TMessage>>();
   private readonly _router: StreamRouter<TEvent>;
   private readonly _decoder: StreamDecoder<TEvent, TMessage>;
+  /**
+   * Shared encoder for the lifetime of the session. The client only ever uses
+   * `writeMessages` (discrete publish path), so the encoder's stream tracker
+   * map stays empty across the session. Closed once on session close.
+   */
+  private readonly _encoder: StreamEncoder<TEvent, TMessage>;
 
   // Spec: AIT-CT10, AIT-CT10a
   readonly tree: Tree<TMessage>;
@@ -145,6 +163,19 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
   // Events staged locally via stageEvents(). Flushed into the eventNodes
   // parameter of _internalSend on the next send operation.
   private _pendingLocalEvents: EventsNode<TEvent>[] = [];
+
+  /** Default deadline for the agent's `x-ably-run-start` to arrive after a `send()`. */
+  private readonly _runStartDeadlineMs: number;
+
+  /**
+   * Pending send() promises awaiting `x-ably-run-start` for their invocation.
+   * Keyed by invocation-id (which is unique per send). Resolved on run-start
+   * receive; rejected on deadline lapse.
+   */
+  private readonly _pendingRunStarts = new Map<
+    string,
+    { resolve: () => void; reject: (e: Ably.ErrorInfo) => void; timer: ReturnType<typeof setTimeout> }
+  >();
 
   constructor(options: ClientSessionOptions<TEvent, TMessage>) {
     // Spec: AIT-CT1a, AIT-CT1a2 — register this SDK on both the connection
@@ -171,6 +202,7 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
           ? () => options.body as Record<string, unknown>
           : undefined;
     this._fetchFn = options.fetch ?? globalThis.fetch.bind(globalThis);
+    this._runStartDeadlineMs = options.runStartDeadlineMs ?? 30000;
     this._logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
       component: 'ClientSession',
     });
@@ -190,6 +222,10 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
     });
     this._router = createStreamRouter<TEvent>(this._codec.isTerminal.bind(this._codec), this._logger);
     this._decoder = this._codec.createDecoder();
+    this._encoder = this._codec.createEncoder(
+      this._channel,
+      this._clientId === undefined ? undefined : { clientId: this._clientId },
+    );
 
     this._views.add(this._view);
 
@@ -277,12 +313,48 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
     if (this._state === ClientSessionState.CLOSED) return;
 
     try {
+      // --- Agent-side error event ---
+      // Agent emits `x-ably-error` to surface failures that occur before any
+      // assistant message can be streamed (most importantly, prompt-not-found
+      // after the rewind + live wait lapses). The error carries
+      // `x-ably-run-id` and `x-ably-invocation-id` so we can match it against
+      // the pending run-start tracker and the active stream.
+      if (ablyMessage.name === EVENT_ERROR) {
+        const headers = getHeaders(ablyMessage);
+        const runId = headers[HEADER_RUN_ID];
+        const invocationId = headers[HEADER_INVOCATION_ID];
+        const payload =
+          (ablyMessage.data as { code?: number; statusCode?: number; message?: string } | undefined) ?? {};
+        const code = typeof payload.code === 'number' ? payload.code : ErrorCode.SessionSubscriptionError;
+        const statusCode = typeof payload.statusCode === 'number' ? payload.statusCode : 500;
+        const message = typeof payload.message === 'string' ? payload.message : 'agent reported an error';
+        const errInfo = new Ably.ErrorInfo(message, code, statusCode);
+        if (invocationId) {
+          const pending = this._pendingRunStarts.get(invocationId);
+          if (pending) {
+            clearTimeout(pending.timer);
+            this._pendingRunStarts.delete(invocationId);
+            pending.reject(errInfo);
+          }
+        }
+        if (runId) this._router.errorStream(runId, errInfo);
+        this._logger.error('ClientSession._handleMessage(); agent error received', {
+          runId,
+          invocationId,
+          code,
+        });
+        this._emitter.emit('error', errInfo);
+        this._tree.emitAblyMessage(ablyMessage);
+        return;
+      }
+
       // Spec: AIT-CT16a
       // --- Run lifecycle events from the agent ---
       if (ablyMessage.name === EVENT_RUN_START) {
         const headers = getHeaders(ablyMessage);
         const runId = headers[HEADER_RUN_ID];
         const runCid = headers[HEADER_RUN_CLIENT_ID] ?? '';
+        const invocationId = headers[HEADER_INVOCATION_ID];
         if (runId) {
           this._tree.trackRun(runId, runCid);
           const parentRaw = headers[HEADER_PARENT];
@@ -294,6 +366,14 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
             ...(parentRaw !== undefined && { parent: parentRaw }),
             ...(forkOf !== undefined && { forkOf }),
           });
+          if (invocationId) {
+            const pending = this._pendingRunStarts.get(invocationId);
+            if (pending) {
+              clearTimeout(pending.timer);
+              this._pendingRunStarts.delete(invocationId);
+              pending.resolve();
+            }
+          }
         }
         this._tree.emitAblyMessage(ablyMessage);
         return;
@@ -303,9 +383,32 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
         const headers = getHeaders(ablyMessage);
         const runId = headers[HEADER_RUN_ID];
         const runCid = headers[HEADER_RUN_CLIENT_ID] ?? '';
+        const invocationId = headers[HEADER_INVOCATION_ID];
         // CAST: agent always writes a valid RunEndReason; default to 'complete' for robustness
         const reason = (headers[HEADER_RUN_REASON] ?? 'complete') as RunEndReason;
         if (runId) {
+          // Defensive run-end gating: when a run has multiple invocations
+          // (e.g. developer manually retried under the same runId), only the
+          // currently-bound invocation's run-end should terminate the local
+          // run state. A run-end carrying a different invocation-id belongs
+          // to a losing invocation whose stream was already replaced.
+          //
+          // Source of truth (in order):
+          // 1. Tree's winning invocation — serial-derived; applies to
+          //    observed runs (where this client isn't the sender) as well.
+          // 2. Router's active invocation — covers own runs before the
+          //    first user-message ack lands and the Tree has a winner.
+          const winnerFromTree = this._tree.getWinningInvocation(runId)?.invocationId;
+          const activeInvocation = winnerFromTree ?? this._router.getActiveInvocation(runId);
+          if (activeInvocation && invocationId && activeInvocation !== invocationId) {
+            this._logger.debug('ClientSession.runEnd; ignoring losing-invocation run-end', {
+              runId,
+              invocationId,
+              activeInvocation,
+            });
+            this._tree.emitAblyMessage(ablyMessage);
+            return;
+          }
           this._router.closeStream(runId);
           this._runObservers.delete(runId);
           this._tree.untrackRun(runId);
@@ -411,12 +514,17 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
     const runId = headers[HEADER_RUN_ID];
     if (!runId) return;
 
+    const invocationId = headers[HEADER_INVOCATION_ID];
+
     // Observer headers are already updated in _handleMessage (before outputs
     // are iterated) so that header transitions are captured even when the
     // decoder produces no outputs (e.g. aborted stream appends per AIT-CD8).
 
-    // Active own run — route to the ReadableStream
-    if (this._router.route(runId, event)) {
+    // Active own run — route to the ReadableStream. Events from a different
+    // invocation under the same runId (a losing retry) are dropped by the
+    // router, allowing the consumer's stream to remain bound to the winning
+    // invocation it was created for.
+    if (this._router.route(runId, invocationId, event)) {
       this._accumulateAndEmit(runId, output);
       if (this._codec.isTerminal(event)) this._runObservers.delete(runId);
       return;
@@ -497,7 +605,7 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
     // As with cancellation (_closeMatchingRunStreams), do not clear
     // _ownRunIds or _runObservers here — late events must still accumulate
     // into the tree. The run-end handler cleans up observers.
-    for (const runId of this._ownRunIds) {
+    for (const runId of this._ownRunIds.keys()) {
       this._router.errorStream(runId, err);
     }
 
@@ -605,7 +713,9 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
     this._logger.trace('ClientSession._publishCancel();', { filter });
 
     const headers: Record<string, string> = {};
-    if (filter.runId) {
+    if (filter.invocationId) {
+      headers[HEADER_CANCEL_INVOCATION_ID] = filter.invocationId;
+    } else if (filter.runId) {
       headers[HEADER_CANCEL_RUN_ID] = filter.runId;
     } else if (filter.own) {
       headers[HEADER_CANCEL_OWN] = 'true';
@@ -619,6 +729,38 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
       name: EVENT_CANCEL,
       extras: { headers },
     });
+  }
+
+  /**
+   * Tear down local state for a run that failed before run-start could
+   * complete. Idempotent.
+   * @param runId - The runId of the failed send.
+   * @param options - Cleanup options.
+   * @param options.removeOptimistic - When true, delete optimistic tree
+   *   nodes for this send that haven't been acked yet (no serial). Set on
+   *   publish-leg failure (channel never received the message); leave
+   *   false on POST-leg failure (channel accepted it — keep local state
+   *   in sync with what observers see).
+   */
+  private _cleanupFailedSend(runId: string, options: { removeOptimistic: boolean }): void {
+    const msgIds = this._runMsgIds.get(runId);
+    if (msgIds) {
+      if (options.removeOptimistic) {
+        for (const msgId of msgIds) {
+          const node = this._tree.getNode(msgId);
+          if (node && node.serial === undefined) {
+            this._tree.delete(msgId);
+          }
+        }
+      }
+      for (const msgId of msgIds) {
+        this._ownMsgIds.delete(msgId);
+      }
+    }
+    this._ownRunIds.delete(runId);
+    this._runMsgIds.delete(runId);
+    this._runObservers.delete(runId);
+    this._tree.untrackRun(runId);
   }
 
   private _closeMatchingRunStreams(filter: CancelFilter): void {
@@ -657,6 +799,13 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
           break;
         }
       }
+    } else if (filter.invocationId) {
+      // Match on the local _ownRunIds map (runId → most-recent invocationId).
+      // Only own runs can be matched by invocation-id from this session — the
+      // map is the only place we track invocationId for active runs locally.
+      for (const [runId, invocationId] of this._ownRunIds) {
+        if (invocationId === filter.invocationId) matched.add(runId);
+      }
     }
     return matched;
   }
@@ -684,11 +833,15 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
   }
 
   // Spec: AIT-CT3, AIT-CT4
+  // `republishMsgId`, when set, publishes the (single) input message under
+  // this existing msg-id instead of generating a new one — used by
+  // regenerate so headers refresh in place and no new tree node is created.
   private async _internalSend(
     input: TMessage | TMessage[],
     sendOptions: SendOptions | undefined,
     history: MessageNode<TMessage>[],
     eventNodes?: EventsNode<TEvent>[],
+    republishMsgId?: string,
   ): Promise<ActiveRun<TEvent>> {
     if (this._state === ClientSessionState.CLOSED) {
       throw new Ably.ErrorInfo('unable to send; session is closed', ErrorCode.SessionClosed, 400);
@@ -711,7 +864,8 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
 
     const msgs = Array.isArray(input) ? input : [input];
     const runId = crypto.randomUUID();
-    this._ownRunIds.add(runId);
+    const invocationId = crypto.randomUUID();
+    this._ownRunIds.set(runId, invocationId);
     this._tree.trackRun(runId, this._clientId ?? '');
 
     // Flush any events staged via stageEvents() since the last send. They
@@ -750,60 +904,208 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
     // Capture the first parent for the POST body before the loop advances it.
     const postParent = sendOptions?.parent === undefined ? autoParent : sendOptions.parent;
 
-    for (const message of msgs) {
-      const msgId = crypto.randomUUID();
+    // Republish path (regenerate): the single input message reuses an
+    // existing tree node's msg-id so the tree's getWinningInvocation map
+    // promotes the new run/invocation as the winner once the relay lands,
+    // and no new node is created. We refresh the tree node's headers up
+    // front so observers see the latest run/invocation without waiting
+    // for the channel echo.
+    if (republishMsgId === undefined) {
+      for (const message of msgs) {
+        const msgId = crypto.randomUUID();
+        this._ownMsgIds.add(msgId);
+        msgIds.add(msgId);
+
+        const resolvedParent = sendOptions?.parent === undefined ? autoParent : sendOptions.parent;
+
+        const optimisticHeaders = buildTransportHeaders({
+          role: 'user',
+          runId,
+          msgId,
+          runClientId: this._clientId,
+          parent: resolvedParent,
+          forkOf: sendOptions?.forkOf,
+          invocationId,
+        });
+        // Spec: AIT-CT3c
+        // Optimistically insert each user message into the tree
+        this._upsertAndNotify(message, optimisticHeaders);
+
+        // Build MessageNode for the POST body
+        postMessages.push({
+          kind: 'message',
+          message,
+          msgId,
+          parentId: resolvedParent,
+          forkOf: sendOptions?.forkOf,
+          headers: optimisticHeaders,
+          serial: undefined,
+        });
+
+        // Spec: AIT-CT3e
+        // Chain: each subsequent message in the batch parents off the previous
+        // one, forming a linear conversation thread rather than siblings.
+        if (sendOptions?.parent === undefined && !sendOptions?.forkOf) {
+          autoParent = msgId;
+        }
+      }
+    } else {
+      if (msgs.length !== 1) {
+        throw new Ably.ErrorInfo(
+          'unable to send; republishMsgId requires exactly one message',
+          ErrorCode.InvalidArgument,
+          400,
+        );
+      }
+      const message = msgs[0];
+      if (message === undefined) {
+        throw new Ably.ErrorInfo('unable to send; republish message is undefined', ErrorCode.InvalidArgument, 400);
+      }
+      const msgId = republishMsgId;
       this._ownMsgIds.add(msgId);
       msgIds.add(msgId);
 
-      const resolvedParent = sendOptions?.parent === undefined ? autoParent : sendOptions.parent;
-
-      const optimisticHeaders = buildTransportHeaders({
+      const resolvedParent = sendOptions?.parent;
+      const headers = buildTransportHeaders({
         role: 'user',
         runId,
         msgId,
         runClientId: this._clientId,
         parent: resolvedParent,
         forkOf: sendOptions?.forkOf,
+        invocationId,
       });
-      // Spec: AIT-CT3c
-      // Optimistically insert each user message into the tree
-      this._upsertAndNotify(message, optimisticHeaders);
 
-      // Build MessageNode for the POST body
+      // Refresh the existing tree node's headers — the node already
+      // exists, so this updates HEADER_RUN_ID / HEADER_INVOCATION_ID in
+      // place. Pass no serial so we don't clobber the ack serial from the
+      // original publish (Tree.upsert only promotes null → serial).
+      this._upsertAndNotify(message, headers);
+
       postMessages.push({
         kind: 'message',
         message,
         msgId,
         parentId: resolvedParent,
         forkOf: sendOptions?.forkOf,
-        headers: optimisticHeaders,
+        headers,
         serial: undefined,
       });
-
-      // Spec: AIT-CT3e
-      // Chain: each subsequent message in the batch parents off the previous
-      // one, forming a linear conversation thread rather than siblings.
-      if (sendOptions?.parent === undefined && !sendOptions?.forkOf) {
-        autoParent = msgId;
-      }
     }
 
     this._runMsgIds.set(runId, msgIds);
 
-    // Create ReadableStream via router
-    const stream = this._router.createStream(runId);
+    // Create ReadableStream via router. The router binds the stream to
+    // (runId, invocationId) so that events from a losing/stale invocation
+    // under the same runId are dropped instead of bleeding into the
+    // consumer's stream.
+    const stream = this._router.createStream(runId, invocationId);
+
+    // Arm a pending-run-start tracker keyed by invocationId. The run-start
+    // handler resolves it; the deadline timer rejects it. send() awaits this
+    // promise so callers see a definitive success/failure of invocation
+    // startup before reading from the stream.
+    //
+    // A runStartDeadlineMs of 0 disables the wait entirely — used by tests
+    // and by callers driving the agent in-process. In that mode no timer is
+    // armed and no pending entry is registered. The wait applies regardless
+    // of whether the invocation carries a new user message: regenerate /
+    // update paths also require run-start within the deadline.
+    const waitForRunStart = this._runStartDeadlineMs > 0;
+    const runStartPromise: Promise<void> = waitForRunStart
+      ? new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            if (!this._pendingRunStarts.has(invocationId)) return;
+            this._pendingRunStarts.delete(invocationId);
+            const err = new Ably.ErrorInfo(
+              `unable to start run; no run-start for invocation ${invocationId} within ${String(this._runStartDeadlineMs)}ms`,
+              ErrorCode.RunStartDeadlineExceeded,
+              504,
+            );
+            this._logger.warn('ClientSession.send(); runStartDeadlineMs exceeded', {
+              runId,
+              invocationId,
+            });
+            this._router.errorStream(runId, err);
+            reject(err);
+          }, this._runStartDeadlineMs);
+          this._pendingRunStarts.set(invocationId, { resolve, reject, timer });
+        })
+      : Promise.resolve();
+
+    // Mark the rejection as handled so Node doesn't report an unhandled
+    // rejection when the publish-leg failure path short-circuits this
+    // function (via `await publishPromise`) before `await runStartPromise`
+    // is reached. The actual await below still throws normally.
+    runStartPromise.catch(() => {
+      /* handled below via await; suppress unhandled-rejection warning */
+    });
+
+    // Helper: settle the pending-run-start tracker with an error. Used when
+    // the publish or POST leg fails — the run will never start, so reject the
+    // outer send() promise immediately.
+    const failPending = (err: Ably.ErrorInfo): void => {
+      const pending = this._pendingRunStarts.get(invocationId);
+      if (!pending) return;
+      clearTimeout(pending.timer);
+      this._pendingRunStarts.delete(invocationId);
+      pending.reject(err);
+    };
+
+    // Publish the user message(s) on the channel via the shared encoder. This
+    // replaces the prior agent-side authorship: the channel is the durable
+    // session record. Each message's headers carry the invocation-id so the
+    // agent can correlate.
+    const publishPromise = (async () => {
+      try {
+        for (const node of postMessages) {
+          await this._encoder.writeMessages([node.message], {
+            extras: { headers: node.headers },
+            messageId: node.msgId,
+            ...(this._clientId !== undefined && { clientId: this._clientId }),
+          });
+        }
+      } catch (error) {
+        // Translate Ably permission errors so the developer sees a clear
+        // remediation. Any other publish failure is reported as send-failed.
+        // Capability failures preserve Ably's canonical code so callers
+        // can dispatch on it without a custom SDK code.
+        const cause = error instanceof Ably.ErrorInfo ? error : undefined;
+        const isPermission = cause?.statusCode === 401 || cause?.statusCode === 403;
+        const err = new Ably.ErrorInfo(
+          isPermission
+            ? `unable to publish user message; missing publish capability on the channel`
+            : `unable to publish user message; ${error instanceof Error ? error.message : String(error)}`,
+          isPermission ? ErrorCode.InsufficientCapability : ErrorCode.SessionSendFailed,
+          isPermission ? 401 : 500,
+          cause,
+        );
+        this._emitter.emit('error', err);
+        this._router.errorStream(runId, err);
+        failPending(err);
+        this._cleanupFailedSend(runId, { removeOptimistic: true });
+        throw err;
+      }
+    })();
 
     // Resolve headers and body
     const resolvedHeaders = this._headersFn?.() ?? {};
     const resolvedBody = this._bodyFn?.() ?? {};
 
+    // The POST body carries history + identity metadata only; any new user
+    // message was published on the channel, and the agent reads it back via
+    // rewind keyed by invocationId. `userMessageCount` lets the agent
+    // distinguish a fresh send (look up the prompt on the channel) from a
+    // continuation triggered by `sendAutomaticallyWhen` (no new user
+    // message — the events array carries the tool result instead).
     const postBody: Record<string, unknown> = {
       ...resolvedBody,
       history: preInsertHistory,
       ...sendOptions?.body,
       runId,
+      invocationId,
       clientId: this._clientId,
-      messages: postMessages,
+      userMessageCount: postMessages.length,
       ...(sendOptions?.forkOf !== undefined && { forkOf: sendOptions.forkOf }),
       ...(postParent !== undefined && { parent: postParent }),
       ...(allEventNodes.length > 0 && { events: allEventNodes }),
@@ -815,8 +1117,8 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
     };
 
     // Spec: AIT-CT3a, AIT-CT3b
-    // Fire-and-forget: POST must not block the stream return to the caller.
-    // .catch() is intentional — async/await would delay stream availability.
+    // POST is fired in parallel with the channel publish. POST failure errors
+    // the stream and rejects the pending run-start so send() rejects.
     this._fetchFn(this._api, {
       method: 'POST',
       headers: {
@@ -835,6 +1137,11 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
           );
           this._emitter.emit('error', err);
           this._router.errorStream(runId, err);
+          failPending(err);
+          // POST failed AFTER the user-message publish completed (channel
+          // received it). Keep the optimistic node so the local tree
+          // mirrors the channel record; only clear the active-run maps.
+          this._cleanupFailedSend(runId, { removeOptimistic: false });
         }
       })
       .catch((error: unknown) => {
@@ -847,11 +1154,23 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
         );
         this._emitter.emit('error', err);
         this._router.errorStream(runId, err);
+        failPending(err);
+        this._cleanupFailedSend(runId, { removeOptimistic: false });
       });
+
+    // Wait for publish ack. A capability error here aborts the send before
+    // the agent has any chance to start, so reject before exposing the stream.
+    await publishPromise;
+
+    // Wait for run-start to arrive (or for any failure path to reject this).
+    // Regenerate / update paths and the deadline-disabled mode resolve
+    // immediately because runStartPromise was a pre-resolved Promise.
+    await runStartPromise;
 
     return {
       stream,
       runId,
+      invocationId,
       cancel: async () => this.cancel({ runId }),
       optimisticMsgIds: [...msgIds],
     };
@@ -994,7 +1313,7 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
     this._channel.off(this._onChannelStateChange);
 
     // Close any remaining active streams
-    for (const runId of this._ownRunIds) {
+    for (const runId of this._ownRunIds.keys()) {
       this._router.closeStream(runId);
     }
 
@@ -1004,9 +1323,28 @@ class DefaultClientSession<TEvent, TMessage> implements ClientSession<TEvent, TM
     this._views.clear();
     for (const resolve of this._closeResolvers) resolve();
     this._closeResolvers.length = 0;
+    // Reject any in-flight pending run-starts and clear their timers so the
+    // owning send() promises settle rather than hang.
+    if (this._pendingRunStarts.size > 0) {
+      const closedErr = new Ably.ErrorInfo('unable to await run-start; session closed', ErrorCode.SessionClosed, 400);
+      for (const pending of this._pendingRunStarts.values()) {
+        clearTimeout(pending.timer);
+        pending.reject(closedErr);
+      }
+      this._pendingRunStarts.clear();
+    }
     this._ownRunIds.clear();
     this._ownMsgIds.clear();
     this._runMsgIds.clear();
+
+    // Best-effort encoder close — flushes any pending stream operations.
+    // The client only uses the discrete path (writeMessages), so this is
+    // typically a no-op, but it releases any internal resources cleanly.
+    try {
+      await this._encoder.close();
+    } catch {
+      // Swallow: encoder close is best-effort during teardown
+    }
   }
 }
 

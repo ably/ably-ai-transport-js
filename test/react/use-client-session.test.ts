@@ -13,7 +13,7 @@ import { createMockSession } from './helper/mock-session.js';
 
 // Wrap renderHook with a ClientSessionContext providing the given channelName-to-session record (no nearest).
 const withClientSessionContext =
-  (record: Record<string, ClientSession<unknown, unknown>>) =>
+  (record: Record<string, ClientSession<unknown, unknown, unknown>>) =>
   ({ children }: { children: ReactNode }) =>
     createElement(
       ClientSessionContext.Provider,
@@ -28,7 +28,7 @@ const withClientSessionContext =
 
 // Wrap renderHook with a ClientSessionContext exposing only a nearest slot.
 const withNearestSession =
-  (session: ClientSession<unknown, unknown>) =>
+  (session: ClientSession<unknown, unknown, unknown>) =>
   ({ children }: { children: ReactNode }) =>
     createElement(ClientSessionContext.Provider, { value: { nearest: { session }, providers: {} } }, children);
 

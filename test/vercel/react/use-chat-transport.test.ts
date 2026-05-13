@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ClientSession } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
+import type { VercelEvent, VercelProjection } from '../../../src/vercel/codec/index.js';
 import type { ChatTransportSlot } from '../../../src/vercel/react/contexts/chat-transport-context.js';
 import { ChatTransportContext } from '../../../src/vercel/react/contexts/chat-transport-context.js';
 import { useChatTransport } from '../../../src/vercel/react/use-chat-transport.js';
@@ -29,8 +30,8 @@ const createFakeChatTransport = (): ChatTransport => ({
 
 // Test stub — identity comparison only, methods not exercised.
 // CAST: test stub satisfies ClientSession structurally; methods are never called.
-const createFakeClientSession = (): ClientSession<AI.UIMessageChunk, AI.UIMessage> =>
-  ({}) as unknown as ClientSession<AI.UIMessageChunk, AI.UIMessage>;
+const createFakeClientSession = (): ClientSession<VercelEvent, VercelProjection, AI.UIMessage> =>
+  ({}) as unknown as ClientSession<VercelEvent, VercelProjection, AI.UIMessage>;
 
 const createFakeChatTransportSlot = (): ChatTransportSlot => ({
   session: createFakeClientSession(),

@@ -15,6 +15,7 @@ import { AbstractChat } from 'ai';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ClientSession, Tree } from '../../../src/core/transport/types.js';
+import type { VercelEvent, VercelProjection } from '../../../src/vercel/codec/index.js';
 import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
 
 // ---------------------------------------------------------------------------
@@ -134,7 +135,7 @@ const createMockSession = () => {
     getMessages: vi.fn(() => []),
     getAblyMessages: vi.fn(() => []),
     history: vi.fn(),
-  } as unknown as ClientSession<AI.UIMessageChunk, AI.UIMessage>;
+  } as unknown as ClientSession<VercelEvent, VercelProjection, AI.UIMessage>;
 
   return { session, send, mockRun };
 };
@@ -171,7 +172,7 @@ const createMultiRunMockSession = () => {
     getMessages: vi.fn(() => []),
     getAblyMessages: vi.fn(() => []),
     history: vi.fn(),
-  } as unknown as ClientSession<AI.UIMessageChunk, AI.UIMessage>;
+  } as unknown as ClientSession<VercelEvent, VercelProjection, AI.UIMessage>;
 
   return { session, send, runA, runB };
 };

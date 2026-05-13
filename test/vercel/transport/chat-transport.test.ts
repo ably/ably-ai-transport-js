@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ClientSession, SendOptions, Tree, View } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
+import type { VercelEvent, VercelProjection } from '../../../src/vercel/codec/index.js';
 import type { ChatTransportOptions } from '../../../src/vercel/transport/chat-transport.js';
 import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
 import { toBeErrorInfo } from '../../helper/expectations.js';
@@ -69,13 +70,13 @@ const createMockRun = (): MockRun => {
 };
 
 interface MockSession {
-  session: ClientSession<AI.UIMessageChunk, AI.UIMessage>;
+  session: ClientSession<VercelEvent, VercelProjection, AI.UIMessage>;
   send: ReturnType<typeof vi.fn>;
   cancel: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
   mockRun: MockRun;
   tree: Tree<AI.UIMessage>;
-  view: View<AI.UIMessageChunk, AI.UIMessage>;
+  view: View<VercelEvent, VercelProjection, AI.UIMessage>;
 }
 
 const createMockSession = (): MockSession => {
@@ -115,7 +116,7 @@ const createMockSession = (): MockSession => {
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
     on: vi.fn(() => () => {}),
     close: vi.fn(),
-  } as unknown as View<AI.UIMessageChunk, AI.UIMessage>;
+  } as unknown as View<VercelEvent, VercelProjection, AI.UIMessage>;
 
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const cancel = vi.fn(() => Promise.resolve());
@@ -130,7 +131,7 @@ const createMockSession = (): MockSession => {
     close,
     waitForRun: vi.fn(),
     on: vi.fn(() => noop),
-  } as unknown as ClientSession<AI.UIMessageChunk, AI.UIMessage>;
+  } as unknown as ClientSession<VercelEvent, VercelProjection, AI.UIMessage>;
 
   return { session, send, cancel, close, mockRun, tree, view };
 };

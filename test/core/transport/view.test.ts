@@ -22,6 +22,9 @@ vi.mock('../../../src/core/transport/decode-history.js', () => ({
 interface TestEvent {
   type: string;
 }
+interface TestProjection {
+  messages: TestMessage[];
+}
 interface TestMessage {
   id: string;
   content: string;
@@ -35,21 +38,17 @@ const createMockChannel = (): Ably.RealtimeChannel => {
   return {
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     history: vi.fn(() => Promise.resolve(emptyPage)),
+    // CAST: Tests only call history() — the full RealtimeChannel surface isn't needed.
   } as unknown as Ably.RealtimeChannel;
 };
 
-const createMockCodec = (): Codec<TestEvent, TestMessage> => ({
+const createMockCodec = (): Codec<TestEvent, TestProjection, TestMessage> => ({
+  init: vi.fn(() => ({ messages: [] })),
+  fold: vi.fn((state: TestProjection) => state),
+  getMessages: vi.fn((state: TestProjection) => state.messages),
+  userMessageEvent: vi.fn(() => ({ type: 'user-message' })),
   createEncoder: vi.fn(),
   createDecoder: vi.fn(() => ({ decode: vi.fn(() => []) })),
-  createAccumulator: vi.fn(() => ({
-    processOutputs: vi.fn(),
-    updateMessage: vi.fn(),
-    initMessage: vi.fn(),
-    completeMessage: vi.fn(),
-    messages: [],
-    completedMessages: [],
-    hasActiveStream: false,
-  })),
   isTerminal: vi.fn(() => false),
 });
 
@@ -96,7 +95,7 @@ const makePage = (
 
 describe('DefaultView', () => {
   let tree: DefaultTree<TestMessage>;
-  let view: DefaultView<TestEvent, TestMessage>;
+  let view: DefaultView<TestEvent, TestProjection, TestMessage>;
 
   beforeEach(() => {
     vi.mocked(decodeHistory).mockReset();
@@ -606,34 +605,6 @@ describe('DefaultView', () => {
   });
 
   // -------------------------------------------------------------------------
-  // update
-  // -------------------------------------------------------------------------
-
-  describe('update', () => {
-    it('delegates to sendDelegate with events', async () => {
-      const mockDelegate = createMockSendDelegate();
-      const updateView = new DefaultView<TestEvent, TestMessage>({
-        tree,
-        channel: createMockChannel(),
-        codec: createMockCodec(),
-        sendDelegate: mockDelegate,
-        logger: silentLogger,
-      });
-
-      const events = [{ type: 'tool-output' }];
-
-      await updateView.update('target-1', events);
-
-      expect(mockDelegate).toHaveBeenCalledOnce();
-      expect(mockDelegate).toHaveBeenCalledWith([], undefined, expect.any(Array), [
-        { kind: 'event', msgId: 'target-1', events },
-      ]);
-
-      updateView.close();
-    });
-  });
-
-  // -------------------------------------------------------------------------
   // Branch navigation (view-local selections)
   // -------------------------------------------------------------------------
 
@@ -736,7 +707,7 @@ describe('DefaultView', () => {
         'serial-3',
       );
 
-      const view2 = new DefaultView<TestEvent, TestMessage>({
+      const view2 = new DefaultView<TestEvent, TestProjection, TestMessage>({
         tree,
         channel: createMockChannel(),
         codec: createMockCodec(),
@@ -762,7 +733,7 @@ describe('DefaultView', () => {
     it('tree mutation propagates to both views', () => {
       tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'));
 
-      const view2 = new DefaultView<TestEvent, TestMessage>({
+      const view2 = new DefaultView<TestEvent, TestProjection, TestMessage>({
         tree,
         channel: createMockChannel(),
         codec: createMockCodec(),
@@ -795,7 +766,7 @@ describe('DefaultView', () => {
         'serial-2',
       );
 
-      const view2 = new DefaultView<TestEvent, TestMessage>({
+      const view2 = new DefaultView<TestEvent, TestProjection, TestMessage>({
         tree,
         channel: createMockChannel(),
         codec: createMockCodec(),
@@ -855,7 +826,7 @@ describe('DefaultView', () => {
         });
       });
 
-      const forkView = new DefaultView<TestEvent, TestMessage>({
+      const forkView = new DefaultView<TestEvent, TestProjection, TestMessage>({
         tree,
         channel: createMockChannel(),
         codec: createMockCodec(),
@@ -896,7 +867,7 @@ describe('DefaultView', () => {
         }),
       );
 
-      const forkView = new DefaultView<TestEvent, TestMessage>({
+      const forkView = new DefaultView<TestEvent, TestProjection, TestMessage>({
         tree,
         channel: createMockChannel(),
         codec: createMockCodec(),
@@ -976,7 +947,7 @@ describe('DefaultView', () => {
         }),
       );
 
-      const forkView = new DefaultView<TestEvent, TestMessage>({
+      const forkView = new DefaultView<TestEvent, TestProjection, TestMessage>({
         tree,
         channel: createMockChannel(),
         codec: createMockCodec(),
@@ -1050,7 +1021,7 @@ describe('DefaultView', () => {
         }),
       );
 
-      const forkView = new DefaultView<TestEvent, TestMessage>({
+      const forkView = new DefaultView<TestEvent, TestProjection, TestMessage>({
         tree,
         channel: createMockChannel(),
         codec: createMockCodec(),
@@ -1120,7 +1091,7 @@ describe('DefaultView', () => {
         }),
       );
 
-      const forkView = new DefaultView<TestEvent, TestMessage>({
+      const forkView = new DefaultView<TestEvent, TestProjection, TestMessage>({
         tree,
         channel: createMockChannel(),
         codec: createMockCodec(),
@@ -1166,7 +1137,7 @@ describe('DefaultView', () => {
     it('closing one view does not affect the other', () => {
       tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'));
 
-      const view2 = new DefaultView<TestEvent, TestMessage>({
+      const view2 = new DefaultView<TestEvent, TestProjection, TestMessage>({
         tree,
         channel: createMockChannel(),
         codec: createMockCodec(),
@@ -1242,7 +1213,7 @@ describe('DefaultView', () => {
       const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
       const input = call[0] as TestMessage[];
       const options = call[1] as SendOptions;
-      const republishMsgId = call[4] as string | undefined;
+      const republishMsgId = call[3] as string | undefined;
       // The delegate receives the parent user message (m1) as the message to republish.
       expect(input).toHaveLength(1);
       expect(input[0]?.id).toBe('1');

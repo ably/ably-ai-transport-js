@@ -1,7 +1,6 @@
-import type * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { StreamEncoder, WriteOptions } from '../../../src/core/codec/types.js';
+import type { Encoder, WriteOptions } from '../../../src/core/codec/types.js';
 import { pipeStream } from '../../../src/core/transport/pipe-stream.js';
 
 // ---------------------------------------------------------------------------
@@ -12,19 +11,13 @@ interface TestEvent {
   type: string;
   text?: string;
 }
-interface TestMessage {
-  id: string;
-  content: string;
-}
 
-interface MockEncoder extends StreamEncoder<TestEvent, TestMessage> {
+interface MockEncoder extends Encoder<TestEvent> {
   appendedEvents: TestEvent[];
   appendedOpts: (WriteOptions | undefined)[];
   closed: boolean;
   abortedReason: string | undefined;
 }
-
-const emptyPublishResult = { serials: [] } as unknown as Ably.PublishResult;
 
 const createMockEncoder = (): MockEncoder => {
   const mock: MockEncoder = {
@@ -33,7 +26,7 @@ const createMockEncoder = (): MockEncoder => {
     closed: false,
     abortedReason: undefined,
     // eslint-disable-next-line @typescript-eslint/require-await -- mock
-    appendEvent: vi.fn(async (event: TestEvent, opts?: WriteOptions) => {
+    publish: vi.fn(async (event: TestEvent, opts?: WriteOptions) => {
       mock.appendedEvents.push(event);
       mock.appendedOpts.push(opts);
     }),
@@ -45,10 +38,6 @@ const createMockEncoder = (): MockEncoder => {
     close: vi.fn(async () => {
       mock.closed = true;
     }),
-    // eslint-disable-next-line @typescript-eslint/require-await -- mock
-    writeMessages: vi.fn(async () => emptyPublishResult),
-    // eslint-disable-next-line @typescript-eslint/require-await -- mock
-    writeEvent: vi.fn(async () => emptyPublishResult),
   };
   return mock;
 };

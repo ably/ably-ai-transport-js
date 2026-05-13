@@ -1,12 +1,12 @@
 import type * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { HEADER_MSG_ID, HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID } from '../../../src/constants.js';
+import { HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID } from '../../../src/constants.js';
 import type { DecoderCoreHooks } from '../../../src/core/codec/decoder.js';
 import { createDecoderCore } from '../../../src/core/codec/decoder.js';
 
 // ---------------------------------------------------------------------------
-// Test event/message types
+// Test event type
 // ---------------------------------------------------------------------------
 
 type TestEvent =
@@ -15,26 +15,16 @@ type TestEvent =
   | { type: 'end'; streamId: string }
   | { type: 'discrete'; name: string; data: string };
 
-interface TestMessage {
-  id: string;
-  text: string;
-}
-
 // ---------------------------------------------------------------------------
 // Mock hooks factory
 // ---------------------------------------------------------------------------
 
-const createMockHooks = (): DecoderCoreHooks<TestEvent, TestMessage> => ({
-  buildStartEvents: (tracker) => [{ kind: 'event', event: { type: 'start', streamId: tracker.streamId } }],
-  buildDeltaEvents: (tracker, delta) => [
-    { kind: 'event', event: { type: 'delta', streamId: tracker.streamId, delta } },
-  ],
-  buildEndEvents: (tracker) => [{ kind: 'event', event: { type: 'end', streamId: tracker.streamId } }],
+const createMockHooks = (): DecoderCoreHooks<TestEvent> => ({
+  buildStartEvents: (tracker) => [{ type: 'start', streamId: tracker.streamId }],
+  buildDeltaEvents: (tracker, delta) => [{ type: 'delta', streamId: tracker.streamId, delta }],
+  buildEndEvents: (tracker) => [{ type: 'end', streamId: tracker.streamId }],
   decodeDiscrete: (input) => [
-    {
-      kind: 'event',
-      event: { type: 'discrete', name: input.name, data: typeof input.data === 'string' ? input.data : '' },
-    },
+    { type: 'discrete', name: input.name, data: typeof input.data === 'string' ? input.data : '' },
   ],
 });
 
@@ -50,6 +40,7 @@ const withHeaders = (msg: Partial<Ably.InboundMessage>, headers: Record<string, 
     data: '',
     ...msg,
     extras: { headers },
+    // CAST: Tests construct a minimal Ably.InboundMessage stub; full shape isn't needed for these tests.
   }) as Ably.InboundMessage;
 
 // ---------------------------------------------------------------------------
@@ -57,7 +48,7 @@ const withHeaders = (msg: Partial<Ably.InboundMessage>, headers: Record<string, 
 // ---------------------------------------------------------------------------
 
 describe('createDecoderCore', () => {
-  let hooks: DecoderCoreHooks<TestEvent, TestMessage>;
+  let hooks: DecoderCoreHooks<TestEvent>;
 
   beforeEach(() => {
     hooks = createMockHooks();
@@ -75,7 +66,7 @@ describe('createDecoderCore', () => {
         ),
       );
 
-      expect(outputs).toEqual([{ kind: 'event', event: { type: 'start', streamId: 'id-1' } }]);
+      expect(outputs).toEqual([{ type: 'start', streamId: 'id-1' }]);
     });
 
     it('returns empty for missing serial', () => {
@@ -100,7 +91,7 @@ describe('createDecoderCore', () => {
         withHeaders({ action: 'message.create', name: 'user-message', data: 'hello' }, { [HEADER_STREAM]: 'false' }),
       );
 
-      expect(outputs).toEqual([{ kind: 'event', event: { type: 'discrete', name: 'user-message', data: 'hello' } }]);
+      expect(outputs).toEqual([{ type: 'discrete', name: 'user-message', data: 'hello' }]);
     });
 
     it('handles non-string data by defaulting to empty string', () => {
@@ -109,11 +100,7 @@ describe('createDecoderCore', () => {
         withHeaders({ action: 'message.create', name: 'user-message', data: 42 }, { [HEADER_STREAM]: 'false' }),
       );
 
-      expect((outputs[0] as { kind: 'event'; event: TestEvent }).event).toEqual({
-        type: 'discrete',
-        name: 'user-message',
-        data: '',
-      });
+      expect(outputs[0]).toEqual({ type: 'discrete', name: 'user-message', data: '' });
     });
   });
 
@@ -130,7 +117,7 @@ describe('createDecoderCore', () => {
       );
 
       const outputs = decoder.decode(withHeaders({ action: 'message.append', serial: 's1', data: 'hello' }, {}));
-      expect(outputs).toEqual([{ kind: 'event', event: { type: 'delta', streamId: 'id-1', delta: 'hello' } }]);
+      expect(outputs).toEqual([{ type: 'delta', streamId: 'id-1', delta: 'hello' }]);
     });
 
     it('emits end events when status is finished', () => {
@@ -146,7 +133,7 @@ describe('createDecoderCore', () => {
         withHeaders({ action: 'message.append', serial: 's1', data: '' }, { [HEADER_STATUS]: 'finished' }),
       );
 
-      expect(outputs).toEqual([{ kind: 'event', event: { type: 'end', streamId: 'id-1' } }]);
+      expect(outputs).toEqual([{ type: 'end', streamId: 'id-1' }]);
     });
 
     it('does not emit end after abort (closed flag prevents duplicate)', () => {
@@ -181,8 +168,8 @@ describe('createDecoderCore', () => {
       );
 
       expect(outputs).toHaveLength(2);
-      expect(outputs[0]).toEqual({ kind: 'event', event: { type: 'delta', streamId: 'id-1', delta: 'final' } });
-      expect(outputs[1]).toEqual({ kind: 'event', event: { type: 'end', streamId: 'id-1' } });
+      expect(outputs[0]).toEqual({ type: 'delta', streamId: 'id-1', delta: 'final' });
+      expect(outputs[1]).toEqual({ type: 'end', streamId: 'id-1' });
     });
 
     it('falls through to update for unknown serial', () => {
@@ -209,7 +196,7 @@ describe('createDecoderCore', () => {
         withHeaders({ action: 'message.append', serial: 's1', data: '' }, { [HEADER_STATUS]: 'finished' }),
       );
 
-      expect(outputs).toEqual([{ kind: 'event', event: { type: 'end', streamId: 'id-1' } }]);
+      expect(outputs).toEqual([{ type: 'end', streamId: 'id-1' }]);
     });
 
     it('handles non-string data by treating as empty delta', () => {
@@ -240,8 +227,8 @@ describe('createDecoderCore', () => {
       );
 
       expect(outputs).toHaveLength(2);
-      expect(outputs[0]).toEqual({ kind: 'event', event: { type: 'start', streamId: 'id-1' } });
-      expect(outputs[1]).toEqual({ kind: 'event', event: { type: 'delta', streamId: 'id-1', delta: 'accumulated' } });
+      expect(outputs[0]).toEqual({ type: 'start', streamId: 'id-1' });
+      expect(outputs[1]).toEqual({ type: 'delta', streamId: 'id-1', delta: 'accumulated' });
     });
 
     it('emits start + delta + end for first-contact finished stream', () => {
@@ -254,9 +241,9 @@ describe('createDecoderCore', () => {
       );
 
       expect(outputs).toHaveLength(3);
-      expect((outputs[0] as { kind: 'event'; event: TestEvent }).event.type).toBe('start');
-      expect((outputs[1] as { kind: 'event'; event: TestEvent }).event.type).toBe('delta');
-      expect((outputs[2] as { kind: 'event'; event: TestEvent }).event.type).toBe('end');
+      expect(outputs[0]?.type).toBe('start');
+      expect(outputs[1]?.type).toBe('delta');
+      expect(outputs[2]?.type).toBe('end');
     });
 
     it('emits only start for first-contact aborted stream (no end events)', () => {
@@ -269,7 +256,7 @@ describe('createDecoderCore', () => {
       );
 
       expect(outputs).toHaveLength(1);
-      expect((outputs[0] as { kind: 'event'; event: TestEvent }).event.type).toBe('start');
+      expect(outputs[0]?.type).toBe('start');
     });
 
     it('treats non-streamed first-contact as discrete', () => {
@@ -281,7 +268,7 @@ describe('createDecoderCore', () => {
         ),
       );
 
-      expect(outputs).toEqual([{ kind: 'event', event: { type: 'discrete', name: 'user-message', data: 'updated' } }]);
+      expect(outputs).toEqual([{ type: 'discrete', name: 'user-message', data: 'updated' }]);
     });
   });
 
@@ -305,7 +292,7 @@ describe('createDecoderCore', () => {
         ),
       );
 
-      expect(outputs).toEqual([{ kind: 'event', event: { type: 'delta', streamId: 'id-1', delta: ' world' } }]);
+      expect(outputs).toEqual([{ type: 'delta', streamId: 'id-1', delta: ' world' }]);
     });
 
     it('emits end on prefix-match with finished status', () => {
@@ -325,7 +312,7 @@ describe('createDecoderCore', () => {
         ),
       );
 
-      expect(outputs).toEqual([{ kind: 'event', event: { type: 'end', streamId: 'id-1' } }]);
+      expect(outputs).toEqual([{ type: 'end', streamId: 'id-1' }]);
     });
 
     it('returns empty when data matches exactly and still streaming', () => {
@@ -419,9 +406,12 @@ describe('createDecoderCore', () => {
   describe('unknown action', () => {
     it('returns empty array', () => {
       const decoder = createDecoderCore(hooks);
-      expect(decoder.decode(withHeaders({ action: 'message.summary' as Ably.InboundMessage['action'] }, {}))).toEqual(
-        [],
-      );
+      expect(
+        decoder.decode(
+          // CAST: testing an action value outside the typed union.
+          withHeaders({ action: 'message.summary' as Ably.InboundMessage['action'] }, {}),
+        ),
+      ).toEqual([]);
     });
   });
 
@@ -470,7 +460,7 @@ describe('createDecoderCore', () => {
   // -- full stream lifecycle -----------------------------------------------
 
   describe('stream lifecycle', () => {
-    it('handles complete lifecycle: create → append → append → close', () => {
+    it('handles complete lifecycle: create -> append -> append -> close', () => {
       const decoder = createDecoderCore(hooks);
 
       const start = decoder.decode(
@@ -479,21 +469,21 @@ describe('createDecoderCore', () => {
           { [HEADER_STREAM]: 'true', [HEADER_STATUS]: 'streaming', [HEADER_STREAM_ID]: 'id-1' },
         ),
       );
-      expect(start).toEqual([{ kind: 'event', event: { type: 'start', streamId: 'id-1' } }]);
+      expect(start).toEqual([{ type: 'start', streamId: 'id-1' }]);
 
       const delta1 = decoder.decode(withHeaders({ action: 'message.append', serial: 's1', data: 'Hello' }, {}));
-      expect(delta1).toEqual([{ kind: 'event', event: { type: 'delta', streamId: 'id-1', delta: 'Hello' } }]);
+      expect(delta1).toEqual([{ type: 'delta', streamId: 'id-1', delta: 'Hello' }]);
 
       const delta2 = decoder.decode(withHeaders({ action: 'message.append', serial: 's1', data: ' world' }, {}));
-      expect(delta2).toEqual([{ kind: 'event', event: { type: 'delta', streamId: 'id-1', delta: ' world' } }]);
+      expect(delta2).toEqual([{ type: 'delta', streamId: 'id-1', delta: ' world' }]);
 
       const end = decoder.decode(
         withHeaders({ action: 'message.append', serial: 's1', data: '' }, { [HEADER_STATUS]: 'finished' }),
       );
-      expect(end).toEqual([{ kind: 'event', event: { type: 'end', streamId: 'id-1' } }]);
+      expect(end).toEqual([{ type: 'end', streamId: 'id-1' }]);
     });
 
-    it('handles create → abort (no end events)', () => {
+    it('handles create -> abort (no end events)', () => {
       const decoder = createDecoderCore(hooks);
 
       decoder.decode(
@@ -508,72 +498,6 @@ describe('createDecoderCore', () => {
       );
 
       expect(abort).toHaveLength(0);
-    });
-  });
-
-  // -- messageId tagging -------------------------------------------------------
-
-  describe('x-ably-msg-id tagging', () => {
-    it('tags streamed event outputs with messageId from x-ably-msg-id header', () => {
-      const decoder = createDecoderCore(createMockHooks());
-      const outputs = decoder.decode(
-        withHeaders(
-          { action: 'message.create', serial: 's1' },
-          {
-            [HEADER_STREAM]: 'true',
-            [HEADER_STATUS]: 'streaming',
-            [HEADER_STREAM_ID]: 'sid-1',
-            [HEADER_MSG_ID]: 'msg-42',
-          },
-        ),
-      );
-
-      expect(outputs).toHaveLength(1);
-      expect(outputs[0]).toEqual(expect.objectContaining({ kind: 'event', messageId: 'msg-42' }));
-    });
-
-    it('tags discrete event outputs with messageId from x-ably-msg-id header', () => {
-      const decoder = createDecoderCore(createMockHooks());
-      const outputs = decoder.decode(
-        withHeaders({ action: 'message.create' }, { [HEADER_STREAM]: 'false', [HEADER_MSG_ID]: 'msg-99' }),
-      );
-
-      expect(outputs).toHaveLength(1);
-      expect(outputs[0]).toEqual(expect.objectContaining({ kind: 'event', messageId: 'msg-99' }));
-    });
-
-    it('does not set messageId when x-ably-msg-id header is absent', () => {
-      const decoder = createDecoderCore(createMockHooks());
-      const outputs = decoder.decode(withHeaders({ action: 'message.create' }, { [HEADER_STREAM]: 'false' }));
-
-      expect(outputs).toHaveLength(1);
-      expect(outputs[0]).toEqual(expect.objectContaining({ kind: 'event' }));
-      expect((outputs[0] as { messageId?: string }).messageId).toBeUndefined();
-    });
-
-    it('tags append event outputs with messageId', () => {
-      const decoder = createDecoderCore(createMockHooks());
-
-      // Create a stream first
-      decoder.decode(
-        withHeaders(
-          { action: 'message.create', serial: 's1' },
-          {
-            [HEADER_STREAM]: 'true',
-            [HEADER_STATUS]: 'streaming',
-            [HEADER_STREAM_ID]: 'sid-1',
-            [HEADER_MSG_ID]: 'msg-1',
-          },
-        ),
-      );
-
-      // Append with msg-id
-      const outputs = decoder.decode(
-        withHeaders({ action: 'message.append', serial: 's1', data: 'delta' }, { [HEADER_MSG_ID]: 'msg-1' }),
-      );
-
-      expect(outputs).toHaveLength(1);
-      expect(outputs[0]).toEqual(expect.objectContaining({ kind: 'event', messageId: 'msg-1' }));
     });
   });
 });

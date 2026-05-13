@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DOMAIN_HEADER_PREFIX as D,
+  HEADER_DISCRETE,
   HEADER_MSG_ID,
   HEADER_STATUS,
   HEADER_STREAM,
@@ -29,7 +30,9 @@ const createMockWriter = (): MockWriter => {
     publishCalls: [],
     appendCalls: [],
     updateCalls: [],
+    // CAST: Tests construct a minimal Ably.PublishResult; full shape isn't needed.
     nextPublishResult: { serials: ['serial-1'] } as Ably.PublishResult,
+    // CAST: Tests construct a minimal Ably.UpdateDeleteResult; full shape isn't needed.
     nextAppendResult: {} as Ably.UpdateDeleteResult,
     publish: vi.fn(async (message: Ably.Message | Ably.Message[]) => {
       mock.publishCalls.push(message);
@@ -47,8 +50,11 @@ const createMockWriter = (): MockWriter => {
   return mock;
 };
 
-const headersOf = (msg: Ably.Message): Record<string, string> =>
-  (msg.extras as { headers: Record<string, string> }).headers;
+const headersOf = (msg: Ably.Message): Record<string, string> => {
+  // CAST: Tests build messages with extras shaped { headers: ... }.
+  const extras = msg.extras as { headers: Record<string, string> };
+  return extras.headers;
+};
 
 const firstPublish = (writer: MockWriter): Ably.Message => {
   const call = writer.publishCalls[0];
@@ -94,7 +100,7 @@ describe('Vercel encoder', () => {
   describe('text streaming', () => {
     it('encodes text-start as a streamed publish', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({ type: 'text-start', id: 'txt-1' });
+      await encoder.publish({ type: 'text-start', id: 'txt-1' });
 
       const msg = firstPublish(writer);
       expect(msg.name).toBe('text');
@@ -106,8 +112,8 @@ describe('Vercel encoder', () => {
 
     it('encodes text-delta as an append', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({ type: 'text-start', id: 'txt-1' });
-      await encoder.appendEvent({ type: 'text-delta', id: 'txt-1', delta: 'hello' });
+      await encoder.publish({ type: 'text-start', id: 'txt-1' });
+      await encoder.publish({ type: 'text-delta', id: 'txt-1', delta: 'hello' });
 
       expect(writer.appendCalls).toHaveLength(1);
       expect(writer.appendCalls[0]?.data).toBe('hello');
@@ -115,17 +121,18 @@ describe('Vercel encoder', () => {
 
     it('encodes text-end as a closing append', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({ type: 'text-start', id: 'txt-1' });
-      await encoder.appendEvent({ type: 'text-end', id: 'txt-1' });
+      await encoder.publish({ type: 'text-start', id: 'txt-1' });
+      await encoder.publish({ type: 'text-end', id: 'txt-1' });
 
       const msg = lastAppend(writer);
       expect(headersOf(msg)[HEADER_STATUS]).toBe('finished');
     });
 
     it('includes providerMetadata on text-start and text-end', async () => {
+      // CAST: Trust boundary — providerMetadata is opaque to the encoder.
       const pm = { anthropic: { key: 'value' } } as AI.ProviderMetadata;
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({ type: 'text-start', id: 'txt-1', providerMetadata: pm });
+      await encoder.publish({ type: 'text-start', id: 'txt-1', providerMetadata: pm });
 
       const msg = firstPublish(writer);
       expect(headersOf(msg)[`${D}providerMetadata`]).toBe(JSON.stringify(pm));
@@ -137,9 +144,9 @@ describe('Vercel encoder', () => {
   describe('reasoning streaming', () => {
     it('encodes reasoning-start/delta/end lifecycle', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({ type: 'reasoning-start', id: 'r-1' });
-      await encoder.appendEvent({ type: 'reasoning-delta', id: 'r-1', delta: 'think' });
-      await encoder.appendEvent({ type: 'reasoning-end', id: 'r-1' });
+      await encoder.publish({ type: 'reasoning-start', id: 'r-1' });
+      await encoder.publish({ type: 'reasoning-delta', id: 'r-1', delta: 'think' });
+      await encoder.publish({ type: 'reasoning-end', id: 'r-1' });
 
       const startMsg = firstPublish(writer);
       expect(startMsg.name).toBe('reasoning');
@@ -153,7 +160,7 @@ describe('Vercel encoder', () => {
   describe('tool-input streaming', () => {
     it('encodes tool-input-start with tool metadata headers', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({
+      await encoder.publish({
         type: 'tool-input-start',
         toolCallId: 'tc-1',
         toolName: 'search',
@@ -174,8 +181,8 @@ describe('Vercel encoder', () => {
 
     it('encodes tool-input-delta as append', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({ type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'search' });
-      await encoder.appendEvent({ type: 'tool-input-delta', toolCallId: 'tc-1', inputTextDelta: '{"q":' });
+      await encoder.publish({ type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'search' });
+      await encoder.publish({ type: 'tool-input-delta', toolCallId: 'tc-1', inputTextDelta: '{"q":' });
 
       expect(writer.appendCalls).toHaveLength(1);
       expect(writer.appendCalls[0]?.data).toBe('{"q":');
@@ -183,8 +190,8 @@ describe('Vercel encoder', () => {
 
     it('encodes tool-input-available as close for streamed tool', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({ type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'search' });
-      await encoder.appendEvent({
+      await encoder.publish({ type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'search' });
+      await encoder.publish({
         type: 'tool-input-available',
         toolCallId: 'tc-1',
         toolName: 'search',
@@ -197,7 +204,7 @@ describe('Vercel encoder', () => {
 
     it('encodes non-streaming tool-input-available as discrete', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({
+      await encoder.publish({
         type: 'tool-input-available',
         toolCallId: 'tc-2',
         toolName: 'calc',
@@ -218,7 +225,7 @@ describe('Vercel encoder', () => {
   describe('lifecycle events', () => {
     it('encodes start with messageId and messageMetadata', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({ type: 'start', messageId: 'msg-1', messageMetadata: { key: 'val' } });
+      await encoder.publish({ type: 'start', messageId: 'msg-1', messageMetadata: { key: 'val' } });
 
       const msg = firstPublish(writer);
       expect(msg.name).toBe('start');
@@ -228,7 +235,7 @@ describe('Vercel encoder', () => {
 
     it('publishes messageId domain header from start chunk', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({ type: 'start', messageId: 'msg-1' });
+      await encoder.publish({ type: 'start', messageId: 'msg-1' });
 
       const msg = firstPublish(writer);
       expect(headersOf(msg)[`${D}messageId`]).toBe('msg-1');
@@ -236,7 +243,7 @@ describe('Vercel encoder', () => {
 
     it('omits messageId domain header when neither chunk nor options provide it', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({ type: 'start' });
+      await encoder.publish({ type: 'start' });
 
       const msg = firstPublish(writer);
       expect(headersOf(msg)[`${D}messageId`]).toBeUndefined();
@@ -244,7 +251,7 @@ describe('Vercel encoder', () => {
 
     it('falls back to options.messageId when start chunk has no messageId', async () => {
       const encoder = createEncoder(writer, { messageId: 'fallback-id' });
-      await encoder.appendEvent({ type: 'start' });
+      await encoder.publish({ type: 'start' });
 
       const msg = firstPublish(writer);
       expect(headersOf(msg)[`${D}messageId`]).toBe('fallback-id');
@@ -252,7 +259,7 @@ describe('Vercel encoder', () => {
 
     it('prefers chunk.messageId over options.messageId', async () => {
       const encoder = createEncoder(writer, { messageId: 'fallback-id' });
-      await encoder.appendEvent({ type: 'start', messageId: 'chunk-id' });
+      await encoder.publish({ type: 'start', messageId: 'chunk-id' });
 
       const msg = firstPublish(writer);
       expect(headersOf(msg)[`${D}messageId`]).toBe('chunk-id');
@@ -261,19 +268,20 @@ describe('Vercel encoder', () => {
     it('stamps x-ably-msg-id from WriteOptions on all publishes', async () => {
       const encoder = createEncoder(writer);
       const perWrite = { messageId: 'msg-1' };
-      await encoder.appendEvent({ type: 'start', messageId: 'msg-1' }, perWrite);
-      await encoder.appendEvent({ type: 'text-start', id: 'txt-1' }, perWrite);
+      await encoder.publish({ type: 'start', messageId: 'msg-1' }, perWrite);
+      await encoder.publish({ type: 'text-start', id: 'txt-1' }, perWrite);
 
       const startMsg = firstPublish(writer);
       expect(headersOf(startMsg)[HEADER_MSG_ID]).toBe('msg-1');
 
-      const textMsg = writer.publishCalls[1] as Ably.Message;
-      expect(headersOf(textMsg)[HEADER_MSG_ID]).toBe('msg-1');
+      const second = writer.publishCalls[1];
+      if (!second || Array.isArray(second)) throw new Error('expected single-message second publish');
+      expect(headersOf(second)[HEADER_MSG_ID]).toBe('msg-1');
     });
 
     it('encodes finish-step', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({ type: 'finish-step' });
+      await encoder.publish({ type: 'finish-step' });
 
       const msg = firstPublish(writer);
       expect(msg.name).toBe('finish-step');
@@ -281,7 +289,7 @@ describe('Vercel encoder', () => {
 
     it('encodes finish with finishReason', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({ type: 'finish', finishReason: 'stop' });
+      await encoder.publish({ type: 'finish', finishReason: 'stop' });
 
       const msg = firstPublish(writer);
       expect(msg.name).toBe('finish');
@@ -290,7 +298,7 @@ describe('Vercel encoder', () => {
 
     it('encodes error with errorText', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({ type: 'error', errorText: 'something failed' });
+      await encoder.publish({ type: 'error', errorText: 'something failed' });
 
       const msg = firstPublish(writer);
       expect(msg.name).toBe('error');
@@ -299,8 +307,8 @@ describe('Vercel encoder', () => {
 
     it('encodes abort and aborts all streams', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({ type: 'text-start', id: 'txt-1' });
-      await encoder.appendEvent({ type: 'abort', reason: 'cancelled' });
+      await encoder.publish({ type: 'text-start', id: 'txt-1' });
+      await encoder.publish({ type: 'abort', reason: 'cancelled' });
 
       // Should have: publish (text-start), append (abort stream), publish (abort event)
       const abortMsg = lastPublish(writer);
@@ -315,7 +323,7 @@ describe('Vercel encoder', () => {
 
     it('abort() aborts all streams and publishes abort event', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({ type: 'text-start', id: 'txt-1' });
+      await encoder.publish({ type: 'text-start', id: 'txt-1' });
       await encoder.abort('cancelled');
 
       const abortMsg = lastPublish(writer);
@@ -329,7 +337,7 @@ describe('Vercel encoder', () => {
 
     it('abort() is idempotent — second call is a no-op', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({ type: 'text-start', id: 'txt-1' });
+      await encoder.publish({ type: 'text-start', id: 'txt-1' });
 
       await encoder.abort('cancelled');
       const publishCountAfterFirst = writer.publishCalls.length;
@@ -354,7 +362,7 @@ describe('Vercel encoder', () => {
 
     it('encodes start-step as a discrete message', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({ type: 'start-step' });
+      await encoder.publish({ type: 'start-step' });
 
       expect(writer.publishCalls).toHaveLength(1);
       expect(firstPublish(writer)).toEqual(expect.objectContaining({ name: 'start-step' }));
@@ -366,7 +374,7 @@ describe('Vercel encoder', () => {
   describe('tool lifecycle events', () => {
     it('encodes tool-input-error', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({
+      await encoder.publish({
         type: 'tool-input-error',
         toolCallId: 'tc-1',
         toolName: 'search',
@@ -382,7 +390,7 @@ describe('Vercel encoder', () => {
 
     it('encodes tool-output-available', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({
+      await encoder.publish({
         type: 'tool-output-available',
         toolCallId: 'tc-1',
         output: { result: 42 },
@@ -395,7 +403,7 @@ describe('Vercel encoder', () => {
 
     it('encodes tool-output-error', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({
+      await encoder.publish({
         type: 'tool-output-error',
         toolCallId: 'tc-1',
         errorText: 'timeout',
@@ -408,7 +416,7 @@ describe('Vercel encoder', () => {
 
     it('encodes tool-approval-request', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({
+      await encoder.publish({
         type: 'tool-approval-request',
         toolCallId: 'tc-1',
         approvalId: 'apr-1',
@@ -422,7 +430,7 @@ describe('Vercel encoder', () => {
 
     it('encodes tool-output-denied', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({
+      await encoder.publish({
         type: 'tool-output-denied',
         toolCallId: 'tc-1',
       });
@@ -437,7 +445,7 @@ describe('Vercel encoder', () => {
   describe('content parts', () => {
     it('encodes file chunk', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({ type: 'file', url: 'https://example.com/img.png', mediaType: 'image/png' });
+      await encoder.publish({ type: 'file', url: 'https://example.com/img.png', mediaType: 'image/png' });
 
       const msg = firstPublish(writer);
       expect(msg.name).toBe('file');
@@ -447,7 +455,7 @@ describe('Vercel encoder', () => {
 
     it('encodes source-url chunk', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({
+      await encoder.publish({
         type: 'source-url',
         sourceId: 'src-1',
         url: 'https://example.com',
@@ -462,7 +470,7 @@ describe('Vercel encoder', () => {
 
     it('encodes source-document chunk', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({
+      await encoder.publish({
         type: 'source-document',
         sourceId: 'src-1',
         mediaType: 'application/pdf',
@@ -477,7 +485,7 @@ describe('Vercel encoder', () => {
 
     it('encodes message-metadata chunk', async () => {
       const encoder = createEncoder(writer);
-      await encoder.appendEvent({ type: 'message-metadata', messageMetadata: { key: 'val' } });
+      await encoder.publish({ type: 'message-metadata', messageMetadata: { key: 'val' } });
 
       const msg = firstPublish(writer);
       expect(msg.name).toBe('message-metadata');
@@ -491,7 +499,7 @@ describe('Vercel encoder', () => {
     it('encodes data-* chunk as discrete', async () => {
       const encoder = createEncoder(writer);
       const chunk = { type: 'data-custom' as const, data: { foo: 'bar' }, id: 'dc-1' };
-      await encoder.appendEvent(chunk);
+      await encoder.publish(chunk);
 
       const msg = firstPublish(writer);
       expect(msg.name).toBe('data-custom');
@@ -502,36 +510,19 @@ describe('Vercel encoder', () => {
     it('marks transient data-* chunks as ephemeral', async () => {
       const encoder = createEncoder(writer);
       const chunk = { type: 'data-status' as const, data: undefined, transient: true };
-      await encoder.appendEvent(chunk);
+      await encoder.publish(chunk);
 
       const msg = firstPublish(writer);
-      expect((msg.extras as { ephemeral?: boolean }).ephemeral).toBe(true);
+      // CAST: Tests inspect the ephemeral field set by the encoder.
+      const extras = msg.extras as { ephemeral?: boolean };
+      expect(extras.ephemeral).toBe(true);
     });
   });
 
-  // -- writeEvent -----------------------------------------------------------
+  // -- user message events (codec-local TEvent) -----------------------------
 
-  describe('writeEvent', () => {
-    it('publishes data-* chunk as discrete event', async () => {
-      const encoder = createEncoder(writer);
-      const chunk = { type: 'data-ping' as const, data: 'pong', id: 'p-1' };
-      const result = await encoder.writeEvent(chunk);
-
-      expect(result).toEqual({ serials: ['serial-1'] });
-      const msg = firstPublish(writer);
-      expect(msg.name).toBe('data-ping');
-    });
-
-    it('throws for non-data-* chunk types', async () => {
-      const encoder = createEncoder(writer);
-      await expect(encoder.writeEvent({ type: 'start' } as AI.UIMessageChunk)).rejects.toThrow('unable to write event');
-    });
-  });
-
-  // -- writeMessages --------------------------------------------------------
-
-  describe('writeMessages', () => {
-    it('publishes UIMessage parts as discrete batch', async () => {
+  describe('publishing user-message events', () => {
+    it('publishes UIMessage parts as discrete batch tagged x-ably-discrete', async () => {
       const encoder = createEncoder(writer);
       const msg: AI.UIMessage = {
         id: 'msg-1',
@@ -542,46 +533,58 @@ describe('Vercel encoder', () => {
         ],
       };
 
-      await encoder.writeMessages([msg]);
+      await encoder.publish({ type: 'ait-user-message', message: msg });
 
       // Should be a single batch publish with 2 messages
       expect(writer.publishCalls).toHaveLength(1);
-      const batch = writer.publishCalls[0] as Ably.Message[];
-      expect(batch).toHaveLength(2);
+      const call = writer.publishCalls[0];
+      if (!Array.isArray(call)) throw new Error('expected batch publish');
+      expect(call).toHaveLength(2);
 
-      const first = batch[0];
+      const first = call[0];
       expect(first?.name).toBe('text');
       expect(first?.data).toBe('hello');
-      if (first) expect(headersOf(first)[`${D}messageId`]).toBe('msg-1');
+      if (first) {
+        expect(headersOf(first)[`${D}messageId`]).toBe('msg-1');
+        expect(headersOf(first)[HEADER_DISCRETE]).toBe('true');
+      }
 
-      expect(batch[1]?.name).toBe('file');
-      expect(batch[1]?.data).toBe('https://example.com/img.png');
+      expect(call[1]?.name).toBe('file');
+      expect(call[1]?.data).toBe('https://example.com/img.png');
     });
 
-    it('publishes empty text part for message with no parts', async () => {
+    it('publishes an empty text part for a message with no parts', async () => {
       const encoder = createEncoder(writer);
       const msg: AI.UIMessage = { id: 'msg-1', role: 'user', parts: [] };
 
-      await encoder.writeMessages([msg]);
+      await encoder.publish({ type: 'ait-user-message', message: msg });
 
-      const batch = writer.publishCalls[0] as Ably.Message[];
-      expect(batch).toHaveLength(1);
-      expect(batch[0]?.name).toBe('text');
-      expect(batch[0]?.data).toBe('');
+      const call = writer.publishCalls[0];
+      if (!Array.isArray(call)) throw new Error('expected batch publish');
+      expect(call).toHaveLength(1);
+      expect(call[0]?.name).toBe('text');
+      expect(call[0]?.data).toBe('');
     });
+  });
 
-    it('publishes multiple messages as a single batch', async () => {
+  // -- tool-approval events (codec-local TEvent) ----------------------------
+
+  describe('publishing tool-approval events', () => {
+    it('publishes a discrete tool-approval-response with toolCallId and approved headers', async () => {
       const encoder = createEncoder(writer);
-      const msgs: AI.UIMessage[] = [
-        { id: 'msg-1', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
-        { id: 'msg-2', role: 'user', parts: [{ type: 'text', text: 'bye' }] },
-      ];
-
-      await encoder.writeMessages(msgs);
+      await encoder.publish({
+        type: 'ait-tool-approval',
+        toolCallId: 'tc-1',
+        approved: true,
+        reason: 'looks good',
+      });
 
       expect(writer.publishCalls).toHaveLength(1);
-      const batch = writer.publishCalls[0] as Ably.Message[];
-      expect(batch).toHaveLength(2);
+      const msg = firstPublish(writer);
+      expect(msg.name).toBe('tool-approval-response');
+      expect(headersOf(msg)[`${D}toolCallId`]).toBe('tc-1');
+      expect(headersOf(msg)[`${D}approved`]).toBe('true');
+      expect(headersOf(msg)[`${D}reason`]).toBe('looks good');
     });
   });
 

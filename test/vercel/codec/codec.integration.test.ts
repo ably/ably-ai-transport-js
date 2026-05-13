@@ -1,7 +1,7 @@
 /**
  * Vercel UIMessageCodec integration tests.
  *
- * Validate encode → publish → subscribe → decode → accumulate roundtrips
+ * Validate encode -> publish -> subscribe -> decode -> fold roundtrips
  * over real Ably channels using message appends. These tests prove the
  * wire format and Ably message serialization work end-to-end without
  * transport machinery.
@@ -16,8 +16,7 @@ import type * as AI from 'ai';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { HEADER_MSG_ID, HEADER_RUN_ID } from '../../../src/constants.js';
-import type { DecoderOutput } from '../../../src/core/codec/types.js';
-import { UIMessageCodec } from '../../../src/vercel/codec/index.js';
+import { UIMessageCodec, type VercelEvent, type VercelProjection } from '../../../src/vercel/codec/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 import { eventsOf, eventTypesOf } from '../../integration/helpers.js';
@@ -38,6 +37,34 @@ const stampHeaders = (runId: string, messageId: string) => (msg: Ably.Message) =
   }
 };
 
+/**
+ * Read `x-ably-msg-id` and serial from an Ably inbound message for the reducer meta.
+ * @param msg - The Ably inbound message to read meta from.
+ * @returns A ReducerMeta-shaped object carrying serial and optional messageId.
+ */
+const metaOf = (msg: Ably.InboundMessage): { serial: string; messageId?: string } => {
+  // CAST: Ably SDK types `extras` as `any`; we trust the runtime shape.
+  const headers = (msg.extras as { headers?: Record<string, string> } | undefined)?.headers ?? {};
+  const messageId = headers[HEADER_MSG_ID];
+  return messageId === undefined ? { serial: msg.serial ?? '' } : { serial: msg.serial ?? '', messageId };
+};
+
+/**
+ * Fold a batch of decoder events into the projection, stamping each with
+ * the right ReducerMeta carried from the source Ably message.
+ * @param state - Current projection to fold into.
+ * @param events - Decoder events to fold.
+ * @param msg - Source Ably inbound message (used to derive meta).
+ * @returns The updated projection.
+ */
+const foldBatch = (state: VercelProjection, events: VercelEvent[], msg: Ably.InboundMessage): VercelProjection => {
+  const meta = metaOf(msg);
+  for (const event of events) {
+    state = UIMessageCodec.fold(state, event, meta);
+  }
+  return state;
+};
+
 describe('Vercel UIMessageCodec integration', () => {
   afterEach(() => {
     closeAllClients();
@@ -46,9 +73,9 @@ describe('Vercel UIMessageCodec integration', () => {
   /**
    * Scenario 1: Text response roundtrip
    *
-   * Encodes a complete text stream (start → text-start → text-delta(s) →
-   * text-end → finish) through a real Ably channel and verifies the decoder
-   * + accumulator reconstruct the expected UIMessage.
+   * Encodes a complete text stream (start -> text-start -> text-delta(s) ->
+   * text-end -> finish) through a real Ably channel and verifies the decoder
+   * + reducer reconstruct the expected UIMessage.
    */
   it('text response roundtrip', async () => {
     const channelName = uniqueChannelName('text-roundtrip');
@@ -59,23 +86,23 @@ describe('Vercel UIMessageCodec integration', () => {
     const subChannel = subClient.channels.get(channelName);
 
     const decoder = UIMessageCodec.createDecoder();
-    const accumulator = UIMessageCodec.createAccumulator();
+    let projection = UIMessageCodec.init();
 
     const messageId = 'msg-1';
     const textId = 'text-1';
 
-    const allOutputs: DecoderOutput<AI.UIMessageChunk, AI.UIMessage>[] = [];
+    const allEvents: VercelEvent[] = [];
     let resolveFinish: () => void;
     const finished = new Promise<void>((r) => {
       resolveFinish = r;
     });
 
     await subChannel.subscribe((msg) => {
-      const outputs = decoder.decode(msg);
-      allOutputs.push(...outputs);
-      accumulator.processOutputs(outputs);
+      const events = decoder.decode(msg);
+      allEvents.push(...events);
+      projection = foldBatch(projection, events, msg);
 
-      if (eventsOf(outputs).some((e) => e.type === 'finish')) {
+      if (eventsOf(events).some((e) => e.type === 'finish')) {
         resolveFinish();
       }
     });
@@ -84,20 +111,20 @@ describe('Vercel UIMessageCodec integration', () => {
       onMessage: stampHeaders('run-1', messageId),
     });
 
-    await encoder.appendEvent({ type: 'start', messageId });
-    await encoder.appendEvent({ type: 'start-step' });
-    await encoder.appendEvent({ type: 'text-start', id: textId });
+    await encoder.publish({ type: 'start', messageId });
+    await encoder.publish({ type: 'start-step' });
+    await encoder.publish({ type: 'text-start', id: textId });
     // Fire-and-forget deltas: encoder accumulates internally and flushes on close
-    void encoder.appendEvent({ type: 'text-delta', id: textId, delta: 'Hello' });
-    void encoder.appendEvent({ type: 'text-delta', id: textId, delta: ', ' });
-    void encoder.appendEvent({ type: 'text-delta', id: textId, delta: 'world!' });
-    await encoder.appendEvent({ type: 'text-end', id: textId });
-    await encoder.appendEvent({ type: 'finish', finishReason: 'stop' });
+    void encoder.publish({ type: 'text-delta', id: textId, delta: 'Hello' });
+    void encoder.publish({ type: 'text-delta', id: textId, delta: ', ' });
+    void encoder.publish({ type: 'text-delta', id: textId, delta: 'world!' });
+    await encoder.publish({ type: 'text-end', id: textId });
+    await encoder.publish({ type: 'finish', finishReason: 'stop' });
     await encoder.close();
 
     await finished;
 
-    const types = eventTypesOf(allOutputs);
+    const types = eventTypesOf(allEvents);
     expect(types).toContain('start');
     expect(types).toContain('start-step');
     expect(types).toContain('text-start');
@@ -105,23 +132,19 @@ describe('Vercel UIMessageCodec integration', () => {
     expect(types).toContain('text-end');
     expect(types).toContain('finish');
 
-    expect(accumulator.completedMessages).toHaveLength(1);
-    const [msg] = accumulator.completedMessages;
+    const messages = UIMessageCodec.getMessages(projection);
+    expect(messages).toHaveLength(1);
+    const [msg] = messages;
     expect(msg).toBeDefined();
     expect(msg?.role).toBe('assistant');
 
     const textPart = msg?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
     expect(textPart).toBeDefined();
     expect(textPart?.text).toBe('Hello, world!');
-    expect(accumulator.hasActiveStream).toBe(false);
   });
 
   /**
    * Scenario 2: Tool call roundtrip
-   *
-   * Encodes a streamed tool-input (start → tool-input-start → tool-input-delta(s) →
-   * tool-input-available → tool-output-available → finish) and verifies the
-   * roundtrip produces the correct DynamicToolUIPart state transitions.
    */
   it('tool call roundtrip', async () => {
     const channelName = uniqueChannelName('tool-roundtrip');
@@ -132,23 +155,23 @@ describe('Vercel UIMessageCodec integration', () => {
     const subChannel = subClient.channels.get(channelName);
 
     const decoder = UIMessageCodec.createDecoder();
-    const accumulator = UIMessageCodec.createAccumulator();
+    let projection = UIMessageCodec.init();
 
     const messageId = 'msg-tool-1';
     const toolCallId = 'tc-1';
 
-    const allOutputs: DecoderOutput<AI.UIMessageChunk, AI.UIMessage>[] = [];
+    const allEvents: VercelEvent[] = [];
     let resolveFinish: () => void;
     const finished = new Promise<void>((r) => {
       resolveFinish = r;
     });
 
     await subChannel.subscribe((msg) => {
-      const outputs = decoder.decode(msg);
-      allOutputs.push(...outputs);
-      accumulator.processOutputs(outputs);
+      const events = decoder.decode(msg);
+      allEvents.push(...events);
+      projection = foldBatch(projection, events, msg);
 
-      if (eventsOf(outputs).some((e) => e.type === 'finish')) {
+      if (eventsOf(events).some((e) => e.type === 'finish')) {
         resolveFinish();
       }
     });
@@ -157,32 +180,32 @@ describe('Vercel UIMessageCodec integration', () => {
       onMessage: stampHeaders('run-tool-1', messageId),
     });
 
-    await encoder.appendEvent({ type: 'start', messageId });
-    await encoder.appendEvent({ type: 'start-step' });
-    await encoder.appendEvent({
+    await encoder.publish({ type: 'start', messageId });
+    await encoder.publish({ type: 'start-step' });
+    await encoder.publish({
       type: 'tool-input-start',
       toolCallId,
       toolName: 'get_weather',
     });
-    void encoder.appendEvent({ type: 'tool-input-delta', toolCallId, inputTextDelta: '{"loc' });
-    void encoder.appendEvent({ type: 'tool-input-delta', toolCallId, inputTextDelta: 'ation":"SF"}' });
-    await encoder.appendEvent({
+    void encoder.publish({ type: 'tool-input-delta', toolCallId, inputTextDelta: '{"loc' });
+    void encoder.publish({ type: 'tool-input-delta', toolCallId, inputTextDelta: 'ation":"SF"}' });
+    await encoder.publish({
       type: 'tool-input-available',
       toolCallId,
       toolName: 'get_weather',
       input: { location: 'SF' },
     });
-    await encoder.appendEvent({
+    await encoder.publish({
       type: 'tool-output-available',
       toolCallId,
       output: { temp: 72 },
     });
-    await encoder.appendEvent({ type: 'finish', finishReason: 'tool-calls' });
+    await encoder.publish({ type: 'finish', finishReason: 'tool-calls' });
     await encoder.close();
 
     await finished;
 
-    const types = eventTypesOf(allOutputs);
+    const types = eventTypesOf(allEvents);
     expect(types).toContain('start');
     expect(types).toContain('tool-input-start');
     expect(types).toContain('tool-input-delta');
@@ -190,24 +213,25 @@ describe('Vercel UIMessageCodec integration', () => {
     expect(types).toContain('tool-output-available');
     expect(types).toContain('finish');
 
-    expect(accumulator.completedMessages).toHaveLength(1);
-    const [msg] = accumulator.completedMessages;
+    const messages = UIMessageCodec.getMessages(projection);
+    expect(messages).toHaveLength(1);
+    const [msg] = messages;
 
     const toolPart = msg?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
     expect(toolPart).toBeDefined();
     expect(toolPart?.toolName).toBe('get_weather');
     expect(toolPart?.toolCallId).toBe(toolCallId);
     expect(toolPart?.state).toBe('output-available');
-    expect(toolPart?.input).toEqual({ location: 'SF' });
-    expect(toolPart?.output).toEqual({ temp: 72 });
+    if (toolPart?.state === 'output-available' || toolPart?.state === 'input-available') {
+      expect(toolPart.input).toEqual({ location: 'SF' });
+    }
+    if (toolPart?.state === 'output-available') {
+      expect(toolPart.output).toEqual({ temp: 72 });
+    }
   });
 
   /**
    * Scenario 3: Discrete tool call (non-streaming)
-   *
-   * Publishes a tool-input-available without a preceding tool-input-start,
-   * verifying the encoder falls back to discrete publish and the decoder
-   * synthesizes tool-input-start + tool-input-available events.
    */
   it('non-streaming tool call roundtrip', async () => {
     const channelName = uniqueChannelName('discrete-tool');
@@ -218,23 +242,23 @@ describe('Vercel UIMessageCodec integration', () => {
     const subChannel = subClient.channels.get(channelName);
 
     const decoder = UIMessageCodec.createDecoder();
-    const accumulator = UIMessageCodec.createAccumulator();
+    let projection = UIMessageCodec.init();
 
     const messageId = 'msg-dt-1';
     const toolCallId = 'tc-discrete-1';
 
-    const allOutputs: DecoderOutput<AI.UIMessageChunk, AI.UIMessage>[] = [];
+    const allEvents: VercelEvent[] = [];
     let resolveFinish: () => void;
     const finished = new Promise<void>((r) => {
       resolveFinish = r;
     });
 
     await subChannel.subscribe((msg) => {
-      const outputs = decoder.decode(msg);
-      allOutputs.push(...outputs);
-      accumulator.processOutputs(outputs);
+      const events = decoder.decode(msg);
+      allEvents.push(...events);
+      projection = foldBatch(projection, events, msg);
 
-      if (eventsOf(outputs).some((e) => e.type === 'finish')) {
+      if (eventsOf(events).some((e) => e.type === 'finish')) {
         resolveFinish();
       }
     });
@@ -243,45 +267,44 @@ describe('Vercel UIMessageCodec integration', () => {
       onMessage: stampHeaders('run-dt-1', messageId),
     });
 
-    await encoder.appendEvent({ type: 'start', messageId });
-    await encoder.appendEvent({ type: 'start-step' });
-    await encoder.appendEvent({
+    await encoder.publish({ type: 'start', messageId });
+    await encoder.publish({ type: 'start-step' });
+    await encoder.publish({
       type: 'tool-input-available',
       toolCallId,
       toolName: 'calculator',
       input: { expression: '2+2' },
     });
-    await encoder.appendEvent({
+    await encoder.publish({
       type: 'tool-output-available',
       toolCallId,
       output: { result: 4 },
     });
-    await encoder.appendEvent({ type: 'finish', finishReason: 'tool-calls' });
+    await encoder.publish({ type: 'finish', finishReason: 'tool-calls' });
     await encoder.close();
 
     await finished;
 
-    const types = eventTypesOf(allOutputs);
+    const types = eventTypesOf(allEvents);
     expect(types).toContain('tool-input-start');
     expect(types).toContain('tool-input-available');
     expect(types).toContain('tool-output-available');
 
-    expect(accumulator.completedMessages).toHaveLength(1);
-    const [msg] = accumulator.completedMessages;
+    const messages = UIMessageCodec.getMessages(projection);
+    expect(messages).toHaveLength(1);
+    const [msg] = messages;
     const toolPart = msg?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
     expect(toolPart).toBeDefined();
     expect(toolPart?.toolName).toBe('calculator');
     expect(toolPart?.state).toBe('output-available');
-    expect(toolPart?.input).toEqual({ expression: '2+2' });
-    expect(toolPart?.output).toEqual({ result: 4 });
+    if (toolPart?.state === 'output-available') {
+      expect(toolPart.input).toEqual({ expression: '2+2' });
+      expect(toolPart.output).toEqual({ result: 4 });
+    }
   });
 
   /**
    * Scenario 4: Abort mid-stream
-   *
-   * Starts a text stream, sends some deltas, then aborts. Verifies the
-   * encoder sends the abort signal and the decoder/accumulator handle
-   * the aborted stream correctly.
    */
   it('abort mid-stream', async () => {
     const channelName = uniqueChannelName('abort');
@@ -292,23 +315,23 @@ describe('Vercel UIMessageCodec integration', () => {
     const subChannel = subClient.channels.get(channelName);
 
     const decoder = UIMessageCodec.createDecoder();
-    const accumulator = UIMessageCodec.createAccumulator();
+    let projection = UIMessageCodec.init();
 
     const messageId = 'msg-abort-1';
     const textId = 'text-abort-1';
 
-    const allOutputs: DecoderOutput<AI.UIMessageChunk, AI.UIMessage>[] = [];
+    const allEvents: VercelEvent[] = [];
     let resolveAbort: () => void;
     const aborted = new Promise<void>((r) => {
       resolveAbort = r;
     });
 
     await subChannel.subscribe((msg) => {
-      const outputs = decoder.decode(msg);
-      allOutputs.push(...outputs);
-      accumulator.processOutputs(outputs);
+      const events = decoder.decode(msg);
+      allEvents.push(...events);
+      projection = foldBatch(projection, events, msg);
 
-      if (eventsOf(outputs).some((e) => e.type === 'abort')) {
+      if (eventsOf(events).some((e) => e.type === 'abort')) {
         resolveAbort();
       }
     });
@@ -317,31 +340,27 @@ describe('Vercel UIMessageCodec integration', () => {
       onMessage: stampHeaders('run-abort-1', messageId),
     });
 
-    await encoder.appendEvent({ type: 'start', messageId });
-    await encoder.appendEvent({ type: 'start-step' });
-    await encoder.appendEvent({ type: 'text-start', id: textId });
-    void encoder.appendEvent({ type: 'text-delta', id: textId, delta: 'Hello' });
-    void encoder.appendEvent({ type: 'text-delta', id: textId, delta: ', wo' });
-    await encoder.appendEvent({ type: 'abort', reason: 'user cancelled' });
+    await encoder.publish({ type: 'start', messageId });
+    await encoder.publish({ type: 'start-step' });
+    await encoder.publish({ type: 'text-start', id: textId });
+    void encoder.publish({ type: 'text-delta', id: textId, delta: 'Hello' });
+    void encoder.publish({ type: 'text-delta', id: textId, delta: ', wo' });
+    await encoder.publish({ type: 'abort', reason: 'user cancelled' });
     await encoder.close();
 
     await aborted;
 
-    const types = eventTypesOf(allOutputs);
+    const types = eventTypesOf(allEvents);
     expect(types).toContain('text-start');
     expect(types).toContain('text-delta');
     expect(types).toContain('abort');
 
-    expect(accumulator.completedMessages).toHaveLength(1);
-    expect(accumulator.hasActiveStream).toBe(false);
+    const messages = UIMessageCodec.getMessages(projection);
+    expect(messages).toHaveLength(1);
   });
 
   /**
    * Scenario 5: History hydration via channel history
-   *
-   * Publishes a complete text stream, then fetches channel history
-   * and feeds it through a fresh decoder + accumulator. Verifies
-   * the decoder handles history messages correctly.
    */
   it('history hydration', async () => {
     const channelName = uniqueChannelName('history');
@@ -356,13 +375,13 @@ describe('Vercel UIMessageCodec integration', () => {
       onMessage: stampHeaders('run-hist-1', messageId),
     });
 
-    await encoder.appendEvent({ type: 'start', messageId });
-    await encoder.appendEvent({ type: 'start-step' });
-    await encoder.appendEvent({ type: 'text-start', id: textId });
-    void encoder.appendEvent({ type: 'text-delta', id: textId, delta: 'History ' });
-    void encoder.appendEvent({ type: 'text-delta', id: textId, delta: 'test.' });
-    await encoder.appendEvent({ type: 'text-end', id: textId });
-    await encoder.appendEvent({ type: 'finish', finishReason: 'stop' });
+    await encoder.publish({ type: 'start', messageId });
+    await encoder.publish({ type: 'start-step' });
+    await encoder.publish({ type: 'text-start', id: textId });
+    void encoder.publish({ type: 'text-delta', id: textId, delta: 'History ' });
+    void encoder.publish({ type: 'text-delta', id: textId, delta: 'test.' });
+    await encoder.publish({ type: 'text-end', id: textId });
+    await encoder.publish({ type: 'finish', finishReason: 'stop' });
     await encoder.close();
 
     // Wait for Ably's history API to become consistent — real network propagation
@@ -378,26 +397,22 @@ describe('Vercel UIMessageCodec integration', () => {
     expect(historyMessages.length).toBeGreaterThan(0);
 
     const decoder = UIMessageCodec.createDecoder();
-    const accumulator = UIMessageCodec.createAccumulator();
+    let projection = UIMessageCodec.init();
 
     for (const msg of historyMessages) {
-      const outputs = decoder.decode(msg);
-      accumulator.processOutputs(outputs);
+      const events = decoder.decode(msg);
+      projection = foldBatch(projection, events, msg);
     }
 
-    expect(accumulator.messages.length).toBeGreaterThanOrEqual(1);
+    const messages = UIMessageCodec.getMessages(projection);
+    expect(messages.length).toBeGreaterThanOrEqual(1);
 
-    const textMsg = accumulator.messages.find((m) =>
-      m.parts.some((p) => p.type === 'text' && p.text.includes('History test.')),
-    );
+    const textMsg = messages.find((m) => m.parts.some((p) => p.type === 'text' && p.text.includes('History test.')));
     expect(textMsg).toBeDefined();
   });
 
   /**
    * Scenario 6: Multi-client sync
-   *
-   * Two subscribers on the same channel both receive a streamed response.
-   * Verifies both decoders/accumulators reconstruct the same message.
    */
   it('multi-client sync', async () => {
     const channelName = uniqueChannelName('multi-client');
@@ -410,9 +425,9 @@ describe('Vercel UIMessageCodec integration', () => {
     const sub2Channel = sub2Client.channels.get(channelName);
 
     const decoder1 = UIMessageCodec.createDecoder();
-    const accumulator1 = UIMessageCodec.createAccumulator();
+    let projection1 = UIMessageCodec.init();
     const decoder2 = UIMessageCodec.createDecoder();
-    const accumulator2 = UIMessageCodec.createAccumulator();
+    let projection2 = UIMessageCodec.init();
 
     const messageId = 'msg-multi-1';
     const textId = 'text-multi-1';
@@ -427,45 +442,45 @@ describe('Vercel UIMessageCodec integration', () => {
     });
 
     await sub1Channel.subscribe((msg) => {
-      const outputs = decoder1.decode(msg);
-      accumulator1.processOutputs(outputs);
-      if (eventsOf(outputs).some((e) => e.type === 'finish')) resolve1();
+      const events = decoder1.decode(msg);
+      projection1 = foldBatch(projection1, events, msg);
+      if (eventsOf(events).some((e) => e.type === 'finish')) resolve1();
     });
 
     await sub2Channel.subscribe((msg) => {
-      const outputs = decoder2.decode(msg);
-      accumulator2.processOutputs(outputs);
-      if (eventsOf(outputs).some((e) => e.type === 'finish')) resolve2();
+      const events = decoder2.decode(msg);
+      projection2 = foldBatch(projection2, events, msg);
+      if (eventsOf(events).some((e) => e.type === 'finish')) resolve2();
     });
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
       onMessage: stampHeaders('run-multi-1', messageId),
     });
 
-    await encoder.appendEvent({ type: 'start', messageId });
-    await encoder.appendEvent({ type: 'start-step' });
-    await encoder.appendEvent({ type: 'text-start', id: textId });
-    void encoder.appendEvent({ type: 'text-delta', id: textId, delta: 'Sync ' });
-    void encoder.appendEvent({ type: 'text-delta', id: textId, delta: 'test.' });
-    await encoder.appendEvent({ type: 'text-end', id: textId });
-    await encoder.appendEvent({ type: 'finish', finishReason: 'stop' });
+    await encoder.publish({ type: 'start', messageId });
+    await encoder.publish({ type: 'start-step' });
+    await encoder.publish({ type: 'text-start', id: textId });
+    void encoder.publish({ type: 'text-delta', id: textId, delta: 'Sync ' });
+    void encoder.publish({ type: 'text-delta', id: textId, delta: 'test.' });
+    await encoder.publish({ type: 'text-end', id: textId });
+    await encoder.publish({ type: 'finish', finishReason: 'stop' });
     await encoder.close();
 
     await Promise.all([finished1, finished2]);
 
-    expect(accumulator1.completedMessages).toHaveLength(1);
-    expect(accumulator2.completedMessages).toHaveLength(1);
+    const messages1 = UIMessageCodec.getMessages(projection1);
+    const messages2 = UIMessageCodec.getMessages(projection2);
+    expect(messages1).toHaveLength(1);
+    expect(messages2).toHaveLength(1);
 
-    const text1 = accumulator1.completedMessages[0]?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
-    const text2 = accumulator2.completedMessages[0]?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
+    const text1 = messages1[0]?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
+    const text2 = messages2[0]?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
     expect(text1?.text).toBe('Sync test.');
     expect(text2?.text).toBe('Sync test.');
   });
 
   /**
    * Scenario 7: Reasoning stream roundtrip
-   *
-   * Verifies reasoning content streams through the codec correctly.
    */
   it('reasoning stream roundtrip', async () => {
     const channelName = uniqueChannelName('reasoning');
@@ -476,51 +491,52 @@ describe('Vercel UIMessageCodec integration', () => {
     const subChannel = subClient.channels.get(channelName);
 
     const decoder = UIMessageCodec.createDecoder();
-    const accumulator = UIMessageCodec.createAccumulator();
+    let projection = UIMessageCodec.init();
 
     const messageId = 'msg-reason-1';
     const reasoningId = 'reason-1';
     const textId = 'text-after-reason-1';
 
-    const allOutputs: DecoderOutput<AI.UIMessageChunk, AI.UIMessage>[] = [];
+    const allEvents: VercelEvent[] = [];
     let resolveFinish: () => void;
     const finished = new Promise<void>((r) => {
       resolveFinish = r;
     });
 
     await subChannel.subscribe((msg) => {
-      const outputs = decoder.decode(msg);
-      allOutputs.push(...outputs);
-      accumulator.processOutputs(outputs);
-      if (eventsOf(outputs).some((e) => e.type === 'finish')) resolveFinish();
+      const events = decoder.decode(msg);
+      allEvents.push(...events);
+      projection = foldBatch(projection, events, msg);
+      if (eventsOf(events).some((e) => e.type === 'finish')) resolveFinish();
     });
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
       onMessage: stampHeaders('run-reason-1', messageId),
     });
 
-    await encoder.appendEvent({ type: 'start', messageId });
-    await encoder.appendEvent({ type: 'start-step' });
-    await encoder.appendEvent({ type: 'reasoning-start', id: reasoningId });
-    void encoder.appendEvent({ type: 'reasoning-delta', id: reasoningId, delta: 'Let me think...' });
-    await encoder.appendEvent({ type: 'reasoning-end', id: reasoningId });
-    await encoder.appendEvent({ type: 'text-start', id: textId });
-    void encoder.appendEvent({ type: 'text-delta', id: textId, delta: 'The answer is 42.' });
-    await encoder.appendEvent({ type: 'text-end', id: textId });
-    await encoder.appendEvent({ type: 'finish', finishReason: 'stop' });
+    await encoder.publish({ type: 'start', messageId });
+    await encoder.publish({ type: 'start-step' });
+    await encoder.publish({ type: 'reasoning-start', id: reasoningId });
+    void encoder.publish({ type: 'reasoning-delta', id: reasoningId, delta: 'Let me think...' });
+    await encoder.publish({ type: 'reasoning-end', id: reasoningId });
+    await encoder.publish({ type: 'text-start', id: textId });
+    void encoder.publish({ type: 'text-delta', id: textId, delta: 'The answer is 42.' });
+    await encoder.publish({ type: 'text-end', id: textId });
+    await encoder.publish({ type: 'finish', finishReason: 'stop' });
     await encoder.close();
 
     await finished;
 
-    const types = eventTypesOf(allOutputs);
+    const types = eventTypesOf(allEvents);
     expect(types).toContain('reasoning-start');
     expect(types).toContain('reasoning-delta');
     expect(types).toContain('reasoning-end');
     expect(types).toContain('text-start');
     expect(types).toContain('text-end');
 
-    expect(accumulator.completedMessages).toHaveLength(1);
-    const [msg] = accumulator.completedMessages;
+    const messages = UIMessageCodec.getMessages(projection);
+    expect(messages).toHaveLength(1);
+    const [msg] = messages;
 
     const reasoningPart = msg?.parts.find((p): p is AI.ReasoningUIPart => p.type === 'reasoning');
     expect(reasoningPart).toBeDefined();
@@ -533,9 +549,6 @@ describe('Vercel UIMessageCodec integration', () => {
 
   /**
    * Scenario 8: Error propagation
-   *
-   * Server publishes an error event mid-stream. Verifies the decoder
-   * surfaces the error event.
    */
   it('error propagation mid-stream', async () => {
     const channelName = uniqueChannelName('error-prop');
@@ -546,43 +559,43 @@ describe('Vercel UIMessageCodec integration', () => {
     const subChannel = subClient.channels.get(channelName);
 
     const decoder = UIMessageCodec.createDecoder();
-    const accumulator = UIMessageCodec.createAccumulator();
+    let projection = UIMessageCodec.init();
 
     const messageId = 'msg-err-1';
     const textId = 'text-err-1';
 
-    const allOutputs: DecoderOutput<AI.UIMessageChunk, AI.UIMessage>[] = [];
+    const allEvents: VercelEvent[] = [];
     let resolveError: () => void;
     const gotError = new Promise<void>((r) => {
       resolveError = r;
     });
 
     await subChannel.subscribe((msg) => {
-      const outputs = decoder.decode(msg);
-      allOutputs.push(...outputs);
-      accumulator.processOutputs(outputs);
-      if (eventsOf(outputs).some((e) => e.type === 'error')) resolveError();
+      const events = decoder.decode(msg);
+      allEvents.push(...events);
+      projection = foldBatch(projection, events, msg);
+      if (eventsOf(events).some((e) => e.type === 'error')) resolveError();
     });
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
       onMessage: stampHeaders('run-err-1', messageId),
     });
 
-    await encoder.appendEvent({ type: 'start', messageId });
-    await encoder.appendEvent({ type: 'start-step' });
-    await encoder.appendEvent({ type: 'text-start', id: textId });
-    void encoder.appendEvent({ type: 'text-delta', id: textId, delta: 'Partial...' });
-    await encoder.appendEvent({ type: 'error', errorText: 'model rate limit exceeded' });
+    await encoder.publish({ type: 'start', messageId });
+    await encoder.publish({ type: 'start-step' });
+    await encoder.publish({ type: 'text-start', id: textId });
+    void encoder.publish({ type: 'text-delta', id: textId, delta: 'Partial...' });
+    await encoder.publish({ type: 'error', errorText: 'model rate limit exceeded' });
     await encoder.close();
 
     await gotError;
 
-    const types = eventTypesOf(allOutputs);
+    const types = eventTypesOf(allEvents);
     expect(types).toContain('text-start');
     expect(types).toContain('text-delta');
     expect(types).toContain('error');
 
-    const errorEvent = eventsOf(allOutputs).find(
+    const errorEvent = eventsOf(allEvents).find(
       (e): e is Extract<AI.UIMessageChunk, { type: 'error' }> => e.type === 'error',
     );
     expect(errorEvent).toBeDefined();

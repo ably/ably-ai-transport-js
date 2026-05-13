@@ -27,7 +27,7 @@ export interface TreeHandle<TMessage> {
 }
 
 /** Options for {@link useTree}. */
-export type UseTreeOptions<TEvent, TMessage> = BaseSessionOption<TEvent, TMessage>;
+export type UseTreeOptions<TEvent, TProjection, TMessage> = BaseSessionOption<TEvent, TProjection, TMessage>;
 
 /**
  * Provide stable structural query callbacks backed by the session's tree.
@@ -36,14 +36,19 @@ export type UseTreeOptions<TEvent, TMessage> = BaseSessionOption<TEvent, TMessag
  * @param props.session - Session to read tree structure from; defaults to the nearest provider.
  * @returns A {@link TreeHandle} with structural query methods.
  */
-export const useTree = <TEvent, TMessage>({ session }: UseTreeOptions<TEvent, TMessage> = {}): TreeHandle<TMessage> => {
+export const useTree = <TEvent, TProjection, TMessage>({
+  session,
+}: UseTreeOptions<TEvent, TProjection, TMessage> = {}): TreeHandle<TMessage> => {
   const resolved = useResolvedSession({ session });
 
-  const getSiblings = useCallback((msgId: string) => resolved?.tree.getSiblings(msgId) ?? [], [resolved]);
+  const getSiblings = useCallback((msgId: string): TMessage[] => resolved?.tree.getSiblings(msgId) ?? [], [resolved]);
 
   const hasSiblings = useCallback((msgId: string) => resolved?.tree.hasSiblings(msgId) ?? false, [resolved]);
 
-  const getNode = useCallback((msgId: string) => resolved?.tree.getNode(msgId), [resolved]);
+  const getNode = useCallback(
+    (msgId: string): MessageNode<TMessage> | undefined => resolved?.tree.getNode(msgId),
+    [resolved],
+  );
 
   return {
     getSiblings,

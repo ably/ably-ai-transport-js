@@ -11,7 +11,8 @@
 
 import { useState, useRef, useCallback } from 'react';
 import type { ClientSession, ActiveRun, SendOptions } from '@ably/ai-transport';
-import type { UIMessageChunk, UIMessage } from 'ai';
+import type { UIMessage } from 'ai';
+import type { VercelEvent, VercelProjection } from '@ably/ai-transport/vercel';
 import { userMessage } from '../helpers';
 
 export interface QueuedMessage {
@@ -27,9 +28,12 @@ export interface QueueHandle {
   clear: () => void;
 }
 
-type SendFn = (messages: UIMessage[], options?: SendOptions) => Promise<ActiveRun<UIMessageChunk>>;
+type SendFn = (messages: UIMessage[], options?: SendOptions) => Promise<ActiveRun<VercelEvent>>;
 
-export function useMessageQueue(session: ClientSession<UIMessageChunk, UIMessage>, send: SendFn): QueueHandle {
+export function useMessageQueue(
+  session: ClientSession<VercelEvent, VercelProjection, UIMessage>,
+  send: SendFn,
+): QueueHandle {
   const [items, setItems] = useState<QueuedMessage[]>([]);
   const itemsRef = useRef(items);
   itemsRef.current = items;

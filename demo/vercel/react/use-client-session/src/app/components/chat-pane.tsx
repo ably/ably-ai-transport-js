@@ -2,10 +2,10 @@
 
 import { useCallback } from 'react';
 import type * as Ably from 'ably';
-import type { UIMessage, UIMessageChunk } from 'ai';
+import type { UIMessage } from 'ai';
 import type { ViewHandle } from '@ably/ai-transport/react';
 import type { ClientSession } from '@ably/ai-transport';
-import type { ToolApprovalDecision } from '@ably/ai-transport/vercel';
+import type { ToolApprovalDecision, VercelEvent, VercelProjection } from '@ably/ai-transport/vercel';
 import { MessageList } from './message-list';
 import { InputBar } from './input-bar';
 import { MessageQueue } from './message-queue';
@@ -16,9 +16,9 @@ import { userMessage } from '../helpers';
 
 interface ChatPaneProps {
   label: string;
-  session: ClientSession<UIMessageChunk, UIMessage>;
+  session: ClientSession<VercelEvent, VercelProjection, UIMessage>;
   /** The reactive ViewHandle from useView or useCreateView. */
-  view: ViewHandle<UIMessageChunk, UIMessage>;
+  view: ViewHandle<VercelEvent, VercelProjection, UIMessage>;
   /** Raw Ably messages for the debug pane. */
   ablyMessages: Ably.InboundMessage[];
   activeRuns: Map<string, Set<string>>;

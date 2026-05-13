@@ -17,9 +17,13 @@ import type { BaseSessionOption } from './internal/use-resolved-session.js';
 import { useResolvedSession } from './internal/use-resolved-session.js';
 
 /** Options for {@link useView}. */
-export interface UseViewOptions<TEvent, TMessage> extends BaseSessionOption<TEvent, TMessage> {
+export interface UseViewOptions<TEvent, TProjection, TMessage> extends BaseSessionOption<
+  TEvent,
+  TProjection,
+  TMessage
+> {
   /** A specific {@link View} to subscribe to directly. Takes priority over `session`. */
-  view?: View<TEvent, TMessage> | null;
+  view?: View<TEvent, TProjection, TMessage> | null;
   /** Maximum number of older messages to load per page. When provided, auto-loads on mount. */
   limit?: number;
   /** When `true`, skip all subscriptions and return an empty handle immediately. */
@@ -27,7 +31,8 @@ export interface UseViewOptions<TEvent, TMessage> extends BaseSessionOption<TEve
 }
 
 /** Handle for the paginated, branch-aware conversation view. */
-export interface ViewHandle<TEvent, TMessage> {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- TProjection is part of the codec generic triple kept symmetric with View
+export interface ViewHandle<TEvent, TProjection, TMessage> {
   /** The visible domain messages along the selected branch. */
   messages: TMessage[];
   /** Visible conversation nodes along the selected branch. */
@@ -63,8 +68,6 @@ export interface ViewHandle<TEvent, TMessage> {
   regenerate: (messageId: string, options?: SendOptions) => Promise<ActiveRun<TEvent>>;
   /** Edit a user message, forking from this view's branch. */
   edit: (messageId: string, newMessages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>;
-  /** Amend an existing message and start a continuation run (e.g. tool results). */
-  update: (msgId: string, events: TEvent[], options?: SendOptions) => Promise<ActiveRun<TEvent>>;
 }
 
 /**
@@ -80,12 +83,12 @@ export interface ViewHandle<TEvent, TMessage> {
  * @param props.skip - When `true`, skip all subscriptions and return an empty handle.
  * @returns A {@link ViewHandle} with nodes, pagination state, navigation, write operations, and loadOlder.
  */
-export const useView = <TEvent, TMessage>({
+export const useView = <TEvent, TProjection, TMessage>({
   session,
   view,
   limit,
   skip,
-}: UseViewOptions<TEvent, TMessage> = {}): ViewHandle<TEvent, TMessage> => {
+}: UseViewOptions<TEvent, TProjection, TMessage> = {}): ViewHandle<TEvent, TProjection, TMessage> => {
   const resolvedSession = useResolvedSession({ session, skip });
   const resolvedView = skip ? undefined : (view ?? resolvedSession?.view);
 
@@ -196,15 +199,6 @@ export const useView = <TEvent, TMessage>({
     [resolvedView],
   );
 
-  const update = useCallback(
-    async (msgId: string, events: TEvent[], opts?: SendOptions) => {
-      if (!resolvedView)
-        throw new Ably.ErrorInfo('unable to update; view is not available', ErrorCode.InvalidArgument, 400);
-      return resolvedView.update(msgId, events, opts);
-    },
-    [resolvedView],
-  );
-
   return {
     messages,
     nodes,
@@ -220,6 +214,5 @@ export const useView = <TEvent, TMessage>({
     send,
     regenerate,
     edit,
-    update,
   };
 };

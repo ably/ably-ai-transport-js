@@ -38,8 +38,8 @@ import { ClientSessionContext } from './client-session-context.js';
  * All {@link ClientSessionOptions} except `client` (read from the surrounding
  * `<AblyProvider>`).
  */
-export interface ClientSessionProviderProps<TEvent, TMessage>
-  extends Omit<ClientSessionOptions<TEvent, TMessage>, 'client'>, PropsWithChildren {}
+export interface ClientSessionProviderProps<TEvent, TProjection, TMessage>
+  extends Omit<ClientSessionOptions<TEvent, TProjection, TMessage>, 'client'>, PropsWithChildren {}
 
 /**
  * Provide a {@link ClientSession} to descendant components.
@@ -82,15 +82,15 @@ export interface ClientSessionProviderProps<TEvent, TMessage>
  * @param props.children - Descendant components that consume the session via {@link useClientSession}.
  * @returns A React element wrapping children with ClientSessionContext.
  */
-export const ClientSessionProvider = <TEvent, TMessage>({
+export const ClientSessionProvider = <TEvent, TProjection, TMessage>({
   children,
   ...sessionOptions
-}: ClientSessionProviderProps<TEvent, TMessage>): ReactNode => {
+}: ClientSessionProviderProps<TEvent, TProjection, TMessage>): ReactNode => {
   const client = useAbly();
   const { channelName } = sessionOptions;
-  const sessionRef = useRef<ClientSession<TEvent, TMessage> | undefined>(undefined);
+  const sessionRef = useRef<ClientSession<TEvent, TProjection, TMessage> | undefined>(undefined);
   const sessionChannelRef = useRef<string>(channelName);
-  const sessionsToDisposeRef = useRef<ClientSession<unknown, unknown>[]>([]);
+  const sessionsToDisposeRef = useRef<ClientSession<unknown, unknown, unknown>[]>([]);
   const pendingCloseRef = useRef(false);
   const constructionErrorRef = useRef<Ably.ErrorInfo | undefined>(undefined);
 
@@ -115,8 +115,8 @@ export const ClientSessionProvider = <TEvent, TMessage>({
 
   // Capture ref values as locals so useMemo deps track changes correctly.
   // CAST: ClientSessionContext stores sessions with erased generics.
-  // The generic types are fixed at the ClientSessionProvider<TEvent, TMessage> boundary.
-  const currentSession = sessionRef.current as ClientSession<unknown, unknown> | undefined;
+  // The generic types are fixed at the ClientSessionProvider<TEvent, TProjection, TMessage> boundary.
+  const currentSession = sessionRef.current as ClientSession<unknown, unknown, unknown> | undefined;
   const currentError = constructionErrorRef.current;
 
   const slot = useMemo<ClientSessionSlot>(

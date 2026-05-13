@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react';
-import type { UIMessage, UIMessageChunk } from 'ai';
+import type { UIMessage } from 'ai';
 import type { ClientSession } from '@ably/ai-transport';
+import type { VercelEvent, VercelProjection } from '@ably/ai-transport/vercel';
 import { describe, expect, it, vi } from 'vitest';
 
 import { useMessageQueue } from '../use-message-queue';
@@ -8,7 +9,7 @@ import { useMessageQueue } from '../use-message-queue';
 const createMockSession = () =>
   ({
     waitForRun: vi.fn(() => Promise.resolve()),
-  }) as unknown as ClientSession<UIMessageChunk, UIMessage>;
+  }) as unknown as ClientSession<VercelEvent, VercelProjection, UIMessage>;
 
 const createMockSend = () =>
   vi.fn(() =>

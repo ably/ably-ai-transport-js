@@ -2,16 +2,17 @@
 
 import { useState, useCallback } from 'react';
 import type { ClientSession, ActiveRun, SendOptions } from '@ably/ai-transport';
-import type { UIMessageChunk, UIMessage } from 'ai';
+import type { UIMessage } from 'ai';
+import type { VercelEvent, VercelProjection } from '@ably/ai-transport/vercel';
 import { useSlashCommands, type SlashCommand } from '../hooks/use-slash-commands';
 import { SlashAutocomplete } from './slash-autocomplete';
 import type { QueueHandle } from '../hooks/use-message-queue';
 import { userMessage } from '../helpers';
 
-type SendFn = (messages: UIMessage[], options?: SendOptions) => Promise<ActiveRun<UIMessageChunk>>;
+type SendFn = (messages: UIMessage[], options?: SendOptions) => Promise<ActiveRun<VercelEvent>>;
 
 interface InputBarProps {
-  session: ClientSession<UIMessageChunk, UIMessage>;
+  session: ClientSession<VercelEvent, VercelProjection, UIMessage>;
   send: SendFn;
   activeRuns: Map<string, Set<string>>;
   clientId: string | undefined;

@@ -43,11 +43,11 @@ import { useView as _useView } from './use-view.js';
  * `TEvent` and `TMessage` are baked in at factory creation time so no type params
  * are needed at hook call sites.
  */
-export interface SessionHooks<TEvent, TMessage> {
+export interface SessionHooks<TEvent, TProjection, TMessage> {
   /**
    * `ClientSessionProvider` narrowed to `TEvent`/`TMessage`. No JSX type params needed.
    */
-  ClientSessionProvider: ComponentType<ClientSessionProviderProps<TEvent, TMessage>>;
+  ClientSessionProvider: ComponentType<ClientSessionProviderProps<TEvent, TProjection, TMessage>>;
   /**
    * Read the session from context. No type params needed.
    *
@@ -66,7 +66,7 @@ export interface SessionHooks<TEvent, TMessage> {
     skip?: boolean;
     /** Called whenever the resolved session emits an error event. */
     onError?: (error: Ably.ErrorInfo) => void;
-  }) => ClientSessionHandle<TEvent, TMessage>;
+  }) => ClientSessionHandle<TEvent, TProjection, TMessage>;
   /**
    * Subscribe to the nearest session's view and return the visible node list with pagination.
    * Pass `session` to use a session's default view, `view` to subscribe to a specific view
@@ -74,21 +74,21 @@ export interface SessionHooks<TEvent, TMessage> {
    */
   useView: (props?: {
     /** Client session whose default view to subscribe to; defaults to the nearest {@link ClientSessionProvider}. */
-    session?: ClientSession<TEvent, TMessage> | null;
+    session?: ClientSession<TEvent, TProjection, TMessage> | null;
     /** A specific {@link View} to subscribe to directly. Takes priority over `session`. */
-    view?: View<TEvent, TMessage> | null;
+    view?: View<TEvent, TProjection, TMessage> | null;
     /** When provided, auto-loads the first page on mount. */
     limit?: number;
     /** When `true`, skip all subscriptions and return an empty handle. */
     skip?: boolean;
-  }) => ViewHandle<TEvent, TMessage>;
+  }) => ViewHandle<TEvent, TProjection, TMessage>;
   /**
    * Track active runs across all clients on the channel.
    * Pass `session` to override; defaults to the nearest {@link ClientSessionProvider}.
    */
   useActiveRuns: (props?: {
     /** Override session; defaults to the nearest {@link ClientSessionProvider}. */
-    session?: ClientSession<TEvent, TMessage> | null;
+    session?: ClientSession<TEvent, TProjection, TMessage> | null;
   }) => Map<string, Set<string>>;
   /**
    * Navigate conversation branches in the session tree.
@@ -96,7 +96,7 @@ export interface SessionHooks<TEvent, TMessage> {
    */
   useTree: (props?: {
     /** Override session; defaults to the nearest {@link ClientSessionProvider}. */
-    session?: ClientSession<TEvent, TMessage>;
+    session?: ClientSession<TEvent, TProjection, TMessage>;
   }) => TreeHandle<TMessage>;
   /**
    * Subscribe to raw Ably messages on the session channel.
@@ -105,7 +105,7 @@ export interface SessionHooks<TEvent, TMessage> {
    */
   useAblyMessages: (props?: {
     /** Override session; defaults to the nearest {@link ClientSessionProvider}. */
-    session?: ClientSession<TEvent, TMessage>;
+    session?: ClientSession<TEvent, TProjection, TMessage>;
     /** When `true`, skip all subscriptions and return an empty array. */
     skip?: boolean;
   }) => Ably.InboundMessage[];
@@ -116,12 +116,12 @@ export interface SessionHooks<TEvent, TMessage> {
    */
   useCreateView: (props?: {
     /** Override session; defaults to the nearest {@link ClientSessionProvider}. */
-    session?: ClientSession<TEvent, TMessage> | null;
+    session?: ClientSession<TEvent, TProjection, TMessage> | null;
     /** When provided, auto-loads the first page on mount. */
     limit?: number;
     /** When `true`, skip view creation and return an empty handle. */
     skip?: boolean;
-  }) => ViewHandle<TEvent, TMessage>;
+  }) => ViewHandle<TEvent, TProjection, TMessage>;
 }
 
 /**
@@ -132,13 +132,15 @@ export interface SessionHooks<TEvent, TMessage> {
  * with the types resolved.
  * @returns A {@link SessionHooks} bundle.
  */
-export const createSessionHooks = <TEvent, TMessage>(): SessionHooks<TEvent, TMessage> => ({
+export const createSessionHooks = <TEvent, TProjection, TMessage>(): SessionHooks<TEvent, TProjection, TMessage> => ({
   // CAST: ClientSessionProvider is generic; factory narrows it to TEvent/TMessage.
-  ClientSessionProvider: _ClientSessionProvider as ComponentType<ClientSessionProviderProps<TEvent, TMessage>>,
-  useClientSession: (props) => _useClientSession<TEvent, TMessage>(props ?? {}),
-  useView: (props) => _useView<TEvent, TMessage>(props ?? {}),
-  useActiveRuns: (props) => _useActiveRuns<TEvent, TMessage>(props ?? {}),
-  useTree: (props) => _useTree<TEvent, TMessage>(props ?? {}),
-  useAblyMessages: (props) => _useAblyMessages<TEvent, TMessage>(props ?? {}),
-  useCreateView: (props) => _useCreateView<TEvent, TMessage>(props ?? {}),
+  ClientSessionProvider: _ClientSessionProvider as ComponentType<
+    ClientSessionProviderProps<TEvent, TProjection, TMessage>
+  >,
+  useClientSession: (props) => _useClientSession<TEvent, TProjection, TMessage>(props ?? {}),
+  useView: (props) => _useView<TEvent, TProjection, TMessage>(props ?? {}),
+  useActiveRuns: (props) => _useActiveRuns<TEvent, TProjection, TMessage>(props ?? {}),
+  useTree: (props) => _useTree<TEvent, TProjection, TMessage>(props ?? {}),
+  useAblyMessages: (props) => _useAblyMessages<TEvent, TProjection, TMessage>(props ?? {}),
+  useCreateView: (props) => _useCreateView<TEvent, TProjection, TMessage>(props ?? {}),
 });

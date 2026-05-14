@@ -1554,6 +1554,41 @@ describe('AgentSession', () => {
       s.close();
     });
 
+    it('honours a custom promptBufferLimit option', async () => {
+      const ch = createMockChannel();
+      const c = codecWithFunctionalDecoder();
+      const { logger, warn } = captureWarnLogger();
+      const s = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'evict-custom',
+        codec: c,
+        promptLookupTimeoutMs: 5000,
+        promptBufferLimit: 3,
+        logger,
+      });
+      await s.connect();
+
+      // Fill the 3-slot buffer; no eviction warns should fire yet.
+      for (let i = 0; i < 3; i++) {
+        deliverUserPrompt(ch, { invocationId: `inv-${String(i)}`, msgId: `m${String(i)}`, serial: `s${String(i)}` });
+      }
+      let evictCalls = warn.mock.calls.filter(
+        (call) => typeof call[0] === 'string' && call[0].includes('prompt buffer full'),
+      );
+      expect(evictCalls).toHaveLength(0);
+
+      // The 4th distinct invocation-id must evict `inv-0` and log limit=3.
+      deliverUserPrompt(ch, { invocationId: 'inv-3', msgId: 'm3', serial: 's3' });
+      evictCalls = warn.mock.calls.filter(
+        (call) => typeof call[0] === 'string' && call[0].includes('prompt buffer full'),
+      );
+      expect(evictCalls).toHaveLength(1);
+      const ctx = evictCalls[0]?.[1] as { evictedInvocationId?: string; limit?: number } | undefined;
+      expect(ctx?.evictedInvocationId).toBe('inv-0');
+      expect(ctx?.limit).toBe(3);
+      s.close();
+    });
+
     it('rejects the entire lookup if any message fails to decode', async () => {
       const ch = createMockChannel();
       // Decoder throws on any input.

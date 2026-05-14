@@ -84,6 +84,24 @@ export interface AgentSessionOptions<TEvent, TMessage> {
    * Default: 30000 (30 seconds).
    */
   promptLookupTimeoutMs?: number;
+
+  /**
+   * Maximum number of distinct invocation-ids whose user-prompt messages
+   * may be buffered while waiting for `Run.start()` to register a lookup
+   * listener. Channel rewind on attach can replay user messages before any
+   * run has been created for them; this buffer holds those messages so
+   * that subsequent `start()` calls can drain them on registration.
+   *
+   * Each entry corresponds to one invocation-id regardless of how many
+   * messages that invocation buffered. When the limit is exceeded the
+   * oldest invocation entry (and all its buffered messages) is FIFO-evicted
+   * — the client whose prompt was dropped will fail their lookup with
+   * `PromptNotFound`. The eviction is logged at warn level so operators
+   * can correlate capacity pressure with `PromptNotFound` errors.
+   *
+   * Default: 200.
+   */
+  promptBufferLimit?: number;
 }
 
 // ---------------------------------------------------------------------------

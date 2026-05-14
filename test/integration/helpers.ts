@@ -9,13 +9,19 @@ import type { VercelEvent } from '../../src/vercel/codec/index.js';
 /**
  * Filter codec-decoded events to UIMessageChunk variants (the legacy assistant
  * stream). Excludes Vercel codec-local variants (`UserMessageEvent`,
- * `ToolApprovalEvent`).
+ * `ToolApprovalEvent`, `ClientToolOutputEvent`).
  * @param events - Codec-decoded events.
  * @returns UIMessageChunk-only subset.
  */
 const chunksOf = (events: VercelEvent[]): AI.UIMessageChunk[] =>
   // CAST: discriminator excludes the codec-local variants.
-  events.filter((e) => e.type !== 'ait-user-message' && e.type !== 'ait-tool-approval');
+  events.filter(
+    (e): e is AI.UIMessageChunk =>
+      e.type !== 'ait-user-message' &&
+      e.type !== 'ait-tool-approval' &&
+      e.type !== 'ait-client-tool-output' &&
+      e.type !== 'ait-client-tool-output-error',
+  );
 
 /**
  * Extract event types from decoder outputs.

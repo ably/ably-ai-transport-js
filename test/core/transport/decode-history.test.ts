@@ -13,7 +13,6 @@ import type * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  HEADER_AMEND,
   HEADER_DISCRETE,
   HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
@@ -231,6 +230,9 @@ const createMockCodec = (): Codec<TestEvent, TestProjection, TestMessage> & {
     }),
     getMessages: vi.fn((p: TestProjection) => p.order.map((id) => p.byId.get(id)).filter((m): m is TestMessage => !!m)),
     userMessageEvent: vi.fn((m: TestMessage): TestEvent => ({ type: 'text', text: m.content })),
+    classifyEvent: vi.fn(() => ({ kind: 'other' as const }) as const),
+    // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires an explicit return matching the codec contract
+    resolveToolTarget: vi.fn(() => undefined),
     createEncoder: vi.fn(() => noopEncoderFactory()),
     createDecoder: vi.fn(() => {
       counters.decoderInstances += 1;
@@ -430,9 +432,9 @@ describe('decodeHistory', () => {
   describe('amend routing', () => {
     it('folds an amend with matching HEADER_RUN_ID into the same run projection', async () => {
       // Run T1 streams the original message; a later wire message in the SAME
-      // run T1 amends asst-1 with HEADER_AMEND. The reducer routes via
-      // meta.messageId === 'asst-1', so the amend appends into the same
-      // message.
+      // run T1 carries HEADER_MSG_ID = 'asst-1' to amend it. The reducer
+      // routes via meta.messageId === 'asst-1', so the amend appends into
+      // the same message.
       const [finish, delta, create] = streamingRun('T1', 'asst-1', ['original']);
       if (!finish || !delta || !create) throw new Error('expected 3 wire messages');
 
@@ -441,8 +443,7 @@ describe('decodeHistory', () => {
           action: 'message.create',
           headers: {
             [HEADER_RUN_ID]: 'T1',
-            [HEADER_MSG_ID]: 'amend-carrier',
-            [HEADER_AMEND]: 'asst-1',
+            [HEADER_MSG_ID]: 'asst-1',
             [HEADER_STREAM]: 'false',
             [HEADER_DISCRETE]: 'true',
           },
@@ -473,8 +474,7 @@ describe('decodeHistory', () => {
           action: 'message.create',
           headers: {
             [HEADER_RUN_ID]: 'T2',
-            [HEADER_MSG_ID]: 'amend-carrier',
-            [HEADER_AMEND]: 'asst-1',
+            [HEADER_MSG_ID]: 'asst-1',
             [HEADER_STREAM]: 'false',
             [HEADER_DISCRETE]: 'true',
           },

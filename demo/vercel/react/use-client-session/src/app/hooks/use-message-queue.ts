@@ -13,7 +13,7 @@ import { useState, useRef, useCallback } from 'react';
 import type { ClientSession, ActiveRun, SendOptions } from '@ably/ai-transport';
 import type { UIMessage } from 'ai';
 import type { VercelEvent, VercelProjection } from '@ably/ai-transport/vercel';
-import { userMessage } from '../helpers';
+import { userMessageEvent } from '../helpers';
 
 export interface QueuedMessage {
   id: string;
@@ -28,7 +28,7 @@ export interface QueueHandle {
   clear: () => void;
 }
 
-type SendFn = (messages: UIMessage[], options?: SendOptions) => Promise<ActiveRun<VercelEvent>>;
+type SendFn = (events: VercelEvent | VercelEvent[], options?: SendOptions) => Promise<ActiveRun<VercelEvent>>;
 
 export function useMessageQueue(
   session: ClientSession<VercelEvent, VercelProjection, UIMessage>,
@@ -56,8 +56,8 @@ export function useMessageQueue(
         if (batch.length === 0) break;
         setItems([]);
         itemsRef.current = [];
-        const msgs = batch.map((item) => userMessage(item.text));
-        await sendRef.current(msgs);
+        const events = batch.map((item) => userMessageEvent(item.text));
+        await sendRef.current(events);
       }
     } finally {
       drainingRef.current = false;

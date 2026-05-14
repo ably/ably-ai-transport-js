@@ -1,9 +1,8 @@
 'use client';
 
 import { useState, useCallback } from 'react';
-import type { ToolApprovalDecision } from '@ably/ai-transport/vercel';
 
-import { userMessage } from '../helpers';
+import { userMessageEvent } from '../helpers';
 import { useClientTools } from '../hooks/use-client-tools';
 import { useMessageQueue } from '../hooks/use-message-queue';
 import { Header } from './header';
@@ -35,28 +34,27 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
 
   const activeRuns = useActiveRuns();
   const ablyMessages = useAblyMessages();
-  const queue = useMessageQueue(session, view.send);
+  const queue = useMessageQueue(session, view.sendEvent);
 
   const handleToolApproved = useCallback(
-    (msgId: string, toolCallId: string, input: unknown) => {
-      const inputObj = input as Record<string, string> | undefined;
-      const label = inputObj?.location ?? toolCallId;
-      const decision: ToolApprovalDecision = { toolCallId, approved: true, targetMsgId: msgId };
-      view.send([userMessage(`Approved: ${label}`)], {
-        body: { toolApprovals: [decision] },
-      });
+    (msgId: string, toolCallId: string) => {
+      const node = view.getNode(msgId);
+      const runId = node?.headers['x-ably-run-id'];
+      if (!runId) return;
+      view.sendEvent([{ type: 'ait-tool-approval', toolCallId, approved: true, targetMsgId: msgId }], { runId });
     },
     [view],
   );
 
   const handleToolDeny = useCallback(
-    (msgId: string, toolCallId: string, input: unknown) => {
-      const inputObj = input as Record<string, string> | undefined;
-      const label = inputObj?.location ?? toolCallId;
-      const decision: ToolApprovalDecision = { toolCallId, approved: false, targetMsgId: msgId };
-      view.send([userMessage(`Denied: ${label}`)], {
-        body: { toolApprovals: [decision] },
-      });
+    (msgId: string, toolCallId: string) => {
+      const node = view.getNode(msgId);
+      const runId = node?.headers['x-ably-run-id'];
+      if (!runId) return;
+      view.sendEvent(
+        [{ type: 'ait-tool-approval', toolCallId, approved: false, reason: 'User denied', targetMsgId: msgId }],
+        { runId },
+      );
     },
     [view],
   );
@@ -94,14 +92,14 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
             <MessageList
               view={view}
               onRegenerate={(id) => view.regenerate(id)}
-              onEdit={(id, text) => view.edit(id, [userMessage(text)])}
+              onEdit={(id, text) => view.edit(id, [userMessageEvent(text)])}
               onToolApprove={handleToolApproved}
               onToolDeny={handleToolDeny}
             />
             <MessageQueue queue={queue} />
             <InputBar
               session={session}
-              send={view.send}
+              send={view.sendEvent}
               activeRuns={activeRuns}
               clientId={clientId}
               queue={queue}

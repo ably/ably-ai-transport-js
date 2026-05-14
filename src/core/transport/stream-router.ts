@@ -20,6 +20,15 @@ import type { RunEntry } from './types.js';
 export interface StreamRouter<TEvent> {
   /** Register a new stream for a (runId, invocationId). Returns the ReadableStream the consumer reads from. */
   createStream(runId: string, invocationId: string): ReadableStream<TEvent>;
+  /**
+   * Rebind an existing run's stream to a new invocation-id. Used when a
+   * suspended run resumes under the same runId with a fresh invocation —
+   * the ReadableStream the consumer is already reading stays open; only
+   * the invocation filter advances. Returns the existing ReadableStream on
+   * success, or `undefined` (and does nothing) if no stream is registered
+   * for the runId.
+   */
+  rebindStream(runId: string, newInvocationId: string): ReadableStream<TEvent> | undefined;
   /** Close the stream for a runId. Returns true if a stream existed. */
   closeStream(runId: string): boolean;
   /** Error the stream for a runId. The consumer's reader will reject with the given error. Returns true if a stream existed. */
@@ -69,8 +78,20 @@ class DefaultStreamRouter<TEvent> implements StreamRouter<TEvent> {
         500,
       );
     }
-    this._runs.set(runId, { controller: entry.controller, runId, invocationId });
+    this._runs.set(runId, { stream, controller: entry.controller, runId, invocationId });
     return stream;
+  }
+
+  rebindStream(runId: string, newInvocationId: string): ReadableStream<TEvent> | undefined {
+    const run = this._runs.get(runId);
+    if (!run) return undefined;
+    this._logger.debug('StreamRouter.rebindStream();', {
+      runId,
+      from: run.invocationId,
+      to: newInvocationId,
+    });
+    run.invocationId = newInvocationId;
+    return run.stream;
   }
 
   // Spec: AIT-CT14b

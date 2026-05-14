@@ -232,6 +232,39 @@ export interface Decoder<TEvent> {
 // ---------------------------------------------------------------------------
 
 /**
+ * The runtime category of a TEvent, used by the SDK to dispatch a
+ * `View.sendEvent` call to the correct publish path. The codec is the only
+ * thing that knows how to inspect its TEvents; the core session asks via
+ * {@link Codec.classifyEvent}.
+ *
+ * - `user-message` — kicks off a new run (or refreshes a regen target).
+ *   `message` is the TMessage to optimistically insert into the Tree.
+ * - `amend` — modifies an existing message (wire `HEADER_MSG_ID` is set to that message's id). Used by
+ *   client-published tool outputs and tool-approval responses.
+ *   `targetMsgId` is the `x-ably-msg-id` of the message being amended.
+ * - `other` — anything the codec doesn't recognize as either of the above.
+ *   The session rejects `view.sendEvent` calls that include `other`-classified
+ *   events.
+ */
+export type EventClassification<TMessage> =
+  | {
+      /** Discriminator — user-message event variant. */
+      kind: 'user-message';
+      /** The TMessage to insert into the Tree on optimistic publish. */
+      message: TMessage;
+    }
+  | {
+      /** Discriminator — amend event variant. */
+      kind: 'amend';
+      /** The `x-ably-msg-id` of the message this event amends. */
+      targetMsgId: string;
+    }
+  | {
+      /** Discriminator — unrecognized / not-sendable event variant. */
+      kind: 'other';
+    };
+
+/**
  * The codec describes the wire and folds events into a per-Run projection.
  *
  * Type parameters:
@@ -260,6 +293,39 @@ export interface Codec<TEvent, TProjection, TMessage> extends Reducer<TEvent, TP
    * caller-provided TMessages into wire events.
    */
   userMessageEvent(message: TMessage): TEvent;
+  /**
+   * Classify a TEvent for `View.sendEvent` dispatch. The session inspects the
+   * returned discriminant to decide whether the event opens a new run
+   * (`user-message`), amends an existing message (`amend`), or is
+   * unsupported on the send path (`other`).
+   *
+   * Codecs should return `other` rather than throw for unrecognized event
+   * types — `_internalSend` is the one place that errors on `other`, which
+   * keeps the codec permissive for future wire variants.
+   * @param event - The event being sent.
+   * @returns The classification driving the publish path.
+   */
+  classifyEvent(event: TEvent): EventClassification<TMessage>;
+  /**
+   * Return the existing message id a stream event should be attributed
+   * to, based on the projection's current state. Used by `Run.pipe` to
+   * override the wire `HEADER_MSG_ID` when a tool-output event (or
+   * similar message-modifying event) emitted by `streamText`'s second
+   * pass should land on the original message that holds the matching
+   * tool call.
+   *
+   * Codecs implement the lookup over their own projection shape. The
+   * Vercel codec, for example, scans `dynamic-tool` parts in
+   * `approval-responded` / `approval-requested` state for a matching
+   * `toolCallId`.
+   *
+   * Returns `undefined` when the event has no projection-derived
+   * target (the caller's default `messageId` is used).
+   * @param event - The event about to be encoded.
+   * @param projection - The current per-run projection.
+   * @returns The target message id, or `undefined` to use the default.
+   */
+  resolveToolTarget(event: TEvent, projection: TProjection): string | undefined;
   /**
    * Whether an event signals stream/run completion.
    * @deprecated Temporary bridge. Removed when wire-level `run-end`

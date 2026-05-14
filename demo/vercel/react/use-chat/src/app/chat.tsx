@@ -8,7 +8,6 @@ import {
   useChatTransport,
   useMessageSync,
   useView,
-  useStagedAddToolApprovalResponse,
 } from '@ably/ai-transport/vercel/react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { MessageList } from './components/message-list';
@@ -77,11 +76,6 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
 
   useMessageSync({ setMessages });
 
-  // Wrap addToolApprovalResponse so the approval response patches the
-  // session tree synchronously on click. Eliminates useChat↔tree
-  // divergence and closes the observer-run race.
-  const stagedApproval = useStagedAddToolApprovalResponse(session, addToolApprovalResponse);
-
   // Track status transitions
   useEffect(() => {
     setStatusLog((prev) => [...prev, { time: Date.now(), status }]);
@@ -120,8 +114,10 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
           onLoadOlder={loadOlder}
           onRegenerate={(messageId) => regenerate({ messageId })}
           onEdit={(messageId, text) => sendMessage({ text, messageId })}
-          onToolApprove={(approvalId) => stagedApproval({ id: approvalId, approved: true })}
-          onToolDeny={(approvalId) => stagedApproval({ id: approvalId, approved: false, reason: 'User denied' })}
+          onToolApprove={(approvalId) => addToolApprovalResponse({ id: approvalId, approved: true })}
+          onToolDeny={(approvalId) =>
+            addToolApprovalResponse({ id: approvalId, approved: false, reason: 'User denied' })
+          }
         />
         <div className="border-t border-zinc-800">
           <SuggestionChips

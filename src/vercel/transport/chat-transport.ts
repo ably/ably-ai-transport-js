@@ -24,6 +24,7 @@
 import * as Ably from 'ably';
 import type * as AI from 'ai';
 
+import { HEADER_RUN_ID } from '../../constants.js';
 import type { ClientSession, CloseOptions, SendOptions } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
 import type { VercelEvent, VercelProjection } from '../codec/index.js';
@@ -171,7 +172,13 @@ const filterToChunks = (source: ReadableStream<VercelEvent>): ReadableStream<AI.
   source.pipeThrough(
     new TransformStream<VercelEvent, AI.UIMessageChunk>({
       transform: (event, controller) => {
-        if (event.type === 'ait-user-message' || event.type === 'ait-tool-approval') return;
+        if (
+          event.type === 'ait-user-message' ||
+          event.type === 'ait-tool-approval' ||
+          event.type === 'ait-client-tool-output' ||
+          event.type === 'ait-client-tool-output-error'
+        )
+          return;
         // CAST: discriminator above excludes the codec-local variants, leaving UIMessageChunk.
         controller.enqueue(event);
       },
@@ -225,6 +232,111 @@ const hasUnresolvedToolCall = (msg: AI.UIMessage): boolean =>
       (p.state === 'input-streaming' || p.state === 'input-available' || p.state === 'approval-requested'),
   );
 
+/**
+ * `dynamic-tool` part states that mean "the LLM produced a tool call and
+ * is waiting on it". Used to detect new client-side resolutions in the
+ * useChat overlay relative to the tree.
+ */
+const UNRESOLVED_TOOL_STATES = new Set(['input-streaming', 'input-available', 'approval-requested']);
+
+/**
+ * Walk the useChat message overlay against the session tree and synthesize
+ * the TEvents needed to resolve every `dynamic-tool` part that the user
+ * acted on (executed a tool, approved, denied) but the tree's reduced
+ * state hasn't reflected yet.
+ *
+ * The resulting events are passed alongside the continuation `view.sendEvent`
+ * so the channel publish and the continuation POST land as ONE atomic
+ * operation — the agent's `loadProjection()` history fetch is guaranteed
+ * to see the new events because the channel publish happens before the
+ * POST inside `_internalSend`.
+ *
+ * Three resolutions are produced:
+ *
+ * - `approval-responded` overlay vs `approval-requested` tree →
+ *   `ait-tool-approval` (approved=true)
+ * - `output-denied` overlay vs `approval-requested` tree →
+ *   `ait-tool-approval` (approved=false)
+ * - `output-available`/`output-error` overlay vs unresolved tree →
+ *   `ait-client-tool-output(-error)`
+ *
+ * Replacement for the retired `session.stageEvents` flow: client-side
+ * resolutions reach the agent through the channel, not the HTTP POST body.
+ * @param session - The client session (used to read the current tree).
+ * @param messages - useChat's local overlay messages.
+ * @returns Continuation events to publish, in tree order.
+ */
+const deriveContinuationEvents = (
+  session: ClientSession<VercelEvent, VercelProjection, AI.UIMessage>,
+  messages: AI.UIMessage[],
+): VercelEvent[] => {
+  const allNodes = session.view.flattenNodes();
+  const events: VercelEvent[] = [];
+  for (const overlay of messages) {
+    if (overlay.role !== 'assistant') continue;
+    const node = allNodes.find((n) => n.message.id === overlay.id);
+    if (!node) continue;
+    const treeMessage = node.message;
+
+    for (const overlayPart of overlay.parts) {
+      if (overlayPart.type !== 'dynamic-tool') continue;
+      const treePart = treeMessage.parts.find(
+        (p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool' && p.toolCallId === overlayPart.toolCallId,
+      );
+
+      // Approval response: useChat's `addToolApprovalResponse` flipped the
+      // overlay part to `approval-responded` (approve) or `output-denied`
+      // (deny) while the tree still sits on `approval-requested`. Publish a
+      // `ToolApprovalEvent` so the agent's projection sees the decision.
+      if (overlayPart.state === 'approval-responded' && (!treePart || treePart.state === 'approval-requested')) {
+        const approvalEvent: VercelEvent = {
+          type: 'ait-tool-approval',
+          toolCallId: overlayPart.toolCallId,
+          approved: true,
+          targetMsgId: node.msgId,
+        };
+        if (overlayPart.approval.reason !== undefined) {
+          (approvalEvent as { reason?: string }).reason = overlayPart.approval.reason;
+        }
+        events.push(approvalEvent);
+        continue;
+      }
+      if (overlayPart.state === 'output-denied' && (!treePart || treePart.state === 'approval-requested')) {
+        events.push({
+          type: 'ait-tool-approval',
+          toolCallId: overlayPart.toolCallId,
+          approved: false,
+          targetMsgId: node.msgId,
+        });
+        continue;
+      }
+
+      // Client-tool resolution: overlay has `output-available` / `output-error`
+      // while the tree's part is still unresolved.
+      if (overlayPart.state !== 'output-available' && overlayPart.state !== 'output-error') continue;
+      // Tree already resolved (echo arrived back) — nothing to do.
+      if (treePart && !UNRESOLVED_TOOL_STATES.has(treePart.state)) continue;
+
+      if (overlayPart.state === 'output-available') {
+        events.push({
+          type: 'ait-client-tool-output',
+          toolCallId: overlayPart.toolCallId,
+          output: overlayPart.output,
+          targetMsgId: node.msgId,
+        });
+      } else {
+        events.push({
+          type: 'ait-client-tool-output-error',
+          toolCallId: overlayPart.toolCallId,
+          errorText: overlayPart.errorText,
+          targetMsgId: node.msgId,
+        });
+      }
+    }
+  }
+  return events;
+};
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -269,6 +381,7 @@ export const createChatTransport = (
 
   const sendMessages: ChatTransport['sendMessages'] = async (opts) => {
     const { messages, abortSignal, trigger, messageId } = opts;
+
     const allNodes = session.view.flattenNodes();
 
     // useChat calls sendMessages in three distinct modes. We disambiguate
@@ -389,10 +502,30 @@ export const createChatTransport = (
     const sendOpts: SendOptions = { body: sendBody, headers: sendHeaders };
     if (forkOf !== undefined) sendOpts.forkOf = forkOf;
     if (parent !== undefined) sendOpts.parent = parent;
+    // Continuations reuse the suspended assistant's runId so the agent's
+    // existing run resumes under a fresh invocation rather than spinning
+    // up a brand-new run. `lastMessageNode` is non-undefined whenever
+    // `isContinuation` is true.
+    if (isContinuation) {
+      const suspendedRunId = lastMessageNode.headers[HEADER_RUN_ID];
+      if (suspendedRunId) sendOpts.runId = suspendedRunId;
+    }
 
-    // A single dispatch path: view.send with the (possibly empty)
-    // newMessages array.
-    const run = await session.view.send(newMessages, sendOpts);
+    // Build the events array. For continuations, this is the set of
+    // client-side tool-output amends derived from useChat's overlay vs the
+    // tree — publishing them through the same `view.sendEvent` call means the
+    // channel publish lands BEFORE the continuation POST reaches the agent,
+    // so the agent's `loadProjection()` history fetch sees the amends.
+    let inputEvents: VercelEvent[];
+    if (isContinuation) {
+      inputEvents = deriveContinuationEvents(session, messages);
+    } else if (trigger === 'regenerate-message') {
+      inputEvents = [];
+    } else {
+      inputEvents = newMessages.map((m) => ({ type: 'ait-user-message', message: m }));
+    }
+
+    const run = await session.view.sendEvent(inputEvents, sendOpts);
 
     if (abortSignal) {
       abortSignal.addEventListener('abort', () => void session.cancel({ all: true }), {

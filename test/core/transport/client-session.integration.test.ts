@@ -224,7 +224,7 @@ describe('ClientSession integration', () => {
     });
     await clientSession.connect();
 
-    const sendPromise = clientSession.view.send({
+    const sendPromise = clientSession.view.sendMessage({
       id: 'user-msg-rt-1',
       role: 'user',
       parts: [{ type: 'text', text: 'Hello!' }],
@@ -302,7 +302,7 @@ describe('ClientSession integration', () => {
     });
     await clientSession.connect();
 
-    const sendPromise = clientSession.view.send({
+    const sendPromise = clientSession.view.sendMessage({
       id: 'user-msg-stream-1',
       role: 'user',
       parts: [{ type: 'text', text: 'Test' }],
@@ -360,7 +360,7 @@ describe('ClientSession integration', () => {
     const runEvents: RunLifecycleEvent[] = [];
     clientSession.tree.on('run', (e) => runEvents.push(e));
 
-    const sendPromise = clientSession.view.send({
+    const sendPromise = clientSession.view.sendMessage({
       id: 'user-lc-1',
       role: 'user',
       parts: [{ type: 'text', text: 'test' }],
@@ -421,7 +421,7 @@ describe('ClientSession integration', () => {
     });
     await clientSession.connect();
 
-    const sendPromise = clientSession.view.send({
+    const sendPromise = clientSession.view.sendMessage({
       id: 'user-msg-cancel-1',
       role: 'user',
       parts: [{ type: 'text', text: 'Long request' }],
@@ -532,7 +532,7 @@ describe('ClientSession integration', () => {
     const rawMessages: Ably.InboundMessage[] = [];
     clientSession.tree.on('ably-message', (msg) => rawMessages.push(msg));
 
-    const sendPromise = clientSession.view.send({
+    const sendPromise = clientSession.view.sendMessage({
       id: 'user-raw-1',
       role: 'user',
       parts: [{ type: 'text', text: 'test' }],
@@ -588,7 +588,7 @@ describe('ClientSession integration', () => {
     });
     await clientSession.connect();
 
-    const sendPromise = clientSession.view.send({
+    const sendPromise = clientSession.view.sendMessage({
       id: 'user-hdr-1',
       role: 'user',
       parts: [{ type: 'text', text: 'Question' }],
@@ -658,13 +658,11 @@ describe('ClientSession integration', () => {
 
     // Client sends BEFORE any agent is up. send() resolves immediately
     // because runStartDeadlineMs is 0. The channel publish happens regardless.
-    const clientRun = await clientSession.view.send(
-      UIMessageCodec.userMessageEvent({
-        id: 'user-late-agent',
-        role: 'user',
-        parts: [{ type: 'text', text: 'is anybody home?' }],
-      }),
-    );
+    const clientRun = await clientSession.view.sendMessage({
+      id: 'user-late-agent',
+      role: 'user',
+      parts: [{ type: 'text', text: 'is anybody home?' }],
+    });
 
     // Allow the publish ack to land in channel history. Real Ably history
     // has slight propagation lag — poll for up to a few seconds.
@@ -827,13 +825,11 @@ describe('ClientSession integration', () => {
 
     const started = Date.now();
     await expect(
-      clientSession.view.send(
-        UIMessageCodec.userMessageEvent({
-          id: 'user-deadline-1',
-          role: 'user',
-          parts: [{ type: 'text', text: 'no-one is listening' }],
-        }),
-      ),
+      clientSession.view.sendMessage({
+        id: 'user-deadline-1',
+        role: 'user',
+        parts: [{ type: 'text', text: 'no-one is listening' }],
+      }),
     ).rejects.toMatchObject({ code: ErrorCode.RunStartDeadlineExceeded });
     const elapsed = Date.now() - started;
     // Sanity: the rejection should follow the deadline, not fire instantly.
@@ -1025,13 +1021,11 @@ describe('ClientSession integration', () => {
 
     // Kick off the client send; do NOT await yet — the agent has to handle
     // the lookup and publish run-start before this resolves.
-    const sendPromise = clientSession.view.send(
-      UIMessageCodec.userMessageEvent({
-        id: 'user-rs-happy-1',
-        role: 'user',
-        parts: [{ type: 'text', text: 'Need a run-start' }],
-      }),
-    );
+    const sendPromise = clientSession.view.sendMessage({
+      id: 'user-rs-happy-1',
+      role: 'user',
+      parts: [{ type: 'text', text: 'Need a run-start' }],
+    });
 
     const { runId, invocationId } = await idsPromise;
 

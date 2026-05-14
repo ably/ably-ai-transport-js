@@ -278,35 +278,48 @@ describe('useView', () => {
     });
   });
 
-  describe('send', () => {
-    it('delegates to view.send', async () => {
+  describe('sendEvent', () => {
+    it('delegates to view.sendEvent', async () => {
       const mock = createMockSession();
       const { result } = renderHook(() => useView({ session: mock.session }));
 
       await act(async () => {
-        await result.current.send(['hello'], { body: { extra: true } });
+        await result.current.sendEvent(['hello'], { body: { extra: true } });
       });
 
-      expect(mock.send).toHaveBeenCalledWith(['hello'], { body: { extra: true } });
+      expect(mock.sendEvent).toHaveBeenCalledWith(['hello'], { body: { extra: true } });
     });
 
     it('returns a stable reference across rerenders', () => {
       const mock = createMockSession();
       const { result, rerender } = renderHook(() => useView({ session: mock.session }));
-      const first = result.current.send;
+      const first = result.current.sendEvent;
       rerender();
-      expect(result.current.send).toBe(first);
+      expect(result.current.sendEvent).toBe(first);
     });
 
     it('throws when no view is available', async () => {
       const { result } = renderHook(() => useView());
 
       await act(async () => {
-        await expect(result.current.send(['hello'])).rejects.toMatchObject({
+        await expect(result.current.sendEvent(['hello'])).rejects.toMatchObject({
           code: ErrorCode.InvalidArgument,
           statusCode: 400,
         });
       });
+    });
+  });
+
+  describe('sendMessage', () => {
+    it('delegates to view.sendMessage', async () => {
+      const mock = createMockSession();
+      const { result } = renderHook(() => useView({ session: mock.session }));
+
+      await act(async () => {
+        await result.current.sendMessage('hello', { body: { extra: true } });
+      });
+
+      expect(mock.sendMessage).toHaveBeenCalledWith('hello', { body: { extra: true } });
     });
   });
 

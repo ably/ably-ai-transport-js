@@ -131,6 +131,28 @@ describe('StreamRouter', () => {
     });
   });
 
+  describe('rebindStream', () => {
+    it('returns the existing stream and routes events tagged with the new invocation', async () => {
+      const original = router.createStream('run-1', INV_A);
+      const rebound = router.rebindStream('run-1', INV_B);
+      expect(rebound).toBe(original);
+      expect(router.getActiveInvocation('run-1')).toBe(INV_B);
+
+      // Events tagged with the OLD invocation are now dropped
+      expect(router.route('run-1', INV_A, { type: 'text', text: 'stale' })).toBe(false);
+      // Events tagged with the NEW invocation route to the same readable
+      router.route('run-1', INV_B, { type: 'text', text: 'fresh' });
+      router.closeStream('run-1');
+
+      const items = await drain(original);
+      expect(items).toEqual([{ type: 'text', text: 'fresh' }]);
+    });
+
+    it('returns undefined when no stream is registered for the runId', () => {
+      expect(router.rebindStream('missing', INV_B)).toBeUndefined();
+    });
+  });
+
   describe('closeStream', () => {
     it('closes the stream and removes it from the router', async () => {
       const stream = router.createStream('run-1', INV_A);

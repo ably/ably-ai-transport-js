@@ -13,15 +13,4 @@ export type {
 export { createAgentSession, createChatTransport, createClientSession } from './transport/index.js';
 
 // Server-side tool approval helpers
-export type {
-  PrepareApprovalRunOptions,
-  PrepareApprovalRunResult,
-  StreamResponseWithApprovalRedirectOptions,
-  ToolApprovalDecision,
-} from './tool-approvals.js';
-export {
-  applyToolApprovalsToHistory,
-  extractApprovalDecisionsFromHistory,
-  prepareApprovalRun,
-  streamResponseWithApprovalRedirect,
-} from './tool-approvals.js';
+export { disableApprovalsForApproved } from './tool-approvals.js';

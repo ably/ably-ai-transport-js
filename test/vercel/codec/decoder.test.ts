@@ -966,5 +966,29 @@ describe('Vercel decoder', () => {
       expect(outputs).toHaveLength(1);
       expect(outputs[0]?.type).toBe('ait-user-message');
     });
+
+    it('decodes tool-approval-response, reading targetMsgId from HEADER_MSG_ID', () => {
+      const decoder = createDecoder();
+      const msg = withHeaders(
+        { name: 'tool-approval-response', data: '' },
+        {
+          [HEADER_STREAM]: 'false',
+          [HEADER_MSG_ID]: 'msg-target',
+          [`${D}toolCallId`]: 'tc-1',
+          [`${D}approved`]: 'true',
+          [`${D}reason`]: 'ok',
+        },
+      );
+
+      const outputs = decoder.decode(msg);
+      expect(outputs).toHaveLength(1);
+      const event = outputs[0];
+      expect(event?.type).toBe('ait-tool-approval');
+      if (event?.type !== 'ait-tool-approval') return;
+      expect(event.toolCallId).toBe('tc-1');
+      expect(event.approved).toBe(true);
+      expect(event.reason).toBe('ok');
+      expect(event.targetMsgId).toBe('msg-target');
+    });
   });
 });

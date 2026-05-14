@@ -18,7 +18,6 @@ import {
   EVENT_ERROR,
   EVENT_RUN_END,
   EVENT_RUN_START,
-  HEADER_AMEND,
   HEADER_CANCEL_ALL,
   HEADER_CANCEL_CLIENT_ID,
   HEADER_CANCEL_INVOCATION_ID,
@@ -279,6 +278,15 @@ const createMockCodec = (decoder?: MockDecoder): MockCodec => {
     }),
     getMessages: vi.fn((p: TestProjection) => p.messages),
     userMessageEvent: vi.fn((m: TestMessage): TestEvent => ({ type: 'user-message', text: m.content })),
+    classifyEvent: vi.fn((event: TestEvent) =>
+      event.type === 'user-message'
+        ? ({ kind: 'user-message' as const, message: { id: '', content: event.text ?? '' } } as const)
+        : event.type === 'amend'
+          ? ({ kind: 'amend' as const, targetMsgId: event.text ?? '' } as const)
+          : ({ kind: 'other' as const } as const),
+    ),
+    // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires an explicit return matching the codec contract
+    resolveToolTarget: vi.fn(() => undefined),
     // eslint-disable-next-line @typescript-eslint/no-unused-vars -- writer/options unused by stub
     createEncoder: vi.fn((_writer: ChannelWriter, _opts?: EncoderOptions) => {
       const enc = createMockEncoder();
@@ -445,7 +453,9 @@ describe('ClientSession', () => {
         fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
         runStartDeadlineMs: 0,
       });
-      await expect(s.view.send({ id: 'u1', content: 'hi' })).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await expect(s.view.sendEvent({ type: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
+        ErrorCode.InvalidArgument,
+      );
       await s.close();
     });
 
@@ -541,7 +551,7 @@ describe('ClientSession', () => {
 
   describe('send', () => {
     it('returns an ActiveRun with stream, runId, invocationId, cancel', async () => {
-      const run = await fix.session.view.send({ id: 'u1', content: 'hi' });
+      const run = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
       expect(run.stream).toBeInstanceOf(ReadableStream);
       expect(typeof run.runId).toBe('string');
       expect(typeof run.invocationId).toBe('string');
@@ -549,20 +559,22 @@ describe('ClientSession', () => {
     });
 
     it('inserts an optimistic user message into the tree', async () => {
-      await fix.session.view.send({ id: 'u1', content: 'hello' });
+      await fix.session.view.sendEvent({ type: 'user-message', text: 'hello' });
       const messages = fix.session.view.flattenNodes().map((n) => n.message);
       expect(messages).toHaveLength(1);
       expect(messages[0]?.content).toBe('hello');
     });
 
-    it('publishes the user message on the channel via codec.userMessageEvent + encoder.publish', async () => {
+    it('publishes the user-message TEvent on the channel via encoder.publish with transport headers', async () => {
       const before = fix.codec.lastEncoder()?.publishCalls.length ?? 0;
-      await fix.session.view.send({ id: 'u1', content: 'hello' });
+      await fix.session.view.sendEvent({ type: 'user-message', text: 'hello' });
 
       const enc = fix.codec.lastEncoder();
       expect(enc).toBeDefined();
+      // The caller passed a user-message TEvent; the session classifies it
+      // via `classifyEvent` and forwards it to the encoder unchanged.
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock check
-      expect(fix.codec.userMessageEvent).toHaveBeenCalled();
+      expect(fix.codec.classifyEvent).toHaveBeenCalled();
       expect((enc?.publishCalls.length ?? 0) - before).toBe(1);
 
       const call = enc?.publishCalls.at(-1);
@@ -575,7 +587,7 @@ describe('ClientSession', () => {
     });
 
     it('fires HTTP POST with runId, invocationId, history, userMessageCount', async () => {
-      const run = await fix.session.view.send({ id: 'u1', content: 'hi' });
+      const run = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
       await fix.fetch.waitForCalls(1);
 
       expect(fix.fetch.calls[0]?.url).toBe('/api/chat');
@@ -603,7 +615,7 @@ describe('ClientSession', () => {
       await seeded.connect();
 
       const seedMsgId = seeded.view.flattenNodes()[0]?.msgId;
-      const run = await seeded.view.send({ id: 'u1', content: 'next' });
+      const run = await seeded.view.sendEvent({ type: 'user-message', text: 'next' });
 
       // Find the new node — should reference the seed as its parent.
       const nodes = seeded.view.flattenNodes();
@@ -614,9 +626,9 @@ describe('ClientSession', () => {
     });
 
     it('chains multi-message sends in a thread', async () => {
-      await fix.session.view.send([
-        { id: 'a', content: 'first' },
-        { id: 'b', content: 'second' },
+      await fix.session.view.sendEvent([
+        { type: 'user-message', text: 'first' },
+        { type: 'user-message', text: 'second' },
       ]);
       const nodes = fix.session.view.flattenNodes();
       expect(nodes).toHaveLength(2);
@@ -624,8 +636,8 @@ describe('ClientSession', () => {
     });
 
     it('merges sendOptions.body and sendOptions.headers into POST', async () => {
-      await fix.session.view.send(
-        { id: 'u1', content: 'hi' },
+      await fix.session.view.sendEvent(
+        { type: 'user-message', text: 'hi' },
         { body: { tag: 'v1' }, headers: { 'X-Custom': 'token' } },
       );
       await fix.fetch.waitForCalls(1);
@@ -636,7 +648,7 @@ describe('ClientSession', () => {
     });
 
     it('includes forkOf in POST body when set', async () => {
-      await fix.session.view.send({ id: 'u1', content: 'hi' }, { forkOf: 'msg-original' });
+      await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' }, { forkOf: 'msg-original' });
       await fix.fetch.waitForCalls(1);
       expect(fix.fetch.body(0).forkOf).toBe('msg-original');
     });
@@ -659,7 +671,7 @@ describe('ClientSession', () => {
         runStartDeadlineMs: 0,
       });
       await s.connect();
-      const run = await s.view.send({ id: 'u1', content: 'hi' });
+      const run = await s.view.sendEvent({ type: 'user-message', text: 'hi' });
       expect(run.stream).toBeInstanceOf(ReadableStream);
       await s.close();
     });
@@ -667,7 +679,7 @@ describe('ClientSession', () => {
     it('throws when session is closed', async () => {
       await fix.session.close();
       // View error wrapping: the view rejects with its "view is closed" error.
-      await expect(fix.session.view.send({ id: 'u1', content: 'hi' })).rejects.toThrow();
+      await expect(fix.session.view.sendEvent({ type: 'user-message', text: 'hi' })).rejects.toThrow();
     });
 
     for (const state of ['failed', 'suspended', 'detached', 'initialized'] as const) {
@@ -679,7 +691,7 @@ describe('ClientSession', () => {
           resumed: false,
         } as Ably.ChannelStateChange);
         fix.channel.state = state;
-        await expect(fix.session.view.send({ id: 'u1', content: 'hi' })).rejects.toBeErrorInfoWithCode(
+        await expect(fix.session.view.sendEvent({ type: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
           ErrorCode.ChannelNotReady,
         );
       });
@@ -692,8 +704,70 @@ describe('ClientSession', () => {
         resumed: false,
       } as Ably.ChannelStateChange);
       fix.channel.state = 'attaching';
-      const run = await fix.session.view.send({ id: 'u1', content: 'hi' });
+      const run = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
       expect(run.stream).toBeInstanceOf(ReadableStream);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // send — continuation (options.runId reuses the suspended run)
+  // -------------------------------------------------------------------------
+
+  describe('send — continuation', () => {
+    it('reuses the runId, mints a fresh invocationId, and returns the existing stream', async () => {
+      const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
+
+      const cont = await fix.session.view.sendEvent([{ type: 'amend', text: 'msg-target' }], { runId: initial.runId });
+
+      expect(cont.runId).toBe(initial.runId);
+      expect(cont.invocationId).not.toBe(initial.invocationId);
+      // Same readable across the suspend/resume gap — useChat keeps reading.
+      expect(cont.stream).toBe(initial.stream);
+    });
+
+    it('publishes the amend event with HEADER_RUN_ID and HEADER_INVOCATION_ID', async () => {
+      const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
+      const enc = fix.codec.lastEncoder();
+      // Drop the initial publish from the call count
+      const baseCalls = enc?.publishCalls.length ?? 0;
+
+      await fix.session.view.sendEvent([{ type: 'amend', text: 'msg-target' }], { runId: initial.runId });
+
+      const newCalls = (enc?.publishCalls.length ?? 0) - baseCalls;
+      expect(newCalls).toBe(1);
+      const call = enc?.publishCalls.at(-1);
+      expect(call?.event.type).toBe('amend');
+      expect(call?.opts?.extras?.headers?.[HEADER_RUN_ID]).toBe(initial.runId);
+      // A fresh invocation-id is minted for the continuation.
+      expect(call?.opts?.extras?.headers?.[HEADER_INVOCATION_ID]).toBeDefined();
+      expect(call?.opts?.extras?.headers?.[HEADER_INVOCATION_ID]).not.toBe(initial.invocationId);
+    });
+
+    it('does not optimistic-insert and posts userMessageCount=0', async () => {
+      const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
+      const beforeNodes = fix.session.view.flattenNodes().length;
+
+      const cont = await fix.session.view.sendEvent([{ type: 'amend', text: 'msg-target' }], { runId: initial.runId });
+
+      const afterNodes = fix.session.view.flattenNodes().length;
+      expect(afterNodes).toBe(beforeNodes);
+
+      await fix.fetch.waitForCalls(2);
+      const body = fix.fetch.body(1);
+      expect(body.userMessageCount).toBe(0);
+      expect(body.runId).toBe(cont.runId);
+      expect(body.invocationId).toBe(cont.invocationId);
+    });
+
+    it('rejects when continuation send includes a user-message event', async () => {
+      const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
+      await expect(
+        fix.session.view.sendEvent({ type: 'user-message', text: 'should-not-be-here' }, { runId: initial.runId }),
+      ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+    });
+
+    it('rejects an empty send with no runId and no forkOf', async () => {
+      await expect(fix.session.view.sendEvent([])).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
   });
 
@@ -729,7 +803,9 @@ describe('ClientSession', () => {
       const errors: Ably.ErrorInfo[] = [];
       s.on('error', (e) => errors.push(e));
 
-      await expect(s.view.send({ id: 'u1', content: 'hi' })).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSendFailed);
+      await expect(s.view.sendEvent({ type: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
+        ErrorCode.SessionSendFailed,
+      );
       expect(errors.length).toBeGreaterThanOrEqual(1);
       await s.close();
     });
@@ -759,7 +835,7 @@ describe('ClientSession', () => {
         /* consume */
       });
 
-      await expect(s.view.send({ id: 'u1', content: 'hi' })).rejects.toBeErrorInfoWithCode(
+      await expect(s.view.sendEvent({ type: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
         ErrorCode.InsufficientCapability,
       );
       await s.close();
@@ -790,7 +866,7 @@ describe('ClientSession', () => {
         /* consume */
       });
 
-      await expect(s.view.send({ id: 'u1', content: 'hi' })).rejects.toBeDefined();
+      await expect(s.view.sendEvent({ type: 'user-message', text: 'hi' })).rejects.toBeDefined();
       // Optimistic node removed since publish failed before any ack
       expect(s.view.flattenNodes()).toHaveLength(0);
       await s.close();
@@ -811,7 +887,7 @@ describe('ClientSession', () => {
       await s.connect();
       const errors: Ably.ErrorInfo[] = [];
       s.on('error', (e) => errors.push(e));
-      await s.view.send({ id: 'u1', content: 'hi' });
+      await s.view.sendEvent({ type: 'user-message', text: 'hi' });
       await fetch.waitForCalls(1);
       await flushMicrotasks();
       expect(errors).toHaveLength(1);
@@ -836,7 +912,7 @@ describe('ClientSession', () => {
       s.on('error', () => {
         /* consume */
       });
-      const run = await s.view.send({ id: 'u1', content: 'hi' });
+      const run = await s.view.sendEvent({ type: 'user-message', text: 'hi' });
       await flushMicrotasks();
       const reader = run.stream.getReader();
       await expect(reader.read()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSendFailed);
@@ -865,7 +941,7 @@ describe('ClientSession', () => {
       s.on('error', () => {
         /* consume */
       });
-      await expect(s.view.send({ id: 'u1', content: 'hi' })).rejects.toBeErrorInfoWithCode(
+      await expect(s.view.sendEvent({ type: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
         ErrorCode.RunStartDeadlineExceeded,
       );
       await s.close();
@@ -885,7 +961,7 @@ describe('ClientSession', () => {
       });
       await s.connect();
 
-      const sendPromise = s.view.send({ id: 'u1', content: 'hi' });
+      const sendPromise = s.view.sendEvent({ type: 'user-message', text: 'hi' });
       await ackPendingSend(ch, codec);
       const run = await sendPromise;
       expect(run.stream).toBeInstanceOf(ReadableStream);
@@ -977,7 +1053,7 @@ describe('ClientSession', () => {
       });
       await s.connect();
 
-      const sendPromise = s.view.send({ id: 'u1', content: 'hi' });
+      const sendPromise = s.view.sendEvent({ type: 'user-message', text: 'hi' });
       const { runId, invocationId } = await ackPendingSend(ch, codec);
       const run = await sendPromise;
 
@@ -1056,7 +1132,7 @@ describe('ClientSession', () => {
       const errors: Ably.ErrorInfo[] = [];
       s.on('error', (e) => errors.push(e));
 
-      const sendPromise = s.view.send({ id: 'u1', content: 'hi' });
+      const sendPromise = s.view.sendEvent({ type: 'user-message', text: 'hi' });
       // Wait for a publish to land so we know the invocation has been registered
       while (codec.lastEncoder()?.publishCalls.length === 0) {
         await Promise.resolve();
@@ -1094,7 +1170,7 @@ describe('ClientSession', () => {
       });
       await s.connect();
 
-      const sendPromise = s.view.send({ id: 'u1', content: 'hi' });
+      const sendPromise = s.view.sendEvent({ type: 'user-message', text: 'hi' });
       const { runId, invocationId } = await ackPendingSend(ch, codec);
       const run = await sendPromise;
 
@@ -1125,6 +1201,36 @@ describe('ClientSession', () => {
       expect(events).toEqual([]);
       await s.close();
     });
+
+    it('processes continuation run-end (router-active invocation is fresh)', async () => {
+      // Continuation rebinds the router stream to a new invocation while the
+      // Tree's winner stays on the original user-message's invocation. The
+      // gating must prefer the router for own runs so the continuation's
+      // run-end is accepted and the run cleans up.
+      const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
+      const continuation = await fix.session.view.sendEvent([{ type: 'amend', text: 'msg-target' }], {
+        runId: initial.runId,
+      });
+      expect(continuation.invocationId).not.toBe(initial.invocationId);
+
+      const runEnds: RunLifecycleEvent[] = [];
+      fix.session.tree.on('run', (e) => {
+        if (e.type === EVENT_RUN_END) runEnds.push(e);
+      });
+
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: initial.runId,
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+          [HEADER_INVOCATION_ID]: continuation.invocationId,
+          [HEADER_RUN_REASON]: 'complete',
+        }),
+      );
+
+      expect(runEnds).toHaveLength(1);
+      expect(runEnds[0]?.runId).toBe(initial.runId);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -1152,16 +1258,15 @@ describe('ClientSession', () => {
         }),
       );
 
-      // Amend targeting m-1 from the SAME run — should fold with meta.messageId === 'm-1'
-      // (HEADER_AMEND overrides HEADER_MSG_ID for routing).
+      // Amend targeting m-1 from the SAME run — encoder stamps
+      // HEADER_MSG_ID = 'm-1', so the reducer folds with meta.messageId === 'm-1'.
       fix.decoder.queue.push({ type: 'text', text: '-amended' });
       simulateMessage(
         fix.channel,
         ablyMsg('text', {
           [HEADER_RUN_ID]: 'run-A',
           [HEADER_RUN_CLIENT_ID]: 'other',
-          [HEADER_MSG_ID]: 'other-msg',
-          [HEADER_AMEND]: 'm-1',
+          [HEADER_MSG_ID]: 'm-1',
         }),
       );
 
@@ -1171,15 +1276,14 @@ describe('ClientSession', () => {
       // CAST: tuple shape comes from vi.mocked
       const firstCall = calls[0] as unknown as [TestProjection, TestEvent, ReducerMeta];
       const secondCall = calls[1] as unknown as [TestProjection, TestEvent, ReducerMeta];
-      // First event routed under HEADER_MSG_ID
+      // Both events routed under HEADER_MSG_ID = 'm-1'
       expect(firstCall[2].messageId).toBe('m-1');
-      // Amend event routed under HEADER_AMEND (target msg-id), NOT HEADER_MSG_ID
       expect(secondCall[2].messageId).toBe('m-1');
       // Both folded into the SAME projection (observer for run-A)
       expect(firstCall[0]).toBe(secondCall[0]);
     });
 
-    it('drops an amend whose HEADER_RUN_ID does not match (orphan dropped at reducer)', () => {
+    it('folds events into the projection of the run named on the wire (per-run isolation)', () => {
       // Run-start for run-A (observer projection bound to run-A)
       simulateMessage(
         fix.channel,
@@ -1188,32 +1292,34 @@ describe('ClientSession', () => {
           [HEADER_RUN_CLIENT_ID]: 'other',
         }),
       );
-
-      // Amend message arrives carrying HEADER_RUN_ID: 'run-B' (a different run).
-      // The reducer for run-B's observer projection will receive the event,
-      // but for THIS test we assert the amend doesn't leak into run-A's
-      // projection — the session only folds into the projection keyed by the
-      // wire HEADER_RUN_ID.
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked accessor
-      const projectionsBeforeRunB = vi.mocked(fix.codec.init).mock.calls.length;
+      const projectionsBefore = vi.mocked(fix.codec.init).mock.calls.length;
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked accessor
+      const foldsBefore = vi.mocked(fix.codec.fold).mock.calls.length;
 
+      // A wire message carrying HEADER_RUN_ID: 'run-B' arrives. The session
+      // routes by HEADER_RUN_ID — it folds into run-B's (new) projection,
+      // never into run-A's.
       fix.decoder.queue.push({ type: 'text', text: 'cross-run' });
       simulateMessage(
         fix.channel,
         ablyMsg('text', {
           [HEADER_RUN_ID]: 'run-B',
           [HEADER_RUN_CLIENT_ID]: 'other',
-          [HEADER_MSG_ID]: 'wrapper',
-          [HEADER_AMEND]: 'm-1',
+          [HEADER_MSG_ID]: 'm-1',
         }),
       );
 
-      // A new projection was created for run-B (one extra init call)
+      // A fresh projection was created for run-B (one extra init call).
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked accessor
-      expect(vi.mocked(fix.codec.init).mock.calls.length).toBeGreaterThan(projectionsBeforeRunB);
-      // The fold was called on the run-B projection — but run-A's tree node
-      // 'm-1' was never created because no event ever landed there.
-      expect(fix.session.tree.getNode('m-1')).toBeUndefined();
+      expect(vi.mocked(fix.codec.init).mock.calls.length).toBeGreaterThan(projectionsBefore);
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked accessor
+      const foldCalls = vi.mocked(fix.codec.fold).mock.calls;
+      expect(foldCalls.length).toBeGreaterThan(foldsBefore);
+      // The new fold targeted run-B's projection (not run-A's).
+      // CAST: tuple shape comes from vi.mocked.
+      const lastFold = foldCalls.at(-1) as unknown as [TestProjection, TestEvent, ReducerMeta];
+      expect(lastFold[2].messageId).toBe('m-1');
     });
   });
 
@@ -1257,7 +1363,7 @@ describe('ClientSession', () => {
       });
       await s.connect();
 
-      const sendPromise = s.view.send({ id: 'u1', content: 'hi' });
+      const sendPromise = s.view.sendEvent({ type: 'user-message', text: 'hi' });
       await ackPendingSend(ch, codec);
       const run = await sendPromise;
 
@@ -1335,7 +1441,7 @@ describe('ClientSession', () => {
 
     it('closes the shared encoder', async () => {
       // Trigger creation of the shared encoder by sending
-      await fix.session.view.send({ id: 'u1', content: 'hi' });
+      await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
       const enc = fix.codec.lastEncoder();
       expect(enc).toBeDefined();
       await fix.session.close();
@@ -1366,7 +1472,7 @@ describe('ClientSession', () => {
         /* consume */
       });
 
-      const sendPromise = s.view.send({ id: 'u1', content: 'hi' });
+      const sendPromise = s.view.sendEvent({ type: 'user-message', text: 'hi' });
       // Don't ack — close while pending
       await flushMicrotasks();
       await s.close();
@@ -1482,7 +1588,7 @@ describe('ClientSession', () => {
 
   describe('edit', () => {
     it('throws when the target node is unknown', async () => {
-      await expect(fix.session.view.edit('missing-msg', { id: 'u-new', content: 'replaced' })).rejects.toThrow();
+      await expect(fix.session.view.edit('missing-msg', { type: 'user-message', text: 'replaced' })).rejects.toThrow();
     });
   });
 

@@ -16,7 +16,7 @@ import { useMemo, useCallback } from 'react';
 import type { ClientSession, ActiveRun, SendOptions } from '@ably/ai-transport';
 import type { UIMessage } from 'ai';
 import type { VercelEvent, VercelProjection } from '@ably/ai-transport/vercel';
-import { userMessage } from '../helpers';
+import { userMessageEvent } from '../helpers';
 
 export interface SlashCommand {
   name: string;
@@ -43,7 +43,7 @@ export interface SlashCommandHandle {
   execute: (input: string) => boolean;
 }
 
-type SendFn = (messages: UIMessage[], options?: SendOptions) => Promise<ActiveRun<VercelEvent>>;
+type SendFn = (events: VercelEvent | VercelEvent[], options?: SendOptions) => Promise<ActiveRun<VercelEvent>>;
 
 export function useSlashCommands(
   session: ClientSession<VercelEvent, VercelProjection, UIMessage>,
@@ -146,7 +146,7 @@ export function useSlashCommands(
         const prompt = trimmed.slice('/interrupt '.length).trim();
         if (prompt) {
           session.cancel({ own: true }).then(() => {
-            send([userMessage(prompt)]);
+            send([userMessageEvent(prompt)]);
           });
           return true;
         }
@@ -156,7 +156,7 @@ export function useSlashCommands(
       if (lower.startsWith('/btw ')) {
         const prompt = trimmed.slice('/btw '.length).trim();
         if (prompt) {
-          send([userMessage(prompt)]);
+          send([userMessageEvent(prompt)]);
           return true;
         }
         return false;

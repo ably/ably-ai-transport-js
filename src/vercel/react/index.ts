@@ -15,4 +15,3 @@ export type { ChatTransportHandle, UseChatTransportOptions } from './use-chat-tr
 export { useChatTransport } from './use-chat-transport.js';
 export type { UseMessageSyncOptions } from './use-message-sync.js';
 export { useMessageSync } from './use-message-sync.js';
-export { useStagedAddToolApprovalResponse } from './use-staged-add-tool-approval-response.js';

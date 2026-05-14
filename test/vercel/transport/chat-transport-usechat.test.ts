@@ -111,7 +111,7 @@ const createMockSession = () => {
 
   const view = {
     flattenNodes: vi.fn(() => []),
-    send,
+    sendEvent: send,
     regenerate: vi.fn(),
     edit: vi.fn(),
     getActiveRunIds: vi.fn(() => new Map()),
@@ -120,7 +120,7 @@ const createMockSession = () => {
   };
 
   const session = {
-    send,
+    sendEvent: send,
     tree,
     view,
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
@@ -148,7 +148,7 @@ const createMultiRunMockSession = () => {
 
   const view = {
     flattenNodes: vi.fn(() => []),
-    send,
+    sendEvent: send,
     regenerate: vi.fn(),
     edit: vi.fn(),
     getActiveRunIds: vi.fn(() => new Map()),
@@ -157,7 +157,7 @@ const createMultiRunMockSession = () => {
   };
 
   const session = {
-    send,
+    sendEvent: send,
     tree,
     view,
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly

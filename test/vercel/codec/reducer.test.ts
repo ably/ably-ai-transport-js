@@ -239,13 +239,18 @@ describe('Vercel reducer', () => {
         meta('s2', 'msg-1'),
       );
 
-      state = fold(state, { type: 'ait-tool-approval', toolCallId: 'tc-1', approved: true }, meta('s3'));
+      state = fold(
+        state,
+        { type: 'ait-tool-approval', toolCallId: 'tc-1', approved: true, targetMsgId: 'msg-1' },
+        meta('s3'),
+      );
 
       const message = state.messages.find((m) => m.id === 'msg-1');
       const toolPart = message?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
       expect(toolPart).toBeDefined();
-      // approved transitions to tool-approval-request → approval-requested state
-      expect(toolPart?.state).toBe('approval-requested');
+      // approved=true transitions to approval-responded so the AI SDK's
+      // multi-step loop auto-runs the tool on the next step.
+      expect(toolPart?.state).toBe('approval-responded');
     });
 
     it('transitions to output-denied on deny with reason', () => {
@@ -264,7 +269,7 @@ describe('Vercel reducer', () => {
 
       state = fold(
         state,
-        { type: 'ait-tool-approval', toolCallId: 'tc-1', approved: false, reason: 'nope' },
+        { type: 'ait-tool-approval', toolCallId: 'tc-1', approved: false, reason: 'nope', targetMsgId: 'msg-1' },
         meta('s3'),
       );
 
@@ -276,8 +281,113 @@ describe('Vercel reducer', () => {
     it('silently drops an approval for an unknown toolCallId (orphan)', () => {
       let state = init();
       const before = JSON.stringify(state.messages);
-      state = fold(state, { type: 'ait-tool-approval', toolCallId: 'unknown', approved: true }, meta('s1'));
+      state = fold(
+        state,
+        { type: 'ait-tool-approval', toolCallId: 'unknown', approved: true, targetMsgId: 'msg-target' },
+        meta('s1'),
+      );
       expect(JSON.stringify(state.messages)).toBe(before);
+    });
+  });
+
+  // -- ait-client-tool-output (and -error) -----------------------------------
+
+  describe('ait-client-tool-output', () => {
+    it('transitions the dynamic-tool part to output-available', () => {
+      let state = init();
+      state = fold(
+        state,
+        { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'getLocation' },
+        meta('s1', 'msg-1'),
+      );
+      state = fold(
+        state,
+        { type: 'tool-input-available', toolCallId: 'tc-1', toolName: 'getLocation', input: { highAccuracy: true } },
+        meta('s2', 'msg-1'),
+      );
+
+      state = fold(
+        state,
+        {
+          type: 'ait-client-tool-output',
+          toolCallId: 'tc-1',
+          output: { latitude: 51.5, longitude: -0.1 },
+          targetMsgId: 'msg-1',
+        },
+        meta('s3', 'msg-1'),
+      );
+
+      const message = state.messages.find((m) => m.id === 'msg-1');
+      const toolPart = message?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
+      expect(toolPart?.state).toBe('output-available');
+      if (toolPart?.state !== 'output-available') return;
+      expect(toolPart.output).toEqual({ latitude: 51.5, longitude: -0.1 });
+    });
+
+    it('shares the tool-output conflict key — drops later duplicates', () => {
+      let state = init();
+      state = fold(
+        state,
+        { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'getLocation' },
+        meta('s1', 'msg-1'),
+      );
+      state = fold(
+        state,
+        { type: 'tool-input-available', toolCallId: 'tc-1', toolName: 'getLocation', input: {} },
+        meta('s2', 'msg-1'),
+      );
+
+      // First fold wins
+      state = fold(
+        state,
+        { type: 'ait-client-tool-output', toolCallId: 'tc-1', output: { v: 1 }, targetMsgId: 'msg-1' },
+        meta('s3', 'msg-1'),
+      );
+      // Second fold at the same conflict key (toolCallId) drops because the
+      // serial is not greater than the already-seen high-water-mark.
+      state = fold(
+        state,
+        { type: 'ait-client-tool-output', toolCallId: 'tc-1', output: { v: 2 }, targetMsgId: 'msg-1' },
+        meta('s3', 'msg-1'),
+      );
+
+      const message = state.messages.find((m) => m.id === 'msg-1');
+      const toolPart = message?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
+      if (toolPart?.state !== 'output-available') throw new Error('expected output-available');
+      expect(toolPart.output).toEqual({ v: 1 });
+    });
+  });
+
+  describe('ait-client-tool-output-error', () => {
+    it('transitions the dynamic-tool part to output-error', () => {
+      let state = init();
+      state = fold(
+        state,
+        { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'getLocation' },
+        meta('s1', 'msg-1'),
+      );
+      state = fold(
+        state,
+        { type: 'tool-input-available', toolCallId: 'tc-1', toolName: 'getLocation', input: {} },
+        meta('s2', 'msg-1'),
+      );
+
+      state = fold(
+        state,
+        {
+          type: 'ait-client-tool-output-error',
+          toolCallId: 'tc-1',
+          errorText: 'permission denied',
+          targetMsgId: 'msg-1',
+        },
+        meta('s3', 'msg-1'),
+      );
+
+      const message = state.messages.find((m) => m.id === 'msg-1');
+      const toolPart = message?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
+      expect(toolPart?.state).toBe('output-error');
+      if (toolPart?.state !== 'output-error') return;
+      expect(toolPart.errorText).toBe('permission denied');
     });
   });
 

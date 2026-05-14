@@ -20,7 +20,6 @@ import {
   EVENT_ERROR,
   EVENT_RUN_END,
   EVENT_RUN_START,
-  HEADER_AMEND,
   HEADER_CANCEL_ALL,
   HEADER_CANCEL_CLIENT_ID,
   HEADER_CANCEL_INVOCATION_ID,
@@ -52,7 +51,6 @@ import type {
   ClientSession,
   ClientSessionOptions,
   CloseOptions,
-  EventsNode,
   MessageNode,
   RunEndReason,
   RunLifecycleEvent,
@@ -385,37 +383,49 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
         const reason = (headers[HEADER_RUN_REASON] ?? 'complete') as RunEndReason;
         if (runId) {
           // Defensive run-end gating: when a run has multiple invocations
-          // (e.g. developer manually retried under the same runId), only the
-          // currently-bound invocation's run-end should terminate the local
-          // run state. A run-end carrying a different invocation-id belongs
-          // to a losing invocation whose stream was already replaced.
+          // (e.g. developer manually retried under the same runId, OR the
+          // run was suspended and continued under a fresh invocation), only
+          // the currently-bound invocation's run-end should terminate the
+          // local run state.
           //
-          // Source of truth (in order):
-          // 1. Tree's winning invocation — serial-derived; applies to
-          //    observed runs (where this client isn't the sender) as well.
-          // 2. Router's active invocation — covers own runs before the
-          //    first user-message ack lands and the Tree has a winner.
-          const winnerFromTree = this._tree.getWinningInvocation(runId)?.invocationId;
-          const activeInvocation = winnerFromTree ?? this._router.getActiveInvocation(runId);
-          if (activeInvocation && invocationId && activeInvocation !== invocationId) {
+          // For own runs the router holds the most recent invocation —
+          // either the most-recent send's, or the rebound continuation's.
+          // For observer runs the router has no entry, so we fall through
+          // to the Tree's serial-derived winning-invocation map.
+          //
+          // A run-end whose invocation matches neither source is dropped as
+          // a losing-invocation echo.
+          const routerActive = this._router.getActiveInvocation(runId);
+          const treeWinner = this._tree.getWinningInvocation(runId)?.invocationId;
+          if (
+            invocationId !== undefined &&
+            ((routerActive !== undefined && routerActive !== invocationId) ||
+              (routerActive === undefined && treeWinner !== undefined && treeWinner !== invocationId))
+          ) {
             this._logger.debug('ClientSession.runEnd; ignoring losing-invocation run-end', {
               runId,
               invocationId,
-              activeInvocation,
+              routerActive,
+              treeWinner,
             });
             this._tree.emitAblyMessage(ablyMessage);
             return;
           }
-          this._router.closeStream(runId);
-          this._runObservers.delete(runId);
-          this._tree.untrackRun(runId);
-          // Clean up per-run relay-detection state
-          const msgIds = this._runMsgIds.get(runId);
-          if (msgIds) {
-            for (const mid of msgIds) this._ownMsgIds.delete(mid);
-            this._runMsgIds.delete(runId);
+          // `suspended` keeps the run live so a continuation that reuses
+          // the runId picks up where it left off. Router stream, observer
+          // state, and tree run-tracking survive. The `run` event still
+          // fires so listeners can react to the suspend.
+          if (reason !== 'suspended') {
+            this._router.closeStream(runId);
+            this._runObservers.delete(runId);
+            this._tree.untrackRun(runId);
+            const msgIds = this._runMsgIds.get(runId);
+            if (msgIds) {
+              for (const mid of msgIds) this._ownMsgIds.delete(mid);
+              this._runMsgIds.delete(runId);
+            }
+            this._ownRunIds.delete(runId);
           }
-          this._ownRunIds.delete(runId);
           this._tree.emitRun({ type: EVENT_RUN_END, runId, clientId: runCid, reason });
         }
         this._tree.emitAblyMessage(ablyMessage);
@@ -427,11 +437,11 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
       const headers = getHeaders(ablyMessage);
       const serial = ablyMessage.serial;
       const msgId = headers[HEADER_MSG_ID];
-      // Producer-responsibility amend routing: HEADER_AMEND identifies the
-      // target msg-id; the reducer routes via meta.messageId within the
-      // SAME run's projection. Cross-run amends (mismatched HEADER_RUN_ID)
-      // are silently dropped at the reducer.
-      const routingMsgId = headers[HEADER_AMEND] ?? msgId;
+      // Wire `HEADER_MSG_ID` is THE routing key for the reducer's
+      // per-message-id fold path. Events that modify a previously-published
+      // message (client tool outputs, approval responses, agent
+      // approved-tool outputs) carry the original message's id here.
+      const routingMsgId = msgId;
 
       // Always update observer headers, even when the decoder produces no events.
       // This ensures header transitions (e.g. x-ably-status: streaming → aborted)
@@ -466,8 +476,10 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
 
   /**
    * Handle a decoded TEvent: route to the active stream (own run) and fold into
-   * the observer's projection. Run termination triggers observer cleanup via
-   * the codec's deprecated `isTerminal` bridge.
+   * the observer's projection. Observer cleanup happens on `run-end` (with a
+   * non-suspended reason) in `_handleMessage` — keeping observer state alive
+   * past a stream-terminal event lets late amend events (e.g. tool-output
+   * resolutions) fold into the same assistant message.
    * @param event - The decoded TEvent.
    * @param headers - Ably headers from the wire message.
    * @param meta - Reducer meta — serial and msg-id for routing.
@@ -480,22 +492,16 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
 
     // Active own run — route to the ReadableStream. Events from a different
     // invocation under the same runId (a losing retry) are dropped by the
-    // router.
+    // router. Note: the router closes its stream on terminal events (per
+    // `isTerminal`), but the observer state below stays alive until run-end.
     if (this._router.route(runId, invocationId, event)) {
       this._accumulateAndEmit(runId, event, meta);
-      // eslint-disable-next-line @typescript-eslint/no-deprecated -- isTerminal is the temporary bridge for terminal detection until LifecycleEvents land
-      if (this._codec.isTerminal(event)) this._runObservers.delete(runId);
       return;
     }
 
-    // Completed own run — late arrival, skip
-    if (this._ownRunIds.has(runId) && !this._runObservers.has(runId)) return;
-
     // Spec: AIT-CT16
-    // Observer run — fold into projection and emit
+    // Observer run — fold into projection and emit.
     this._accumulateAndEmit(runId, event, meta);
-    // eslint-disable-next-line @typescript-eslint/no-deprecated -- isTerminal is the temporary bridge for terminal detection until LifecycleEvents land
-    if (this._codec.isTerminal(event)) this._runObservers.delete(runId);
   }
 
   // ---------------------------------------------------------------------------
@@ -776,11 +782,12 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
   }
 
   // Spec: AIT-CT3, AIT-CT4
-  // `republishMsgId`, when set, publishes the (single) input message under
-  // this existing msg-id instead of generating a new one — used by
-  // regenerate so headers refresh in place and no new tree node is created.
+  // `republishMsgId`, when set, refreshes the existing tree node's headers
+  // and publishes the single user-message event under that msg-id instead
+  // of generating a new one — used by regenerate so observers see the latest
+  // run/invocation without a new node being created.
   private async _internalSend(
-    input: TMessage | TMessage[],
+    input: TEvent | TEvent[],
     sendOptions: SendOptions | undefined,
     history: MessageNode<TMessage>[],
     republishMsgId?: string,
@@ -804,42 +811,114 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
 
     this._logger.trace('ClientSession._internalSend();');
 
-    const msgs = Array.isArray(input) ? input : [input];
-    const runId = crypto.randomUUID();
-    const invocationId = crypto.randomUUID();
+    const events = Array.isArray(input) ? input : [input];
+
+    // Classify each event up front; reject if any are unrecognized by the
+    // codec. The session has no general-purpose publish path for raw events
+    // — they must be either a user-message (kicks off a run) or an amend
+    // (rides on an existing message).
+    interface UserMessageItem {
+      event: TEvent;
+      kind: 'user-message';
+      message: TMessage;
+      /** Allocated below in the optimistic-insert phase. */
+      state?: { msgId: string; headers: Record<string, string> };
+    }
+    interface AmendItem {
+      event: TEvent;
+      kind: 'amend';
+      targetMsgId: string;
+    }
+    type ClassifiedItem = UserMessageItem | AmendItem;
+    const classified: ClassifiedItem[] = [];
+    for (const event of events) {
+      const cls = this._codec.classifyEvent(event);
+      if (cls.kind === 'other') {
+        throw new Ably.ErrorInfo(
+          'unable to send; codec did not classify event as user-message or amend',
+          ErrorCode.InvalidArgument,
+          400,
+        );
+      }
+      if (cls.kind === 'user-message') {
+        classified.push({ event, kind: 'user-message', message: cls.message });
+      } else {
+        classified.push({ event, kind: 'amend', targetMsgId: cls.targetMsgId });
+      }
+    }
+
+    const isContinuation = sendOptions?.runId !== undefined;
+    const userMessageCount = classified.reduce((n, c) => n + (c.kind === 'user-message' ? 1 : 0), 0);
+    const amendCount = classified.length - userMessageCount;
+
+    if (isContinuation && userMessageCount > 0) {
+      throw new Ably.ErrorInfo(
+        'unable to send; continuation send (options.runId set) cannot include user-message events',
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+    // Empty events are only valid when the caller signals intent another
+    // way: `options.runId` (continuation) or `options.forkOf` (legacy
+    // regenerate-via-POST — agent re-derives from history + forkOf).
+    if (events.length === 0 && !isContinuation && sendOptions?.forkOf === undefined) {
+      throw new Ably.ErrorInfo(
+        'unable to send; events array is empty (pass options.runId for continuation, options.forkOf for regenerate, or include at least one user-message event)',
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+    // Fresh send with non-empty events must include at least one
+    // user-message — pure amend-only sends have no run to attach to.
+    if (!isContinuation && classified.length > 0 && userMessageCount === 0) {
+      throw new Ably.ErrorInfo(
+        'unable to send; non-continuation send must include at least one user-message event',
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+    if (republishMsgId !== undefined && (userMessageCount !== 1 || amendCount !== 0)) {
+      throw new Ably.ErrorInfo(
+        'unable to send; republishMsgId requires exactly one user-message event and no amend events',
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+
+    const runId = sendOptions?.runId ?? crypto.randomUUID();
+    const invocationId = sendOptions?.invocationId ?? crypto.randomUUID();
     this._ownRunIds.set(runId, invocationId);
-    this._tree.trackRun(runId, this._clientId ?? '');
 
-    const allEventNodes: EventsNode<TEvent>[] = [];
-
-    const msgIds = new Set<string>();
-    const postMessages: MessageNode<TMessage>[] = [];
+    if (!isContinuation) {
+      this._tree.trackRun(runId, this._clientId ?? '');
+    }
 
     // The View pre-computed the visible branch before calling this delegate,
     // so preInsertHistory reflects the state before any optimistic inserts.
     const preInsertHistory = history;
 
     // Spec: AIT-CT3d
-    // Auto-compute parent from the current thread if not explicitly provided
+    // Auto-compute parent from the current thread if not explicitly provided.
+    // Continuation sends skip optimistic insert entirely; their parent comes
+    // strictly from sendOptions (typically set to the suspended assistant's
+    // msg-id by the chat-transport adapter).
     let autoParent: string | undefined;
-    if (sendOptions?.parent === undefined && !sendOptions?.forkOf) {
+    if (!isContinuation && sendOptions?.parent === undefined && !sendOptions?.forkOf) {
       const lastNode = preInsertHistory.at(-1);
       if (lastNode) {
         autoParent = lastNode.msgId;
       }
     }
-
-    // Capture the first parent for the POST body before the loop advances it.
     const postParent = sendOptions?.parent === undefined ? autoParent : sendOptions.parent;
 
-    // Republish path (regenerate): the single input message reuses an
-    // existing tree node's msg-id so the tree's getWinningInvocation map
-    // promotes the new run/invocation as the winner once the relay lands,
-    // and no new node is created. We refresh the tree node's headers up
-    // front so observers see the latest run/invocation without waiting
-    // for the channel echo.
+    const msgIds = new Set<string>();
+    const postMessages: MessageNode<TMessage>[] = [];
+
+    // Optimistic tree insert / republish header refresh for user-message events.
     if (republishMsgId === undefined) {
-      for (const message of msgs) {
+      for (const item of classified) {
+        if (item.kind !== 'user-message') continue;
+
         const msgId = crypto.randomUUID();
         this._ownMsgIds.add(msgId);
         msgIds.add(msgId);
@@ -856,13 +935,11 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
           invocationId,
         });
         // Spec: AIT-CT3c
-        // Optimistically insert each user message into the tree
-        this._upsertAndNotify(message, optimisticHeaders);
+        this._upsertAndNotify(item.message, optimisticHeaders);
 
-        // Build MessageNode for the POST body
         postMessages.push({
           kind: 'message',
-          message,
+          message: item.message,
           msgId,
           parentId: resolvedParent,
           forkOf: sendOptions?.forkOf,
@@ -870,24 +947,24 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
           serial: undefined,
         });
 
-        // Spec: AIT-CT3e
-        // Chain: each subsequent message in the batch parents off the previous
-        // one, forming a linear conversation thread rather than siblings.
+        item.state = { msgId, headers: optimisticHeaders };
+
+        // Spec: AIT-CT3e — chain subsequent user messages off the previous one.
         if (sendOptions?.parent === undefined && !sendOptions?.forkOf) {
           autoParent = msgId;
         }
       }
     } else {
-      if (msgs.length !== 1) {
+      // Republish path: exactly one user-message event reuses the existing
+      // tree node's msg-id. We refresh headers up front so observers see the
+      // new run/invocation immediately.
+      const item = classified.find((c) => c.kind === 'user-message');
+      if (!item) {
         throw new Ably.ErrorInfo(
-          'unable to send; republishMsgId requires exactly one message',
+          'unable to send; republish missing user-message event',
           ErrorCode.InvalidArgument,
           400,
         );
-      }
-      const message = msgs[0];
-      if (message === undefined) {
-        throw new Ably.ErrorInfo('unable to send; republish message is undefined', ErrorCode.InvalidArgument, 400);
       }
       const msgId = republishMsgId;
       this._ownMsgIds.add(msgId);
@@ -903,42 +980,41 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
         forkOf: sendOptions?.forkOf,
         invocationId,
       });
-
-      // Refresh the existing tree node's headers — the node already
-      // exists, so this updates HEADER_RUN_ID / HEADER_INVOCATION_ID in
-      // place. Pass no serial so we don't clobber the ack serial from the
-      // original publish (Tree.upsert only promotes null → serial).
-      this._upsertAndNotify(message, headers);
+      // Refresh existing node — Tree.upsert only promotes null → serial,
+      // so the ack serial from the original publish is preserved.
+      this._upsertAndNotify(item.message, headers);
 
       postMessages.push({
         kind: 'message',
-        message,
+        message: item.message,
         msgId,
         parentId: resolvedParent,
         forkOf: sendOptions?.forkOf,
         headers,
         serial: undefined,
       });
+
+      item.state = { msgId, headers };
     }
 
     this._runMsgIds.set(runId, msgIds);
 
-    // Create ReadableStream via router. The router binds the stream to
-    // (runId, invocationId) so that events from a losing/stale invocation
-    // under the same runId are dropped instead of bleeding into the
-    // consumer's stream.
-    const stream = this._router.createStream(runId, invocationId);
+    // Stream setup. Fresh send opens a new stream; continuation rebinds the
+    // existing one. If the suspended stream was torn down (e.g. cancel /
+    // continuity loss), fall back to creating a fresh stream so the
+    // continuation still completes — observers will see the events even if
+    // the originally-returned readable was already drained.
+    let stream: ReadableStream<TEvent>;
+    if (isContinuation) {
+      const existing = this._router.rebindStream(runId, invocationId);
+      stream = existing ?? this._router.createStream(runId, invocationId);
+    } else {
+      stream = this._router.createStream(runId, invocationId);
+    }
 
     // Arm a pending-run-start tracker keyed by invocationId. The run-start
-    // handler resolves it; the deadline timer rejects it. send() awaits this
-    // promise so callers see a definitive success/failure of invocation
-    // startup before reading from the stream.
-    //
-    // A runStartDeadlineMs of 0 disables the wait entirely — used by tests
-    // and by callers driving the agent in-process. In that mode no timer is
-    // armed and no pending entry is registered. The wait applies regardless
-    // of whether the invocation carries a new user message: regenerate /
-    // update paths also require run-start within the deadline.
+    // handler resolves it; the deadline timer rejects it. A `runStartDeadlineMs`
+    // of 0 disables the wait entirely — tests and in-process drivers use it.
     const waitForRunStart = this._runStartDeadlineMs > 0;
     const runStartPromise: Promise<void> = waitForRunStart
       ? new Promise<void>((resolve, reject) => {
@@ -961,17 +1037,10 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
         })
       : Promise.resolve();
 
-    // Mark the rejection as handled so Node doesn't report an unhandled
-    // rejection when the publish-leg failure path short-circuits this
-    // function (via `await publishPromise`) before `await runStartPromise`
-    // is reached. The actual await below still throws normally.
     runStartPromise.catch(() => {
       /* handled below via await; suppress unhandled-rejection warning */
     });
 
-    // Helper: settle the pending-run-start tracker with an error. Used when
-    // the publish or POST leg fails — the run will never start, so reject the
-    // outer send() promise immediately.
     const failPending = (err: Ably.ErrorInfo): void => {
       const pending = this._pendingRunStarts.get(invocationId);
       if (!pending) return;
@@ -980,31 +1049,53 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
       pending.reject(err);
     };
 
-    // Publish the user message(s) on the channel via the shared encoder. This
-    // replaces the prior agent-side authorship: the channel is the durable
-    // session record. Each message's headers carry the invocation-id so the
-    // agent can correlate.
+    // Publish each event in original order via the shared encoder. The codec
+    // routes user-message events into a per-part discrete batch and amend
+    // events into a single tool-output / tool-approval write that stamps
+    // `HEADER_MSG_ID = targetMsgId` (no separate amend header).
     const publishPromise = (async () => {
       try {
-        for (const node of postMessages) {
-          const userEvent = this._codec.userMessageEvent(node.message);
-          await this._encoder.publish(userEvent, {
-            extras: { headers: node.headers },
-            messageId: node.msgId,
-            ...(this._clientId !== undefined && { clientId: this._clientId }),
-          });
+        for (const item of classified) {
+          if (item.kind === 'user-message') {
+            if (!item.state) {
+              // Defensive: every user-message item gains a state above.
+              throw new Ably.ErrorInfo(
+                'unable to send; user-message item missing optimistic state',
+                ErrorCode.InvalidArgument,
+                500,
+              );
+            }
+            await this._encoder.publish(item.event, {
+              extras: { headers: item.state.headers },
+              messageId: item.state.msgId,
+              ...(this._clientId !== undefined && { clientId: this._clientId }),
+            });
+          } else {
+            // Amend event: the codec already knows the target via the event's
+            // `targetMsgId`. We supply only the transport-level headers that
+            // bind the amend to this send's run+invocation; the codec stamps
+            // `HEADER_MSG_ID = targetMsgId` so the reducer routes it to the
+            // original message.
+            const amendHeaders: Record<string, string> = {
+              [HEADER_RUN_ID]: runId,
+              [HEADER_INVOCATION_ID]: invocationId,
+            };
+            if (this._clientId !== undefined) {
+              amendHeaders[HEADER_RUN_CLIENT_ID] = this._clientId;
+            }
+            await this._encoder.publish(item.event, {
+              extras: { headers: amendHeaders },
+              ...(this._clientId !== undefined && { clientId: this._clientId }),
+            });
+          }
         }
       } catch (error) {
-        // Translate Ably permission errors so the developer sees a clear
-        // remediation. Any other publish failure is reported as send-failed.
-        // Capability failures preserve Ably's canonical code so callers
-        // can dispatch on it without a custom SDK code.
         const cause = error instanceof Ably.ErrorInfo ? error : undefined;
         const isPermission = cause?.statusCode === 401 || cause?.statusCode === 403;
         const err = new Ably.ErrorInfo(
           isPermission
-            ? `unable to publish user message; missing publish capability on the channel`
-            : `unable to publish user message; ${error instanceof Error ? error.message : String(error)}`,
+            ? `unable to publish events; missing publish capability on the channel`
+            : `unable to publish events; ${error instanceof Error ? error.message : String(error)}`,
           isPermission ? ErrorCode.InsufficientCapability : ErrorCode.SessionSendFailed,
           isPermission ? 401 : 500,
           cause,
@@ -1012,21 +1103,16 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
         this._emitter.emit('error', err);
         this._router.errorStream(runId, err);
         failPending(err);
-        this._cleanupFailedSend(runId, { removeOptimistic: true });
+        // Continuations didn't insert optimistic nodes, so removeOptimistic
+        // is moot for them — only fresh sends need to clear their inserts.
+        this._cleanupFailedSend(runId, { removeOptimistic: !isContinuation });
         throw err;
       }
     })();
 
-    // Resolve headers and body
     const resolvedHeaders = this._headersFn?.() ?? {};
     const resolvedBody = this._bodyFn?.() ?? {};
 
-    // The POST body carries history + identity metadata only; any new user
-    // message was published on the channel, and the agent reads it back via
-    // rewind keyed by invocationId. `userMessageCount` lets the agent
-    // distinguish a fresh send (look up the prompt on the channel) from a
-    // continuation triggered by `sendAutomaticallyWhen` (no new user
-    // message — the events array carries the tool result instead).
     const postBody: Record<string, unknown> = {
       ...resolvedBody,
       history: preInsertHistory,
@@ -1034,10 +1120,9 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
       runId,
       invocationId,
       clientId: this._clientId,
-      userMessageCount: postMessages.length,
+      userMessageCount,
       ...(sendOptions?.forkOf !== undefined && { forkOf: sendOptions.forkOf }),
       ...(postParent !== undefined && { parent: postParent }),
-      ...(allEventNodes.length > 0 && { events: allEventNodes }),
     };
 
     const postHeaders: Record<string, string> = {
@@ -1046,8 +1131,6 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     };
 
     // Spec: AIT-CT3a, AIT-CT3b
-    // POST is fired in parallel with the channel publish. POST failure errors
-    // the stream and rejects the pending run-start so send() rejects.
     this._fetchFn(this._api, {
       method: 'POST',
       headers: {
@@ -1067,9 +1150,9 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
           this._emitter.emit('error', err);
           this._router.errorStream(runId, err);
           failPending(err);
-          // POST failed AFTER the user-message publish completed (channel
-          // received it). Keep the optimistic node so the local tree
-          // mirrors the channel record; only clear the active-run maps.
+          // POST failed AFTER the channel publish completed. Keep optimistic
+          // nodes so the local tree mirrors what observers see; only clear
+          // active-run maps.
           this._cleanupFailedSend(runId, { removeOptimistic: false });
         }
       })
@@ -1087,13 +1170,7 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
         this._cleanupFailedSend(runId, { removeOptimistic: false });
       });
 
-    // Wait for publish ack. A capability error here aborts the send before
-    // the agent has any chance to start, so reject before exposing the stream.
     await publishPromise;
-
-    // Wait for run-start to arrive (or for any failure path to reject this).
-    // Regenerate / update paths and the deadline-disabled mode resolve
-    // immediately because runStartPromise was a pre-resolved Promise.
     await runStartPromise;
 
     return {

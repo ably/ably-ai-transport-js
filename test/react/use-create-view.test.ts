@@ -92,10 +92,10 @@ describe('useCreateView', () => {
     const { result } = renderHook(() => useCreateView({ session: mock.session }));
 
     await act(async () => {
-      await result.current.send(['new message']);
+      await result.current.sendEvent(['new message']);
     });
 
-    expect(mock.send).toHaveBeenCalledWith(['new message'], undefined);
+    expect(mock.sendEvent).toHaveBeenCalledWith(['new message'], undefined);
   });
 
   it('returns empty handle when no session and no nearest context', () => {

@@ -62,12 +62,14 @@ export interface ViewHandle<TEvent, TProjection, TMessage> {
   hasSiblings: (msgId: string) => boolean;
   /** Get a node by msgId, or undefined if not found. */
   getNode: (msgId: string) => MessageNode<TMessage> | undefined;
-  /** Send one or more messages in the context of this view's selected branch. */
-  send: (messages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>;
+  /** Send one or more user messages on the channel and fire a POST. See {@link View.sendMessage}. */
+  sendMessage: (messages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>;
+  /** Send one or more TEvents on the channel and fire a POST. See {@link View.sendEvent}. */
+  sendEvent: (events: TEvent | TEvent[], options?: SendOptions) => Promise<ActiveRun<TEvent>>;
   /** Regenerate an assistant message, using this view's branch for history. */
   regenerate: (messageId: string, options?: SendOptions) => Promise<ActiveRun<TEvent>>;
   /** Edit a user message, forking from this view's branch. */
-  edit: (messageId: string, newMessages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>;
+  edit: (messageId: string, newEvents: TEvent | TEvent[], options?: SendOptions) => Promise<ActiveRun<TEvent>>;
 }
 
 /**
@@ -172,11 +174,20 @@ export const useView = <TEvent, TProjection, TMessage>({
   const getNode = useCallback((msgId: string) => resolvedView?.getNode(msgId), [resolvedView]);
 
   // Write operation callbacks
-  const send = useCallback(
-    async (msgs: TMessage | TMessage[], opts?: SendOptions) => {
+  const sendMessage = useCallback(
+    async (messages: TMessage | TMessage[], opts?: SendOptions) => {
       if (!resolvedView)
         throw new Ably.ErrorInfo('unable to send; view is not available', ErrorCode.InvalidArgument, 400);
-      return resolvedView.send(msgs, opts);
+      return resolvedView.sendMessage(messages, opts);
+    },
+    [resolvedView],
+  );
+
+  const sendEvent = useCallback(
+    async (events: TEvent | TEvent[], opts?: SendOptions) => {
+      if (!resolvedView)
+        throw new Ably.ErrorInfo('unable to send; view is not available', ErrorCode.InvalidArgument, 400);
+      return resolvedView.sendEvent(events, opts);
     },
     [resolvedView],
   );
@@ -191,10 +202,10 @@ export const useView = <TEvent, TProjection, TMessage>({
   );
 
   const edit = useCallback(
-    async (messageId: string, newMessages: TMessage | TMessage[], opts?: SendOptions) => {
+    async (messageId: string, newEvents: TEvent | TEvent[], opts?: SendOptions) => {
       if (!resolvedView)
         throw new Ably.ErrorInfo('unable to edit; view is not available', ErrorCode.InvalidArgument, 400);
-      return resolvedView.edit(messageId, newMessages, opts);
+      return resolvedView.edit(messageId, newEvents, opts);
     },
     [resolvedView],
   );
@@ -211,7 +222,8 @@ export const useView = <TEvent, TProjection, TMessage>({
     getSiblings,
     hasSiblings,
     getNode,
-    send,
+    sendMessage,
+    sendEvent,
     regenerate,
     edit,
   };

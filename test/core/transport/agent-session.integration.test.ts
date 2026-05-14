@@ -23,7 +23,6 @@ import {
   EVENT_CANCEL,
   EVENT_RUN_END,
   EVENT_RUN_START,
-  HEADER_AMEND,
   HEADER_CANCEL_RUN_ID,
   HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
@@ -86,7 +85,7 @@ const collectUntil = (
     const events = decoder.decode(msg);
     allEvents.push(...events);
     const headers = getHeaders(msg);
-    const msgId = headers[HEADER_AMEND] ?? headers[HEADER_MSG_ID];
+    const msgId = headers[HEADER_MSG_ID];
     for (const event of events) {
       projection = UIMessageCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: msgId });
     }
@@ -282,7 +281,7 @@ describe('AgentSession integration', () => {
     await subChannel.subscribe((msg) => {
       const events = decoder.decode(msg);
       const headers = getHeaders(msg);
-      const msgId = headers[HEADER_AMEND] ?? headers[HEADER_MSG_ID];
+      const msgId = headers[HEADER_MSG_ID];
       for (const event of events) {
         projection = UIMessageCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: msgId });
       }
@@ -587,10 +586,8 @@ describe('AgentSession integration', () => {
     });
 
     await run.pipe(stream, {
-      resolveWriteOptions: (event) =>
-        event.type === 'tool-output-available'
-          ? { messageId: 'target-msg-id', extras: { headers: { [HEADER_AMEND]: 'target-msg-id' } } }
-          : undefined,
+      resolveWriteOptions: (event: VercelEvent) =>
+        event.type === 'tool-output-available' ? { messageId: 'target-msg-id' } : undefined,
     });
 
     await done;
@@ -600,7 +597,6 @@ describe('AgentSession integration', () => {
     if (textStartMsg) {
       const textHeaders = getHeaders(textStartMsg);
       expect(textHeaders[HEADER_MSG_ID]).not.toBe('target-msg-id');
-      expect(textHeaders[HEADER_AMEND]).toBeUndefined();
     }
 
     const toolMsg = rawMessages.find((m) => m.name === 'tool-output-available');
@@ -608,7 +604,6 @@ describe('AgentSession integration', () => {
     if (toolMsg) {
       const toolHeaders = getHeaders(toolMsg);
       expect(toolHeaders[HEADER_MSG_ID]).toBe('target-msg-id');
-      expect(toolHeaders[HEADER_AMEND]).toBe('target-msg-id');
     }
 
     await run.end('complete');
@@ -730,17 +725,17 @@ describe('AgentSession integration', () => {
     await clientSession.connect();
 
     try {
-      const activeRun = await clientSession.view.send([
-        UIMessageCodec.userMessageEvent({
+      const activeRun = await clientSession.view.sendMessage([
+        {
           id: 'user-multi-1',
           role: 'user',
           parts: [{ type: 'text', text: 'First' }],
-        }),
-        UIMessageCodec.userMessageEvent({
+        },
+        {
           id: 'user-multi-2',
           role: 'user',
           parts: [{ type: 'text', text: 'Second' }],
-        }),
+        },
       ]);
 
       const serverRun = createRunFromOpts(session, {

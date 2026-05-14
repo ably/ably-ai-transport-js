@@ -279,7 +279,7 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
    * once regardless of array length).
    */
   private readonly _promptBuffer = new Map<string, Ably.InboundMessage[]>();
-  private readonly _promptBufferLimit = 200;
+  private readonly _promptBufferLimit: number;
   /**
    * Bounded FIFO map of invocation-ids whose lookup has resolved
    * successfully, valued by the expected count the lookup resolved at.
@@ -318,6 +318,7 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
     this._onError = options.onError;
     this._runManager = createRunManager(this._channel, this._logger);
     this._promptLookupTimeoutMs = options.promptLookupTimeoutMs ?? 30000;
+    this._promptBufferLimit = options.promptBufferLimit ?? 200;
 
     this._channelListener = (msg: Ably.InboundMessage) => {
       this._handleChannelMessage(msg);

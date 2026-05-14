@@ -17,12 +17,17 @@ The method is idempotent - a second call returns the same in-flight promise and 
 
 ## Prompt lookup
 
-The client publishes the user prompt directly on the channel; the agent locates it by `x-ably-invocation-id`. Inside `Run.start()`:
+The client publishes the user prompt(s) directly on the channel; the agent locates them by `x-ably-invocation-id`. The session attaches with a 2-minute channel rewind so messages published before the agent attached are replayed through the session's unfiltered listener.
+
+Inside `Run.start()`:
 
 - If `invocation.messages` is non-empty (legacy / test path), it is used directly and no lookup runs.
-- Otherwise the session scans recent channel history (newest-first) for a matching `(runId, invocationId, role: "user")` message. A match populates `run.view.messages` and the lookup ends.
-- If no historical match is found, a transient channel subscription waits live for an arrival, bounded by `AgentSessionOptions.promptLookupTimeoutMs` (default 30 000 ms). Setting `promptLookupTimeoutMs` to `0` skips the lookup entirely (used by tests and by callers who pre-populate `view.messages`).
-- On deadline lapse the agent publishes an `x-ably-error` event (tagged with `runId` and `invocationId`, error code `PromptNotFound`) and `start()` rejects. Run-start is not published.
+- If `invocation.userMessageCount === 0` (continuation send after a tool result, where the events array carries the work and no new user prompt was published), the lookup is skipped.
+- Otherwise the lookup waits for exactly `userMessageCount` distinct user-prompt Ably messages tagged with the run's invocation-id. Multi-message `send([m1, m2, …])` publishes each message as its own Ably message under one invocation-id, so all `userMessageCount` arrivals must be collected before the run starts. Dedupe by Ably `serial` (rewind may redeliver a message also seen live); sort the collected messages by `serial` ascending before appending them to `run.view.messages`. The whole collection is bounded by a single `AgentSessionOptions.promptLookupTimeoutMs` budget (default 30 000 ms). Setting `promptLookupTimeoutMs` to `0` skips the lookup entirely.
+- Messages may arrive before `Run.start()` runs (rewind replay on attach). The session buffers user-prompt Ably messages by invocation-id (`Map<string, InboundMessage[]>`) so a later `_registerPromptListener` call drains them on registration. The listener stays registered after the drain to also receive live arrivals until the lookup completes.
+- The buffer is bounded by `AgentSessionOptions.promptBufferLimit` (default 200) — counted by distinct invocation-id entries, not by individual messages. When the limit is exceeded the oldest invocation entry (and all its buffered messages) is FIFO-evicted and a warn is logged with the evicted invocation-id and the limit. The client whose prompt was evicted will fail its lookup with `PromptNotFound`, so the warn is the only operator-visible signal that capacity was the cause.
+- On partial collection at timeout the lookup rejects with `PromptNotFound` and an error message including the count (e.g. `"received 1 of 2"`); a decode failure mid-collection rejects the entire lookup, wrapping the decode error as `cause`. In both cases the agent publishes an `x-ably-error` event (tagged with `runId` and `invocationId`) and `start()` rejects without publishing run-start.
+- After a lookup resolves successfully the invocation-id is recorded in a bounded FIFO set (`_completedLookupInvocationIds`). A subsequent user-prompt arrival for an invocation in that set is treated as an over-arrival (client published more than `userMessageCount`); the message is buffered as normal and the agent logs a warn at `over-arrival user-prompt after lookup completed`. The run is not aborted.
 
 ## Run lifecycle
 

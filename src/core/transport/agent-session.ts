@@ -56,32 +56,45 @@ import type {
 // ---------------------------------------------------------------------------
 
 /**
- * Wait for a user-prompt message matching `invocationId` to land on the
- * channel. Uses the session's unfiltered channel dispatcher (registered in
- * `connect()`) so that messages replayed via channel rewind on attach reach
- * the lookup — no separate history fetch needed.
+ * Wait for `expectedCount` user-prompt messages matching `invocationId` to
+ * land on the channel. Uses the session's unfiltered channel dispatcher
+ * (registered in `connect()`) so that messages replayed via channel rewind
+ * on attach reach the lookup — no separate history fetch needed.
  *
- * Bounded by `timeoutMs`. The caller's `signal` aborts the wait.
+ * Multi-message `send()` publishes each user message as a separate Ably
+ * message under the same invocation-id; the lookup collects all of them
+ * before resolving. Duplicates (rewind redelivering a message also seen
+ * live) are deduped by Ably `serial`. Collected nodes are returned sorted
+ * by `serial` ascending.
+ *
+ * Bounded by `timeoutMs` as a total budget across all N arrivals. The
+ * caller's `signal` aborts the wait. On partial collection at timeout the
+ * promise rejects with `PromptNotFound` and an error message including
+ * "received X of Y". If any decode throws mid-collection, the whole lookup
+ * rejects with `PromptNotFound` wrapping the decode error as cause —
+ * already-collected messages are discarded.
  * @param opts - Lookup parameters.
  * @param opts.register - Session-provided registration that delivers user-prompt messages for this invocationId. Returns an unregister function.
  * @param opts.codec - Codec used to decode the matching message into MessageNodes.
  * @param opts.invocationId - Invocation identifier the dispatcher keys on.
  * @param opts.runId - Run identifier (used for logging and error messages).
- * @param opts.timeoutMs - Maximum time to wait for a matching arrival.
+ * @param opts.expectedCount - Number of distinct user-prompt Ably messages to collect before resolving.
+ * @param opts.timeoutMs - Maximum total time to wait for all `expectedCount` arrivals.
  * @param opts.signal - AbortSignal that cancels the wait when the run aborts.
  * @param opts.logger - Optional logger for diagnostic output.
- * @returns The decoded MessageNodes for the matching user prompt.
+ * @returns The decoded MessageNodes for the matching user prompt, sorted by Ably serial.
  */
 const lookupUserPrompt = async <TEvent, TMessage>(opts: {
   register: (callback: (msg: Ably.InboundMessage) => void) => () => void;
   codec: import('../codec/types.js').Codec<TEvent, TMessage>;
   invocationId: string;
   runId: string;
+  expectedCount: number;
   timeoutMs: number;
   signal: AbortSignal;
   logger: Logger | undefined;
 }): Promise<MessageNode<TMessage>[]> => {
-  const { register, codec, invocationId, runId, timeoutMs, signal, logger } = opts;
+  const { register, codec, invocationId, runId, expectedCount, timeoutMs, signal, logger } = opts;
 
   /**
    * Decode an inbound Ably message into MessageNodes via the codec.
@@ -107,34 +120,27 @@ const lookupUserPrompt = async <TEvent, TMessage>(opts: {
 
   return new Promise<MessageNode<TMessage>[]>((resolve, reject) => {
     let settled = false;
+    // Dedupe across rewind-redelivery: rewind may surface a message the
+    // listener also saw live. Scoped to the active lookup so it cannot
+    // grow unbounded.
+    const seenSerials = new Set<string>();
+    const collected: MessageNode<TMessage>[] = [];
+    // Forward-declared so that cleanup() and onAbort() can reference them
+    // before they are assigned. cleanup may run synchronously inside
+    // `register(...)` (when buffered prompts drain on registration) before
+    // `unregister`/`timer` have been assigned — the no-op fallback for
+    // unregister and undefined-guard for timer handle that window. The
+    // settled-flag re-check after `register` returns reconciles the
+    // listener-detach that cleanup couldn't perform inside that window.
+    /* eslint-disable prefer-const, unicorn/consistent-function-scoping, @typescript-eslint/no-empty-function -- forward-declared state for the sync-drain reconciliation pattern; see comment above. */
+    let unregister: () => void = () => {};
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    /* eslint-enable */
     const cleanup = (): void => {
       unregister();
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
       signal.removeEventListener('abort', onAbort);
     };
-    const unregister = register((m) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      logger?.debug('lookupUserPrompt(); matched user-prompt message', { runId, invocationId });
-      try {
-        resolve(decode(m));
-      } catch (error) {
-        reject(error as Error);
-      }
-    });
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(
-        new Ably.ErrorInfo(
-          `unable to look up user prompt; no matching user-message for invocation ${invocationId} within ${String(timeoutMs)}ms`,
-          ErrorCode.PromptNotFound,
-          504,
-        ),
-      );
-    }, timeoutMs);
     const onAbort = (): void => {
       if (settled) return;
       settled = true;
@@ -144,6 +150,71 @@ const lookupUserPrompt = async <TEvent, TMessage>(opts: {
       );
     };
     signal.addEventListener('abort', onAbort, { once: true });
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- onAbort may have settled the promise synchronously above when the signal was already aborted.
+    if (settled) return;
+    unregister = register((m) => {
+      if (settled) return;
+      if (m.serial !== undefined && seenSerials.has(m.serial)) return;
+      if (m.serial !== undefined) seenSerials.add(m.serial);
+      let decoded: MessageNode<TMessage>[];
+      try {
+        decoded = decode(m);
+      } catch (error) {
+        settled = true;
+        cleanup();
+        const cause = error instanceof Ably.ErrorInfo ? error : undefined;
+        reject(
+          new Ably.ErrorInfo(
+            `unable to look up user prompt; decode failed for invocation ${invocationId}: ${error instanceof Error ? error.message : String(error)}`,
+            ErrorCode.PromptNotFound,
+            504,
+            cause,
+          ),
+        );
+        return;
+      }
+      for (const node of decoded) collected.push(node);
+      if (collected.length < expectedCount) return;
+      settled = true;
+      cleanup();
+      // Sort by Ably serial ascending so callers see publish order regardless
+      // of interleaved rewind+live delivery. Null serials sort last (defensive
+      // — user-prompt messages should always carry a serial).
+      collected.sort((a, b) => {
+        if (a.serial === undefined && b.serial === undefined) return 0;
+        if (a.serial === undefined) return 1;
+        if (b.serial === undefined) return -1;
+        if (a.serial < b.serial) return -1;
+        if (a.serial > b.serial) return 1;
+        return 0;
+      });
+      logger?.debug('lookupUserPrompt(); collected user-prompt messages', {
+        runId,
+        invocationId,
+        count: collected.length,
+      });
+      resolve(collected);
+    });
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the register callback may have settled the promise synchronously during buffered-prompt drain.
+    if (settled) {
+      // Sync drain inside register settled the promise; cleanup ran but
+      // could not detach the listener because `unregister` was still the
+      // no-op. Detach it now.
+      unregister();
+      return;
+    }
+    timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(
+        new Ably.ErrorInfo(
+          `unable to look up user prompt; received ${String(collected.length)} of ${String(expectedCount)} user-messages for invocation ${invocationId} within ${String(timeoutMs)}ms`,
+          ErrorCode.PromptNotFound,
+          504,
+        ),
+      );
+    }, timeoutMs);
   });
 };
 
@@ -199,13 +270,28 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
   private readonly _pendingPromptLookups = new Map<string, (msg: Ably.InboundMessage) => void>();
   /**
    * User-prompt messages buffered by invocation-id when no lookup callback
-   * was registered at delivery time. Rewind replays user messages on attach
-   * — before `run.start()` runs — so without buffering they would be
-   * dropped. `_registerPromptListener` drains the buffer on registration.
-   * FIFO eviction at `_promptBufferLimit` entries.
+   * was registered at delivery time. Each invocation-id maps to an ordered
+   * array because a single multi-message `send()` publishes N Ably messages
+   * sharing one invocation-id. Rewind replays user messages on attach —
+   * before `run.start()` runs — so without buffering they would be dropped.
+   * `_registerPromptListener` drains the buffer on registration. FIFO
+   * eviction at `_promptBufferLimit` invocation entries (each entry counts
+   * once regardless of array length).
    */
-  private readonly _promptBuffer = new Map<string, Ably.InboundMessage>();
+  private readonly _promptBuffer = new Map<string, Ably.InboundMessage[]>();
   private readonly _promptBufferLimit = 200;
+  /**
+   * Bounded FIFO map of invocation-ids whose lookup has resolved
+   * successfully, valued by the expected count the lookup resolved at.
+   * Used to distinguish over-arrival (extra user-prompt for a lookup that
+   * already completed with `userMessageCount === N`) from a genuine late /
+   * never-claimed arrival, so we can warn loudly on the former (with the
+   * count the client claimed) without spamming on the latter. Reject paths
+   * do not populate this map — their cause is already surfaced via the
+   * rejection.
+   */
+  private readonly _completedLookupInvocationIds = new Map<string, number>();
+  private readonly _completedLookupInvocationIdsLimit = 256;
   private readonly _channelListener: (msg: Ably.InboundMessage) => void;
   private readonly _promptLookupTimeoutMs: number;
 
@@ -297,26 +383,49 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
    * `invocationId`. Lookups must share the session's unfiltered
    * subscription rather than registering their own subscribe — Ably's
    * rewind only delivers to listeners present at attach time.
+   *
+   * The listener remains registered after the initial buffer drain so
+   * subsequent live arrivals reach the lookup until it unregisters itself.
+   * Multi-message `send()` relies on this: the buffer may hold K of N
+   * messages on register, with the remaining N-K arriving live.
    * @param invocationId - The invocation-id this listener cares about.
-   * @param callback - Invoked with the matching Ably message.
+   * @param callback - Invoked once per matching Ably message, in buffer-insertion order for drained entries.
    * @returns Unregister function. Safe to call multiple times.
    */
   private _registerPromptListener(invocationId: string, callback: (msg: Ably.InboundMessage) => void): () => void {
     this._pendingPromptLookups.set(invocationId, callback);
-    // Drain any buffered user-prompt message for this invocation-id —
+    // Drain any buffered user-prompt messages for this invocation-id —
     // rewind replays user messages on attach before run.start() can
     // register the callback. Without this drain, the lookup waits the
     // full `promptLookupTimeoutMs` for a live arrival that never comes.
     const buffered = this._promptBuffer.get(invocationId);
     if (buffered) {
       this._promptBuffer.delete(invocationId);
-      callback(buffered);
+      for (const m of buffered) callback(m);
     }
     return () => {
       if (this._pendingPromptLookups.get(invocationId) === callback) {
         this._pendingPromptLookups.delete(invocationId);
       }
     };
+  }
+
+  /**
+   * Record an invocation-id whose lookup has resolved successfully so a
+   * subsequent unmatched arrival for the same invocation-id can be flagged
+   * as an over-arrival (client published more user-prompts than
+   * `userMessageCount`). Bounded FIFO eviction at
+   * `_completedLookupInvocationIdsLimit`.
+   * @param invocationId - The invocation-id whose lookup just completed.
+   * @param expectedCount - The `userMessageCount` the lookup resolved at — surfaced in the over-arrival warn.
+   */
+  private _recordCompletedLookup(invocationId: string, expectedCount: number): void {
+    if (this._completedLookupInvocationIds.has(invocationId)) return;
+    if (this._completedLookupInvocationIds.size >= this._completedLookupInvocationIdsLimit) {
+      const oldest = this._completedLookupInvocationIds.keys().next().value;
+      if (oldest !== undefined) this._completedLookupInvocationIds.delete(oldest);
+    }
+    this._completedLookupInvocationIds.set(invocationId, expectedCount);
   }
 
   // Spec: AIT-ST3
@@ -340,6 +449,7 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
     this._registeredRuns.clear();
     this._pendingPromptLookups.clear();
     this._promptBuffer.clear();
+    this._completedLookupInvocationIds.clear();
     this._runManager.close();
     this._logger?.debug('DefaultAgentSession.close(); session closed');
   }
@@ -506,16 +616,52 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
         if (listener) {
           listener(msg);
         } else {
+          // Over-arrival: lookup for this invocation already completed
+          // successfully (e.g. client published N+1 messages but
+          // `userMessageCount === N`). Warn loudly so client-side bugs
+          // surface, then drop the message — no listener will ever
+          // register for this completed lookup, so buffering would just
+          // hold a slot until FIFO eviction. The run is not aborted.
+          const completedExpectedCount = this._completedLookupInvocationIds.get(invocationId);
+          if (completedExpectedCount !== undefined) {
+            this._logger?.warn(
+              'DefaultAgentSession._handleChannelMessage(); over-arrival user-prompt after lookup completed',
+              {
+                invocationId,
+                expectedCount: completedExpectedCount,
+                msgId: headers[HEADER_MSG_ID],
+              },
+            );
+            return;
+          }
           // Buffer for a future `_registerPromptListener` call. This is
           // load-bearing for the "agent attaches after publish" scenario
-          // where channel rewind delivers the user message before
+          // where channel rewind delivers user messages before
           // `run.start()` runs.
-          if (this._promptBuffer.size >= this._promptBufferLimit) {
-            // FIFO eviction: drop the oldest entry.
-            const oldestKey = this._promptBuffer.keys().next().value;
-            if (oldestKey !== undefined) this._promptBuffer.delete(oldestKey);
+          const existing = this._promptBuffer.get(invocationId);
+          if (existing) {
+            existing.push(msg);
+          } else {
+            if (this._promptBuffer.size >= this._promptBufferLimit) {
+              // FIFO eviction: drop the oldest invocation entry (and all
+              // its buffered messages). Clients whose prompt was evicted
+              // will fail their lookup with `PromptNotFound` — this warn
+              // is the only operator-visible signal that capacity caused
+              // the failure.
+              const oldestKey = this._promptBuffer.keys().next().value;
+              if (oldestKey !== undefined) {
+                this._promptBuffer.delete(oldestKey);
+                this._logger?.warn(
+                  'DefaultAgentSession._handleChannelMessage(); prompt buffer full, dropping oldest entry',
+                  {
+                    evictedInvocationId: oldestKey,
+                    limit: this._promptBufferLimit,
+                  },
+                );
+              }
+            }
+            this._promptBuffer.set(invocationId, [msg]);
           }
-          this._promptBuffer.set(invocationId, msg);
         }
       }
     } catch (error) {
@@ -587,6 +733,7 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
     const registeredRuns = this._registeredRuns;
     const requireConnected = this._requireConnected.bind(this);
     const registerPromptListener = this._registerPromptListener.bind(this);
+    const recordCompletedLookup = this._recordCompletedLookup.bind(this);
     const invocationUserMessageCount = invocation.userMessageCount;
 
     // invocation.messages is empty when the client publishes user messages
@@ -647,10 +794,12 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
               codec,
               invocationId,
               runId,
+              expectedCount: invocationUserMessageCount,
               timeoutMs: promptLookupTimeoutMs,
               signal,
               logger,
             });
+            recordCompletedLookup(invocationId, invocationUserMessageCount);
             for (const m of found) viewMessages.push(m);
           } catch (error) {
             const errInfo =

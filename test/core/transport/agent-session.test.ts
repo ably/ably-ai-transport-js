@@ -13,6 +13,7 @@ import {
   HEADER_CANCEL_INVOCATION_ID,
   HEADER_CANCEL_OWN,
   HEADER_CANCEL_RUN_ID,
+  HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
   HEADER_PARENT,
   HEADER_ROLE,
@@ -227,6 +228,109 @@ const streamOf = (...events: TestEvent[]): ReadableStream<TestEvent> =>
       controller.close();
     },
   });
+
+// eslint-disable-next-line @typescript-eslint/no-empty-function -- shared no-op for logger fakes
+const loggerNoop = (): void => {};
+
+/**
+ * Build a Logger fake that captures warn calls into a vitest mock. All
+ * other levels are no-ops; `withContext` returns the same logger so
+ * messages logged from child contexts also flow into `warn`.
+ * @returns Logger fake plus the `warn` mock for assertions.
+ */
+const captureWarnLogger = (): {
+  logger: import('../../../src/logger.js').Logger;
+  warn: ReturnType<typeof vi.fn>;
+} => {
+  const warn = vi.fn();
+  const logger: import('../../../src/logger.js').Logger = {
+    trace: loggerNoop,
+    debug: loggerNoop,
+    info: loggerNoop,
+    warn,
+    error: loggerNoop,
+    withContext: () => logger,
+  };
+  return { logger, warn };
+};
+
+/**
+ * Build a codec mock whose decoder yields one synthetic TestMessage per
+ * inbound Ably message — sufficient to exercise the lookup's accumulation,
+ * dedup-by-serial, and sort-on-resolve behavior without standing up a real
+ * codec.
+ * @returns A codec that decodes each inbound message into a single message whose id reflects the inbound msgId header.
+ */
+const codecWithFunctionalDecoder = (): Codec<TestEvent, TestMessage> => ({
+  createEncoder: vi.fn(() => createMockEncoder()),
+  createDecoder: vi.fn(() => ({
+    decode: (m: Ably.InboundMessage) => {
+      const hdrs = (m.extras as { headers?: Record<string, string> } | undefined)?.headers ?? {};
+      const id = hdrs[HEADER_MSG_ID] ?? 'unknown';
+      return [{ kind: 'message' as const, message: { id, content: id } }];
+    },
+  })),
+  createAccumulator: vi.fn(() => {
+    const list: TestMessage[] = [];
+    return {
+      get messages() {
+        return list;
+      },
+      get completedMessages() {
+        return list;
+      },
+      get hasActiveStream() {
+        return false;
+      },
+      processOutputs: (
+        outputs: { kind: 'message'; message: TestMessage }[] | { kind: 'event'; event: TestEvent }[],
+      ) => {
+        for (const out of outputs) {
+          if (out.kind === 'message') list.push(out.message);
+        }
+      },
+      updateMessage: vi.fn(),
+      initMessage: vi.fn(),
+      completeMessage: vi.fn(),
+    };
+  }) as Codec<TestEvent, TestMessage>['createAccumulator'],
+  isTerminal: vi.fn(() => false),
+});
+
+interface DeliverUserPromptOpts {
+  /** The invocation-id header to stamp on the synthetic message. */
+  invocationId: string;
+  /** Optional run-id header. */
+  runId?: string;
+  /** The msg-id header. */
+  msgId: string;
+  /** Ably serial (used for dedup and sort assertions). */
+  serial: string;
+  /** Optional Ably message name; defaults to 'text'. */
+  name?: string;
+}
+
+/**
+ * Deliver a synthetic user-prompt message to the session's unfiltered
+ * channel listener. Mirrors the path real Ably messages would take.
+ * @param ch - The mock channel hosting the session's listener.
+ * @param opts - Headers, serial, and message name for the synthetic message.
+ */
+const deliverUserPrompt = (ch: MockChannel, opts: DeliverUserPromptOpts): void => {
+  const headers: Record<string, string> = {
+    [HEADER_ROLE]: 'user',
+    [HEADER_INVOCATION_ID]: opts.invocationId,
+    [HEADER_MSG_ID]: opts.msgId,
+  };
+  if (opts.runId) headers[HEADER_RUN_ID] = opts.runId;
+  const msg = {
+    name: opts.name ?? 'text',
+    serial: opts.serial,
+    extras: { headers },
+  } as unknown as Ably.InboundMessage;
+  const listeners = ch.listeners.get(ALL_NAMES) ?? [];
+  for (const listener of listeners) listener(msg);
+};
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1282,6 +1386,243 @@ describe('AgentSession', () => {
           previous: 'attached',
         } as Ably.ChannelStateChange);
       }).not.toThrow();
+    });
+  });
+
+  describe('prompt lookup (multi-message)', () => {
+    it('collects userMessageCount messages, dedupes by serial, and returns them sorted', async () => {
+      const ch = createMockChannel();
+      const c = codecWithFunctionalDecoder();
+      const s = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'multi-msg',
+        codec: c,
+        promptLookupTimeoutMs: 5000,
+      });
+      await s.connect();
+
+      const runId = 'r-multi';
+      const invocationId = 'inv-multi';
+      const run = createRunFromOpts(s, { runId, invocationId, userMessageCount: 2 });
+      const startPromise = run.start();
+
+      // Deliver out of order with a duplicate of the first to assert dedup.
+      deliverUserPrompt(ch, { invocationId, runId, msgId: 'b', serial: '02' });
+      deliverUserPrompt(ch, { invocationId, runId, msgId: 'a', serial: '01' });
+      deliverUserPrompt(ch, { invocationId, runId, msgId: 'b', serial: '02' });
+
+      await startPromise;
+      expect(run.view.messages).toHaveLength(2);
+      expect(run.view.messages[0]?.msgId).toBe('a');
+      expect(run.view.messages[1]?.msgId).toBe('b');
+      s.close();
+    });
+
+    it('rejects with PromptNotFound including "received X of Y" on partial collection at timeout', async () => {
+      const ch = createMockChannel();
+      const c = codecWithFunctionalDecoder();
+      const s = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'partial',
+        codec: c,
+        promptLookupTimeoutMs: 5,
+      });
+      await s.connect();
+
+      const runId = 'r-partial';
+      const invocationId = 'inv-partial';
+      const run = createRunFromOpts(s, { runId, invocationId, userMessageCount: 2 });
+      const startPromise = run.start();
+
+      // Deliver only 1 of 2 before timeout fires.
+      deliverUserPrompt(ch, { invocationId, runId, msgId: 'only', serial: '01' });
+
+      const rejection = await startPromise.catch((error: unknown) => error);
+      expect(rejection).toBeErrorInfoWithCode(ErrorCode.PromptNotFound);
+      expect((rejection as Ably.ErrorInfo).message).toContain('received 1 of 2');
+      s.close();
+    });
+
+    it('drains buffered prompts in insertion order and stays registered for the remainder', async () => {
+      const ch = createMockChannel();
+      const c = codecWithFunctionalDecoder();
+      const s = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'drain',
+        codec: c,
+        promptLookupTimeoutMs: 5000,
+      });
+      await s.connect();
+
+      const runId = 'r-drain';
+      const invocationId = 'inv-drain';
+      // Pre-buffer one message before any listener is registered.
+      deliverUserPrompt(ch, { invocationId, runId, msgId: 'first', serial: '01' });
+
+      const run = createRunFromOpts(s, { runId, invocationId, userMessageCount: 2 });
+      const startPromise = run.start();
+
+      // Second message arrives live after the listener registered.
+      deliverUserPrompt(ch, { invocationId, runId, msgId: 'second', serial: '02' });
+
+      await startPromise;
+      expect(run.view.messages.map((m) => m.msgId)).toEqual(['first', 'second']);
+      s.close();
+    });
+
+    it('warns on over-arrival after a lookup has completed and does not buffer the extra message', async () => {
+      const ch = createMockChannel();
+      const c = codecWithFunctionalDecoder();
+      const { logger, warn } = captureWarnLogger();
+      const s = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'over-arrival',
+        codec: c,
+        promptLookupTimeoutMs: 5000,
+        // Limit set to 1 so we can prove via the eviction warn that the
+        // over-arrival did not occupy a buffer slot. If the over-arrival
+        // were buffered, the next unrelated invocation would force a
+        // FIFO eviction; with the drop-instead-of-buffer behavior, no
+        // eviction occurs.
+        promptBufferLimit: 1,
+        logger,
+      });
+      await s.connect();
+
+      const runId = 'r-over';
+      const invocationId = 'inv-over';
+      const run = createRunFromOpts(s, { runId, invocationId, userMessageCount: 1 });
+      const startPromise = run.start();
+      deliverUserPrompt(ch, { invocationId, runId, msgId: 'a', serial: '01' });
+      await startPromise;
+
+      warn.mockClear();
+      // Extra arrival after the lookup completed — must warn and drop.
+      deliverUserPrompt(ch, { invocationId, runId, msgId: 'b', serial: '02' });
+
+      const overArrivalCalls = warn.mock.calls.filter(
+        (call) => typeof call[0] === 'string' && call[0].includes('over-arrival'),
+      );
+      expect(overArrivalCalls).toHaveLength(1);
+      const ctx = overArrivalCalls[0]?.[1] as
+        | { invocationId?: string; expectedCount?: number; msgId?: string }
+        | undefined;
+      expect(ctx?.invocationId).toBe(invocationId);
+      expect(ctx?.expectedCount).toBe(1);
+      expect(ctx?.msgId).toBe('b');
+
+      // Prove the over-arrival did not occupy the single buffer slot:
+      // deliver a different invocation and assert no FIFO eviction warn
+      // fires. If `msg b` were buffered, the buffer would now hold one
+      // entry and this would evict it.
+      warn.mockClear();
+      deliverUserPrompt(ch, { invocationId: 'inv-other', msgId: 'c', serial: '03' });
+      const evictCalls = warn.mock.calls.filter(
+        (call) => typeof call[0] === 'string' && call[0].includes('prompt buffer full'),
+      );
+      expect(evictCalls).toHaveLength(0);
+      s.close();
+    });
+
+    it('warns and FIFO-evicts the oldest entry when the prompt buffer is full', async () => {
+      const ch = createMockChannel();
+      const c = codecWithFunctionalDecoder();
+      const { logger, warn } = captureWarnLogger();
+      const s = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'evict',
+        codec: c,
+        promptLookupTimeoutMs: 5000,
+        logger,
+      });
+      await s.connect();
+
+      // Default limit is 200. Fill it, then push one more to trigger eviction.
+      for (let i = 0; i < 200; i++) {
+        deliverUserPrompt(ch, { invocationId: `inv-${String(i)}`, msgId: `m${String(i)}`, serial: `s${String(i)}` });
+      }
+      warn.mockClear();
+      deliverUserPrompt(ch, { invocationId: 'inv-overflow', msgId: 'm-over', serial: 's-over' });
+
+      const evictCalls = warn.mock.calls.filter(
+        (call) => typeof call[0] === 'string' && call[0].includes('prompt buffer full'),
+      );
+      expect(evictCalls).toHaveLength(1);
+      const ctx = evictCalls[0]?.[1] as { evictedInvocationId?: string; limit?: number } | undefined;
+      expect(ctx?.evictedInvocationId).toBe('inv-0');
+      expect(ctx?.limit).toBe(200);
+      s.close();
+    });
+
+    it('rejects the entire lookup if any message fails to decode', async () => {
+      const ch = createMockChannel();
+      // Decoder throws on any input.
+      const codec: Codec<TestEvent, TestMessage> = {
+        createEncoder: vi.fn(() => createMockEncoder()),
+        createDecoder: vi.fn(() => ({
+          decode: () => {
+            throw new Error('boom');
+          },
+        })),
+        createAccumulator: vi.fn(() => ({
+          get messages() {
+            return [] as TestMessage[];
+          },
+          get completedMessages() {
+            return [] as TestMessage[];
+          },
+          get hasActiveStream() {
+            return false;
+          },
+          // eslint-disable-next-line @typescript-eslint/no-empty-function -- mock
+          processOutputs: () => {},
+          updateMessage: vi.fn(),
+          initMessage: vi.fn(),
+          completeMessage: vi.fn(),
+        })) as Codec<TestEvent, TestMessage>['createAccumulator'],
+        isTerminal: vi.fn(() => false),
+      };
+      const s = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'decode-fail',
+        codec,
+        promptLookupTimeoutMs: 5000,
+      });
+      await s.connect();
+
+      const runId = 'r-bad';
+      const invocationId = 'inv-bad';
+      const run = createRunFromOpts(s, { runId, invocationId, userMessageCount: 2 });
+      const startPromise = run.start();
+      deliverUserPrompt(ch, { invocationId, runId, msgId: 'a', serial: '01' });
+
+      const rejection = await startPromise.catch((error: unknown) => error);
+      expect(rejection).toBeErrorInfoWithCode(ErrorCode.PromptNotFound);
+      expect((rejection as Ably.ErrorInfo).message).toContain('decode failed');
+      s.close();
+    });
+
+    it('aborts the lookup when the run signal aborts mid-collection', async () => {
+      const ch = createMockChannel();
+      const c = codecWithFunctionalDecoder();
+      const s = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'abort-mid',
+        codec: c,
+        promptLookupTimeoutMs: 5000,
+      });
+      await s.connect();
+
+      const runId = 'r-abort';
+      const invocationId = 'inv-abort';
+      const run = createRunFromOpts(s, { runId, invocationId, userMessageCount: 2 });
+      const startPromise = run.start();
+
+      // Cancel-by-invocation-id triggers controller.abort() on the registered run.
+      simulateCancel(ch, { [HEADER_CANCEL_INVOCATION_ID]: invocationId });
+
+      await expect(startPromise).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      s.close();
     });
   });
 });

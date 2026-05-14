@@ -88,6 +88,9 @@ const hasFinish = (events: AI.UIMessageChunk[]): boolean => events.some((e) => e
  */
 const isRunEnd = (msg: Ably.InboundMessage): boolean => msg.name === EVENT_RUN_END;
 
+// eslint-disable-next-line @typescript-eslint/promise-function-async -- noop fetch
+const noopFetch: typeof globalThis.fetch = () => Promise.resolve(new Response(undefined, { status: 200 }));
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -817,5 +820,93 @@ describe('AgentSession integration', () => {
     expect(message?.parts[0]).toEqual({ type: 'text', text });
 
     await run.end('complete');
+  });
+
+  /**
+   * Scenario: multi-message `send([m1, m2])` round-trip.
+   *
+   * The client publishes two user messages on the channel under a single
+   * invocation-id (each as its own Ably message). The agent's
+   * `lookupUserPrompt` must collect both before resolving, surface them in
+   * `run.view.messages` ordered by publish order, then the agent can pipe
+   * an assistant response that the client receives.
+   *
+   * This is the regression test for PR #90: previously the lookup settled
+   * on the first matching arrival and dropped subsequent messages.
+   */
+  it('collects all messages in a multi-message send before run.start() resolves', async () => {
+    // Lazy-import to keep the existing test imports above stable.
+    const { createClientSession } = await import('../../../src/core/transport/client-session.js');
+    const channelName = uniqueChannelName('st-multi-msg');
+    const serverClient = ablyRealtimeClient();
+    const clientClient = ablyRealtimeClient();
+
+    session = createAgentSession({
+      client: serverClient,
+      channelName,
+      codec: UIMessageCodec,
+      // Use the default promptLookupTimeoutMs so the real lookup path runs.
+    });
+    await session.connect();
+
+    const clientSession = createClientSession<AI.UIMessageChunk, AI.UIMessage>({
+      client: clientClient,
+      channelName,
+      codec: UIMessageCodec,
+      // `send()` would otherwise block awaiting `x-ably-run-start` — but
+      // the agent only publishes that AFTER its lookup resolves, which
+      // requires `send()` to publish the user messages first. The
+      // happy-path run-start wait is exercised in client-session integration
+      // tests (Commit 2); this test focuses on the lookup itself.
+      runStartDeadlineMs: 0,
+      clientId: clientClient.auth.clientId,
+      fetch: noopFetch,
+      api: '/test',
+    });
+    await clientSession.connect();
+
+    try {
+      const activeRun = await clientSession.view.send([
+        { id: 'user-multi-1', role: 'user', parts: [{ type: 'text', text: 'First' }] },
+        { id: 'user-multi-2', role: 'user', parts: [{ type: 'text', text: 'Second' }] },
+      ]);
+
+      const serverRun = createRunFromOpts(session, {
+        runId: activeRun.runId,
+        invocationId: activeRun.invocationId,
+        clientId: clientClient.auth.clientId,
+        userMessageCount: 2,
+      });
+      await serverRun.start();
+
+      expect(serverRun.view.messages).toHaveLength(2);
+      const ids = serverRun.view.messages.map((n) => n.message.id);
+      expect(ids).toEqual(['user-multi-1', 'user-multi-2']);
+      const firstText = serverRun.view.messages[0]?.message.parts.find(
+        (p): p is AI.TextUIPart => p.type === 'text',
+      )?.text;
+      const secondText = serverRun.view.messages[1]?.message.parts.find(
+        (p): p is AI.TextUIPart => p.type === 'text',
+      )?.text;
+      expect(firstText).toBe('First');
+      expect(secondText).toBe('Second');
+
+      const responseStream = textResponseStream('asst-multi-1', 'text-multi-1', 'Got both');
+      const result = await serverRun.pipe(responseStream);
+      await serverRun.end('complete');
+      expect(result.reason).toBe('complete');
+
+      // Drain the client's stream to verify the response reached it.
+      const reader = activeRun.stream.getReader();
+      const events: AI.UIMessageChunk[] = [];
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        events.push(value);
+      }
+      expect(events.some((e) => e.type === 'finish')).toBe(true);
+    } finally {
+      await clientSession.close();
+    }
   });
 });

@@ -16,8 +16,19 @@ import type { Invocation } from './invocation.js';
 // Shared types
 // ---------------------------------------------------------------------------
 
-/** Why a run ended. */
-export type RunEndReason = 'complete' | 'cancelled' | 'error';
+/**
+ * Why a run ended.
+ *
+ * - `complete` — the run finished naturally.
+ * - `cancelled` — the run was cancelled by a client.
+ * - `error` — the run errored.
+ * - `suspended` — the run paused waiting for input (e.g. a client tool
+ *   output). The same `runId` can be resumed via a subsequent send that
+ *   reuses it; observer state (router stream, tree run-tracking) survives
+ *   the suspend signal so the resumed run feeds into the existing
+ *   `ReadableStream`.
+ */
+export type RunEndReason = 'complete' | 'cancelled' | 'error' | 'suspended';
 
 /** Filter for cancel operations. At most one field should be set. */
 export interface CancelFilter {
@@ -263,7 +274,7 @@ export interface RunView<TMessage> {
 }
 
 /** A server-side run with explicit lifecycle methods. */
-export interface Run<TEvent, TMessage> {
+export interface Run<TEvent, TProjection, TMessage> {
   /** The run's unique identifier. */
   readonly runId: string;
 
@@ -304,6 +315,22 @@ export interface Run<TEvent, TMessage> {
    */
   addEvents(nodes: EventsNode<TEvent>[]): Promise<void>;
 
+  /**
+   * Fetch every channel message bound to this run and fold them through
+   * the codec into a single projection. Used by the agent to reconstruct
+   * the run's full state — including client-published tool-output amends
+   * the agent didn't observe live — when resuming a suspended run.
+   *
+   * Uses `channel.history()` (no `untilAttach`) so messages published
+   * after the channel was originally attached are still included. Each
+   * call paginates until either there are no more pages or an internal
+   * safety bound is reached.
+   * @returns The TProjection produced by folding every event for this run
+   *   in serial order. The caller extracts what they need via
+   *   {@link Codec.getMessages}.
+   */
+  loadProjection(): Promise<TProjection>;
+
   /** Publish run-end event to the channel and clean up. */
   end(reason: RunEndReason): Promise<void>;
 }
@@ -313,7 +340,6 @@ export interface Run<TEvent, TMessage> {
 // ---------------------------------------------------------------------------
 
 /** Server-side session that manages run lifecycles over an Ably channel. */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- TProjection is part of the codec generic triple kept symmetric with ClientSession even though AgentSession does not fold events itself
 export interface AgentSession<TEvent, TProjection, TMessage> {
   /**
    * Subscribe to the cancel channel and (implicitly) attach. Idempotent —
@@ -332,7 +358,7 @@ export interface AgentSession<TEvent, TProjection, TMessage> {
    * @param runtime - Optional runtime hooks and external abort signal
    *   (e.g. the HTTP request's `req.signal`).
    */
-  createRun(invocation: Invocation<TEvent, TMessage>, runtime?: RunRuntime<TEvent>): Run<TEvent, TMessage>;
+  createRun(invocation: Invocation<TEvent, TMessage>, runtime?: RunRuntime<TEvent>): Run<TEvent, TProjection, TMessage>;
 
   /** Unsubscribe from cancel messages, abort all active runs, and clean up. */
   close(): void;
@@ -382,7 +408,7 @@ export interface ClientSessionOptions<TEvent, TProjection, TMessage> {
   messages?: TMessage[];
 
   /**
-   * How long `send()` will wait for the agent's `x-ably-run-start` event for
+   * How long `sendMessage()` / `sendEvent()` will wait for the agent's `x-ably-run-start` event for
    * the run+invocation before rejecting with `RunStartDeadlineExceeded`.
    * Default: 30000 (30 seconds).
    */
@@ -414,6 +440,21 @@ export interface SendOptions {
    * message in the view.
    */
   parent?: string;
+  /**
+   * Reuse an existing `runId` (e.g. resume a suspended run). When set,
+   * the send is treated as a continuation: the run's existing observer
+   * state (router stream, tree run-tracking) is reused; no fresh
+   * `crypto.randomUUID()` is minted. Pair with a fresh `invocationId`
+   * (or rely on the auto-generated one) so each continuation POST has
+   * a distinct invocation key.
+   */
+  runId?: string;
+  /**
+   * Reuse or override the `invocationId` for this send. Useful for
+   * deterministic identification (tests) or for pairing with a reused
+   * `runId`. Defaults to `crypto.randomUUID()`.
+   */
+  invocationId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -437,7 +478,7 @@ export type RunLifecycleEvent =
 // Active run handle
 // ---------------------------------------------------------------------------
 
-/** A handle to an active client-side run, returned by `send()`, `regenerate()`, and `edit()`. */
+/** A handle to an active client-side run, returned by `sendMessage()`, `sendEvent()`, `regenerate()`, and `edit()`. */
 export interface ActiveRun<TEvent> {
   /** The decoded event stream for this run. May error if the delivery guarantee is broken (e.g. POST failure, channel continuity loss). */
   stream: ReadableStream<TEvent>;
@@ -666,17 +707,36 @@ export interface View<TEvent, TProjection, TMessage> {
   // --- Write operations ---
 
   /**
-   * Send one or more messages and start a new run. The parent is
-   * auto-computed from this view's selected branch unless overridden.
-   * The HTTP POST is fire-and-forget — the returned stream is available
-   * immediately. If the POST fails, the error is surfaced via the
-   * session's `on("error")` and the stream is errored.
+   * Send one or more user messages and start a new run. Each TMessage is
+   * wrapped into a `UserMessageEvent` TEvent via `Codec.userMessageEvent`
+   * before being published, so callers can pass TMessage values directly
+   * without manually constructing the event shape.
+   *
+   * The parent is auto-computed from this view's selected branch unless
+   * overridden. The HTTP POST is fire-and-forget — the returned stream is
+   * available immediately. If the POST fails, the error is surfaced via
+   * the session's `on("error")` and the stream is errored.
    */
-  send(messages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveRun<TEvent>>;
+  sendMessage(messages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveRun<TEvent>>;
+
+  /**
+   * Send one or more TEvents on the channel and fire a POST. Each event
+   * carries the metadata required to construct its wire message —
+   * `UserMessageEvent` carries the user prompt; amend events
+   * (`ClientToolOutputEvent`, `ToolApprovalEvent`) carry `targetMsgId`
+   * which the encoder stamps as the wire message's `HEADER_MSG_ID` so
+   * the reducer folds the event onto the original message.
+   *
+   * Convention: a send containing at least one `UserMessageEvent` is a
+   * fresh send (mints a new `runId`). A send containing only amend
+   * events is a continuation — pair with `options.runId` to extend a
+   * suspended run.
+   */
+  sendEvent(events: TEvent | TEvent[], options?: SendOptions): Promise<ActiveRun<TEvent>>;
 
   /**
    * Regenerate an assistant message. Creates a new run that forks the
-   * target message with no new user messages. Automatically computes
+   * target message with no new user events. Automatically computes
    * `forkOf`, `parent`, and truncated `history` from this view's branch.
    */
   regenerate(messageId: string, options?: SendOptions): Promise<ActiveRun<TEvent>>;
@@ -686,7 +746,7 @@ export interface View<TEvent, TProjection, TMessage> {
    * with replacement content. Automatically computes `forkOf`, `parent`,
    * and `history` from this view's branch.
    */
-  edit(messageId: string, newMessages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveRun<TEvent>>;
+  edit(messageId: string, newEvents: TEvent | TEvent[], options?: SendOptions): Promise<ActiveRun<TEvent>>;
 
   // --- Observation ---
 
@@ -712,6 +772,8 @@ export interface View<TEvent, TProjection, TMessage> {
 
 /** Entry in the StreamRouter's run map. Not part of the public API. */
 export interface RunEntry<TEvent> {
+  /** The ReadableStream consumed by the caller — retained so `rebindStream` can re-expose it across a suspend/resume cycle. */
+  stream: ReadableStream<TEvent>;
   /** The ReadableStream controller for this run. */
   controller: ReadableStreamDefaultController<TEvent>;
   /** The run's unique identifier. */
@@ -734,8 +796,9 @@ export interface ClientSession<TEvent, TProjection, TMessage> {
 
   /**
    * Subscribe to the channel and (implicitly) attach. Idempotent —
-   * subsequent calls return the same promise. `send()`, `regenerate()`,
-   * `edit()`, `update()`, `cancel()`, and `waitForRun()` throw
+   * subsequent calls return the same promise. `sendMessage()`,
+   * `sendEvent()`, `regenerate()`, `edit()`, `update()`, `cancel()`, and
+   * `waitForRun()` throw
    * `InvalidArgument` until `connect()` resolves.
    */
   connect(): Promise<void>;

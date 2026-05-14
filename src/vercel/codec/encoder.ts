@@ -21,7 +21,13 @@ import { createEncoderCore } from '../../core/codec/encoder.js';
 import type { ChannelWriter, Encoder, MessagePayload, WriteOptions } from '../../core/codec/types.js';
 import { ErrorCode, errorInfoIs } from '../../errors.js';
 import { headerWriter } from '../../utils.js';
-import type { ToolApprovalEvent, UserMessageEvent, VercelEvent } from './events.js';
+import type {
+  ClientToolOutputErrorEvent,
+  ClientToolOutputEvent,
+  ToolApprovalEvent,
+  UserMessageEvent,
+  VercelEvent,
+} from './events.js';
 
 // ---------------------------------------------------------------------------
 // Default implementation
@@ -44,6 +50,14 @@ class DefaultUIMessageEncoder implements Encoder<VercelEvent> {
     }
     if (event.type === 'ait-tool-approval') {
       await this._publishToolApproval(event, options);
+      return;
+    }
+    if (event.type === 'ait-client-tool-output') {
+      await this._publishClientToolOutput(event, options);
+      return;
+    }
+    if (event.type === 'ait-client-tool-output-error') {
+      await this._publishClientToolOutputError(event, options);
       return;
     }
     await this._publishChunk(event, options);
@@ -287,9 +301,10 @@ class DefaultUIMessageEncoder implements Encoder<VercelEvent> {
 
   /**
    * Publish a tool approval response as a discrete `tool-approval-response`
-   * Ably message. The agent's reducer matches it to the original tool-call
-   * by `toolCallId`.
-   * @param event - The tool-approval TEvent (toolCallId, approved, optional reason).
+   * Ably message. The wire message stamps `HEADER_MSG_ID =
+   * event.targetMsgId` so the reducer folds the response onto the original
+   * assistant message via its normal per-message-id routing.
+   * @param event - The tool-approval TEvent (toolCallId, approved, optional reason, targetMsgId).
    * @param perWrite - Optional per-write overrides (clientId, extras, messageId).
    */
   private async _publishToolApproval(event: ToolApprovalEvent, perWrite?: WriteOptions): Promise<void> {
@@ -298,9 +313,64 @@ class DefaultUIMessageEncoder implements Encoder<VercelEvent> {
       .bool('approved', event.approved)
       .str('reason', event.reason)
       .build();
-    await this._core.publishDiscrete({ name: 'tool-approval-response', data: '', headers: h }, perWrite);
+    await this._core.publishDiscrete(
+      { name: 'tool-approval-response', data: '', headers: h },
+      _withTarget(perWrite, event.targetMsgId),
+    );
+  }
+
+  /**
+   * Publish a client-executed tool's output as a discrete
+   * `tool-output-available` Ably message — the same wire shape the agent
+   * uses for its own streamText tool outputs. The wire message stamps
+   * `HEADER_MSG_ID = event.targetMsgId` so the reducer folds the output
+   * onto the suspended assistant message.
+   * @param event - The client-tool-output TEvent (toolCallId, output, targetMsgId).
+   * @param perWrite - Optional per-write overrides (clientId, extras, messageId).
+   */
+  private async _publishClientToolOutput(event: ClientToolOutputEvent, perWrite?: WriteOptions): Promise<void> {
+    const h = headerWriter().str('toolCallId', event.toolCallId).build();
+    await this._core.publishDiscrete(
+      { name: 'tool-output-available', data: { output: event.output }, headers: h },
+      _withTarget(perWrite, event.targetMsgId),
+    );
+  }
+
+  /**
+   * Publish a client-executed tool's failure as a discrete `tool-output-error`
+   * Ably message. Symmetric to {@link _publishClientToolOutput}: the wire
+   * message stamps `HEADER_MSG_ID = event.targetMsgId` so the reducer folds
+   * the error onto the suspended assistant message's dynamic-tool part.
+   * @param event - The client-tool-output-error TEvent (toolCallId, errorText, targetMsgId).
+   * @param perWrite - Optional per-write overrides (clientId, extras, messageId).
+   */
+  private async _publishClientToolOutputError(
+    event: ClientToolOutputErrorEvent,
+    perWrite?: WriteOptions,
+  ): Promise<void> {
+    const h = headerWriter().str('toolCallId', event.toolCallId).build();
+    await this._core.publishDiscrete(
+      { name: 'tool-output-error', data: { errorText: event.errorText }, headers: h },
+      _withTarget(perWrite, event.targetMsgId),
+    );
   }
 }
+
+/**
+ * Stamp `messageId = targetMsgId` into a `WriteOptions`, preserving
+ * caller-supplied fields. The encoder-core writes `messageId` as
+ * `HEADER_MSG_ID`; the reducer routes events by that header to the
+ * target message in the projection. Used by the codec's publishers for
+ * events that modify a previously-published message.
+ * @param perWrite - The caller's per-write options (may be undefined).
+ * @param targetMsgId - The msg-id of the message this event modifies.
+ * @returns A new `WriteOptions` with the target stamped as `messageId`.
+ */
+const _withTarget = (perWrite: WriteOptions | undefined, targetMsgId: string): WriteOptions => ({
+  ...perWrite,
+  messageId: targetMsgId,
+  extras: { ...perWrite?.extras },
+});
 
 // ---------------------------------------------------------------------------
 // Tool output discrete payload builder

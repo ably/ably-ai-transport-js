@@ -29,6 +29,7 @@ import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import { getHeaders, mergeHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
+import type { Codec, WriteOptions } from '../codec/types.js';
 import { buildTransportHeaders } from './headers.js';
 import { Invocation } from './invocation.js';
 import { pipeStream } from './pipe-stream.js';
@@ -52,8 +53,82 @@ import type {
 } from './types.js';
 
 // ---------------------------------------------------------------------------
-// Prompt lookup
+// Run-state lookup helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Fetch all messages on the channel that belong to `runId`, decode them
+ * through the codec, and fold them into a single projection. Used by the
+ * agent to reconstruct the run's full state — including client-published
+ * tool-output amends — when resuming a suspended run in a fresh agent
+ * session.
+ *
+ * Doesn't require channel rewind: an explicit `channel.history()` call
+ * returns the same data even if the channel is already attached from a
+ * prior session.
+ * @param opts - Load parameters.
+ * @param opts.channel - The Ably channel to read history from.
+ * @param opts.codec - Codec used to decode and fold events.
+ * @param opts.runId - Run identifier whose events should be folded.
+ * @param opts.signal - AbortSignal that cancels the wait when the run aborts.
+ * @param opts.logger - Optional logger for diagnostic output.
+ * @returns The projection produced by folding all run events in serial order.
+ */
+const loadRunProjection = async <TEvent, TProjection, TMessage>(opts: {
+  channel: Ably.RealtimeChannel;
+  codec: Codec<TEvent, TProjection, TMessage>;
+  runId: string;
+  signal: AbortSignal;
+  logger: Logger | undefined;
+}): Promise<TProjection> => {
+  const { channel, codec, runId, signal, logger } = opts;
+
+  if (signal.aborted) {
+    throw new Ably.ErrorInfo(`unable to load run projection; run ${runId} was aborted`, ErrorCode.InvalidArgument, 400);
+  }
+
+  await channel.attach();
+
+  // No `untilAttach` — we need messages published AFTER the channel first
+  // attached (e.g. client-published tool-output amends on a suspended run
+  // that this agent session is resuming).
+  const wirePerPage = 200;
+  const collected: Ably.InboundMessage[] = [];
+  let page = await channel.history({ limit: wirePerPage });
+  collected.push(...page.items);
+  // Bound page-walk so a long-lived channel doesn't exhaust memory on
+  // resume. 2000 wire messages is generously more than any single run
+  // could possibly produce.
+  const collectedCap = 2000;
+  while (page.hasNext() && collected.length < collectedCap) {
+    const nextPage: Ably.PaginatedResult<Ably.InboundMessage> | null = await page.next();
+    if (!nextPage) break;
+    collected.push(...nextPage.items);
+    page = nextPage;
+  }
+
+  // Ably history returns newest-first; the codec's decoder + reducer
+  // expect chronological order so streams accumulate in the right direction.
+  const chronological = collected.toReversed();
+  const decoder = codec.createDecoder();
+  let projection = codec.init();
+  let folded = 0;
+
+  for (const msg of chronological) {
+    const headers = getHeaders(msg);
+    if (headers[HEADER_RUN_ID] !== runId) continue;
+    const events = decoder.decode(msg);
+    const routingMsgId = headers[HEADER_MSG_ID] ?? '';
+    const serial = msg.serial ?? '';
+    for (const event of events) {
+      projection = codec.fold(projection, event, { serial, messageId: routingMsgId });
+    }
+    folded++;
+  }
+
+  logger?.debug('loadRunProjection(); folded run events', { runId, folded });
+  return projection;
+};
 
 /**
  * Wait for `expectedCount` user-prompt messages matching `invocationId` to
@@ -434,7 +509,10 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
   }
 
   // Spec: AIT-ST3
-  createRun(invocation: Invocation<TEvent, TMessage>, runtime?: RunRuntime<TEvent>): Run<TEvent, TMessage> {
+  createRun(
+    invocation: Invocation<TEvent, TMessage>,
+    runtime?: RunRuntime<TEvent>,
+  ): Run<TEvent, TProjection, TMessage> {
     this._logger?.trace('DefaultAgentSession.createRun();', { runId: invocation.runId });
     return this._createRun(invocation, runtime ?? {});
   }
@@ -700,7 +778,10 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
   // Run creation
   // -------------------------------------------------------------------------
 
-  private _createRun(invocation: Invocation<TEvent, TMessage>, runtime: RunRuntime<TEvent>): Run<TEvent, TMessage> {
+  private _createRun(
+    invocation: Invocation<TEvent, TMessage>,
+    runtime: RunRuntime<TEvent>,
+  ): Run<TEvent, TProjection, TMessage> {
     const runId = invocation.runId;
     const invocationId = invocation.invocationId;
     const runClientId = invocation.clientId;
@@ -756,7 +837,14 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
       },
     };
 
-    const run: Run<TEvent, TMessage> = {
+    // Most recently loaded projection. `Run.loadProjection()` caches it so
+    // `Run.pipe()` can consult `codec.resolveToolTarget` for cross-message
+    // attribution (e.g. approved-tool second-pass tool outputs redirect to
+    // the original assistant). `undefined` before any loadProjection call;
+    // pipe falls back to natural messageId behaviour in that case.
+    let cachedProjection: TProjection | undefined;
+
+    const run: Run<TEvent, TProjection, TMessage> = {
       get runId() {
         return runId;
       },
@@ -936,7 +1024,6 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
               runId,
               msgId: node.msgId,
               runClientId: runOwnerClientId,
-              amend: node.msgId,
             });
 
             const encoder = codec.createEncoder(channel, {
@@ -962,6 +1049,20 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
         }
 
         logger?.debug('Run.addEvents(); events published', { runId, count: nodes.length });
+      },
+
+      loadProjection: async (): Promise<TProjection> => {
+        logger?.trace('Run.loadProjection();', { runId });
+        await requireConnected('loadProjection');
+        const projection = await loadRunProjection<TEvent, TProjection, TMessage>({
+          channel,
+          codec,
+          runId,
+          signal,
+          logger,
+        });
+        cachedProjection = projection;
+        return projection;
       },
 
       // Spec: AIT-ST6, AIT-ST6a, AIT-ST6b, AIT-ST6b1, AIT-ST6b2, AIT-ST6b3, AIT-ST6c
@@ -998,7 +1099,25 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
           messageId: msgId,
         });
 
-        const result = await pipeStream(stream, encoder, signal, onAbort, streamOpts?.resolveWriteOptions, logger);
+        // Compose caller-supplied resolveWriteOptions with codec-driven
+        // tool-output attribution. After a `loadProjection` call, the
+        // codec's `resolveToolTarget` returns the original message id for
+        // tool-output chunks whose toolCallId matches an awaiting tool
+        // call in the projection — letting the reducer fold them onto the
+        // original message via the standard messageId routing path. The
+        // caller's `messageId` (if any) wins over the codec's suggestion.
+        const composed = (event: TEvent): WriteOptions | undefined => {
+          const callerResolved = streamOpts?.resolveWriteOptions?.(event);
+          if (cachedProjection === undefined) return callerResolved;
+          const target = codec.resolveToolTarget(event, cachedProjection);
+          if (target === undefined) return callerResolved;
+          return {
+            ...callerResolved,
+            messageId: callerResolved?.messageId ?? target,
+          };
+        };
+
+        const result = await pipeStream(stream, encoder, signal, onAbort, composed, logger);
 
         if (result.error) {
           const errInfo = new Ably.ErrorInfo(

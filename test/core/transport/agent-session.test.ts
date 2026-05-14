@@ -15,7 +15,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   EVENT_CANCEL,
-  HEADER_AMEND,
   HEADER_CANCEL_ALL,
   HEADER_CANCEL_CLIENT_ID,
   HEADER_CANCEL_INVOCATION_ID,
@@ -80,6 +79,8 @@ interface MockChannel {
   unsubscribe: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
   off: ReturnType<typeof vi.fn>;
+  attach: ReturnType<typeof vi.fn>;
+  history: ReturnType<typeof vi.fn>;
   state: Ably.ChannelState;
   publishCalls: Ably.Message[];
   listener: ((msg: Ably.InboundMessage) => void) | undefined;
@@ -111,6 +112,14 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
     off: vi.fn((callback?: Ably.channelEventCallback) => {
       if (callback) stateListeners.delete(callback);
       else stateListeners.clear();
+    }),
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+    attach: vi.fn(() => Promise.resolve()),
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+    history: vi.fn(() => {
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+      const empty = { items: [], hasNext: () => false, next: () => Promise.resolve(empty) };
+      return Promise.resolve(empty);
     }),
   };
   // CAST: Tests only use the listed members.
@@ -193,6 +202,13 @@ const createMockCodec = (overrides?: { encoderFactory?: () => MockEncoder }): Mo
     fold: vi.fn((state: TestProjection, _event: TestEvent, _meta: ReducerMeta) => state),
     getMessages: vi.fn((p: TestProjection) => p.messages),
     userMessageEvent: vi.fn((m: TestMessage): TestEvent => ({ type: 'user-message', text: m.content })),
+    classifyEvent: vi.fn((event: TestEvent) =>
+      event.type === 'user-message'
+        ? ({ kind: 'user-message' as const, message: { id: '', content: event.text ?? '' } } as const)
+        : ({ kind: 'other' as const } as const),
+    ),
+    // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires an explicit return matching the codec contract
+    resolveToolTarget: vi.fn(() => undefined),
     createEncoder: vi.fn((writer: ChannelWriter, opts?: EncoderOptions) => {
       encoderCalls.push({ writer, opts });
       const enc = overrides?.encoderFactory ? overrides.encoderFactory() : createMockEncoder();
@@ -264,6 +280,12 @@ const codecWithFunctionalDecoder = (): Codec<TestEvent, TestProjection, TestMess
   },
   getMessages: (p: TestProjection) => p.messages,
   userMessageEvent: (m: TestMessage): TestEvent => ({ type: 'user-message', text: m.id }),
+  classifyEvent: (event: TestEvent) =>
+    event.type === 'user-message'
+      ? ({ kind: 'user-message' as const, message: { id: event.text ?? '', content: event.text ?? '' } } as const)
+      : ({ kind: 'other' as const } as const),
+  // eslint-disable-next-line unicorn/no-useless-undefined -- codec contract returns string | undefined
+  resolveToolTarget: () => undefined,
   createEncoder: vi.fn(() => createMockEncoder()),
   createDecoder: vi.fn(() => ({
     decode: (m: Ably.InboundMessage): TestEvent[] => {
@@ -602,14 +624,15 @@ describe('AgentSession', () => {
   // -------------------------------------------------------------------------
 
   describe('addEvents', () => {
-    it('creates encoder with amend header pointing at the target msg-id', async () => {
+    it('creates encoder with HEADER_MSG_ID pointing at the target msg-id', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1', clientId: 'user-a' });
       await run.start();
       await run.addEvents([{ kind: 'event', msgId: 'target-msg-1', events: [{ type: 'tool-output' }] }]);
 
       const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
-      expect(headers[HEADER_AMEND]).toBe('target-msg-1');
       expect(headers[HEADER_ROLE]).toBe('assistant');
+      // HEADER_MSG_ID = target's id so the reducer routes the events onto
+      // the existing message via its standard per-message-id fold path.
       expect(headers[HEADER_MSG_ID]).toBe('target-msg-1');
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
     });
@@ -636,7 +659,7 @@ describe('AgentSession', () => {
       ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
 
-    it('uses one encoder per EventsNode (distinct amend targets)', async () => {
+    it('uses one encoder per EventsNode (distinct target msg-ids)', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1', clientId: 'user-a' });
       await run.start();
       // Reset counts after start (start publishes run-start, no encoder)
@@ -647,11 +670,11 @@ describe('AgentSession', () => {
       ]);
       // Two nodes → two encoders
       expect(codec.encoderCalls.length - before).toBe(2);
-      // First encoder amends target-1
+      // Each encoder stamps HEADER_MSG_ID = its target id
       const first = codec.encoderCalls[before]?.opts?.extras?.headers ?? {};
       const second = codec.encoderCalls[before + 1]?.opts?.extras?.headers ?? {};
-      expect(first[HEADER_AMEND]).toBe('target-1');
-      expect(second[HEADER_AMEND]).toBe('target-2');
+      expect(first[HEADER_MSG_ID]).toBe('target-1');
+      expect(second[HEADER_MSG_ID]).toBe('target-2');
     });
 
     it('closes each encoder after publishing all events', async () => {
@@ -731,13 +754,89 @@ describe('AgentSession', () => {
         { type: 'text', text: 'b' },
       ];
       await run.pipe(streamOf(...events), {
-        resolveWriteOptions: (event) => (event.text === 'b' ? { messageId: 'override-b' } : undefined),
+        resolveWriteOptions: (event: TestEvent) => (event.text === 'b' ? { messageId: 'override-b' } : undefined),
       });
 
       const enc = codec.lastEncoder();
       expect(enc?.publishCalls).toHaveLength(2);
       expect(enc?.publishCalls[0]?.opts).toBeUndefined();
       expect(enc?.publishCalls[1]?.opts).toEqual({ messageId: 'override-b' });
+    });
+
+    it('uses codec.resolveToolTarget to override messageId after loadProjection', async () => {
+      const targetCodec = createMockCodec();
+      // Mock codec.resolveToolTarget: for events tagged with text === 'tool-output',
+      // return msg-X. Other events return undefined.
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked accessor
+      vi.mocked(targetCodec.resolveToolTarget).mockImplementation((event: TestEvent) =>
+        event.text === 'tool-output' ? 'msg-X' : undefined,
+      );
+      const targetSession = createAgentSession<TestEvent, TestProjection, TestMessage>({
+        client: createMockClient(channel),
+        channelName: 'test',
+        codec: targetCodec,
+      });
+      await targetSession.connect();
+      const run = createRunFromOpts(targetSession, { runId: 'run-1' });
+      await run.start();
+      await run.loadProjection();
+
+      await run.pipe(streamOf({ type: 'text', text: 'tool-output' }, { type: 'text', text: 'plain' }));
+
+      const enc = targetCodec.lastEncoder();
+      expect(enc?.publishCalls).toHaveLength(2);
+      // First event: tool-output → messageId overridden to msg-X.
+      expect(enc?.publishCalls[0]?.opts?.messageId).toBe('msg-X');
+      // Second event: plain → no override, no messageId in per-write opts.
+      expect(enc?.publishCalls[1]?.opts?.messageId).toBeUndefined();
+      targetSession.close();
+    });
+
+    it('caller-supplied messageId wins over codec.resolveToolTarget', async () => {
+      const targetCodec = createMockCodec();
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked accessor
+      vi.mocked(targetCodec.resolveToolTarget).mockImplementation(() => 'codec-target');
+      const targetSession = createAgentSession<TestEvent, TestProjection, TestMessage>({
+        client: createMockClient(channel),
+        channelName: 'test',
+        codec: targetCodec,
+      });
+      await targetSession.connect();
+      const run = createRunFromOpts(targetSession, { runId: 'run-1' });
+      await run.start();
+      await run.loadProjection();
+
+      await run.pipe(streamOf({ type: 'text', text: 'a' }), {
+        resolveWriteOptions: () => ({ messageId: 'caller-target' }),
+      });
+
+      const enc = targetCodec.lastEncoder();
+      expect(enc?.publishCalls[0]?.opts?.messageId).toBe('caller-target');
+      targetSession.close();
+    });
+
+    it('skips codec.resolveToolTarget when loadProjection has not been called', async () => {
+      const targetCodec = createMockCodec();
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked accessor
+      vi.mocked(targetCodec.resolveToolTarget).mockImplementation(() => 'codec-target');
+      const targetSession = createAgentSession<TestEvent, TestProjection, TestMessage>({
+        client: createMockClient(channel),
+        channelName: 'test',
+        codec: targetCodec,
+      });
+      await targetSession.connect();
+      const run = createRunFromOpts(targetSession, { runId: 'run-1' });
+      await run.start();
+      // No loadProjection() call — pipe should NOT consult resolveToolTarget.
+
+      await run.pipe(streamOf({ type: 'text', text: 'a' }));
+
+      const enc = targetCodec.lastEncoder();
+      // No override fired; opts is undefined (the default).
+      expect(enc?.publishCalls[0]?.opts).toBeUndefined();
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked accessor
+      expect(vi.mocked(targetCodec.resolveToolTarget)).not.toHaveBeenCalled();
+      targetSession.close();
     });
   });
 
@@ -1178,6 +1277,9 @@ describe('AgentSession', () => {
         fold: (state: TestProjection): TestProjection => state,
         getMessages: (p: TestProjection) => p.messages,
         userMessageEvent: (m: TestMessage): TestEvent => ({ type: 'user-message', text: m.id }),
+        classifyEvent: () => ({ kind: 'other' as const }) as const,
+        // eslint-disable-next-line unicorn/no-useless-undefined -- codec contract returns string | undefined
+        resolveToolTarget: () => undefined,
         createEncoder: vi.fn(() => createMockEncoder()),
         createDecoder: vi.fn(() => ({
           decode: () => {

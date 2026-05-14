@@ -129,6 +129,35 @@ export const fold = (state: VercelProjection, event: VercelEvent, meta: ReducerM
     case 'ait-tool-approval': {
       return _foldToolApproval(state, event);
     }
+    case 'ait-client-tool-output': {
+      // Wire-level routing already delivered the event to the right
+      // assistant message (via `HEADER_MSG_ID = targetMsgId`). Reuse the
+      // existing tool-output-available fold by promoting the event into
+      // the equivalent UIMessageChunk shape — the reducer needs no
+      // separate logic for client- vs agent-published tool outputs.
+      return _foldChunk(
+        state,
+        {
+          type: 'tool-output-available',
+          toolCallId: event.toolCallId,
+          output: event.output,
+        },
+        meta,
+      );
+    }
+    case 'ait-client-tool-output-error': {
+      // Mirror of `ait-client-tool-output`: promote into the equivalent
+      // `tool-output-error` UIMessageChunk and reuse the standard fold.
+      return _foldChunk(
+        state,
+        {
+          type: 'tool-output-error',
+          toolCallId: event.toolCallId,
+          errorText: event.errorText,
+        },
+        meta,
+      );
+    }
     default: {
       return _foldChunk(state, event, meta);
     }
@@ -166,11 +195,15 @@ const _conflictKeyOf = (event: VercelEvent, meta: ReducerMeta): string | undefin
     }
 
     // All "tool-output-ish" variants compete for the same final state of
-    // the tool call. Highest-serial wins among them.
+    // the tool call. Highest-serial wins among them. `ait-client-tool-output`
+    // promotes into the same `tool-output-available` final state, so it
+    // shares the conflict key.
     case 'tool-output-available':
     case 'tool-output-error':
     case 'tool-output-denied':
-    case 'tool-approval-request': {
+    case 'tool-approval-request':
+    case 'ait-client-tool-output':
+    case 'ait-client-tool-output-error': {
       return `tool-output:${event.toolCallId}`;
     }
 
@@ -218,16 +251,33 @@ const _foldToolApproval = (state: VercelProjection, event: ToolApprovalEvent): V
   for (const message of state.messages) {
     for (let i = 0; i < message.parts.length; i++) {
       const part = message.parts[i];
-      if (part?.type === 'dynamic-tool' && part.toolCallId === event.toolCallId) {
-        message.parts[i] = transitionToolPart(part, {
-          type: event.approved ? 'tool-approval-request' : 'tool-output-denied',
-          toolCallId: event.toolCallId,
-          ...(event.reason === undefined ? {} : { reason: event.reason }),
-          // CAST: transitionToolPart accepts the wider tool-approval/denied chunk union;
-          // we synthesize a minimal record here that carries only the fields it reads.
-        } as Parameters<typeof transitionToolPart>[1]);
-        return state;
-      }
+      if (part?.type !== 'dynamic-tool' || part.toolCallId !== event.toolCallId) continue;
+
+      message.parts[i] = event.approved
+        ? // approved=true → transition to `approval-responded`. The AI SDK's
+          // multi-step loop reads this state and auto-runs the tool on the
+          // next step. `transitionToolPart` has no shape for this transition,
+          // so we synthesize the part directly.
+          // CAST: AI SDK's discriminated union per-state shape constraints; mint
+          // a fresh part with only fields valid for `approval-responded`.
+          ({
+            ...toolBase(part),
+            state: 'approval-responded',
+            input: 'input' in part ? part.input : undefined,
+            approval: {
+              id: 'approval' in part && part.approval ? part.approval.id : '',
+              approved: true,
+              ...(event.reason === undefined ? {} : { reason: event.reason }),
+            },
+          } as AI.DynamicToolUIPart)
+        : transitionToolPart(part, {
+            type: 'tool-output-denied',
+            toolCallId: event.toolCallId,
+            ...(event.reason === undefined ? {} : { reason: event.reason }),
+            // CAST: transitionToolPart accepts the wider chunk union; the
+            // minimal record below carries only the fields it reads.
+          } as Parameters<typeof transitionToolPart>[1]);
+      return state;
     }
   }
   // Orphan — drop silently

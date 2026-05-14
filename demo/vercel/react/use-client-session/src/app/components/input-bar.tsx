@@ -7,9 +7,9 @@ import type { VercelEvent, VercelProjection } from '@ably/ai-transport/vercel';
 import { useSlashCommands, type SlashCommand } from '../hooks/use-slash-commands';
 import { SlashAutocomplete } from './slash-autocomplete';
 import type { QueueHandle } from '../hooks/use-message-queue';
-import { userMessage } from '../helpers';
+import { userMessageEvent } from '../helpers';
 
-type SendFn = (messages: UIMessage[], options?: SendOptions) => Promise<ActiveRun<VercelEvent>>;
+type SendFn = (events: VercelEvent | VercelEvent[], options?: SendOptions) => Promise<ActiveRun<VercelEvent>>;
 
 interface InputBarProps {
   session: ClientSession<VercelEvent, VercelProjection, UIMessage>;
@@ -47,7 +47,7 @@ export function InputBar({ session, send, activeRuns, clientId, queue }: InputBa
     if (hasOwnRuns) {
       queue.add(text);
     } else {
-      send([userMessage(text)]);
+      send([userMessageEvent(text)]);
     }
   }, [input, slash, hasOwnRuns, send, queue]);
 

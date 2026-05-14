@@ -43,12 +43,19 @@ interface ViewEventsMap {
  * Internal delegate function provided by the session for executing sends.
  * The View pre-computes the visible branch history and passes it directly,
  * so the delegate has no back-reference to the View.
+ *
+ * `input` is the TEvent (or array thereof) the caller passed to
+ * `View.sendEvent`. The session classifies each event via `Codec.classifyEvent`
+ * and dispatches accordingly — user-message events trigger optimistic tree
+ * inserts and start a fresh run; amend events ride a fresh-or-continuation
+ * publish without inserts.
+ *
  * When `republishMsgId` is provided, the delegate publishes the (single)
- * input message under the existing msg-id instead of generating a new one.
- * No new tree node is created.
+ * user-message event under the existing msg-id instead of generating a
+ * new one. No new tree node is created.
  */
 export type SendDelegate<TEvent, TMessage> = (
-  input: TMessage | TMessage[],
+  input: TEvent | TEvent[],
   options: SendOptions | undefined,
   history: MessageNode<TMessage>[],
   republishMsgId?: string,
@@ -348,9 +355,16 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   // Write operations
   // -------------------------------------------------------------------------
 
+  async sendMessage(messages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveRun<TEvent>> {
+    this._logger.trace('DefaultView.sendMessage();');
+    const list = Array.isArray(messages) ? messages : [messages];
+    const events = list.map((m) => this._codec.userMessageEvent(m));
+    return this.sendEvent(events, options);
+  }
+
   // Spec: AIT-CT3, AIT-CT4
-  async send(input: TMessage | TMessage[], options?: SendOptions): Promise<ActiveRun<TEvent>> {
-    this._logger.trace('DefaultView.send();');
+  async sendEvent(input: TEvent | TEvent[], options?: SendOptions): Promise<ActiveRun<TEvent>> {
+    this._logger.trace('DefaultView.sendEvent();');
     if (this._closed) {
       throw new Ably.ErrorInfo('unable to send; view is closed', ErrorCode.InvalidArgument, 400);
     }
@@ -460,13 +474,16 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
       ...(parentNode.parentId !== undefined && { parent: parentNode.parentId }),
     };
 
-    const result = await this._sendDelegate([parentNode.message], sendOptions, history, parentNode.msgId);
+    // Regenerate wraps the parent user message into a user-message TEvent
+    // via the codec so the publish flow is uniform with send/edit.
+    const republishEvent = this._codec.userMessageEvent(parentNode.message);
+    const result = await this._sendDelegate(republishEvent, sendOptions, history, parentNode.msgId);
     this._applyForkAutoSelect(result, sendOptions);
     return result;
   }
 
   // Spec: AIT-CT6
-  async edit(messageId: string, newMessages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveRun<TEvent>> {
+  async edit(messageId: string, newEvents: TEvent | TEvent[], options?: SendOptions): Promise<ActiveRun<TEvent>> {
     this._logger.trace('DefaultView.edit();', { messageId });
 
     const node = this._tree.getNode(messageId);
@@ -479,7 +496,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     }
     const parentId = node.parentId;
 
-    return this.send(newMessages, {
+    return this.sendEvent(newEvents, {
       ...options,
       body: {
         history: this._getHistoryBefore(messageId),

@@ -7,7 +7,6 @@
  */
 
 import {
-  HEADER_AMEND,
   HEADER_FORK_OF,
   HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
@@ -22,11 +21,12 @@ import {
  * @param opts - The header values to include.
  * @param opts.role - Message role (e.g. "user", "assistant").
  * @param opts.runId - Run correlation ID.
- * @param opts.msgId - Message identity.
+ * @param opts.msgId - Message identity. Set to the original message's id when
+ *   publishing an event that modifies an existing message (client tool output,
+ *   approval response) — the reducer routes events by `meta.messageId`.
  * @param opts.runClientId - ClientId of the run initiator.
  * @param opts.parent - Preceding message's msg-id (for branching).
  * @param opts.forkOf - Forked message's msg-id (for edit/regen).
- * @param opts.amend - The msg-id of the existing message this message targets (cross-run events).
  * @param opts.invocationId - Invocation correlation ID. Set on the user-prompt message so the agent can locate the prompt by invocation.
  * @returns A headers record with the `x-ably-*` transport headers set.
  */
@@ -37,7 +37,6 @@ export const buildTransportHeaders = (opts: {
   runClientId?: string;
   parent?: string;
   forkOf?: string;
-  amend?: string;
   invocationId?: string;
 }): Record<string, string> => {
   const h: Record<string, string> = {
@@ -48,7 +47,6 @@ export const buildTransportHeaders = (opts: {
   if (opts.runClientId !== undefined) h[HEADER_RUN_CLIENT_ID] = opts.runClientId;
   if (opts.parent) h[HEADER_PARENT] = opts.parent;
   if (opts.forkOf) h[HEADER_FORK_OF] = opts.forkOf;
-  if (opts.amend) h[HEADER_AMEND] = opts.amend;
   if (opts.invocationId) h[HEADER_INVOCATION_ID] = opts.invocationId;
   return h;
 };

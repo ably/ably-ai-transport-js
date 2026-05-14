@@ -12,7 +12,8 @@ type Handler = ((...args: never[]) => void) | (() => void);
 
 export interface MockSession {
   session: ClientSession<unknown, unknown, string>;
-  send: ReturnType<typeof vi.fn>;
+  sendMessage: ReturnType<typeof vi.fn>;
+  sendEvent: ReturnType<typeof vi.fn>;
   regenerate: ReturnType<typeof vi.fn>;
   edit: ReturnType<typeof vi.fn>;
   cancel: ReturnType<typeof vi.fn>;
@@ -110,7 +111,9 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
   };
 
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-  const send = vi.fn(() => Promise.resolve(mockRun));
+  const sendMessage = vi.fn(() => Promise.resolve(mockRun));
+  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+  const sendEvent = vi.fn(() => Promise.resolve(mockRun));
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const regenerate = vi.fn(() => Promise.resolve(mockRun));
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
@@ -127,7 +130,8 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
     getSiblings: vi.fn((msgId: string) => [msgId]),
     hasSiblings: vi.fn(() => false),
     getNode: vi.fn(),
-    send,
+    sendMessage,
+    sendEvent,
     regenerate,
     edit,
     getActiveRunIds: vi.fn(() => new Map<string, Set<string>>()),
@@ -160,7 +164,8 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
 
   return {
     session,
-    send,
+    sendMessage,
+    sendEvent,
     regenerate,
     edit,
     cancel,

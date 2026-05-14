@@ -3,9 +3,10 @@
  * in the conversation.
  *
  * Watches the view's message list for tool parts in `input-available` state
- * that match a registered client tool. Routing the tool result back into the
- * run is currently a no-op pending the ChatTransport rework (the previous
- * `view.update()` API was retired by the event-sourced codec contract).
+ * that match a registered client tool. Executes the tool, then publishes a
+ * `ait-client-tool-output` TEvent on the channel via `view.publishEvent`.
+ * The codec's reducer folds the event onto the assistant message that
+ * issued the tool call.
  *
  * Skips tool calls that already have a follow-up assistant message — those
  * were resolved in a previous session and don't need re-execution.
@@ -89,20 +90,43 @@ export function useClientTools(
 }
 
 async function executeClientTool(
-  _view: ViewHandle<VercelEvent, VercelProjection, UIMessage>,
-  _node: MessageNode<UIMessage>,
+  view: ViewHandle<VercelEvent, VercelProjection, UIMessage>,
+  node: MessageNode<UIMessage>,
   toolPart: DynamicToolUIPart,
 ): Promise<void> {
   const executor = clientTools[toolPart.toolName];
   if (!executor) return;
 
-  // TODO: cross-run tool-output publishing pending the ChatTransport
-  // rework. The retired `view.update(msgId, events)` API was the previous
-  // hook; the new event-sourced contract surfaces it as a typed TEvent
-  // emitted from the client without a stable view-side helper yet.
+  // The tool output amends the suspended assistant message; the
+  // continuation reuses that run's runId so the agent's lookupToolOutputs
+  // picks the output up off the channel and resumes generation.
+  const runId = node.headers['x-ably-run-id'];
+  if (!runId) return;
+
   try {
-    await executor(toolPart.input);
-  } catch {
-    // swallow — tool output cannot currently be routed back to the run
+    const output = await executor(toolPart.input);
+    await view.sendEvent(
+      [
+        {
+          type: 'ait-client-tool-output',
+          toolCallId: toolPart.toolCallId,
+          output,
+          targetMsgId: node.msgId,
+        },
+      ],
+      { runId },
+    );
+  } catch (error) {
+    await view.sendEvent(
+      [
+        {
+          type: 'ait-client-tool-output-error',
+          toolCallId: toolPart.toolCallId,
+          errorText: error instanceof Error ? error.message : 'Client tool execution failed',
+          targetMsgId: node.msgId,
+        },
+      ],
+      { runId },
+    );
   }
 }

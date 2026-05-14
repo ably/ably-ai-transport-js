@@ -47,6 +47,13 @@ const createMockCodec = (): Codec<TestEvent, TestProjection, TestMessage> => ({
   fold: vi.fn((state: TestProjection) => state),
   getMessages: vi.fn((state: TestProjection) => state.messages),
   userMessageEvent: vi.fn(() => ({ type: 'user-message' })),
+  classifyEvent: vi.fn((event: TestEvent) =>
+    event.type === 'user-message'
+      ? ({ kind: 'user-message' as const, message: { id: '', content: '' } } as const)
+      : ({ kind: 'other' as const } as const),
+  ),
+  // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires an explicit return matching the codec contract
+  resolveToolTarget: vi.fn(() => undefined),
   createEncoder: vi.fn(),
   createDecoder: vi.fn(() => ({ decode: vi.fn(() => []) })),
   isTerminal: vi.fn(() => false),
@@ -845,7 +852,7 @@ describe('DefaultView', () => {
         'serial-2',
       );
 
-      await forkView.send([], { forkOf: 'm2', parent: 'm1' });
+      await forkView.sendEvent([], { forkOf: 'm2', parent: 'm1' });
 
       // forkView auto-selected the new fork (m3, latest sibling)
       expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
@@ -887,7 +894,7 @@ describe('DefaultView', () => {
       );
 
       // Regenerate: send with forkOf but no optimistic insert
-      await forkView.send([], { forkOf: 'm2', parent: 'm1' });
+      await forkView.sendEvent([], { forkOf: 'm2', parent: 'm1' });
 
       // Still on original branch — no sibling yet
       expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
@@ -982,7 +989,7 @@ describe('DefaultView', () => {
       expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
 
       // Regenerate again: forkOf m2, no optimistic insert
-      await forkView.send([], { forkOf: 'm2', parent: 'm1' });
+      await forkView.sendEvent([], { forkOf: 'm2', parent: 'm1' });
 
       // Still showing m3 — no new sibling yet
       expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
@@ -1056,7 +1063,7 @@ describe('DefaultView', () => {
       expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
 
       // Regenerate while viewing m3 — forkOf is m3, not the group root m2
-      await forkView.send([], { forkOf: 'm3', parent: 'm1' });
+      await forkView.sendEvent([], { forkOf: 'm3', parent: 'm1' });
 
       // Server response creates a new sibling (forks from m2 via m3's group, stamped with pending run)
       tree.upsert(
@@ -1111,7 +1118,7 @@ describe('DefaultView', () => {
       );
 
       // Regenerate: deferred auto-select (pending)
-      await forkView.send([], { forkOf: 'm2', parent: 'm1' });
+      await forkView.sendEvent([], { forkOf: 'm2', parent: 'm1' });
 
       // Run ends without creating a sibling — pending entry should be cleaned up
       tree.emitRun({ type: 'x-ably-run-end', runId: 'run-cleanup', clientId: 'client-a', reason: 'complete' });
@@ -1194,7 +1201,7 @@ describe('DefaultView', () => {
     });
 
     it('send passes pre-computed history to delegate', async () => {
-      await view.send({ id: '4', content: 'new msg' });
+      await view.sendEvent({ type: 'user-message' });
       expect(mockDelegate).toHaveBeenCalledOnce();
       const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
       const history = call[2] as MessageNode<TestMessage>[];
@@ -1202,21 +1209,21 @@ describe('DefaultView', () => {
     });
 
     it('send forwards options to delegate', async () => {
-      await view.send({ id: '4', content: 'msg' }, { parent: 'm1', body: { extra: true } });
+      await view.sendEvent({ type: 'user-message' }, { parent: 'm1', body: { extra: true } });
       const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
-      expect(call[0]).toEqual({ id: '4', content: 'msg' });
+      expect(call[0]).toEqual({ type: 'user-message' });
       expect(call[1]).toEqual({ parent: 'm1', body: { extra: true } });
     });
 
     it('regenerate republishes the parent user message and sets forkOf to the target', async () => {
       await view.regenerate('m2');
       const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
-      const input = call[0] as TestMessage[];
+      const input = call[0] as TestEvent;
       const options = call[1] as SendOptions;
       const republishMsgId = call[3] as string | undefined;
-      // The delegate receives the parent user message (m1) as the message to republish.
-      expect(input).toHaveLength(1);
-      expect(input[0]?.id).toBe('1');
+      // The delegate receives the parent user message wrapped via the
+      // codec's userMessageEvent — the mock returns { type: 'user-message' }.
+      expect(input).toEqual({ type: 'user-message' });
       expect(republishMsgId).toBe('m1');
       // forkOf still targets the assistant message being regenerated.
       expect(options.forkOf).toBe('m2');
@@ -1234,16 +1241,16 @@ describe('DefaultView', () => {
     });
 
     it('edit computes forkOf and parent from target node', async () => {
-      await view.edit('m3', { id: 'edited', content: 'revised' });
+      await view.edit('m3', { type: 'user-message' });
       const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
       const options = call[1] as SendOptions;
-      expect(call[0]).toEqual({ id: 'edited', content: 'revised' });
+      expect(call[0]).toEqual({ type: 'user-message' });
       expect(options.forkOf).toBe('m3');
       expect(options.parent).toBe('m2'); // parent of m3
     });
 
     it('edit passes truncated history (before target)', async () => {
-      await view.edit('m3', { id: 'edited', content: 'revised' });
+      await view.edit('m3', { type: 'user-message' });
       const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
       const options = call[1] as { body: { history: MessageNode<TestMessage>[] } };
       expect(options.body.history).toHaveLength(2); // m1 and m2
@@ -1254,7 +1261,7 @@ describe('DefaultView', () => {
     });
 
     it('edit throws for unknown messageId', async () => {
-      await expect(view.edit('nonexistent', { id: 'x', content: 'y' })).rejects.toThrow('message not found in tree');
+      await expect(view.edit('nonexistent', { type: 'user-message' })).rejects.toThrow('message not found in tree');
     });
 
     it('send uses view-local branch selections for context', async () => {
@@ -1273,7 +1280,7 @@ describe('DefaultView', () => {
       // Select original branch (m2, not m4)
       view.select('m2', 0);
 
-      await view.send({ id: '5', content: 'msg' });
+      await view.sendEvent({ type: 'user-message' });
       const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
       const history = call[2] as MessageNode<TestMessage>[];
       // Should follow m1 -> m2 -> m3 (selected branch), not m1 -> m4
@@ -1363,7 +1370,7 @@ describe('DefaultView', () => {
 
     it('send rejects after close', async () => {
       view.close();
-      await expect(view.send({ id: '1', content: 'hi' })).rejects.toThrow('view is closed');
+      await expect(view.sendEvent({ type: 'user-message' })).rejects.toThrow('view is closed');
     });
 
     it('regenerate rejects after close', async () => {
@@ -1375,7 +1382,7 @@ describe('DefaultView', () => {
     it('edit rejects after close', async () => {
       tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'), 'serial-1');
       view.close();
-      await expect(view.edit('m1', { id: '2', content: 'revised' })).rejects.toThrow('view is closed');
+      await expect(view.edit('m1', { type: 'user-message' })).rejects.toThrow('view is closed');
     });
   });
 

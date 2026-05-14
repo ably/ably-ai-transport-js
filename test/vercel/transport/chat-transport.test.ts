@@ -109,7 +109,8 @@ const createMockSession = (): MockSession => {
     getSiblings: vi.fn(() => []),
     hasSiblings: vi.fn(() => false),
     getNode: vi.fn(),
-    send,
+    sendMessage: vi.fn(),
+    sendEvent: send,
     regenerate: vi.fn(),
     edit: vi.fn(),
     getActiveRunIds: vi.fn(() => new Map()),
@@ -169,8 +170,8 @@ describe('createChatTransport', () => {
       await streamPromise;
 
       expect(send).toHaveBeenCalledOnce();
-      const [msgs, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
-      expect(msgs).toEqual([m3]);
+      const [events, opts] = send.mock.calls[0] as [VercelEvent[], SendOptions];
+      expect(events).toEqual([{ type: 'ait-user-message', message: m3 }]);
       expect(opts.body).toMatchObject({
         sessionName: 'chat-1',
         trigger: 'submit-message',
@@ -228,8 +229,8 @@ describe('createChatTransport', () => {
       await streamPromise;
 
       expect(send).toHaveBeenCalledOnce();
-      const [msgs] = send.mock.calls[0] as [AI.UIMessage[]];
-      expect(msgs).toEqual([]);
+      const [events] = send.mock.calls[0] as [VercelEvent[]];
+      expect(events).toEqual([]);
     });
 
     it('resolves fork metadata from the conversation tree', async () => {
@@ -368,8 +369,8 @@ describe('createChatTransport', () => {
       mockRun.close();
       await streamPromise;
 
-      const [msgs, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
-      expect(msgs).toEqual([edited]);
+      const [events, opts] = send.mock.calls[0] as [VercelEvent[], SendOptions];
+      expect(events).toEqual([{ type: 'ait-user-message', message: edited }]);
       // CAST: body is always set by the adapter; narrowing to non-undefined.
       // eslint-disable-next-line @typescript-eslint/non-nullable-type-assertion-style -- prefer `as` over `!` per TYPES.md
       const body = opts.body as Record<string, unknown>;
@@ -760,8 +761,8 @@ describe('createChatTransport', () => {
       mockRun.close();
       await streamPromise;
 
-      const [msgs, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
-      expect(msgs).toEqual([user2]);
+      const [events, opts] = send.mock.calls[0] as [VercelEvent[], SendOptions];
+      expect(events).toEqual([{ type: 'ait-user-message', message: user2 }]);
       expect(opts.forkOf).toBe('wire-a1');
       expect(opts.parent).toBe('wire-u1');
       // History excludes the unresolved assistant — `[user1]` only.
@@ -891,8 +892,8 @@ describe('createChatTransport', () => {
       mockRun.close();
       await streamPromise;
 
-      const [msgs, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
-      expect(msgs).toEqual([user2]);
+      const [events, opts] = send.mock.calls[0] as [VercelEvent[], SendOptions];
+      expect(events).toEqual([{ type: 'ait-user-message', message: user2 }]);
       expect(opts.forkOf).toBeUndefined();
       expect(opts.parent).toBeUndefined();
     });

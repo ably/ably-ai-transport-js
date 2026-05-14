@@ -15,7 +15,7 @@
 
 import type * as AI from 'ai';
 
-import type { Codec } from '../../core/codec/types.js';
+import type { Codec, EventClassification } from '../../core/codec/types.js';
 import { createDecoder } from './decoder.js';
 import { createEncoder } from './encoder.js';
 import type { VercelEvent } from './events.js';
@@ -34,9 +34,46 @@ export const UIMessageCodec: Codec<VercelEvent, VercelProjection, AI.UIMessage> 
   createDecoder,
   getMessages,
   userMessageEvent: (message: AI.UIMessage): VercelEvent => ({ type: 'ait-user-message', message }),
+  classifyEvent: (event: VercelEvent): EventClassification<AI.UIMessage> => {
+    if (event.type === 'ait-user-message') {
+      return { kind: 'user-message', message: event.message };
+    }
+    if (
+      event.type === 'ait-tool-approval' ||
+      event.type === 'ait-client-tool-output' ||
+      event.type === 'ait-client-tool-output-error'
+    ) {
+      return { kind: 'amend', targetMsgId: event.targetMsgId };
+    }
+    return { kind: 'other' };
+  },
+  resolveToolTarget: (event: VercelEvent, projection: VercelProjection): string | undefined => {
+    // Only tool-output-style chunks are candidates for redirection — the
+    // streamText second-pass case after an approved tool runs. Other
+    // events default to whatever messageId the caller (or pipe default)
+    // assigns.
+    if (event.type !== 'tool-output-available' && event.type !== 'tool-output-error') return undefined;
+    const toolCallId = event.toolCallId;
+    for (const msg of projection.messages) {
+      for (const part of msg.parts) {
+        if (part.type !== 'dynamic-tool') continue;
+        if (part.toolCallId !== toolCallId) continue;
+        if (part.state === 'approval-responded' || part.state === 'approval-requested') {
+          return msg.id;
+        }
+      }
+    }
+    return undefined;
+  },
   isTerminal: (event: VercelEvent): boolean =>
     event.type === 'finish' || event.type === 'error' || event.type === 'abort',
 };
 
-export type { ToolApprovalEvent, UserMessageEvent, VercelEvent } from './events.js';
+export type {
+  ClientToolOutputErrorEvent,
+  ClientToolOutputEvent,
+  ToolApprovalEvent,
+  UserMessageEvent,
+  VercelEvent,
+} from './events.js';
 export { type VercelProjection } from './reducer.js';

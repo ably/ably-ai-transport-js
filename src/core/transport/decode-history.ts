@@ -25,7 +25,6 @@
 import type * as Ably from 'ably';
 
 import {
-  HEADER_AMEND,
   HEADER_DISCRETE,
   HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
@@ -140,11 +139,12 @@ const decodeAll = <TEvent, TProjection, TMessage>(
     const msgId = headers[HEADER_MSG_ID];
     const serial = msg.serial ?? '';
 
-    // Producer-responsibility model: amend events must carry the target's
-    // `HEADER_RUN_ID`. The reducer routes via `meta.messageId` (using
-    // HEADER_AMEND when present, otherwise HEADER_MSG_ID). Mismatched
-    // run-ids result in orphan drops at the reducer.
-    const routingMsgId = headers[HEADER_AMEND] ?? msgId;
+    // Wire `HEADER_MSG_ID` is the reducer's routing key. Events that
+    // modify a previously-published message carry the original message's
+    // id here (the encoder stamps `messageId` accordingly for client
+    // tool outputs / approval responses / agent's redirected
+    // approved-tool outputs).
+    const routingMsgId = msgId;
 
     if (runId) {
       let run = runs.get(runId);
@@ -302,9 +302,15 @@ const decodeAllCached = <TEvent, TProjection, TMessage>(
  *
  * Messages skipped for counting:
  * - Missing `x-ably-msg-id`: lifecycle events not tied to a domain message.
- * - `x-ably-amend` set: amendments target an existing message, not a new
- *   completion.
  * - `message.delete`: clears the tracker, doesn't produce output.
+ *
+ * Amend-class wire messages (events targeting an existing message via
+ * `HEADER_MSG_ID`) flow through the same counter — the Sets naturally
+ * dedup so a tool-output amend on an already-seen msg-id is idempotent.
+ * If an amend is encountered before any chunks for its target msg-id
+ * (newest-first scan), the msg-id gets counted as one new completion;
+ * subsequent pages still produce the correct decoded output because the
+ * decoder runs once on the full collected log.
  *
  * Known edge case: if Ably history is truncated and a terminal survives
  * while every start signal for its msg-id has rolled off, the counter will
@@ -322,10 +328,6 @@ const countNewCompletions = <TEvent, TProjection, TMessage>(
     const headers = getHeaders(msg);
     const msgId = headers[HEADER_MSG_ID];
     if (!msgId) continue;
-    // Amendments target an existing message, not a new completion.
-    // Defensive: no current encoder path produces an amendment carrying
-    // HEADER_STREAM=true, HEADER_STATUS, or HEADER_DISCRETE.
-    if (headers[HEADER_AMEND]) continue;
 
     const action = msg.action;
     const isDiscreteCreate = action === 'message.create' && HEADER_DISCRETE in headers;

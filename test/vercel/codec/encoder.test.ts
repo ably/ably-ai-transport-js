@@ -577,6 +577,7 @@ describe('Vercel encoder', () => {
         toolCallId: 'tc-1',
         approved: true,
         reason: 'looks good',
+        targetMsgId: 'msg-target',
       });
 
       expect(writer.publishCalls).toHaveLength(1);
@@ -585,6 +586,56 @@ describe('Vercel encoder', () => {
       expect(headersOf(msg)[`${D}toolCallId`]).toBe('tc-1');
       expect(headersOf(msg)[`${D}approved`]).toBe('true');
       expect(headersOf(msg)[`${D}reason`]).toBe('looks good');
+      // HEADER_MSG_ID = targetMsgId so the reducer folds the response onto the original message.
+      expect(headersOf(msg)[HEADER_MSG_ID]).toBe('msg-target');
+      // No HEADER_AMEND on the wire — routing is by HEADER_MSG_ID alone.
+      expect(headersOf(msg)['x-ably-amend']).toBeUndefined();
+    });
+  });
+
+  // -- client tool output events (codec-local TEvent) -----------------------
+
+  describe('publishing client tool output events', () => {
+    it('publishes ait-client-tool-output as tool-output-available with HEADER_MSG_ID', async () => {
+      const encoder = createEncoder(writer);
+      await encoder.publish({
+        type: 'ait-client-tool-output',
+        toolCallId: 'tc-1',
+        output: { latitude: 51.5, longitude: -0.1 },
+        targetMsgId: 'msg-target',
+      });
+
+      expect(writer.publishCalls).toHaveLength(1);
+      const msg = firstPublish(writer);
+      expect(msg.name).toBe('tool-output-available');
+      expect(headersOf(msg)[`${D}toolCallId`]).toBe('tc-1');
+      // HEADER_MSG_ID is stamped to the target so the wire message lands on it
+      // and the reducer's per-message-id fold path picks it up.
+      expect(headersOf(msg)[HEADER_MSG_ID]).toBe('msg-target');
+      expect(headersOf(msg)['x-ably-amend']).toBeUndefined();
+      // CAST: data is unknown — we know the encoder shape from above.
+      const data = msg.data as { output: unknown };
+      expect(data.output).toEqual({ latitude: 51.5, longitude: -0.1 });
+    });
+
+    it('publishes ait-client-tool-output-error as tool-output-error with HEADER_MSG_ID', async () => {
+      const encoder = createEncoder(writer);
+      await encoder.publish({
+        type: 'ait-client-tool-output-error',
+        toolCallId: 'tc-1',
+        errorText: 'geolocation denied',
+        targetMsgId: 'msg-target',
+      });
+
+      expect(writer.publishCalls).toHaveLength(1);
+      const msg = firstPublish(writer);
+      expect(msg.name).toBe('tool-output-error');
+      expect(headersOf(msg)[`${D}toolCallId`]).toBe('tc-1');
+      expect(headersOf(msg)[HEADER_MSG_ID]).toBe('msg-target');
+      expect(headersOf(msg)['x-ably-amend']).toBeUndefined();
+      // CAST: data is unknown — we know the encoder shape from above.
+      const data = msg.data as { errorText: string };
+      expect(data.errorText).toBe('geolocation denied');
     });
   });
 

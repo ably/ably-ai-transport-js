@@ -38,7 +38,7 @@ interface RunOpts<TEvent> {
 export const createRunFromOpts = <TEvent, TProjection, TMessage>(
   session: AgentSession<TEvent, TProjection, TMessage>,
   opts: RunOpts<TEvent>,
-): Run<TEvent, TMessage> => {
+): Run<TEvent, TProjection, TMessage> => {
   const invocation = Invocation.fromJSON<TEvent, TMessage>({
     runId: opts.runId,
     invocationId: opts.invocationId ?? `${opts.runId}-inv`,

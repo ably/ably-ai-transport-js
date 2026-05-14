@@ -823,6 +823,73 @@ describe('AgentSession integration', () => {
   });
 
   /**
+   * Scenario: forward-looking live wait for a user prompt.
+   *
+   * The agent registers its prompt-lookup listener BEFORE the client
+   * publishes the user message — exercising the live-wait path inside
+   * `lookupUserPrompt` (not the rewind/buffer-drain path that other
+   * tests in this file cover). The lookup must pick the message up as
+   * it arrives live and resolve `run.start()`.
+   *
+   * Pre-allocating the runId / invocationId is what makes this
+   * orderable: the agent can stand up its run with known identifiers
+   * and call `start()` first, then the publisher publishes a message
+   * tagged with the same invocation-id.
+   */
+  it('collects a user prompt that arrives live after the lookup is registered', async () => {
+    const channelName = uniqueChannelName('st-live-lookup');
+    const serverClient = ablyRealtimeClient();
+    const publisherClient = ablyRealtimeClient();
+
+    session = createAgentSession({
+      client: serverClient,
+      channelName,
+      codec: UIMessageCodec,
+      // Default `promptLookupTimeoutMs` — the live wait must succeed
+      // well before the 30s default.
+    });
+    await session.connect();
+
+    const runId = crypto.randomUUID();
+    const invocationId = crypto.randomUUID();
+    const msgId = crypto.randomUUID();
+    const text = 'Live arrival';
+
+    const serverRun = createRunFromOpts(session, {
+      runId,
+      invocationId,
+      clientId: 'live-lookup-client',
+      userMessageCount: 1,
+    });
+
+    // Begin the lookup. `start()` will not resolve until a user prompt
+    // with `invocationId` arrives — and that message has not been
+    // published yet.
+    const startPromise = serverRun.start();
+
+    // Publish the user prompt from a separate client after the lookup
+    // has had a chance to register. A short sleep here is enough to
+    // ensure `start()` has crossed the requireConnected await and
+    // installed the listener; the lookup itself has a 30s budget so
+    // a few hundred ms is safe.
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    const publisherChannel = publisherClient.channels.get(channelName);
+    const headers = buildTransportHeaders({ role: 'user', runId, msgId, invocationId });
+    const encoder = UIMessageCodec.createEncoder(publisherChannel, { extras: { headers } });
+    await encoder.writeMessages([{ id: msgId, role: 'user', parts: [{ type: 'text', text }] }]);
+
+    await startPromise;
+
+    expect(serverRun.view.messages).toHaveLength(1);
+    const found = serverRun.view.messages[0];
+    expect(found?.msgId).toBe(msgId);
+    expect(found?.headers[HEADER_INVOCATION_ID]).toBe(invocationId);
+    expect(found?.message.parts[0]).toEqual({ type: 'text', text });
+
+    await serverRun.end('complete');
+  });
+
+  /**
    * Scenario: multi-message `send([m1, m2])` round-trip.
    *
    * The client publishes two user messages on the channel under a single

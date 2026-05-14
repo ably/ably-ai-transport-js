@@ -1116,4 +1116,94 @@ describe('ClientSession integration', () => {
     expect(cancelHeaders['x-ably-cancel-all']).toBeUndefined();
     expect(cancelHeaders['x-ably-cancel-client-id']).toBeUndefined();
   });
+
+  /**
+   * Scenario: real run-start await on the happy path.
+   *
+   * Almost every other test in this file sets `runStartDeadlineMs: 0` to
+   * skip the run-start wait — so a regression in the client's run-start
+   * handling would not be caught here. This test exercises the real
+   * `runStartDeadlineMs` path end-to-end: the client uses the default
+   * deadline, a real `DefaultAgentSession` on a second Ably client
+   * collects the user prompt via the real lookup, publishes run-start,
+   * pipes a short assistant stream, and ends the run. `send()` resolves
+   * cleanly (no `RunStartDeadlineExceeded`) and the resulting stream
+   * carries the assistant response.
+   */
+  it('resolves send() against the real run-start await when an agent publishes run-start', async () => {
+    const channelName = uniqueChannelName('ct-run-start-happy');
+    const serverClient = ablyRealtimeClient();
+    const clientClient = ablyRealtimeClient();
+
+    agentSession = createAgentSession({
+      client: serverClient,
+      channelName,
+      codec: UIMessageCodec,
+      // Use the default `promptLookupTimeoutMs` so the agent's real
+      // lookup path runs against the client's published user message.
+    });
+    await agentSession.connect();
+
+    clientSession = createClientSession({
+      client: clientClient,
+      channelName,
+      codec: UIMessageCodec,
+      // No `runStartDeadlineMs` override — the default (30s) wait is the SUT.
+      clientId: clientClient.auth.clientId,
+      fetch: noopFetch as typeof globalThis.fetch,
+      api: '/test',
+    });
+    await clientSession.connect();
+
+    // Snoop on the channel BEFORE issuing send() so we don't race the
+    // client's publish. Use the agent's serverClient channel (already
+    // attached via `agentSession.connect()` above) so subscribe is
+    // effectively instant — a separate observer client would risk
+    // missing the publish while it attaches.
+    const observerChannel = serverClient.channels.get(channelName);
+    let resolveIds!: (ids: { runId: string; invocationId: string }) => void;
+    const idsPromise = new Promise<{ runId: string; invocationId: string }>((resolve) => {
+      resolveIds = resolve;
+    });
+    const observerListener = (msg: Ably.InboundMessage): void => {
+      const headers = getHeaders(msg);
+      if (headers[HEADER_ROLE] !== 'user') return;
+      const runId = headers[HEADER_RUN_ID];
+      const invocationId = headers[HEADER_INVOCATION_ID];
+      if (!runId || !invocationId) return;
+      observerChannel.unsubscribe(observerListener);
+      resolveIds({ runId, invocationId });
+    };
+    await observerChannel.subscribe(observerListener);
+
+    // Kick off the client send; do NOT await yet — the agent has to handle
+    // the lookup and publish run-start before this resolves.
+    const sendPromise = clientSession.view.send({
+      id: 'user-rs-happy-1',
+      role: 'user',
+      parts: [{ type: 'text', text: 'Need a run-start' }],
+    });
+
+    const { runId, invocationId } = await idsPromise;
+
+    // Stand up the server-side run; its `start()` triggers the real
+    // lookup (which finds the user message) and publishes run-start.
+    const serverRun = createRunFromOpts(agentSession, {
+      runId,
+      invocationId,
+      clientId: clientClient.auth.clientId,
+      userMessageCount: 1,
+    });
+    await serverRun.start();
+    const responseStream = textResponseStream('asst-rs-happy-1', 'text-rs-happy-1', 'Started');
+    await serverRun.pipe(responseStream);
+    await serverRun.end('complete');
+
+    // The client's send() must now resolve (run-start has landed) and the
+    // returned stream must carry the assistant response.
+    const activeRun = await sendPromise;
+    expect(activeRun.runId).toBe(runId);
+    const events = await drain(activeRun.stream);
+    expect(events.some((e) => e.type === 'finish')).toBe(true);
+  });
 });

@@ -17,7 +17,7 @@ The method is idempotent - a second call returns the same in-flight promise and 
 
 ## Prompt lookup
 
-The client publishes the user prompt(s) directly on the channel; the agent locates them by `x-ably-invocation-id`. The session attaches with a 2-minute channel rewind so messages published before the agent attached are replayed through the session's unfiltered listener.
+The client publishes the user prompt(s) directly on the channel; the agent locates them by `x-ably-invocation-id`. The session attaches with a channel rewind (default 2 minutes, tunable via `AgentSessionOptions.promptRewindWindow`) so messages published before the agent attached are replayed through the session's unfiltered listener. A longer window improves the chances of finding a user prompt for an agent with a slow cold start but increases the message volume replayed on attach (and therefore the pressure on `promptBufferLimit`).
 
 Inside `Run.start()`:
 

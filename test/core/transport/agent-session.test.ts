@@ -372,6 +372,23 @@ describe('AgentSession', () => {
       s.close();
     });
 
+    it('forwards a custom promptRewindWindow to params.rewind', () => {
+      const ch = createMockChannel();
+      const client = createMockClient(ch);
+      const c = createMockCodec();
+      const s = createAgentSession({
+        client,
+        channelName: 'rewind-channel',
+        codec: c,
+        promptRewindWindow: '5m',
+      });
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- accessing vi mock
+      expect(client.channels.get).toHaveBeenCalledWith('rewind-channel', {
+        params: { agent: `ai-transport-js/${VERSION}`, rewind: '5m' },
+      });
+      s.close();
+    });
+
     it('does not pollute options.agents when constructing multiple sessions on the same client', () => {
       const ch1 = createMockChannel();
       const ch2 = createMockChannel();

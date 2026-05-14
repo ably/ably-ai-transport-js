@@ -305,12 +305,13 @@ class DefaultAgentSession<TEvent, TMessage> implements AgentSession<TEvent, TMes
     // (options.agents) and channel-attach (params.agent) paths. Idempotent
     // across sessions sharing one client.
     const registerOptions = registerAgent(options.client);
-    // Attach with a 2-minute rewind so a freshly-constructed agent session
-    // can locate a user prompt that was published before it attached
-    // (closes the lookup race when a per-request agent is spun up after the
-    // client has already POSTed).
+    // Attach with a rewind window (default 2m) so a freshly-constructed
+    // agent session can locate a user prompt that was published before it
+    // attached (closes the lookup race when a per-request agent is spun
+    // up after the client has already POSTed). Tunable via
+    // `AgentSessionOptions.promptRewindWindow`.
     const channelOptions: Ably.ChannelOptions = {
-      params: { ...registerOptions.params, rewind: '2m' },
+      params: { ...registerOptions.params, rewind: options.promptRewindWindow ?? '2m' },
     };
     this._channel = options.client.channels.get(options.channelName, channelOptions);
     this._codec = options.codec;

@@ -102,6 +102,23 @@ export interface AgentSessionOptions<TEvent, TMessage> {
    * Default: 200.
    */
   promptBufferLimit?: number;
+
+  /**
+   * How far back the agent's channel attach rewinds when looking for
+   * user-prompt messages that were published before the session
+   * attached. Passed through verbatim to Ably's `params.rewind` channel
+   * parameter — accepts duration strings (`"2m"`, `"30s"`) or a count of
+   * messages as a string (e.g. `"50"`). Malformed values surface as a
+   * channel attach error from Ably; the SDK does not pre-validate.
+   *
+   * A longer window improves the chances of finding a user prompt for an
+   * agent that takes a while to come up after the client published, but
+   * also increases the buffer pressure on `promptBufferLimit` because
+   * more user messages may be replayed on attach.
+   *
+   * Default: `"2m"`.
+   */
+  promptRewindWindow?: string;
 }
 
 // ---------------------------------------------------------------------------

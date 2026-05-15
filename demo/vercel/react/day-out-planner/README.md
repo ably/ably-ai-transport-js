@@ -23,7 +23,7 @@ cp .env.local.example .env.local
 npm run dev
 ```
 
-Then open <http://localhost:3000?channel=demo-1> in two or three browser
+Then open <http://localhost:3000?channel=ai:test-1> in two or three browser
 windows. The first visit asks you to pick a name; that name is used as your
 Ably `clientId` and as the sender label everyone (including Bernard) sees.
 The name is persisted to `localStorage`; the header has a "change name" link
@@ -31,6 +31,12 @@ to reset it.
 
 The `?channel=` query param scopes the chat — open the same value in
 multiple windows to talk to each other, change it to start a fresh session.
+
+**Channel names must live in the `ai:` namespace** (e.g. `ai:test-1`,
+`ai:weekend-plan`). The AI Transport SDK uses Ably's mutable-message
+operations, which Ably only enables on channels in that namespace. The
+default channel (`ai:day-out-planner:demo`) and the auto-derived sibling
+itinerary channel (`<channel>:itinerary`) are both inside `ai:` already.
 
 ### Environment variables
 

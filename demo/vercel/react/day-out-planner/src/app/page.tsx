@@ -10,7 +10,11 @@ import { Planner } from './components/planner';
 
 const { ClientSessionProvider } = SessionHooks;
 
-const DEFAULT_CHANNEL = process.env.NEXT_PUBLIC_ABLY_CHANNEL ?? 'day-out-planner:demo';
+// The chat channel must live under the `ai:` namespace so Ably's mutable-message
+// support (which the AI Transport SDK relies on) is enabled — without this you
+// get "Can only update/delete/append messages on channels with mutableMessages
+// enabled" (code 93002).
+const DEFAULT_CHANNEL = process.env.NEXT_PUBLIC_ABLY_CHANNEL ?? 'ai:day-out-planner:demo';
 
 function PlannerWhenReady({
   channelName,

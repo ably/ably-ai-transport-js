@@ -77,13 +77,13 @@ export enum ErrorCode {
    * The client's send() did not observe `x-ably-run-start` for the run+invocation
    * within the configured `runStartDeadlineMs`.
    */
-  RunStartDeadlineExceeded = 104010,
+  RunStartDeadlineExceeded = 104009,
 
   /**
    * The agent attached to the channel and waited for the user-prompt message
    * (rewind + live wait) but `promptLookupTimeoutMs` lapsed without seeing it.
    */
-  PromptNotFound = 104011,
+  PromptNotFound = 104010,
 }
 
 /**

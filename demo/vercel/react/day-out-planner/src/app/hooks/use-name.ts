@@ -1,46 +1,35 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-
-const STORAGE_KEY = 'day-out-planner:name';
+import { useCallback, useState } from 'react';
 
 export interface UseNameHandle {
-  /** The current name, or empty string if unset. Only meaningful when `ready` is true. */
+  /** The current name, or empty string if unset. */
   name: string;
-  /**
-   * Whether the localStorage read has happened. False on the server and on the
-   * first client render; true after the mount effect runs. Callers should gate
-   * UI on this so the name modal doesn't briefly render during SSR/hydration
-   * (which can hydration-mismatch against browser autofill).
-   */
-  ready: boolean;
-  /** Persist a new name. Trimmed; empty input is rejected. */
+  /** Set the name. Trimmed; empty input is rejected. */
   setName: (next: string) => void;
-  /** Forget the stored name so the modal shows again on next render. */
+  /** Forget the current name so the modal shows again. Scoped to this tab. */
   clearName: () => void;
 }
 
-export function useName(): UseNameHandle {
-  const [name, setNameState] = useState('');
-  const [ready, setReady] = useState(false);
-
-  useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) setNameState(stored);
-    setReady(true);
-  }, []);
+/**
+ * In-memory name state for this browser tab. Deliberately not persisted —
+ * makes it easy to demonstrate with multiple tabs without each one inheriting
+ * the previous identity. Use the `?user=` query param to skip the modal.
+ *
+ * @param initialName - Optional name to seed state with (e.g. from `?user=`).
+ */
+export function useName(initialName?: string): UseNameHandle {
+  const [name, setNameState] = useState(initialName?.trim() ?? '');
 
   const setName = useCallback((next: string) => {
     const trimmed = next.trim();
     if (!trimmed) return;
-    localStorage.setItem(STORAGE_KEY, trimmed);
     setNameState(trimmed);
   }, []);
 
   const clearName = useCallback(() => {
-    localStorage.removeItem(STORAGE_KEY);
     setNameState('');
   }, []);
 
-  return { name, ready, setName, clearName };
+  return { name, setName, clearName };
 }

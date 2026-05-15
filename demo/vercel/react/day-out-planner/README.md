@@ -26,11 +26,22 @@ npm run dev
 Then open <http://localhost:3000?channel=ai:test-1> in two or three browser
 windows. The first visit asks you to pick a name; that name is used as your
 Ably `clientId` and as the sender label everyone (including Bernard) sees.
-The name is persisted to `localStorage`; the header has a "change name" link
-to reset it.
+The name is kept in memory only for the current tab — open a new tab and
+you get prompted again, which makes it easy to demo multiple identities at
+once. The header has a "change name" link to drop back to the modal.
 
-The `?channel=` query param scopes the chat — open the same value in
-multiple windows to talk to each other, change it to start a fresh session.
+### URL parameters
+
+| Param     | Purpose                                                                                               |
+| --------- | ----------------------------------------------------------------------------------------------------- |
+| `channel` | Channel name to join (default `ai:day-out-planner:demo`). Must be in the `ai:` namespace — see below. |
+| `user`    | Skips the name modal by pre-filling the name. Useful for tab-per-identity demos.                      |
+
+So a quick three-tab demo:
+
+- `http://localhost:3000?channel=ai:test-1&user=alice`
+- `http://localhost:3000?channel=ai:test-1&user=bob`
+- `http://localhost:3000?channel=ai:test-1&user=charlie`
 
 **Channel names must live in the `ai:` namespace** (e.g. `ai:test-1`,
 `ai:weekend-plan`). The AI Transport SDK uses Ably's mutable-message
@@ -40,11 +51,11 @@ itinerary channel (`<channel>:itinerary`) are both inside `ai:` already.
 
 ### Environment variables
 
-| Variable                   | Required | Purpose                                                                       |
-| -------------------------- | -------- | ----------------------------------------------------------------------------- |
-| `ABLY_API_KEY`             | yes      | Server-side Ably key (used by both the agent session and JWT issuer).         |
-| `ANTHROPIC_API_KEY`        | yes      | Used by `@ai-sdk/anthropic` to call Claude.                                   |
-| `NEXT_PUBLIC_ABLY_CHANNEL` | no       | Default channel when `?channel=` is omitted (default `day-out-planner:demo`). |
+| Variable                   | Required | Purpose                                                                          |
+| -------------------------- | -------- | -------------------------------------------------------------------------------- |
+| `ABLY_API_KEY`             | yes      | Server-side Ably key (used by both the agent session and JWT issuer).            |
+| `ANTHROPIC_API_KEY`        | yes      | Used by `@ai-sdk/anthropic` to call Claude.                                      |
+| `NEXT_PUBLIC_ABLY_CHANNEL` | no       | Default channel when `?channel=` is omitted (default `ai:day-out-planner:demo`). |
 
 ## Using it
 

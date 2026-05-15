@@ -51,11 +51,8 @@ function PlannerWhenReady({
 function PlannerPage() {
   const searchParams = useSearchParams();
   const channelName = searchParams.get('channel') ?? DEFAULT_CHANNEL;
-  const { name, ready, setName, clearName } = useName();
-
-  if (!ready) {
-    return <div className="flex h-dvh items-center justify-center text-sm text-zinc-600" />;
-  }
+  const userParam = searchParams.get('user') ?? undefined;
+  const { name, setName, clearName } = useName(userParam);
 
   if (!name) {
     return <NameModal onSubmit={setName} />;

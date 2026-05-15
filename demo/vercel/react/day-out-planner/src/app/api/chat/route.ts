@@ -3,8 +3,12 @@
  *
  * Every user message sent via view.send() hits this endpoint. If the latest
  * user message mentions @bernard, we run the LLM with itinerary tools that
- * write to the channel's LiveObjects root LiveMap. Otherwise we close the
- * run immediately so the message becomes plain chat between users.
+ * write to a sibling channel's LiveObjects root LiveMap. Otherwise we close
+ * the run immediately so the message becomes plain chat between users.
+ *
+ * The itinerary lives on a separate channel (`<chat channel>:itinerary`)
+ * because the AI Transport SDK's internal channels.get() call wipes
+ * channel modes — see README → "Itinerary lives on a sibling channel".
  */
 
 import { after } from 'next/server';
@@ -17,21 +21,23 @@ import { createAgentSession } from '@ably/ai-transport/vercel';
 import type { InvocationData, MessageNode } from '@ably/ai-transport';
 import { Invocation } from '@ably/ai-transport';
 import { buildTools } from './tools';
-import type { ItineraryRoot } from '../../itinerary';
+import { itineraryChannelName, type ItineraryRoot } from '../../itinerary';
 
 const ably = new Ably.Realtime({
   key: process.env.ABLY_API_KEY!,
   plugins: { LiveObjects },
 });
 
+const ITINERARY_CHANNEL_MODES: Ably.ChannelMode[] = ['OBJECT_SUBSCRIBE', 'OBJECT_PUBLISH'];
+
 const rootCache = new Map<string, Promise<LiveMapPathObject<ItineraryRoot>>>();
 
-function getItineraryRoot(channelName: string): Promise<LiveMapPathObject<ItineraryRoot>> {
-  let cached = rootCache.get(channelName);
+function getItineraryRoot(chatChannelName: string): Promise<LiveMapPathObject<ItineraryRoot>> {
+  let cached = rootCache.get(chatChannelName);
   if (!cached) {
-    const channel = ably.channels.get(channelName);
+    const channel = ably.channels.get(itineraryChannelName(chatChannelName), { modes: ITINERARY_CHANNEL_MODES });
     cached = channel.object.get<ItineraryRoot>();
-    rootCache.set(channelName, cached);
+    rootCache.set(chatChannelName, cached);
   }
   return cached;
 }

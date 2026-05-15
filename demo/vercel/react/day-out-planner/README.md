@@ -74,24 +74,31 @@ client.
 
 ## How it works
 
-A single Ably channel carries both layers:
+Two sibling Ably channels, one Ably connection per client:
 
 ```
-                ┌────────────────────────────────────────────┐
-                │            Ably channel (per ?channel=)    │
-                │                                            │
-   ai-transport │  ◄── chat messages (user + assistant)     │  ai-transport
-   ClientSession│  ◄── run-start / run-end                  │  AgentSession
-   (browser)    │                                            │  (server route)
-                │  LiveObjects root LiveMap:                 │
-                │    "cine-belas-artes" → { name, lat, ...} │
-                │    "pizza-bráz"       → { name, lat, ...} │
-                └────────────────────────────────────────────┘
-                          ▲                          ▲
-                          │ subscribe                │ set / remove
-                          │                          │
-                      useItinerary               Bernard's tools
-                      (every client)             (server-side)
+              ┌─────────────────────────────────────────────────┐
+              │    `<channel>` — chat (AI Transport SDK)        │
+              │                                                  │
+              │  ◄── chat messages (user + assistant)           │
+              │  ◄── run-start / run-end                        │
+              └─────────────────────────────────────────────────┘
+                   ▲                              ▲
+                   │ ClientSession                │ AgentSession
+                   │ (every client)               │ (server route,
+                   │                              │  only on @bernard)
+
+              ┌─────────────────────────────────────────────────┐
+              │ `<channel>:itinerary` — LiveObjects root LiveMap│
+              │                                                  │
+              │    "cine-belas-artes" → JSON({ name, lat, ...}) │
+              │    "pizza-bráz"       → JSON({ name, lat, ...}) │
+              └─────────────────────────────────────────────────┘
+                   ▲                              ▲
+                   │ root.subscribe(...)          │ root.set / .remove
+                   │                              │
+                 useItinerary                 Bernard's tools
+                 (every client)               (server-side)
 ```
 
 Key points:
@@ -110,6 +117,38 @@ Key points:
 - Itinerary items are stored as JSON strings keyed by id inside the root
   LiveMap. Whole-item updates only; granular field updates would mean
   nested LiveMaps.
+
+### Itinerary lives on a sibling channel
+
+LiveObjects requires the channel to be attached with the `OBJECT_SUBSCRIBE`
+and `OBJECT_PUBLISH` modes; default modes don't include them. The AI
+Transport SDK fetches its channel internally via
+`client.channels.get(name, opts)` and there's no public way to pass
+`modes` through `ClientSessionOptions` / `AgentSessionOptions`.
+
+Worse, you can't set the modes "first" and then let the SDK piggy-back:
+`ably-js`'s `channels.get(name, options)` calls `setOptions`, which
+_replaces_ the channel's options wholesale
+(`realtimechannel.ts:setOptions`). So when the SDK later calls
+`channels.get(name, { params: ... })` it wipes any `modes` a caller had
+set first.
+
+To keep things simple without changing the SDK, the demo splits the work
+across two sibling channels on the same connection:
+
+- `<channelName>` — chat, owned by the AI Transport SDK. No OBJECT modes
+  needed.
+- `<channelName>:itinerary` — LiveObjects root LiveMap. The SDK never
+  touches this channel, so its OBJECT modes are stable.
+
+The mapping is centralised in `src/app/itinerary.ts` as
+`itineraryChannelName(chatChannelName)`.
+
+The right long-term fix is for `@ably/ai-transport` to expose a
+`channelOptions` / `modes` field on `ClientSessionOptions` and
+`AgentSessionOptions` and merge user modes with what the SDK needs
+(agent-registration params, rewind window). With that, the chat and the
+LiveObjects state could share a single channel.
 
 ## File map
 

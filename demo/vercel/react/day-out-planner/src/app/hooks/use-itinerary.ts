@@ -1,9 +1,12 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import type * as Ably from 'ably';
 import { useAbly } from 'ably/react';
 import type { LiveMapPathObject } from 'ably/liveobjects';
-import type { ItineraryItem, ItineraryRoot } from '../itinerary';
+import { itineraryChannelName, type ItineraryItem, type ItineraryRoot } from '../itinerary';
+
+const ITINERARY_CHANNEL_MODES: Ably.ChannelMode[] = ['OBJECT_SUBSCRIBE', 'OBJECT_PUBLISH'];
 
 function parseItem(id: string, raw: string): ItineraryItem | null {
   try {
@@ -37,7 +40,7 @@ function snapshotItems(root: LiveMapPathObject<ItineraryRoot>): ItineraryItem[] 
   return items;
 }
 
-export function useItinerary(channelName: string): ItineraryItem[] {
+export function useItinerary(chatChannelName: string): ItineraryItem[] {
   const ably = useAbly();
   const [items, setItems] = useState<ItineraryItem[]>([]);
 
@@ -46,7 +49,7 @@ export function useItinerary(channelName: string): ItineraryItem[] {
     let unsubscribe: (() => void) | undefined;
 
     (async () => {
-      const channel = ably.channels.get(channelName);
+      const channel = ably.channels.get(itineraryChannelName(chatChannelName), { modes: ITINERARY_CHANNEL_MODES });
       const root = await channel.object.get<ItineraryRoot>();
       if (cancelled) return;
       setItems(snapshotItems(root));
@@ -64,7 +67,7 @@ export function useItinerary(channelName: string): ItineraryItem[] {
       cancelled = true;
       unsubscribe?.();
     };
-  }, [ably, channelName]);
+  }, [ably, chatChannelName]);
 
   return items;
 }

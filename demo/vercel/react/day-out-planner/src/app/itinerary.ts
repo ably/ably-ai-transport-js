@@ -22,6 +22,13 @@ export interface ItineraryItem {
   lat: number;
   /** Longitude. */
   lng: number;
+  /**
+   * Sort key for the day-of order. Items are rendered in ascending `order`.
+   * Floats are intentional so Bernard can insert between two existing items
+   * by picking any value between their orders (e.g. 1.5 between 1 and 2)
+   * without having to re-emit every neighbour.
+   */
+  order: number;
   /** Optional time of day, e.g. "15:30" or "evening". */
   time?: string;
   /** Optional free-form notes (e.g. "Devil Wears Prada 2"). */

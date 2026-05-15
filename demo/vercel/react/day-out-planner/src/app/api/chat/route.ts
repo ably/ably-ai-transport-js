@@ -54,6 +54,18 @@ function mentionsBernard(text: string): boolean {
   return /@bernard\b/i.test(text);
 }
 
+function describeItinerary(root: LiveMapPathObject<ItineraryRoot>): string {
+  const data = root.compactJson();
+  if (!data || 'objectId' in data) return 'The itinerary is currently empty.';
+  const lines: string[] = [];
+  for (const [id, value] of Object.entries(data)) {
+    if (typeof value !== 'string') continue;
+    lines.push(`- ${id}: ${value}`);
+  }
+  if (lines.length === 0) return 'The itinerary is currently empty.';
+  return `The itinerary currently contains these items (each stored as a JSON string keyed by id):\n${lines.join('\n')}`;
+}
+
 function annotateSender(node: MessageNode<UIMessage>): UIMessage {
   if (node.message.role !== 'user') return node.message;
   const sender = node.headers['x-ably-run-client-id'];
@@ -82,6 +94,14 @@ When asked to help, your job is to:
   an item's id to update it instead of duplicating.
 - Reply in chat with a short, friendly summary of what you added, including
   rough timings.
+
+Each itinerary item has a numeric \`order\` field. Items are rendered in
+ascending order. To insert a new item between two existing ones, pick any
+number between their orders (floats are fine — e.g. 1.5 between 1 and 2)
+so you don't need to update the neighbours. To put an item before
+everything pick a smaller number; to put it at the end pick a larger one.
+The conversation history (and the latest tool results you've made) tells
+you which orders are already taken.
 
 If the request is genuinely ambiguous, ask a clarifying question instead of
 guessing wildly. If you have enough to make a reasonable plan, just do it.
@@ -117,7 +137,7 @@ export async function POST(req: Request) {
 
   const result = streamText({
     model: anthropic('claude-sonnet-4-6'),
-    system: SYSTEM_PROMPT,
+    system: `${SYSTEM_PROMPT}\n\n${describeItinerary(root)}`,
     messages: modelMessages,
     tools: buildTools(root),
     abortSignal: run.abortSignal,

@@ -12,6 +12,11 @@ const itemSchema = z.object({
   name: z.string().describe('Display name of the place, e.g. "Cine Belas Artes".'),
   lat: z.number().describe('Latitude in decimal degrees.'),
   lng: z.number().describe('Longitude in decimal degrees.'),
+  order: z
+    .number()
+    .describe(
+      'Sort key for day-of order; items render in ascending order. Floats are allowed: to insert between two existing items pick any value between their orders (e.g. 1.5 between 1 and 2) so you do not need to update neighbours.',
+    ),
   time: z.string().optional().describe('Optional time of day, e.g. "15:30" or "evening".'),
   notes: z.string().optional().describe('Optional short notes — what they will do there, why it was chosen.'),
 });

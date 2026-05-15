@@ -12,7 +12,12 @@ function parseItem(id: string, raw: string): ItineraryItem | null {
   try {
     // CAST: JSON.parse returns unknown; we narrow each field below before constructing the item.
     const parsed = JSON.parse(raw) as Partial<ItineraryItem>;
-    if (typeof parsed.name !== 'string' || typeof parsed.lat !== 'number' || typeof parsed.lng !== 'number') {
+    if (
+      typeof parsed.name !== 'string' ||
+      typeof parsed.lat !== 'number' ||
+      typeof parsed.lng !== 'number' ||
+      typeof parsed.order !== 'number'
+    ) {
       return null;
     }
     return {
@@ -20,6 +25,7 @@ function parseItem(id: string, raw: string): ItineraryItem | null {
       name: parsed.name,
       lat: parsed.lat,
       lng: parsed.lng,
+      order: parsed.order,
       time: typeof parsed.time === 'string' ? parsed.time : undefined,
       notes: typeof parsed.notes === 'string' ? parsed.notes : undefined,
     };
@@ -37,6 +43,7 @@ function snapshotItems(root: LiveMapPathObject<ItineraryRoot>): ItineraryItem[] 
     const item = parseItem(id, value);
     if (item) items.push(item);
   }
+  items.sort((a, b) => a.order - b.order);
   return items;
 }
 

@@ -514,9 +514,9 @@ describe('Tree', () => {
       expect(tree.getWinningInvocation('run-2')).toEqual({ invocationId: 'inv-2', serial: 'serial-002' });
     });
 
-    it('emits winning-change when the winner is set or replaced', () => {
+    it('emits invocation-winner-changed when the winner is set or replaced', () => {
       const handler = vi.fn();
-      tree.on('winning-change', handler);
+      tree.on('invocation-winner-changed', handler);
       tree.upsert('m1', { id: 'a', content: 'hi' }, userH('run-1', 'inv-1'), 'serial-005');
       expect(handler).toHaveBeenCalledWith({ runId: 'run-1', invocationId: 'inv-1', serial: 'serial-005' });
       handler.mockClear();
@@ -524,9 +524,9 @@ describe('Tree', () => {
       expect(handler).toHaveBeenCalledWith({ runId: 'run-1', invocationId: 'inv-2', serial: 'serial-007' });
     });
 
-    it('does not emit winning-change for optimistic inserts', () => {
+    it('does not emit invocation-winner-changed for optimistic inserts', () => {
       const handler = vi.fn();
-      tree.on('winning-change', handler);
+      tree.on('invocation-winner-changed', handler);
       tree.upsert('m1', { id: 'a', content: 'hi' }, userH('run-1', 'inv-1'));
       expect(handler).not.toHaveBeenCalled();
     });

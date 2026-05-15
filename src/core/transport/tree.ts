@@ -87,7 +87,7 @@ interface TreeEventsMap {
   update: undefined;
   'ably-message': Ably.InboundMessage;
   run: RunLifecycleEvent;
-  'winning-change': { runId: string; invocationId: string; serial: string };
+  'invocation-winner-changed': { runId: string; invocationId: string; serial: string };
 }
 
 // Spec: AIT-CT13
@@ -471,7 +471,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
       previous: current?.invocationId,
     });
     this._winningInvocations.set(runId, { invocationId, serial });
-    this._emitter.emit('winning-change', { runId, invocationId, serial });
+    this._emitter.emit('invocation-winner-changed', { runId, invocationId, serial });
   }
 
   delete(msgId: string): void {
@@ -526,11 +526,11 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
   on(event: 'run', handler: (event: RunLifecycleEvent) => void): () => void;
   on(
-    event: 'winning-change',
+    event: 'invocation-winner-changed',
     handler: (event: { runId: string; invocationId: string; serial: string }) => void,
   ): () => void;
   on(
-    event: 'update' | 'ably-message' | 'run' | 'winning-change',
+    event: 'update' | 'ably-message' | 'run' | 'invocation-winner-changed',
     handler:
       | (() => void)
       | ((msg: Ably.InboundMessage) => void)

@@ -602,7 +602,7 @@ export interface Tree<TMessage> {
    * replacement by a higher-serial user-message).
    */
   on(
-    event: 'winning-change',
+    event: 'invocation-winner-changed',
     handler: (event: { runId: string; invocationId: string; serial: string }) => void,
   ): () => void;
 }

@@ -181,7 +181,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
       this._tree.on('run', (event) => {
         this._onTreeRun(event);
       }),
-      this._tree.on('winning-change', () => {
+      this._tree.on('invocation-winner-changed', () => {
         this._onTreeWinningChange();
       }),
     );
@@ -189,7 +189,7 @@ export class DefaultView<TEvent, TMessage> implements View<TEvent, TMessage> {
 
   /**
    * Re-filter the visible window when a run's winning invocation changes.
-   * Bypasses the structural-version short-circuit because winning-change
+   * Bypasses the structural-version short-circuit because invocation-winner-changed
    * does not bump structuralVersion (the underlying nodes are the same;
    * only their visibility under the latest-serial rule changed).
    */

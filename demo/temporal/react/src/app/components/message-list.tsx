@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import type * as AI from 'ai';
 
 import type { RunStatus, StepStatus } from '@ably/ai-transport';
@@ -48,20 +48,28 @@ interface MessageListProps {
 }
 
 export function MessageList({ messages, streamingId, info, retryableMessageId, onRetry }: MessageListProps) {
-  const endRef = useRef<HTMLDivElement>(null);
-  const prevLastIdRef = useRef<string | undefined>(undefined);
+  const containerRef = useRef<HTMLDivElement>(null);
+  // Tracks whether the user is pinned to the bottom of the scroll viewport.
+  // Updated on user scroll events; programmatic scrolls below also land at
+  // the bottom, so the ref stays true and we keep auto-scrolling. If the
+  // user scrolls up, this flips to false and we stop fighting them.
+  const isAtBottomRef = useRef(true);
 
-  // Auto-scroll to bottom when the last message id changes.
-  useEffect(() => {
-    const lastId = messages.at(-1)?.id;
-    if (lastId !== undefined && lastId !== prevLastIdRef.current) {
-      prevLastIdRef.current = lastId;
-      endRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }
+  const handleScroll = (): void => {
+    const el = containerRef.current;
+    if (el === null) return;
+    isAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 32;
+  };
+
+  useLayoutEffect(() => {
+    if (!isAtBottomRef.current) return;
+    const el = containerRef.current;
+    if (el === null) return;
+    el.scrollTop = el.scrollHeight;
   }, [messages]);
 
   return (
-    <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
+    <div ref={containerRef} onScroll={handleScroll} className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
       {messages.length === 0 && (
         <p className="mt-20 text-center text-sm text-zinc-600">Send a message to start chatting.</p>
       )}
@@ -79,7 +87,6 @@ export function MessageList({ messages, streamingId, info, retryableMessageId, o
           />
         );
       })}
-      <div ref={endRef} />
     </div>
   );
 }

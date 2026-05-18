@@ -10,22 +10,26 @@ The protocol has two header namespaces and two message types: [transport headers
 
 Transport headers are set by the generic transport layer. They handle run correlation, stream lifecycle, cancellation, and branching. The codec layer never reads or writes these - the transport layer owns them.
 
-| Header                    | Values                                     | Purpose                                                                                                                                                           |
-| ------------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `x-ably-stream`           | `"true"` / `"false"`                       | Whether this message uses the message append lifecycle                                                                                                            |
-| `x-ably-status`           | `"streaming"` / `"finished"` / `"aborted"` | Current lifecycle state of a streamed message                                                                                                                     |
-| `x-ably-stream-id`        | string                                     | Identity of the streamed message (correlates create → appends → close)                                                                                            |
-| `x-ably-run-id`           | string                                     | [Run](glossary.md#run-id-vs-message-id) correlation ID. Every message in a run carries this                                                                       |
-| `x-ably-msg-id`           | string                                     | [Message identity](#message-identity-x-ably-msg-id). One per domain message (user or assistant). Used for [optimistic reconciliation](#optimistic-reconciliation) |
-| `x-ably-run-client-id`    | string                                     | ClientId of the user who initiated the run                                                                                                                        |
-| `x-ably-role`             | `"user"` / `"assistant"`                   | Message role                                                                                                                                                      |
-| `x-ably-parent`           | message ID                                 | Preceding message in the branch (linear parent)                                                                                                                   |
-| `x-ably-fork-of`          | message ID                                 | Message being replaced (creates a fork in the conversation tree)                                                                                                  |
-| `x-ably-cancel-run-id`    | string                                     | Cancel a specific run                                                                                                                                             |
-| `x-ably-cancel-own`       | `"true"`                                   | Cancel all runs belonging to the sender                                                                                                                           |
-| `x-ably-cancel-client-id` | string                                     | Cancel all runs belonging to a specific clientId                                                                                                                  |
-| `x-ably-cancel-all`       | `"true"`                                   | Cancel all runs on the channel                                                                                                                                    |
-| `x-ably-run-reason`       | `"complete"` / `"cancelled"` / `"error"`   | Why a run ended (on run-end events)                                                                                                                               |
+| Header                        | Values                                                   | Purpose                                                                                                                                                           |
+| ----------------------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `x-ably-stream`               | `"true"` / `"false"`                                     | Whether this message uses the message append lifecycle                                                                                                            |
+| `x-ably-status`               | `"streaming"` / `"finished"` / `"aborted"`               | Current lifecycle state of a streamed message                                                                                                                     |
+| `x-ably-stream-id`            | string                                                   | Identity of the streamed message (correlates create → appends → close)                                                                                            |
+| `x-ably-run-id`               | string                                                   | [Run](glossary.md#run-id-vs-message-id) correlation ID. Every message in a run carries this                                                                       |
+| `x-ably-msg-id`               | string                                                   | [Message identity](#message-identity-x-ably-msg-id). One per domain message (user or assistant). Used for [optimistic reconciliation](#optimistic-reconciliation) |
+| `x-ably-run-client-id`        | string                                                   | ClientId of the user who initiated the run                                                                                                                        |
+| `x-ably-role`                 | `"user"` / `"assistant"`                                 | Message role                                                                                                                                                      |
+| `x-ably-parent`               | message ID                                               | Preceding message in the branch. See [Branching headers](#branching-headers) for the rendering rules                                                              |
+| `x-ably-fork-of`              | message ID                                               | Message being replaced (creates a sibling in the conversation tree). See [Branching headers](#branching-headers)                                                  |
+| `x-ably-invocation-id`        | string                                                   | Per-invocation correlator. Stamped on user-prompt messages and echoed on `run-start` / `run-end` so the client can match lifecycle events to its pending send     |
+| `x-ably-prompt-id`            | string                                                   | Per-prompt identifier. Stamped on each user-prompt message published from the client. The invocation body lists the IDs the agent must look up                    |
+| `x-ably-run-continue`         | `"true"`                                                 | Marks a `run-start` as a continuation of an already-started run rather than the first start of that `runId`                                                       |
+| `x-ably-cancel-run-id`        | string                                                   | Cancel a specific run                                                                                                                                             |
+| `x-ably-cancel-own`           | `"true"`                                                 | Cancel all runs belonging to the sender                                                                                                                           |
+| `x-ably-cancel-client-id`     | string                                                   | Cancel all runs belonging to a specific clientId                                                                                                                  |
+| `x-ably-cancel-all`           | `"true"`                                                 | Cancel all runs on the channel                                                                                                                                    |
+| `x-ably-cancel-invocation-id` | string                                                   | Cancel the run bound to a specific invocation                                                                                                                     |
+| `x-ably-run-reason`           | `"complete"` / `"cancelled"` / `"error"` / `"suspended"` | Why a run ended (on run-end events). `suspended` signals the run is paused awaiting a continuation invocation (e.g. tool approval)                                |
 
 ### Domain headers (`x-domain-*`)
 
@@ -47,13 +51,13 @@ The `x-domain-` prefix is defined in `constants.ts` as `DOMAIN_HEADER_PREFIX`. C
 
 Lifecycle events are published by the transport layer to coordinate run state. They use Ably message `name` as the event type and carry metadata in headers. They have no `data` payload.
 
-| Event name         | Direction        | Headers                                                      | Purpose                                         |
-| ------------------ | ---------------- | ------------------------------------------------------------ | ----------------------------------------------- |
-| `x-ably-run-start` | Server → Channel | `x-ably-run-id`, `x-ably-run-client-id`                      | Signal that a run has started                   |
-| `x-ably-run-end`   | Server → Channel | `x-ably-run-id`, `x-ably-run-client-id`, `x-ably-run-reason` | Signal that a run has ended                     |
-| `x-ably-cancel`    | Client → Channel | Cancel filter headers                                        | Request cancellation of one or more runs        |
-| `x-ably-abort`     | Server → Channel | -                                                            | Transport-level abort signal (stream cancelled) |
-| `x-ably-error`     | Server → Channel | -                                                            | Transport-level error signal                    |
+| Event name         | Direction        | Required headers                                             | Optional headers                                                                 | Purpose                                         |
+| ------------------ | ---------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `x-ably-run-start` | Server → Channel | `x-ably-run-id`, `x-ably-run-client-id`                      | `x-ably-parent`, `x-ably-fork-of`, `x-ably-invocation-id`, `x-ably-run-continue` | Signal that a run has started                   |
+| `x-ably-run-end`   | Server → Channel | `x-ably-run-id`, `x-ably-run-client-id`, `x-ably-run-reason` | `x-ably-invocation-id`                                                           | Signal that a run has ended                     |
+| `x-ably-cancel`    | Client → Channel | one of the cancel filter headers                             | -                                                                                | Request cancellation of one or more runs        |
+| `x-ably-abort`     | Server → Channel | `x-ably-run-id`                                              | -                                                                                | Transport-level abort signal (stream cancelled) |
+| `x-ably-error`     | Server → Channel | -                                                            | `x-ably-run-id`, `x-ably-invocation-id`                                          | Transport-level error signal                    |
 
 ## Content messages
 
@@ -199,6 +203,19 @@ Branching uses two headers:
 When a user calls `regenerate(msgId)`, the new assistant message carries `x-ably-fork-of: msgId`. When a user calls `edit(msgId, newMessages)`, the new user message carries `x-ably-fork-of: msgId`. The [conversation tree](conversation-tree.md#sibling-groups-and-fork-chains) uses these to build sibling groups - alternative responses at the same point in the conversation.
 
 In linear sequences (no branching), `x-ably-parent` establishes ordering. Serial-based ordering handles the common case; parent headers are only structurally meaningful at branch points.
+
+### How `x-ably-parent` is resolved
+
+Each wire message can carry `x-ably-parent`. The value comes from different sources depending on which side of the protocol produces the message:
+
+| Wire message            | Who sets it                   | Source of the parent value                                                                                                                                                                                                                                         |
+| ----------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| User-prompt message     | Client                        | `autoParent` - the last visible msgId before the new prompt in the sender's view, or `sendOptions.parent` when the caller overrides                                                                                                                                |
+| `run-start`             | Agent (`RunManager.startRun`) | `invocation.parent` from the POST body (= the client's `autoParent`). On continuations the chat-transport adapter sets this to the suspended assistant's msgId, so `run-start` carries a "resume anchor" rather than a tree-shaping parent                         |
+| Assistant message       | Agent (`Run.pipe`)            | Priority: explicit `streamOpts.parent` → the most recent user-prompt msgId in `run.view.messages` (populated by the channel-rewind prompt lookup) → `runParent` (= `invocation.parent`). Keeps user → assistant chains explicit without the route having to opt in |
+| Continuation amendments | Codec / `Run.pipe`            | Tool outputs and approval responses fold back onto the original assistant message via `x-ably-msg-id` routing - they don't reshape parent edges                                                                                                                    |
+
+Agent routes do not normally need to pass `{ parent: ... }` to `Run.pipe`. The default chains the assistant under the user prompt that triggered it, which is what the conversation tree needs to keep edit-then-regenerate sibling resolution correct - see [What renders](conversation-tree.md#what-renders).
 
 ## Header persistence on appends
 

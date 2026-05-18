@@ -133,4 +133,78 @@ view.select(m2, 0)
 view.flattenNodes() → ["What is 2+2?", "4"]
 ```
 
-See [Wire protocol](wire-protocol.md) for the branching headers (`x-ably-parent`, `x-ably-fork-of`). See [History hydration](history.md) for how the tree is populated from channel history.
+## What renders
+
+The visible conversation is whatever `flattenNodes()` returns. Three rules combine to produce it:
+
+1. **Parent reachability** - a node is included only if its `parentId` is already on the current path. Root nodes (no parent) are always reachable.
+2. **Sibling selection** - when multiple nodes share a parent and are linked by a `forkOf` chain, exactly one is rendered. The View's selection (default: latest fork by serial) picks which.
+3. **Serial order** - nodes that pass both checks are emitted in serial-ascending order. Optimistic null-serial nodes sort after all serial-bearing nodes.
+
+Two practical patterns follow from these rules.
+
+### Linear conversation
+
+When every assistant message is parented to the user prompt that triggered it, the rendered path is a clean chain:
+
+```
+m1 (user "hi")
+ └─ m2 (assistant "hello",         parent=m1)
+     └─ m3 (user "what's weather", parent=m2)
+         └─ m4 (assistant "sunny", parent=m3)
+
+view.flattenNodes() → [m1, m2, m3, m4]
+```
+
+This is the shape the assistant-parent default in [`Run.pipe`](wire-protocol.md#how-x-ably-parent-is-resolved) produces: assistant messages parent under the user prompt the agent just consumed.
+
+### Edit-then-regenerate
+
+When the user edits a prompt, the edit publishes with the **same parent** as the original and `forkOf` pointing to it. A fresh run produces a new assistant message threaded under the edit. Both originals stay in the tree; selection picks which branch is visible.
+
+```
+m1 (user "hi")
+ └─ m2 (assistant "hello",         parent=m1)
+     ├─ m3  (user "weather",       parent=m2)
+     │   └─ m4 (assistant "sunny", parent=m3)
+     └─ m3' (user "forecast",      parent=m2, forkOf=m3)
+         └─ m4' (assistant "5-day…", parent=m3')
+
+Sibling group at m2: [m3, m3']      selection default: m3'
+Sibling group at m3': []            (m4 is not a sibling of m4'; they
+                                     have different parents)
+
+view.flattenNodes() (default selection)        → [m1, m2, m3', m4']
+view.select(m2, 0) (pick the original m3)
+view.flattenNodes()                            → [m1, m2, m3,  m4]
+```
+
+m4 and m4' are **not** in a sibling group - they share no parent and there's no `forkOf` link between them. They sit on separate branches, gated by parent reachability:
+
+- Select m3 → m4's parent (m3) is in the path → m4 renders; m4''s parent (m3') is not in the path → m4' is hidden.
+- Select m3' → m4''s parent (m3') is in the path → m4' renders; m4 is hidden.
+
+This is why threading assistants under their user prompt (not under the run anchor) matters - it gives `flattenNodes()` the reachability edges it needs to swap branches cleanly when selection changes.
+
+### What goes wrong if parents are flat
+
+If every assistant in the example above were parented to m2 (the run anchor) instead of its user prompt, the rendered output for either selection would include both m4 and m4':
+
+```
+m1
+ └─ m2
+     ├─ m3   (user "weather",       parent=m2)
+     ├─ m3'  (user "forecast",      parent=m2, forkOf=m3)
+     ├─ m4   (assistant "sunny",    parent=m2)    ← flat parent
+     └─ m4'  (assistant "5-day…",   parent=m2)    ← flat parent
+
+view.flattenNodes() (m3' selected) → [m1, m2, m3', m4, m4']
+                                              ↑    ↑    ↑
+                                              ok   old  new
+```
+
+m4 and m4' are still not a sibling group (no `forkOf` between them), so selection doesn't suppress one. Both pass parent reachability because their parent m2 is on the path regardless of which user-prompt sibling is selected. The visible conversation shows the old assistant reply for a prompt the user just edited away.
+
+The assistant-parent default in `Run.pipe` (see [Branching headers](wire-protocol.md#how-x-ably-parent-is-resolved)) is what keeps the first shape happening automatically.
+
+See [Wire protocol: branching headers](wire-protocol.md#branching-headers) for header semantics and where each parent value comes from. See [History hydration](history.md) for how the tree is populated from channel history.

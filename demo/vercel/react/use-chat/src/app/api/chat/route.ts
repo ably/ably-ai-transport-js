@@ -13,10 +13,12 @@
  * - Server-executed gated on approval (getWeatherForecast): suspends at
  *   `approval-requested`. The user approves → the client publishes an
  *   `ait-tool-approval` TEvent on the channel → continuation POST →
- *   `run.loadProjection()` reflects the approval; `disableApprovalsForApproved`
- *   stops the multi-step loop pausing on the same tool again; `run.pipe`'s
- *   internal `resolveToolTarget` redirects the resulting tool-output wire
- *   message back to the original assistant message via `HEADER_MSG_ID`.
+ *   `run.loadProjection()` reflects the approval. The tool's
+ *   `needsApproval` function returns `false` once the matching
+ *   `toolCallId` has an `approval-responded` part in the messages, so
+ *   `streamText` executes it without re-pausing. `run.pipe`'s internal
+ *   `resolveToolTarget` redirects the resulting tool-output wire message
+ *   back to the original assistant message via `HEADER_MSG_ID`.
  */
 
 import { after } from 'next/server';
@@ -24,7 +26,7 @@ import { streamText, convertToModelMessages } from 'ai';
 import type { DynamicToolUIPart, UIMessage } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
-import { createAgentSession, disableApprovalsForApproved, UIMessageCodec } from '@ably/ai-transport/vercel';
+import { createAgentSession, UIMessageCodec } from '@ably/ai-transport/vercel';
 import type { InvocationData } from '@ably/ai-transport';
 import { Invocation } from '@ably/ai-transport';
 import { tools } from './tools';
@@ -50,13 +52,20 @@ export async function POST(req: Request) {
 
   await run.start();
 
-  // Continuation: no new user prompt, but the history carries assistant
-  // messages with unresolved tool parts. Fold the run's channel events
-  // through the codec and use the projection's reduced messages as the
-  // resumed history — client tool outputs and approval responses are
-  // already merged onto their original dynamic-tool parts by the reducer.
   let resolvedMessages: UIMessage[];
+
+  // Continuation under an existing run, with history that still carries
+  // assistant messages whose tool parts haven't been resolved (client tool
+  // output / approval response). Fold the run's channel events through the
+  // codec and overlay the projection's reduced messages on the history —
+  // client tool outputs and approval responses are merged onto their
+  // original dynamic-tool parts by the reducer.
+  // TODO: drop this branch when session state loads from the channel rather than the invocation body.
   if (invocation.isContinuation && invocation.history.some(({ message }) => hasUnresolvedToolPart(message))) {
+    // TODO: when all session state is loaded from the channel, the run.loadProjection() call won't be needed.
+    // Right now we are in a middle ground where the _run state_ is loaded from the channel; so the existing run
+    // parts on continuation, and the tool-call approvals for that run are on the channel. But the rest of the
+    // converstaion history is still loaded from the invocation body.
     const projection = await run.loadProjection();
     const projectedById = new Map(UIMessageCodec.getMessages(projection).map((m) => [m.id, m]));
     resolvedMessages = invocation.history.map((node) => projectedById.get(node.message.id) ?? node.message);
@@ -64,19 +73,16 @@ export async function POST(req: Request) {
     resolvedMessages = invocation.history.map((h) => h.message);
   }
 
+  // TODO: when we load session state from the channel. we will only use run.view.messages.
+  // In the mean time, run.view.messages contains _this run's state_, and resolvedMessages are coming from the invocation
   const newNodes = run.view.messages;
   const allMessages = [...resolvedMessages, ...newNodes.map((m) => m.message)];
-
-  // Prevent the multi-step loop from re-pausing on a tool the user just
-  // approved. Reads the approval state off the resolved history (which
-  // already reflects the projection).
-  const effectiveTools = disableApprovalsForApproved(allMessages, tools);
 
   const result = streamText({
     model: anthropic('claude-sonnet-4-6'),
     system: `You are a helpful assistant. When the user asks about weather, use the getWeather tool. If they don't specify a location, call getLocation first to get their coordinates, then call getWeather with a description of that location. When the user asks about a weather forecast or upcoming weather, use getWeatherForecast.`,
     messages: await convertToModelMessages(allMessages),
-    tools: effectiveTools,
+    tools,
     abortSignal: run.abortSignal,
   });
 

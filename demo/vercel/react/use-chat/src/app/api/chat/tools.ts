@@ -4,14 +4,24 @@
  * - getWeather: server-executed, returns mock weather data
  * - getLocation: client-executed, no execute function — the client
  *   runs browser geolocation and sends the result back via view.update()
- * - getWeatherForecast: server-executed but gated on user approval
- *   (needsApproval: true). The client sees an approval-requested tool
- *   part; after addToolApprovalResponse, the server runs execute() and
- *   the result is stitched back onto the original assistant message.
+ * - getWeatherForecast: server-executed but gated on user approval.
+ *   `needsApproval` is a function that returns `false` once the matching
+ *   `toolCallId` has an `approval-responded` part in the message stream
+ *   — per-call approval, not per-tool-name.
  */
 
-import type { Tool } from 'ai';
+import type { DynamicToolUIPart, Tool, UIMessage } from 'ai';
 import { z } from 'zod';
+
+const isApprovedToolCall = (toolCallId: string, messages: readonly UIMessage[]): boolean =>
+  messages.some((m) =>
+    m.parts.some(
+      (p) =>
+        p.type === 'dynamic-tool' &&
+        (p as DynamicToolUIPart).toolCallId === toolCallId &&
+        (p as DynamicToolUIPart).state === 'approval-responded',
+    ),
+  );
 
 const weatherInput = z.object({
   location: z.string().describe('The city and state or country, e.g. "San Francisco, CA"'),
@@ -55,7 +65,7 @@ export const tools: Record<string, Tool> = {
   getWeatherForecast: {
     description:
       'Get a 5-day weather forecast for a location. Requires user approval before executing. Use when the user asks about upcoming weather or a forecast.',
-    needsApproval: true as const,
+    needsApproval: (_input, { toolCallId, messages }) => !isApprovedToolCall(toolCallId, messages),
     inputSchema: z.object({
       location: z.string().describe('The city and state or country, e.g. "London, UK"'),
     }),

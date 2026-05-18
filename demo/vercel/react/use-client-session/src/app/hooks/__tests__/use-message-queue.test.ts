@@ -19,6 +19,7 @@ const createMockSend = () =>
       invocationId: 'inv-1',
       cancel: vi.fn(),
       optimisticMsgIds: [],
+      promptIds: [],
     }),
   );
 

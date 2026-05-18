@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import type * as AI from 'ai';
 import { getToolName, isToolUIPart } from 'ai';
 
@@ -107,19 +108,39 @@ function SubagentBlock({ part }: { part: AI.ToolUIPart | AI.DynamicToolUIPart })
 
   const link = ctx?.links.byToolCallId.get(part.toolCallId);
   const subagentMessages = link === undefined ? undefined : ctx?.messagesByRun.get(link.runId);
+  const messageCount = subagentMessages?.length ?? 0;
+  const status = link === undefined ? 'spawning…' : part.state === 'output-available' ? 'returned' : 'running';
+  const hasContent = messageCount > 0 && ctx !== undefined;
+
+  // Default expanded so the user can watch the subagent's work as it
+  // streams in; they can collapse a finished run to keep the main thread
+  // tidy. Per-block local state — each subagent in a fan-out toggles
+  // independently.
+  const [expanded, setExpanded] = useState(true);
 
   return (
     <div className="mt-2 rounded-md border border-violet-900/60 bg-violet-950/30 px-2 py-1.5 text-xs">
-      <div className="flex items-center gap-2 font-mono">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        disabled={!hasContent}
+        aria-expanded={expanded}
+        className="flex w-full items-center gap-2 font-mono text-left disabled:cursor-default"
+      >
+        <span
+          aria-hidden="true"
+          className={`inline-block w-2 text-violet-300/70 transition-transform ${expanded ? 'rotate-90' : ''} ${hasContent ? '' : 'opacity-30'}`}
+        >
+          ▶
+        </span>
         <span className="text-zinc-400">subagent</span>
         <span className="text-zinc-200">{description}</span>
-        <span className="ml-auto text-[10px] uppercase tracking-wide text-violet-300/80">
-          {link === undefined ? 'spawning…' : part.state === 'output-available' ? 'returned' : 'running'}
-        </span>
-      </div>
-      {subagentMessages !== undefined && subagentMessages.length > 0 && ctx !== undefined && (
+        {messageCount > 0 && <span className="text-[10px] text-violet-300/60">({messageCount})</span>}
+        <span className="ml-auto text-[10px] uppercase tracking-wide text-violet-300/80">{status}</span>
+      </button>
+      {expanded && hasContent && (
         <div className="mt-2 space-y-2 border-l border-violet-900/50 pl-3">
-          {subagentMessages.map((m) => {
+          {subagentMessages?.map((m) => {
             const meta = ctx.info.get(m.id);
             return (
               <MessageBubble

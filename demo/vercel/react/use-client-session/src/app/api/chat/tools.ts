@@ -10,18 +10,34 @@
  *   — per-call approval, not per-tool-name.
  */
 
-import type { DynamicToolUIPart, Tool, UIMessage } from 'ai';
+import type { ModelMessage, Tool } from 'ai';
 import { z } from 'zod';
 
-const isApprovedToolCall = (toolCallId: string, messages: readonly UIMessage[]): boolean =>
-  messages.some((m) =>
-    m.parts.some(
-      (p) =>
-        p.type === 'dynamic-tool' &&
-        (p as DynamicToolUIPart).toolCallId === toolCallId &&
-        (p as DynamicToolUIPart).state === 'approval-responded',
-    ),
-  );
+// `streamText` calls `needsApproval` with the model-message list it's
+// about to send to the LLM — `ModelMessage[]`, not `UIMessage[]`. Tool
+// approvals show up there as a `tool-approval-request` part on an
+// assistant message paired with a `tool-approval-response` part on a
+// later tool message; the pair is correlated by `approvalId`, with the
+// `toolCallId` only present on the request side.
+const isApprovedToolCall = (toolCallId: string, messages: readonly ModelMessage[]): boolean => {
+  const approvalIdToToolCallId = new Map<string, string>();
+  for (const message of messages) {
+    if (message.role !== 'assistant' || typeof message.content === 'string') continue;
+    for (const part of message.content) {
+      if (part.type === 'tool-approval-request') {
+        approvalIdToToolCallId.set(part.approvalId, part.toolCallId);
+      }
+    }
+  }
+  for (const message of messages) {
+    if (message.role !== 'tool') continue;
+    for (const part of message.content) {
+      if (part.type !== 'tool-approval-response' || !part.approved) continue;
+      if (approvalIdToToolCallId.get(part.approvalId) === toolCallId) return true;
+    }
+  }
+  return false;
+};
 
 const weatherInput = z.object({
   location: z.string().describe('The city and state or country, e.g. "San Francisco, CA"'),

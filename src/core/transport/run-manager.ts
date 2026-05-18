@@ -15,6 +15,7 @@ import {
   HEADER_INVOCATION_ID,
   HEADER_PARENT,
   HEADER_RUN_CLIENT_ID,
+  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
 } from '../../constants.js';
@@ -32,7 +33,7 @@ export interface RunManager {
     runId: string,
     clientId?: string,
     controller?: AbortController,
-    metadata?: { parent?: string; forkOf?: string; invocationId?: string },
+    metadata?: { parent?: string; forkOf?: string; invocationId?: string; continuation?: boolean },
   ): Promise<AbortSignal>;
   /** End a run. Publishes run-end on the channel. Cleans up internal state. */
   endRun(runId: string, reason: RunEndReason, invocationId?: string): Promise<void>;
@@ -75,7 +76,7 @@ class DefaultRunManager implements RunManager {
     runId: string,
     clientId?: string,
     externalController?: AbortController,
-    metadata?: { parent?: string; forkOf?: string; invocationId?: string },
+    metadata?: { parent?: string; forkOf?: string; invocationId?: string; continuation?: boolean },
   ): Promise<AbortSignal> {
     this._logger?.trace('DefaultRunManager.startRun();', { runId, clientId });
 
@@ -99,6 +100,9 @@ class DefaultRunManager implements RunManager {
     // and send() hangs for the full runStartDeadlineMs.
     if (metadata?.invocationId !== undefined) {
       headers[HEADER_INVOCATION_ID] = metadata.invocationId;
+    }
+    if (metadata?.continuation) {
+      headers[HEADER_RUN_CONTINUE] = 'true';
     }
 
     await this._channel.publish({

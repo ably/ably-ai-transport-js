@@ -80,6 +80,16 @@ export const HEADER_FORK_OF = 'x-ably-fork-of';
 /** Header: reason a run ended (on x-ably-run-end messages). */
 export const HEADER_RUN_REASON = 'x-ably-run-reason';
 
+/**
+ * Header: marks a `run-start` event as a continuation of an already-started
+ * run rather than the first start. Value: the literal string `'true'`.
+ * Continuation runs share the original run's id but represent a subsequent
+ * invocation (e.g. tool-result follow-up). Consumers can use this to skip
+ * re-threading the run into the tree or to surface a distinct lifecycle
+ * signal.
+ */
+export const HEADER_RUN_CONTINUE = 'x-ably-run-continue';
+
 // ---------------------------------------------------------------------------
 // Message / event names
 // ---------------------------------------------------------------------------

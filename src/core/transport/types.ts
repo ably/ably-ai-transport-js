@@ -471,6 +471,13 @@ export type RunLifecycleEvent =
       parent?: string;
       /** The msg-id being forked/replaced, if this is a regeneration or edit. */
       forkOf?: string;
+      /**
+       * True when the agent published this `run-start` as a continuation
+       * of an already-started run (e.g. a tool-result follow-up invocation
+       * under the same runId). Surfaced from the `x-ably-run-continue`
+       * wire header. Absent for the first start of a run.
+       */
+      isContinuation?: boolean;
     }
   | { type: 'x-ably-run-end'; runId: string; clientId: string; reason: RunEndReason };
 

@@ -49,7 +49,7 @@ export async function POST(req: Request) {
   // already reflects any client-published tool outputs / approval
   // responses, then use its UIMessages as the resumed history.
   let resolvedMessages: UIMessage[];
-  if (invocation.userMessageCount === 0 && invocation.history.some(({ message }) => hasUnresolvedToolPart(message))) {
+  if (invocation.isContinuation && invocation.history.some(({ message }) => hasUnresolvedToolPart(message))) {
     const projection = await run.loadProjection();
     const projectedById = new Map(UIMessageCodec.getMessages(projection).map((m) => [m.id, m]));
     resolvedMessages = invocation.history.map((node) => projectedById.get(node.message.id) ?? node.message);

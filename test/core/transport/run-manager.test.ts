@@ -5,6 +5,7 @@ import {
   EVENT_RUN_END,
   EVENT_RUN_START,
   HEADER_RUN_CLIENT_ID,
+  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
 } from '../../../src/constants.js';
@@ -81,6 +82,24 @@ describe('RunManager', () => {
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
       const headers = headersOf(channel.publishCalls.at(0)!);
       expect(headers[HEADER_RUN_CLIENT_ID]).toBe('');
+    });
+
+    it('stamps x-ably-run-continue:true when continuation metadata is set', async () => {
+      await manager.startRun('run-1', 'user-a', undefined, { continuation: true });
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
+      const headers = headersOf(channel.publishCalls.at(0)!);
+      expect(headers[HEADER_RUN_CONTINUE]).toBe('true');
+    });
+
+    it('omits x-ably-run-continue when continuation is false or unset', async () => {
+      await manager.startRun('run-1', 'user-a', undefined, { continuation: false });
+      await manager.startRun('run-2', 'user-a');
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
+      expect(headersOf(channel.publishCalls.at(0)!)[HEADER_RUN_CONTINUE]).toBeUndefined();
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
+      expect(headersOf(channel.publishCalls.at(1)!)[HEADER_RUN_CONTINUE]).toBeUndefined();
     });
   });
 

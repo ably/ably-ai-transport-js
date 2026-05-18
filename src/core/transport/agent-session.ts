@@ -928,6 +928,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
             parent: runParent,
             forkOf: runForkOf,
             invocationId,
+            continuation: invocation.isContinuation,
           });
         } catch (error) {
           const errInfo = new Ably.ErrorInfo(

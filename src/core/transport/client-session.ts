@@ -29,6 +29,7 @@ import {
   HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
   HEADER_PARENT,
+  HEADER_PROMPT_ID,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
@@ -831,6 +832,8 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
       event: TEvent;
       kind: 'amend';
       targetMsgId: string;
+      /** Allocated below before the publish loop runs. */
+      state?: { promptId: string; headers: Record<string, string> };
     }
     type ClassifiedItem = UserMessageItem | AmendItem;
     const classified: ClassifiedItem[] = [];
@@ -1010,6 +1013,27 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
       item.state = { msgId, headers };
     }
 
+    // Amend events also get a prompt-id stamped on the wire and listed
+    // in the invocation body. The agent's prompt-lookup waits for every
+    // promised event (user-message AND amend) on the channel before
+    // entering its LLM-call phase — without this, the agent races the
+    // amend's local relay and loadProjection's history fetch can miss
+    // the just-published event.
+    for (const item of classified) {
+      if (item.kind !== 'amend') continue;
+      const promptId = crypto.randomUUID();
+      promptIds.push(promptId);
+      const amendHeaders: Record<string, string> = {
+        [HEADER_RUN_ID]: runId,
+        [HEADER_INVOCATION_ID]: invocationId,
+        [HEADER_PROMPT_ID]: promptId,
+      };
+      if (this._clientId !== undefined) {
+        amendHeaders[HEADER_RUN_CLIENT_ID] = this._clientId;
+      }
+      item.state = { promptId, headers: amendHeaders };
+    }
+
     this._runMsgIds.set(runId, msgIds);
 
     // Stream setup. Fresh send opens a new stream; continuation rebinds the
@@ -1085,19 +1109,21 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
             });
           } else {
             // Amend event: the codec already knows the target via the event's
-            // `targetMsgId`. We supply only the transport-level headers that
-            // bind the amend to this send's run+invocation; the codec stamps
-            // `HEADER_MSG_ID = targetMsgId` so the reducer routes it to the
-            // original message.
-            const amendHeaders: Record<string, string> = {
-              [HEADER_RUN_ID]: runId,
-              [HEADER_INVOCATION_ID]: invocationId,
-            };
-            if (this._clientId !== undefined) {
-              amendHeaders[HEADER_RUN_CLIENT_ID] = this._clientId;
+            // `targetMsgId`. We supply transport-level headers (run+invocation
+            // + prompt-id) so the agent can correlate the publish with the
+            // continuation invocation and wait for it via the prompt lookup.
+            // The codec stamps `HEADER_MSG_ID = targetMsgId` itself so the
+            // reducer routes the amend onto the original message.
+            if (!item.state) {
+              // Defensive: every amend item gains a state above.
+              throw new Ably.ErrorInfo(
+                'unable to send; amend item missing prompt state',
+                ErrorCode.InvalidArgument,
+                500,
+              );
             }
             await this._encoder.publish(item.event, {
-              extras: { headers: amendHeaders },
+              extras: { headers: item.state.headers },
               ...(this._clientId !== undefined && { clientId: this._clientId }),
             });
           }

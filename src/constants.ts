@@ -36,10 +36,14 @@ export const HEADER_RUN_ID = 'x-ably-run-id';
 export const HEADER_INVOCATION_ID = 'x-ably-invocation-id';
 
 /**
- * Header: per-prompt identifier. Stamped by the client on each
- * user-prompt message it publishes on the channel. Distinct from
- * `x-ably-msg-id` — survives edits/retries that reuse the same msg-id.
- * The invocation body lists the `promptId`(s) the agent should look up.
+ * Header: per-event identifier stamped by the client on every
+ * client-published event in a send — user-message events AND amend
+ * events (tool-approval responses, client tool outputs). Distinct from
+ * `x-ably-msg-id` so it survives edits/retries that reuse the same
+ * msg-id, and so amend events that target an existing message can
+ * carry their own per-send identity. The invocation body lists every
+ * promptId the agent must observe on the channel before starting LLM
+ * work — see `Run.start()`'s prompt lookup.
  */
 export const HEADER_PROMPT_ID = 'x-ably-prompt-id';
 

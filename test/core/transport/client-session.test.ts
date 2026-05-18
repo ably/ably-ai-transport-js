@@ -764,7 +764,7 @@ describe('ClientSession', () => {
       expect(call?.opts?.extras?.headers?.[HEADER_INVOCATION_ID]).not.toBe(initial.invocationId);
     });
 
-    it('does not optimistic-insert and posts empty promptIds', async () => {
+    it('does not optimistic-insert and posts one promptId per amend event', async () => {
       const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
       const beforeNodes = fix.session.view.flattenNodes().length;
 
@@ -775,9 +775,29 @@ describe('ClientSession', () => {
 
       await fix.fetch.waitForCalls(2);
       const body = fix.fetch.body(1);
-      expect(body.promptIds).toEqual([]);
+      // Every client-published event in an invocation carries a promptId
+      // — the agent waits for all of them on the channel before starting
+      // LLM work. Amend events use the same mechanism as user-messages.
+      expect(Array.isArray(body.promptIds)).toBe(true);
+      expect((body.promptIds as string[]).length).toBe(1);
       expect(body.runId).toBe(cont.runId);
       expect(body.invocationId).toBe(cont.invocationId);
+    });
+
+    it('stamps the matching x-ably-prompt-id on each amend publish', async () => {
+      const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
+      const before = fix.codec.lastEncoder()?.publishCalls.length ?? 0;
+
+      await fix.session.view.sendEvent([{ type: 'amend', text: 'msg-target' }], { runId: initial.runId });
+
+      const enc = fix.codec.lastEncoder();
+      const amendPublish = enc?.publishCalls.slice(before).find((c) => c.event.type === 'amend');
+      const stampedId = amendPublish?.opts?.extras?.headers?.['x-ably-prompt-id'];
+      expect(stampedId).toBeDefined();
+
+      await fix.fetch.waitForCalls(2);
+      const body = fix.fetch.body(1);
+      expect(body.promptIds).toEqual([stampedId]);
     });
 
     it('posts isContinuation=true on continuation sends and omits it on fresh sends', async () => {

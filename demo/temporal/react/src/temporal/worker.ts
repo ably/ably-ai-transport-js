@@ -12,7 +12,7 @@
 
 import { NativeConnection, Worker } from '@temporalio/worker';
 
-import { getSession } from '../lib/agent-session';
+import { getClientSession, getSession } from '../lib/agent-session';
 import * as activities from './activities';
 
 const TASK_QUEUE = process.env.TEMPORAL_TASK_QUEUE ?? 'ai-transport-chat';
@@ -27,9 +27,12 @@ async function run(): Promise<void> {
   const namespace = process.env.NEXT_PUBLIC_ABLY_NAMESPACE;
   const sessionName = resolveSessionName(baseName, namespace);
 
-  await getSession(sessionName);
+  // Pre-warm both sessions in parallel so the worker can act as agent
+  // (subscribe / publish step output) and as client (publish subagent
+  // user messages) without paying a connect cost on the hot path.
+  await Promise.all([getSession(sessionName), getClientSession(sessionName)]);
   // eslint-disable-next-line no-console
-  console.log(`[worker] agent session "${sessionName}" pre-warmed`);
+  console.log(`[worker] agent and client sessions "${sessionName}" pre-warmed`);
 
   const connection = await NativeConnection.connect({ address: TEMPORAL_ADDRESS });
   try {

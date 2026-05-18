@@ -1,5 +1,5 @@
 /**
- * Module-scope cache of {@link BashToolkit}s, keyed by session name.
+ * Module-scope cache of {@link BashToolkit}s, keyed by run id.
  *
  * Each toolkit wraps a `just-bash` instance whose filesystem mounts a
  * `ReadWriteFs` at `/workspace` over a real directory on disk, so any
@@ -7,9 +7,12 @@
  * the shell touches (e.g. `/tmp`) fall through to `MountableFs`'s default
  * in-memory base and never escape onto the host.
  *
- * The cache is keyed by session so different sessions can in principle
- * be backed by different workspaces — for now they all share the same
- * on-disk root.
+ * The cache is keyed by run so each run gets its own shell (its own cwd,
+ * its own in-flight command state, its own ephemeral fs branches). This
+ * matters when a parent agent spawns parallel subagents — sharing one
+ * `Bash` would serialise their concurrent `exec` calls and conflate
+ * their cwd state. They all still share the on-disk WORKSPACE_ROOT, so
+ * file contents are visible across agents.
  */
 
 import * as fsp from 'node:fs/promises';
@@ -53,13 +56,24 @@ Stay inside ${MOUNT_POINT}; nothing useful lives outside of it.`,
 };
 
 /**
- * Resolve the cached {@link BashToolkit} for `sessionName`, building it
- * on first call.
+ * Resolve the cached {@link BashToolkit} for `runId`, building it on
+ * first call. Subsequent calls within the same run (across steps and
+ * retries) return the same toolkit so the shell's cwd / env / fs state
+ * survives between iterations.
  */
-export const getBashToolkit = (sessionName: string): Promise<BashToolkit> => {
-  let toolkit = toolkits.get(sessionName);
+export const getBashToolkit = (runId: string): Promise<BashToolkit> => {
+  let toolkit = toolkits.get(runId);
   if (toolkit) return toolkit;
   toolkit = createToolkit();
-  toolkits.set(sessionName, toolkit);
+  toolkits.set(runId, toolkit);
   return toolkit;
+};
+
+/**
+ * Drop the cached {@link BashToolkit} for `runId`. Called when a run
+ * ends so the toolkit (and its in-process state) is released — bounded
+ * memory across long-lived workers.
+ */
+export const dropBashToolkit = (runId: string): void => {
+  toolkits.delete(runId);
 };

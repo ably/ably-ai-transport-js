@@ -23,5 +23,5 @@
     }
   },
   "include": ["**/*.ts", "**/*.tsx", "next-env.d.ts", ".next/types/**/*.ts", ".next/dev/types/**/*.ts"],
-  "exclude": ["node_modules", "src/temporal/worker.ts"]
+  "exclude": ["node_modules", "src/temporal/worker.ts", "workspace"]
 }

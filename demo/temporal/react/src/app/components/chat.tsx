@@ -8,9 +8,11 @@ import type { UIMessageCodec } from '@ably/ai-transport/vercel';
 
 import type { ChatHandle } from '../providers';
 import { userMessage } from '../helpers';
+import { useSubagentLinks } from '../hooks/use-subagent-links';
 import { Header } from './header';
 import { MessageList, type MessageInfo } from './message-list';
 import { InputBar } from './input-bar';
+import { SubagentRenderingContext, type SubagentRendering } from './subagent-context';
 
 interface ChatProps {
   handle: ChatHandle;
@@ -67,24 +69,49 @@ const projectMessageInfo = (view: ChatHandle['view']): Map<string, MessageInfo> 
 };
 
 export function Chat({ handle, clientId }: ChatProps) {
-  const { view } = handle;
+  const { ably, session, view } = handle;
   const [messages, setMessages] = useState<readonly AI.UIMessage[]>([]);
   const [info, setInfo] = useState<ReadonlyMap<string, MessageInfo>>(new Map());
   const [runs, setRuns] = useState<readonly Run[]>([]);
+  // Messages grouped by runId so nested subagent blocks can locate their
+  // own messages without re-scanning the whole view. Computed alongside
+  // the flat list to share the same view subscription.
+  const [messagesByRun, setMessagesByRun] = useState<ReadonlyMap<string, readonly AI.UIMessage[]>>(new Map());
+  // UIMessage.id -> runId, populated alongside the flat list so the
+  // top-level / subagent split is driven off the same authoritative
+  // source as the bubble's render data (rather than the projected info
+  // map, which may lag for one render frame on new messages). Keyed by
+  // `node.message.id` (the UIMessage's domain id, which is what the
+  // bubble renders against) — NOT `node.id` (the SDK wire-routing id
+  // from `x-ably-msg-id`), which can differ.
+  const [messageRunIds, setMessageRunIds] = useState<ReadonlyMap<string, string>>(new Map());
 
   useEffect(() => {
     const update = (): void => {
       const next: AI.UIMessage[] = [];
+      const grouped = new Map<string, AI.UIMessage[]>();
+      const byMsg = new Map<string, string>();
       for (const node of view.messages) {
         next.push(node.message);
+        byMsg.set(node.message.id, node.runId);
+        let bucket = grouped.get(node.runId);
+        if (bucket === undefined) {
+          bucket = [];
+          grouped.set(node.runId, bucket);
+        }
+        bucket.push(node.message);
       }
       setMessages(next);
+      setMessagesByRun(grouped);
+      setMessageRunIds(byMsg);
       setInfo(projectMessageInfo(view));
       setRuns(view.runs);
     };
     update();
     return view.subscribe(update);
   }, [view]);
+
+  const links = useSubagentLinks(ably, session.sessionName);
 
   const activeRuns = useMemo(() => runs.filter((r) => r.status === 'active'), [runs]);
   const suspendedRuns = useMemo(() => runs.filter((r) => r.status === 'suspended'), [runs]);
@@ -105,17 +132,33 @@ export function Chat({ handle, clientId }: ChatProps) {
     return id;
   }, [activeRuns, view]);
 
+  // Top-level messages exclude anything published by a subagent run —
+  // those render nested under the parent assistant message's
+  // spawn_subagent tool-call part instead.
+  const topLevelMessages = useMemo(
+    () => messages.filter((m) => !links.byRunId.has(messageRunIds.get(m.id) ?? '')),
+    [messages, messageRunIds, links.byRunId],
+  );
+
+  const subagentRendering = useMemo<SubagentRendering>(
+    () => ({ messagesByRun, info, links, streamingId }),
+    [messagesByRun, info, links, streamingId],
+  );
+
   const retryableMessageId = useMemo<string | undefined>(() => {
     let id: string | undefined;
     for (const node of view.messages) {
       if (node.role !== 'assistant') continue;
+      // Subagent runs are not user-retryable — the parent workflow owns
+      // their lifecycle. Only surface retry on top-level assistant turns.
+      if (links.byRunId.has(node.runId)) continue;
       const status = info.get(node.id)?.runStatus;
       if (status !== undefined && RETRYABLE.has(status)) {
         id = node.id;
       }
     }
     return id;
-  }, [info, view]);
+  }, [info, view, links.byRunId]);
 
   const findRun = useCallback((runId: string): Run | undefined => runs.find((r) => r.id === runId), [runs]);
 
@@ -239,22 +282,24 @@ export function Chat({ handle, clientId }: ChatProps) {
   );
 
   return (
-    <div className="flex h-dvh flex-col">
-      <Header clientId={clientId} />
-      <MessageList
-        messages={messages}
-        streamingId={streamingId}
-        info={info}
-        retryableMessageId={isRunning ? undefined : retryableMessageId}
-        onRetry={(messageId) => void handleRetry(messageId)}
-      />
-      <InputBar
-        onSubmit={(text, simulateFail) => void handleSubmit(text, simulateFail)}
-        onStop={isRunning ? handleStop : undefined}
-        onPause={isRunning ? handlePause : undefined}
-        onResume={isSuspended ? handleResume : undefined}
-        state={inputState}
-      />
-    </div>
+    <SubagentRenderingContext.Provider value={subagentRendering}>
+      <div className="flex h-dvh flex-col">
+        <Header clientId={clientId} />
+        <MessageList
+          messages={topLevelMessages}
+          streamingId={streamingId}
+          info={info}
+          retryableMessageId={isRunning ? undefined : retryableMessageId}
+          onRetry={(messageId) => void handleRetry(messageId)}
+        />
+        <InputBar
+          onSubmit={(text, simulateFail) => void handleSubmit(text, simulateFail)}
+          onStop={isRunning ? handleStop : undefined}
+          onPause={isRunning ? handlePause : undefined}
+          onResume={isSuspended ? handleResume : undefined}
+          state={inputState}
+        />
+      </div>
+    </SubagentRenderingContext.Provider>
   );
 }

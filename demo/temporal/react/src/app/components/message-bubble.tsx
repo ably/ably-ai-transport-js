@@ -5,6 +5,9 @@ import { getToolName, isToolUIPart } from 'ai';
 
 import type { StepStatus } from '@ably/ai-transport';
 
+import { SPAWN_SUBAGENT_TOOL_NAME } from '../../lib/spawn-subagent-tool';
+import { useSubagentRendering } from './subagent-context';
+
 interface MessageBubbleProps {
   message: AI.UIMessage;
   streaming: boolean;
@@ -79,6 +82,62 @@ function ToolCallCard({ part }: { part: AI.ToolUIPart | AI.DynamicToolUIPart }) 
   );
 }
 
+/**
+ * Inline rendering of a subagent spawn. Replaces the generic tool-call
+ * card for `spawn_subagent` parts and shows the linked subagent run's
+ * messages indented underneath, recursively (a subagent that spawned its
+ * own children renders them via the same nested MessageBubble calls).
+ *
+ * While the link sidecar hasn't arrived yet (the subagent has been
+ * announced by the parent's tool-call but the worker hasn't published
+ * the link message yet) we fall back to a placeholder driven off the
+ * tool-call input alone, so the UI never has a frame where the spawn is
+ * invisible.
+ */
+function SubagentBlock({ part }: { part: AI.ToolUIPart | AI.DynamicToolUIPart }) {
+  const ctx = useSubagentRendering();
+  const inputDescription =
+    part.input !== undefined && typeof part.input === 'object' && part.input !== null
+      ? // CAST: tool input is validated by the spawn_subagent inputSchema
+        // at the model layer, so the part's input is { description, prompt }.
+        // Read the description for the header label.
+        ((part.input as { description?: unknown }).description ?? '')
+      : '';
+  const description = typeof inputDescription === 'string' ? inputDescription : '';
+
+  const link = ctx?.links.byToolCallId.get(part.toolCallId);
+  const subagentMessages = link === undefined ? undefined : ctx?.messagesByRun.get(link.runId);
+
+  return (
+    <div className="mt-2 rounded-md border border-violet-900/60 bg-violet-950/30 px-2 py-1.5 text-xs">
+      <div className="flex items-center gap-2 font-mono">
+        <span className="text-zinc-400">subagent</span>
+        <span className="text-zinc-200">{description}</span>
+        <span className="ml-auto text-[10px] uppercase tracking-wide text-violet-300/80">
+          {link === undefined ? 'spawning…' : part.state === 'output-available' ? 'returned' : 'running'}
+        </span>
+      </div>
+      {subagentMessages !== undefined && subagentMessages.length > 0 && ctx !== undefined && (
+        <div className="mt-2 space-y-2 border-l border-violet-900/50 pl-3">
+          {subagentMessages.map((m) => {
+            const meta = ctx.info.get(m.id);
+            return (
+              <MessageBubble
+                key={m.id}
+                message={m}
+                streaming={m.id === ctx.streamingId}
+                stepStatus={meta?.stepStatus}
+                stepIndex={meta?.stepIndex}
+                canonical={meta?.canonical ?? true}
+              />
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const STEP_STATUS_PILL: Record<StepStatus, { label: string; classes: string }> = {
   pending: { label: 'pending', classes: 'border-zinc-700 text-zinc-400' },
   active: { label: 'active', classes: 'border-amber-700/60 text-amber-300' },
@@ -110,13 +169,22 @@ export function MessageBubble({ message, streaming, stepStatus, stepIndex, canon
         <div className={bubbleClasses(isUser, streaming, canonical)}>
           {message.parts.map((part, i) => {
             if (part.type === 'text') return <span key={i}>{part.text}</span>;
-            if (isToolUIPart(part))
+            if (isToolUIPart(part)) {
+              if (getToolName(part) === SPAWN_SUBAGENT_TOOL_NAME) {
+                return (
+                  <SubagentBlock
+                    key={i}
+                    part={part}
+                  />
+                );
+              }
               return (
                 <ToolCallCard
                   key={i}
                   part={part}
                 />
               );
+            }
             return null;
           })}
           {!isUser && streaming && (

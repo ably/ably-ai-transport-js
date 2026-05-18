@@ -488,6 +488,24 @@ describe('AgentSession', () => {
       expect(headers?.[HEADER_RUN_ID]).toBe('run-1');
     });
 
+    it('start() stamps x-ably-run-continue on run-start when invocation.isContinuation is true', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1', isContinuation: true });
+      await run.start();
+
+      const startMsg = channel.publishCalls.find((m) => m.name === 'x-ably-run-start');
+      const headers = (startMsg?.extras as { headers: Record<string, string> } | undefined)?.headers;
+      expect(headers?.['x-ably-run-continue']).toBe('true');
+    });
+
+    it('start() omits x-ably-run-continue on run-start when invocation.isContinuation is false', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+
+      const startMsg = channel.publishCalls.find((m) => m.name === 'x-ably-run-start');
+      const headers = (startMsg?.extras as { headers: Record<string, string> } | undefined)?.headers;
+      expect(headers?.['x-ably-run-continue']).toBeUndefined();
+    });
+
     it('end() publishes run-end with reason', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1', clientId: 'user-a' });
       await run.start();

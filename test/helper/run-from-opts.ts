@@ -22,6 +22,8 @@ interface RunOpts<TEvent> {
    * channel prompt-lookup path.
    */
   userMessageCount?: number;
+  /** Mark the invocation as a continuation (drives `x-ably-run-continue`). */
+  isContinuation?: boolean;
   signal?: AbortSignal;
   onMessage?: (message: Ably.Message) => void;
   onAbort?: (write: (event: TEvent) => Promise<void>) => void | Promise<void>;
@@ -50,6 +52,7 @@ export const createRunFromOpts = <TEvent, TProjection, TMessage>(
     ...(opts.parent !== undefined && { parent: opts.parent }),
     ...(opts.forkOf !== undefined && { forkOf: opts.forkOf }),
     ...(opts.userMessageCount !== undefined && { userMessageCount: opts.userMessageCount }),
+    ...(opts.isContinuation !== undefined && { isContinuation: opts.isContinuation }),
   });
   return session.createRun(invocation, {
     signal: opts.signal,

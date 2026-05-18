@@ -47,6 +47,14 @@ export interface InvocationData<TEvent, TMessage> {
    * prompt lookup — there is no new user prompt to find.
    */
   userMessageCount?: number;
+  /**
+   * Whether this invocation continues an already-started run rather than
+   * starting a fresh one. The client sets this when it supplies an existing
+   * `runId` (e.g. tool-result follow-up). The agent stamps
+   * `x-ably-run-continue: true` on the `run-start` lifecycle event so
+   * downstream consumers can distinguish a continuation from a first start.
+   */
+  isContinuation?: boolean;
 }
 
 /**
@@ -88,6 +96,12 @@ export class Invocation<TEvent, TMessage> {
    * agent should locate them via channel rewind.
    */
   readonly userMessageCount: number;
+  /**
+   * Whether this invocation continues an already-started run. Drives the
+   * `x-ably-run-continue` header on the published `run-start` event so
+   * consumers can distinguish a continuation from a first start.
+   */
+  readonly isContinuation: boolean;
 
   private constructor(data: InvocationData<TEvent, TMessage>) {
     this.runId = data.runId;
@@ -103,6 +117,7 @@ export class Invocation<TEvent, TMessage> {
     // `invocation.messages` directly behave correctly without setting the
     // count explicitly.
     this.userMessageCount = data.userMessageCount ?? this.messages.length;
+    this.isContinuation = data.isContinuation ?? false;
   }
 
   /**

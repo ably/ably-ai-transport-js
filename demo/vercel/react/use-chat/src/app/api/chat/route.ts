@@ -56,7 +56,7 @@ export async function POST(req: Request) {
   // resumed history — client tool outputs and approval responses are
   // already merged onto their original dynamic-tool parts by the reducer.
   let resolvedMessages: UIMessage[];
-  if (invocation.userMessageCount === 0 && invocation.history.some(({ message }) => hasUnresolvedToolPart(message))) {
+  if (invocation.isContinuation && invocation.history.some(({ message }) => hasUnresolvedToolPart(message))) {
     const projection = await run.loadProjection();
     const projectedById = new Map(UIMessageCodec.getMessages(projection).map((m) => [m.id, m]));
     resolvedMessages = invocation.history.map((node) => projectedById.get(node.message.id) ?? node.message);

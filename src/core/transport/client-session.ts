@@ -30,6 +30,7 @@ import {
   HEADER_MSG_ID,
   HEADER_PARENT,
   HEADER_RUN_CLIENT_ID,
+  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
 } from '../../constants.js';
@@ -354,12 +355,14 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
           this._tree.trackRun(runId, runCid);
           const parentRaw = headers[HEADER_PARENT];
           const forkOf = headers[HEADER_FORK_OF];
+          const isContinuation = headers[HEADER_RUN_CONTINUE] === 'true';
           this._tree.emitRun({
             type: EVENT_RUN_START,
             runId,
             clientId: runCid,
             ...(parentRaw !== undefined && { parent: parentRaw }),
             ...(forkOf !== undefined && { forkOf }),
+            ...(isContinuation && { isContinuation: true }),
           });
           if (invocationId) {
             const pending = this._pendingRunStarts.get(invocationId);
@@ -1121,6 +1124,7 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
       invocationId,
       clientId: this._clientId,
       userMessageCount,
+      ...(isContinuation && { isContinuation: true }),
       ...(sendOptions?.forkOf !== undefined && { forkOf: sendOptions.forkOf }),
       ...(postParent !== undefined && { parent: postParent }),
     };

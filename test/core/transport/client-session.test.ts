@@ -759,6 +759,19 @@ describe('ClientSession', () => {
       expect(body.invocationId).toBe(cont.invocationId);
     });
 
+    it('posts isContinuation=true on continuation sends and omits it on fresh sends', async () => {
+      await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
+      await fix.fetch.waitForCalls(1);
+      const fresh = fix.fetch.body(0);
+      expect(fresh.isContinuation).toBeUndefined();
+
+      const initial = { runId: fresh.runId as string };
+      await fix.session.view.sendEvent([{ type: 'amend', text: 'msg-target' }], { runId: initial.runId });
+      await fix.fetch.waitForCalls(2);
+      const cont = fix.fetch.body(1);
+      expect(cont.isContinuation).toBe(true);
+    });
+
     it('rejects when continuation send includes a user-message event', async () => {
       const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
       await expect(
@@ -1005,6 +1018,34 @@ describe('ClientSession', () => {
       expect(lifecycle).toHaveLength(2);
       expect(lifecycle[0]?.type).toBe(EVENT_RUN_START);
       expect(lifecycle[1]?.type).toBe(EVENT_RUN_END);
+    });
+
+    it('surfaces isContinuation on the run-start event when x-ably-run-continue is set', () => {
+      const lifecycle: RunLifecycleEvent[] = [];
+      fix.session.tree.on('run', (e) => lifecycle.push(e));
+
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_START, {
+          [HEADER_RUN_ID]: 'run-cont',
+          [HEADER_RUN_CLIENT_ID]: 'agent',
+          'x-ably-run-continue': 'true',
+        }),
+      );
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_START, {
+          [HEADER_RUN_ID]: 'run-fresh',
+          [HEADER_RUN_CLIENT_ID]: 'agent',
+        }),
+      );
+
+      const [cont, fresh] = lifecycle;
+      expect(cont?.type).toBe(EVENT_RUN_START);
+      if (cont?.type !== EVENT_RUN_START) throw new Error('expected run-start');
+      expect(cont.isContinuation).toBe(true);
+      if (fresh?.type !== EVENT_RUN_START) throw new Error('expected run-start');
+      expect(fresh.isContinuation).toBeUndefined();
     });
 
     it('folds codec events into an observer projection (run from another client)', () => {

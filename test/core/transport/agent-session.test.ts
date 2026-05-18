@@ -768,6 +768,53 @@ describe('AgentSession', () => {
       expect(headers[HEADER_PARENT]).toBe('parent-msg');
     });
 
+    it('defaults assistant parent to the most recently looked-up user prompt', async () => {
+      // Stand up a session whose prompt lookup will resolve via the channel
+      // dispatcher — this populates `run.view.messages` with the user prompt
+      // before pipe runs, exercising the new default.
+      const ch = createMockChannel();
+      const base = codecWithFunctionalDecoder();
+      // Wrap createEncoder to capture the headers Run.pipe stamps as defaults.
+      let capturedHeaders: Record<string, string> | undefined;
+      const c: Codec<TestEvent, TestProjection, TestMessage> = {
+        ...base,
+        createEncoder: (writer: ChannelWriter, opts?: EncoderOptions) => {
+          capturedHeaders = opts?.extras?.headers;
+          return createMockEncoder();
+        },
+      };
+      const s = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'pipe-parent-default',
+        codec: c,
+        promptLookupTimeoutMs: 5000,
+      });
+      await s.connect();
+
+      const runId = 'r-pp';
+      const invocationId = 'inv-pp';
+      const run = createRunFromOpts(s, { runId, invocationId, promptIds: ['p-u1'] });
+      const startPromise = run.start();
+      deliverUserPrompt(ch, { invocationId, runId, msgId: 'user-1', serial: '01', promptId: 'p-u1' });
+      await startPromise;
+
+      await run.pipe(streamOf({ type: 'text', text: 'reply' }));
+
+      expect(capturedHeaders?.[HEADER_PARENT]).toBe('user-1');
+      s.close();
+    });
+
+    it('falls back to runParent when view.messages is empty (continuation pipe)', async () => {
+      // No prompt lookup — invocation.parent flows in as runParent and is
+      // used directly because run.view.messages stays empty.
+      const run = createRunFromOpts(session, { runId: 'run-1', parent: 'fallback-parent' });
+      await run.start();
+      await run.pipe(streamOf({ type: 'text', text: 'reply' }));
+
+      const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
+      expect(headers[HEADER_PARENT]).toBe('fallback-parent');
+    });
+
     it('forwards resolveWriteOptions per-event overrides into encoder.publish', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();

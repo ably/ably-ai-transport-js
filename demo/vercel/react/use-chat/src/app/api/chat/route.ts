@@ -65,7 +65,6 @@ export async function POST(req: Request) {
   }
 
   const newNodes = run.view.messages;
-  const lastUserMsgId = newNodes.at(-1)?.msgId;
   const allMessages = [...resolvedMessages, ...newNodes.map((m) => m.message)];
 
   // Prevent the multi-step loop from re-pausing on a tool the user just
@@ -82,7 +81,7 @@ export async function POST(req: Request) {
   });
 
   after(async () => {
-    const { reason } = await run.pipe(result.toUIMessageStream(), { parent: lastUserMsgId });
+    const { reason } = await run.pipe(result.toUIMessageStream());
     // When streamText finished because the LLM asked for tool calls (and
     // streamText didn't execute them server-side), suspend the run instead
     // of ending it. The client publishes the resolution on the channel

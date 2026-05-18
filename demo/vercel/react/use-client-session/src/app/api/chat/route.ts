@@ -10,9 +10,11 @@
  *   already folded onto the assistant message.
  * - Approval-required tools (getWeatherForecast): client publishes an
  *   `ait-tool-approval` TEvent on Approve. The projection reflects the
- *   `approval-responded` state, `disableApprovalsForApproved` stops
- *   re-pausing on the same tool, and `Run.pipe`'s `resolveToolTarget` hook
- *   redirects the resulting tool output back to the original assistant.
+ *   `approval-responded` state. The tool's `needsApproval` function returns
+ *   `false` once the matching `toolCallId` has an `approval-responded`
+ *   part in the messages, so `streamText` executes it without re-pausing.
+ *   `Run.pipe`'s `resolveToolTarget` hook redirects the resulting tool
+ *   output back to the original assistant.
  */
 
 import { after } from 'next/server';
@@ -20,7 +22,7 @@ import { streamText, convertToModelMessages } from 'ai';
 import type { DynamicToolUIPart, UIMessage } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
-import { createAgentSession, disableApprovalsForApproved, UIMessageCodec } from '@ably/ai-transport/vercel';
+import { createAgentSession, UIMessageCodec } from '@ably/ai-transport/vercel';
 import type { InvocationData } from '@ably/ai-transport';
 import { Invocation } from '@ably/ai-transport';
 import { tools } from './tools';
@@ -61,13 +63,11 @@ export async function POST(req: Request) {
   const lastUserMsgId = newNodes.at(-1)?.msgId;
   const allMessages = [...resolvedMessages, ...newNodes.map((m) => m.message)];
 
-  const effectiveTools = disableApprovalsForApproved(allMessages, tools);
-
   const result = streamText({
     model: anthropic('claude-sonnet-4-6'),
     system: `You are a helpful assistant. When the user asks about weather, use the getWeather tool. If they don't specify a location, call getLocation first to get their coordinates, then call getWeather with a description of that location. When the user asks about a weather forecast or upcoming weather, use getWeatherForecast.`,
     messages: await convertToModelMessages(allMessages),
-    tools: effectiveTools,
+    tools,
     abortSignal: run.abortSignal,
   });
 

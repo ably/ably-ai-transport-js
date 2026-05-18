@@ -11,6 +11,3 @@ export type {
   VercelClientSessionOptions,
 } from './transport/index.js';
 export { createAgentSession, createChatTransport, createClientSession } from './transport/index.js';
-
-// Server-side tool approval helpers
-export { disableApprovalsForApproved } from './tool-approvals.js';

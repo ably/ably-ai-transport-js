@@ -69,6 +69,7 @@ const createMockSendDelegate = (): SendDelegate<TestEvent, TestMessage> =>
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
       cancel: () => Promise.resolve(),
       optimisticMsgIds: [],
+      promptIds: [],
     }),
   );
 
@@ -830,6 +831,7 @@ describe('DefaultView', () => {
           invocationId: 'inv-1',
           cancel: vi.fn(),
           optimisticMsgIds: ['m3'],
+          promptIds: [],
         });
       });
 
@@ -871,6 +873,7 @@ describe('DefaultView', () => {
           invocationId: 'inv-1',
           cancel: vi.fn(),
           optimisticMsgIds: [],
+          promptIds: [],
         }),
       );
 
@@ -951,6 +954,7 @@ describe('DefaultView', () => {
           invocationId: 'inv-1',
           cancel: vi.fn(),
           optimisticMsgIds: [],
+          promptIds: [],
         }),
       );
 
@@ -1025,6 +1029,7 @@ describe('DefaultView', () => {
           invocationId: 'inv-1',
           cancel: vi.fn(),
           optimisticMsgIds: [],
+          promptIds: [],
         }),
       );
 
@@ -1095,6 +1100,7 @@ describe('DefaultView', () => {
           invocationId: 'inv-cleanup',
           cancel: vi.fn(),
           optimisticMsgIds: [],
+          promptIds: [],
         }),
       );
 

@@ -23,6 +23,7 @@ import {
   HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
   HEADER_PARENT,
+  HEADER_PROMPT_ID,
   HEADER_ROLE,
   HEADER_RUN_ID,
 } from '../../../src/constants.js';
@@ -308,6 +309,8 @@ interface DeliverUserPromptOpts {
   serial: string;
   /** Optional Ably message name; defaults to 'text'. */
   name?: string;
+  /** Prompt-id (`x-ably-prompt-id`) the agent matches against `invocation.promptIds`. */
+  promptId?: string;
 }
 
 /**
@@ -323,6 +326,7 @@ const deliverUserPrompt = (ch: MockChannel, opts: DeliverUserPromptOpts): void =
     [HEADER_MSG_ID]: opts.msgId,
   };
   if (opts.runId) headers[HEADER_RUN_ID] = opts.runId;
+  if (opts.promptId) headers[HEADER_PROMPT_ID] = opts.promptId;
   const msg = {
     name: opts.name ?? 'text',
     serial: opts.serial,
@@ -1151,7 +1155,7 @@ describe('AgentSession', () => {
   });
 
   describe('prompt lookup (multi-message)', () => {
-    it('collects userMessageCount messages, dedupes by serial, and returns them sorted', async () => {
+    it('collects every expected prompt-id, dedupes by serial, and returns them sorted', async () => {
       const ch = createMockChannel();
       const c = codecWithFunctionalDecoder();
       const s = createAgentSession({
@@ -1164,13 +1168,13 @@ describe('AgentSession', () => {
 
       const runId = 'r-multi';
       const invocationId = 'inv-multi';
-      const run = createRunFromOpts(s, { runId, invocationId, userMessageCount: 2 });
+      const run = createRunFromOpts(s, { runId, invocationId, promptIds: ['p-a', 'p-b'] });
       const startPromise = run.start();
 
       // Deliver out of order with a duplicate of the first to assert dedup.
-      deliverUserPrompt(ch, { invocationId, runId, msgId: 'b', serial: '02' });
-      deliverUserPrompt(ch, { invocationId, runId, msgId: 'a', serial: '01' });
-      deliverUserPrompt(ch, { invocationId, runId, msgId: 'b', serial: '02' });
+      deliverUserPrompt(ch, { invocationId, runId, msgId: 'b', serial: '02', promptId: 'p-b' });
+      deliverUserPrompt(ch, { invocationId, runId, msgId: 'a', serial: '01', promptId: 'p-a' });
+      deliverUserPrompt(ch, { invocationId, runId, msgId: 'b', serial: '02', promptId: 'p-b' });
 
       await startPromise;
       expect(run.view.messages).toHaveLength(2);
@@ -1192,11 +1196,11 @@ describe('AgentSession', () => {
 
       const runId = 'r-partial';
       const invocationId = 'inv-partial';
-      const run = createRunFromOpts(s, { runId, invocationId, userMessageCount: 2 });
+      const run = createRunFromOpts(s, { runId, invocationId, promptIds: ['p-a', 'p-b'] });
       const startPromise = run.start();
 
       // Deliver only 1 of 2 before timeout fires.
-      deliverUserPrompt(ch, { invocationId, runId, msgId: 'only', serial: '01' });
+      deliverUserPrompt(ch, { invocationId, runId, msgId: 'only', serial: '01', promptId: 'p-a' });
 
       const rejection = await startPromise.catch((error: unknown) => error);
       expect(rejection).toBeErrorInfoWithCode(ErrorCode.PromptNotFound);
@@ -1218,13 +1222,13 @@ describe('AgentSession', () => {
       const runId = 'r-drain';
       const invocationId = 'inv-drain';
       // Pre-buffer one message before any listener is registered.
-      deliverUserPrompt(ch, { invocationId, runId, msgId: 'first', serial: '01' });
+      deliverUserPrompt(ch, { invocationId, runId, msgId: 'first', serial: '01', promptId: 'p-first' });
 
-      const run = createRunFromOpts(s, { runId, invocationId, userMessageCount: 2 });
+      const run = createRunFromOpts(s, { runId, invocationId, promptIds: ['p-first', 'p-second'] });
       const startPromise = run.start();
 
       // Second message arrives live after the listener registered.
-      deliverUserPrompt(ch, { invocationId, runId, msgId: 'second', serial: '02' });
+      deliverUserPrompt(ch, { invocationId, runId, msgId: 'second', serial: '02', promptId: 'p-second' });
 
       await startPromise;
       expect(run.view.messages.map((m) => m.msgId)).toEqual(['first', 'second']);
@@ -1254,14 +1258,14 @@ describe('AgentSession', () => {
 
       const runId = 'r-over';
       const invocationId = 'inv-over';
-      const run = createRunFromOpts(s, { runId, invocationId, userMessageCount: 1 });
+      const run = createRunFromOpts(s, { runId, invocationId, promptIds: ['p-a'] });
       const startPromise = run.start();
-      deliverUserPrompt(ch, { invocationId, runId, msgId: 'a', serial: '01' });
+      deliverUserPrompt(ch, { invocationId, runId, msgId: 'a', serial: '01', promptId: 'p-a' });
       await startPromise;
 
       warn.mockClear();
       // Extra arrival after the lookup completed — must warn and drop.
-      deliverUserPrompt(ch, { invocationId, runId, msgId: 'b', serial: '02' });
+      deliverUserPrompt(ch, { invocationId, runId, msgId: 'b', serial: '02', promptId: 'p-b' });
 
       const overArrivalCalls = warn.mock.calls.filter(
         (call) => typeof call[0] === 'string' && call[0].includes('over-arrival'),
@@ -1316,9 +1320,9 @@ describe('AgentSession', () => {
 
       const runId = 'r-bad';
       const invocationId = 'inv-bad';
-      const run = createRunFromOpts(s, { runId, invocationId, userMessageCount: 2 });
+      const run = createRunFromOpts(s, { runId, invocationId, promptIds: ['p-a', 'p-b'] });
       const startPromise = run.start();
-      deliverUserPrompt(ch, { invocationId, runId, msgId: 'a', serial: '01' });
+      deliverUserPrompt(ch, { invocationId, runId, msgId: 'a', serial: '01', promptId: 'p-a' });
 
       const rejection = await startPromise.catch((error: unknown) => error);
       expect(rejection).toBeErrorInfoWithCode(ErrorCode.PromptNotFound);
@@ -1339,7 +1343,7 @@ describe('AgentSession', () => {
 
       const runId = 'r-abort';
       const invocationId = 'inv-abort';
-      const run = createRunFromOpts(s, { runId, invocationId, userMessageCount: 2 });
+      const run = createRunFromOpts(s, { runId, invocationId, promptIds: ['p-a', 'p-b'] });
       const startPromise = run.start();
 
       // Cancel-by-invocation-id triggers controller.abort() on the registered run.
@@ -1423,7 +1427,7 @@ describe('AgentSession', () => {
 // ---------------------------------------------------------------------------
 
 describe('AgentSession prompt lookup', () => {
-  it('start() succeeds when userMessageCount === 0 (continuation send)', async () => {
+  it('start() succeeds when invocation has no promptIds (continuation send)', async () => {
     const channel = createMockChannel();
     const codec = createMockCodec();
     const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
@@ -1436,7 +1440,6 @@ describe('AgentSession prompt lookup', () => {
     const run = createRunFromOpts(session, {
       runId: 'run-1',
       invocationId: 'inv-1',
-      userMessageCount: 0,
     });
     await expect(run.start()).resolves.toBeUndefined();
     session.close();
@@ -1452,9 +1455,9 @@ describe('AgentSession prompt lookup', () => {
     });
     await session.connect();
 
-    // createRunFromOpts always passes messages: [] in invocation. Use signal
-    // to verify start completes synchronously without channel lookup.
-    const run = createRunFromOpts(session, { runId: 'run-1', invocationId: 'inv-1', userMessageCount: 0 });
+    // createRunFromOpts always passes messages: [] in invocation. Without
+    // promptIds, the lookup is skipped and start() completes synchronously.
+    const run = createRunFromOpts(session, { runId: 'run-1', invocationId: 'inv-1' });
     await expect(run.start()).resolves.toBeUndefined();
     session.close();
   });
@@ -1473,7 +1476,7 @@ describe('AgentSession prompt lookup', () => {
     const run = createRunFromOpts(session, {
       runId: 'run-1',
       invocationId: 'inv-needs-prompt',
-      userMessageCount: 1, // signal that a prompt should be looked up
+      promptIds: ['p-1'], // signal that a prompt should be looked up
     });
 
     await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.PromptNotFound);

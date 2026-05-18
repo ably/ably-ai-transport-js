@@ -916,6 +916,10 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
 
     const msgIds = new Set<string>();
     const postMessages: MessageNode<TMessage>[] = [];
+    // One prompt-id minted per user-message item. The invocation body
+    // carries the list so the agent looks up exactly these prompts on the
+    // channel via `x-ably-prompt-id`.
+    const promptIds: string[] = [];
 
     // Optimistic tree insert / republish header refresh for user-message events.
     if (republishMsgId === undefined) {
@@ -923,8 +927,10 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
         if (item.kind !== 'user-message') continue;
 
         const msgId = crypto.randomUUID();
+        const promptId = crypto.randomUUID();
         this._ownMsgIds.add(msgId);
         msgIds.add(msgId);
+        promptIds.push(promptId);
 
         const resolvedParent = sendOptions?.parent === undefined ? autoParent : sendOptions.parent;
 
@@ -936,6 +942,7 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
           parent: resolvedParent,
           forkOf: sendOptions?.forkOf,
           invocationId,
+          promptId,
         });
         // Spec: AIT-CT3c
         this._upsertAndNotify(item.message, optimisticHeaders);
@@ -970,8 +977,10 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
         );
       }
       const msgId = republishMsgId;
+      const promptId = crypto.randomUUID();
       this._ownMsgIds.add(msgId);
       msgIds.add(msgId);
+      promptIds.push(promptId);
 
       const resolvedParent = sendOptions?.parent;
       const headers = buildTransportHeaders({
@@ -982,6 +991,7 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
         parent: resolvedParent,
         forkOf: sendOptions?.forkOf,
         invocationId,
+        promptId,
       });
       // Refresh existing node — Tree.upsert only promotes null → serial,
       // so the ack serial from the original publish is preserved.
@@ -1123,7 +1133,7 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
       runId,
       invocationId,
       clientId: this._clientId,
-      userMessageCount,
+      promptIds,
       ...(isContinuation && { isContinuation: true }),
       ...(sendOptions?.forkOf !== undefined && { forkOf: sendOptions.forkOf }),
       ...(postParent !== undefined && { parent: postParent }),
@@ -1183,6 +1193,7 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
       invocationId,
       cancel: async () => this.cancel({ runId }),
       optimisticMsgIds: [...msgIds],
+      promptIds: [...promptIds],
     };
   }
 

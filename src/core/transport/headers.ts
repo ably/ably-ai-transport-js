@@ -11,6 +11,7 @@ import {
   HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
   HEADER_PARENT,
+  HEADER_PROMPT_ID,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
@@ -28,6 +29,7 @@ import {
  * @param opts.parent - Preceding message's msg-id (for branching).
  * @param opts.forkOf - Forked message's msg-id (for edit/regen).
  * @param opts.invocationId - Invocation correlation ID. Set on the user-prompt message so the agent can locate the prompt by invocation.
+ * @param opts.promptId - Per-prompt identifier. Set on each client-published user-prompt message; the invocation body's `promptIds` lists the ids the agent should look up.
  * @returns A headers record with the `x-ably-*` transport headers set.
  */
 export const buildTransportHeaders = (opts: {
@@ -38,6 +40,7 @@ export const buildTransportHeaders = (opts: {
   parent?: string;
   forkOf?: string;
   invocationId?: string;
+  promptId?: string;
 }): Record<string, string> => {
   const h: Record<string, string> = {
     [HEADER_ROLE]: opts.role,
@@ -48,5 +51,6 @@ export const buildTransportHeaders = (opts: {
   if (opts.parent) h[HEADER_PARENT] = opts.parent;
   if (opts.forkOf) h[HEADER_FORK_OF] = opts.forkOf;
   if (opts.invocationId) h[HEADER_INVOCATION_ID] = opts.invocationId;
+  if (opts.promptId) h[HEADER_PROMPT_ID] = opts.promptId;
   return h;
 };

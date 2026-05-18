@@ -358,7 +358,7 @@ export interface AgentSession<TEvent, TProjection, TMessage> {
    * @param runtime - Optional runtime hooks and external abort signal
    *   (e.g. the HTTP request's `req.signal`).
    */
-  createRun(invocation: Invocation<TEvent, TMessage>, runtime?: RunRuntime<TEvent>): Run<TEvent, TProjection, TMessage>;
+  createRun(invocation: Invocation<TMessage>, runtime?: RunRuntime<TEvent>): Run<TEvent, TProjection, TMessage>;
 
   /** Unsubscribe from cancel messages, abort all active runs, and clean up. */
   close(): void;
@@ -507,6 +507,13 @@ export interface ActiveRun<TEvent> {
    * regeneration (no user messages to insert optimistically).
    */
   optimisticMsgIds: string[];
+  /**
+   * The per-prompt ids minted for this send, in order — one entry per
+   * user-message event published. Empty when the send carried no
+   * user-message events (continuation). The same list is sent in the
+   * POST body's `promptIds` field for the agent to look up.
+   */
+  promptIds: string[];
 }
 
 // ---------------------------------------------------------------------------

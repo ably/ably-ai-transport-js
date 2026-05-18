@@ -1088,8 +1088,18 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
 
         const runOwnerClientId = runManager.getClientId(runId);
 
-        // Per-operation parent overrides the run-level default.
-        const assistantParent = streamOpts?.parent === undefined ? runParent : streamOpts.parent;
+        // Resolve the assistant message's parent. Priority (highest first):
+        //   1. Explicit `streamOpts.parent` from the caller.
+        //   2. The most recently looked-up user prompt for this run — so the
+        //      assistant threads under the user msg that triggered it.
+        //   3. `runParent` (from `invocation.parent`) — used when there is no
+        //      new user prompt (e.g. a continuation send).
+        // Owning the default here means agent routes don't have to remember
+        // to pass `{ parent: lastUserMsgId }` to keep tree threading correct;
+        // edit-then-regenerate sibling resolution relies on the user→assistant
+        // chain being explicit.
+        const lastViewMsgId = viewMessages.at(-1)?.msgId;
+        const assistantParent = streamOpts?.parent === undefined ? (lastViewMsgId ?? runParent) : streamOpts.parent;
 
         const msgId = crypto.randomUUID();
         const defaultHeaders = buildTransportHeaders({

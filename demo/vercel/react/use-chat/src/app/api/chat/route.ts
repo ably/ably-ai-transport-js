@@ -21,7 +21,7 @@
 
 import { after } from 'next/server';
 import { streamText, convertToModelMessages } from 'ai';
-import type { DynamicToolUIPart, UIMessage, UIMessageChunk } from 'ai';
+import type { DynamicToolUIPart, UIMessage } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
 import { createAgentSession, disableApprovalsForApproved, UIMessageCodec } from '@ably/ai-transport/vercel';
@@ -41,7 +41,7 @@ const hasUnresolvedToolPart = (message: UIMessage): boolean =>
   );
 
 export async function POST(req: Request) {
-  const data = (await req.json()) as InvocationData<UIMessageChunk, UIMessage>;
+  const data = (await req.json()) as InvocationData<UIMessage>;
   const invocation = Invocation.fromJSON(data);
 
   const session = createAgentSession({ client: ably, channelName: invocation.sessionName });

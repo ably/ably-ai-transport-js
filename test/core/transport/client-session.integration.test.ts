@@ -1004,8 +1004,8 @@ describe('ClientSession integration', () => {
     // effectively instant — a separate observer client would risk
     // missing the publish while it attaches.
     const observerChannel = serverClient.channels.get(channelName);
-    let resolveIds!: (ids: { runId: string; invocationId: string }) => void;
-    const idsPromise = new Promise<{ runId: string; invocationId: string }>((resolve) => {
+    let resolveIds!: (ids: { runId: string; invocationId: string; promptId: string }) => void;
+    const idsPromise = new Promise<{ runId: string; invocationId: string; promptId: string }>((resolve) => {
       resolveIds = resolve;
     });
     const observerListener = (msg: Ably.InboundMessage): void => {
@@ -1013,9 +1013,10 @@ describe('ClientSession integration', () => {
       if (headers[HEADER_ROLE] !== 'user') return;
       const runId = headers[HEADER_RUN_ID];
       const invocationId = headers[HEADER_INVOCATION_ID];
-      if (!runId || !invocationId) return;
+      const promptId = headers['x-ably-prompt-id'];
+      if (!runId || !invocationId || !promptId) return;
       observerChannel.unsubscribe(observerListener);
-      resolveIds({ runId, invocationId });
+      resolveIds({ runId, invocationId, promptId });
     };
     await observerChannel.subscribe(observerListener);
 
@@ -1027,7 +1028,7 @@ describe('ClientSession integration', () => {
       parts: [{ type: 'text', text: 'Need a run-start' }],
     });
 
-    const { runId, invocationId } = await idsPromise;
+    const { runId, invocationId, promptId } = await idsPromise;
 
     // Stand up the server-side run; its `start()` triggers the real
     // lookup (which finds the user message) and publishes run-start.
@@ -1035,7 +1036,7 @@ describe('ClientSession integration', () => {
       runId,
       invocationId,
       clientId: clientClient.auth.clientId,
-      userMessageCount: 1,
+      promptIds: [promptId],
     });
     await serverRun.start();
     const responseStream = textResponseStream('asst-rs-happy-1', 'text-rs-happy-1', 'Started');

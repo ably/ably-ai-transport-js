@@ -103,7 +103,7 @@ describe('useChat error propagation', () => {
       codec: UIMessageCodec,
       // Tests use the runId-coordination pattern (invocationId from the
       // client doesn't reach the test-driven serverRun), so skip the
-      // channel lookup and rely on `invocation.messages` (empty here).
+      // channel prompt lookup entirely.
       promptLookupTimeoutMs: 0,
     });
     await agentSession.connect();

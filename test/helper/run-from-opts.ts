@@ -17,11 +17,11 @@ interface RunOpts<TEvent> {
   parent?: string;
   forkOf?: string;
   /**
-   * Override the invocation's `userMessageCount`. Defaults to 0 (matches
-   * `messages: []`). Set to >0 in tests that want to exercise the agent's
-   * channel prompt-lookup path.
+   * Prompt-ids the agent should wait for on the channel. Defaults to `[]`
+   * (no prompt lookup, `Run.start` resolves synchronously). Tests that
+   * exercise the channel prompt-lookup path supply one or more ids here.
    */
-  userMessageCount?: number;
+  promptIds?: string[];
   /** Mark the invocation as a continuation (drives `x-ably-run-continue`). */
   isContinuation?: boolean;
   signal?: AbortSignal;
@@ -41,17 +41,15 @@ export const createRunFromOpts = <TEvent, TProjection, TMessage>(
   session: AgentSession<TEvent, TProjection, TMessage>,
   opts: RunOpts<TEvent>,
 ): Run<TEvent, TProjection, TMessage> => {
-  const invocation = Invocation.fromJSON<TEvent, TMessage>({
+  const invocation = Invocation.fromJSON<TMessage>({
     runId: opts.runId,
     invocationId: opts.invocationId ?? `${opts.runId}-inv`,
     clientId: opts.clientId ?? '',
     sessionName: 'test',
-    messages: [],
     history: [],
-    events: [],
     ...(opts.parent !== undefined && { parent: opts.parent }),
     ...(opts.forkOf !== undefined && { forkOf: opts.forkOf }),
-    ...(opts.userMessageCount !== undefined && { userMessageCount: opts.userMessageCount }),
+    ...(opts.promptIds !== undefined && { promptIds: opts.promptIds }),
     ...(opts.isContinuation !== undefined && { isContinuation: opts.isContinuation }),
   });
   return session.createRun(invocation, {

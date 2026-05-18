@@ -642,15 +642,16 @@ describe('AgentSession integration', () => {
     const msgId = crypto.randomUUID();
     const text = 'Live arrival';
 
+    const promptId = crypto.randomUUID();
     const serverRun = createRunFromOpts(session, {
       runId,
       invocationId,
       clientId: 'live-lookup-client',
-      userMessageCount: 1,
+      promptIds: [promptId],
     });
 
     // Begin the lookup. `start()` will not resolve until a user prompt
-    // with `invocationId` arrives — and that message has not been
+    // with the expected `promptId` arrives — and that message has not been
     // published yet.
     const startPromise = serverRun.start();
 
@@ -661,7 +662,7 @@ describe('AgentSession integration', () => {
     // a few hundred ms is safe.
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
     const publisherChannel = publisherClient.channels.get(channelName);
-    const headers = buildTransportHeaders({ role: 'user', runId, msgId, invocationId });
+    const headers = buildTransportHeaders({ role: 'user', runId, msgId, invocationId, promptId });
     const encoder = UIMessageCodec.createEncoder(publisherChannel, { extras: { headers } });
     const userEvent = UIMessageCodec.userMessageEvent({
       id: msgId,
@@ -742,7 +743,7 @@ describe('AgentSession integration', () => {
         runId: activeRun.runId,
         invocationId: activeRun.invocationId,
         clientId: clientClient.auth.clientId,
-        userMessageCount: 2,
+        promptIds: activeRun.promptIds,
       });
       await serverRun.start();
 

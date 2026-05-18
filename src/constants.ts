@@ -35,6 +35,14 @@ export const HEADER_RUN_ID = 'x-ably-run-id';
 /** Header: invocation correlation ID. Set on the client-published user message; identifies a specific invocation under a run. */
 export const HEADER_INVOCATION_ID = 'x-ably-invocation-id';
 
+/**
+ * Header: per-prompt identifier. Stamped by the client on each
+ * user-prompt message it publishes on the channel. Distinct from
+ * `x-ably-msg-id` — survives edits/retries that reuse the same msg-id.
+ * The invocation body lists the `promptId`(s) the agent should look up.
+ */
+export const HEADER_PROMPT_ID = 'x-ably-prompt-id';
+
 /** Header: message identity. Assigned per message (user or assistant). Used for optimistic reconciliation on the client. */
 export const HEADER_MSG_ID = 'x-ably-msg-id';
 

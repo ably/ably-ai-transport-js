@@ -584,9 +584,29 @@ describe('ClientSession', () => {
       expect(opts?.extras?.headers?.[HEADER_RUN_ID]).toBeDefined();
       expect(opts?.extras?.headers?.[HEADER_INVOCATION_ID]).toBeDefined();
       expect(opts?.extras?.headers?.[HEADER_ROLE]).toBe('user');
+      expect(opts?.extras?.headers?.['x-ably-prompt-id']).toBeDefined();
     });
 
-    it('fires HTTP POST with runId, invocationId, history, userMessageCount', async () => {
+    it('mints a distinct prompt-id per user-message and lists them in postBody.promptIds in order', async () => {
+      await fix.session.view.sendEvent([
+        { type: 'user-message', text: 'first' },
+        { type: 'user-message', text: 'second' },
+      ]);
+
+      const enc = fix.codec.lastEncoder();
+      const userPublishes = enc?.publishCalls.filter((c) => c.event.type === 'user-message') ?? [];
+      expect(userPublishes).toHaveLength(2);
+      const stampedIds = userPublishes.map((c) => c.opts?.extras?.headers?.['x-ably-prompt-id']);
+      expect(stampedIds[0]).toBeDefined();
+      expect(stampedIds[1]).toBeDefined();
+      expect(stampedIds[0]).not.toBe(stampedIds[1]);
+
+      await fix.fetch.waitForCalls(1);
+      const body = fix.fetch.body(0);
+      expect(body.promptIds).toEqual(stampedIds);
+    });
+
+    it('fires HTTP POST with runId, invocationId, history, promptIds', async () => {
       const run = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
       await fix.fetch.waitForCalls(1);
 
@@ -595,7 +615,8 @@ describe('ClientSession', () => {
       expect(body.runId).toBe(run.runId);
       expect(body.invocationId).toBe(run.invocationId);
       expect(body.clientId).toBe('client-1');
-      expect(body.userMessageCount).toBe(1);
+      expect(Array.isArray(body.promptIds)).toBe(true);
+      expect((body.promptIds as string[]).length).toBe(1);
       expect(Array.isArray(body.history)).toBe(true);
       // history excludes the brand-new optimistic message
       expect((body.history as unknown[]).length).toBe(0);
@@ -743,7 +764,7 @@ describe('ClientSession', () => {
       expect(call?.opts?.extras?.headers?.[HEADER_INVOCATION_ID]).not.toBe(initial.invocationId);
     });
 
-    it('does not optimistic-insert and posts userMessageCount=0', async () => {
+    it('does not optimistic-insert and posts empty promptIds', async () => {
       const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
       const beforeNodes = fix.session.view.flattenNodes().length;
 
@@ -754,7 +775,7 @@ describe('ClientSession', () => {
 
       await fix.fetch.waitForCalls(2);
       const body = fix.fetch.body(1);
-      expect(body.userMessageCount).toBe(0);
+      expect(body.promptIds).toEqual([]);
       expect(body.runId).toBe(cont.runId);
       expect(body.invocationId).toBe(cont.invocationId);
     });

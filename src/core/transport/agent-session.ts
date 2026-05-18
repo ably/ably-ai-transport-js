@@ -22,6 +22,7 @@ import {
   HEADER_CANCEL_RUN_ID,
   HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
+  HEADER_PROMPT_ID,
   HEADER_ROLE,
   HEADER_RUN_ID,
 } from '../../constants.js';
@@ -131,16 +132,18 @@ const loadRunProjection = async <TEvent, TProjection, TMessage>(opts: {
 };
 
 /**
- * Wait for `expectedCount` user-prompt messages matching `invocationId` to
- * land on the channel. Uses the session's unfiltered channel dispatcher
- * (registered in `connect()`) so that messages replayed via channel rewind
- * on attach reach the lookup — no separate history fetch needed.
+ * Wait for every prompt-id in `expectedPromptIds` to arrive as a channel
+ * message and decode the matching messages into MessageNodes. Uses the
+ * session's unfiltered channel dispatcher (registered in `connect()`) so
+ * that messages replayed via channel rewind on attach reach the lookup —
+ * no separate history fetch needed.
  *
  * Multi-message `send()` publishes each user message as a separate Ably
- * message under the same invocation-id; the lookup collects all of them
- * before resolving. Duplicates (rewind redelivering a message also seen
- * live) are deduped by Ably `serial`. Collected nodes are returned sorted
- * by `serial` ascending.
+ * message under the same invocation-id, each stamped with its own
+ * `x-ably-prompt-id`. The lookup matches incoming messages against the
+ * expected set; ids not in the set are ignored, duplicates (rewind
+ * redelivering a message also seen live) are deduped by prompt-id.
+ * Collected nodes are returned sorted by Ably `serial` ascending.
  *
  * Bounded by `timeoutMs` as a total budget across all N arrivals. The
  * caller's `signal` aborts the wait. On partial collection at timeout the
@@ -153,23 +156,25 @@ const loadRunProjection = async <TEvent, TProjection, TMessage>(opts: {
  * @param opts.codec - Codec used to decode the matching message into MessageNodes.
  * @param opts.invocationId - Invocation identifier the dispatcher keys on.
  * @param opts.runId - Run identifier (used for logging and error messages).
- * @param opts.expectedCount - Number of distinct user-prompt Ably messages to collect before resolving.
- * @param opts.timeoutMs - Maximum total time to wait for all `expectedCount` arrivals.
+ * @param opts.expectedPromptIds - Prompt-ids the lookup must observe before resolving.
+ * @param opts.timeoutMs - Maximum total time to wait for all prompt-id arrivals.
  * @param opts.signal - AbortSignal that cancels the wait when the run aborts.
  * @param opts.logger - Optional logger for diagnostic output.
- * @returns The decoded MessageNodes for the matching user prompt, sorted by Ably serial.
+ * @returns The decoded MessageNodes for the matching user prompts, sorted by Ably serial.
  */
 const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
   register: (callback: (msg: Ably.InboundMessage) => void) => () => void;
   codec: import('../codec/types.js').Codec<TEvent, TProjection, TMessage>;
   invocationId: string;
   runId: string;
-  expectedCount: number;
+  expectedPromptIds: readonly string[];
   timeoutMs: number;
   signal: AbortSignal;
   logger: Logger | undefined;
 }): Promise<MessageNode<TMessage>[]> => {
-  const { register, codec, invocationId, runId, expectedCount, timeoutMs, signal, logger } = opts;
+  const { register, codec, invocationId, runId, expectedPromptIds, timeoutMs, signal, logger } = opts;
+  const expectedSet = new Set(expectedPromptIds);
+  const expectedCount = expectedSet.size;
 
   /**
    * Decode an inbound Ably message into MessageNodes via the codec.
@@ -230,10 +235,17 @@ const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
     signal.addEventListener('abort', onAbort, { once: true });
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- onAbort may have settled the promise synchronously above when the signal was already aborted.
     if (settled) return;
+    const matchedPromptIds = new Set<string>();
     unregister = register((m) => {
       if (settled) return;
       if (m.serial !== undefined && seenSerials.has(m.serial)) return;
+      // Filter by prompt-id: ignore messages whose prompt-id isn't in the
+      // expected set, and dedupe across rewind+live by prompt-id.
+      const promptId = getHeaders(m)[HEADER_PROMPT_ID];
+      if (promptId === undefined || !expectedSet.has(promptId)) return;
+      if (matchedPromptIds.has(promptId)) return;
       if (m.serial !== undefined) seenSerials.add(m.serial);
+      matchedPromptIds.add(promptId);
       let decoded: MessageNode<TMessage>[];
       try {
         decoded = decode(m);
@@ -252,7 +264,7 @@ const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
         return;
       }
       for (const node of decoded) collected.push(node);
-      if (collected.length < expectedCount) return;
+      if (matchedPromptIds.size < expectedCount) return;
       settled = true;
       cleanup();
       // Sort by Ably serial ascending so callers see publish order regardless
@@ -360,9 +372,9 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
   private readonly _promptBufferLimit: number;
   /**
    * Bounded FIFO map of invocation-ids whose lookup has resolved
-   * successfully, valued by the expected count the lookup resolved at.
+   * successfully, valued by the number of prompt-ids the lookup resolved at.
    * Used to distinguish over-arrival (extra user-prompt for a lookup that
-   * already completed with `userMessageCount === N`) from a genuine late /
+   * already completed with N prompt-ids) from a genuine late /
    * never-claimed arrival, so we can warn loudly on the former (with the
    * count the client claimed) without spamming on the latter. Reject paths
    * do not populate this map — their cause is already surfaced via the
@@ -493,11 +505,11 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
   /**
    * Record an invocation-id whose lookup has resolved successfully so a
    * subsequent unmatched arrival for the same invocation-id can be flagged
-   * as an over-arrival (client published more user-prompts than
-   * `userMessageCount`). Bounded FIFO eviction at
+   * as an over-arrival (client published more user-prompts than the
+   * invocation's `promptIds` listed). Bounded FIFO eviction at
    * `_completedLookupInvocationIdsLimit`.
    * @param invocationId - The invocation-id whose lookup just completed.
-   * @param expectedCount - The `userMessageCount` the lookup resolved at — surfaced in the over-arrival warn.
+   * @param expectedCount - The number of prompt-ids the lookup resolved at — surfaced in the over-arrival warn.
    */
   private _recordCompletedLookup(invocationId: string, expectedCount: number): void {
     if (this._completedLookupInvocationIds.has(invocationId)) return;
@@ -509,10 +521,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
   }
 
   // Spec: AIT-ST3
-  createRun(
-    invocation: Invocation<TEvent, TMessage>,
-    runtime?: RunRuntime<TEvent>,
-  ): Run<TEvent, TProjection, TMessage> {
+  createRun(invocation: Invocation<TMessage>, runtime?: RunRuntime<TEvent>): Run<TEvent, TProjection, TMessage> {
     this._logger?.trace('DefaultAgentSession.createRun();', { runId: invocation.runId });
     return this._createRun(invocation, runtime ?? {});
   }
@@ -700,11 +709,12 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
           listener(msg);
         } else {
           // Over-arrival: lookup for this invocation already completed
-          // successfully (e.g. client published N+1 messages but
-          // `userMessageCount === N`). Warn loudly so client-side bugs
-          // surface, then drop the message — no listener will ever
-          // register for this completed lookup, so buffering would just
-          // hold a slot until FIFO eviction. The run is not aborted.
+          // successfully (e.g. client published more user-prompts than
+          // the invocation's `promptIds` listed). Warn loudly so
+          // client-side bugs surface, then drop the message — no listener
+          // will ever register for this completed lookup, so buffering
+          // would just hold a slot until FIFO eviction. The run is not
+          // aborted.
           const completedExpectedCount = this._completedLookupInvocationIds.get(invocationId);
           if (completedExpectedCount !== undefined) {
             this._logger?.warn(
@@ -779,7 +789,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
   // -------------------------------------------------------------------------
 
   private _createRun(
-    invocation: Invocation<TEvent, TMessage>,
+    invocation: Invocation<TMessage>,
     runtime: RunRuntime<TEvent>,
   ): Run<TEvent, TProjection, TMessage> {
     const runId = invocation.runId;
@@ -820,17 +830,13 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
     const requireConnected = this._requireConnected.bind(this);
     const registerPromptListener = this._registerPromptListener.bind(this);
     const recordCompletedLookup = this._recordCompletedLookup.bind(this);
-    const invocationUserMessageCount = invocation.userMessageCount;
+    const invocationPromptIds = invocation.promptIds;
 
-    // invocation.messages is empty when the client publishes user messages
-    // on the channel. The agent populates this buffer in start() via a
-    // channel rewind+subscribe lookup keyed by invocation-id. Tests and
-    // legacy callers may pre-populate via Invocation.fromJSON; in that case
-    // the lookup step is skipped. The lookup is also skipped when the
-    // invocation reports `userMessageCount === 0` (e.g. a continuation
-    // triggered by `sendAutomaticallyWhen` after a tool result, where no
-    // new user prompt was published).
-    const viewMessages: MessageNode<TMessage>[] = [...invocation.messages];
+    // `viewMessages` starts empty. `Run.start()` populates it via the
+    // channel-rewind prompt lookup when `invocation.promptIds` has entries,
+    // pulling in user-message MessageNodes as they arrive on the channel.
+    // Continuation sends list no promptIds and skip the lookup entirely.
+    const viewMessages: MessageNode<TMessage>[] = [];
     const view: RunView<TMessage> = {
       get messages() {
         return viewMessages;
@@ -873,26 +879,26 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
         state = RunState.STARTED;
 
         // Look up the user prompt on the channel when the invocation
-        // signals a fresh send (userMessageCount > 0) but didn't carry the
+        // signals a fresh send (promptIds.length > 0) but didn't carry the
         // messages inline. Skip when:
         // - viewMessages already populated (legacy / pre-populated path)
         // - promptLookupTimeoutMs === 0 (tests and in-process drivers)
-        // - userMessageCount === 0 (continuation send: no new user prompt
+        // - promptIds.length === 0 (continuation send: no new user prompt
         //   was published, so waiting for one would hang for the full
         //   deadline before erroring out)
-        if (viewMessages.length === 0 && invocationUserMessageCount > 0 && promptLookupTimeoutMs > 0) {
+        if (viewMessages.length === 0 && invocationPromptIds.length > 0 && promptLookupTimeoutMs > 0) {
           try {
             const found = await lookupUserPrompt<TEvent, TProjection, TMessage>({
               register: (callback) => registerPromptListener(invocationId, callback),
               codec,
               invocationId,
               runId,
-              expectedCount: invocationUserMessageCount,
+              expectedPromptIds: invocationPromptIds,
               timeoutMs: promptLookupTimeoutMs,
               signal,
               logger,
             });
-            recordCompletedLookup(invocationId, invocationUserMessageCount);
+            recordCompletedLookup(invocationId, invocationPromptIds.length);
             for (const m of found) viewMessages.push(m);
           } catch (error) {
             const errInfo =

@@ -38,15 +38,15 @@ The run manager tracks active runs and publishes [run lifecycle events](wire-pro
 
 ### Operations
 
-| Method                                    | What it does                                                              |
-| ----------------------------------------- | ------------------------------------------------------------------------- |
-| `startRun(runId, clientId?, controller?)` | Registers the run, publishes `x-ably-run-start`, returns an `AbortSignal` |
-| `endRun(runId, reason)`                   | Publishes `x-ably-run-end` with the reason, removes the run               |
-| `abort(runId)`                            | Fires the run's `AbortController.abort()` immediately                     |
-| `getSignal(runId)`                        | Returns the `AbortSignal` for a run                                       |
-| `getClientId(runId)`                      | Returns the clientId that owns a run                                      |
-| `getActiveRunIds()`                       | Returns all active run IDs                                                |
-| `close()`                                 | Aborts all active runs and clears state                                   |
+| Method                                               | What it does                                                                                                                                                                                                                           |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `startRun(runId, clientId?, controller?, metadata?)` | Registers the run, publishes `x-ably-run-start`, returns an `AbortSignal`. `metadata` optionally stamps `parent`, `forkOf`, `invocationId`, and a `continuation` flag (→ `x-ably-run-continue: "true"`) on the lifecycle event headers |
+| `endRun(runId, reason, invocationId?)`               | Publishes `x-ably-run-end` with the reason (and `invocationId` if provided), removes the run                                                                                                                                           |
+| `abort(runId)`                                       | Fires the run's `AbortController.abort()` immediately                                                                                                                                                                                  |
+| `getSignal(runId)`                                   | Returns the `AbortSignal` for a run                                                                                                                                                                                                    |
+| `getClientId(runId)`                                 | Returns the clientId that owns a run                                                                                                                                                                                                   |
+| `getActiveRunIds()`                                  | Returns all active run IDs                                                                                                                                                                                                             |
+| `close()`                                            | Aborts all active runs and clears state                                                                                                                                                                                                |
 
 ### AbortController per run
 
@@ -95,7 +95,7 @@ Cancel routing lives in the agent session (`src/core/transport/agent-session.ts`
 
 The agent session subscribes to [`x-ably-cancel`](wire-protocol.md#lifecycle-events) events on channel construction. When a cancel message arrives, it:
 
-1. Parses the cancel filter from [cancel headers](wire-protocol.md#transport-headers-x-ably) (`x-ably-cancel-run-id`, `x-ably-cancel-own`, `x-ably-cancel-client-id`, `x-ably-cancel-all`)
+1. Parses the cancel filter from [cancel headers](wire-protocol.md#transport-headers-x-ably) (`x-ably-cancel-run-id`, `x-ably-cancel-invocation-id`, `x-ably-cancel-own`, `x-ably-cancel-client-id`, `x-ably-cancel-all`)
 2. Resolves which active runs match the filter
 3. For each matched run:
    - Calls the run's `onCancel` hook (if provided) - the hook can return `false` to reject the cancel
@@ -105,28 +105,39 @@ Throwing handlers don't prevent other runs from being cancelled - each run's can
 
 ### Cancel filter resolution
 
-| Header                    | Matches                                      |
-| ------------------------- | -------------------------------------------- |
-| `x-ably-cancel-run-id`    | The specific run                             |
-| `x-ably-cancel-own`       | All runs whose clientId matches the sender   |
-| `x-ably-cancel-client-id` | All runs belonging to the specified clientId |
-| `x-ably-cancel-all`       | All active runs                              |
+| Header                        | Matches                                      |
+| ----------------------------- | -------------------------------------------- |
+| `x-ably-cancel-run-id`        | The specific run                             |
+| `x-ably-cancel-invocation-id` | The run bound to the specified invocation    |
+| `x-ably-cancel-own`           | All runs whose clientId matches the sender   |
+| `x-ably-cancel-client-id`     | All runs belonging to the specified clientId |
+| `x-ably-cancel-all`           | All active runs                              |
 
 ## buildTransportHeaders
 
 `src/core/transport/headers.ts` - used by both client and server.
 
-A single function that builds the standard [`x-ably-*` header set](wire-protocol.md#transport-headers-x-ably) for a message. Takes role, runId, msgId, and optional [branching headers](wire-protocol.md#branching-headers) (parent, forkOf). Used by the agent session's `addMessages()` and `pipe()`, and by the client session for optimistic message stamping.
+A single function that builds the standard [`x-ably-*` header set](wire-protocol.md#transport-headers-x-ably) for a message. Used by the agent session's `addMessages()` and `pipe()`, and by the client session for optimistic message stamping.
 
 ```typescript
 buildTransportHeaders({
-  role: 'assistant',
-  runId: 'run-1',
-  msgId: 'msg-2',
-  runClientId: 'user-1',
-  parent: 'msg-1',
+  role: 'assistant', // required - 'user' or 'assistant'
+  runId: 'run-1', // required
+  msgId: 'msg-2', // required
+  runClientId: 'user-1', // optional - omits header when undefined
+  parent: 'msg-1', // optional - see Branching headers
+  forkOf: 'msg-0', // optional - sibling marker for fork chains
+  invocationId: 'inv-1', // optional - per-invocation correlator
+  promptId: 'p-1', // optional - per-prompt correlator (client side)
 });
-// → { 'x-ably-role': 'assistant', 'x-ably-run-id': 'run-1', ... }
+// → {
+//     'x-ably-role': 'assistant', 'x-ably-run-id': 'run-1',
+//     'x-ably-msg-id': 'msg-2', 'x-ably-run-client-id': 'user-1',
+//     'x-ably-parent': 'msg-1', 'x-ably-fork-of': 'msg-0',
+//     'x-ably-invocation-id': 'inv-1', 'x-ably-prompt-id': 'p-1',
+//   }
 ```
+
+Optional fields are omitted from the result entirely when undefined, not stamped as empty strings. See [Branching headers](wire-protocol.md#branching-headers) for how `parent` and `forkOf` shape the conversation tree, and [Run.pipe parent resolution](wire-protocol.md#how-x-ably-parent-is-resolved) for the default-parent rules.
 
 See [Client session](client-session.md) and [Agent session](agent-session.md) for how these sub-components are composed into the full session implementations. See [Wire protocol](wire-protocol.md) for the full header and event specification. See [Encoder](encoder.md) for how the encoder writes through the channel. See [Decoder](decoder.md) for how decoded events are produced for routing. See [Headers](headers.md) for the domain header reader/writer utilities.

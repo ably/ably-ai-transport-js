@@ -16,9 +16,11 @@ interface InputBarProps {
   activeRuns: Map<string, Set<string>>;
   clientId: string | undefined;
   queue: QueueHandle;
+  /** Override the input placeholder (e.g. for the Images tab). */
+  placeholder?: string;
 }
 
-export function InputBar({ session, send, activeRuns, clientId, queue }: InputBarProps) {
+export function InputBar({ session, send, activeRuns, clientId, queue, placeholder }: InputBarProps) {
   const [input, setInput] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
 
@@ -109,7 +111,9 @@ export function InputBar({ session, send, activeRuns, clientId, queue }: InputBa
             setSelectedIndex(0);
           }}
           onKeyDown={handleKeyDown}
-          placeholder={hasOwnRuns ? 'Type to queue, or /cancel...' : 'Type a message, or / for commands...'}
+          placeholder={
+            hasOwnRuns ? 'Type to queue, or /cancel...' : (placeholder ?? 'Type a message, or / for commands...')
+          }
           className="flex-1 rounded-md bg-zinc-900 border border-zinc-700 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500"
           autoFocus
         />

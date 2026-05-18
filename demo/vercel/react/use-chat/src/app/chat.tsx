@@ -10,14 +10,20 @@ import {
   useView,
   useStagedAddToolApprovalResponse,
 } from '@ably/ai-transport/vercel/react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { MessageList } from './components/message-list';
 import type { CallbackLogEntry } from './components/debug-pane';
 import { DebugPane } from './components/debug-pane';
+import { ImagePresets } from './components/image-presets';
+import { SpeechPresets } from './components/speech-presets';
 import { SuggestionChips } from './components/suggestion-chips';
 import { useClientTools } from './hooks/use-client-tools';
 import { useDemoProgress } from './hooks/use-demo-progress';
 import { clientColor } from './lib/client-color';
+
+type TabId = 'chat' | 'images' | 'speech';
+const TAB_IDS: TabId[] = ['chat', 'images', 'speech'];
 
 // ---------------------------------------------------------------------------
 // Chat component
@@ -108,10 +114,31 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
     inputRef.current?.focus();
   }, []);
 
+  // Active tab is held in the URL so it's shareable and survives reloads.
+  // Each tab attaches to its own Ably channel (see page.tsx for the
+  // base + suffix derivation), so the chat, image, and speech histories
+  // are independent.
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const rawTab = searchParams.get('tab');
+  const tab: TabId = rawTab === 'images' ? 'images' : rawTab === 'speech' ? 'speech' : 'chat';
+  const setTab = useCallback(
+    (next: TabId) => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set('tab', next);
+      router.replace(`?${params.toString().replaceAll('%3A', ':')}`);
+    },
+    [router, searchParams],
+  );
+
   return (
     <div className="flex h-dvh">
       <div className="flex flex-1 flex-col">
         <Header clientId={clientId} />
+        <Tabs
+          active={tab}
+          onChange={setTab}
+        />
         <MessageList
           nodes={nodes}
           hasOlder={hasOlder}
@@ -124,14 +151,25 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
           onToolDeny={(approvalId) => stagedApproval({ id: approvalId, approved: false, reason: 'User denied' })}
         />
         <div className="border-t border-zinc-800">
-          <SuggestionChips
-            steps={unfinishedSteps}
-            onSelectPrompt={handleSelectPrompt}
-          />
+          {tab === 'chat' && (
+            <SuggestionChips
+              steps={unfinishedSteps}
+              onSelectPrompt={handleSelectPrompt}
+            />
+          )}
+          {tab === 'images' && <ImagePresets onSelectPrompt={handleSelectPrompt} />}
+          {tab === 'speech' && <SpeechPresets onSelectPrompt={handleSelectPrompt} />}
           <InputBar
             value={input}
             onChange={setInput}
             inputRef={inputRef}
+            placeholder={
+              tab === 'images'
+                ? 'Describe a small image to generate...'
+                : tab === 'speech'
+                  ? 'Say something out loud...'
+                  : 'Type a message...'
+            }
             onSend={(text) => sendMessage({ text })}
             onStop={stop}
             hasAnyRuns={hasAnyRuns}
@@ -231,6 +269,7 @@ function InputBar({
   value,
   onChange,
   inputRef,
+  placeholder,
   onSend,
   onStop,
   hasAnyRuns,
@@ -238,6 +277,7 @@ function InputBar({
   value: string;
   onChange: (value: string) => void;
   inputRef?: React.RefObject<HTMLInputElement | null>;
+  placeholder?: string;
   onSend: (text: string) => void;
   onStop: () => void;
   hasAnyRuns: boolean;
@@ -259,7 +299,7 @@ function InputBar({
         ref={inputRef}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder="Type a message..."
+        placeholder={placeholder ?? 'Type a message...'}
         className="flex-1 rounded-md bg-zinc-900 border border-zinc-700 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500"
         autoFocus
       />
@@ -281,5 +321,30 @@ function InputBar({
         </button>
       )}
     </form>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tabs - switch between chat and image generation. Each tab has its own
+// Ably channel and history; switching tabs re-attaches with a different
+// channel suffix.
+// ---------------------------------------------------------------------------
+
+function Tabs({ active, onChange }: { active: TabId; onChange: (tab: TabId) => void }) {
+  return (
+    <div className="flex flex-shrink-0 border-b border-zinc-800 px-4">
+      {TAB_IDS.map((id) => (
+        <button
+          key={id}
+          type="button"
+          onClick={() => onChange(id)}
+          className={`px-4 py-2 text-xs font-medium uppercase tracking-wide transition-colors border-b-2 -mb-px ${
+            active === id ? 'border-emerald-500 text-zinc-100' : 'border-transparent text-zinc-500 hover:text-zinc-300'
+          }`}
+        >
+          {id}
+        </button>
+      ))}
+    </div>
   );
 }

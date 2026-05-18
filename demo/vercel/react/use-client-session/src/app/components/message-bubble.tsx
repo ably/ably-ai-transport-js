@@ -228,6 +228,38 @@ export function MessageBubble({
                     />
                   );
                 }
+                if (part.type === 'file') {
+                  if (part.mediaType?.startsWith('image/')) {
+                    return (
+                      <img
+                        key={i}
+                        src={part.url}
+                        alt=""
+                        className="block max-w-[256px] max-h-[256px] rounded-md mt-1 first:mt-0"
+                      />
+                    );
+                  }
+                  if (part.mediaType?.startsWith('audio/')) {
+                    return (
+                      <audio
+                        key={i}
+                        src={part.url}
+                        controls
+                        className="block w-full max-w-[320px] mt-1 first:mt-0"
+                      />
+                    );
+                  }
+                  return (
+                    <a
+                      key={i}
+                      href={part.url}
+                      download
+                      className="text-xs text-zinc-400 underline"
+                    >
+                      Download file ({part.mediaType})
+                    </a>
+                  );
+                }
                 return null;
               })}
               {!isUser && status === 'streaming' && (

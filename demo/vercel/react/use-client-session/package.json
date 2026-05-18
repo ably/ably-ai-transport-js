@@ -13,13 +13,15 @@
   "dependencies": {
     "@ably/ai-transport": "file:../../../..",
     "@ai-sdk/anthropic": "^3",
+    "@ai-sdk/openai": "^3",
     "@ai-sdk/react": "^3.0.161",
     "ably": "^2",
     "ai": "^6",
     "jsonwebtoken": "^9",
     "next": "^16",
     "react": "^19",
-    "react-dom": "^19"
+    "react-dom": "^19",
+    "sharp": "^0.34"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

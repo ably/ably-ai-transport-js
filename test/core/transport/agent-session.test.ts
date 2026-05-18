@@ -324,9 +324,14 @@ const deliverUserPrompt = (ch: MockChannel, opts: DeliverUserPromptOpts): void =
     [HEADER_ROLE]: 'user',
     [HEADER_INVOCATION_ID]: opts.invocationId,
     [HEADER_MSG_ID]: opts.msgId,
+    // Always stamp a prompt-id — the agent dispatcher routes prompt-bearing
+    // messages by `x-ably-prompt-id`, not by role, so without one the
+    // synthetic message wouldn't reach the buffer/lookup path. Tests that
+    // care about the specific id supply it via `opts.promptId`; otherwise
+    // we derive a unique value from the msg-id.
+    [HEADER_PROMPT_ID]: opts.promptId ?? `p-${opts.msgId}`,
   };
   if (opts.runId) headers[HEADER_RUN_ID] = opts.runId;
-  if (opts.promptId) headers[HEADER_PROMPT_ID] = opts.promptId;
   const msg = {
     name: opts.name ?? 'text',
     serial: opts.serial,
@@ -1279,6 +1284,52 @@ describe('AgentSession', () => {
 
       await startPromise;
       expect(run.view.messages.map((m) => m.msgId)).toEqual(['first', 'second']);
+      s.close();
+    });
+
+    it('waits for prompt-bearing messages with no user role (e.g. tool-approval-response)', async () => {
+      // The agent dispatcher routes any inbound message carrying
+      // `x-ably-prompt-id`, not just messages with role=user. Continuation
+      // sends publish amend events (tool-approval-response, client tool
+      // output) that don't have role=user but DO carry a promptId.
+      // `Run.start()` must wait for them via the same prompt lookup —
+      // they count toward the wait whether or not they decode into a
+      // viewable message.
+      const ch = createMockChannel();
+      const c = codecWithFunctionalDecoder();
+      const s = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'amend-wait',
+        codec: c,
+        promptLookupTimeoutMs: 5000,
+      });
+      await s.connect();
+
+      const runId = 'r-amend';
+      const invocationId = 'inv-amend';
+      const promptId = 'p-amend';
+      const run = createRunFromOpts(s, { runId, invocationId, promptIds: [promptId] });
+      const startPromise = run.start();
+
+      // Synthetic amend wire message — no role=user, just the headers a
+      // client-published amend event would carry. The lookup should
+      // resolve solely because the promptId is in the expected set.
+      const amendMsg = {
+        name: 'tool-approval-response',
+        serial: '01',
+        extras: {
+          headers: {
+            [HEADER_RUN_ID]: runId,
+            [HEADER_INVOCATION_ID]: invocationId,
+            [HEADER_PROMPT_ID]: promptId,
+          },
+        },
+      } as unknown as Ably.InboundMessage;
+      ch.listener?.(amendMsg);
+
+      // Resolution proves the dispatcher routed the no-role message into
+      // the lookup. Without the gate change, the lookup would time out.
+      await expect(startPromise).resolves.toBeUndefined();
       s.close();
     });
   });

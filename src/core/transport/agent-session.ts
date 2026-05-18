@@ -23,7 +23,6 @@ import {
   HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
   HEADER_PROMPT_ID,
-  HEADER_ROLE,
   HEADER_RUN_ID,
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
@@ -133,17 +132,26 @@ const loadRunProjection = async <TEvent, TProjection, TMessage>(opts: {
 
 /**
  * Wait for every prompt-id in `expectedPromptIds` to arrive as a channel
- * message and decode the matching messages into MessageNodes. Uses the
- * session's unfiltered channel dispatcher (registered in `connect()`) so
- * that messages replayed via channel rewind on attach reach the lookup —
- * no separate history fetch needed.
+ * message before letting the run proceed to LLM work. Uses the session's
+ * unfiltered channel dispatcher (registered in `connect()`) so that
+ * messages replayed via channel rewind on attach reach the lookup — no
+ * separate history fetch needed.
  *
- * Multi-message `send()` publishes each user message as a separate Ably
- * message under the same invocation-id, each stamped with its own
- * `x-ably-prompt-id`. The lookup matches incoming messages against the
- * expected set; ids not in the set are ignored, duplicates (rewind
- * redelivering a message also seen live) are deduped by prompt-id.
- * Collected nodes are returned sorted by Ably `serial` ascending.
+ * Each client-published event in a send (user-message AND amend events
+ * such as tool-approval responses and client tool outputs) is stamped
+ * with its own `x-ably-prompt-id` and listed in `invocation.promptIds`.
+ * The lookup matches incoming messages against the expected set; ids
+ * not in the set are ignored, duplicates (rewind redelivering a message
+ * also seen live) are deduped by prompt-id. The wait completes when
+ * every expected id has arrived, guaranteeing the channel state is
+ * consistent with what the client promised before any downstream
+ * processing (loadProjection, streamText) runs.
+ *
+ * User-message arrivals decode into MessageNodes that populate
+ * `run.view.messages`; amend arrivals fold into a fresh projection that
+ * has no target message, so they're orphaned and dropped — they only
+ * count toward the wait. Collected nodes are returned sorted by Ably
+ * `serial` ascending.
  *
  * Bounded by `timeoutMs` as a total budget across all N arrivals. The
  * caller's `signal` aborts the wait. On partial collection at timeout the
@@ -152,15 +160,15 @@ const loadRunProjection = async <TEvent, TProjection, TMessage>(opts: {
  * rejects with `PromptNotFound` wrapping the decode error as cause —
  * already-collected messages are discarded.
  * @param opts - Lookup parameters.
- * @param opts.register - Session-provided registration that delivers user-prompt messages for this invocationId. Returns an unregister function.
- * @param opts.codec - Codec used to decode the matching message into MessageNodes.
+ * @param opts.register - Session-provided registration that delivers prompt-bearing messages for this invocationId. Returns an unregister function.
+ * @param opts.codec - Codec used to decode arriving messages.
  * @param opts.invocationId - Invocation identifier the dispatcher keys on.
  * @param opts.runId - Run identifier (used for logging and error messages).
  * @param opts.expectedPromptIds - Prompt-ids the lookup must observe before resolving.
  * @param opts.timeoutMs - Maximum total time to wait for all prompt-id arrivals.
  * @param opts.signal - AbortSignal that cancels the wait when the run aborts.
  * @param opts.logger - Optional logger for diagnostic output.
- * @returns The decoded MessageNodes for the matching user prompts, sorted by Ably serial.
+ * @returns MessageNodes for arriving user-message events, sorted by Ably serial; empty for invocations that publish only amend events.
  */
 const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
   register: (callback: (msg: Ably.InboundMessage) => void) => () => void;
@@ -697,28 +705,32 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
         return;
       }
 
-      // Dispatch user-prompt messages to any pending lookup keyed by
-      // invocation-id. The lookup itself does the role/runId discrimination
-      // (invocation-ids are unique UUIDs, so the key alone is sufficient in
-      // practice; the callback re-checks defensively).
+      // Dispatch client-published prompt-bearing messages to any pending
+      // lookup keyed by invocation-id. Every client-originated event in
+      // an invocation (user-message AND amend events such as tool-approval
+      // responses and client tool outputs) carries `x-ably-prompt-id`; the
+      // lookup waits for every promised id to arrive before letting the
+      // run start LLM work. Server-side lifecycle messages (run-start,
+      // run-end, cancel, abort, error) never stamp `x-ably-prompt-id`, so
+      // they're naturally excluded.
       const headers = getHeaders(msg);
       const invocationId = headers[HEADER_INVOCATION_ID];
-      if (invocationId && headers[HEADER_ROLE] === 'user') {
+      if (invocationId && headers[HEADER_PROMPT_ID] !== undefined) {
         const listener = this._pendingPromptLookups.get(invocationId);
         if (listener) {
           listener(msg);
         } else {
           // Over-arrival: lookup for this invocation already completed
-          // successfully (e.g. client published more user-prompts than
-          // the invocation's `promptIds` listed). Warn loudly so
-          // client-side bugs surface, then drop the message — no listener
-          // will ever register for this completed lookup, so buffering
-          // would just hold a slot until FIFO eviction. The run is not
-          // aborted.
+          // successfully (e.g. client published more prompt-bearing
+          // events than the invocation's `promptIds` listed). Warn
+          // loudly so client-side bugs surface, then drop the message —
+          // no listener will ever register for this completed lookup,
+          // so buffering would just hold a slot until FIFO eviction.
+          // The run is not aborted.
           const completedExpectedCount = this._completedLookupInvocationIds.get(invocationId);
           if (completedExpectedCount !== undefined) {
             this._logger?.warn(
-              'DefaultAgentSession._handleChannelMessage(); over-arrival user-prompt after lookup completed',
+              'DefaultAgentSession._handleChannelMessage(); over-arrival prompt-bearing message after lookup completed',
               {
                 invocationId,
                 expectedCount: completedExpectedCount,

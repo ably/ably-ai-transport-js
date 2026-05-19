@@ -52,12 +52,23 @@ export function ChatBootstrap({ sessionName, clientId, children }: ChatBootstrap
     const view = session.createView();
     handleRef.current = { ably, session, view };
 
+    const channel = ably.channels.get(sessionName);
+
     void (async () => {
       try {
         await session.connect();
       } catch (err) {
         console.error('client session failed to connect', err);
         return;
+      }
+      if (disposed) return;
+      try {
+        // Ably auto-rejoins presence on reconnect, so one enter() at
+        // connect time is enough to keep the member visible for the
+        // session's lifetime.
+        await channel.presence.enter();
+      } catch (err) {
+        console.error('failed to enter presence', err);
       }
       if (disposed) return;
       setHandle({ ably, session, view });
@@ -67,6 +78,10 @@ export function ChatBootstrap({ sessionName, clientId, children }: ChatBootstrap
       disposed = true;
       handleRef.current = null;
       view.close();
+      // Best-effort: leave presence before tearing down the connection.
+      // If it fails (or the connection has already dropped) Ably will
+      // expire the member after the connection-loss grace period.
+      void channel.presence.leave().catch(() => {});
       void session.close().finally(() => {
         ably.close();
       });

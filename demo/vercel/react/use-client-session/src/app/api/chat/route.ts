@@ -22,7 +22,7 @@ import { streamText, convertToModelMessages } from 'ai';
 import type { DynamicToolUIPart, UIMessage } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
-import { createAgentSession, UIMessageCodec } from '@ably/ai-transport/vercel';
+import { createAgentSession, UIMessageCodec, vercelRunEndReason } from '@ably/ai-transport/vercel';
 import type { InvocationData } from '@ably/ai-transport';
 import { Invocation } from '@ably/ai-transport';
 import { tools } from './tools';
@@ -72,9 +72,8 @@ export async function POST(req: Request) {
   });
 
   after(async () => {
-    const { reason } = await run.pipe(result.toUIMessageStream(), { parent: lastUserMsgId });
-    const finishReason = reason === 'complete' ? await result.finishReason : undefined;
-    const endReason = finishReason === 'tool-calls' ? 'suspended' : reason;
+    const pipeResult = await run.pipe(result.toUIMessageStream(), { parent: lastUserMsgId });
+    const endReason = await vercelRunEndReason(pipeResult, result.finishReason);
     await run.end(endReason);
     session.close();
   });

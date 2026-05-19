@@ -11,3 +11,6 @@ export type {
   VercelClientSessionOptions,
 } from './transport/index.js';
 export { createAgentSession, createChatTransport, createClientSession } from './transport/index.js';
+
+// Vercel-shaped helpers
+export { vercelRunEndReason } from './run-end-reason.js';

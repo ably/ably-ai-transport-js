@@ -139,7 +139,7 @@ function SubagentBlock({ part }: { part: AI.ToolUIPart | AI.DynamicToolUIPart })
         <span className="ml-auto text-[10px] uppercase tracking-wide text-violet-300/80">{status}</span>
       </button>
       {expanded && hasContent && (
-        <div className="mt-2 space-y-2 border-l border-violet-900/50 pl-3">
+        <div className="mt-2 space-y-2 pl-3">
           {subagentMessages?.map((m) => {
             const meta = ctx.info.get(m.id);
             return (

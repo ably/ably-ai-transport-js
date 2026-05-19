@@ -201,36 +201,6 @@ export function Chat({ handle, clientId }: ChatProps) {
     }
   }, [activeRuns]);
 
-  // Pause: publish x-ably-pause on the channel (run.pause()) AND POST to
-  // /api/agent/pause so the workflow's Temporal Update flips its
-  // in-process `paused` flag. Both paths are required per the demo's
-  // long-lived workflow design — the channel publish is the durable
-  // record visible to other observers/devices, the Update is the
-  // reliable in-process wake-up for the workflow.
-  const handlePause = useCallback(() => {
-    for (const run of activeRuns) {
-      void (async () => {
-        try {
-          await run.pause();
-        } catch (err) {
-          console.error('failed to publish pause', err);
-        }
-        try {
-          const response = await fetch('/api/agent/pause', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ runId: run.id }),
-          });
-          if (!response.ok) {
-            console.error(`pause endpoint returned HTTP ${String(response.status)}`);
-          }
-        } catch (err) {
-          console.error('failed to send pause update', err);
-        }
-      })();
-    }
-  }, [activeRuns]);
-
   // Resume: symmetric with pause. run.resume() publishes x-ably-resume;
   // the POST sends the Temporal Update that wakes the paused workflow's
   // condition wait.
@@ -295,7 +265,6 @@ export function Chat({ handle, clientId }: ChatProps) {
         <InputBar
           onSubmit={(text, simulateFail) => void handleSubmit(text, simulateFail)}
           onStop={isRunning ? handleStop : undefined}
-          onPause={isRunning ? handlePause : undefined}
           onResume={isSuspended ? handleResume : undefined}
           state={inputState}
         />

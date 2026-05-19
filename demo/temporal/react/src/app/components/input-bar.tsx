@@ -13,11 +13,6 @@ interface InputBarProps {
   /** Invoked when the user clicks Stop while a run is in flight. */
   onStop?: () => void;
   /**
-   * Invoked when the user clicks Pause. Visible only while a run is
-   * `'active'` — pause is a no-op on suspended/terminal runs.
-   */
-  onPause?: () => void;
-  /**
    * Invoked when the user clicks Resume. Visible only when a run is
    * `'suspended'` — resume publishes `x-ably-resume` and sends the
    * Temporal Update that wakes the paused workflow.
@@ -25,13 +20,13 @@ interface InputBarProps {
   onResume?: () => void;
   /**
    * `'idle'` while no run is in flight (input + Send),
-   * `'active'` while a run is streaming (Stop + Pause + disabled input),
+   * `'active'` while a run is streaming (Stop + disabled input),
    * `'suspended'` while a run is paused (Resume + disabled input).
    */
   state: 'idle' | 'active' | 'suspended';
 }
 
-export function InputBar({ onSubmit, onStop, onPause, onResume, state }: InputBarProps) {
+export function InputBar({ onSubmit, onStop, onResume, state }: InputBarProps) {
   const [input, setInput] = useState('');
   const [simulateFail, setSimulateFail] = useState(false);
 
@@ -67,16 +62,6 @@ export function InputBar({ onSubmit, onStop, onPause, onResume, state }: InputBa
           className="flex-1 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500 disabled:cursor-not-allowed disabled:opacity-60"
           autoFocus
         />
-        {state === 'active' && onPause !== undefined ? (
-          <button
-            type="button"
-            onClick={onPause}
-            className="rounded-md bg-amber-700 px-4 py-2 text-sm font-medium text-zinc-100 transition-colors hover:bg-amber-600"
-            aria-label="Pause the running response"
-          >
-            Pause
-          </button>
-        ) : null}
         {state === 'active' && onStop !== undefined ? (
           <button
             type="button"

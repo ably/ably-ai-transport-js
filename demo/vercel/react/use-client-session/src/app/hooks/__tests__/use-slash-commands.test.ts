@@ -142,7 +142,12 @@ describe('useSlashCommands', () => {
     expect(executed).toBe(true);
     expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith(
-      expect.arrayContaining([expect.objectContaining({ parts: [{ type: 'text', text: 'hello' }] })]),
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'ait-user-message',
+          message: expect.objectContaining({ parts: [{ type: 'text', text: 'hello' }] }),
+        }),
+      ]),
     );
   });
 
@@ -162,7 +167,12 @@ describe('useSlashCommands', () => {
 
     expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith(
-      expect.arrayContaining([expect.objectContaining({ parts: [{ type: 'text', text: 'new prompt' }] })]),
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'ait-user-message',
+          message: expect.objectContaining({ parts: [{ type: 'text', text: 'new prompt' }] }),
+        }),
+      ]),
     );
   });
 

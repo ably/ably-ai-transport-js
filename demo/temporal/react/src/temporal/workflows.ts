@@ -13,6 +13,10 @@
  *      the run's view after each `step.start()` lands, so retried or
  *      aborted predecessors are excluded from the model context.
  *   3. {@link endRun} activity ends the run.
+ *   4. For root runs (`depth === 0`), a trailing `closeSession` activity
+ *      tears down the cached AIT session for `sessionName` in a `finally`
+ *      block so each user→assistant exchange leaves no Ably subscription
+ *      behind. Subagents skip this — they share the parent's session.
  *
  * Pause and resume are exposed to the route handler via Temporal Updates
  * (`pauseUpdate` / `resumeUpdate`). The client also publishes
@@ -50,6 +54,15 @@ const MAX_ITERATIONS = 20;
 
 const { startRun, step, endRun, suspendRun } = proxyActivities<typeof activities>({
   startToCloseTimeout: '5 minutes',
+});
+
+// `closeSession` is best-effort teardown — the underlying `session.close()`
+// is documented as never rejecting, and a worker restart would clean up
+// any leak anyway. Keep maximumAttempts at 1 so a transient activity
+// failure doesn't multiply into retries on the cleanup path.
+const { closeSession } = proxyActivities<typeof activities>({
+  startToCloseTimeout: '1 minute',
+  retry: { maximumAttempts: 1 },
 });
 
 // `spawnSubagent` publishes a run-start + user message onto the channel
@@ -123,8 +136,6 @@ export async function runAgent(input: RunAgentInput): Promise<string> {
     paused = false;
   });
 
-  await startRun(invocationData);
-
   let lastText = '';
   // Set by a fan-out iteration to hand the subagents' final-text results
   // to the next iteration so it runs a `step` with `publishToolResults`.
@@ -137,6 +148,7 @@ export async function runAgent(input: RunAgentInput): Promise<string> {
   // the next activity reads the run's view.
   const subagentResultsSoFar: SubagentResultArg[] = [];
   try {
+    await startRun(invocationData);
     for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
       const failHere = simulateFail && iteration === 0;
       let result;
@@ -208,6 +220,13 @@ export async function runAgent(input: RunAgentInput): Promise<string> {
     const message = error instanceof Error ? error.message : String(error);
     await endRun({ runId: invocationData.runId, errorMessage: message });
     throw error;
+  } finally {
+    // Only the root run owns the AIT session lifetime — subagent runs
+    // share the parent's session, so closing it from a child would tear
+    // the subscriber out from under the parent loop.
+    if (depth === 0) {
+      await closeSession({ sessionName: invocationData.sessionName });
+    }
   }
   return lastText;
 }

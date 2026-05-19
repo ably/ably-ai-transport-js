@@ -19,6 +19,9 @@
  *     run's channel between iterations.
  *   - {@link endRun} ends the run (cleanly or with an error) and clears
  *     the cached handle.
+ *   - {@link closeSession} tears down the cached AIT sessions for the
+ *     session name. Called from the root workflow's `finally` block so
+ *     each user→assistant exchange leaves no subscription behind.
  *
  * Tool execute functions run in-process inside `step` — they don't become
  * their own Temporal activities. Keeping the LLM call and its tool fan-out
@@ -34,7 +37,12 @@ import { anthropic } from '@ai-sdk/anthropic';
 
 import { Invocation, type InvocationData } from '@ably/ai-transport';
 
-import { getClientSession, getSession, publishOnSessionChannel } from '../lib/agent-session';
+import {
+  closeSession as closeSessionImpl,
+  getClientSession,
+  getSession,
+  publishOnSessionChannel,
+} from '../lib/agent-session';
 import { dropBashToolkit, getBashToolkit } from '../lib/bash-session';
 import { deleteRun, getRun, setRun } from '../lib/run-cache';
 import { SPAWN_SUBAGENT_TOOL_NAME, type SpawnSubagentInput, spawnSubagentToolFor } from '../lib/spawn-subagent-tool';
@@ -429,6 +437,21 @@ export async function endRun(args: EndRunArgs): Promise<void> {
     deleteRun(args.runId);
     dropBashToolkit(args.runId);
   }
+}
+
+export interface CloseSessionArgs {
+  /** Session name whose cached AgentSession + ClientSession should be torn down. */
+  sessionName: string;
+}
+
+/**
+ * Tear down the cached AIT sessions bound to `sessionName`. Idempotent
+ * and best-effort — calling twice (or on a session that never opened)
+ * is a no-op. Designed to be safe in a workflow's `finally` block so
+ * the cleanup runs whether the run succeeded, failed, or was aborted.
+ */
+export async function closeSession(args: CloseSessionArgs): Promise<void> {
+  await closeSessionImpl(args.sessionName);
 }
 
 export interface SpawnSubagentArgs {

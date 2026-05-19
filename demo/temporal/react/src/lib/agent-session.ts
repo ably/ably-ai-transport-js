@@ -92,3 +92,26 @@ export const publishOnSessionChannel = async (sessionName: string, name: string,
   const channel = getClientAbly().channels.get(sessionName);
   await channel.publish(name, data);
 };
+
+/**
+ * Tear down the cached AgentSession and ClientSession for `sessionName`.
+ * Removes them from the cache before awaiting close so a concurrent
+ * `getSession` call observes the eviction and creates a fresh entry
+ * instead of receiving the about-to-be-closed one. The shared Realtime
+ * connections (`agentAbly` / `clientAbly`) stay alive — they're keyed at
+ * the process, not the session.
+ *
+ * Best-effort: AIT session `close()` never rejects, but the cached
+ * promise itself can have rejected if the original `connect()` failed.
+ * Swallow those so the caller can always finally-block this.
+ */
+export const closeSession = async (sessionName: string): Promise<void> => {
+  const agent = agentSessions.get(sessionName);
+  const client = clientSessions.get(sessionName);
+  agentSessions.delete(sessionName);
+  clientSessions.delete(sessionName);
+  await Promise.all([
+    agent?.then((s) => s.close()).catch(() => undefined),
+    client?.then((s) => s.close()).catch(() => undefined),
+  ]);
+};

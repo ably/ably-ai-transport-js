@@ -5,10 +5,10 @@
  *
  * Each call to {@link runAgent} orchestrates one user→assistant exchange:
  *
- *   1. {@link openRun} activity binds an AIT run on the agent session.
+ *   1. {@link startRun} activity binds an AIT run on the agent session.
  *   2. The workflow loops up to {@link MAX_ITERATIONS} times. Each
- *      iteration calls {@link streamStep}, which runs one `streamText`
- *      and pipes the resulting `UIMessageChunk` stream through the AIT
+ *      iteration calls {@link step}, which runs one `streamText` and
+ *      pipes the resulting `UIMessageChunk` stream through the AIT
  *      step. The activity reads the canonical conversation history from
  *      the run's view after each `step.start()` lands, so retried or
  *      aborted predecessors are excluded from the model context.
@@ -42,23 +42,23 @@ import { workflowIdForRun } from '../lib/temporal-ids';
 /**
  * Hard cap on iterations per run. Each iteration is one model call plus
  * any tool executions it triggers, published as one AIT step. Subagent
- * fan-outs cost two iterations apiece (one streamStep that emits the
- * spawn calls, one resumeWithToolResults that feeds the results back),
+ * fan-outs cost two iterations apiece (one step that emits the spawn
+ * calls, one step that feeds the results back via `publishToolResults`),
  * so the cap is set comfortably above the no-subagent baseline.
  */
 const MAX_ITERATIONS = 20;
 
-const { openRun, streamStep, endRun, suspendRun, resumeWithToolResults } = proxyActivities<typeof activities>({
+const { startRun, step, endRun, suspendRun } = proxyActivities<typeof activities>({
   startToCloseTimeout: '5 minutes',
 });
 
-// `seedSubagentRun` publishes a run-start + user message onto the channel
+// `spawnSubagent` publishes a run-start + user message onto the channel
 // and is therefore NOT idempotent across retries: a successful Ably
 // publish followed by a worker crash before the activity result reaches
 // Temporal would, on retry, create a second orphan run and a duplicate
 // subagent-link sidecar. Disable retry so the workflow surfaces the
 // failure to the user instead of silently fanning out duplicates.
-const { seedSubagentRun } = proxyActivities<typeof activities>({
+const { spawnSubagent } = proxyActivities<typeof activities>({
   startToCloseTimeout: '5 minutes',
   retry: { maximumAttempts: 1 },
 });
@@ -85,14 +85,14 @@ export const resumeUpdate = defineUpdate<void, []>('resume');
  * Workflow input — extends {@link InvocationData} with demo-specific
  * fields:
  *
- *   - `simulateFail`: when true the first iteration's `streamStep` errors
+ *   - `simulateFail`: when true the first iteration's `step` errors
  *     mid-stream on its first activity attempt; Temporal then retries the
  *     activity and the second attempt succeeds, so the user sees a
  *     transient failed step followed by a successful run rather than a
  *     permanently-failed run.
  *   - `depth`: how deep this run sits in the subagent tree. The root
  *     (user-facing) run is `0`; a subagent spawned from it is `1`, etc.
- *     Threaded into every `streamStep` so the toolkit can hide
+ *     Threaded into every `step` so the toolkit can hide
  *     `spawn_subagent` once the recursion cap is reached.
  */
 export interface RunAgentInput extends InvocationData {
@@ -123,12 +123,12 @@ export async function runAgent(input: RunAgentInput): Promise<string> {
     paused = false;
   });
 
-  await openRun(invocationData);
+  await startRun(invocationData);
 
   let lastText = '';
   // Set by a fan-out iteration to hand the subagents' final-text results
-  // to the next iteration so it runs `resumeWithToolResults` instead of
-  // a fresh `streamStep`. Reset to undefined after consumption.
+  // to the next iteration so it runs a `step` with `publishToolResults`.
+  // Reset to undefined after consumption.
   let pendingSubagentResults: SubagentResultArg[] | undefined;
   // Every subagent result this run has seen, from every fan-out. Threaded
   // into every activity so they can hydrate the run's
@@ -141,7 +141,7 @@ export async function runAgent(input: RunAgentInput): Promise<string> {
       const failHere = simulateFail && iteration === 0;
       let result;
       if (pendingSubagentResults === undefined) {
-        result = await streamStep({
+        result = await step({
           runId: invocationData.runId,
           sessionName: invocationData.sessionName,
           depth,
@@ -151,11 +151,12 @@ export async function runAgent(input: RunAgentInput): Promise<string> {
         });
       } else {
         subagentResultsSoFar.push(...pendingSubagentResults);
-        result = await resumeWithToolResults({
+        result = await step({
           runId: invocationData.runId,
           sessionName: invocationData.sessionName,
           depth,
-          results: subagentResultsSoFar,
+          iteration,
+          publishToolResults: subagentResultsSoFar,
         });
         pendingSubagentResults = undefined;
       }
@@ -178,9 +179,9 @@ export async function runAgent(input: RunAgentInput): Promise<string> {
         paused = true;
         await suspendRun({ runId: invocationData.runId });
         await condition(() => !paused);
-        // Resumed — fall through to the next iteration. The next
-        // streamStep starts a fresh AIT step which re-activates the
-        // run from `'suspended'` per AIT-CS5.
+        // Resumed — fall through to the next iteration. The next step
+        // starts a fresh AIT step which re-activates the run from
+        // `'suspended'` per AIT-CS5.
         continue;
       }
 
@@ -189,7 +190,7 @@ export async function runAgent(input: RunAgentInput): Promise<string> {
       // Seed each child run on the shared channel, start a Temporal
       // child workflow per call (in parallel), capture each child's
       // final text, and queue the results so the next iteration is a
-      // `resumeWithToolResults` instead of a regular streamStep.
+      // `step` with `publishToolResults` instead of a regular step.
       if (result.subagentCalls !== undefined && result.subagentCalls.length > 0) {
         pendingSubagentResults = await spawnSubagents({
           calls: result.subagentCalls,
@@ -230,7 +231,7 @@ interface SpawnSubagentsArgs {
 async function spawnSubagents(args: SpawnSubagentsArgs): Promise<SubagentResultArg[]> {
   return Promise.all(
     args.calls.map(async (call) => {
-      const invocation = await seedSubagentRun({
+      const invocation = await spawnSubagent({
         sessionName: args.sessionName,
         parentRunId: args.parentRunId,
         parentToolCallId: call.toolCallId,

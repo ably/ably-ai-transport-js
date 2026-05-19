@@ -3,23 +3,28 @@
  *
  * Each AIT step is one Temporal activity:
  *
- *   - {@link openRun} binds an {@link AgentRun} on the AIT session, caches
- *     it by `runId`, and returns the canonical conversation history as
- *     `AI.ModelMessage`s so the workflow can feed the first
- *     `streamText` call.
- *   - {@link streamStep} runs one model call (with any tools the model
- *     invokes) via `streamText`, pipes the resulting `UIMessageChunk`
- *     stream through the AIT step, and returns the iteration's finish
- *     reason and response messages so the workflow can decide whether
- *     to keep looping.
+ *   - {@link startRun} binds an {@link AgentRun} on the AIT session and
+ *     caches it by `runId`.
+ *   - {@link step} runs one model call (with any tools the model invokes)
+ *     via `streamText`, pipes the resulting `UIMessageChunk` stream
+ *     through the AIT step, and returns the iteration's finish reason and
+ *     response messages so the workflow can decide whether to keep
+ *     looping. When the workflow is resuming after a subagent fan-out it
+ *     passes `publishToolResults`, which the step prepends to the stream
+ *     as `tool-output-available` chunks.
+ *   - {@link spawnSubagent} seeds a fresh run on the shared channel on
+ *     behalf of a `spawn_subagent` tool call; the workflow starts a
+ *     Temporal child workflow against it.
+ *   - {@link suspendRun} publishes `x-ably-run-suspend (paused)` on the
+ *     run's channel between iterations.
  *   - {@link endRun} ends the run (cleanly or with an error) and clears
  *     the cached handle.
  *
- * Tool execute functions run in-process inside `streamStep` — they don't
- * become their own Temporal activities. Keeping the LLM call and its
- * tool fan-out inside one activity keeps the wire shape close to the
- * vercel demo (one `streamText` per step) and avoids passing tool
- * call/result blobs through the workflow.
+ * Tool execute functions run in-process inside `step` — they don't become
+ * their own Temporal activities. Keeping the LLM call and its tool fan-out
+ * inside one activity keeps the wire shape close to the vercel demo (one
+ * `streamText` per step) and avoids passing tool call/result blobs through
+ * the workflow.
  */
 
 import { Context } from '@temporalio/activity';
@@ -49,7 +54,7 @@ const STEP_TIMEOUT_MS = 60_000;
  * fires. Mirrors the vercel demo's behaviour so the user sees a partial
  * assistant bubble before the catch path lands a failed step-end.
  *
- * Only applied on the activity's first attempt — see `streamStep` below.
+ * Only applied on the activity's first attempt — see `step` below.
  * Temporal's retry of the activity then succeeds and the run completes
  * normally, demonstrating automatic recovery from a transient failure.
  */
@@ -87,7 +92,7 @@ const streamThatFailsAfterPartialText = (
   });
 };
 
-export async function openRun(data: InvocationData): Promise<void> {
+export async function startRun(data: InvocationData): Promise<void> {
   const invocation = Invocation.fromJSON(data);
   const session = await getSession(invocation.sessionName);
   const signal = Context.current().cancellationSignal;
@@ -96,7 +101,7 @@ export async function openRun(data: InvocationData): Promise<void> {
   setRun(invocation.runId, run);
 }
 
-export interface StreamStepArgs {
+export interface StepArgs {
   runId: string;
   /** Session name — used to resolve the bash toolkit for this run. */
   sessionName: string;
@@ -116,13 +121,21 @@ export interface StreamStepArgs {
    */
   iteration: number;
   /**
-   * Subagent results the workflow has accumulated for this run across
-   * prior fan-out cycles. Threaded in so we can hydrate the run's
-   * `tool-spawn_subagent` parts locally without depending on Ably's
-   * echo-back of the `tool-output-available` chunks landing before this
-   * activity runs. Empty/undefined on the first iteration.
+   * Subagent results accumulated from prior fan-outs in this run.
+   * Threaded in so we can hydrate the run's `tool-spawn_subagent` parts
+   * locally without depending on Ably's echo-back of the
+   * `tool-output-available` chunks landing before this activity runs.
    */
   priorSubagentResults?: SubagentResultArg[];
+  /**
+   * Subagent results to publish at the start of this step as
+   * `tool-output-available` chunks. Set when the workflow is resuming
+   * after a fan-out completed — the step prepends one chunk per result
+   * before the live `streamText` output so the channel reflects the
+   * resolved tool parts on the parent's prior assistant message. These
+   * are also used for hydration alongside {@link priorSubagentResults}.
+   */
+  publishToolResults?: SubagentResultArg[];
   /**
    * When true on the activity's first attempt, the step publishes a few
    * text-delta chunks then errors so the catch path lands a failed
@@ -182,7 +195,7 @@ export interface PendingSubagentCall {
   input: SpawnSubagentInput;
 }
 
-export interface StreamStepResult {
+export interface StepResult {
   /** Finish reason from the model. The workflow stops looping when it isn't `'tool-calls'`. */
   finishReason: AI.FinishReason;
   /**
@@ -204,8 +217,8 @@ export interface StreamStepResult {
    * Spawn-subagent tool calls the model emitted that the SDK did not
    * auto-execute (the tool has no `execute` function). The workflow
    * starts one Temporal child workflow per call, then resumes the loop
-   * with a `resumeWithToolResults` activity that feeds the children's
-   * final text back as `tool-output-available` chunks.
+   * with a `step` whose `publishToolResults` feeds the children's final
+   * text back as `tool-output-available` chunks.
    */
   subagentCalls?: PendingSubagentCall[];
   /**
@@ -218,10 +231,10 @@ export interface StreamStepResult {
   text: string;
 }
 
-export async function streamStep(args: StreamStepArgs): Promise<StreamStepResult> {
+export async function step(args: StepArgs): Promise<StepResult> {
   const run = getRun(args.runId);
   if (run === undefined) {
-    throw new Error(`unable to stream step; no cached run for ${args.runId}`);
+    throw new Error(`unable to run step; no cached run for ${args.runId}`);
   }
   const signal = Context.current().cancellationSignal;
   const { tools: bashTools } = await getBashToolkit(args.runId);
@@ -230,8 +243,8 @@ export async function streamStep(args: StreamStepArgs): Promise<StreamStepResult
   // `result.toolCalls` and the workflow handles it out-of-band.
   const tools = { ...bashTools, ...spawnSubagentToolFor(args.depth) };
 
-  const step = run.createStep();
-  await step.start({ signal, timeoutMs: STEP_TIMEOUT_MS });
+  const aitStep = run.createStep();
+  await aitStep.start({ signal, timeoutMs: STEP_TIMEOUT_MS });
 
   // Read canonical messages from the run AFTER step.start() lands so
   // any prior failed/aborted step in this run is excluded from the
@@ -246,21 +259,29 @@ export async function streamStep(args: StreamStepArgs): Promise<StreamStepResult
   // would pull subagent conversations into the parent's context — both
   // confusing for the model and brittle against Ably's echo-back
   // ordering (subagent tool-output chunks may arrive at the parent
-  // subscriber after the next streamStep starts, leaving the parent's
-  // view holding apparently-unresolved tool calls from the subagent's
-  // run). The demo is single-turn at root, so we don't lose history by
+  // subscriber after the next step starts, leaving the parent's view
+  // holding apparently-unresolved tool calls from the subagent's run).
+  // The demo is single-turn at root, so we don't lose history by
   // scoping to the run.
   //
   // Hydrate the run's own `tool-spawn_subagent` parts using subagent
   // results the workflow has accumulated for this run. We don't rely on
   // Ably's echo of our own `tool-output-available` publishes landing
-  // before the next streamStep — the workflow remembers what came back
-  // and threads it through every activity.
-  const resultByToolCallId = new Map((args.priorSubagentResults ?? []).map((r) => [r.toolCallId, r.output]));
+  // before the next step — the workflow remembers what came back and
+  // threads it through every activity.
+  const resultByToolCallId = new Map(
+    [...(args.priorSubagentResults ?? []), ...(args.publishToolResults ?? [])].map((r) => [r.toolCallId, r.output]),
+  );
   const hydratedUIMessages = run.messages
     .filter((node) => node.canonical)
     .map((node) => hydrateSpawnToolResults(node.message, resultByToolCallId));
-  const messages = await convertToModelMessages(hydratedUIMessages);
+  // ignoreIncompleteToolCalls: if a previous step's bash call errored
+  // (output-error) or its input stream was cut short (input-streaming),
+  // the AIT UIMessage on the channel still carries that partial tool
+  // part — with no `input` to serialise. Anthropic rejects a `tool_use`
+  // block without `input`. Drop those partials from the model's view of
+  // the conversation; the model can re-decide what to do next.
+  const messages = await convertToModelMessages(hydratedUIMessages, { ignoreIncompleteToolCalls: true });
 
   // Demo aid: only on the root run's opening turn, if the user mentioned
   // "subagent" / "parallel" / etc, inject a forcing system prompt so the
@@ -276,7 +297,7 @@ export async function streamStep(args: StreamStepArgs): Promise<StreamStepResult
       model: anthropic(MODEL),
       system,
       messages,
-      abortSignal: step.signal,
+      abortSignal: aitStep.signal,
       tools,
       stopWhen: stepCountIs(1),
     });
@@ -286,9 +307,17 @@ export async function streamStep(args: StreamStepArgs): Promise<StreamStepResult
     // automatically — this is what makes the demo show Temporal's retry
     // behaviour rather than a permanently-failed run.
     const failThisAttempt = args.simulateFail === true && Context.current().info.attempt === 1;
-    const stream = failThisAttempt ? streamThatFailsAfterPartialText(source) : source;
-    await step.pipe(stream);
-    await step.end();
+    const maybeFailing = failThisAttempt ? streamThatFailsAfterPartialText(source) : source;
+    // When resuming after a fan-out, prepend tool-output-available
+    // chunks so the channel reflects the resolved tool parts on the
+    // parent's prior assistant message before the live model output
+    // starts flowing.
+    const stream =
+      args.publishToolResults !== undefined && args.publishToolResults.length > 0
+        ? prependToolOutputs(maybeFailing, args.publishToolResults)
+        : maybeFailing;
+    await aitStep.pipe(stream);
+    await aitStep.end();
 
     const finishReason = await result.finishReason;
     const text = await result.text;
@@ -306,7 +335,7 @@ export async function streamStep(args: StreamStepArgs): Promise<StreamStepResult
     // obvious from the worker terminal whether subagent fan-out fired.
     // eslint-disable-next-line no-console
     console.log(
-      `[streamStep] runId=${args.runId} depth=${String(args.depth)} iter=${String(args.iteration)} finishReason=${finishReason} tools=${JSON.stringify(toolCalls.map((c) => c.toolName))}`,
+      `[step] runId=${args.runId} depth=${String(args.depth)} iter=${String(args.iteration)} finishReason=${finishReason} tools=${JSON.stringify(toolCalls.map((c) => c.toolName))}`,
     );
     // Read pauseRequested AFTER step.end so any pause signal that landed
     // during the step's lifetime is reflected in the value the workflow
@@ -319,8 +348,8 @@ export async function streamStep(args: StreamStepArgs): Promise<StreamStepResult
       text,
     };
   } catch (error) {
-    await step.end(error);
-    if (step.signal.aborted) {
+    await aitStep.end(error);
+    if (aitStep.signal.aborted) {
       // Caller cancelled the run — end it here so the run-end terminal
       // is classified as `'aborted'` (the classifier needs the original
       // signal-driven error). Returning a marker tells the workflow to
@@ -402,7 +431,7 @@ export async function endRun(args: EndRunArgs): Promise<void> {
   }
 }
 
-export interface SeedSubagentRunArgs {
+export interface SpawnSubagentArgs {
   /** Session whose channel carries the new run. Shared with the parent. */
   sessionName: string;
   /** Parent run id — recorded on the demo:subagent-link sidecar. */
@@ -426,7 +455,7 @@ export interface SeedSubagentRunArgs {
  * The parent workflow uses the returned InvocationData to start a
  * `runAgent` child workflow that drives the subagent.
  */
-export async function seedSubagentRun(args: SeedSubagentRunArgs): Promise<InvocationData> {
+export async function spawnSubagent(args: SpawnSubagentArgs): Promise<InvocationData> {
   const session = await getClientSession(args.sessionName);
   const view = session.createView();
   try {
@@ -458,107 +487,6 @@ export interface SubagentResultArg {
   toolCallId: string;
   /** Final assistant text the child workflow produced. */
   output: string;
-}
-
-export interface ResumeWithToolResultsArgs {
-  runId: string;
-  sessionName: string;
-  depth: number;
-  /**
-   * Cumulative subagent results across every fan-out in this run.
-   * Includes both the results from the fan-out we are currently
-   * resuming from AND any prior fan-outs in the same run. Used to
-   * hydrate every still-`input-available` spawn part on the run's
-   * messages — see {@link StreamStepArgs.priorSubagentResults} for the
-   * echo-gap motivation.
-   */
-  results: SubagentResultArg[];
-}
-
-/**
- * Open a new step on the parent run that
- *   1. publishes a `tool-output-available` chunk for each completed
- *      subagent (so the channel reflects the resolved tool parts on the
- *      parent's prior assistant message), and
- *   2. resumes `streamText` with a message history that has the same
- *      tool results appended as a `tool` ModelMessage, so the model can
- *      react to the subagents' findings.
- *
- * Returns the same {@link StreamStepResult} shape as {@link streamStep}
- * so the workflow loop can keep iterating uniformly.
- */
-export async function resumeWithToolResults(args: ResumeWithToolResultsArgs): Promise<StreamStepResult> {
-  const run = getRun(args.runId);
-  if (run === undefined) {
-    throw new Error(`unable to resume with tool results; no cached run for ${args.runId}`);
-  }
-  const signal = Context.current().cancellationSignal;
-  const { tools: bashTools } = await getBashToolkit(args.runId);
-  const tools = { ...bashTools, ...spawnSubagentToolFor(args.depth) };
-
-  const step = run.createStep();
-  await step.start({ signal, timeoutMs: STEP_TIMEOUT_MS });
-
-  // Build the model's view of the conversation. We can't just call
-  // convertToModelMessages on the raw run — the run's prior assistant
-  // message still carries `tool-spawn_subagent` parts in
-  // `input-available` state locally (we deliberately did not
-  // auto-execute them, and Ably's echo of our own
-  // `tool-output-available` publishes may not have arrived back at this
-  // subscriber yet). Hydrate those parts to `output-available` from the
-  // workflow's accumulator before converting; the resulting UIMessages
-  // are internally consistent and serialize cleanly.
-  //
-  // See streamStep for the run.messages (run-scoped) choice rationale.
-  const resultByToolCallId = new Map(args.results.map((r) => [r.toolCallId, r.output]));
-  const hydratedUIMessages = run.messages
-    .filter((node) => node.canonical)
-    .map((node) => hydrateSpawnToolResults(node.message, resultByToolCallId));
-  const messages = await convertToModelMessages(hydratedUIMessages);
-
-  try {
-    const result = streamText({
-      model: anthropic(MODEL),
-      messages,
-      abortSignal: step.signal,
-      tools,
-      stopWhen: stepCountIs(1),
-    });
-    const source = result.toUIMessageStream();
-    // Prepend tool-output-available chunks for each completed subagent
-    // so the channel reflects the resolved tool parts on the parent's
-    // prior assistant message, then chain the live streamText output.
-    const stream = prependToolOutputs(source, args.results);
-    await step.pipe(stream);
-    await step.end();
-
-    const finishReason = await result.finishReason;
-    const text = await result.text;
-    const toolCalls = await result.toolCalls;
-    const subagentCalls: PendingSubagentCall[] = [];
-    for (const call of toolCalls) {
-      if (call.toolName === SPAWN_SUBAGENT_TOOL_NAME) {
-        // CAST: see streamStep for the same narrowing rationale.
-        subagentCalls.push({ toolCallId: call.toolCallId, input: call.input as SpawnSubagentInput });
-      }
-    }
-    return {
-      finishReason,
-      pauseRequested: run.pauseRequested,
-      subagentCalls: subagentCalls.length > 0 ? subagentCalls : undefined,
-      text,
-    };
-  } catch (error) {
-    await step.end(error);
-    if (step.signal.aborted) {
-      await run.end(error);
-      await run.close();
-      deleteRun(args.runId);
-      dropBashToolkit(args.runId);
-      return { finishReason: 'other', runEnded: true, text: '' };
-    }
-    throw error;
-  }
 }
 
 /**

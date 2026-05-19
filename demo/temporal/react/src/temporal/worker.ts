@@ -2,8 +2,9 @@
  * Temporal worker entry point. Run with `npm run worker` alongside
  * `npm run dev`.
  *
- * The worker registers the demo's activities — `openRun`, `streamStep`,
- * `endRun` — and polls the configured task queue. The {@link AgentSession}
+ * The worker registers the demo's activities — `startRun`, `step`,
+ * `endRun`, `suspendRun`, `spawnSubagent` — and polls the configured task
+ * queue. The {@link AgentSession}
  * for the session name is pre-warmed before the worker starts polling, so
  * the channel is attached and subscribed before any client publishes onto
  * it. Without this, the first user message can race the worker's first

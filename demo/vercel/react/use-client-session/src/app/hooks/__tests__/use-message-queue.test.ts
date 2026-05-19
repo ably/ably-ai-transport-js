@@ -106,7 +106,12 @@ describe('useMessageQueue', () => {
     expect(session.waitForRun).toHaveBeenCalled();
     expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith(
-      expect.arrayContaining([expect.objectContaining({ parts: [{ type: 'text', text: 'queued message' }] })]),
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'ait-user-message',
+          message: expect.objectContaining({ parts: [{ type: 'text', text: 'queued message' }] }),
+        }),
+      ]),
     );
     expect(result.current.items).toEqual([]);
   });
@@ -129,8 +134,14 @@ describe('useMessageQueue', () => {
     expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith(
       expect.arrayContaining([
-        expect.objectContaining({ parts: [{ type: 'text', text: 'first' }] }),
-        expect.objectContaining({ parts: [{ type: 'text', text: 'second' }] }),
+        expect.objectContaining({
+          type: 'ait-user-message',
+          message: expect.objectContaining({ parts: [{ type: 'text', text: 'first' }] }),
+        }),
+        expect.objectContaining({
+          type: 'ait-user-message',
+          message: expect.objectContaining({ parts: [{ type: 'text', text: 'second' }] }),
+        }),
       ]),
     );
   });

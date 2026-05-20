@@ -4,9 +4,10 @@
  *
  * Watches the view's message list for tool parts in `input-available` state
  * that match a registered client tool. Executes the tool, then publishes a
- * `ait-client-tool-output` TEvent on the channel via `view.publishEvent`.
- * The codec's reducer folds the event onto the assistant message that
- * issued the tool call.
+ * `tool-output-available` UIMessageChunk on the channel via `view.sendEvent`.
+ * The codec's reducer folds the chunk onto the assistant message that
+ * issued the tool call (matched by `toolCallId`) and marks the wire
+ * continuation message as consumed.
  *
  * Skips tool calls that already have a follow-up assistant message — those
  * were resolved in a previous session and don't need re-execution.
@@ -108,10 +109,9 @@ async function executeClientTool(
     await view.sendEvent(
       [
         {
-          type: 'ait-client-tool-output',
+          type: 'tool-output-available',
           toolCallId: toolPart.toolCallId,
           output,
-          targetMsgId: node.msgId,
         },
       ],
       { runId },
@@ -120,10 +120,9 @@ async function executeClientTool(
     await view.sendEvent(
       [
         {
-          type: 'ait-client-tool-output-error',
+          type: 'tool-output-error',
           toolCallId: toolPart.toolCallId,
           errorText: error instanceof Error ? error.message : 'Client tool execution failed',
-          targetMsgId: node.msgId,
         },
       ],
       { runId },

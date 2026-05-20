@@ -20,9 +20,13 @@ import {
   HEADER_CANCEL_INVOCATION_ID,
   HEADER_CANCEL_OWN,
   HEADER_CANCEL_RUN_ID,
+  HEADER_FORK_OF,
   HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
+  HEADER_PARENT,
   HEADER_PROMPT_ID,
+  HEADER_RUN_CLIENT_ID,
+  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
@@ -168,8 +172,18 @@ const loadRunProjection = async <TEvent, TProjection, TMessage>(opts: {
  * @param opts.timeoutMs - Maximum total time to wait for all prompt-id arrivals.
  * @param opts.signal - AbortSignal that cancels the wait when the run aborts.
  * @param opts.logger - Optional logger for diagnostic output.
- * @returns MessageNodes for arriving user-message events, sorted by Ably serial; empty for invocations that publish only amend events.
+ * @returns The MessageNodes for arriving user-message events (sorted by Ably
+ *   serial — empty when every prompt was a tool-resolution wire message that
+ *   decoded to a chunk and produced no node), and the transport headers of
+ *   the first matched wire message. `firstHeaders` is the canonical source for
+ *   run-level metadata (clientId, parent, forkOf, continuation flag) because
+ *   it lands whether or not the decode produced a MessageNode.
  */
+interface PromptLookupResult<TMessage> {
+  nodes: MessageNode<TMessage>[];
+  firstHeaders?: Record<string, string>;
+}
+
 const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
   register: (callback: (msg: Ably.InboundMessage) => void) => () => void;
   codec: import('../codec/types.js').Codec<TEvent, TProjection, TMessage>;
@@ -179,7 +193,7 @@ const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
   timeoutMs: number;
   signal: AbortSignal;
   logger: Logger | undefined;
-}): Promise<MessageNode<TMessage>[]> => {
+}): Promise<PromptLookupResult<TMessage>> => {
   const { register, codec, invocationId, runId, expectedPromptIds, timeoutMs, signal, logger } = opts;
   const expectedSet = new Set(expectedPromptIds);
   const expectedCount = expectedSet.size;
@@ -209,13 +223,14 @@ const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
     }));
   };
 
-  return new Promise<MessageNode<TMessage>[]>((resolve, reject) => {
+  return new Promise<PromptLookupResult<TMessage>>((resolve, reject) => {
     let settled = false;
     // Dedupe across rewind-redelivery: rewind may surface a message the
     // listener also saw live. Scoped to the active lookup so it cannot
     // grow unbounded.
     const seenSerials = new Set<string>();
     const collected: MessageNode<TMessage>[] = [];
+    let firstHeaders: Record<string, string> | undefined;
     // Forward-declared so that cleanup() and onAbort() can reference them
     // before they are assigned. cleanup may run synchronously inside
     // `register(...)` (when buffered prompts drain on registration) before
@@ -249,11 +264,18 @@ const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
       if (m.serial !== undefined && seenSerials.has(m.serial)) return;
       // Filter by prompt-id: ignore messages whose prompt-id isn't in the
       // expected set, and dedupe across rewind+live by prompt-id.
-      const promptId = getHeaders(m)[HEADER_PROMPT_ID];
+      const wireHeaders = getHeaders(m);
+      const promptId = wireHeaders[HEADER_PROMPT_ID];
       if (promptId === undefined || !expectedSet.has(promptId)) return;
       if (matchedPromptIds.has(promptId)) return;
       if (m.serial !== undefined) seenSerials.add(m.serial);
       matchedPromptIds.add(promptId);
+      // Capture the first matched wire message's headers so run-level
+      // metadata (clientId / parent / forkOf / continuation flag) is
+      // available even when the decode produces zero MessageNodes — the
+      // case for continuation tool-resolution wire messages whose chunks
+      // fold into a fresh empty projection without an assistant to land on.
+      if (firstHeaders === undefined) firstHeaders = wireHeaders;
       let decoded: MessageNode<TMessage>[];
       try {
         decoded = decode(m);
@@ -291,7 +313,7 @@ const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
         invocationId,
         count: collected.length,
       });
-      resolve(collected);
+      resolve({ nodes: collected, firstHeaders });
     });
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the register callback may have settled the promise synchronously during buffered-prompt drain.
     if (settled) {
@@ -324,7 +346,14 @@ interface RegisteredRun {
   runId: string;
   /** Invocation-id this run is associated with, sourced from the invocation's `invocationId`. */
   invocationId: string;
-  clientId: string;
+  /**
+   * ClientId of the run initiator — populated post-lookup from the first
+   * lookup-result MessageNode's `x-ably-run-client-id` header. Stays
+   * undefined while the lookup is in flight. Cancel filters that need a
+   * concrete clientId (`own`, `clientId`) buffer against runs with
+   * unresolved clientId until this lands.
+   */
+  clientId: string | undefined;
   controller: AbortController;
   /** Composite signal that fires when either the internal controller or the external signal aborts. */
   signal: AbortSignal;
@@ -390,6 +419,14 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
    */
   private readonly _completedLookupInvocationIds = new Map<string, number>();
   private readonly _completedLookupInvocationIdsLimit = 256;
+  /**
+   * Cancel messages received before a run's `clientId` was resolved from
+   * the prompt-lookup result. Keyed by runId, FIFO-bounded per
+   * `_promptBufferLimit` so a stalled run can't grow this unboundedly.
+   * Drained when the run's clientId lands (or discarded when the run
+   * fails its lookup and is torn down).
+   */
+  private readonly _bufferedCancels = new Map<string, Ably.InboundMessage[]>();
   private readonly _channelListener: (msg: Ably.InboundMessage) => void;
   private readonly _promptLookupTimeoutMs: number;
 
@@ -550,6 +587,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
     this._pendingPromptLookups.clear();
     this._promptBuffer.clear();
     this._completedLookupInvocationIds.clear();
+    this._bufferedCancels.clear();
     this._runManager.close();
     this._logger?.debug('DefaultAgentSession.close(); session closed');
   }
@@ -558,6 +596,18 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
   // Cancel message routing
   // -------------------------------------------------------------------------
 
+  /**
+   * Resolve which active runs a cancel filter targets.
+   *
+   * `own` and `clientId` filters require the run's `clientId` to be
+   * populated — that field lands only after the prompt-lookup resolves.
+   * Runs whose `clientId` is still undefined are skipped here; the cancel
+   * is buffered against them by `_handleCancelMessage` and re-evaluated
+   * when lookup populates the field.
+   * @param filter - The parsed cancel scope.
+   * @param senderClientId - The clientId of the cancel-message sender (for `own`).
+   * @returns RunIds whose clientId is known and matches the filter.
+   */
   private _resolveFilter(filter: CancelFilter, senderClientId?: string): string[] {
     const runIds = [...this._registeredRuns.keys()];
 
@@ -575,6 +625,66 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
       return [filter.runId];
     }
     return [];
+  }
+
+  /**
+   * Whether a cancel filter needs `clientId` to decide a run's match —
+   * i.e. `own` (sender's clientId vs the run's clientId) or `clientId`
+   * (explicit clientId vs the run's clientId). `all`, `runId`, and
+   * `invocationId` filters never need it.
+   * @param filter - The parsed cancel scope.
+   * @returns True when the filter requires `RegisteredRun.clientId` to be populated.
+   */
+  private _filterNeedsClientId(filter: CancelFilter): boolean {
+    return filter.own === true || filter.clientId !== undefined;
+  }
+
+  /**
+   * Buffer an incoming cancel message against runs whose `clientId` is
+   * unresolved. When their lookup completes, `_drainBufferedCancels`
+   * replays the buffered message through the normal cancel-handling
+   * path. Bounded per-run by `_promptBufferLimit` (FIFO eviction).
+   * @param msg - The Ably cancel message to defer.
+   */
+  private _bufferCancelForUnresolvedRuns(msg: Ably.InboundMessage): void {
+    for (const [runId, reg] of this._registeredRuns) {
+      if (reg.clientId !== undefined) continue;
+      const queue = this._bufferedCancels.get(runId) ?? [];
+      if (queue.length >= this._promptBufferLimit) {
+        queue.shift();
+        this._logger?.warn('DefaultAgentSession._bufferCancelForUnresolvedRuns(); evicting oldest', {
+          runId,
+          limit: this._promptBufferLimit,
+        });
+      }
+      queue.push(msg);
+      this._bufferedCancels.set(runId, queue);
+    }
+  }
+
+  /**
+   * Replay every cancel buffered against `runId` through the normal
+   * cancel handler. Called by `Run.start()` after the prompt-lookup
+   * resolves and populates `RegisteredRun.clientId`. Idempotent against
+   * an empty buffer.
+   * @param runId - The run whose cancel buffer should drain.
+   */
+  private _drainBufferedCancels(runId: string): void {
+    const queue = this._bufferedCancels.get(runId);
+    if (!queue || queue.length === 0) return;
+    this._bufferedCancels.delete(runId);
+    for (const msg of queue) {
+      this._handleCancelMessage(msg).catch((error: unknown) => {
+        const errInfo = new Ably.ErrorInfo(
+          `unable to drain buffered cancel; ${error instanceof Error ? error.message : String(error)}`,
+          ErrorCode.CancelListenerError,
+          500,
+          error instanceof Ably.ErrorInfo ? error : undefined,
+        );
+        this._logger?.error('DefaultAgentSession._drainBufferedCancels(); replay failed', { runId });
+        this._onError?.(errInfo);
+      });
+    }
   }
 
   // Spec: AIT-ST8, AIT-ST8a, AIT-ST8b, AIT-ST8c, AIT-ST8d, AIT-ST9, AIT-ST9a
@@ -596,6 +706,14 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
     }
 
     const matchedRunIds = this._resolveFilter(filter, msg.clientId);
+
+    // `own`/`clientId` filters may match runs whose clientId hasn't landed
+    // yet — buffer the message against them so the cancel re-fires once
+    // the prompt-lookup populates `RegisteredRun.clientId`.
+    if (this._filterNeedsClientId(filter)) {
+      this._bufferCancelForUnresolvedRuns(msg);
+    }
+
     if (matchedRunIds.length === 0) return;
 
     this._logger?.debug('DefaultAgentSession._handleCancelMessage(); matched runs', {
@@ -806,9 +924,6 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
   ): Run<TEvent, TProjection, TMessage> {
     const runId = invocation.runId;
     const invocationId = invocation.invocationId;
-    const runClientId = invocation.clientId;
-    const runParent = invocation.parent;
-    const runForkOf = invocation.forkOf;
     const promptLookupTimeoutMs = this._promptLookupTimeoutMs;
     const { onMessage, onAbort, onCancel, onError: runOnError, signal: externalSignal } = runtime;
 
@@ -821,10 +936,12 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
     const signal = externalSignal ? AbortSignal.any([controller.signal, externalSignal]) : controller.signal;
 
     // Spec: AIT-ST3a — register immediately so early cancels can fire the abort signal.
+    // clientId is undefined until prompt-lookup resolves; cancel filters that
+    // need it are buffered in the meantime.
     const registration: RegisteredRun = {
       runId,
       invocationId: invocation.invocationId,
-      clientId: runClientId,
+      clientId: undefined,
       controller,
       signal,
       onCancel,
@@ -842,7 +959,13 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
     const requireConnected = this._requireConnected.bind(this);
     const registerPromptListener = this._registerPromptListener.bind(this);
     const recordCompletedLookup = this._recordCompletedLookup.bind(this);
+    const drainBufferedCancels = this._drainBufferedCancels.bind(this);
+    const bufferedCancels = this._bufferedCancels;
     const invocationPromptIds = invocation.promptIds;
+    // Snapshot the invocation's prior-conversation history. `Run.start()`
+    // may overlay this with codec-folded state for continuation tool
+    // resolutions; `run.messages` exposes the result.
+    let resolvedHistory: TMessage[] = [...invocation.history];
 
     // `viewMessages` starts empty. `Run.start()` populates it via the
     // channel-rewind prompt lookup when `invocation.promptIds` has entries,
@@ -854,6 +977,18 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
         return viewMessages;
       },
     };
+
+    // Per-run metadata resolved from the prompt-lookup result. The first
+    // matched wire message's headers carry the run's `clientId`, `parent`,
+    // `forkOf`, and continuation flag. Captured separately from
+    // `viewMessages` because tool-resolution wire messages
+    // (`tool-output-available` etc.) decode to chunks and produce zero
+    // MessageNodes — the metadata still needs to surface.
+    let resolvedClientId: string | undefined;
+    let resolvedParent: string | undefined;
+    let resolvedForkOf: string | undefined;
+    let resolvedContinuation = false;
+    let firstLookupHeaders: Record<string, string> | undefined;
 
     // Most recently loaded projection. `Run.loadProjection()` caches it so
     // `Run.pipe()` can consult `codec.resolveToolTarget` for cross-message
@@ -871,6 +1006,9 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
       },
       get view() {
         return view;
+      },
+      get messages() {
+        return [...resolvedHistory, ...viewMessages.map((n) => n.message)];
       },
 
       // Spec: AIT-ST4, AIT-ST4a, AIT-ST4b
@@ -895,9 +1033,8 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
         // messages inline. Skip when:
         // - viewMessages already populated (legacy / pre-populated path)
         // - promptLookupTimeoutMs === 0 (tests and in-process drivers)
-        // - promptIds.length === 0 (continuation send: no new user prompt
-        //   was published, so waiting for one would hang for the full
-        //   deadline before erroring out)
+        // - promptIds.length === 0 (no client-published prompt-bearing
+        //   events — degenerate; agent runs without seeing any user input)
         if (viewMessages.length === 0 && invocationPromptIds.length > 0 && promptLookupTimeoutMs > 0) {
           try {
             const found = await lookupUserPrompt<TEvent, TProjection, TMessage>({
@@ -911,7 +1048,8 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
               logger,
             });
             recordCompletedLookup(invocationId, invocationPromptIds.length);
-            for (const m of found) viewMessages.push(m);
+            for (const m of found.nodes) viewMessages.push(m);
+            if (found.firstHeaders !== undefined) firstLookupHeaders = found.firstHeaders;
           } catch (error) {
             const errInfo =
               error instanceof Ably.ErrorInfo
@@ -936,17 +1074,91 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
             } catch {
               // swallow — best-effort
             }
+            // Tear down the registration so buffered cancels for this run
+            // don't leak — they're best-effort against an aborted run.
+            bufferedCancels.delete(runId);
+            registeredRuns.delete(runId);
             logger?.error('Run.start(); prompt lookup failed', { runId, invocationId });
             throw errInfo;
           }
         }
 
+        // Resolve per-run metadata from the first matched wire message's
+        // headers — they carry `clientId`, `parent`, `forkOf`, and the
+        // continuation flag. Continuations of a suspended run pick up the
+        // suspended assistant's parent in the same headers (the continuation
+        // wire message parents off the assistant). Fall back to the first
+        // MessageNode's headers for the legacy pre-populated path where the
+        // lookup ran with `viewMessages` already populated and no
+        // `firstHeaders` was captured.
+        const sourceHeaders = firstLookupHeaders ?? viewMessages[0]?.headers;
+        if (sourceHeaders) {
+          resolvedClientId = sourceHeaders[HEADER_RUN_CLIENT_ID];
+          resolvedParent = sourceHeaders[HEADER_PARENT];
+          resolvedForkOf = sourceHeaders[HEADER_FORK_OF];
+          resolvedContinuation = sourceHeaders[HEADER_RUN_CONTINUE] === 'true';
+        }
+        registration.clientId = resolvedClientId;
+        drainBufferedCancels(runId);
+
+        // Continuation overlay: for runs resuming under an existing runId,
+        // any client-published tool resolutions on the channel have already
+        // mutated `dynamic-tool` parts on assistants in this run's projection.
+        // Fold the run's channel events through the codec, then overlay the
+        // resulting messages onto `resolvedHistory` by id — the model sees
+        // the resolved tool state instead of the unresolved snapshot the
+        // client POSTed. Best-effort: a failed fetch leaves the un-overlaid
+        // history in place; the reducer reconciles via subsequent echoes.
+        //
+        // The projection is also stashed in `cachedProjection` so that
+        // `Run.pipe`'s `resolveToolTarget` hook can redirect tool-output
+        // chunks emitted by streamText to the original assistant message
+        // (the one carrying the `approval-responded` / `approval-requested`
+        // dynamic-tool part). Without that, the wire `HEADER_MSG_ID` lands
+        // on the new step's assistant and the client reducer redirects via
+        // the toolCallId fallback — a path that's correct in isolation but
+        // collides with the new assistant's own streamed content (text,
+        // step-start). Setting cachedProjection makes the agent stamp the
+        // right wire id from the start.
+        if (resolvedContinuation) {
+          try {
+            const projection = await loadRunProjection<TEvent, TProjection, TMessage>({
+              channel,
+              codec,
+              runId,
+              signal,
+              logger,
+            });
+            cachedProjection = projection;
+            const projectedById = new Map<string, TMessage>();
+            for (const m of codec.getMessages(projection)) {
+              const id = (m as { id?: unknown }).id;
+              if (typeof id === 'string') projectedById.set(id, m);
+            }
+            if (projectedById.size > 0) {
+              resolvedHistory = invocation.history.map((m) => {
+                const id = (m as { id?: unknown }).id;
+                if (typeof id === 'string') {
+                  const overlaid = projectedById.get(id);
+                  if (overlaid) return overlaid;
+                }
+                return m;
+              });
+            }
+          } catch (error) {
+            logger?.warn('Run.start(); continuation overlay failed', {
+              runId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+
         try {
-          await runManager.startRun(runId, runClientId, controller, {
-            parent: runParent,
-            forkOf: runForkOf,
+          await runManager.startRun(runId, resolvedClientId, controller, {
+            parent: resolvedParent,
+            forkOf: resolvedForkOf,
             invocationId,
-            continuation: invocation.isContinuation,
+            continuation: resolvedContinuation,
           });
         } catch (error) {
           const errInfo = new Ably.ErrorInfo(
@@ -988,8 +1200,8 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
                 runId,
                 msgId: node.msgId,
                 runClientId: opts?.clientId,
-                parent: node.parentId ?? runParent,
-                forkOf: node.forkOf ?? runForkOf,
+                parent: node.parentId,
+                forkOf: node.forkOf,
                 invocationId,
               }),
               node.headers,
@@ -1104,14 +1316,18 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
         //   1. Explicit `streamOpts.parent` from the caller.
         //   2. The most recently looked-up user prompt for this run — so the
         //      assistant threads under the user msg that triggered it.
-        //   3. `runParent` (from `invocation.parent`) — used when there is no
-        //      new user prompt (e.g. a continuation send).
+        //   3. `resolvedParent` from the prompt-lookup's `firstLookupHeaders`.
+        //      For regenerate wires the lookup matches the event (by
+        //      promptId) but produces no MessageNodes, so `viewMessages` is
+        //      empty — the regenerate event's `x-ably-parent` header carries
+        //      the parent msg-id we need to thread under.
         // Owning the default here means agent routes don't have to remember
         // to pass `{ parent: lastUserMsgId }` to keep tree threading correct;
         // edit-then-regenerate sibling resolution relies on the user→assistant
         // chain being explicit.
         const lastViewMsgId = viewMessages.at(-1)?.msgId;
-        const assistantParent = streamOpts?.parent === undefined ? (lastViewMsgId ?? runParent) : streamOpts.parent;
+        const assistantParent = streamOpts?.parent ?? lastViewMsgId ?? resolvedParent;
+        const assistantForkOf = streamOpts?.forkOf ?? resolvedForkOf;
 
         const msgId = crypto.randomUUID();
         const defaultHeaders = buildTransportHeaders({
@@ -1120,7 +1336,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
           msgId,
           runClientId: runOwnerClientId,
           parent: assistantParent,
-          forkOf: streamOpts?.forkOf ?? runForkOf,
+          forkOf: assistantForkOf,
         });
         const encoder = codec.createEncoder(channel, {
           extras: { headers: defaultHeaders },

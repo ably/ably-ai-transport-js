@@ -72,6 +72,7 @@ const createMockRun = (): MockRun => {
 interface MockSession {
   session: ClientSession<VercelEvent, VercelProjection, AI.UIMessage>;
   send: ReturnType<typeof vi.fn>;
+  regenerate: ReturnType<typeof vi.fn>;
   cancel: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
   mockRun: MockRun;
@@ -96,6 +97,8 @@ const createMockSession = (): MockSession => {
 
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const send = vi.fn(() => Promise.resolve(mockRun));
+  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+  const regenerate = vi.fn(() => Promise.resolve(mockRun));
 
   // CAST: mock object satisfies the subset of View methods used by chat-transport tests
   const view = {
@@ -111,7 +114,7 @@ const createMockSession = (): MockSession => {
     getNode: vi.fn(),
     sendMessage: vi.fn(),
     sendEvent: send,
-    regenerate: vi.fn(),
+    regenerate,
     edit: vi.fn(),
     getActiveRunIds: vi.fn(() => new Map()),
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
@@ -134,7 +137,7 @@ const createMockSession = (): MockSession => {
     on: vi.fn(() => noop),
   } as unknown as ClientSession<VercelEvent, VercelProjection, AI.UIMessage>;
 
-  return { session, send, cancel, close, mockRun, tree, view };
+  return { session, send, regenerate, cancel, close, mockRun, tree, view };
 };
 
 // ---------------------------------------------------------------------------
@@ -176,14 +179,12 @@ describe('createChatTransport', () => {
         sessionName: 'chat-1',
         trigger: 'submit-message',
       });
-      // History should include the first two messages
-      // CAST: body is always set by the adapter; narrowing to non-undefined.
-      // eslint-disable-next-line @typescript-eslint/non-nullable-type-assertion-style -- prefer `as` over `!` per TYPES.md
-      const body = opts.body as Record<string, unknown>;
-      const bodyHistory = body.history as { message: AI.UIMessage }[];
-      expect(bodyHistory).toHaveLength(2);
-      expect(bodyHistory.at(0)?.message).toEqual(m1);
-      expect(bodyHistory.at(1)?.message).toEqual(m2);
+      // History is no longer built at the chat-transport layer — the client
+      // session adds the projection-folded `history` to the POST body from
+      // its own view. The chat-transport's sendOpts.body intentionally omits
+      // history so the session is the single source of truth.
+      expect(opts.body).toBeDefined();
+      expect(opts.body?.history).toBeUndefined();
     });
 
     it('throws on empty messages array', async () => {
@@ -210,8 +211,17 @@ describe('createChatTransport', () => {
   });
 
   describe('sendMessages — regenerate-message', () => {
-    it('sends empty messages with all input as history', async () => {
-      const { session, send, mockRun } = createMockSession();
+    it('delegates to view.regenerate so a wire-only regenerate event is published', async () => {
+      // Regenerate must route through `view.regenerate` (not `view.sendEvent`)
+      // so the View mints an `ait-regenerate` event. The event publishes
+      // wire-only with `x-ably-fork-of: A1`, `x-ably-parent: U1` headers
+      // — U1 is never re-published. The agent's prompt-lookup catches the
+      // regenerate event by its promptId and reads parent/forkOf from those
+      // transport headers; the LLM receives history through U1 inclusive
+      // via the body. Routing through `sendEvent([])` would skip this
+      // entirely and the agent would have no way to learn the run's
+      // parent/forkOf.
+      const { session, send, regenerate, mockRun } = createMockSession();
       const chat = createChatTransport(session);
 
       const m1 = makeMessage('1');
@@ -228,64 +238,34 @@ describe('createChatTransport', () => {
       mockRun.close();
       await streamPromise;
 
-      expect(send).toHaveBeenCalledOnce();
-      const [events] = send.mock.calls[0] as [VercelEvent[]];
-      expect(events).toEqual([]);
+      expect(regenerate).toHaveBeenCalledOnce();
+      expect(send).not.toHaveBeenCalled();
+      const [msgId, opts] = regenerate.mock.calls[0] as [string, SendOptions];
+      expect(msgId).toBe('m2-id');
+      expect(opts.body).toMatchObject({
+        sessionName: 'chat-1',
+        trigger: 'regenerate-message',
+        messageId: 'm2-id',
+      });
     });
 
-    it('resolves fork metadata from the conversation tree', async () => {
-      const { session, send, view, mockRun } = createMockSession();
-
-      const msg = makeMessage('ui-message-id');
-      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
-        {
-          message: msg,
-          msgId: 'wire-msg-id',
-          parentId: 'wire-parent-id',
-          forkOf: undefined,
-          headers: {},
-          serial: undefined,
-        },
-      ]);
-
+    it('throws when regenerate-message fires without a messageId', async () => {
+      const { session } = createMockSession();
       const chat = createChatTransport(session);
 
-      const streamPromise = chat.sendMessages({
-        trigger: 'regenerate-message',
-        chatId: 'chat-1',
-        messageId: 'ui-message-id',
-        messages: [msg],
-        abortSignal: undefined,
+      await expect(
+        chat.sendMessages({
+          trigger: 'regenerate-message',
+          chatId: 'chat-1',
+          messageId: undefined,
+          messages: [],
+          abortSignal: undefined,
+        }),
+      ).rejects.toBeErrorInfo({
+        code: ErrorCode.InvalidArgument,
+        statusCode: 400,
+        message: 'unable to regenerate; regenerate-message trigger fired without messageId',
       });
-
-      mockRun.close();
-      await streamPromise;
-
-      const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
-      expect(opts.forkOf).toBe('wire-msg-id');
-      expect(opts.parent).toBe('wire-parent-id');
-    });
-
-    it('falls back to raw messageId when node not found in tree', async () => {
-      const { session, send, view, mockRun } = createMockSession();
-      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([]);
-
-      const chat = createChatTransport(session);
-
-      const streamPromise = chat.sendMessages({
-        trigger: 'regenerate-message',
-        chatId: 'chat-1',
-        messageId: 'unknown-id',
-        messages: [makeMessage('1')],
-        abortSignal: undefined,
-      });
-
-      mockRun.close();
-      await streamPromise;
-
-      const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
-      expect(opts.forkOf).toBe('unknown-id');
-      expect(opts.parent).toBeUndefined();
     });
   });
 
@@ -371,12 +351,10 @@ describe('createChatTransport', () => {
 
       const [events, opts] = send.mock.calls[0] as [VercelEvent[], SendOptions];
       expect(events).toEqual([{ type: 'ait-user-message', message: edited }]);
-      // CAST: body is always set by the adapter; narrowing to non-undefined.
-      // eslint-disable-next-line @typescript-eslint/non-nullable-type-assertion-style -- prefer `as` over `!` per TYPES.md
-      const body = opts.body as Record<string, unknown>;
-      const bodyHistory = body.history as { message: AI.UIMessage }[];
-      expect(bodyHistory).toHaveLength(1);
-      expect(bodyHistory.at(0)?.message).toEqual(m1);
+      // The forkOf metadata is carried in sendOpts (not in the body); history
+      // is built by the client session, not by the chat-transport adapter.
+      expect(opts.forkOf).toBeDefined();
+      expect(opts.body?.history).toBeUndefined();
     });
   });
 
@@ -386,10 +364,10 @@ describe('createChatTransport', () => {
       const chat = createChatTransport(session);
 
       const stream = await chat.sendMessages({
-        trigger: 'regenerate-message',
+        trigger: 'submit-message',
         chatId: 'chat-1',
         messageId: undefined,
-        messages: [],
+        messages: [makeMessage('1')],
         abortSignal: undefined,
       });
 
@@ -423,10 +401,10 @@ describe('createChatTransport', () => {
       const chat = createChatTransport(session);
 
       const stream = await chat.sendMessages({
-        trigger: 'regenerate-message',
+        trigger: 'submit-message',
         chatId: 'chat-1',
         messageId: undefined,
-        messages: [],
+        messages: [makeMessage('1')],
         abortSignal: undefined,
       });
 
@@ -446,10 +424,10 @@ describe('createChatTransport', () => {
 
       // sendMessages must resolve before the abort listener is registered
       const stream = await chat.sendMessages({
-        trigger: 'regenerate-message',
+        trigger: 'submit-message',
         chatId: 'chat-1',
         messageId: undefined,
-        messages: [],
+        messages: [makeMessage('1')],
         abortSignal: abortController.signal,
       });
 
@@ -511,7 +489,7 @@ describe('createChatTransport', () => {
   });
 
   describe('default body construction', () => {
-    it('includes history nodes from session.view.flattenNodes', async () => {
+    it('does not duplicate history into sendOpts.body (client session builds it)', async () => {
       const { session, send, view, mockRun } = createMockSession();
 
       const m1 = makeMessage('1');
@@ -558,14 +536,13 @@ describe('createChatTransport', () => {
       await streamPromise;
 
       const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
-      // CAST: body is always set by the adapter; narrowing to non-undefined.
-      // eslint-disable-next-line @typescript-eslint/non-nullable-type-assertion-style -- prefer `as` over `!` per TYPES.md
-      const body = opts.body as Record<string, unknown>;
-      const bodyHistory = body.history as { message: AI.UIMessage; msgId: string; headers: Record<string, string> }[];
-      // History should include m1 and m2 (everything except the last message being sent)
-      expect(bodyHistory).toHaveLength(2);
-      expect(bodyHistory.at(0)?.msgId).toBe('h1');
-      expect(bodyHistory.at(1)?.msgId).toBe('h2');
+      // The chat-transport adapter only stamps session metadata; the
+      // session's internal send delegate fills in `history` from
+      // `view.flattenNodes` before the POST goes out. Verify the adapter
+      // does NOT also write it (single source of truth).
+      expect(opts.body?.sessionName).toBe('chat-1');
+      expect(opts.body?.trigger).toBe('submit-message');
+      expect(opts.body?.history).toBeUndefined();
     });
   });
 
@@ -611,10 +588,10 @@ describe('createChatTransport', () => {
       const chat = createChatTransport(session);
 
       const streamPromise = chat.sendMessages({
-        trigger: 'regenerate-message',
+        trigger: 'submit-message',
         chatId: 'chat-1',
         messageId: undefined,
-        messages: [],
+        messages: [makeMessage('1')],
         abortSignal: undefined,
       });
 
@@ -641,10 +618,10 @@ describe('createChatTransport', () => {
       const unsub = chat.onStreamingChange((s) => log.push(s));
 
       const stream = await chat.sendMessages({
-        trigger: 'regenerate-message',
+        trigger: 'submit-message',
         chatId: 'chat-1',
         messageId: undefined,
-        messages: [],
+        messages: [makeMessage('1')],
         abortSignal: undefined,
       });
 
@@ -670,10 +647,10 @@ describe('createChatTransport', () => {
       chat.onStreamingChange((s) => log.push(s));
 
       const stream = await chat.sendMessages({
-        trigger: 'regenerate-message',
+        trigger: 'submit-message',
         chatId: 'chat-1',
         messageId: undefined,
-        messages: [],
+        messages: [makeMessage('1')],
         abortSignal: undefined,
       });
 
@@ -704,10 +681,10 @@ describe('createChatTransport', () => {
 
       await expect(
         chat.sendMessages({
-          trigger: 'regenerate-message',
+          trigger: 'submit-message',
           chatId: 'chat-1',
           messageId: undefined,
-          messages: [],
+          messages: [makeMessage('1')],
           abortSignal: undefined,
         }),
       ).rejects.toThrow('send failed');
@@ -765,12 +742,9 @@ describe('createChatTransport', () => {
       expect(events).toEqual([{ type: 'ait-user-message', message: user2 }]);
       expect(opts.forkOf).toBe('wire-a1');
       expect(opts.parent).toBe('wire-u1');
-      // History excludes the unresolved assistant — `[user1]` only.
-      // eslint-disable-next-line @typescript-eslint/non-nullable-type-assertion-style -- prefer `as` over `!` per TYPES.md
-      const body = opts.body as Record<string, unknown>;
-      const bodyHistory = body.history as { message: AI.UIMessage }[];
-      expect(bodyHistory).toHaveLength(1);
-      expect(bodyHistory[0]?.message).toEqual(user1);
+      // History is built by the client session (not the chat-transport
+      // adapter) — the adapter's sendOpts.body intentionally omits it.
+      expect(opts.body?.history).toBeUndefined();
     });
 
     it('forks when the preceding assistant has input-available (client tool pending)', async () => {
@@ -982,6 +956,136 @@ describe('createChatTransport', () => {
       // Edit path forks off the edited message, not the assistant.
       expect(opts.forkOf).toBe('wire-u2');
       expect(opts.parent).toBe('wire-a1');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // sendMessages — continuation: domainMessageId threading
+  // -------------------------------------------------------------------------
+
+  describe('sendMessages — continuation domainMessageId', () => {
+    it('passes the prior assistant tree msg-id as domainMessageId for a client-tool resolution', async () => {
+      const { session, send, view, mockRun } = createMockSession();
+
+      const user1 = makeMessage('u1');
+      // Tree view: getLocation is unresolved (input-available).
+      const treeAssistant = makeAssistantWithToolPart('a1', {
+        type: 'dynamic-tool',
+        toolName: 'getLocation',
+        toolCallId: 'tc1',
+        state: 'input-available',
+        input: { highAccuracy: false },
+      });
+      // useChat overlay: client executed the tool, output-available.
+      const overlayAssistant: AI.UIMessage = {
+        id: 'a1',
+        role: 'assistant',
+        parts: [
+          { type: 'text', text: 'intro' },
+          {
+            type: 'dynamic-tool',
+            toolName: 'getLocation',
+            toolCallId: 'tc1',
+            state: 'output-available',
+            input: { highAccuracy: false },
+            output: { latitude: 51, longitude: 0 },
+          },
+        ],
+      };
+
+      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
+        { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+        {
+          message: treeAssistant,
+          msgId: 'wire-a1',
+          parentId: 'wire-u1',
+          forkOf: undefined,
+          headers: {},
+          serial: undefined,
+        },
+      ]);
+
+      const chat = createChatTransport(session);
+      const streamPromise = chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        // Continuation: last message is an assistant (with a tree node) and
+        // useChat's local overlay has the tool in output-available state.
+        messages: [user1, overlayAssistant],
+        abortSignal: undefined,
+      });
+      mockRun.close();
+      await streamPromise;
+
+      const [input] = send.mock.calls[0] as [{ event: VercelEvent; domainMessageId?: string }[]];
+
+      // chat-transport passes the richer per-entry shape to view.sendEvent.
+      // Each entry pairs a tool-resolution event with the prior assistant's
+      // tree msg-id so the SDK stamps the wire HEADER_MSG_ID to 'wire-a1' —
+      // the reducer's direct-fold path then matches by msg-id and folds
+      // the chunk onto the existing assistant without a cross-message
+      // redirect.
+      expect(input).toHaveLength(1);
+      expect(input[0]?.event.type).toBe('tool-output-available');
+      expect(input[0]?.domainMessageId).toBe('wire-a1');
+    });
+
+    it('passes the prior assistant tree msg-id as domainMessageId for an approval response', async () => {
+      const { session, send, view, mockRun } = createMockSession();
+
+      const user1 = makeMessage('u1');
+      const treeAssistant = makeAssistantWithToolPart('a1', {
+        type: 'dynamic-tool',
+        toolName: 'getWeatherForecast',
+        toolCallId: 'tc1',
+        state: 'approval-requested',
+        input: { location: 'London' },
+        approval: { id: 'ap-1' },
+      });
+      const overlayAssistant: AI.UIMessage = {
+        id: 'a1',
+        role: 'assistant',
+        parts: [
+          { type: 'text', text: 'intro' },
+          {
+            type: 'dynamic-tool',
+            toolName: 'getWeatherForecast',
+            toolCallId: 'tc1',
+            state: 'approval-responded',
+            input: { location: 'London' },
+            approval: { id: 'ap-1', approved: true },
+          },
+        ],
+      };
+
+      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
+        { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+        {
+          message: treeAssistant,
+          msgId: 'wire-a1',
+          parentId: 'wire-u1',
+          forkOf: undefined,
+          headers: {},
+          serial: undefined,
+        },
+      ]);
+
+      const chat = createChatTransport(session);
+      const streamPromise = chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: [user1, overlayAssistant],
+        abortSignal: undefined,
+      });
+      mockRun.close();
+      await streamPromise;
+
+      const [input] = send.mock.calls[0] as [{ event: VercelEvent; domainMessageId?: string }[]];
+      expect(input).toHaveLength(1);
+      expect(input[0]?.event.type).toBe('tool-approval-response');
+      expect(input[0]?.domainMessageId).toBe('wire-a1');
     });
   });
 });

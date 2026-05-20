@@ -41,7 +41,7 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
       const node = view.getNode(msgId);
       const runId = node?.headers['x-ably-run-id'];
       if (!runId) return;
-      view.sendEvent([{ type: 'ait-tool-approval', toolCallId, approved: true, targetMsgId: msgId }], { runId });
+      view.sendEvent([{ type: 'tool-approval-response', toolCallId, approved: true }], { runId });
     },
     [view],
   );
@@ -51,10 +51,9 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
       const node = view.getNode(msgId);
       const runId = node?.headers['x-ably-run-id'];
       if (!runId) return;
-      view.sendEvent(
-        [{ type: 'ait-tool-approval', toolCallId, approved: false, reason: 'User denied', targetMsgId: msgId }],
-        { runId },
-      );
+      view.sendEvent([{ type: 'tool-approval-response', toolCallId, approved: false, reason: 'User denied' }], {
+        runId,
+      });
     },
     [view],
   );

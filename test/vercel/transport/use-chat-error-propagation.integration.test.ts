@@ -169,7 +169,6 @@ describe('useChat error propagation', () => {
     // The stream stays open so we can detach the channel mid-stream.
     const serverRun = createRunFromOpts(agentSession, {
       runId,
-      clientId: clientClient.auth.clientId,
     });
     await serverRun.start();
 

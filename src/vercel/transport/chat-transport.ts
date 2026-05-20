@@ -25,7 +25,7 @@ import * as Ably from 'ably';
 import type * as AI from 'ai';
 
 import { HEADER_RUN_ID } from '../../constants.js';
-import type { ClientSession, CloseOptions, SendOptions } from '../../core/transport/types.js';
+import type { ActiveRun, ClientSession, CloseOptions, SendOptions } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
 import type { VercelEvent, VercelProjection } from '../codec/index.js';
 
@@ -153,18 +153,12 @@ export interface ChatTransport {
 // ---------------------------------------------------------------------------
 
 /**
- * Wrap a ReadableStream in a passthrough TransformStream that resolves a
- * promise when the stream completes or errors. The returned stream passes
- * all chunks through unchanged.
- * @param source - The original stream to wrap.
- * @returns The wrapped stream and a `done` promise that resolves when the stream closes.
- */
-/**
  * Filter a VercelEvent stream down to its UIMessageChunk variants. Non-chunk
- * variants (UserMessageEvent / ToolApprovalEvent) only appear on prompt-side
- * publishes from the client; the assistant stream consumed by useChat is
- * naturally chunk-only. This filter narrows the TypeScript type and protects
- * against any unexpected non-chunk leakage at runtime.
+ * codec-local variants (UserMessageEvent / ToolApprovalResponseEvent) only
+ * appear on prompt-side publishes from the client; the assistant stream
+ * consumed by useChat is naturally chunk-only. This filter narrows the
+ * TypeScript type and protects against any unexpected non-chunk leakage
+ * at runtime.
  * @param source - The raw VercelEvent stream from the active run.
  * @returns A stream of UIMessageChunks suitable for handing to useChat.
  */
@@ -174,16 +168,24 @@ const filterToChunks = (source: ReadableStream<VercelEvent>): ReadableStream<AI.
       transform: (event, controller) => {
         if (
           event.type === 'ait-user-message' ||
-          event.type === 'ait-tool-approval' ||
-          event.type === 'ait-client-tool-output' ||
-          event.type === 'ait-client-tool-output-error'
-        )
+          event.type === 'tool-approval-response' ||
+          event.type === 'ait-regenerate'
+        ) {
           return;
+        }
         // CAST: discriminator above excludes the codec-local variants, leaving UIMessageChunk.
         controller.enqueue(event);
       },
     }),
   );
+
+/**
+ * Wrap a ReadableStream in a passthrough TransformStream that resolves a
+ * promise when the stream completes or errors. The returned stream passes
+ * all chunks through unchanged.
+ * @param source - The original stream to wrap.
+ * @returns The wrapped stream and a `done` promise that resolves when the stream closes.
+ */
 
 const wrapStreamWithDone = <T>(source: ReadableStream<T>): { stream: ReadableStream<T>; done: Promise<void> } => {
   let resolveDone: () => void;
@@ -245,6 +247,13 @@ const UNRESOLVED_TOOL_STATES = new Set(['input-streaming', 'input-available', 'a
  * acted on (executed a tool, approved, denied) but the tree's reduced
  * state hasn't reflected yet.
  *
+ * Each TEvent is published as a `role: 'user'` channel message stamped
+ * with `x-ably-run-continue: 'true'` AND with `x-ably-msg-id` set to the
+ * prior assistant's tree msg-id (the one carrying the original
+ * `dynamic-tool` part the resolution targets). The reducer's direct fold
+ * path matches by msg-id and the chunk lands on the assistant in one
+ * step — no cross-message redirect-by-toolCallId fallback.
+ *
  * The resulting events are passed alongside the continuation `view.sendEvent`
  * so the channel publish and the continuation POST land as ONE atomic
  * operation — the agent's `loadProjection()` history fetch is guaranteed
@@ -254,24 +263,25 @@ const UNRESOLVED_TOOL_STATES = new Set(['input-streaming', 'input-available', 'a
  * Three resolutions are produced:
  *
  * - `approval-responded` overlay vs `approval-requested` tree →
- *   `ait-tool-approval` (approved=true)
+ *   `tool-approval-response` (approved=true)
  * - `output-denied` overlay vs `approval-requested` tree →
- *   `ait-tool-approval` (approved=false)
+ *   `tool-approval-response` (approved=false)
  * - `output-available`/`output-error` overlay vs unresolved tree →
- *   `ait-client-tool-output(-error)`
- *
- * Replacement for the retired `session.stageEvents` flow: client-side
- * resolutions reach the agent through the channel, not the HTTP POST body.
+ *   `tool-output-available` / `tool-output-error` UIMessageChunk
  * @param session - The client session (used to read the current tree).
  * @param messages - useChat's local overlay messages.
- * @returns Continuation events to publish, in tree order.
+ * @returns Continuation events to publish, in tree order, paired with
+ *   the target msg-id (the prior assistant's tree key) each event should
+ *   fold onto. Arrays are parallel — `domainMessageIds[i]` belongs to
+ *   `events[i]`.
  */
 const deriveContinuationEvents = (
   session: ClientSession<VercelEvent, VercelProjection, AI.UIMessage>,
   messages: AI.UIMessage[],
-): VercelEvent[] => {
+): { events: VercelEvent[]; domainMessageIds: string[] } => {
   const allNodes = session.view.flattenNodes();
   const events: VercelEvent[] = [];
+  const domainMessageIds: string[] = [];
   for (const overlay of messages) {
     if (overlay.role !== 'assistant') continue;
     const node = allNodes.find((n) => n.message.id === overlay.id);
@@ -286,28 +296,29 @@ const deriveContinuationEvents = (
 
       // Approval response: useChat's `addToolApprovalResponse` flipped the
       // overlay part to `approval-responded` (approve) or `output-denied`
-      // (deny) while the tree still sits on `approval-requested`. Publish a
-      // `ToolApprovalEvent` so the agent's projection sees the decision.
+      // (deny) while the tree still sits on `approval-requested`. Publish
+      // a `tool-approval-response` TEvent so the agent's projection sees
+      // the decision.
       if (overlayPart.state === 'approval-responded' && (!treePart || treePart.state === 'approval-requested')) {
         const approvalEvent: VercelEvent = {
-          type: 'ait-tool-approval',
+          type: 'tool-approval-response',
           toolCallId: overlayPart.toolCallId,
           approved: true,
-          targetMsgId: node.msgId,
         };
         if (overlayPart.approval.reason !== undefined) {
           (approvalEvent as { reason?: string }).reason = overlayPart.approval.reason;
         }
         events.push(approvalEvent);
+        domainMessageIds.push(node.msgId);
         continue;
       }
       if (overlayPart.state === 'output-denied' && (!treePart || treePart.state === 'approval-requested')) {
         events.push({
-          type: 'ait-tool-approval',
+          type: 'tool-approval-response',
           toolCallId: overlayPart.toolCallId,
           approved: false,
-          targetMsgId: node.msgId,
         });
+        domainMessageIds.push(node.msgId);
         continue;
       }
 
@@ -319,22 +330,21 @@ const deriveContinuationEvents = (
 
       if (overlayPart.state === 'output-available') {
         events.push({
-          type: 'ait-client-tool-output',
+          type: 'tool-output-available',
           toolCallId: overlayPart.toolCallId,
           output: overlayPart.output,
-          targetMsgId: node.msgId,
         });
       } else {
         events.push({
-          type: 'ait-client-tool-output-error',
+          type: 'tool-output-error',
           toolCallId: overlayPart.toolCallId,
           errorText: overlayPart.errorText,
-          targetMsgId: node.msgId,
         });
       }
+      domainMessageIds.push(node.msgId);
     }
   }
-  return events;
+  return { events, domainMessageIds };
 };
 
 // ---------------------------------------------------------------------------
@@ -442,27 +452,22 @@ export const createChatTransport = (
       history = forkSource ? messages.slice(0, -2) : messages.slice(0, -1);
     }
 
-    // Compute fork metadata. Only set in regenerate or edit modes — in
-    // continuation mode we do NOT fork, we continue the branch.
+    // Compute fork metadata for edit (submit-message with messageId) and
+    // fork-on-unresolved-tool. Regenerate is NOT precomputed here —
+    // `View.regenerate` derives forkOf/parent from the tree itself and
+    // overrides anything we'd set.
     let forkOf: string | undefined;
     let parent: string | undefined;
 
-    if (messageId && !isContinuation) {
-      // Regeneration: messageId = assistant to regenerate.
-      // Edit (submit-message with user message and messageId): messageId = user being replaced.
-      // In both cases forkOf = the x-ably-msg-id, parent = that message's parent.
+    if (trigger === 'submit-message' && messageId && !isContinuation) {
+      // Edit: messageId identifies the user message being replaced. forkOf =
+      // its tree msg-id, parent = its parent in the tree.
       forkOf = messageId;
       const node = allNodes.find((n) => n.message.id === messageId);
       if (node) {
         forkOf = node.msgId;
         parent = node.parentId;
       }
-    } else if (isContinuation) {
-      // Continuation: the server's next assistant message is a child of the
-      // last assistant (no fork). Pass parent so the server places the new
-      // message correctly in the tree. isContinuation narrows lastMessageNode
-      // to defined.
-      parent = lastMessageNode.msgId;
     } else if (forkSource) {
       // Fork off the preceding assistant — the new user message becomes a
       // sibling of the unresolved tool call assistant, rooted at its parent.
@@ -486,15 +491,10 @@ export const createChatTransport = (
       sendBody = prepared.body ?? {};
       sendHeaders = prepared.headers;
     } else {
-      const historyIds = new Set(history.map((m) => m.id));
-      const historyNodes = allNodes.filter((n) => historyIds.has(n.message.id));
       sendBody = {
-        history: historyNodes,
         sessionName: opts.chatId,
         trigger,
         ...(messageId !== undefined && { messageId }),
-        ...(forkOf !== undefined && { forkOf }),
-        ...(parent !== undefined && { parent }),
       };
       sendHeaders = undefined;
     }
@@ -511,21 +511,41 @@ export const createChatTransport = (
       if (suspendedRunId) sendOpts.runId = suspendedRunId;
     }
 
-    // Build the events array. For continuations, this is the set of
-    // client-side tool-output amends derived from useChat's overlay vs the
-    // tree — publishing them through the same `view.sendEvent` call means the
-    // channel publish lands BEFORE the continuation POST reaches the agent,
-    // so the agent's `loadProjection()` history fetch sees the amends.
-    let inputEvents: VercelEvent[];
+    // Dispatch by mode:
+    //
+    // - Continuation: derive tool-resolution events from useChat's overlay
+    //   vs the tree and pair each with the prior assistant's tree msg-id —
+    //   the SDK stamps the wire's `x-ably-msg-id` to that id so the
+    //   reducer's direct fold path runs (no redirect, no consume).
+    // - Regenerate: route through `view.regenerate`. The View mints a
+    //   wire-only regenerate event (`ait-regenerate`) carrying
+    //   `forkOf=A1` / `parent=U1` on transport headers. U1 is NOT
+    //   republished — A1 and A2 group as tree siblings under U1 via the
+    //   existing forkOf machinery. The LLM receives the truncated history
+    //   through U1 inclusive via the body.
+    // - Fresh send / edit: publish the new user-message TEvent(s) via
+    //   `view.sendEvent`.
+    let run: ActiveRun<VercelEvent>;
     if (isContinuation) {
-      inputEvents = deriveContinuationEvents(session, messages);
+      const derived = deriveContinuationEvents(session, messages);
+      const sendInput = derived.events.map((event, i) => ({
+        event,
+        domainMessageId: derived.domainMessageIds[i],
+      }));
+      run = await session.view.sendEvent(sendInput, sendOpts);
     } else if (trigger === 'regenerate-message') {
-      inputEvents = [];
+      if (messageId === undefined) {
+        throw new Ably.ErrorInfo(
+          'unable to regenerate; regenerate-message trigger fired without messageId',
+          ErrorCode.InvalidArgument,
+          400,
+        );
+      }
+      run = await session.view.regenerate(messageId, sendOpts);
     } else {
-      inputEvents = newMessages.map((m) => ({ type: 'ait-user-message', message: m }));
+      const sendInput = newMessages.map((m): VercelEvent => ({ type: 'ait-user-message', message: m }));
+      run = await session.view.sendEvent(sendInput, sendOpts);
     }
-
-    const run = await session.view.sendEvent(inputEvents, sendOpts);
 
     if (abortSignal) {
       abortSignal.addEventListener('abort', () => void session.cancel({ all: true }), {

@@ -246,7 +246,6 @@ describe('ClientSession integration', () => {
     const serverRun = createRunFromOpts(agentSession, {
       runId,
       invocationId,
-      clientId: clientClient.auth.clientId,
     });
     await serverRun.start();
 
@@ -317,7 +316,6 @@ describe('ClientSession integration', () => {
     const serverRun = createRunFromOpts(agentSession, {
       runId,
       invocationId,
-      clientId: clientClient.auth.clientId,
     });
     await serverRun.start();
 
@@ -377,7 +375,6 @@ describe('ClientSession integration', () => {
     const run = createRunFromOpts(agentSession, {
       runId,
       invocationId,
-      clientId: clientClient.auth.clientId,
     });
     await run.start();
 
@@ -435,7 +432,6 @@ describe('ClientSession integration', () => {
     const serverRun = createRunFromOpts(agentSession, {
       runId,
       invocationId,
-      clientId: clientClient.auth.clientId,
     });
     await serverRun.start();
     const clientRun = await sendPromise;
@@ -465,7 +461,7 @@ describe('ClientSession integration', () => {
       });
     });
 
-    const run = createRunFromOpts(agentSession, { runId: 'run-hist-1', clientId: 'user-d' });
+    const run = createRunFromOpts(agentSession, { runId: 'run-hist-1' });
     await run.start();
     await run.addMessages([
       {
@@ -548,7 +544,6 @@ describe('ClientSession integration', () => {
     const run = createRunFromOpts(agentSession, {
       runId,
       invocationId,
-      clientId: clientClient.auth.clientId,
     });
     await run.start();
     const clientRun = await sendPromise;
@@ -602,7 +597,6 @@ describe('ClientSession integration', () => {
     const run = createRunFromOpts(agentSession, {
       runId,
       invocationId,
-      clientId: clientClient.auth.clientId,
     });
     await run.start();
     const clientRun = await sendPromise;
@@ -890,12 +884,10 @@ describe('ClientSession integration', () => {
     const survivingRun = createRunFromOpts(agentSession, {
       runId: survivingRunId,
       invocationId: survivingInvocationId,
-      clientId: 'agent',
     });
     const targetRun = createRunFromOpts(agentSession, {
       runId: targetRunId,
       invocationId: targetInvocationId,
-      clientId: 'agent',
     });
     await survivingRun.start();
     await targetRun.start();
@@ -1035,7 +1027,6 @@ describe('ClientSession integration', () => {
     const serverRun = createRunFromOpts(agentSession, {
       runId,
       invocationId,
-      clientId: clientClient.auth.clientId,
       promptIds: [promptId],
     });
     await serverRun.start();

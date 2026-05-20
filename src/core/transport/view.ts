@@ -44,21 +44,21 @@ interface ViewEventsMap {
  * The View pre-computes the visible branch history and passes it directly,
  * so the delegate has no back-reference to the View.
  *
- * `input` is the TEvent (or array thereof) the caller passed to
- * `View.sendEvent`. The session classifies each event via `Codec.classifyEvent`
- * and dispatches accordingly — user-message events trigger optimistic tree
- * inserts and start a fresh run; amend events ride a fresh-or-continuation
- * publish without inserts.
+ * `input` is the normalised richer shape — each entry pairs a TEvent
+ * with an optional `domainMessageId` override. The View boundary
+ * (`View.sendEvent`) normalises raw `TEvent` / `TEvent[]` inputs into
+ * this shape so the delegate always sees the same structure.
  *
- * When `republishMsgId` is provided, the delegate publishes the (single)
- * user-message event under the existing msg-id instead of generating a
- * new one. No new tree node is created.
+ * When `domainMessageId` is set on an entry, the SDK uses that value as
+ * the wire `x-ably-msg-id` (and the optimistic fold's `meta.messageId`)
+ * for that event instead of minting a fresh `crypto.randomUUID()`. Used
+ * by chat-transport to publish continuation tool resolutions onto an
+ * existing assistant's tree key.
  */
 export type SendDelegate<TEvent, TMessage> = (
-  input: TEvent | TEvent[],
+  input: { event: TEvent; domainMessageId?: string }[],
   options: SendOptions | undefined,
   history: MessageNode<TMessage>[],
-  republishMsgId?: string,
 ) => Promise<ActiveRun<TEvent>>;
 
 // ---------------------------------------------------------------------------
@@ -98,6 +98,39 @@ type BranchSelection =
   | { kind: 'pinned'; selectedId: string }
   /** This view's `regenerate()` is in flight — select newest when run's response arrives. */
   | { kind: 'pending'; runId: string };
+
+// ---------------------------------------------------------------------------
+// Send-input normalisation
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalise the three input shapes `View.sendEvent` accepts into the
+ * single richer shape the SendDelegate consumes:
+ * - `TEvent` (single event) → `[{ event }]`
+ * - `TEvent[]` (array of raw events) → `events.map(e => ({ event: e }))`
+ * - `Array<{ event, domainMessageId? }>` (richer shape) → passed through
+ *
+ * Discriminator: an array whose first element is a non-null object
+ * carrying an `event` property is the richer shape. TEvents themselves
+ * use a `type` discriminator and don't carry `event`.
+ * @param input - The raw input from `View.sendEvent`.
+ * @returns The richer per-entry shape.
+ */
+const _normaliseSendInput = <TEvent>(
+  input: TEvent | TEvent[] | { event: TEvent; domainMessageId?: string }[],
+): { event: TEvent; domainMessageId?: string }[] => {
+  if (!Array.isArray(input)) {
+    return [{ event: input }];
+  }
+  if (input.length === 0) return [];
+  const first = input[0];
+  if (typeof first === 'object' && first !== null && 'event' in first) {
+    // CAST: discriminator above proves the array is the richer shape.
+    return input as { event: TEvent; domainMessageId?: string }[];
+  }
+  // CAST: discriminator above proves the array is TEvent[].
+  return (input as TEvent[]).map((event) => ({ event }));
+};
 
 // ---------------------------------------------------------------------------
 // Implementation
@@ -363,16 +396,23 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   }
 
   // Spec: AIT-CT3, AIT-CT4
-  async sendEvent(input: TEvent | TEvent[], options?: SendOptions): Promise<ActiveRun<TEvent>> {
+  async sendEvent(
+    input: TEvent | TEvent[] | { event: TEvent; domainMessageId?: string }[],
+    options?: SendOptions,
+  ): Promise<ActiveRun<TEvent>> {
     this._logger.trace('DefaultView.sendEvent();');
     if (this._closed) {
       throw new Ably.ErrorInfo('unable to send; view is closed', ErrorCode.InvalidArgument, 400);
     }
 
+    // Normalise to the richer per-entry shape — a single delegate
+    // signature handles all three input forms.
+    const normalised = _normaliseSendInput<TEvent>(input);
+
     // Pre-compute visible branch history before the delegate call so the
     // session has no back-reference to the View (one-way dependency).
     const history = this.flattenNodes();
-    const result = await this._sendDelegate(input, options, history);
+    const result = await this._sendDelegate(normalised, options, history);
     this._applyForkAutoSelect(result, options);
     return result;
   }
@@ -432,25 +472,23 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   async regenerate(messageId: string, options?: SendOptions): Promise<ActiveRun<TEvent>> {
     this._logger.trace('DefaultView.regenerate();', { messageId });
 
-    const node = this._tree.getNode(messageId);
-    if (!node) {
+    if (this._closed) {
+      throw new Ably.ErrorInfo('unable to regenerate; view is closed', ErrorCode.InvalidArgument, 400);
+    }
+
+    // `messageId` is the assistant being regenerated. The new assistant
+    // streams as a sibling under the same parent user — A1 and A2 group
+    // under U1 via the tree's existing forkOf machinery — and U1 is
+    // never re-published.
+    const targetNode = this._tree.getNode(messageId);
+    if (!targetNode) {
       throw new Ably.ErrorInfo(
         `unable to regenerate; message not found in tree: ${messageId}`,
         ErrorCode.InvalidArgument,
         400,
       );
     }
-    const parentId = node.parentId;
-
-    if (this._closed) {
-      throw new Ably.ErrorInfo('unable to regenerate; view is closed', ErrorCode.InvalidArgument, 400);
-    }
-
-    // Per spec: pure regenerate republishes the parent user message under
-    // the same x-ably-msg-id but new run-id + invocation-id, so the agent's
-    // channel-rewind lookup operates uniformly with send/edit. Find the
-    // parent (user) message and thread it through the delegate.
-    const parentNode = parentId ? this._tree.getNode(parentId) : undefined;
+    const parentNode = targetNode.parentId ? this._tree.getNode(targetNode.parentId) : undefined;
     if (!parentNode) {
       throw new Ably.ErrorInfo(
         `unable to regenerate; parent user message not found for ${messageId}`,
@@ -459,27 +497,45 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
       );
     }
 
-    // History excludes the parent user message — it's being republished
-    // separately via the channel, so the agent picks it up through the
-    // invocation-id lookup rather than seeing it twice in the POST body.
-    const history = this._getHistoryBefore(parentNode.msgId);
+    // History runs through U1 inclusive — the LLM receives the user
+    // message it should re-answer. U1 is NOT republished on the wire;
+    // the body carries it directly.
+    const history = this._getHistoryThrough(parentNode.msgId);
 
     const sendOptions: SendOptions = {
       ...options,
       body: {
-        history,
+        history: history.map((n) => n.message),
         ...options?.body,
       },
-      forkOf: messageId,
-      ...(parentNode.parentId !== undefined && { parent: parentNode.parentId }),
+      forkOf: targetNode.msgId,
+      parent: parentNode.msgId,
     };
 
-    // Regenerate wraps the parent user message into a user-message TEvent
-    // via the codec so the publish flow is uniform with send/edit.
-    const republishEvent = this._codec.userMessageEvent(parentNode.message);
-    const result = await this._sendDelegate(republishEvent, sendOptions, history, parentNode.msgId);
+    // Mint a regenerate event via the codec. The event is classified
+    // as `kind: 'regenerate'` so `_internalSend` publishes the wire
+    // (with `x-ably-fork-of: A1`, `x-ably-parent: U1` on transport
+    // headers) without creating a tree node or folding the projection.
+    // The agent's prompt-lookup catches the regenerate event by
+    // `promptId` and reads the routing headers off the inbound wire
+    // message.
+    const regenerateEvent = this._codec.createRegenerateEvent(targetNode.msgId, parentNode.msgId);
+    const result = await this._sendDelegate([{ event: regenerateEvent }], sendOptions, history);
     this._applyForkAutoSelect(result, sendOptions);
     return result;
+  }
+
+  private _getHistoryThrough(messageId: string): MessageNode<TMessage>[] {
+    this._logger.trace('DefaultView._getHistoryThrough();', { messageId });
+    const all = this.flattenNodes();
+    const idx = all.findIndex((n) => n.msgId === messageId);
+    if (idx === -1) {
+      this._logger.warn('DefaultView._getHistoryThrough(); target not in visible nodes, returning full list', {
+        messageId,
+      });
+      return all;
+    }
+    return all.slice(0, idx + 1);
   }
 
   // Spec: AIT-CT6
@@ -499,7 +555,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     return this.sendEvent(newEvents, {
       ...options,
       body: {
-        history: this._getHistoryBefore(messageId),
+        history: this._getHistoryBefore(messageId).map((n) => n.message),
         ...options?.body,
       },
       forkOf: messageId,

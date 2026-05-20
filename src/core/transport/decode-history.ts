@@ -26,13 +26,53 @@ import type * as Ably from 'ably';
 
 import {
   HEADER_DISCRETE,
+  HEADER_FORK_OF,
   HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
+  HEADER_PARENT,
   HEADER_ROLE,
+  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
   HEADER_STATUS,
   HEADER_STREAM,
 } from '../../constants.js';
+
+/**
+ * Headers that define a message's identity in the tree (role, parent,
+ * fork-of). They are set by the FIRST wire for an `x-ably-msg-id` and
+ * must NOT be overwritten by later wires targeting the same msg-id.
+ *
+ * Why: amendment wires legitimately publish under an existing msg-id
+ * (Option X continuation tool-resolutions and agent-side redirected
+ * tool-output chunks) but carry their own continuation-scoped headers.
+ * For tool-resolution publishes the amend has `role: user, parent: <self>`;
+ * for agent amendments the parent points at the assistant itself. Merging
+ * those over the original message's stored headers in decode-history
+ * poisons `parentId` and `role` so `tree.upsert` records a self-loop
+ * parent and `flattenNodes` skips the node as unreachable.
+ *
+ * Live channel flow doesn't have this problem because `tree.upsert`
+ * already preserves `parentId` (set once on insert) and `x-ably-role`
+ * on re-upsert; decode-history aggregates headers per msg-id BEFORE
+ * the first upsert, so the protection has to live here too.
+ */
+const IDENTITY_HEADERS: ReadonlySet<string> = new Set([HEADER_ROLE, HEADER_PARENT, HEADER_FORK_OF]);
+
+/**
+ * Merge `incoming` headers onto `existing` for the same `x-ably-msg-id`.
+ * Identity headers (see {@link IDENTITY_HEADERS}) are sticky — only set
+ * when absent on `existing`; never overwritten. Everything else
+ * (`status`, domain headers, etc.) merges last-wins so a closing append
+ * can update `status: streaming → finished`.
+ * @param existing - The accumulated headers for the msg-id.
+ * @param incoming - The headers from a subsequent wire targeting the same msg-id.
+ */
+const mergePreservingIdentity = (existing: Record<string, string>, incoming: Record<string, string>): void => {
+  for (const [key, value] of Object.entries(incoming)) {
+    if (IDENTITY_HEADERS.has(key) && existing[key] !== undefined) continue;
+    existing[key] = value;
+  }
+};
 import type { Logger } from '../../logger.js';
 import { getHeaders } from '../../utils.js';
 import type { Codec } from '../codec/types.js';
@@ -167,7 +207,7 @@ const decodeAll = <TEvent, TProjection, TMessage>(
           run.msgHeaders.set(msgId, { ...headers });
           if (serial) run.msgSerials.set(msgId, serial);
         } else if (Object.keys(headers).length > 0) {
-          Object.assign(existing, headers);
+          mergePreservingIdentity(existing, headers);
         }
       }
       for (const event of events) {
@@ -188,7 +228,7 @@ const decodeAll = <TEvent, TProjection, TMessage>(
             discreteHeaders.set(msgId, { ...headers });
             if (serial) discreteSerials.set(msgId, serial);
           } else if (Object.keys(headers).length > 0) {
-            Object.assign(existing, headers);
+            mergePreservingIdentity(existing, headers);
           }
         }
       }
@@ -213,9 +253,14 @@ const decodeAll = <TEvent, TProjection, TMessage>(
     // with the highest Ably serial is canonical. Messages whose serial
     // precedes the winning user-message's serial belong to a losing
     // invocation and are dropped from the materialised history.
+    // Continuation user-messages (`x-ably-run-continue: 'true'`) are
+    // skipped — they publish under the original run-id but represent
+    // tool-resolution traffic and would incorrectly supersede the
+    // original prompt's serial.
     let winningSerial: string | undefined;
     for (const [mid, hdrs] of run.msgHeaders) {
       if (hdrs[HEADER_ROLE] !== 'user') continue;
+      if (hdrs[HEADER_RUN_CONTINUE] === 'true') continue;
       if (!hdrs[HEADER_INVOCATION_ID]) continue;
       const s = run.msgSerials.get(mid);
       if (!s) continue;

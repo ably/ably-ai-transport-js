@@ -123,6 +123,24 @@ describe('Tree', () => {
 
       expect(tree.getHeaders('m1')).toEqual({ 'x-new': 'val2' });
     });
+
+    it('preserves an existing x-ably-role when a later upsert carries a different role', () => {
+      // Original insert: agent's assistant stream stamps role='assistant'.
+      tree.upsert('m1', { id: 'a', content: 'v1' }, { [HEADER_ROLE]: 'assistant', 'x-foo': 'a' }, 'serial-001');
+      // Secondary contribution: a client-published continuation tool
+      // resolution stamps the SAME msg-id but with role='user'. The node's
+      // role must remain 'assistant' — otherwise the UI / winner-rule / etc.
+      // misread the node as a user message.
+      tree.upsert('m1', { id: 'a', content: 'v2' }, { [HEADER_ROLE]: 'user', 'x-foo': 'b' });
+
+      expect(tree.getHeaders('m1')).toEqual({ [HEADER_ROLE]: 'assistant', 'x-foo': 'b' });
+    });
+
+    it('allows the very first upsert to set whatever role it likes', () => {
+      // Sanity: preservation only kicks in on second-or-later upsert.
+      tree.upsert('m1', { id: 'a', content: 'v1' }, { [HEADER_ROLE]: 'user' });
+      expect(tree.getHeaders('m1')?.[HEADER_ROLE]).toBe('user');
+    });
   });
 
   // -------------------------------------------------------------------------

@@ -18,7 +18,14 @@
 
 import type * as Ably from 'ably';
 
-import { HEADER_FORK_OF, HEADER_INVOCATION_ID, HEADER_PARENT, HEADER_ROLE, HEADER_RUN_ID } from '../../constants.js';
+import {
+  HEADER_FORK_OF,
+  HEADER_INVOCATION_ID,
+  HEADER_PARENT,
+  HEADER_ROLE,
+  HEADER_RUN_CONTINUE,
+  HEADER_RUN_ID,
+} from '../../constants.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import type { MessageNode, RunLifecycleEvent, Tree } from './types.js';
@@ -407,7 +414,18 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
       // streaming updates from erasing canonical headers).
       existing.node.message = message;
       if (Object.keys(headers).length > 0) {
+        // Preserve a previously-set `x-ably-role`. Secondary wire
+        // contributions to an existing message (e.g. a client-published
+        // continuation tool resolution stamped with the prior assistant's
+        // msg-id) carry `x-ably-role: 'user'`, but the node's role
+        // belongs to its original contributor (the agent's assistant
+        // stream). Without this carve-out the role flips and downstream
+        // consumers (UI rendering, winner rule, etc.) misread the node.
+        const previousRole = existing.node.headers[HEADER_ROLE];
         existing.node.headers = { ...headers };
+        if (previousRole !== undefined) {
+          existing.node.headers[HEADER_ROLE] = previousRole;
+        }
       }
       // Spec: AIT-CT13d
       // Promote serial: optimistic (null) → server-assigned on relay.
@@ -452,13 +470,19 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
    * the highest Ably channel serial is canonical. We only consider messages
    * with `role: user` and a non-null serial — optimistic (null-serial)
    * inserts never win, otherwise a fresh-but-unacked retry would prematurely
-   * supersede the in-flight invocation.
+   * supersede the in-flight invocation. Continuation user-messages
+   * (`x-ably-run-continue: 'true'`) are skipped: they publish under the
+   * same run-id as the original prompt but represent tool-resolution
+   * traffic, not a competing user-prompt. Without this exclusion the
+   * continuation's higher serial would supersede the original prompt in
+   * materialised history.
    * @param headers - Transport headers from the incoming user message.
    * @param serial - Ably channel serial assigned to the published message.
    */
   private _maybeUpdateWinningInvocation(headers: Record<string, string>, serial: string | undefined): void {
     if (!serial) return;
     if (headers[HEADER_ROLE] !== 'user') return;
+    if (headers[HEADER_RUN_CONTINUE] === 'true') return;
     const runId = headers[HEADER_RUN_ID];
     const invocationId = headers[HEADER_INVOCATION_ID];
     if (!runId || !invocationId) return;

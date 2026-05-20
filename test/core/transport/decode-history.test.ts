@@ -16,7 +16,9 @@ import {
   HEADER_DISCRETE,
   HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
+  HEADER_PARENT,
   HEADER_ROLE,
+  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
   HEADER_STATUS,
   HEADER_STREAM,
@@ -30,7 +32,7 @@ import { LogLevel, makeLogger } from '../../../src/logger.js';
 // ---------------------------------------------------------------------------
 
 interface TestEvent {
-  type: 'text' | 'finish' | 'amend';
+  type: 'text' | 'finish';
   text?: string;
 }
 
@@ -230,6 +232,7 @@ const createMockCodec = (): Codec<TestEvent, TestProjection, TestMessage> & {
     }),
     getMessages: vi.fn((p: TestProjection) => p.order.map((id) => p.byId.get(id)).filter((m): m is TestMessage => !!m)),
     userMessageEvent: vi.fn((m: TestMessage): TestEvent => ({ type: 'text', text: m.content })),
+    createRegenerateEvent: vi.fn((): TestEvent => ({ type: 'text', text: '' })),
     classifyEvent: vi.fn(() => ({ kind: 'other' as const }) as const),
     // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires an explicit return matching the codec contract
     resolveToolTarget: vi.fn(() => undefined),
@@ -426,19 +429,19 @@ describe('decodeHistory', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Amend routing
+  // Same-run message routing — successive wire messages folded together
   // -------------------------------------------------------------------------
 
-  describe('amend routing', () => {
-    it('folds an amend with matching HEADER_RUN_ID into the same run projection', async () => {
+  describe('same-run message routing', () => {
+    it('folds a follow-up message with matching HEADER_RUN_ID into the same run projection', async () => {
       // Run T1 streams the original message; a later wire message in the SAME
-      // run T1 carries HEADER_MSG_ID = 'asst-1' to amend it. The reducer
-      // routes via meta.messageId === 'asst-1', so the amend appends into
-      // the same message.
+      // run T1 carries HEADER_MSG_ID = 'asst-1' to extend it. The reducer
+      // routes via meta.messageId === 'asst-1', so the follow-up appends
+      // into the same message.
       const [finish, delta, create] = streamingRun('T1', 'asst-1', ['original']);
       if (!finish || !delta || !create) throw new Error('expected 3 wire messages');
 
-      const amend = withEvents(
+      const followUp = withEvents(
         ablyMsg({
           action: 'message.create',
           headers: {
@@ -448,28 +451,112 @@ describe('decodeHistory', () => {
             [HEADER_DISCRETE]: 'true',
           },
         }),
-        [{ type: 'text', text: ' + amended' }],
+        [{ type: 'text', text: ' + extended' }],
       );
 
-      // Newest-first: amend, finish, delta, create
-      const channel = createMockChannel([[amend, finish, delta, create]]);
+      // Newest-first: follow-up, finish, delta, create
+      const channel = createMockChannel([[followUp, finish, delta, create]]);
       const codec = createMockCodec();
 
       const page = await decodeHistory(channel, codec, { limit: 10 }, silentLogger);
       const asst = page.items.find((i) => i.message.id === 'asst-1');
-      expect(asst?.message.content).toBe('original + amended');
+      expect(asst?.message.content).toBe('original + extended');
     });
 
-    it('drops an amend whose HEADER_RUN_ID does not match (orphan)', async () => {
-      // T1 streams; T2 amends T1's asst-1. With the new producer-responsibility
-      // model the producer must publish the amend under T1's HEADER_RUN_ID,
-      // so an amend tagged with T2 lands in T2's projection — where there is
-      // no asst-1 to update — and is effectively dropped from the asst-1
-      // message in T1.
+    it('preserves identity headers from the first wire when later amend wires target the same msg-id', async () => {
+      // Regression: under Option X the continuation tool-resolution wire
+      // publishes under the prior assistant's msg-id (so the reducer's
+      // direct-fold path runs). The wire carries `role: user, parent: <self>`
+      // because it's a continuation publish — its headers describe the
+      // continuation, not the assistant. The agent-side amend wire
+      // (`tool-output-available`) also publishes under the assistant's
+      // msg-id but with `parent: <self>` (the run.pipe default parent
+      // points at the assistant being amended).
+      //
+      // Without identity-preservation in decode-history, those amends
+      // clobber the assistant's stored `role` and `parent`, poisoning the
+      // tree node so `flattenNodes` skips it as unreachable (self-loop
+      // parent). With preservation, identity stays as set by the first
+      // wire — the assistant renders correctly on history rewind.
+      const [finish, delta, create] = streamingRun('T1', 'asst-1', ['answer']);
+      if (!finish || !delta || !create) throw new Error('expected 3 wire messages');
+
+      // Override the create's headers so it has `role: assistant, parent: u1`
+      // — the assistant's real identity from its first wire.
+      const createWithIdentity = withEvents(
+        ablyMsg({
+          action: 'message.create',
+          headers: {
+            [HEADER_RUN_ID]: 'T1',
+            [HEADER_MSG_ID]: 'asst-1',
+            [HEADER_STREAM]: 'true',
+            [HEADER_ROLE]: 'assistant',
+            [HEADER_PARENT]: 'u1',
+          },
+          serial: create.serial ?? undefined,
+        }),
+        [],
+      );
+
+      // Option X continuation tool-resolution wire: same msg-id, role=user,
+      // parent=self, run-continue=true. Different invocation.
+      const continuationAmend = withEvents(
+        ablyMsg({
+          action: 'message.create',
+          headers: {
+            [HEADER_RUN_ID]: 'T1',
+            [HEADER_MSG_ID]: 'asst-1',
+            [HEADER_ROLE]: 'user',
+            [HEADER_PARENT]: 'asst-1',
+            [HEADER_RUN_CONTINUE]: 'true',
+            [HEADER_INVOCATION_ID]: 'inv-continuation',
+            [HEADER_STREAM]: 'false',
+            [HEADER_DISCRETE]: 'true',
+          },
+        }),
+        // Reducer no-op (mock codec doesn't model tool resolutions).
+        [],
+      );
+
+      // Agent-side amend (tool-output-available): same msg-id,
+      // role=assistant, parent=self.
+      const agentAmend = withEvents(
+        ablyMsg({
+          action: 'message.create',
+          headers: {
+            [HEADER_RUN_ID]: 'T1',
+            [HEADER_MSG_ID]: 'asst-1',
+            [HEADER_ROLE]: 'assistant',
+            [HEADER_PARENT]: 'asst-1',
+            [HEADER_STREAM]: 'false',
+            [HEADER_DISCRETE]: 'true',
+          },
+        }),
+        [],
+      );
+
+      // Newest-first: agentAmend, continuationAmend, finish, delta, create
+      const channel = createMockChannel([[agentAmend, continuationAmend, finish, delta, createWithIdentity]]);
+      const codec = createMockCodec();
+
+      const page = await decodeHistory(channel, codec, { limit: 10 }, silentLogger);
+      const asst = page.items.find((i) => i.message.id === 'asst-1');
+      expect(asst).toBeDefined();
+      // Identity preserved from the first wire (create).
+      expect(asst?.headers[HEADER_ROLE]).toBe('assistant');
+      expect(asst?.headers[HEADER_PARENT]).toBe('u1');
+    });
+
+    it('keeps follow-ups under a different HEADER_RUN_ID isolated from the original message', async () => {
+      // T1 streams; a wire message in T2 targets T1's asst-1. With the new
+      // producer-responsibility model the producer must publish under T1's
+      // HEADER_RUN_ID, so a follow-up tagged with T2 lands in T2's
+      // projection — where there is no asst-1 to update — and never merges
+      // into T1's asst-1 message.
       const [finish, delta, create] = streamingRun('T1', 'asst-1', ['original']);
       if (!finish || !delta || !create) throw new Error('expected 3 wire messages');
 
-      const orphanAmend = withEvents(
+      const orphanFollowUp = withEvents(
         ablyMsg({
           action: 'message.create',
           headers: {
@@ -482,15 +569,15 @@ describe('decodeHistory', () => {
         [{ type: 'text', text: '[orphan]' }],
       );
 
-      const channel = createMockChannel([[orphanAmend, finish, delta, create]]);
+      const channel = createMockChannel([[orphanFollowUp, finish, delta, create]]);
       const codec = createMockCodec();
 
       const page = await decodeHistory(channel, codec, { limit: 10 }, silentLogger);
       const asst = page.items.find((i) => i.message.id === 'asst-1');
-      // The mock reducer keys by meta.messageId — when the amend lands in T2's
-      // projection, it creates a 'asst-1' message there, but the per-run
-      // separation in decode-history means that doesn't merge into T1's
-      // 'asst-1' message. Verify T1's content is unchanged.
+      // The mock reducer keys by meta.messageId — when the follow-up lands
+      // in T2's projection, it creates a 'asst-1' message there, but the
+      // per-run separation in decode-history means that doesn't merge into
+      // T1's 'asst-1' message. Verify T1's content is unchanged.
       expect(asst?.message.content).toBe('original');
     });
   });

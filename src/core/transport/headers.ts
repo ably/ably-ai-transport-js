@@ -14,6 +14,7 @@ import {
   HEADER_PROMPT_ID,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
+  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
 } from '../../constants.js';
 
@@ -22,14 +23,16 @@ import {
  * @param opts - The header values to include.
  * @param opts.role - Message role (e.g. "user", "assistant").
  * @param opts.runId - Run correlation ID.
- * @param opts.msgId - Message identity. Set to the original message's id when
- *   publishing an event that modifies an existing message (client tool output,
- *   approval response) — the reducer routes events by `meta.messageId`.
+ * @param opts.msgId - Message identity — the wire `x-ably-msg-id` for this message.
  * @param opts.runClientId - ClientId of the run initiator.
  * @param opts.parent - Preceding message's msg-id (for branching).
  * @param opts.forkOf - Forked message's msg-id (for edit/regen).
  * @param opts.invocationId - Invocation correlation ID. Set on the user-prompt message so the agent can locate the prompt by invocation.
  * @param opts.promptId - Per-prompt identifier. Set on each client-published user-prompt message; the invocation body's `promptIds` lists the ids the agent should look up.
+ * @param opts.runContinue - When `true`, stamps `x-ably-run-continue: 'true'` to mark
+ *   the message as a continuation user-message (e.g. a tool-resolution publish under
+ *   a suspended run). Continuation user-messages are skipped by the Tree's
+ *   winner-rule so the original user-prompt remains visible in materialised history.
  * @returns A headers record with the `x-ably-*` transport headers set.
  */
 export const buildTransportHeaders = (opts: {
@@ -41,6 +44,7 @@ export const buildTransportHeaders = (opts: {
   forkOf?: string;
   invocationId?: string;
   promptId?: string;
+  runContinue?: boolean;
 }): Record<string, string> => {
   const h: Record<string, string> = {
     [HEADER_ROLE]: opts.role,
@@ -52,5 +56,6 @@ export const buildTransportHeaders = (opts: {
   if (opts.forkOf) h[HEADER_FORK_OF] = opts.forkOf;
   if (opts.invocationId) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.promptId) h[HEADER_PROMPT_ID] = opts.promptId;
+  if (opts.runContinue) h[HEADER_RUN_CONTINUE] = 'true';
   return h;
 };

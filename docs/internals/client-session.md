@@ -28,7 +28,7 @@ All sub-components are created in the constructor and share a single Ably channe
 4. **Create stream** — the [stream router](transport-components.md#streamrouter) creates a `ReadableStream` bound to `(runId, invocationId)`. Events from a different invocation under the same `runId` are dropped.
 5. **Publish on the channel** — the session's shared encoder publishes the user message(s) via `writeMessages`. Capability errors (Ably 401/403) are translated to `MissingPublishCapability` and reject `send()` before exposing the stream.
 6. **POST in parallel** — the HTTP POST is fired in parallel with the publish. The body carries `runId`, `invocationId`, `clientId`, `history` (and `events`, `forkOf`, `parent` when applicable). It does **not** carry a `messages` field — the prompt is on the channel.
-7. **Wait for run-start** — `send()` awaits an `x-ably-run-start` event for the run+invocation, bounded by `runStartDeadlineMs` (default 30 000 ms). Deadline lapse rejects `send()` with `RunStartDeadlineExceeded`. POST failure also rejects.
+7. **Wait for run-start** — `send()` awaits an `ai-run-start` event for the run+invocation, bounded by `runStartDeadlineMs` (default 30 000 ms). Deadline lapse rejects `send()` with `RunStartDeadlineExceeded`. POST failure also rejects.
 8. **Return `ActiveRun`** — once run-start arrives, the caller receives `{ stream, runId, cancel() }`.
 
 `regenerate()` and `update()` (which carry no user-message text) skip the encoder publish and the run-start wait — the agent receives the invocation via POST and runs without needing a channel-published prompt.
@@ -49,8 +49,8 @@ The channel subscription handler (`_handleMessage`) processes every inbound Ably
 
 ### Run lifecycle events
 
-- **`x-ably-run-start`** - records the run's clientId, emits a `run` event
-- **`x-ably-run-end`** - closes the stream router entry, cleans up observer state and relay-detection state, emits a `run` event
+- **`ai-run-start`** - records the run's clientId, emits a `run` event
+- **`ai-run-end`** - closes the stream router entry, cleans up observer state and relay-detection state, emits a `run` event
 
 ### Codec-decoded messages
 

@@ -78,6 +78,6 @@ const run = await view.send([questionOne, questionTwo]);
 
 **Multi-client ordering** - in a conversation with multiple clients sending concurrently, optimistic messages appear at the end of the local tree until reconciliation. After reconciliation, the serial determines the canonical order, which may differ from the optimistic insertion order. All clients converge on the same order once relays are reconciled.
 
-**Cleanup** - the session tracks optimistic message IDs per run. When a [run](../concepts/runs.md) ends (via `x-ably-run-end` on the channel), the tracking state for that run is cleaned up. This prevents stale message IDs from matching against unrelated messages in future runs.
+**Cleanup** - the session tracks optimistic message IDs per run. When a [run](../concepts/runs.md) ends (via `ai-run-end` on the channel), the tracking state for that run is cleaned up. This prevents stale message IDs from matching against unrelated messages in future runs.
 
 For the internal implementation details, see [Client session: optimistic reconciliation](../internals/client-session.md#optimistic-reconciliation), [Conversation tree: upsert](../internals/conversation-tree.md#upsert-the-sole-mutation), and [Wire protocol: message identity](../internals/wire-protocol.md#message-identity-x-ably-msg-id).

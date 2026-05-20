@@ -62,7 +62,7 @@ Run lifecycle events include the `clientId`:
 ```typescript
 session.tree.on('run', (event) => {
   // event.clientId tells you who started or ended the run
-  // event.type is 'x-ably-run-start' or 'x-ably-run-end'
+  // event.type is 'ai-run-start' or 'ai-run-end'
 });
 ```
 

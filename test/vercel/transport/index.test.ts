@@ -144,9 +144,11 @@ describe('Vercel createClientSession', () => {
     expect(init.credentials).toBe('include');
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer token');
 
-    // Verify the body contains the clientId
+    // Verify the body carries the run identity. Per-message metadata
+    // (clientId/parent/forkOf/isContinuation) has moved off the body and
+    // onto channel headers post-AIT-769.
     const body = JSON.parse(init.body as string) as Record<string, unknown>;
-    expect(body.clientId).toBe('user-1');
+    expect(body.clientId).toBeUndefined();
     expect(body.runId).toBe(run.runId);
 
     await session.close();
@@ -172,7 +174,7 @@ describe('Vercel createAgentSession', () => {
     await session.connect();
 
     // Session was created without error — proves options were forwarded
-    const run = createRunFromOpts(session, { runId: 'run-2', clientId: 'user-1' });
+    const run = createRunFromOpts(session, { runId: 'run-2' });
     expect(run.runId).toBe('run-2');
 
     session.close();

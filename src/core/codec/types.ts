@@ -237,12 +237,19 @@ export interface Decoder<TEvent> {
  * thing that knows how to inspect its TEvents; the core session asks via
  * {@link Codec.classifyEvent}.
  *
- * - `user-message` — kicks off a new run (or refreshes a regen target).
- *   `message` is the TMessage to optimistically insert into the Tree.
- * - `amend` — modifies an existing message (wire `HEADER_MSG_ID` is set to that message's id). Used by
- *   client-published tool outputs and tool-approval responses.
- *   `targetMsgId` is the `x-ably-msg-id` of the message being amended.
- * - `other` — anything the codec doesn't recognize as either of the above.
+ * - `user-message` — a free-standing channel message published as
+ *   `x-ably-role: user`. `message` is the TMessage the session uses for
+ *   optimistic tree state. Includes fresh user prompts AND continuation
+ *   tool-resolution messages (tool outputs / approval responses); the
+ *   reducer (not the classifier) inline-detects the latter and folds them
+ *   onto the prior assistant.
+ * - `regenerate` — a wire-only channel message that carries run-routing
+ *   metadata (`parent`, `forkOf`) in its headers but materialises no
+ *   TMessage. The session publishes the wire, mints a `promptId` so the
+ *   agent's prompt-lookup catches it, and skips tree-upsert / projection
+ *   fold entirely. Produced by `View.regenerate` to start a new run forked
+ *   off an assistant message without re-publishing the parent user.
+ * - `other` — anything the codec doesn't recognize as a user-message.
  *   The session rejects `view.sendEvent` calls that include `other`-classified
  *   events.
  */
@@ -250,14 +257,16 @@ export type EventClassification<TMessage> =
   | {
       /** Discriminator — user-message event variant. */
       kind: 'user-message';
-      /** The TMessage to insert into the Tree on optimistic publish. */
+      /** The TMessage the session uses for optimistic Tree state. */
       message: TMessage;
     }
   | {
-      /** Discriminator — amend event variant. */
-      kind: 'amend';
-      /** The `x-ably-msg-id` of the message this event amends. */
-      targetMsgId: string;
+      /** Discriminator — wire-only regenerate event variant. */
+      kind: 'regenerate';
+      /** Wire `x-ably-parent` for this regenerate event. */
+      parent: string;
+      /** Wire `x-ably-fork-of` for this regenerate event. */
+      forkOf: string;
     }
   | {
       /** Discriminator — unrecognized / not-sendable event variant. */
@@ -293,6 +302,18 @@ export interface Codec<TEvent, TProjection, TMessage> extends Reducer<TEvent, TP
    * caller-provided TMessages into wire events.
    */
   userMessageEvent(message: TMessage): TEvent;
+  /**
+   * Build a regenerate TEvent. The View calls this from
+   * `regenerate(messageId)`; the resulting event is classified as
+   * `kind: 'regenerate'` and published as a wire-only channel message
+   * carrying `parent` / `forkOf` headers. No TMessage materialises on
+   * either client or agent — the agent's prompt-lookup picks the event
+   * up via its `promptId` and reads run-routing metadata from headers.
+   * @param forkOfMsgId - The assistant being regenerated (wire `x-ably-fork-of`).
+   * @param parentMsgId - Parent user msg-id for the new assistant chain (wire `x-ably-parent`).
+   * @returns A TEvent that `classifyEvent` will classify as `regenerate`.
+   */
+  createRegenerateEvent(forkOfMsgId: string, parentMsgId: string): TEvent;
   /**
    * Classify a TEvent for `View.sendEvent` dispatch. The session inspects the
    * returned discriminant to decide whether the event opens a new run

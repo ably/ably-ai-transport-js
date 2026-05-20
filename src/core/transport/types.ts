@@ -284,6 +284,21 @@ export interface Run<TEvent, TProjection, TMessage> {
   /** Read-only view of the conversation messages associated with this run. */
   readonly view: RunView<TMessage>;
 
+  /**
+   * The conversation messages this run should feed to the model — the
+   * prior-conversation history overlaid with codec-folded state for any
+   * continuation tool resolutions, followed by the user-prompt messages
+   * looked up on the channel for this invocation.
+   *
+   * Before {@link start} resolves: equals the invocation's `history`
+   * (no view contribution yet). After {@link start}: continuation
+   * overlay applied + the run's own view-message contributions appended.
+   *
+   * Each access returns a fresh array — safe to mutate without affecting
+   * internal Run state.
+   */
+  readonly messages: TMessage[];
+
   /** Publish run-start event to the channel. Must be called before addMessages or pipe. */
   start(): Promise<void>;
 
@@ -734,19 +749,30 @@ export interface View<TEvent, TProjection, TMessage> {
   sendMessage(messages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveRun<TEvent>>;
 
   /**
-   * Send one or more TEvents on the channel and fire a POST. Each event
-   * carries the metadata required to construct its wire message —
-   * `UserMessageEvent` carries the user prompt; amend events
-   * (`ClientToolOutputEvent`, `ToolApprovalEvent`) carry `targetMsgId`
-   * which the encoder stamps as the wire message's `HEADER_MSG_ID` so
-   * the reducer folds the event onto the original message.
+   * Send one or more TEvents on the channel and fire a POST.
+   *
+   * Two input shapes are accepted:
+   *
+   * - `TEvent` / `TEvent[]` — the SDK mints a fresh `x-ably-msg-id` per
+   *   event for the wire publish.
+   * - `Array<{ event, domainMessageId? }>` — per-event publish hint.
+   *   `domainMessageId`, when set, is used as the wire `HEADER_MSG_ID`
+   *   for that event instead of a freshly-minted UUID. Used by the
+   *   chat-transport adapter to publish continuation tool resolutions
+   *   onto an existing assistant's tree key: the wire stamps the
+   *   assistant's `x-ably-msg-id`, the reducer's direct fold path
+   *   runs, and the chunk lands on the assistant's projection entry
+   *   without a cross-message redirect.
    *
    * Convention: a send containing at least one `UserMessageEvent` is a
-   * fresh send (mints a new `runId`). A send containing only amend
-   * events is a continuation — pair with `options.runId` to extend a
-   * suspended run.
+   * fresh send (mints a new `runId`). A send containing only
+   * tool-resolution events is a continuation — pair with
+   * `options.runId` to extend a suspended run.
    */
-  sendEvent(events: TEvent | TEvent[], options?: SendOptions): Promise<ActiveRun<TEvent>>;
+  sendEvent(
+    events: TEvent | TEvent[] | { event: TEvent; domainMessageId?: string }[],
+    options?: SendOptions,
+  ): Promise<ActiveRun<TEvent>>;
 
   /**
    * Regenerate an assistant message. Creates a new run that forks the

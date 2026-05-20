@@ -1,5 +1,5 @@
 // Vercel AI SDK codec
-export type { ToolApprovalEvent, UserMessageEvent, VercelEvent, VercelProjection } from './codec/index.js';
+export type { ToolApprovalResponseEvent, UserMessageEvent, VercelEvent, VercelProjection } from './codec/index.js';
 export { UIMessageCodec } from './codec/index.js';
 
 // Vercel AI SDK transport wrappers (pre-bound to UIMessageCodec)

@@ -136,7 +136,7 @@ describe('AgentSession integration', () => {
 
     const collector = collectUntil(subChannel, hasFinish);
 
-    const run = createRunFromOpts(session, { runId: 'run-1', clientId: 'user-a' });
+    const run = createRunFromOpts(session, { runId: 'run-1' });
     await run.start();
 
     const stream = textResponseStream('msg-1', 'text-1', 'Hello, world!');
@@ -193,7 +193,7 @@ describe('AgentSession integration', () => {
       if (isRunEnd(msg)) resolveEnd();
     });
 
-    const run = createRunFromOpts(session, { runId: 'run-lc-1', clientId: 'user-b' });
+    const run = createRunFromOpts(session, { runId: 'run-lc-1' });
     await run.start();
 
     const stream = textResponseStream('msg-lc-1', 'text-lc-1', 'test');
@@ -231,7 +231,7 @@ describe('AgentSession integration', () => {
     });
     await session.connect();
 
-    const run = createRunFromOpts(session, { runId: 'run-cancel-1', clientId: 'user-c' });
+    const run = createRunFromOpts(session, { runId: 'run-cancel-1' });
     await run.start();
 
     const stream = new ReadableStream<VercelEvent>({
@@ -291,13 +291,13 @@ describe('AgentSession integration', () => {
       }
     });
 
-    const run1 = createRunFromOpts(session, { runId: 'run-seq-1', clientId: 'user-d' });
+    const run1 = createRunFromOpts(session, { runId: 'run-seq-1' });
     await run1.start();
     const result1 = await run1.pipe(textResponseStream('msg-seq-1', 'text-seq-1', 'First response'));
     await run1.end('complete');
     expect(result1.reason).toBe('complete');
 
-    const run2 = createRunFromOpts(session, { runId: 'run-seq-2', clientId: 'user-d' });
+    const run2 = createRunFromOpts(session, { runId: 'run-seq-2' });
     await run2.start();
     const result2 = await run2.pipe(textResponseStream('msg-seq-2', 'text-seq-2', 'Second response'));
     await run2.end('complete');
@@ -339,8 +339,8 @@ describe('AgentSession integration', () => {
       }
     });
 
-    const run1 = createRunFromOpts(session, { runId: 'run-conc-1', clientId: 'user-e' });
-    const run2 = createRunFromOpts(session, { runId: 'run-conc-2', clientId: 'user-f' });
+    const run1 = createRunFromOpts(session, { runId: 'run-conc-1' });
+    const run2 = createRunFromOpts(session, { runId: 'run-conc-2' });
 
     await Promise.all([run1.start(), run2.start()]);
 
@@ -385,7 +385,7 @@ describe('AgentSession integration', () => {
       if (isRunEnd(msg)) resolveEnd();
     });
 
-    const run = createRunFromOpts(session, { runId: 'run-err-1', clientId: 'user-g' });
+    const run = createRunFromOpts(session, { runId: 'run-err-1' });
     await run.start();
 
     const stream = new ReadableStream<VercelEvent>({
@@ -429,7 +429,7 @@ describe('AgentSession integration', () => {
     const c1 = collectUntil(sub1Channel, hasFinish);
     const c2 = collectUntil(sub2Channel, hasFinish);
 
-    const run = createRunFromOpts(session, { runId: 'run-sync-1', clientId: 'user-h' });
+    const run = createRunFromOpts(session, { runId: 'run-sync-1' });
     await run.start();
     await run.pipe(textResponseStream('msg-sync-1', 'text-sync-1', 'Shared response'));
     await run.end('complete');
@@ -473,7 +473,7 @@ describe('AgentSession integration', () => {
       if (eventsOf(events).some((e) => e.type === 'finish')) resolveFinish();
     });
 
-    const run = createRunFromOpts(session, { runId: 'run-add-1', clientId: 'user-i' });
+    const run = createRunFromOpts(session, { runId: 'run-add-1' });
     await run.start();
 
     const userMessage: AI.UIMessage = {
@@ -529,7 +529,7 @@ describe('AgentSession integration', () => {
     });
     await session.connect();
 
-    const run = createRunFromOpts(session, { runId: 'run-1', clientId: 'user-a' });
+    const run = createRunFromOpts(session, { runId: 'run-1' });
     await run.start();
 
     await serverClient.channels.get(channelName).detach();
@@ -567,7 +567,7 @@ describe('AgentSession integration', () => {
       if (msg.name === 'tool-output-available') resolve();
     });
 
-    const run = createRunFromOpts(session, { runId: 'run-rwo', clientId: 'user-a' });
+    const run = createRunFromOpts(session, { runId: 'run-rwo' });
     await run.start();
 
     const stream = new ReadableStream<VercelEvent>({
@@ -646,7 +646,6 @@ describe('AgentSession integration', () => {
     const serverRun = createRunFromOpts(session, {
       runId,
       invocationId,
-      clientId: 'live-lookup-client',
       promptIds: [promptId],
     });
 
@@ -742,7 +741,6 @@ describe('AgentSession integration', () => {
       const serverRun = createRunFromOpts(session, {
         runId: activeRun.runId,
         invocationId: activeRun.invocationId,
-        clientId: clientClient.auth.clientId,
         promptIds: activeRun.promptIds,
       });
       await serverRun.start();

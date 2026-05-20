@@ -567,18 +567,22 @@ describe('Vercel encoder', () => {
     });
   });
 
-  // -- tool-approval events (codec-local TEvent) ----------------------------
+  // -- tool-approval-response events (codec-local TEvent) ------------------
 
-  describe('publishing tool-approval events', () => {
-    it('publishes a discrete tool-approval-response with toolCallId and approved headers', async () => {
+  describe('publishing tool-approval-response events', () => {
+    it('publishes a discrete tool-approval-response with toolCallId/approved/reason headers and no amend header', async () => {
       const encoder = createEncoder(writer);
-      await encoder.publish({
-        type: 'ait-tool-approval',
-        toolCallId: 'tc-1',
-        approved: true,
-        reason: 'looks good',
-        targetMsgId: 'msg-target',
-      });
+      // The encoder's per-write `messageId` carries the continuation's own
+      // wire id — it is NOT used to target the original assistant.
+      await encoder.publish(
+        {
+          type: 'tool-approval-response',
+          toolCallId: 'tc-1',
+          approved: true,
+          reason: 'looks good',
+        },
+        { messageId: 'continuation-msg-id' },
+      );
 
       expect(writer.publishCalls).toHaveLength(1);
       const msg = firstPublish(writer);
@@ -586,52 +590,102 @@ describe('Vercel encoder', () => {
       expect(headersOf(msg)[`${D}toolCallId`]).toBe('tc-1');
       expect(headersOf(msg)[`${D}approved`]).toBe('true');
       expect(headersOf(msg)[`${D}reason`]).toBe('looks good');
-      // HEADER_MSG_ID = targetMsgId so the reducer folds the response onto the original message.
-      expect(headersOf(msg)[HEADER_MSG_ID]).toBe('msg-target');
-      // No HEADER_AMEND on the wire — routing is by HEADER_MSG_ID alone.
+      // HEADER_MSG_ID comes from perWrite.messageId — the continuation's
+      // own new wire id. The reducer routes to the original assistant by
+      // toolCallId, not by msg-id.
+      expect(headersOf(msg)[HEADER_MSG_ID]).toBe('continuation-msg-id');
+      // No HEADER_AMEND on the wire — the amend concept has been retired.
       expect(headersOf(msg)['x-ably-amend']).toBeUndefined();
     });
   });
 
-  // -- client tool output events (codec-local TEvent) -----------------------
+  // -- ait-regenerate events (codec-local TEvent) -------------------------
 
-  describe('publishing client tool output events', () => {
-    it('publishes ait-client-tool-output as tool-output-available with HEADER_MSG_ID', async () => {
+  describe('publishing ait-regenerate events', () => {
+    it('publishes a discrete ait-regenerate wire with empty data; routing metadata travels on transport headers', async () => {
       const encoder = createEncoder(writer);
-      await encoder.publish({
-        type: 'ait-client-tool-output',
-        toolCallId: 'tc-1',
-        output: { latitude: 51.5, longitude: -0.1 },
-        targetMsgId: 'msg-target',
-      });
+      // The client-session builds transport headers (msg-id, prompt-id,
+      // run-id, parent, fork-of, role) and passes them as `extras.headers`
+      // on the per-write options. The encoder forwards them onto the wire
+      // and carries no domain payload of its own.
+      await encoder.publish(
+        {
+          type: 'ait-regenerate',
+          forkOfMsgId: 'asst-A1',
+          parentMsgId: 'user-U1',
+        },
+        {
+          messageId: 'regen-msg-id',
+          extras: {
+            headers: {
+              [HEADER_MSG_ID]: 'regen-msg-id',
+              'x-ably-prompt-id': 'prompt-1',
+              'x-ably-role': 'user',
+              'x-ably-parent': 'user-U1',
+              'x-ably-fork-of': 'asst-A1',
+            },
+          },
+        },
+      );
+
+      expect(writer.publishCalls).toHaveLength(1);
+      const msg = firstPublish(writer);
+      expect(msg.name).toBe('ait-regenerate');
+      expect(msg.data).toBe('');
+      const headers = headersOf(msg);
+      expect(headers[HEADER_MSG_ID]).toBe('regen-msg-id');
+      expect(headers['x-ably-prompt-id']).toBe('prompt-1');
+      expect(headers['x-ably-role']).toBe('user');
+      expect(headers['x-ably-parent']).toBe('user-U1');
+      expect(headers['x-ably-fork-of']).toBe('asst-A1');
+    });
+  });
+
+  // -- client tool output chunks (UIMessageChunk path) ----------------------
+
+  describe('publishing client tool output chunks', () => {
+    it('publishes a tool-output-available UIMessageChunk via the standard discrete path', async () => {
+      const encoder = createEncoder(writer);
+      // Client-published continuation tool outputs ride as standard
+      // `tool-output-available` chunks — the wire's HEADER_MSG_ID is the
+      // continuation's own id (from perWrite.messageId), not the target
+      // assistant's. The reducer redirects by toolCallId.
+      await encoder.publish(
+        {
+          type: 'tool-output-available',
+          toolCallId: 'tc-1',
+          output: { latitude: 51.5, longitude: -0.1 },
+        },
+        { messageId: 'continuation-msg-id' },
+      );
 
       expect(writer.publishCalls).toHaveLength(1);
       const msg = firstPublish(writer);
       expect(msg.name).toBe('tool-output-available');
       expect(headersOf(msg)[`${D}toolCallId`]).toBe('tc-1');
-      // HEADER_MSG_ID is stamped to the target so the wire message lands on it
-      // and the reducer's per-message-id fold path picks it up.
-      expect(headersOf(msg)[HEADER_MSG_ID]).toBe('msg-target');
+      expect(headersOf(msg)[HEADER_MSG_ID]).toBe('continuation-msg-id');
       expect(headersOf(msg)['x-ably-amend']).toBeUndefined();
       // CAST: data is unknown — we know the encoder shape from above.
       const data = msg.data as { output: unknown };
       expect(data.output).toEqual({ latitude: 51.5, longitude: -0.1 });
     });
 
-    it('publishes ait-client-tool-output-error as tool-output-error with HEADER_MSG_ID', async () => {
+    it('publishes a tool-output-error UIMessageChunk via the standard discrete path', async () => {
       const encoder = createEncoder(writer);
-      await encoder.publish({
-        type: 'ait-client-tool-output-error',
-        toolCallId: 'tc-1',
-        errorText: 'geolocation denied',
-        targetMsgId: 'msg-target',
-      });
+      await encoder.publish(
+        {
+          type: 'tool-output-error',
+          toolCallId: 'tc-1',
+          errorText: 'geolocation denied',
+        },
+        { messageId: 'continuation-msg-id' },
+      );
 
       expect(writer.publishCalls).toHaveLength(1);
       const msg = firstPublish(writer);
       expect(msg.name).toBe('tool-output-error');
       expect(headersOf(msg)[`${D}toolCallId`]).toBe('tc-1');
-      expect(headersOf(msg)[HEADER_MSG_ID]).toBe('msg-target');
+      expect(headersOf(msg)[HEADER_MSG_ID]).toBe('continuation-msg-id');
       expect(headersOf(msg)['x-ably-amend']).toBeUndefined();
       // CAST: data is unknown — we know the encoder shape from above.
       const data = msg.data as { errorText: string };

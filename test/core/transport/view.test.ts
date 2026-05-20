@@ -47,6 +47,7 @@ const createMockCodec = (): Codec<TestEvent, TestProjection, TestMessage> => ({
   fold: vi.fn((state: TestProjection) => state),
   getMessages: vi.fn((state: TestProjection) => state.messages),
   userMessageEvent: vi.fn(() => ({ type: 'user-message' })),
+  createRegenerateEvent: vi.fn(() => ({ type: 'user-message' })),
   classifyEvent: vi.fn((event: TestEvent) =>
     event.type === 'user-message'
       ? ({ kind: 'user-message' as const, message: { id: '', content: '' } } as const)
@@ -1217,40 +1218,44 @@ describe('DefaultView', () => {
     it('send forwards options to delegate', async () => {
       await view.sendEvent({ type: 'user-message' }, { parent: 'm1', body: { extra: true } });
       const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
-      expect(call[0]).toEqual({ type: 'user-message' });
+      // View normalises the raw TEvent into the per-entry richer shape
+      // (`Array<{event, domainMessageId?}>`) before invoking the delegate.
+      expect(call[0]).toEqual([{ event: { type: 'user-message' } }]);
       expect(call[1]).toEqual({ parent: 'm1', body: { extra: true } });
     });
 
-    it('regenerate republishes the parent user message and sets forkOf to the target', async () => {
+    it('regenerate sends a codec-minted regenerate event with forkOf and parent', async () => {
       await view.regenerate('m2');
       const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
-      const input = call[0] as TestEvent;
+      const input = call[0] as { event: TestEvent; domainMessageId?: string }[];
       const options = call[1] as SendOptions;
-      const republishMsgId = call[3] as string | undefined;
-      // The delegate receives the parent user message wrapped via the
-      // codec's userMessageEvent — the mock returns { type: 'user-message' }.
-      expect(input).toEqual({ type: 'user-message' });
-      expect(republishMsgId).toBe('m1');
-      // forkOf still targets the assistant message being regenerated.
+      // The delegate receives the regenerate event the codec minted via
+      // createRegenerateEvent (the mock returns { type: 'user-message' });
+      // no republishMsgId argument is passed — the regenerate event is
+      // wire-only.
+      expect(input).toEqual([{ event: { type: 'user-message' } }]);
+      expect(call).toHaveLength(3); // no 4th republishMsgId argument
+      // forkOf targets the assistant being regenerated; parent is the
+      // user msg-id under which the new assistant streams as a sibling.
       expect(options.forkOf).toBe('m2');
-      // parent is m1's tree parentId (m1 is root → undefined).
-      expect(options.parent).toBeUndefined();
+      expect(options.parent).toBe('m1');
     });
 
-    it('regenerate passes history truncated before the republished user message', async () => {
+    it('regenerate passes history through the parent user message inclusive', async () => {
       await view.regenerate('m2');
       const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
-      const options = call[1] as { body: { history: MessageNode<TestMessage>[] } };
-      // m1 is the republished user message — excluded from history. No
-      // earlier messages exist.
-      expect(options.body.history).toEqual([]);
+      const options = call[1] as { body: { history: TestMessage[] } };
+      // History through U1 inclusive — the LLM receives the user message
+      // it should re-answer. U1 is NOT republished on the wire; the body
+      // carries it directly.
+      expect(options.body.history.map((m) => m.id)).toEqual(['1']);
     });
 
     it('edit computes forkOf and parent from target node', async () => {
       await view.edit('m3', { type: 'user-message' });
       const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
       const options = call[1] as SendOptions;
-      expect(call[0]).toEqual({ type: 'user-message' });
+      expect(call[0]).toEqual([{ event: { type: 'user-message' } }]);
       expect(options.forkOf).toBe('m3');
       expect(options.parent).toBe('m2'); // parent of m3
     });

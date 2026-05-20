@@ -14,7 +14,7 @@
 import type * as Ably from 'ably';
 import type * as AI from 'ai';
 
-import { HEADER_DISCRETE, HEADER_MSG_ID, HEADER_ROLE, HEADER_RUN_ID } from '../../constants.js';
+import { HEADER_DISCRETE, HEADER_ROLE, HEADER_RUN_ID } from '../../constants.js';
 import type { DecoderCore, DecoderCoreHooks, DecoderCoreOptions } from '../../core/codec/decoder.js';
 import { createDecoderCore } from '../../core/codec/decoder.js';
 import type { LifecycleTracker } from '../../core/codec/lifecycle-tracker.js';
@@ -348,13 +348,12 @@ const decodeToolOutputDenied = (r: VercelHeaderReader): VercelEvent[] => [
   { type: 'tool-output-denied', toolCallId: r.strOr('toolCallId', '') },
 ];
 
-const decodeToolApprovalResponse = (r: VercelHeaderReader, headers: Record<string, string>): VercelEvent[] => [
+const decodeToolApprovalResponse = (r: VercelHeaderReader): VercelEvent[] => [
   stripUndefined({
-    type: 'ait-tool-approval' as const,
+    type: 'tool-approval-response' as const,
     toolCallId: r.strOr('toolCallId', ''),
     approved: r.bool('approved') ?? false,
     reason: r.str('reason'),
-    targetMsgId: headers[HEADER_MSG_ID] ?? '',
   }),
 ];
 
@@ -516,7 +515,14 @@ const decodeDiscretePayload = (
       return decodeToolOutputDenied(r);
     }
     case 'tool-approval-response': {
-      return decodeToolApprovalResponse(r, h);
+      return decodeToolApprovalResponse(r);
+    }
+    case 'ait-regenerate': {
+      // Regenerate wire — carries `parent` / `forkOf` on transport headers,
+      // no domain payload. The agent's prompt-lookup reads transport headers
+      // directly from the inbound Ably message; no projection fold is
+      // needed here.
+      return [];
     }
     default: {
       return isDataEventName(input.name) ? decodeDataEvent(input.name, r, input.data) : [];

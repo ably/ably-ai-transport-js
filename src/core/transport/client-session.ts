@@ -29,7 +29,7 @@ import {
   HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
   HEADER_PARENT,
-  HEADER_PROMPT_ID,
+  HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
@@ -634,13 +634,19 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     const messages = this._codec.getMessages(observer.projection);
     if (messages.length === 0) return;
 
-    // Find the message matching the observer's current msg-id; fall back to
-    // the most recent message in the projection.
-    const msgId = observer.headers[HEADER_MSG_ID];
+    // Locate the projection message this event belongs to:
+    // - Normal echo (user msg or assistant chunk): the wire `HEADER_MSG_ID`
+    //   matches an owner in the projection. Use it.
+    // - Tool-resolution redirect: the wire `HEADER_MSG_ID` is the
+    //   continuation's own tree msgId, but the reducer redirected the
+    //   payload onto a prior assistant (and added the continuation msgId
+    //   to `consumedMsgIds`, filtering it from `getMessages`). The fallback
+    //   `.at(-1)` lands on the mutated assistant.
+    const wireMsgId = observer.headers[HEADER_MSG_ID];
     const message =
-      msgId === undefined
+      wireMsgId === undefined
         ? messages.at(-1)
-        : (messages.find((m) => (m as { id?: string }).id === msgId) ?? messages.at(-1));
+        : (messages.find((m) => (m as { id?: string }).id === wireMsgId) ?? messages.at(-1));
     if (!message) return;
 
     let cloned: TMessage;
@@ -653,9 +659,95 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
       cloned = message;
     }
 
-    if (msgId) {
-      this._tree.upsert(msgId, cloned, { ...observer.headers }, observer.serial);
+    // Distinguish the two upsert keys via role:
+    // - Wire role 'user' + projection fallback is role 'assistant' →
+    //   tool-resolution redirect. Upsert at the assistant's id (= its
+    //   tree msgId by reducer convention) so the existing assistant tree
+    //   node updates instead of a phantom node being created at the
+    //   consumed continuation msgId. Preserve the existing tree headers
+    //   so the assistant's `parent` / `forkOf` / `role` aren't overwritten
+    //   by the continuation wire's headers.
+    // - Otherwise (normal echo, includes user-msg echo where UIMessage.id
+    //   != wireMsgId because the codec keeps the domain id distinct from
+    //   the wire's `x-ably-msg-id`) → upsert at `wireMsgId`. The optimistic
+    //   insert used the same key; the echo converges with that node.
+    const wireRole = observer.headers[HEADER_ROLE];
+    const messageRole = (message as { role?: string }).role;
+    const isRedirect = wireRole === 'user' && messageRole === 'assistant';
+
+    if (isRedirect) {
+      const actualMsgId = (message as { id?: string }).id;
+      if (!actualMsgId) return;
+      const existing = this._tree.getHeaders(actualMsgId);
+      const upsertHeaders = existing ? { ...existing } : { ...observer.headers, [HEADER_MSG_ID]: actualMsgId };
+      this._tree.upsert(actualMsgId, cloned, upsertHeaders, observer.serial);
+    } else {
+      if (wireMsgId === undefined) return;
+      this._tree.upsert(wireMsgId, cloned, { ...observer.headers }, observer.serial);
     }
+  }
+
+  /**
+   * Whether a synthetic UIMessage from `Codec.classifyEvent` represents a
+   * tool resolution (output / approval) that should be folded onto a prior
+   * assistant via `toolCallId` rather than inserted as its own tree node.
+   *
+   * Duck-typed on the TMessage shape: a `role: 'user'` message whose parts
+   * are all `dynamic-tool` parts in a client-published resolution state.
+   * The session is otherwise codec-agnostic about TMessage; this single
+   * heuristic is the only place that peeks at its shape on the send path.
+   * @param message - The TMessage produced by `Codec.classifyEvent`.
+   * @returns True when the message should be optimistically folded, not upserted.
+   */
+  private _isToolResolutionMessage(message: TMessage): boolean {
+    const m = message as { role?: string; parts?: { type?: string; state?: string }[] };
+    if (m.role !== 'user') return false;
+    if (!Array.isArray(m.parts) || m.parts.length === 0) return false;
+    return m.parts.every(
+      (p) =>
+        p.type === 'dynamic-tool' &&
+        (p.state === 'output-available' ||
+          p.state === 'output-error' ||
+          p.state === 'approval-responded' ||
+          p.state === 'output-denied'),
+    );
+  }
+
+  /**
+   * Optimistically fold a client-published tool-resolution event into the
+   * run's observer projection. Unlike a fresh user-message, the resolution
+   * never materialises as its own Tree node — the reducer promotes its
+   * payload onto the prior assistant by `toolCallId` and marks the wire
+   * msg-id as consumed. The session's existing diff-and-upsert pipeline
+   * (via `_accumulateAndEmit`) then re-upserts the affected assistant
+   * with its now-updated parts list, so the local Tree reflects the
+   * resolution before the server echo arrives.
+   *
+   * Creates the observer lazily when missing — defensive guard for the
+   * (rare) case of a continuation that fires before any echo from the
+   * original run was processed.
+   * @param runId - The run this resolution belongs to (the suspended run's id).
+   * @param event - The original TEvent (tool-output-available / tool-output-error
+   *   / tool-approval-response) — handed to the reducer via `_accumulateAndEmit`.
+   * @param headers - The transport headers stamped on the wire publish; carry
+   *   `HEADER_MSG_ID` (continuation's own id, consumed by the reducer) and
+   *   the run/invocation/prompt ids.
+   * @param msgId - The wire `x-ably-msg-id` for the continuation publish.
+   */
+  private _optimisticallyFoldToolResolution(
+    runId: string,
+    event: TEvent,
+    headers: Record<string, string>,
+    msgId: string,
+  ): void {
+    // Update observer headers so subsequent echo processing finds them in
+    // place. `serial` stays undefined for the optimistic step; the real
+    // serial replaces it on echo.
+    // Optimistic step: pass `undefined` serial so the observer's serial
+    // stays unset until the real wire echo lands.
+    // eslint-disable-next-line unicorn/no-useless-undefined -- the underlying helper distinguishes "no serial yet" from a known serial via `undefined`.
+    this._updateRunObserverHeaders(runId, headers, undefined);
+    this._accumulateAndEmit(runId, event, { serial: '', messageId: msgId });
   }
 
   // ---------------------------------------------------------------------------
@@ -786,15 +878,10 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
   }
 
   // Spec: AIT-CT3, AIT-CT4
-  // `republishMsgId`, when set, refreshes the existing tree node's headers
-  // and publishes the single user-message event under that msg-id instead
-  // of generating a new one — used by regenerate so observers see the latest
-  // run/invocation without a new node being created.
   private async _internalSend(
-    input: TEvent | TEvent[],
+    input: { event: TEvent; domainMessageId?: string }[],
     sendOptions: SendOptions | undefined,
     history: MessageNode<TMessage>[],
-    republishMsgId?: string,
   ): Promise<ActiveRun<TEvent>> {
     if (this._state === ClientSessionState.CLOSED) {
       throw new Ably.ErrorInfo('unable to send; session is closed', ErrorCode.SessionClosed, 400);
@@ -815,77 +902,73 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
 
     this._logger.trace('ClientSession._internalSend();');
 
-    const events = Array.isArray(input) ? input : [input];
-
     // Classify each event up front; reject if any are unrecognized by the
-    // codec. The session has no general-purpose publish path for raw events
-    // — they must be either a user-message (kicks off a run) or an amend
-    // (rides on an existing message).
+    // codec. Events split into two send-path shapes:
+    //
+    // - `user-message`: a fresh user prompt OR a continuation tool resolution
+    //   (tool output / approval response). The reducer (and
+    //   `_isToolResolutionMessage` below) distinguish the two.
+    // - `regenerate`: a wire-only event that carries `parent`/`forkOf`
+    //   headers but materialises no TMessage (`View.regenerate` starts
+    //   a new run forked off an assistant without re-publishing the
+    //   user). The client mints `msgId`/`promptId` for the wire and the
+    //   agent's prompt-lookup catches it; no tree-upsert or optimistic
+    //   projection fold happens.
     interface UserMessageItem {
-      event: TEvent;
       kind: 'user-message';
+      event: TEvent;
       message: TMessage;
+      /**
+       * Caller-supplied wire `x-ably-msg-id` override (e.g. a continuation
+       * tool resolution targeting the prior assistant's tree key). When
+       * set, the SDK uses this as the wire msg-id and the optimistic
+       * fold's `meta.messageId` instead of minting a fresh UUID.
+       */
+      domainMessageId?: string;
       /** Allocated below in the optimistic-insert phase. */
       state?: { msgId: string; headers: Record<string, string> };
     }
-    interface AmendItem {
+    interface RegenerateItem {
+      kind: 'regenerate';
       event: TEvent;
-      kind: 'amend';
-      targetMsgId: string;
-      /** Allocated below before the publish loop runs. */
-      state?: { promptId: string; headers: Record<string, string> };
+      parent: string;
+      forkOf: string;
+      /** Allocated below in the publish-headers phase. */
+      state?: { msgId: string; headers: Record<string, string> };
     }
-    type ClassifiedItem = UserMessageItem | AmendItem;
+    type ClassifiedItem = UserMessageItem | RegenerateItem;
     const classified: ClassifiedItem[] = [];
-    for (const event of events) {
-      const cls = this._codec.classifyEvent(event);
+    for (const entry of input) {
+      const cls = this._codec.classifyEvent(entry.event);
       if (cls.kind === 'other') {
         throw new Ably.ErrorInfo(
-          'unable to send; codec did not classify event as user-message or amend',
+          'unable to send; codec did not classify event as user-message or regenerate',
           ErrorCode.InvalidArgument,
           400,
         );
       }
-      if (cls.kind === 'user-message') {
-        classified.push({ event, kind: 'user-message', message: cls.message });
+      if (cls.kind === 'regenerate') {
+        classified.push({ kind: 'regenerate', event: entry.event, parent: cls.parent, forkOf: cls.forkOf });
       } else {
-        classified.push({ event, kind: 'amend', targetMsgId: cls.targetMsgId });
+        classified.push({
+          kind: 'user-message',
+          event: entry.event,
+          message: cls.message,
+          ...(entry.domainMessageId !== undefined && { domainMessageId: entry.domainMessageId }),
+        });
       }
     }
 
     const isContinuation = sendOptions?.runId !== undefined;
-    const userMessageCount = classified.reduce((n, c) => n + (c.kind === 'user-message' ? 1 : 0), 0);
-    const amendCount = classified.length - userMessageCount;
 
-    if (isContinuation && userMessageCount > 0) {
+    // Every send must carry at least one classified event — either a user
+    // message (fresh prompt or continuation tool resolution) or a regenerate
+    // event. The only exception is a continuation rebind under an existing
+    // runId that carries no new tool resolutions (rare, but allowed — the
+    // agent's existing prompts are already on the channel).
+    if (input.length === 0 && !isContinuation) {
       throw new Ably.ErrorInfo(
-        'unable to send; continuation send (options.runId set) cannot include user-message events',
-        ErrorCode.InvalidArgument,
-        400,
-      );
-    }
-    // Empty events are only valid when the caller signals intent another
-    // way: `options.runId` (continuation) or `options.forkOf` (legacy
-    // regenerate-via-POST — agent re-derives from history + forkOf).
-    if (events.length === 0 && !isContinuation && sendOptions?.forkOf === undefined) {
-      throw new Ably.ErrorInfo(
-        'unable to send; events array is empty (pass options.runId for continuation, options.forkOf for regenerate, or include at least one user-message event)',
-        ErrorCode.InvalidArgument,
-        400,
-      );
-    }
-    // Fresh send with non-empty events must include at least one
-    // user-message — pure amend-only sends have no run to attach to.
-    if (!isContinuation && classified.length > 0 && userMessageCount === 0) {
-      throw new Ably.ErrorInfo(
-        'unable to send; non-continuation send must include at least one user-message event',
-        ErrorCode.InvalidArgument,
-        400,
-      );
-    }
-    if (republishMsgId !== undefined && (userMessageCount !== 1 || amendCount !== 0)) {
-      throw new Ably.ErrorInfo(
-        'unable to send; republishMsgId requires exactly one user-message event and no amend events',
+        'unable to send; events array is empty (pass options.runId for continuation, or include at least one user-message / regenerate event)',
         ErrorCode.InvalidArgument,
         400,
       );
@@ -905,88 +988,67 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
 
     // Spec: AIT-CT3d
     // Auto-compute parent from the current thread if not explicitly provided.
-    // Continuation sends skip optimistic insert entirely; their parent comes
-    // strictly from sendOptions (typically set to the suspended assistant's
-    // msg-id by the chat-transport adapter).
+    // Continuations rely on this rule too — `preInsertHistory.at(-1)` is the
+    // suspended assistant, so tool-resolution user-messages parent off it
+    // without any explicit `sendOptions.parent`.
     let autoParent: string | undefined;
-    if (!isContinuation && sendOptions?.parent === undefined && !sendOptions?.forkOf) {
+    if (sendOptions?.parent === undefined && !sendOptions?.forkOf) {
       const lastNode = preInsertHistory.at(-1);
       if (lastNode) {
         autoParent = lastNode.msgId;
       }
     }
-    const postParent = sendOptions?.parent === undefined ? autoParent : sendOptions.parent;
 
     const msgIds = new Set<string>();
-    const postMessages: MessageNode<TMessage>[] = [];
     // One prompt-id minted per user-message item. The invocation body
     // carries the list so the agent looks up exactly these prompts on the
     // channel via `x-ably-prompt-id`.
     const promptIds: string[] = [];
 
-    // Optimistic tree insert / republish header refresh for user-message events.
-    if (republishMsgId === undefined) {
-      for (const item of classified) {
-        if (item.kind !== 'user-message') continue;
-
+    // Optimistic tree insert per classified item.
+    for (const item of classified) {
+      if (item.kind === 'regenerate') {
+        // Regenerate events publish wire-only. Mint a fresh msgId/promptId,
+        // build headers from the event's parent/forkOf (not from
+        // autoParent / sendOptions), then leave tree and projection
+        // untouched. The agent's prompt-lookup picks the event up by
+        // its promptId and reads parent/forkOf from these headers.
         const msgId = crypto.randomUUID();
         const promptId = crypto.randomUUID();
         this._ownMsgIds.add(msgId);
         msgIds.add(msgId);
         promptIds.push(promptId);
 
-        const resolvedParent = sendOptions?.parent === undefined ? autoParent : sendOptions.parent;
-
-        const optimisticHeaders = buildTransportHeaders({
+        const regenerateHeaders = buildTransportHeaders({
           role: 'user',
           runId,
           msgId,
           runClientId: this._clientId,
-          parent: resolvedParent,
-          forkOf: sendOptions?.forkOf,
+          parent: item.parent,
+          forkOf: item.forkOf,
           invocationId,
           promptId,
+          runContinue: isContinuation,
         });
-        // Spec: AIT-CT3c
-        this._upsertAndNotify(item.message, optimisticHeaders);
-
-        postMessages.push({
-          kind: 'message',
-          message: item.message,
-          msgId,
-          parentId: resolvedParent,
-          forkOf: sendOptions?.forkOf,
-          headers: optimisticHeaders,
-          serial: undefined,
-        });
-
-        item.state = { msgId, headers: optimisticHeaders };
-
-        // Spec: AIT-CT3e — chain subsequent user messages off the previous one.
-        if (sendOptions?.parent === undefined && !sendOptions?.forkOf) {
-          autoParent = msgId;
-        }
+        item.state = { msgId, headers: regenerateHeaders };
+        continue;
       }
-    } else {
-      // Republish path: exactly one user-message event reuses the existing
-      // tree node's msg-id. We refresh headers up front so observers see the
-      // new run/invocation immediately.
-      const item = classified.find((c) => c.kind === 'user-message');
-      if (!item) {
-        throw new Ably.ErrorInfo(
-          'unable to send; republish missing user-message event',
-          ErrorCode.InvalidArgument,
-          400,
-        );
-      }
-      const msgId = republishMsgId;
+
+      // Caller-supplied `domainMessageId` (e.g. chat-transport's
+      // continuation tool resolution targeting the prior assistant's
+      // tree key) takes precedence over the SDK-minted fresh id. When
+      // set, the wire's `x-ably-msg-id` matches the existing
+      // assistant's tree key so the reducer's direct-fold path runs
+      // instead of the cross-message redirect-by-toolCallId fallback.
+      const msgId = item.domainMessageId ?? crypto.randomUUID();
       const promptId = crypto.randomUUID();
       this._ownMsgIds.add(msgId);
       msgIds.add(msgId);
       promptIds.push(promptId);
 
-      const resolvedParent = sendOptions?.parent;
-      const headers = buildTransportHeaders({
+      const resolvedParent = sendOptions?.parent === undefined ? autoParent : sendOptions.parent;
+
+      const optimisticHeaders = buildTransportHeaders({
         role: 'user',
         runId,
         msgId,
@@ -995,43 +1057,27 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
         forkOf: sendOptions?.forkOf,
         invocationId,
         promptId,
-      });
-      // Refresh existing node — Tree.upsert only promotes null → serial,
-      // so the ack serial from the original publish is preserved.
-      this._upsertAndNotify(item.message, headers);
-
-      postMessages.push({
-        kind: 'message',
-        message: item.message,
-        msgId,
-        parentId: resolvedParent,
-        forkOf: sendOptions?.forkOf,
-        headers,
-        serial: undefined,
+        runContinue: isContinuation,
       });
 
-      item.state = { msgId, headers };
-    }
-
-    // Amend events also get a prompt-id stamped on the wire and listed
-    // in the invocation body. The agent's prompt-lookup waits for every
-    // promised event (user-message AND amend) on the channel before
-    // entering its LLM-call phase — without this, the agent races the
-    // amend's local relay and loadProjection's history fetch can miss
-    // the just-published event.
-    for (const item of classified) {
-      if (item.kind !== 'amend') continue;
-      const promptId = crypto.randomUUID();
-      promptIds.push(promptId);
-      const amendHeaders: Record<string, string> = {
-        [HEADER_RUN_ID]: runId,
-        [HEADER_INVOCATION_ID]: invocationId,
-        [HEADER_PROMPT_ID]: promptId,
-      };
-      if (this._clientId !== undefined) {
-        amendHeaders[HEADER_RUN_CLIENT_ID] = this._clientId;
+      // Tool-resolution events ride as `role: 'user'` messages on the wire
+      // but never materialise as Tree nodes — the reducer folds them onto
+      // the prior assistant by toolCallId and marks the wire-msg consumed.
+      // Optimistically fold into the observer projection so the local
+      // assistant updates immediately, mirroring server-side echo.
+      if (this._isToolResolutionMessage(item.message)) {
+        this._optimisticallyFoldToolResolution(runId, item.event, optimisticHeaders, msgId);
+      } else {
+        // Spec: AIT-CT3c
+        this._upsertAndNotify(item.message, optimisticHeaders);
       }
-      item.state = { promptId, headers: amendHeaders };
+
+      item.state = { msgId, headers: optimisticHeaders };
+
+      // Spec: AIT-CT3e — chain subsequent user messages off the previous one.
+      if (sendOptions?.parent === undefined && !sendOptions?.forkOf) {
+        autoParent = msgId;
+      }
     }
 
     this._runMsgIds.set(runId, msgIds);
@@ -1087,46 +1133,25 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     };
 
     // Publish each event in original order via the shared encoder. The codec
-    // routes user-message events into a per-part discrete batch and amend
-    // events into a single tool-output / tool-approval write that stamps
-    // `HEADER_MSG_ID = targetMsgId` (no separate amend header).
+    // routes user-message events into a per-part discrete batch and
+    // tool-resolution events (tool outputs / approval responses) into a
+    // single discrete write — both ride the same `role: 'user'` wire path.
     const publishPromise = (async () => {
       try {
         for (const item of classified) {
-          if (item.kind === 'user-message') {
-            if (!item.state) {
-              // Defensive: every user-message item gains a state above.
-              throw new Ably.ErrorInfo(
-                'unable to send; user-message item missing optimistic state',
-                ErrorCode.InvalidArgument,
-                500,
-              );
-            }
-            await this._encoder.publish(item.event, {
-              extras: { headers: item.state.headers },
-              messageId: item.state.msgId,
-              ...(this._clientId !== undefined && { clientId: this._clientId }),
-            });
-          } else {
-            // Amend event: the codec already knows the target via the event's
-            // `targetMsgId`. We supply transport-level headers (run+invocation
-            // + prompt-id) so the agent can correlate the publish with the
-            // continuation invocation and wait for it via the prompt lookup.
-            // The codec stamps `HEADER_MSG_ID = targetMsgId` itself so the
-            // reducer routes the amend onto the original message.
-            if (!item.state) {
-              // Defensive: every amend item gains a state above.
-              throw new Ably.ErrorInfo(
-                'unable to send; amend item missing prompt state',
-                ErrorCode.InvalidArgument,
-                500,
-              );
-            }
-            await this._encoder.publish(item.event, {
-              extras: { headers: item.state.headers },
-              ...(this._clientId !== undefined && { clientId: this._clientId }),
-            });
+          if (!item.state) {
+            // Defensive: every item gains a state above.
+            throw new Ably.ErrorInfo(
+              'unable to send; user-message item missing optimistic state',
+              ErrorCode.InvalidArgument,
+              500,
+            );
           }
+          await this._encoder.publish(item.event, {
+            extras: { headers: item.state.headers },
+            messageId: item.state.msgId,
+            ...(this._clientId !== undefined && { clientId: this._clientId }),
+          });
         }
       } catch (error) {
         const cause = error instanceof Ably.ErrorInfo ? error : undefined;
@@ -1152,17 +1177,19 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     const resolvedHeaders = this._headersFn?.() ?? {};
     const resolvedBody = this._bodyFn?.() ?? {};
 
+    // History as projection-folded TMessage[]. The tree stores each node's
+    // codec-folded `.message`, so projecting the selected branch is just
+    // a per-node `.message` extraction — no re-fold required. The agent
+    // feeds this straight to the LLM as prior conversation context.
+    const postHistory = preInsertHistory.map((n) => n.message);
+
     const postBody: Record<string, unknown> = {
       ...resolvedBody,
-      history: preInsertHistory,
+      history: postHistory,
       ...sendOptions?.body,
       runId,
       invocationId,
-      clientId: this._clientId,
       promptIds,
-      ...(isContinuation && { isContinuation: true }),
-      ...(sendOptions?.forkOf !== undefined && { forkOf: sendOptions.forkOf }),
-      ...(postParent !== undefined && { parent: postParent }),
     };
 
     const postHeaders: Record<string, string> = {

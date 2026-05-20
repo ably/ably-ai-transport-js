@@ -30,12 +30,12 @@ const withHeaders = (msg: Partial<Ably.InboundMessage>, headers: Record<string, 
     // CAST: Tests construct a minimal Ably.InboundMessage stub; full shape isn't needed.
   }) as Ably.InboundMessage;
 
-// VercelEvent splits into chunks (everything except 'ait-*' variants) and
-// codec-local 'ait-user-message' / 'ait-tool-approval' events. The decoder
-// emits ait-user-message for the multi-part user-message wire format.
+// VercelEvent splits into chunks (everything except codec-local variants) and
+// codec-local 'ait-user-message' / 'tool-approval-response' events. The
+// decoder emits ait-user-message for the multi-part user-message wire format.
 
 const eventsOf = (outputs: VercelEvent[]): AI.UIMessageChunk[] =>
-  outputs.filter((e): e is AI.UIMessageChunk => e.type !== 'ait-user-message' && e.type !== 'ait-tool-approval');
+  outputs.filter((e): e is AI.UIMessageChunk => e.type !== 'ait-user-message' && e.type !== 'tool-approval-response');
 
 const eventTypesOf = (outputs: VercelEvent[]): string[] => outputs.map((e) => e.type);
 
@@ -967,13 +967,13 @@ describe('Vercel decoder', () => {
       expect(outputs[0]?.type).toBe('ait-user-message');
     });
 
-    it('decodes tool-approval-response, reading targetMsgId from HEADER_MSG_ID', () => {
+    it('decodes tool-approval-response into a ToolApprovalResponseEvent', () => {
       const decoder = createDecoder();
       const msg = withHeaders(
         { name: 'tool-approval-response', data: '' },
         {
           [HEADER_STREAM]: 'false',
-          [HEADER_MSG_ID]: 'msg-target',
+          [HEADER_MSG_ID]: 'continuation-msg-id',
           [`${D}toolCallId`]: 'tc-1',
           [`${D}approved`]: 'true',
           [`${D}reason`]: 'ok',
@@ -983,12 +983,33 @@ describe('Vercel decoder', () => {
       const outputs = decoder.decode(msg);
       expect(outputs).toHaveLength(1);
       const event = outputs[0];
-      expect(event?.type).toBe('ait-tool-approval');
-      if (event?.type !== 'ait-tool-approval') return;
+      expect(event?.type).toBe('tool-approval-response');
+      if (event?.type !== 'tool-approval-response') return;
       expect(event.toolCallId).toBe('tc-1');
       expect(event.approved).toBe(true);
       expect(event.reason).toBe('ok');
-      expect(event.targetMsgId).toBe('msg-target');
+    });
+
+    it('decodes ait-regenerate wires into zero events (routing lives on transport headers)', () => {
+      const decoder = createDecoder();
+      // The regenerate wire carries `x-ably-parent` and `x-ably-fork-of`
+      // on transport headers so the agent's prompt-lookup can resolve
+      // run-routing metadata from `firstHeaders`. The decoder itself has
+      // no domain events to emit — regenerate wires are wire-only.
+      const msg = withHeaders(
+        { name: 'ait-regenerate', data: '' },
+        {
+          [HEADER_STREAM]: 'false',
+          [HEADER_MSG_ID]: 'regen-msg-id',
+          [HEADER_ROLE]: 'user',
+          'x-ably-parent': 'user-U1',
+          'x-ably-fork-of': 'asst-A1',
+          'x-ably-prompt-id': 'prompt-1',
+        },
+      );
+
+      const outputs = decoder.decode(msg);
+      expect(outputs).toEqual([]);
     });
   });
 });

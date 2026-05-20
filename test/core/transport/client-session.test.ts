@@ -6,9 +6,10 @@
  * `TEvent[]`, and projection state is folded via `init`/`fold`/`getMessages`.
  *
  * Retired surfaces (`stageEvents`, `stageMessage`, `view.update`,
- * `createAccumulator`, cross-run amend) are gone — the suite covers
- * connect, send, regenerate, edit, cancel, waitForRun, run lifecycle,
- * observer routing, optimistic relay, channel state, and close.
+ * `createAccumulator`, cross-run amend, codec amend classification)
+ * are gone — the suite covers connect, send, regenerate, edit, cancel,
+ * waitForRun, run lifecycle, observer routing, optimistic relay,
+ * channel state, continuation tool-resolutions, and close.
  */
 
 import * as Ably from 'ably';
@@ -23,9 +24,11 @@ import {
   HEADER_CANCEL_INVOCATION_ID,
   HEADER_CANCEL_OWN,
   HEADER_CANCEL_RUN_ID,
+  HEADER_FORK_OF,
   HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
   HEADER_PARENT,
+  HEADER_PROMPT_ID,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
@@ -52,6 +55,12 @@ import { createMockClient } from '../../helper/mock-client.js';
 interface TestEvent {
   type: string;
   text?: string;
+  /** Tool call id, present on tool-resolution-shaped TestEvents. */
+  toolCallId?: string;
+  /** `x-ably-parent` for regenerate-shaped TestEvents. */
+  parent?: string;
+  /** `x-ably-fork-of` for regenerate-shaped TestEvents. */
+  forkOf?: string;
 }
 
 interface TestMessage {
@@ -278,13 +287,45 @@ const createMockCodec = (decoder?: MockDecoder): MockCodec => {
     }),
     getMessages: vi.fn((p: TestProjection) => p.messages),
     userMessageEvent: vi.fn((m: TestMessage): TestEvent => ({ type: 'user-message', text: m.content })),
-    classifyEvent: vi.fn((event: TestEvent) =>
-      event.type === 'user-message'
-        ? ({ kind: 'user-message' as const, message: { id: '', content: event.text ?? '' } } as const)
-        : event.type === 'amend'
-          ? ({ kind: 'amend' as const, targetMsgId: event.text ?? '' } as const)
-          : ({ kind: 'other' as const } as const),
-    ),
+    createRegenerateEvent: vi.fn((): TestEvent => ({ type: 'user-message' })),
+    classifyEvent: vi.fn((event: TestEvent) => {
+      if (event.type === 'user-message') {
+        return { kind: 'user-message' as const, message: { id: '', content: event.text ?? '' } };
+      }
+      // `tool-resolution` is a synthetic test event that mirrors how the
+      // Vercel codec classifies continuation tool resolutions: as a
+      // `user-message` whose TMessage is duck-typed as a tool resolution
+      // (role:'user' + dynamic-tool part in a resolution state) so the
+      // session's `_isToolResolutionMessage` heuristic matches.
+      if (event.type === 'tool-resolution') {
+        // CAST: TestMessage is a flat shape, but the session's
+        // `_isToolResolutionMessage` duck-types the TMessage as a UIMessage
+        // for tool resolutions. The cast lets us synthesise that shape.
+        const toolMessage = {
+          id: '',
+          content: '',
+          role: 'user' as const,
+          parts: [
+            {
+              type: 'dynamic-tool',
+              toolCallId: event.toolCallId ?? '',
+              toolName: '',
+              state: 'output-available',
+              input: undefined,
+            },
+          ],
+        } as unknown as TestMessage;
+        return { kind: 'user-message' as const, message: toolMessage };
+      }
+      if (event.type === 'regenerate-event') {
+        return {
+          kind: 'regenerate' as const,
+          parent: event.parent ?? '',
+          forkOf: event.forkOf ?? '',
+        };
+      }
+      return { kind: 'other' as const };
+    }),
     // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires an explicit return matching the codec contract
     resolveToolTarget: vi.fn(() => undefined),
     // eslint-disable-next-line @typescript-eslint/no-unused-vars -- writer/options unused by stub
@@ -587,6 +628,29 @@ describe('ClientSession', () => {
       expect(opts?.extras?.headers?.['x-ably-prompt-id']).toBeDefined();
     });
 
+    it('accepts the richer `{event, domainMessageId}` shape and uses domainMessageId as the wire HEADER_MSG_ID', async () => {
+      // When the caller passes `Array<{event, domainMessageId?}>`, each
+      // entry's `domainMessageId` overrides the msg-id the SDK would
+      // otherwise mint. Used by chat-transport to publish continuation
+      // tool resolutions onto the prior assistant's tree key — the
+      // reducer's direct-fold path then matches by msg-id and no
+      // cross-message redirect runs.
+      await fix.session.view.sendEvent([
+        { event: { type: 'user-message', text: 'first' }, domainMessageId: 'target-a' },
+        { event: { type: 'user-message', text: 'second' } },
+      ]);
+
+      const enc = fix.codec.lastEncoder();
+      const userPublishes = enc?.publishCalls.filter((c) => c.event.type === 'user-message') ?? [];
+      expect(userPublishes).toHaveLength(2);
+
+      // First entry used the supplied domainMessageId; second fell back to a fresh UUID.
+      expect(userPublishes[0]?.opts?.extras?.headers?.[HEADER_MSG_ID]).toBe('target-a');
+      const secondMsgId = userPublishes[1]?.opts?.extras?.headers?.[HEADER_MSG_ID];
+      expect(secondMsgId).toBeDefined();
+      expect(secondMsgId).not.toBe('target-a');
+    });
+
     it('mints a distinct prompt-id per user-message and lists them in postBody.promptIds in order', async () => {
       await fix.session.view.sendEvent([
         { type: 'user-message', text: 'first' },
@@ -614,7 +678,10 @@ describe('ClientSession', () => {
       const body = fix.fetch.body(0);
       expect(body.runId).toBe(run.runId);
       expect(body.invocationId).toBe(run.invocationId);
-      expect(body.clientId).toBe('client-1');
+      // Per-message metadata (clientId/parent/forkOf/isContinuation) is no
+      // longer in the POST body — those fields live on channel headers and
+      // are resolved by the agent's prompt-lookup result.
+      expect(body.clientId).toBeUndefined();
       expect(Array.isArray(body.promptIds)).toBe(true);
       expect((body.promptIds as string[]).length).toBe(1);
       expect(Array.isArray(body.history)).toBe(true);
@@ -668,10 +735,15 @@ describe('ClientSession', () => {
       expect(headers['X-Custom']).toBe('token');
     });
 
-    it('includes forkOf in POST body when set', async () => {
+    it('stamps forkOf on the publish headers when set', async () => {
+      // forkOf moved off the POST body and onto the channel headers — the
+      // agent resolves it from the first prompt-lookup user-message header.
       await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' }, { forkOf: 'msg-original' });
       await fix.fetch.waitForCalls(1);
-      expect(fix.fetch.body(0).forkOf).toBe('msg-original');
+      expect(fix.fetch.body(0).forkOf).toBeUndefined();
+      const enc = fix.codec.lastEncoder();
+      const headers = enc?.publishCalls.at(-1)?.opts?.extras?.headers;
+      expect(headers?.['x-ably-fork-of']).toBe('msg-original');
     });
 
     it('stream is available before POST completes (fire-and-forget)', async () => {
@@ -738,7 +810,9 @@ describe('ClientSession', () => {
     it('reuses the runId, mints a fresh invocationId, and returns the existing stream', async () => {
       const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
 
-      const cont = await fix.session.view.sendEvent([{ type: 'amend', text: 'msg-target' }], { runId: initial.runId });
+      const cont = await fix.session.view.sendEvent([{ type: 'tool-resolution', toolCallId: 'tc-1' }], {
+        runId: initial.runId,
+      });
 
       expect(cont.runId).toBe(initial.runId);
       expect(cont.invocationId).not.toBe(initial.invocationId);
@@ -746,30 +820,43 @@ describe('ClientSession', () => {
       expect(cont.stream).toBe(initial.stream);
     });
 
-    it('publishes the amend event with HEADER_RUN_ID and HEADER_INVOCATION_ID', async () => {
+    it('publishes the tool-resolution as a continuation user-message with HEADER_RUN_ID and HEADER_RUN_CONTINUE', async () => {
       const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
       const enc = fix.codec.lastEncoder();
       // Drop the initial publish from the call count
       const baseCalls = enc?.publishCalls.length ?? 0;
 
-      await fix.session.view.sendEvent([{ type: 'amend', text: 'msg-target' }], { runId: initial.runId });
+      await fix.session.view.sendEvent([{ type: 'tool-resolution', toolCallId: 'tc-1' }], { runId: initial.runId });
 
       const newCalls = (enc?.publishCalls.length ?? 0) - baseCalls;
       expect(newCalls).toBe(1);
       const call = enc?.publishCalls.at(-1);
-      expect(call?.event.type).toBe('amend');
-      expect(call?.opts?.extras?.headers?.[HEADER_RUN_ID]).toBe(initial.runId);
+      expect(call?.event.type).toBe('tool-resolution');
+      const headers = call?.opts?.extras?.headers;
+      expect(headers?.[HEADER_RUN_ID]).toBe(initial.runId);
       // A fresh invocation-id is minted for the continuation.
-      expect(call?.opts?.extras?.headers?.[HEADER_INVOCATION_ID]).toBeDefined();
-      expect(call?.opts?.extras?.headers?.[HEADER_INVOCATION_ID]).not.toBe(initial.invocationId);
+      expect(headers?.[HEADER_INVOCATION_ID]).toBeDefined();
+      expect(headers?.[HEADER_INVOCATION_ID]).not.toBe(initial.invocationId);
+      // Continuation publishes carry HEADER_RUN_CONTINUE='true' on the wire.
+      expect(headers?.['x-ably-run-continue']).toBe('true');
+      // Tool resolutions publish as role:'user' (the wire shape mirrors a
+      // user-message; the reducer redirects by toolCallId).
+      expect(headers?.[HEADER_ROLE]).toBe('user');
+      // No x-ably-amend header — the old amend header is gone from the wire.
+      expect(headers?.['x-ably-amend']).toBeUndefined();
     });
 
-    it('does not optimistic-insert and posts one promptId per amend event', async () => {
+    it('optimistically folds into observer projection (no tree node) and posts one promptId per tool event', async () => {
       const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
       const beforeNodes = fix.session.view.flattenNodes().length;
 
-      const cont = await fix.session.view.sendEvent([{ type: 'amend', text: 'msg-target' }], { runId: initial.runId });
+      const cont = await fix.session.view.sendEvent([{ type: 'tool-resolution', toolCallId: 'tc-1' }], {
+        runId: initial.runId,
+      });
 
+      // The reducer treats tool-resolution wire messages as user-messages
+      // that get redirected by toolCallId. No standalone tree node lands
+      // for the continuation publish itself (consumedMsgIds path).
       const afterNodes = fix.session.view.flattenNodes().length;
       expect(afterNodes).toBe(beforeNodes);
 
@@ -777,22 +864,22 @@ describe('ClientSession', () => {
       const body = fix.fetch.body(1);
       // Every client-published event in an invocation carries a promptId
       // — the agent waits for all of them on the channel before starting
-      // LLM work. Amend events use the same mechanism as user-messages.
+      // LLM work. Tool resolutions use the same mechanism as user-messages.
       expect(Array.isArray(body.promptIds)).toBe(true);
       expect((body.promptIds as string[]).length).toBe(1);
       expect(body.runId).toBe(cont.runId);
       expect(body.invocationId).toBe(cont.invocationId);
     });
 
-    it('stamps the matching x-ably-prompt-id on each amend publish', async () => {
+    it('stamps the matching x-ably-prompt-id on each continuation publish', async () => {
       const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
       const before = fix.codec.lastEncoder()?.publishCalls.length ?? 0;
 
-      await fix.session.view.sendEvent([{ type: 'amend', text: 'msg-target' }], { runId: initial.runId });
+      await fix.session.view.sendEvent([{ type: 'tool-resolution', toolCallId: 'tc-1' }], { runId: initial.runId });
 
       const enc = fix.codec.lastEncoder();
-      const amendPublish = enc?.publishCalls.slice(before).find((c) => c.event.type === 'amend');
-      const stampedId = amendPublish?.opts?.extras?.headers?.['x-ably-prompt-id'];
+      const contPublish = enc?.publishCalls.slice(before).find((c) => c.event.type === 'tool-resolution');
+      const stampedId = contPublish?.opts?.extras?.headers?.['x-ably-prompt-id'];
       expect(stampedId).toBeDefined();
 
       await fix.fetch.waitForCalls(2);
@@ -800,24 +887,15 @@ describe('ClientSession', () => {
       expect(body.promptIds).toEqual([stampedId]);
     });
 
-    it('posts isContinuation=true on continuation sends and omits it on fresh sends', async () => {
-      await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
-      await fix.fetch.waitForCalls(1);
-      const fresh = fix.fetch.body(0);
-      expect(fresh.isContinuation).toBeUndefined();
+    it('continuation publishes carry HEADER_RUN_CONTINUE=true while fresh sends do not', async () => {
+      const fresh = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
+      const enc = fix.codec.lastEncoder();
+      const freshHeaders = enc?.publishCalls.at(-1)?.opts?.extras?.headers;
+      expect(freshHeaders?.['x-ably-run-continue']).toBeUndefined();
 
-      const initial = { runId: fresh.runId as string };
-      await fix.session.view.sendEvent([{ type: 'amend', text: 'msg-target' }], { runId: initial.runId });
-      await fix.fetch.waitForCalls(2);
-      const cont = fix.fetch.body(1);
-      expect(cont.isContinuation).toBe(true);
-    });
-
-    it('rejects when continuation send includes a user-message event', async () => {
-      const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
-      await expect(
-        fix.session.view.sendEvent({ type: 'user-message', text: 'should-not-be-here' }, { runId: initial.runId }),
-      ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await fix.session.view.sendEvent([{ type: 'tool-resolution', toolCallId: 'tc-1' }], { runId: fresh.runId });
+      const contHeaders = enc?.publishCalls.at(-1)?.opts?.extras?.headers;
+      expect(contHeaders?.['x-ably-run-continue']).toBe('true');
     });
 
     it('rejects an empty send with no runId and no forkOf', async () => {
@@ -1089,6 +1167,94 @@ describe('ClientSession', () => {
       expect(fresh.isContinuation).toBeUndefined();
     });
 
+    it('converges optimistic insert and echo into a single tree node when UIMessage.id differs from wire HEADER_MSG_ID', async () => {
+      // Regression: under Vercel's codec the projection's UIMessage.id is the
+      // domain id (x-domain-messageId, e.g. useChat's local id) while the wire
+      // `x-ably-msg-id` is the optimistic tree msgId. `_accumulateAndEmit` must
+      // upsert at the wire msgId so the echo converges with the optimistic
+      // insert — not at the projection message's id, which would create a
+      // second tree node and dup the message in `view.flattenNodes()`.
+      const ch = createMockChannel();
+      const decoder = createMockDecoder();
+      // Custom codec: classifier returns a message with a FIXED id; fold pushes
+      // the message into the projection keyed by that fixed id (NOT meta.messageId).
+      // Mirrors how the Vercel codec produces UIMessages with x-domain-messageId
+      // as the id field rather than the wire's x-ably-msg-id.
+      const customCodec = createMockCodec(decoder);
+      // CAST: the mock fold's parameters mirror the Codec.fold signature.
+      customCodec.fold = vi.fn((state: TestProjection, event: TestEvent, meta: ReducerMeta) => {
+        state.foldedEvents.push({ event, meta });
+        // Use a fixed domain id derived from the text — independent of wireMsgId.
+        // Mirrors the Vercel codec where UIMessage.id is the domain id, distinct
+        // from the wire's x-ably-msg-id.
+        if (event.type === 'user-message' && typeof event.text === 'string') {
+          const domainId = `domain-${event.text}`;
+          let msg = state.messages.find((m) => m.id === domainId);
+          if (!msg) {
+            msg = { id: domainId, content: event.text };
+            state.messages.push(msg);
+          }
+          return state;
+        }
+        // For non-user-message events, fall back to the keyed-by-meta.messageId
+        // shape of the default mock.
+        if (event.type === 'text' && typeof event.text === 'string') {
+          const id = meta.messageId ?? 'unknown';
+          let msg = state.messages.find((m) => m.id === id);
+          if (!msg) {
+            msg = { id, content: '' };
+            state.messages.push(msg);
+          }
+          msg.content += event.text;
+        }
+        return state;
+      });
+      const s = createClientSession<TestEvent, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: customCodec,
+        api: '/api/chat',
+        clientId: 'client-1',
+        fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
+        runStartDeadlineMs: 0,
+      });
+      await s.connect();
+
+      // Optimistic insert. The session mints a random tree msgId; the
+      // projection's UIMessage id is `domain-hi` (from our custom fold).
+      await s.view.sendEvent({ type: 'user-message', text: 'hi' });
+      const lastPublish = customCodec.lastEncoder()?.publishCalls.at(-1);
+      const optimisticMsgId = lastPublish?.opts?.extras?.headers?.[HEADER_MSG_ID];
+      const runId = lastPublish?.opts?.extras?.headers?.[HEADER_RUN_ID];
+      expect(optimisticMsgId).toBeDefined();
+      if (!optimisticMsgId) throw new Error('expected optimistic msgId on publish');
+
+      // Echo the wire message with the same tree msgId so the optimistic
+      // node converges. Queue the same user-message event for the decoder.
+      decoder.queue.push({ type: 'user-message', text: 'hi' });
+      simulateMessage(
+        ch,
+        ablyMsg(
+          'text',
+          {
+            [HEADER_RUN_ID]: runId ?? '',
+            [HEADER_RUN_CLIENT_ID]: 'client-1',
+            [HEADER_ROLE]: 'user',
+            [HEADER_MSG_ID]: optimisticMsgId,
+          },
+          undefined,
+          'message.create',
+        ),
+      );
+
+      // The tree must contain exactly one node — the optimistic insert,
+      // updated by the echo. NOT a separate node at `domain-hi`.
+      expect(s.view.flattenNodes()).toHaveLength(1);
+      expect(s.tree.getNode(optimisticMsgId)?.message.content).toBe('hi');
+      expect(s.tree.getNode('domain-hi')).toBeUndefined();
+      await s.close();
+    });
+
     it('folds codec events into an observer projection (run from another client)', () => {
       simulateMessage(
         fix.channel,
@@ -1290,7 +1456,7 @@ describe('ClientSession', () => {
       // gating must prefer the router for own runs so the continuation's
       // run-end is accepted and the run cleans up.
       const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
-      const continuation = await fix.session.view.sendEvent([{ type: 'amend', text: 'msg-target' }], {
+      const continuation = await fix.session.view.sendEvent([{ type: 'tool-resolution', toolCallId: 'tc-1' }], {
         runId: initial.runId,
       });
       expect(continuation.invocationId).not.toBe(initial.invocationId);
@@ -1316,11 +1482,11 @@ describe('ClientSession', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Amend events — same-run routing, mismatched-run drop
+  // Same-run message routing — successive wire messages routed by HEADER_MSG_ID
   // -------------------------------------------------------------------------
 
-  describe('amend routing', () => {
-    it('routes an amend message into the same run projection via meta.messageId', () => {
+  describe('same-run message routing', () => {
+    it('routes a follow-up message into the same run projection via meta.messageId', () => {
       simulateMessage(
         fix.channel,
         ablyMsg(EVENT_RUN_START, {
@@ -1340,9 +1506,9 @@ describe('ClientSession', () => {
         }),
       );
 
-      // Amend targeting m-1 from the SAME run — encoder stamps
+      // Follow-up message targeting m-1 from the SAME run — encoder stamps
       // HEADER_MSG_ID = 'm-1', so the reducer folds with meta.messageId === 'm-1'.
-      fix.decoder.queue.push({ type: 'text', text: '-amended' });
+      fix.decoder.queue.push({ type: 'text', text: '-extended' });
       simulateMessage(
         fix.channel,
         ablyMsg('text', {
@@ -1665,6 +1831,62 @@ describe('ClientSession', () => {
   describe('regenerate', () => {
     it('throws when the target node is unknown', async () => {
       await expect(fix.session.view.regenerate('missing-msg')).rejects.toThrow();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // regenerate events (wire-only publish path)
+  // -------------------------------------------------------------------------
+
+  describe('regenerate events', () => {
+    it('publishes a regenerate event without upserting the tree or folding the projection', async () => {
+      // Seed a user message and assistant in the tree first.
+      await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
+      const nodesBefore = fix.session.view.flattenNodes();
+      expect(nodesBefore).toHaveLength(1);
+      const userMsgId = nodesBefore[0]?.msgId;
+      expect(userMsgId).toBeDefined();
+
+      // Send a regenerate event — wire-only, carries parent/forkOf on headers.
+      await fix.session.view.sendEvent({
+        type: 'regenerate-event',
+        parent: userMsgId,
+        forkOf: 'asst-1',
+      });
+
+      // Tree is unchanged — no new node materialised for the regenerate event.
+      const nodesAfter = fix.session.view.flattenNodes();
+      expect(nodesAfter).toHaveLength(1);
+      expect(nodesAfter[0]?.msgId).toBe(userMsgId);
+
+      // The regenerate event was published on the channel with correct headers.
+      const enc = fix.codec.lastEncoder();
+      const regeneratePublish = enc?.publishCalls.find((c) => c.event.type === 'regenerate-event');
+      expect(regeneratePublish).toBeDefined();
+      const headers = regeneratePublish?.opts?.extras?.headers;
+      expect(headers?.[HEADER_ROLE]).toBe('user');
+      expect(headers?.[HEADER_PARENT]).toBe(userMsgId);
+      expect(headers?.[HEADER_FORK_OF]).toBe('asst-1');
+      expect(headers?.[HEADER_PROMPT_ID]).toBeDefined();
+      expect(headers?.[HEADER_MSG_ID]).toBeDefined();
+    });
+
+    it('mints a fresh prompt-id for the regenerate event and lists it in postBody.promptIds', async () => {
+      await fix.session.view.sendEvent({
+        type: 'regenerate-event',
+        parent: 'u1',
+        forkOf: 'asst-1',
+      });
+
+      await fix.fetch.waitForCalls(1);
+      const body = fix.fetch.body(0);
+      expect(Array.isArray(body.promptIds)).toBe(true);
+      expect((body.promptIds as string[]).length).toBe(1);
+
+      const enc = fix.codec.lastEncoder();
+      const regeneratePublish = enc?.publishCalls.find((c) => c.event.type === 'regenerate-event');
+      const promptId = regeneratePublish?.opts?.extras?.headers?.[HEADER_PROMPT_ID];
+      expect((body.promptIds as string[])[0]).toBe(promptId);
     });
   });
 

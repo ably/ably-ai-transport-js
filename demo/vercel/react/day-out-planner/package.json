@@ -20,7 +20,9 @@
     "next": "^16",
     "react": "^19",
     "react-dom": "^19",
-    "react-leaflet": "^5"
+    "react-leaflet": "^5",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

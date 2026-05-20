@@ -34,25 +34,25 @@ The router accepts an [`isTerminal()`](codec-interface.md#the-codec-interface) p
 
 `src/core/transport/run-manager.ts` - server-side only.
 
-The run manager tracks active runs and publishes [run lifecycle events](wire-protocol.md#lifecycle-events) (`x-ably-run-start`, `x-ably-run-end`) on the Ably channel.
+The run manager tracks active runs and publishes [run lifecycle events](wire-protocol.md#lifecycle-events) (`ai-run-start`, `ai-run-end`) on the Ably channel.
 
 ### Operations
 
-| Method                                               | What it does                                                                                                                                                                                                                           |
-| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `startRun(runId, clientId?, controller?, metadata?)` | Registers the run, publishes `x-ably-run-start`, returns an `AbortSignal`. `metadata` optionally stamps `parent`, `forkOf`, `invocationId`, and a `continuation` flag (→ `x-ably-run-continue: "true"`) on the lifecycle event headers |
-| `endRun(runId, reason, invocationId?)`               | Publishes `x-ably-run-end` with the reason (and `invocationId` if provided), removes the run                                                                                                                                           |
-| `abort(runId)`                                       | Fires the run's `AbortController.abort()` immediately                                                                                                                                                                                  |
-| `getSignal(runId)`                                   | Returns the `AbortSignal` for a run                                                                                                                                                                                                    |
-| `getClientId(runId)`                                 | Returns the clientId that owns a run                                                                                                                                                                                                   |
-| `getActiveRunIds()`                                  | Returns all active run IDs                                                                                                                                                                                                             |
-| `close()`                                            | Aborts all active runs and clears state                                                                                                                                                                                                |
+| Method                                               | What it does                                                                                                                                                                                                                       |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `startRun(runId, clientId?, controller?, metadata?)` | Registers the run, publishes `ai-run-start`, returns an `AbortSignal`. `metadata` optionally stamps `parent`, `forkOf`, `invocationId`, and a `continuation` flag (→ `x-ably-run-continue: "true"`) on the lifecycle event headers |
+| `endRun(runId, reason, invocationId?)`               | Publishes `ai-run-end` with the reason (and `invocationId` if provided), removes the run                                                                                                                                           |
+| `abort(runId)`                                       | Fires the run's `AbortController.abort()` immediately                                                                                                                                                                              |
+| `getSignal(runId)`                                   | Returns the `AbortSignal` for a run                                                                                                                                                                                                |
+| `getClientId(runId)`                                 | Returns the clientId that owns a run                                                                                                                                                                                               |
+| `getActiveRunIds()`                                  | Returns all active run IDs                                                                                                                                                                                                         |
+| `close()`                                            | Aborts all active runs and clears state                                                                                                                                                                                            |
 
 ### AbortController per run
 
 Each run gets its own `AbortController`. The agent session can pass an external controller to `startRun()` to share abort control with the cancel routing system. The signal is passed to the LLM call and to `pipeStream`, so cancellation propagates from the channel (cancel signal → abort controller → abort signal → stream reader stops → encoder aborts).
 
-The run manager publishes `x-ably-run-end` **before** deleting local state. If the publish fails, the run remains in the active set and can be retried or cleaned up.
+The run manager publishes `ai-run-end` **before** deleting local state. If the publish fails, the run remains in the active set and can be retried or cleaned up.
 
 ## pipeStream
 
@@ -93,7 +93,7 @@ Returns `{ reason }` where reason is `'complete'`, `'cancelled'`, or `'error'`. 
 
 Cancel routing lives in the agent session (`src/core/transport/agent-session.ts`), not in a separate component.
 
-The agent session subscribes to [`x-ably-cancel`](wire-protocol.md#lifecycle-events) events on channel construction. When a cancel message arrives, it:
+The agent session subscribes to [`ai-cancel`](wire-protocol.md#lifecycle-events) events on channel construction. When a cancel message arrives, it:
 
 1. Parses the cancel filter from [cancel headers](wire-protocol.md#transport-headers-x-ably) (`x-ably-cancel-run-id`, `x-ably-cancel-invocation-id`, `x-ably-cancel-own`, `x-ably-cancel-client-id`, `x-ably-cancel-all`)
 2. Resolves which active runs match the filter

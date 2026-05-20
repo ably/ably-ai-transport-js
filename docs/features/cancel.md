@@ -88,7 +88,7 @@ sequenceDiagram
     participant Ch as Ably Channel
     participant S as Server
 
-    C->>Ch: publish(x-ably-cancel)<br/>headers: cancel-own=true
+    C->>Ch: publish(ai-cancel)<br/>headers: cancel-own=true
     Note left of C: close local stream(s)
     Ch->>S: deliver to cancel listener
     Note right of S: match filter to runs

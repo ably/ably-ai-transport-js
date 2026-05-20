@@ -51,13 +51,13 @@ The `x-domain-` prefix is defined in `constants.ts` as `DOMAIN_HEADER_PREFIX`. C
 
 Lifecycle events are published by the transport layer to coordinate run state. They use Ably message `name` as the event type and carry metadata in headers. They have no `data` payload.
 
-| Event name         | Direction        | Required headers                                             | Optional headers                                                                 | Purpose                                         |
-| ------------------ | ---------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------- | ----------------------------------------------- |
-| `x-ably-run-start` | Server → Channel | `x-ably-run-id`, `x-ably-run-client-id`                      | `x-ably-parent`, `x-ably-fork-of`, `x-ably-invocation-id`, `x-ably-run-continue` | Signal that a run has started                   |
-| `x-ably-run-end`   | Server → Channel | `x-ably-run-id`, `x-ably-run-client-id`, `x-ably-run-reason` | `x-ably-invocation-id`                                                           | Signal that a run has ended                     |
-| `x-ably-cancel`    | Client → Channel | one of the cancel filter headers                             | -                                                                                | Request cancellation of one or more runs        |
-| `x-ably-abort`     | Server → Channel | `x-ably-run-id`                                              | -                                                                                | Transport-level abort signal (stream cancelled) |
-| `x-ably-error`     | Server → Channel | -                                                            | `x-ably-run-id`, `x-ably-invocation-id`                                          | Transport-level error signal                    |
+| Event name     | Direction        | Required headers                                             | Optional headers                                                                 | Purpose                                         |
+| -------------- | ---------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `ai-run-start` | Server → Channel | `x-ably-run-id`, `x-ably-run-client-id`                      | `x-ably-parent`, `x-ably-fork-of`, `x-ably-invocation-id`, `x-ably-run-continue` | Signal that a run has started                   |
+| `ai-run-end`   | Server → Channel | `x-ably-run-id`, `x-ably-run-client-id`, `x-ably-run-reason` | `x-ably-invocation-id`                                                           | Signal that a run has ended                     |
+| `ai-cancel`    | Client → Channel | one of the cancel filter headers                             | -                                                                                | Request cancellation of one or more runs        |
+| `ai-abort`     | Server → Channel | `x-ably-run-id`                                              | -                                                                                | Transport-level abort signal (stream cancelled) |
+| `ai-error`     | Server → Channel | -                                                            | `x-ably-run-id`, `x-ably-invocation-id`                                          | Transport-level error signal                    |
 
 ## Content messages
 
@@ -127,7 +127,7 @@ sequenceDiagram
     participant C as Clients
 
     S->>Ch: publish run-start
-    Ch->>C: x-ably-run-start
+    Ch->>C: ai-run-start
 
     S->>Ch: publish user messages
     Ch->>C: message.create (role: user)
@@ -142,7 +142,7 @@ sequenceDiagram
     Ch->>C: message.append (finished)
 
     S->>Ch: publish run-end
-    Ch->>C: x-ably-run-end (complete)
+    Ch->>C: ai-run-end (complete)
 ```
 
 With cancellation:
@@ -153,10 +153,10 @@ sequenceDiagram
     participant Ch as Channel
     participant S as Server
 
-    A->>Ch: publish x-ably-cancel
+    A->>Ch: publish ai-cancel
     Note over Ch,S: cancel listener matches run
     S->>Ch: message.append (aborted)
-    S->>Ch: x-ably-run-end (cancelled)
+    S->>Ch: ai-run-end (cancelled)
 ```
 
 ## Message identity (`x-ably-msg-id`)

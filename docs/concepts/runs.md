@@ -60,10 +60,10 @@ All clients on the channel receive run lifecycle events, regardless of who start
 
 ```typescript
 session.tree.on('run', (event) => {
-  if (event.type === 'x-ably-run-start') {
+  if (event.type === 'ai-run-start') {
     // A run started: event.runId, event.clientId
   }
-  if (event.type === 'x-ably-run-end') {
+  if (event.type === 'ai-run-end') {
     // A run ended: event.runId, event.clientId, event.reason
   }
 });

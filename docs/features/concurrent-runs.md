@@ -70,10 +70,10 @@ Run lifecycle events are visible to all clients:
 
 ```typescript
 session.tree.on('run', (event) => {
-  if (event.type === 'x-ably-run-start') {
+  if (event.type === 'ai-run-start') {
     console.log(`${event.clientId} started run ${event.runId}`);
   }
-  if (event.type === 'x-ably-run-end') {
+  if (event.type === 'ai-run-end') {
     console.log(`${event.clientId} ended run ${event.runId}: ${event.reason}`);
   }
 });

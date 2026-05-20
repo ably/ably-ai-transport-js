@@ -362,7 +362,7 @@ session.view.on('update', () => {
 });
 
 session.tree.on('run', (event) => {
-  console.log(event.runId, event.type); // 'x-ably-run-start' | 'x-ably-run-end'
+  console.log(event.runId, event.type); // 'ai-run-start' | 'ai-run-end'
 });
 
 session.on('error', (error) => {

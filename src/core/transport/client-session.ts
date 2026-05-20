@@ -160,11 +160,11 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
   private _hasAttachedOnce: boolean;
   private readonly _onChannelStateChange: Ably.channelEventCallback;
 
-  /** Default deadline for the agent's `x-ably-run-start` to arrive after a `send()`. */
+  /** Default deadline for the agent's `ai-run-start` to arrive after a `send()`. */
   private readonly _runStartDeadlineMs: number;
 
   /**
-   * Pending send() promises awaiting `x-ably-run-start` for their invocation.
+   * Pending send() promises awaiting `ai-run-start` for their invocation.
    * Keyed by invocation-id (which is unique per send). Resolved on run-start
    * receive; rejected on deadline lapse.
    */
@@ -311,7 +311,7 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
 
     try {
       // --- Agent-side error event ---
-      // Agent emits `x-ably-error` to surface failures that occur before any
+      // Agent emits `ai-error` to surface failures that occur before any
       // assistant message can be streamed (most importantly, prompt-not-found
       // after the rewind + live wait lapses). The error carries
       // `x-ably-run-id` and `x-ably-invocation-id` so we can match it against

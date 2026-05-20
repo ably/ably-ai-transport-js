@@ -89,7 +89,7 @@ export const HEADER_FORK_OF = 'x-ably-fork-of';
 // Run lifecycle headers
 // ---------------------------------------------------------------------------
 
-/** Header: reason a run ended (on x-ably-run-end messages). */
+/** Header: reason a run ended (on ai-run-end messages). */
 export const HEADER_RUN_REASON = 'x-ably-run-reason';
 
 /**
@@ -107,19 +107,19 @@ export const HEADER_RUN_CONTINUE = 'x-ably-run-continue';
 // ---------------------------------------------------------------------------
 
 /** Message name: client->server cancel signal. */
-export const EVENT_CANCEL = 'x-ably-cancel';
+export const EVENT_CANCEL = 'ai-cancel';
 
 /** Message name: server publishes this to signal a run has started. */
-export const EVENT_RUN_START = 'x-ably-run-start';
+export const EVENT_RUN_START = 'ai-run-start';
 
 /** Message name: server publishes this to signal a run has ended. */
-export const EVENT_RUN_END = 'x-ably-run-end';
+export const EVENT_RUN_END = 'ai-run-end';
 
 /** Message name: transport-level abort signal (stream cancelled). */
-export const EVENT_ABORT = 'x-ably-abort';
+export const EVENT_ABORT = 'ai-abort';
 
 /** Message name: transport-level error signal. */
-export const EVENT_ERROR = 'x-ably-error';
+export const EVENT_ERROR = 'ai-error';
 
 // ---------------------------------------------------------------------------
 // Domain header prefix (used by codec implementations)

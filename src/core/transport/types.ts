@@ -91,7 +91,7 @@ export interface AgentSessionOptions<TEvent, TProjection, TMessage> {
   /**
    * How long `Run.start()` will wait for the user-prompt message tagged with
    * the run's `invocationId` to arrive on the channel (rewind + live wait)
-   * before publishing an `x-ably-error` with `PromptNotFound` and rejecting.
+   * before publishing an `ai-error` with `PromptNotFound` and rejecting.
    * Default: 30000 (30 seconds).
    */
   promptLookupTimeoutMs?: number;
@@ -408,7 +408,7 @@ export interface ClientSessionOptions<TEvent, TProjection, TMessage> {
   messages?: TMessage[];
 
   /**
-   * How long `sendMessage()` / `sendEvent()` will wait for the agent's `x-ably-run-start` event for
+   * How long `sendMessage()` / `sendEvent()` will wait for the agent's `ai-run-start` event for
    * the run+invocation before rejecting with `RunStartDeadlineExceeded`.
    * Default: 30000 (30 seconds).
    */
@@ -464,7 +464,7 @@ export interface SendOptions {
 /** A structured event describing a run starting or ending. */
 export type RunLifecycleEvent =
   | {
-      type: 'x-ably-run-start';
+      type: 'ai-run-start';
       runId: string;
       clientId: string;
       /** The msg-id of the parent message, if known. Omitted for root runs. */
@@ -479,7 +479,7 @@ export type RunLifecycleEvent =
        */
       isContinuation?: boolean;
     }
-  | { type: 'x-ably-run-end'; runId: string; clientId: string; reason: RunEndReason };
+  | { type: 'ai-run-end'; runId: string; clientId: string; reason: RunEndReason };
 
 // ---------------------------------------------------------------------------
 // Active run handle
@@ -494,7 +494,7 @@ export interface ActiveRun<TEvent> {
   /**
    * The invocation's unique identifier. Stamped on the published user
    * message and forwarded in the HTTP POST body so the agent's run
-   * lifecycle events (`x-ably-run-start`, `x-ably-run-end`) can echo it
+   * lifecycle events (`ai-run-start`, `ai-run-end`) can echo it
    * back. The Tree's winning-invocation map and the run-end gate key on
    * this value.
    */

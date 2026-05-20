@@ -1412,7 +1412,7 @@ describe('ClientSession', () => {
   describe('cancel', () => {
     it('publishes a cancel message with own=true by default', async () => {
       await fix.session.cancel();
-      const cancelMsg = fix.channel.publishCalls.find((m) => m.name === 'x-ably-cancel');
+      const cancelMsg = fix.channel.publishCalls.find((m) => m.name === 'ai-cancel');
       expect(cancelMsg).toBeDefined();
       const headers = (cancelMsg?.extras as { headers: Record<string, string> } | undefined)?.headers;
       expect(headers?.[HEADER_CANCEL_OWN]).toBe('true');
@@ -1425,7 +1425,7 @@ describe('ClientSession', () => {
       ['all', { all: true }, HEADER_CANCEL_ALL, 'true'],
     ])('publishes cancel with %s filter', async (_, filter, header, expected) => {
       await fix.session.cancel(filter);
-      const cancelMsg = fix.channel.publishCalls.find((m) => m.name === 'x-ably-cancel');
+      const cancelMsg = fix.channel.publishCalls.find((m) => m.name === 'ai-cancel');
       expect(cancelMsg).toBeDefined();
       const headers = (cancelMsg?.extras as { headers: Record<string, string> } | undefined)?.headers;
       expect(headers?.[header]).toBe(expected);
@@ -1533,7 +1533,7 @@ describe('ClientSession', () => {
 
     it('publishes a cancel when close({ cancel }) is provided', async () => {
       await fix.session.close({ cancel: { all: true } });
-      const cancelMsg = fix.channel.publishCalls.find((m) => m.name === 'x-ably-cancel');
+      const cancelMsg = fix.channel.publishCalls.find((m) => m.name === 'ai-cancel');
       expect(cancelMsg).toBeDefined();
     });
 

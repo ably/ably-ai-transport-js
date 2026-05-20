@@ -324,7 +324,7 @@ describe('DefaultView', () => {
       const handler = vi.fn();
       view.on('run', handler);
 
-      const event: RunLifecycleEvent = { type: 'x-ably-run-start', runId: 'run-1', clientId: 'client-a' };
+      const event: RunLifecycleEvent = { type: 'ai-run-start', runId: 'run-1', clientId: 'client-a' };
       tree.emitRun(event);
 
       expect(handler).toHaveBeenCalledOnce();
@@ -337,7 +337,7 @@ describe('DefaultView', () => {
       const handler = vi.fn();
       view.on('run', handler);
 
-      const event: RunLifecycleEvent = { type: 'x-ably-run-start', runId: 'run-99', clientId: 'client-x' };
+      const event: RunLifecycleEvent = { type: 'ai-run-start', runId: 'run-99', clientId: 'client-x' };
       tree.emitRun(event);
 
       expect(handler).toHaveBeenCalledOnce();
@@ -350,7 +350,7 @@ describe('DefaultView', () => {
       view.on('run', handler);
 
       const event: RunLifecycleEvent = {
-        type: 'x-ably-run-start',
+        type: 'ai-run-start',
         runId: 'run-2',
         clientId: 'client-b',
         parent: 'm1',
@@ -391,7 +391,7 @@ describe('DefaultView', () => {
 
       // Run whose parent is m3 (on the non-selected branch)
       const event: RunLifecycleEvent = {
-        type: 'x-ably-run-start',
+        type: 'ai-run-start',
         runId: 'run-hidden',
         clientId: 'remote',
         parent: 'm3',
@@ -406,7 +406,7 @@ describe('DefaultView', () => {
       view.on('run', handler);
 
       const event: RunLifecycleEvent = {
-        type: 'x-ably-run-start',
+        type: 'ai-run-start',
         runId: 'run-root',
         clientId: 'client-a',
       };
@@ -422,7 +422,7 @@ describe('DefaultView', () => {
       view.on('run', handler);
 
       const event: RunLifecycleEvent = {
-        type: 'x-ably-run-end',
+        type: 'ai-run-end',
         runId: 'run-99',
         clientId: 'client-x',
         reason: 'complete',
@@ -1127,7 +1127,7 @@ describe('DefaultView', () => {
       await forkView.sendEvent([], { forkOf: 'm2', parent: 'm1' });
 
       // Run ends without creating a sibling — pending entry should be cleaned up
-      tree.emitRun({ type: 'x-ably-run-end', runId: 'run-cleanup', clientId: 'client-a', reason: 'complete' });
+      tree.emitRun({ type: 'ai-run-end', runId: 'run-cleanup', clientId: 'client-a', reason: 'complete' });
 
       // A later unrelated fork should NOT be auto-selected (pending was cleaned up)
       tree.upsert(
@@ -1360,7 +1360,7 @@ describe('DefaultView', () => {
       // Trigger tree events — view handlers should not fire
       tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1', 'run-1'), 'serial-1');
       tree.emitAblyMessage({ name: 'test', extras: { headers: { [HEADER_MSG_ID]: 'm1' } } } as Ably.InboundMessage);
-      tree.emitRun({ type: 'x-ably-run-end', runId: 'run-1', clientId: 'c1', reason: 'complete' });
+      tree.emitRun({ type: 'ai-run-end', runId: 'run-1', clientId: 'c1', reason: 'complete' });
 
       expect(updateHandler).not.toHaveBeenCalled();
       expect(ablyHandler).not.toHaveBeenCalled();

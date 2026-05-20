@@ -29,7 +29,7 @@ describe('useActiveRuns', () => {
     const { result } = renderHook(() => useActiveRuns({ session: mock.session }));
 
     act(() => {
-      mock.emitTree('run', makeRunEvent('x-ably-run-start', 'run-1', 'client-1'));
+      mock.emitTree('run', makeRunEvent('ai-run-start', 'run-1', 'client-1'));
     });
 
     expect(result.current.get('client-1')?.has('run-1')).toBe(true);
@@ -44,7 +44,7 @@ describe('useActiveRuns', () => {
     const { result } = renderHook(() => useActiveRuns({ session: mock.session }));
 
     act(() => {
-      mock.emitTree('run', makeRunEvent('x-ably-run-end', 'run-1', 'client-1', 'complete'));
+      mock.emitTree('run', makeRunEvent('ai-run-end', 'run-1', 'client-1', 'complete'));
     });
 
     expect(result.current.has('client-1')).toBe(false);
@@ -59,14 +59,14 @@ describe('useActiveRuns', () => {
     const { result } = renderHook(() => useActiveRuns({ session: mock.session }));
 
     act(() => {
-      mock.emitTree('run', makeRunEvent('x-ably-run-end', 'run-1', 'client-1'));
+      mock.emitTree('run', makeRunEvent('ai-run-end', 'run-1', 'client-1'));
     });
 
     expect(result.current.get('client-1')?.size).toBe(1);
     expect(result.current.get('client-1')?.has('run-2')).toBe(true);
 
     act(() => {
-      mock.emitTree('run', makeRunEvent('x-ably-run-end', 'run-2', 'client-1'));
+      mock.emitTree('run', makeRunEvent('ai-run-end', 'run-2', 'client-1'));
     });
 
     expect(result.current.has('client-1')).toBe(false);
@@ -86,7 +86,7 @@ describe('useActiveRuns', () => {
     expect(setBefore?.size).toBe(2);
 
     act(() => {
-      mock.emitTree('run', makeRunEvent('x-ably-run-end', 'run-1', 'client-1'));
+      mock.emitTree('run', makeRunEvent('ai-run-end', 'run-1', 'client-1'));
     });
 
     // The old Set reference must still contain both original items

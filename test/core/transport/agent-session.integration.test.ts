@@ -713,7 +713,7 @@ describe('AgentSession integration', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      // `send()` would otherwise block awaiting `x-ably-run-start` — but
+      // `send()` would otherwise block awaiting `ai-run-start` — but
       // the agent only publishes that AFTER its lookup resolves, which
       // requires `send()` to publish the user messages first. The
       // happy-path run-start wait is exercised in client-session integration

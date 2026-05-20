@@ -491,7 +491,7 @@ describe('AgentSession', () => {
       const run = createRunFromOpts(session, { runId: 'run-1', clientId: 'user-a' });
       await run.start();
 
-      const startMsg = channel.publishCalls.find((m) => m.name === 'x-ably-run-start');
+      const startMsg = channel.publishCalls.find((m) => m.name === 'ai-run-start');
       expect(startMsg).toBeDefined();
       const headers = (startMsg?.extras as { headers: Record<string, string> } | undefined)?.headers;
       expect(headers?.[HEADER_RUN_ID]).toBe('run-1');
@@ -501,7 +501,7 @@ describe('AgentSession', () => {
       const run = createRunFromOpts(session, { runId: 'run-1', isContinuation: true });
       await run.start();
 
-      const startMsg = channel.publishCalls.find((m) => m.name === 'x-ably-run-start');
+      const startMsg = channel.publishCalls.find((m) => m.name === 'ai-run-start');
       const headers = (startMsg?.extras as { headers: Record<string, string> } | undefined)?.headers;
       expect(headers?.['x-ably-run-continue']).toBe('true');
     });
@@ -510,7 +510,7 @@ describe('AgentSession', () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
 
-      const startMsg = channel.publishCalls.find((m) => m.name === 'x-ably-run-start');
+      const startMsg = channel.publishCalls.find((m) => m.name === 'ai-run-start');
       const headers = (startMsg?.extras as { headers: Record<string, string> } | undefined)?.headers;
       expect(headers?.['x-ably-run-continue']).toBeUndefined();
     });
@@ -520,7 +520,7 @@ describe('AgentSession', () => {
       await run.start();
       await run.end('complete');
 
-      const endMsg = channel.publishCalls.find((m) => m.name === 'x-ably-run-end');
+      const endMsg = channel.publishCalls.find((m) => m.name === 'ai-run-end');
       expect(endMsg).toBeDefined();
     });
 
@@ -529,7 +529,7 @@ describe('AgentSession', () => {
       await run.start();
       await run.start();
       // Only one run-start publish on the channel
-      const startMsgs = channel.publishCalls.filter((m) => m.name === 'x-ably-run-start');
+      const startMsgs = channel.publishCalls.filter((m) => m.name === 'ai-run-start');
       expect(startMsgs).toHaveLength(1);
     });
 
@@ -1579,7 +1579,7 @@ describe('AgentSession prompt lookup', () => {
 
     await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.PromptNotFound);
     // The agent should have published an error event
-    const errMsg = channel.publishCalls.find((m) => m.name === 'x-ably-error');
+    const errMsg = channel.publishCalls.find((m) => m.name === 'ai-error');
     expect(errMsg).toBeDefined();
     session.close();
   });

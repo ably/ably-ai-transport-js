@@ -74,7 +74,7 @@ export enum ErrorCode {
   StreamError = 104008,
 
   /**
-   * The client's send() did not observe `x-ably-run-start` for the run+invocation
+   * The client's send() did not observe `ai-run-start` for the run+invocation
    * within the configured `runStartDeadlineMs`.
    */
   RunStartDeadlineExceeded = 104009,

@@ -38,7 +38,7 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
           const captured = mock.listener;
           queueMicrotask(() => {
             captured({
-              name: 'x-ably-run-start',
+              name: 'ai-run-start',
               extras: {
                 headers: {
                   'x-ably-run-id': headers['x-ably-run-id'] ?? '',

@@ -556,22 +556,6 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
   }
 
   // ---------------------------------------------------------------------------
-  // Tree mutation + notification helpers
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Upsert a message into the tree and notify subscribers.
-   * @param message - The domain message to insert or update.
-   * @param headers - Ably headers for the message.
-   * @param serial - Ably serial for tree ordering.
-   */
-  private _upsertAndNotify(message: TMessage, headers: Record<string, string>, serial?: string): void {
-    const msgId = headers[HEADER_MSG_ID];
-    if (!msgId) return;
-    this._tree.upsert(msgId, message, headers, serial);
-  }
-
-  // ---------------------------------------------------------------------------
   // Observer accumulation
   // ---------------------------------------------------------------------------
 
@@ -643,6 +627,10 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     //   to `consumedMsgIds`, filtering it from `getMessages`). The fallback
     //   `.at(-1)` lands on the mutated assistant.
     const wireMsgId = observer.headers[HEADER_MSG_ID];
+    // CAST: TMessage is opaque to the core session, but the projection
+    // lookup needs to match by domain `id` (the codec sets each message's
+    // `id` to the wire msg-id). Tracked for removal via the codec-method
+    // follow-up noted below.
     const message =
       wireMsgId === undefined
         ? messages.at(-1)
@@ -671,11 +659,21 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     //   != wireMsgId because the codec keeps the domain id distinct from
     //   the wire's `x-ably-msg-id`) → upsert at `wireMsgId`. The optimistic
     //   insert used the same key; the echo converges with that node.
+    //
+    // TODO(follow-up): this is a residual codec-specific peek in the core
+    // layer (mirrors the send-path duck-type that this refactor removed).
+    // To eliminate it cleanly the codec needs to expose "which projection
+    // msgId did this fold land on?" — proposed for a follow-up PR.
     const wireRole = observer.headers[HEADER_ROLE];
+    // CAST: TMessage is opaque to the core session, but the tool-resolution
+    // redirect (see comment above) needs to read its `role` to distinguish
+    // a user-message echo from an assistant-redirected fold. Tracked for
+    // removal via a codec-method follow-up.
     const messageRole = (message as { role?: string }).role;
     const isRedirect = wireRole === 'user' && messageRole === 'assistant';
 
     if (isRedirect) {
+      // CAST: see `messageRole` cast above — same follow-up applies.
       const actualMsgId = (message as { id?: string }).id;
       if (!actualMsgId) return;
       const existing = this._tree.getHeaders(actualMsgId);
@@ -685,69 +683,6 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
       if (wireMsgId === undefined) return;
       this._tree.upsert(wireMsgId, cloned, { ...observer.headers }, observer.serial);
     }
-  }
-
-  /**
-   * Whether a synthetic UIMessage from `Codec.classifyEvent` represents a
-   * tool resolution (output / approval) that should be folded onto a prior
-   * assistant via `toolCallId` rather than inserted as its own tree node.
-   *
-   * Duck-typed on the TMessage shape: a `role: 'user'` message whose parts
-   * are all `dynamic-tool` parts in a client-published resolution state.
-   * The session is otherwise codec-agnostic about TMessage; this single
-   * heuristic is the only place that peeks at its shape on the send path.
-   * @param message - The TMessage produced by `Codec.classifyEvent`.
-   * @returns True when the message should be optimistically folded, not upserted.
-   */
-  private _isToolResolutionMessage(message: TMessage): boolean {
-    const m = message as { role?: string; parts?: { type?: string; state?: string }[] };
-    if (m.role !== 'user') return false;
-    if (!Array.isArray(m.parts) || m.parts.length === 0) return false;
-    return m.parts.every(
-      (p) =>
-        p.type === 'dynamic-tool' &&
-        (p.state === 'output-available' ||
-          p.state === 'output-error' ||
-          p.state === 'approval-responded' ||
-          p.state === 'output-denied'),
-    );
-  }
-
-  /**
-   * Optimistically fold a client-published tool-resolution event into the
-   * run's observer projection. Unlike a fresh user-message, the resolution
-   * never materialises as its own Tree node — the reducer promotes its
-   * payload onto the prior assistant by `toolCallId` and marks the wire
-   * msg-id as consumed. The session's existing diff-and-upsert pipeline
-   * (via `_accumulateAndEmit`) then re-upserts the affected assistant
-   * with its now-updated parts list, so the local Tree reflects the
-   * resolution before the server echo arrives.
-   *
-   * Creates the observer lazily when missing — defensive guard for the
-   * (rare) case of a continuation that fires before any echo from the
-   * original run was processed.
-   * @param runId - The run this resolution belongs to (the suspended run's id).
-   * @param event - The original TEvent (tool-output-available / tool-output-error
-   *   / tool-approval-response) — handed to the reducer via `_accumulateAndEmit`.
-   * @param headers - The transport headers stamped on the wire publish; carry
-   *   `HEADER_MSG_ID` (continuation's own id, consumed by the reducer) and
-   *   the run/invocation/prompt ids.
-   * @param msgId - The wire `x-ably-msg-id` for the continuation publish.
-   */
-  private _optimisticallyFoldToolResolution(
-    runId: string,
-    event: TEvent,
-    headers: Record<string, string>,
-    msgId: string,
-  ): void {
-    // Update observer headers so subsequent echo processing finds them in
-    // place. `serial` stays undefined for the optimistic step; the real
-    // serial replaces it on echo.
-    // Optimistic step: pass `undefined` serial so the observer's serial
-    // stays unset until the real wire echo lands.
-    // eslint-disable-next-line unicorn/no-useless-undefined -- the underlying helper distinguishes "no serial yet" from a known serial via `undefined`.
-    this._updateRunObserverHeaders(runId, headers, undefined);
-    this._accumulateAndEmit(runId, event, { serial: '', messageId: msgId });
   }
 
   // ---------------------------------------------------------------------------
@@ -906,37 +841,37 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     // codec. Events split into two send-path shapes:
     //
     // - `user-message`: a fresh user prompt OR a continuation tool resolution
-    //   (tool output / approval response). The reducer (and
-    //   `_isToolResolutionMessage` below) distinguish the two.
+    //   (tool output / approval response). Both ride the same wire path
+    //   and the same optimistic-fold path; the reducer inline-detects tool
+    //   resolutions and folds them onto the prior assistant.
     // - `regenerate`: a wire-only event that carries `parent`/`forkOf`
     //   headers but materialises no TMessage (`View.regenerate` starts
     //   a new run forked off an assistant without re-publishing the
     //   user). The client mints `msgId`/`promptId` for the wire and the
     //   agent's prompt-lookup catches it; no tree-upsert or optimistic
     //   projection fold happens.
-    interface UserMessageItem {
-      kind: 'user-message';
-      event: TEvent;
-      message: TMessage;
-      /**
-       * Caller-supplied wire `x-ably-msg-id` override (e.g. a continuation
-       * tool resolution targeting the prior assistant's tree key). When
-       * set, the SDK uses this as the wire msg-id and the optimistic
-       * fold's `meta.messageId` instead of minting a fresh UUID.
-       */
-      domainMessageId?: string;
-      /** Allocated below in the optimistic-insert phase. */
-      state?: { msgId: string; headers: Record<string, string> };
-    }
-    interface RegenerateItem {
-      kind: 'regenerate';
-      event: TEvent;
-      parent: string;
-      forkOf: string;
-      /** Allocated below in the publish-headers phase. */
-      state?: { msgId: string; headers: Record<string, string> };
-    }
-    type ClassifiedItem = UserMessageItem | RegenerateItem;
+    type ClassifiedItem =
+      | {
+          kind: 'user-message';
+          event: TEvent;
+          /**
+           * Caller-supplied wire `x-ably-msg-id` override (e.g. a continuation
+           * tool resolution targeting the prior assistant's tree key). When
+           * set, the SDK uses this as the wire msg-id and the optimistic
+           * fold's `meta.messageId` instead of minting a fresh UUID.
+           */
+          domainMessageId?: string;
+          /** Allocated below in the optimistic-insert phase. */
+          state?: { msgId: string; headers: Record<string, string> };
+        }
+      | {
+          kind: 'regenerate';
+          event: TEvent;
+          parent: string;
+          forkOf: string;
+          /** Allocated below in the publish-headers phase. */
+          state?: { msgId: string; headers: Record<string, string> };
+        };
     const classified: ClassifiedItem[] = [];
     for (const entry of input) {
       const cls = this._codec.classifyEvent(entry.event);
@@ -953,7 +888,6 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
         classified.push({
           kind: 'user-message',
           event: entry.event,
-          message: cls.message,
           ...(entry.domainMessageId !== undefined && { domainMessageId: entry.domainMessageId }),
         });
       }
@@ -1060,17 +994,16 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
         runContinue: isContinuation,
       });
 
-      // Tool-resolution events ride as `role: 'user'` messages on the wire
-      // but never materialise as Tree nodes — the reducer folds them onto
-      // the prior assistant by toolCallId and marks the wire-msg consumed.
-      // Optimistically fold into the observer projection so the local
-      // assistant updates immediately, mirroring server-side echo.
-      if (this._isToolResolutionMessage(item.message)) {
-        this._optimisticallyFoldToolResolution(runId, item.event, optimisticHeaders, msgId);
-      } else {
-        // Spec: AIT-CT3c
-        this._upsertAndNotify(item.message, optimisticHeaders);
-      }
+      // Spec: AIT-CT3c
+      // Optimistic update via the reducer. Fresh user prompts and tool
+      // resolutions both flow through the same path: fold the event into
+      // the run's projection, then upsert from the projection. The reducer
+      // handles fresh prompts by appending a UIMessage; tool resolutions
+      // are redirected onto the prior assistant via `consumedMsgIds`. The
+      // session stays codec-agnostic — no peek inside TMessage.
+      // eslint-disable-next-line unicorn/no-useless-undefined -- `_updateRunObserverHeaders` distinguishes "no serial yet" from a known serial via `undefined`.
+      this._updateRunObserverHeaders(runId, optimisticHeaders, undefined);
+      this._accumulateAndEmit(runId, item.event, { serial: '', messageId: msgId });
 
       item.state = { msgId, headers: optimisticHeaders };
 

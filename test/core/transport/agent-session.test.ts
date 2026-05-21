@@ -206,7 +206,7 @@ const createMockCodec = (overrides?: { encoderFactory?: () => MockEncoder }): Mo
     createRegenerateEvent: vi.fn((): TestEvent => ({ type: 'user-message' })),
     classifyEvent: vi.fn((event: TestEvent) =>
       event.type === 'user-message'
-        ? ({ kind: 'user-message' as const, message: { id: '', content: event.text ?? '' } } as const)
+        ? ({ kind: 'user-message' as const } as const)
         : ({ kind: 'other' as const } as const),
     ),
     // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires an explicit return matching the codec contract
@@ -285,7 +285,7 @@ const codecWithFunctionalDecoder = (): Codec<TestEvent, TestProjection, TestMess
   createRegenerateEvent: (): TestEvent => ({ type: 'user-message' }),
   classifyEvent: (event: TestEvent) =>
     event.type === 'user-message'
-      ? ({ kind: 'user-message' as const, message: { id: event.text ?? '', content: event.text ?? '' } } as const)
+      ? ({ kind: 'user-message' as const } as const)
       : ({ kind: 'other' as const } as const),
   // eslint-disable-next-line unicorn/no-useless-undefined -- codec contract returns string | undefined
   resolveToolTarget: () => undefined,

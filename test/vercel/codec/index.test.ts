@@ -26,89 +26,44 @@ describe('UIMessageCodec', () => {
   });
 
   describe('classifyEvent', () => {
-    it('classifies UserMessageEvent as user-message and extracts the message', () => {
+    it('classifies UserMessageEvent as user-message', () => {
       const result = UIMessageCodec.classifyEvent({
         type: 'ait-user-message',
         message: { id: 'm1', role: 'user', parts: [] },
       });
-      expect(result.kind).toBe('user-message');
-      if (result.kind !== 'user-message') return;
-      expect(result.message).toEqual({ id: 'm1', role: 'user', parts: [] });
+      expect(result).toEqual({ kind: 'user-message' });
     });
 
-    it('classifies tool-output-available as user-message with a synthetic role:user dynamic-tool message', () => {
+    it('classifies tool-output-available as user-message', () => {
       // Continuation tool resolutions ride as `role: 'user'` channel
-      // messages whose payload encodes the tool output. The session's
-      // optimistic-fold heuristic duck-types the resulting TMessage; the
-      // reducer redirects the fold onto the prior assistant by toolCallId.
+      // messages on the wire; the reducer redirects the fold onto the
+      // prior assistant by toolCallId. The codec does not synthesise a
+      // TMessage — the session folds the event itself.
       const result = UIMessageCodec.classifyEvent({
         type: 'tool-output-available',
         toolCallId: 'tc-1',
         output: { ok: true },
       });
-      expect(result.kind).toBe('user-message');
-      if (result.kind !== 'user-message') return;
-      expect(result.message.role).toBe('user');
-      expect(result.message.parts).toHaveLength(1);
-      const part = result.message.parts[0];
-      expect(part?.type).toBe('dynamic-tool');
-      if (part?.type !== 'dynamic-tool') return;
-      expect(part.toolCallId).toBe('tc-1');
-      expect(part.state).toBe('output-available');
-      if (part.state !== 'output-available') return;
-      expect(part.output).toEqual({ ok: true });
+      expect(result).toEqual({ kind: 'user-message' });
     });
 
-    it('classifies tool-output-error as user-message with a synthetic role:user dynamic-tool message', () => {
+    it('classifies tool-output-error as user-message', () => {
       const result = UIMessageCodec.classifyEvent({
         type: 'tool-output-error',
         toolCallId: 'tc-1',
         errorText: 'boom',
       });
-      expect(result.kind).toBe('user-message');
-      if (result.kind !== 'user-message') return;
-      expect(result.message.role).toBe('user');
-      const part = result.message.parts[0];
-      expect(part?.type).toBe('dynamic-tool');
-      if (part?.type !== 'dynamic-tool') return;
-      expect(part.toolCallId).toBe('tc-1');
-      expect(part.state).toBe('output-error');
-      if (part.state !== 'output-error') return;
-      expect(part.errorText).toBe('boom');
+      expect(result).toEqual({ kind: 'user-message' });
     });
 
-    it('classifies tool-approval-response as user-message with a synthetic dynamic-tool approval part', () => {
+    it('classifies tool-approval-response as user-message', () => {
       const result = UIMessageCodec.classifyEvent({
         type: 'tool-approval-response',
         toolCallId: 'tc-1',
         approved: true,
         reason: 'looks good',
       });
-      expect(result.kind).toBe('user-message');
-      if (result.kind !== 'user-message') return;
-      expect(result.message.role).toBe('user');
-      const part = result.message.parts[0];
-      expect(part?.type).toBe('dynamic-tool');
-      if (part?.type !== 'dynamic-tool') return;
-      expect(part.toolCallId).toBe('tc-1');
-      expect(part.state).toBe('approval-responded');
-      if (part.state !== 'approval-responded') return;
-      expect(part.approval.approved).toBe(true);
-      expect(part.approval.reason).toBe('looks good');
-    });
-
-    it('classifies tool-approval-response with approved=false as user-message with output-denied state', () => {
-      const result = UIMessageCodec.classifyEvent({
-        type: 'tool-approval-response',
-        toolCallId: 'tc-1',
-        approved: false,
-        reason: 'nope',
-      });
-      expect(result.kind).toBe('user-message');
-      if (result.kind !== 'user-message') return;
-      const part = result.message.parts[0];
-      if (part?.type !== 'dynamic-tool') throw new Error('expected dynamic-tool');
-      expect(part.state).toBe('output-denied');
+      expect(result).toEqual({ kind: 'user-message' });
     });
 
     it('classifies UIMessageChunk variants (e.g. text-delta) as other', () => {

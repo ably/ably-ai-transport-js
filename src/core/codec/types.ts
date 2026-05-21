@@ -238,11 +238,11 @@ export interface Decoder<TEvent> {
  * {@link Codec.classifyEvent}.
  *
  * - `user-message` — a free-standing channel message published as
- *   `x-ably-role: user`. `message` is the TMessage the session uses for
- *   optimistic tree state. Includes fresh user prompts AND continuation
- *   tool-resolution messages (tool outputs / approval responses); the
- *   reducer (not the classifier) inline-detects the latter and folds them
- *   onto the prior assistant.
+ *   `x-ably-role: user`. Covers fresh user prompts AND continuation
+ *   tool-resolution messages (tool outputs / approval responses). Both
+ *   ride the same wire path and the same optimistic-fold path; the
+ *   reducer (not the classifier) inline-detects tool resolutions and
+ *   folds them onto the prior assistant via `consumedMsgIds`.
  * - `regenerate` — a wire-only channel message that carries run-routing
  *   metadata (`parent`, `forkOf`) in its headers but materialises no
  *   TMessage. The session publishes the wire, mints a `promptId` so the
@@ -253,12 +253,10 @@ export interface Decoder<TEvent> {
  *   The session rejects `view.sendEvent` calls that include `other`-classified
  *   events.
  */
-export type EventClassification<TMessage> =
+export type EventClassification =
   | {
       /** Discriminator — user-message event variant. */
       kind: 'user-message';
-      /** The TMessage the session uses for optimistic Tree state. */
-      message: TMessage;
     }
   | {
       /** Discriminator — wire-only regenerate event variant. */
@@ -317,7 +315,7 @@ export interface Codec<TEvent, TProjection, TMessage> extends Reducer<TEvent, TP
   /**
    * Classify a TEvent for `View.sendEvent` dispatch. The session inspects the
    * returned discriminant to decide whether the event opens a new run
-   * (`user-message`), amends an existing message (`amend`), or is
+   * (`user-message`), starts a forked regeneration (`regenerate`), or is
    * unsupported on the send path (`other`).
    *
    * Codecs should return `other` rather than throw for unrecognized event
@@ -326,7 +324,7 @@ export interface Codec<TEvent, TProjection, TMessage> extends Reducer<TEvent, TP
    * @param event - The event being sent.
    * @returns The classification driving the publish path.
    */
-  classifyEvent(event: TEvent): EventClassification<TMessage>;
+  classifyEvent(event: TEvent): EventClassification;
   /**
    * Return the existing message id a stream event should be attributed
    * to, based on the projection's current state. Used by `Run.pipe` to

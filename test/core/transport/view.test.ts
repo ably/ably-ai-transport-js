@@ -50,7 +50,7 @@ const createMockCodec = (): Codec<TestEvent, TestProjection, TestMessage> => ({
   createRegenerateEvent: vi.fn(() => ({ type: 'user-message' })),
   classifyEvent: vi.fn((event: TestEvent) =>
     event.type === 'user-message'
-      ? ({ kind: 'user-message' as const, message: { id: '', content: '' } } as const)
+      ? ({ kind: 'user-message' as const } as const)
       : ({ kind: 'other' as const } as const),
   ),
   // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires an explicit return matching the codec contract

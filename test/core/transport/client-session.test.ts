@@ -9,7 +9,7 @@
  * `createAccumulator`, cross-run amend, codec amend classification)
  * are gone — the suite covers connect, send, regenerate, edit, cancel,
  * waitForRun, run lifecycle, observer routing, optimistic relay,
- * channel state, continuation tool-resolutions, and close.
+ * channel state, continuation (suspend/resume) sends, and close.
  */
 
 import * as Ably from 'ably';
@@ -55,8 +55,6 @@ import { createMockClient } from '../../helper/mock-client.js';
 interface TestEvent {
   type: string;
   text?: string;
-  /** Tool call id, present on tool-resolution-shaped TestEvents. */
-  toolCallId?: string;
   /** `x-ably-parent` for regenerate-shaped TestEvents. */
   parent?: string;
   /** `x-ably-fork-of` for regenerate-shaped TestEvents. */
@@ -283,6 +281,16 @@ const createMockCodec = (decoder?: MockDecoder): MockCodec => {
         }
         msg.content += event.text;
       }
+      // The session's optimistic-fold path now folds user-message events
+      // through the codec. The mock fold appends/replaces a message keyed
+      // by meta.messageId so getMessages() yields it for the tree upsert.
+      if (event.type === 'user-message') {
+        const id = meta.messageId ?? 'unknown';
+        const next: TestMessage = { id, content: event.text ?? '' };
+        const idx = state.messages.findIndex((m) => m.id === id);
+        if (idx === -1) state.messages.push(next);
+        else state.messages[idx] = next;
+      }
       return state;
     }),
     getMessages: vi.fn((p: TestProjection) => p.messages),
@@ -290,32 +298,7 @@ const createMockCodec = (decoder?: MockDecoder): MockCodec => {
     createRegenerateEvent: vi.fn((): TestEvent => ({ type: 'user-message' })),
     classifyEvent: vi.fn((event: TestEvent) => {
       if (event.type === 'user-message') {
-        return { kind: 'user-message' as const, message: { id: '', content: event.text ?? '' } };
-      }
-      // `tool-resolution` is a synthetic test event that mirrors how the
-      // Vercel codec classifies continuation tool resolutions: as a
-      // `user-message` whose TMessage is duck-typed as a tool resolution
-      // (role:'user' + dynamic-tool part in a resolution state) so the
-      // session's `_isToolResolutionMessage` heuristic matches.
-      if (event.type === 'tool-resolution') {
-        // CAST: TestMessage is a flat shape, but the session's
-        // `_isToolResolutionMessage` duck-types the TMessage as a UIMessage
-        // for tool resolutions. The cast lets us synthesise that shape.
-        const toolMessage = {
-          id: '',
-          content: '',
-          role: 'user' as const,
-          parts: [
-            {
-              type: 'dynamic-tool',
-              toolCallId: event.toolCallId ?? '',
-              toolName: '',
-              state: 'output-available',
-              input: undefined,
-            },
-          ],
-        } as unknown as TestMessage;
-        return { kind: 'user-message' as const, message: toolMessage };
+        return { kind: 'user-message' as const };
       }
       if (event.type === 'regenerate-event') {
         return {
@@ -810,7 +793,7 @@ describe('ClientSession', () => {
     it('reuses the runId, mints a fresh invocationId, and returns the existing stream', async () => {
       const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
 
-      const cont = await fix.session.view.sendEvent([{ type: 'tool-resolution', toolCallId: 'tc-1' }], {
+      const cont = await fix.session.view.sendEvent([{ type: 'user-message', text: 'more' }], {
         runId: initial.runId,
       });
 
@@ -820,18 +803,18 @@ describe('ClientSession', () => {
       expect(cont.stream).toBe(initial.stream);
     });
 
-    it('publishes the tool-resolution as a continuation user-message with HEADER_RUN_ID and HEADER_RUN_CONTINUE', async () => {
+    it('publishes the continuation user-message with HEADER_RUN_ID and HEADER_RUN_CONTINUE', async () => {
       const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
       const enc = fix.codec.lastEncoder();
       // Drop the initial publish from the call count
       const baseCalls = enc?.publishCalls.length ?? 0;
 
-      await fix.session.view.sendEvent([{ type: 'tool-resolution', toolCallId: 'tc-1' }], { runId: initial.runId });
+      await fix.session.view.sendEvent([{ type: 'user-message', text: 'more' }], { runId: initial.runId });
 
       const newCalls = (enc?.publishCalls.length ?? 0) - baseCalls;
       expect(newCalls).toBe(1);
       const call = enc?.publishCalls.at(-1);
-      expect(call?.event.type).toBe('tool-resolution');
+      expect(call?.event.type).toBe('user-message');
       const headers = call?.opts?.extras?.headers;
       expect(headers?.[HEADER_RUN_ID]).toBe(initial.runId);
       // A fresh invocation-id is minted for the continuation.
@@ -839,32 +822,24 @@ describe('ClientSession', () => {
       expect(headers?.[HEADER_INVOCATION_ID]).not.toBe(initial.invocationId);
       // Continuation publishes carry HEADER_RUN_CONTINUE='true' on the wire.
       expect(headers?.['x-ably-run-continue']).toBe('true');
-      // Tool resolutions publish as role:'user' (the wire shape mirrors a
-      // user-message; the reducer redirects by toolCallId).
+      // Continuation user-messages publish as role:'user'.
       expect(headers?.[HEADER_ROLE]).toBe('user');
       // No x-ably-amend header — the old amend header is gone from the wire.
       expect(headers?.['x-ably-amend']).toBeUndefined();
     });
 
-    it('optimistically folds into observer projection (no tree node) and posts one promptId per tool event', async () => {
+    it('posts one promptId per continuation event', async () => {
       const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
-      const beforeNodes = fix.session.view.flattenNodes().length;
 
-      const cont = await fix.session.view.sendEvent([{ type: 'tool-resolution', toolCallId: 'tc-1' }], {
+      const cont = await fix.session.view.sendEvent([{ type: 'user-message', text: 'more' }], {
         runId: initial.runId,
       });
-
-      // The reducer treats tool-resolution wire messages as user-messages
-      // that get redirected by toolCallId. No standalone tree node lands
-      // for the continuation publish itself (consumedMsgIds path).
-      const afterNodes = fix.session.view.flattenNodes().length;
-      expect(afterNodes).toBe(beforeNodes);
 
       await fix.fetch.waitForCalls(2);
       const body = fix.fetch.body(1);
       // Every client-published event in an invocation carries a promptId
       // — the agent waits for all of them on the channel before starting
-      // LLM work. Tool resolutions use the same mechanism as user-messages.
+      // LLM work.
       expect(Array.isArray(body.promptIds)).toBe(true);
       expect((body.promptIds as string[]).length).toBe(1);
       expect(body.runId).toBe(cont.runId);
@@ -875,10 +850,10 @@ describe('ClientSession', () => {
       const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
       const before = fix.codec.lastEncoder()?.publishCalls.length ?? 0;
 
-      await fix.session.view.sendEvent([{ type: 'tool-resolution', toolCallId: 'tc-1' }], { runId: initial.runId });
+      await fix.session.view.sendEvent([{ type: 'user-message', text: 'more' }], { runId: initial.runId });
 
       const enc = fix.codec.lastEncoder();
-      const contPublish = enc?.publishCalls.slice(before).find((c) => c.event.type === 'tool-resolution');
+      const contPublish = enc?.publishCalls.slice(before).find((c) => c.event.type === 'user-message');
       const stampedId = contPublish?.opts?.extras?.headers?.['x-ably-prompt-id'];
       expect(stampedId).toBeDefined();
 
@@ -893,7 +868,7 @@ describe('ClientSession', () => {
       const freshHeaders = enc?.publishCalls.at(-1)?.opts?.extras?.headers;
       expect(freshHeaders?.['x-ably-run-continue']).toBeUndefined();
 
-      await fix.session.view.sendEvent([{ type: 'tool-resolution', toolCallId: 'tc-1' }], { runId: fresh.runId });
+      await fix.session.view.sendEvent([{ type: 'user-message', text: 'more' }], { runId: fresh.runId });
       const contHeaders = enc?.publishCalls.at(-1)?.opts?.extras?.headers;
       expect(contHeaders?.['x-ably-run-continue']).toBe('true');
     });
@@ -1456,7 +1431,7 @@ describe('ClientSession', () => {
       // gating must prefer the router for own runs so the continuation's
       // run-end is accepted and the run cleans up.
       const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
-      const continuation = await fix.session.view.sendEvent([{ type: 'tool-resolution', toolCallId: 'tc-1' }], {
+      const continuation = await fix.session.view.sendEvent([{ type: 'user-message', text: 'more' }], {
         runId: initial.runId,
       });
       expect(continuation.invocationId).not.toBe(initial.invocationId);

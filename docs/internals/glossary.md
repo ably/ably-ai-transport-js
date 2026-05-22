@@ -127,8 +127,12 @@ A codec-provided component that assembles [decoder outputs](decoder.md#decoder-o
 
 ### Message materialization
 
-The act of producing a flat message list from the [conversation tree](conversation-tree.md) via [`flattenNodes()`](#flatten). `flattenNodes()` returns `MessageNode<TMessage>[]`. The View caches the result and returns it in O(1) on subsequent calls. The cache is refreshed when the tree structure changes (new nodes, deletions, selection changes, history reveal). All consumers go through the view's `flattenNodes()`: React hooks, `send()` (for the HTTP POST body), `view.loadOlder()` (for pagination snapshots). See [Message lifecycle](message-lifecycle.md#cached-message-list).
+The act of producing a flat message list from the [conversation tree](conversation-tree.md). `view.flattenNodes()` returns the visible Run chain as `RunNode[]`; `view.getMessages()` walks each visible Run's `codec.getMessages(projection)` and concatenates them into the flat `TMessage[]` the UI renders. Both are cached in the View and refresh when the tree's structure changes (new Runs, deletions, selection changes, history reveal). All consumers go through the View: React hooks, `sendMessage()` (for the HTTP POST body), `view.loadOlder()` (for pagination snapshots). See [Message lifecycle](message-lifecycle.md#cached-message-list).
 
 ### Flatten
 
-`view.flattenNodes()` - the sole path from tree state to a message array. Returns the View's cached node list in O(1). The cache is rebuilt by an internal `_computeFlatNodes()` method that walks the sorted node list, checks parent reachability and sibling selection, and produces the linear message sequence for the currently selected conversation path. (`flattenNodes()` on `TreeInternal` does the actual tree walk; the View's public method returns cached results.) See [Conversation tree: flatten](conversation-tree.md#flatten-producing-the-linear-path).
+`view.flattenNodes()` returns the View's cached Run chain in O(1) — `RunNode<TProjection>[]`. The cache is rebuilt by an internal `_computeFlatNodes()` method that walks the Tree's `_sortedRuns`, checks parent reachability and sibling selection, and produces the visible Run sequence for the currently selected branches. The View's `getMessages()` consumes the cached chain and concatenates each Run's `codec.getMessages(projection)` to produce the flat `TMessage[]`. (`flattenNodes(selections)` on `TreeInternal` does the actual tree walk; the View's public method returns cached results.) See [Conversation tree: flatten](conversation-tree.md#flatten-producing-the-visible-run-chain).
+
+### TProjection
+
+The opaque per-Run codec state that the Tree folds events into. Each `RunNode` owns one `TProjection`, initialised via `codec.init()` and updated via `codec.fold(state, event, meta)`. The View extracts the per-message list from a projection via `codec.getMessages(projection)`. The SDK never inspects projection internals — it's the codec's contract surface.

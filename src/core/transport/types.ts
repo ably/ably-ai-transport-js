@@ -248,12 +248,15 @@ export interface RunRuntime<TEvent> {
 
 /**
  * Read-only view exposed on a {@link Run} of the conversation messages
- * this run was created with. Mirrors the spec example
- * `run.view.messages.map(n => n.message)`. A thin facade for now — the
- * eventual full conversation view is forthcoming.
+ * this run was created with.
+ *
+ * TODO(AIT-771): when the agent rebuilds full conversation history from
+ * the channel, this should expose `RunNode[]`-shaped data to match the
+ * client side. Today it carries the flat input messages handed to the
+ * invocation.
  */
 export interface RunView<TMessage> {
-  /** Messages along the selected branch as the agent should see them. */
+  /** Invocation input messages handed to this run; no branch awareness today. */
   readonly messages: MessageNode<TMessage>[];
 }
 
@@ -466,10 +469,28 @@ export type RunLifecycleEvent =
       type: 'ai-run-start';
       runId: string;
       clientId: string;
+      /**
+       * The invocation-id this run-start was published under (wire
+       * `x-ably-invocation-id`). The Tree records it on the RunNode on
+       * first creation so the optimistic Run exposes the invocation
+       * synchronously, without waiting for a serial-bearing echo.
+       */
+      invocationId: string;
       /** The codec-message-id of the parent message, if known. Omitted for root runs. */
       parent?: string;
-      /** The codec-message-id being forked/replaced, if this is a regeneration or edit. */
+      /**
+       * The codec-message-id of the user prompt being forked, when the run is an
+       * edit. Carried verbatim from the `x-ably-fork-of` wire header.
+       */
       forkOf?: string;
+      /**
+       * The codec-message-id of the assistant message this run regenerates, when
+       * the run is a regenerate continuation. Carried verbatim from the
+       * `x-ably-msg-regenerate` wire header. The Tree treats regenerates
+       * as continuations (no `forkOf` at the Run level) — the View
+       * realises the replacement when materialising messages.
+       */
+      regenerates?: string;
       /**
        * True when the agent published this `run-start` as a continuation
        * of an already-started run (e.g. a tool-result follow-up invocation
@@ -577,41 +598,139 @@ export interface MessageNode<TMessage> {
 export type TreeNode<TMessage> = MessageNode<TMessage>;
 
 /**
- * Materializes a branching conversation tree from a flat oplog.
+ * A node in the conversation tree, representing a single Run.
  *
- * Owns the complete conversation state — every node from live messages and
- * history. `flattenNodes()` returns the linear message list for the currently
- * selected branches. Events fire for any change across the full tree.
+ * The Tree is keyed by `runId`. Each RunNode owns a per-Run codec
+ * {@link TProjection} folded from every event published under that run-id;
+ * the SDK extracts the per-message list via {@link Codec.getMessages} when it
+ * needs to render messages for that Run.
+ *
+ * Sibling structure (edits / regenerates) is derived from `forkOf`:
+ * a regenerate or edit publishes a new Run whose `forkOf` points at the
+ * (runId, codecMessageId) being forked.
  */
-export interface Tree<TMessage> {
+export interface RunNode<TProjection> {
+  /** The x-ably-run-id of this Run — primary key in the tree. */
+  runId: string;
   /**
-   * Get all messages that are siblings (alternatives) at a given
-   * fork point. Returns an array ordered chronologically by serial.
-   * The message identified by codecMessageId is always included.
+   * The runId of the immediately preceding Run on this conversation chain,
+   * or undefined for the root Run. Resolved by the Tree from the first
+   * observed message's `x-ably-parent` header via the codecMessageId -> runId index.
+   * May be `undefined` transiently if the parent's first message hasn't
+   * been observed yet.
    */
-  getSiblings(codecMessageId: string): TMessage[];
+  parentRunId: string | undefined;
+  /**
+   * The runId of the Run this Run replaces, or `undefined` if this Run is
+   * not a fork. Populated when the wire's `x-ably-fork-of` header points at
+   * a codec-message-id that has been observed; the Tree resolves it to a runId via
+   * the codecMessageId -> runId index.
+   */
+  forkOf: string | undefined;
+  /**
+   * The codec-message-id this Run regenerates, or `undefined` for non-regenerate
+   * Runs. Populated from the wire's `x-ably-msg-regenerate` header (and
+   * the lifecycle event's `regenerates` field) verbatim — the Tree does
+   * not resolve it to a runId because the anchor is a message position,
+   * not a Run.
+   *
+   * Regenerate Runs are conversation-history continuations: their
+   * `parentRunId` points at the prior Run in the chain, and the message
+   * named by `regeneratesCodecMessageId` is replaced by this Run's content when
+   * the View materialises the chain into messages (Spec: AIT-CT13d).
+   */
+  regeneratesCodecMessageId: string | undefined;
+  /**
+   * Identity of the Ably client that started this Run, sourced from the
+   * `x-ably-run-client-id` wire header (or the run-start lifecycle event's
+   * `clientId` field). Set once at Run creation and never updated; persists
+   * through the Run's lifecycle, including after `run-end`. Empty string if
+   * the wire didn't carry a client id.
+   */
+  clientId: string;
+  /**
+   * Run lifecycle status.
+   * - `'active'` — run-start observed, no run-end yet.
+   * - {@link RunEndReason} — terminal state reflecting the run-end reason.
+   */
+  status: 'active' | RunEndReason;
+  /** Per-Run codec projection. Folded by the Tree from every event published under this run-id. */
+  projection: TProjection;
+  /**
+   * The first invocationId observed for this Run (wire `x-ably-invocation-id`).
+   * Set at Run creation from the optimistic insert's or first wire's headers,
+   * and never reassigned: a dual-invocation race promotes a higher-serial
+   * winner via the Tree's `_winningInvocations` map but does not rewrite this
+   * field, so consumers can still read the first-observed invocation
+   * synchronously without waiting for a serial-bearing echo.
+   * Empty string if the wire didn't carry an invocation-id.
+   */
+  invocationId: string;
+  /** Ably serial of the first observed message tagged with this run-id. Absent for optimistic Runs. */
+  startSerial: string | undefined;
+  /** Ably serial of the run-end lifecycle event, if observed. */
+  endSerial: string | undefined;
+}
 
-  /** Whether a message has sibling alternatives (i.e., show navigation arrows). */
-  hasSiblings(codecMessageId: string): boolean;
-
-  /** Get a node by codecMessageId, or undefined if not found. */
-  getNode(codecMessageId: string): MessageNode<TMessage> | undefined;
-
-  /** Get the stored headers for a node by codecMessageId, or undefined if not found. */
-  getHeaders(codecMessageId: string): Record<string, string> | undefined;
-
-  // --- Mutation (used by the session, not the UI) ---
+/**
+ * Materializes a branching conversation tree from a flat oplog of Ably
+ * messages, keyed by `x-ably-run-id`.
+ *
+ * The Tree owns the complete conversation state across every observed Run.
+ * Each RunNode holds a per-Run codec {@link TProjection} which the Tree folds
+ * from inbound events. The View walks the parent chain to extract a flat
+ * message list for rendering.
+ */
+export interface Tree<TProjection> {
+  /** Get a Run by runId, or undefined if not found. */
+  getRunNode(runId: string): RunNode<TProjection> | undefined;
 
   /**
-   * Insert or update a message in the tree. Reads parent/forkOf from the
-   * provided headers. If the message already exists (by codecMessageId), updates
-   * it in place. The optional serial is the Ably message serial used for
-   * deterministic sibling ordering.
+   * Get the Run that owns a given codec-message-id (via the Tree's
+   * codecMessageId -> runId index), or undefined if the codec-message-id
+   * hasn't been observed.
    */
-  upsert(codecMessageId: string, message: TMessage, headers: Record<string, string>, serial?: string): void;
+  getRunByCodecMessageId(codecMessageId: string): RunNode<TProjection> | undefined;
 
-  /** Remove a message from the tree. */
-  delete(codecMessageId: string): void;
+  /**
+   * Get all Runs that are siblings (alternatives) at a given fork point.
+   * Returns an array ordered chronologically by startSerial; the Run
+   * identified by `runId` is always included.
+   *
+   * Two kinds of sibling groups surface through this API:
+   * - **Edit forks** — Runs sharing a `parentRunId` and chained via
+   *   `forkOf` (the original Run + its edits).
+   * - **Regenerate groups** — the Run that owns a regenerated codec-message-id +
+   *   every Run whose `regeneratesCodecMessageId` points at that codec-message-id.
+   *
+   * A Run is in at most one group; if neither applies the returned array
+   * is `[runId]`.
+   */
+  getSiblingRuns(runId: string): RunNode<TProjection>[];
+
+  /** Whether a Run has sibling alternatives (i.e., show navigation arrows). */
+  hasSiblingRuns(runId: string): boolean;
+
+  /**
+   * Resolve the regenerate sibling group containing `runId`, if any.
+   *
+   * The group is anchored at a codec-message-id — the one being regenerated —
+   * and its members are the Run that owns that codec-message-id plus every
+   * Run whose `regeneratesCodecMessageId` points at it. Returns `undefined`
+   * when `runId` neither regenerates a known codec-message-id nor owns a
+   * codec-message-id that has been regenerated.
+   * @param runId - The runId to look up.
+   * @returns Anchor codec-message-id and members ordered chronologically by
+   *   startSerial (owner first), or `undefined` if there is no group.
+   */
+  getRegenerateGroup(runId: string):
+    | {
+        /** The codec-message-id this group regenerates. */
+        anchorCodecMessageId: string;
+        /** Ordered group members (owner first, then regenerators by serial). */
+        runs: RunNode<TProjection>[];
+      }
+    | undefined;
 
   // --- Events ---
 
@@ -622,8 +741,9 @@ export interface Tree<TMessage> {
    * Get the winning invocation-id for a run-id, if known.
    *
    * Within a run-id, the invocation whose user-message has the highest Ably
-   * channel serial is canonical. Earlier invocations are losers and their
-   * downstream events should be filtered. Optimistic (null-serial) inserts
+   * channel serial is canonical. Continuation wires (`x-ably-run-continue`)
+   * do not update the winner. Earlier invocations are losers and their
+   * events are filtered at fold time. Optimistic (null-serial) inserts
    * never win — the entry only updates once a relayed user-message with a
    * real serial arrives.
    * @param runId - The run-id to query.
@@ -632,7 +752,7 @@ export interface Tree<TMessage> {
    */
   getWinningInvocation(runId: string): { invocationId: string; serial: string } | undefined;
 
-  /** Subscribe to tree structure changes (insert, update, delete). */
+  /** Subscribe to tree structural changes (Run insert, delete, sort-reorder). */
   on(event: 'update', handler: () => void): () => void;
 
   /** Subscribe to raw Ably messages arriving on the channel. */
@@ -640,6 +760,14 @@ export interface Tree<TMessage> {
 
   /** Subscribe to run lifecycle events (start and end). */
   on(event: 'run', handler: (event: RunLifecycleEvent) => void): () => void;
+
+  /**
+   * Subscribe to per-Run projection updates. Fires after every successful
+   * `codec.fold` on an existing Run's projection. Does NOT fire on
+   * structural changes (Run insert/delete); use 'update' for those.
+   * Used by the View to detect streaming deltas without a full tree walk.
+   */
+  on(event: 'run-projection-updated', handler: (event: { runId: string }) => void): () => void;
 
   /**
    * Subscribe to changes in the per-run winning invocation map. Fires when a
@@ -664,13 +792,17 @@ export interface Tree<TMessage> {
  * `loadOlder()`. Events are scoped to the visible window — subscribers
  * are only notified when the visible output changes.
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- TEvent and TProjection are part of the codec generic triple kept symmetric with ClientSession; the View surface itself is message-shape-only
 export interface View<TEvent, TProjection, TMessage> {
-  /** The visible domain messages along the selected branch. Shorthand for `flattenNodes().map(n => n.message)`. */
+  /**
+   * The visible domain messages along the selected branch. Computed by
+   * walking the visible {@link RunNode} chain (newest to root) and
+   * concatenating each Run's `codec.getMessages(projection)` in chronological
+   * order.
+   */
   getMessages(): TMessage[];
 
-  /** Visible nodes along the selected branch, filtered by the pagination window. */
-  flattenNodes(): MessageNode<TMessage>[];
+  /** Visible Runs along the selected branch, filtered by the pagination window. */
+  flattenNodes(): RunNode<TProjection>[];
 
   /** Whether there are older messages that can be loaded or revealed. */
   hasOlder(): boolean;
@@ -686,26 +818,82 @@ export interface View<TEvent, TProjection, TMessage> {
   // --- Branch navigation ---
 
   /**
-   * Select a sibling at a fork point by index. Updates this view's
+   * Select a sibling Run at a fork point by index. Updates this view's
    * branch selection. Index is clamped to `[0, siblings.length - 1]`.
    * Emits 'update' when the visible output changes.
+   * @param runId - Any runId in the sibling group. The View resolves the
+   *   group root internally.
    */
-  select(codecMessageId: string, index: number): void;
+  select(runId: string, index: number): void;
 
-  /** Get the index of the currently selected sibling at a fork point. */
-  getSelectedIndex(codecMessageId: string): number;
+  /** Get the index of the currently selected sibling Run at a fork point. */
+  getSelectedIndex(runId: string): number;
 
   /**
-   * Get all messages that are siblings (alternatives) at a given
-   * fork point. Returns an array ordered chronologically by serial.
+   * Get all Runs that are siblings (alternatives) at a given fork point.
+   * Returns an array ordered chronologically by startSerial.
    */
-  getSiblings(codecMessageId: string): TMessage[];
+  getSiblingRuns(runId: string): RunNode<TProjection>[];
 
-  /** Whether a message has sibling alternatives (i.e., show navigation arrows). */
-  hasSiblings(codecMessageId: string): boolean;
+  /** Whether a Run has sibling alternatives (i.e., show navigation arrows). */
+  hasSiblingRuns(runId: string): boolean;
 
-  /** Get a node by codecMessageId, or undefined if not found. */
-  getNode(codecMessageId: string): MessageNode<TMessage> | undefined;
+  /**
+   * Whether the message at `codecMessageId` is a branch-point anchor — i.e.
+   * the UI should render navigation arrows next to this specific bubble.
+   *
+   * Per AITRFC-014, branch points are message-anchored: edit forks point at
+   * the user prompt's codec-message-id, regenerate forks point at the
+   * assistant message's codec-message-id. This is finer-grained than the
+   * Run-keyed `hasSiblingRuns(runId)`: a Run that owns multiple messages
+   * will be "in a sibling group" via its runId, but only the message that
+   * corresponds to the branch anchor (the user prompt for edits, the
+   * assistant slot for regens) is the actual nav target.
+   *
+   * Use this for UI rendering decisions; use `hasSiblingRuns(runId)` for
+   * Run-level introspection.
+   * @param codecMessageId - The codec-message-id of the bubble being rendered.
+   * @returns True iff `codecMessageId` is the branch anchor of a sibling group.
+   */
+  hasMessageSiblings(codecMessageId: string): boolean;
+
+  /**
+   * Get the sibling Runs forming the branch point anchored at `codecMessageId`.
+   * Returns the same Runs as {@link getSiblingRuns} would for the owning
+   * Run's group, but only when `codecMessageId` is the actual branch anchor;
+   * for non-anchor codec-message-ids the array is empty even if the owning
+   * Run has siblings.
+   * @param codecMessageId - The codec-message-id of the bubble being rendered.
+   * @returns Ordered sibling Runs, or `[]` if `codecMessageId` is not a branch anchor.
+   */
+  getMessageSiblings(codecMessageId: string): RunNode<TProjection>[];
+
+  /**
+   * Index of the currently selected sibling Run for the branch point
+   * anchored at `codecMessageId`. Returns `0` if `codecMessageId` is not a
+   * branch anchor.
+   * @param codecMessageId - The codec-message-id of the bubble being rendered.
+   */
+  getSelectedMessageSiblingIndex(codecMessageId: string): number;
+
+  /**
+   * Select a sibling Run at the branch point anchored at `codecMessageId`.
+   * Updates this view's branch selection and emits `update`. No-op when
+   * `codecMessageId` is not a branch anchor or `index` is out of range.
+   * @param codecMessageId - The codec-message-id of the bubble being rendered.
+   * @param index - The index of the sibling to select.
+   */
+  selectMessageSibling(codecMessageId: string, index: number): void;
+
+  /** Get a Run by runId, or undefined if not found. */
+  getRunNode(runId: string): RunNode<TProjection> | undefined;
+
+  /**
+   * Get the Run that owns a given codec-message-id, or undefined if the
+   * codec-message-id hasn't been observed. Useful when the UI holds a
+   * codec-message-id (e.g. from a previous render) and needs the owning Run.
+   */
+  getRunByCodecMessageId(codecMessageId: string): RunNode<TProjection> | undefined;
 
   // --- Write operations ---
 
@@ -802,8 +990,8 @@ export interface RunEntry<TEvent> {
 
 /** Client-side session that manages conversation state over an Ably channel. */
 export interface ClientSession<TEvent, TProjection, TMessage> {
-  /** The complete conversation tree — all known nodes, events for any change. */
-  readonly tree: Tree<TMessage>;
+  /** The complete conversation tree — all known Run nodes, events for any change. */
+  readonly tree: Tree<TProjection>;
 
   /** The default paginated, branch-aware view for rendering — events scoped to visible messages. */
   readonly view: View<TEvent, TProjection, TMessage>;

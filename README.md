@@ -349,7 +349,7 @@ Load previous conversation state when a client joins or returns to a session.
 ```typescript
 const view = session.view;
 await view.loadOlder(50);
-// view.flattenNodes() returns the messages loaded so far
+// view.getMessages() returns the flat message list loaded so far
 
 // Load more older messages
 await view.loadOlder(50);
@@ -359,7 +359,7 @@ await view.loadOlder(50);
 
 ```typescript
 session.view.on('update', () => {
-  console.log(session.view.flattenNodes().map((n) => n.message));
+  console.log(session.view.getMessages());
 });
 
 session.tree.on('run', (event) => {

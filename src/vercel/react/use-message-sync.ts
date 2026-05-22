@@ -81,7 +81,7 @@ export const useMessageSync = ({ setMessages, channelName, skip }: UseMessageSyn
     if (!view || gated) return;
 
     const sync = (): void => {
-      setMessages(() => view.flattenNodes().map((n) => n.message));
+      setMessages(() => view.getMessages());
     };
 
     // Sync immediately when the effect runs (covers gate-open and initial mount).

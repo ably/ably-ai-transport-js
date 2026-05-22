@@ -38,7 +38,7 @@ export interface UserMessageEvent {
  * `tool-approval-request` natively but no symmetric response variant, so
  * this is a codec-local TEvent. On the wire the response is published as
  * a free-standing `role: 'user'` Ably message with its own `x-ably-codec-message-id`
- * — there is no `targetCodecMessageId` because the reducer redirects the fold by
+ * — there is no `targetMsgId` because the reducer redirects the fold by
  * matching `toolCallId` against the assistant's `dynamic-tool` part.
  */
 export interface ToolApprovalResponseEvent {
@@ -54,19 +54,23 @@ export interface ToolApprovalResponseEvent {
 
 /**
  * Wire-only event that starts a regenerate run. Published by the client
- * via `View.regenerate(messageId)` to signal the agent: open a new run
- * forked off the named assistant (`forkOfCodecMessageId`) and thread the new
- * assistant under the existing parent user (`parentCodecMessageId`). Carries no
- * UIMessage content — the agent feeds the LLM from the invocation
- * `history`. Classified as `kind: 'regenerate'` by `classifyEvent` so the
- * client-session publishes it without creating a tree node or folding
- * the projection.
+ * via `View.regenerate(messageId)` to signal the agent: open a new
+ * continuation Run whose assistant message replaces the named one
+ * (`regeneratesCodecMessageId`) and threads under the existing parent user
+ * (`parentCodecMessageId`). Carries no UIMessage content — the agent feeds the
+ * LLM from the invocation `history`. Classified as `kind: 'regenerate'`
+ * by `classifyEvent` so the client-session publishes it without creating
+ * a tree node or folding the projection.
+ *
+ * Regenerate is NOT a Run-level fork: the new Run is a continuation
+ * (parentRunId points at the prior Run's id) and the View handles the
+ * message-level replacement at projection extraction time.
  */
 export interface RegenerateEvent {
   /** Discriminator. */
   type: 'ait-regenerate';
-  /** The assistant being regenerated — becomes `x-ably-fork-of`. */
-  forkOfCodecMessageId: string;
+  /** The assistant being regenerated — becomes `x-ably-msg-regenerate`. */
+  regeneratesCodecMessageId: string;
   /** Parent user codec-message-id for the new assistant chain — becomes `x-ably-parent`. */
   parentCodecMessageId: string;
 }

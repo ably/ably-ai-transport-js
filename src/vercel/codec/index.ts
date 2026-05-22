@@ -34,9 +34,9 @@ export const UIMessageCodec: Codec<VercelEvent, VercelProjection, AI.UIMessage> 
   createDecoder,
   getMessages,
   userMessageEvent: (message: AI.UIMessage): VercelEvent => ({ type: 'ait-user-message', message }),
-  createRegenerateEvent: (forkOfCodecMessageId: string, parentCodecMessageId: string): VercelEvent => ({
+  createRegenerateEvent: (regeneratesCodecMessageId: string, parentCodecMessageId: string): VercelEvent => ({
     type: 'ait-regenerate',
-    forkOfCodecMessageId,
+    regeneratesCodecMessageId,
     parentCodecMessageId,
   }),
   classifyEvent: (event: VercelEvent): EventClassification => {
@@ -44,7 +44,7 @@ export const UIMessageCodec: Codec<VercelEvent, VercelProjection, AI.UIMessage> 
     // output / approval response) all classify as `user-message` — they
     // share the wire path (own codecMessageId, own eventId, role=user). The
     // reducer inline-detects tool resolutions and folds them onto the
-    // prior assistant via `consumedCodecMessageIds`; the session is uniform.
+    // prior assistant via `consumedMsgIds`; the session is uniform.
     if (
       event.type === 'ait-user-message' ||
       event.type === 'tool-output-available' ||
@@ -54,7 +54,7 @@ export const UIMessageCodec: Codec<VercelEvent, VercelProjection, AI.UIMessage> 
       return { kind: 'user-message' };
     }
     if (event.type === 'ait-regenerate') {
-      return { kind: 'regenerate', parent: event.parentCodecMessageId, forkOf: event.forkOfCodecMessageId };
+      return { kind: 'regenerate', parent: event.parentCodecMessageId, regenerates: event.regeneratesCodecMessageId };
     }
     return { kind: 'other' };
   },

@@ -14,6 +14,7 @@ export type {
   Run,
   RunEndReason,
   RunLifecycleEvent,
+  RunNode,
   RunRuntime,
   RunView,
   SendOptions,

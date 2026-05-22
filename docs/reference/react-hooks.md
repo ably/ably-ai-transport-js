@@ -119,23 +119,24 @@ const view = useView<TEvent, TMessage>({ session?, view?, limit?, skip? } = {});
 
 **Returns:** `ViewHandle<TEvent, TMessage>`
 
-| Property/Method                          | Type                                                                                                            | Description                                                                                                                      |
-| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `nodes`                                  | `MessageNode<TMessage>[]`                                                                                       | Flattened nodes for the current branch. Updates on every message change (including streaming deltas)                             |
-| `messages`                               | `TMessage[]`                                                                                                    | The visible domain messages (shorthand for `nodes.map(n => n.message)`)                                                          |
-| `hasOlder`                               | `boolean`                                                                                                       | Are there older pages? False until history has been loaded                                                                       |
-| `loading`                                | `boolean`                                                                                                       | Is a page being fetched?                                                                                                         |
-| `loadError`                              | `Ably.ErrorInfo \| undefined`                                                                                   | Set when the most recent `loadOlder` call failed. Cleared automatically on the next successful load                              |
-| `loadOlder()`                            | `() => Promise<void>`                                                                                           | Load more older messages. No-op if already loading                                                                               |
-| `select(codecMessageId, index)`          | `(codecMessageId: string, index: number) => void`                                                               | Switch to a sibling branch. Triggers re-render                                                                                   |
-| `getSelectedIndex(codecMessageId)`       | `(codecMessageId: string) => number`                                                                            | Index of the currently selected sibling                                                                                          |
-| `getSiblings(codecMessageId)`            | `(codecMessageId: string) => TMessage[]`                                                                        | All alternatives at a fork point                                                                                                 |
-| `hasSiblings(codecMessageId)`            | `(codecMessageId: string) => boolean`                                                                           | Whether to show navigation arrows                                                                                                |
-| `getNode(codecMessageId)`                | `(codecMessageId: string) => MessageNode<TMessage> \| undefined`                                                | Look up a node by codec-message-id                                                                                               |
-| `send(messages, options?)`               | `(messages: TMessage \| TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>`                       | Send messages in this view's branch context                                                                                      |
-| `regenerate(messageId, options?)`        | `(messageId: string, options?: SendOptions) => Promise<ActiveRun<TEvent>>`                                      | Fork an assistant message with no new user input                                                                                 |
-| `edit(messageId, newMessages, options?)` | `(messageId: string, newMessages: TMessage \| TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>` | Fork a user message with replacement content                                                                                     |
-| `update(messageId, events, options?)`    | `(messageId: string, events: TEvent[], options?: SendOptions) => Promise<ActiveRun<TEvent>>`                    | Update an existing message and start a continuation run (e.g. [tool results](../features/tool-calling.md#client-executed-tools)) |
+| Property/Method                          | Type                                                                                                              | Description                                                                                            |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `nodes`                                  | `RunNode<TProjection>[]`                                                                                          | Flattened Run nodes for the current branch (one Run per turn). Updates on Run-level structural changes |
+| `messages`                               | `TMessage[]`                                                                                                      | The visible domain messages, concatenated across all visible Runs via the codec                        |
+| `hasOlder`                               | `boolean`                                                                                                         | Are there older pages? False until history has been loaded                                             |
+| `loading`                                | `boolean`                                                                                                         | Is a page being fetched?                                                                               |
+| `loadError`                              | `Ably.ErrorInfo \| undefined`                                                                                     | Set when the most recent `loadOlder` call failed. Cleared automatically on the next successful load    |
+| `loadOlder()`                            | `() => Promise<void>`                                                                                             | Load more older Runs. No-op if already loading                                                         |
+| `select(runId, index)`                   | `(runId: string, index: number) => void`                                                                          | Switch to a sibling Run at a fork point. Triggers re-render                                            |
+| `getSelectedIndex(runId)`                | `(runId: string) => number`                                                                                       | Index of the currently selected sibling Run                                                            |
+| `getSiblingRuns(runId)`                  | `(runId: string) => RunNode<TProjection>[]`                                                                       | All alternative Runs at a fork point                                                                   |
+| `hasSiblingRuns(runId)`                  | `(runId: string) => boolean`                                                                                      | Whether to show navigation arrows                                                                      |
+| `getRunNode(runId)`                      | `(runId: string) => RunNode<TProjection> \| undefined`                                                            | Look up a Run by runId                                                                                 |
+| `getRunByMsgId(msgId)`                   | `(msgId: string) => RunNode<TProjection> \| undefined`                                                            | Resolve the Run that owns a given msg-id (useful when the UI holds a message id)                       |
+| `sendMessage(messages, options?)`        | `(messages: TMessage \| TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>`                         | Send user messages in this view's branch context                                                       |
+| `sendEvent(events, options?)`            | `(events: TEvent \| TEvent[] \| {event,domainMessageId?}[], options?: SendOptions) => Promise<ActiveRun<TEvent>>` | Send raw codec events (used for tool resolutions, regenerate events)                                   |
+| `regenerate(messageId, options?)`        | `(messageId: string, options?: SendOptions) => Promise<ActiveRun<TEvent>>`                                        | Fork an assistant message with no new user input                                                       |
+| `edit(messageId, newMessages, options?)` | `(messageId: string, newMessages: TMessage \| TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>`   | Fork a user message with replacement content                                                           |
 
 Each view has independent branch selections and pagination state. When you pass a session, the hook uses its default view. For [split-pane UIs](../features/branching.md#multiple-views) where each pane needs its own branch and message history, use [`useCreateView()`](#usecreateview) to create independent views with the same API.
 
@@ -205,15 +206,16 @@ const tree = useTree<TEvent, TMessage>({ session? } = {});
 | --------- | ---------------- | ----------------------------------------------------------------- |
 | `session` | `ClientSession?` | The session whose tree to query; defaults to the nearest provider |
 
-**Returns:** `TreeHandle<TMessage>`
+**Returns:** `TreeHandle<TProjection>`
 
-| Property/Method               | Type                                                             | Description                        |
-| ----------------------------- | ---------------------------------------------------------------- | ---------------------------------- |
-| `getSiblings(codecMessageId)` | `(codecMessageId: string) => TMessage[]`                         | All alternatives at a fork point   |
-| `hasSiblings(codecMessageId)` | `(codecMessageId: string) => boolean`                            | Whether to show navigation arrows  |
-| `getNode(codecMessageId)`     | `(codecMessageId: string) => MessageNode<TMessage> \| undefined` | Look up a node by codec-message-id |
+| Property/Method         | Type                                                   | Description                              |
+| ----------------------- | ------------------------------------------------------ | ---------------------------------------- |
+| `getRunNode(runId)`     | `(runId: string) => RunNode<TProjection> \| undefined` | Look up a Run by runId                   |
+| `getRunByMsgId(msgId)`  | `(msgId: string) => RunNode<TProjection> \| undefined` | Resolve the Run that owns a given msg-id |
+| `getSiblingRuns(runId)` | `(runId: string) => RunNode<TProjection>[]`            | All alternative Runs at a fork point     |
+| `hasSiblingRuns(runId)` | `(runId: string) => boolean`                           | Whether to show navigation arrows        |
 
-Branch navigation (`select()`, `getSelectedIndex()`) and write operations (`send()`, `regenerate()`, `edit()`) are on `ViewHandle` from `useView()`, not `TreeHandle`. The tree provides structural queries that are the same regardless of which branch is selected.
+Branch navigation (`select()`, `getSelectedIndex()`) and write operations (`sendMessage()`, `regenerate()`, `edit()`) are on `ViewHandle` from `useView()`, not `TreeHandle`. The tree provides structural queries that are the same regardless of which branch is selected.
 
 ---
 

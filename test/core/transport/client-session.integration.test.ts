@@ -183,6 +183,146 @@ const publishUserMessage = async (
   await encoder.publish(event);
 };
 
+/**
+ * Publish a complete Run (user message + assistant text + lifecycle) on
+ * the channel, ordering the user message before run-start so the Tree
+ * sees fork/parent metadata from the user wire on Run creation. Used by
+ * integration tests to seed history without standing up a client to
+ * drive the live send flow.
+ * @param channel - The channel to publish on.
+ * @param opts - Run identifiers, content, and branching metadata.
+ * @param opts.runId - Run identifier.
+ * @param opts.invocationId - Invocation identifier for the publish.
+ * @param opts.clientId - Client identifier stamped on the wire.
+ * @param opts.userMsgId - Codec-message-id of the user message.
+ * @param opts.userText - User message text.
+ * @param opts.userParentMsgId - Optional parent codec-message-id for the user message.
+ * @param opts.userForkOfMsgId - Optional fork-of codec-message-id for the user message.
+ * @param opts.asstMsgId - Codec-message-id of the assistant message.
+ * @param opts.asstText - Assistant message text.
+ */
+const publishCompleteRun = async (
+  channel: Ably.RealtimeChannel,
+  opts: {
+    runId: string;
+    invocationId: string;
+    clientId: string;
+    userMsgId: string;
+    userText: string;
+    userParentMsgId?: string;
+    userForkOfMsgId?: string;
+    asstMsgId: string;
+    asstText: string;
+  },
+): Promise<void> => {
+  const userHeaders = buildTransportHeaders({
+    role: 'user',
+    runId: opts.runId,
+    codecMessageId: opts.userMsgId,
+    invocationId: opts.invocationId,
+    runClientId: opts.clientId,
+    parent: opts.userParentMsgId,
+    forkOf: opts.userForkOfMsgId,
+  });
+  const userEncoder = UIMessageCodec.createEncoder(channel, {
+    extras: { headers: userHeaders },
+    messageId: opts.userMsgId,
+  });
+  await userEncoder.publish({
+    type: 'ait-user-message',
+    message: { id: opts.userMsgId, role: 'user', parts: [{ type: 'text', text: opts.userText }] },
+  });
+
+  await publishRunStart(channel, opts.runId, opts.invocationId, opts.clientId);
+
+  const asstHeaders = buildTransportHeaders({
+    role: 'assistant',
+    runId: opts.runId,
+    codecMessageId: opts.asstMsgId,
+    invocationId: opts.invocationId,
+    runClientId: opts.clientId,
+    parent: opts.userMsgId,
+  });
+  const asstEncoder = UIMessageCodec.createEncoder(channel, {
+    extras: { headers: asstHeaders },
+    messageId: opts.asstMsgId,
+  });
+  const stream = textResponseStream(opts.asstMsgId, `text-${opts.asstMsgId}`, opts.asstText);
+  const reader = stream.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    await asstEncoder.publish(value);
+  }
+
+  await publishRunEnd(channel, opts.runId, opts.invocationId, opts.clientId, 'complete');
+};
+
+/**
+ * Publish a regenerate Run lifecycle on the channel. Emits a run-start
+ * lifecycle carrying `x-ably-msg-regenerate` and `x-ably-parent`, streams
+ * an assistant text response under the new runId via the codec encoder,
+ * then publishes run-end. Used to seed history for tests that exercise
+ * the View's regenerate-sibling surface without standing up a separate
+ * client to trigger the flow.
+ * @param channel - The channel to publish on.
+ * @param opts - Regenerate Run identifiers and content.
+ * @param opts.runId - Run identifier of the regenerate Run.
+ * @param opts.invocationId - Invocation identifier for the publish.
+ * @param opts.clientId - Client identifier stamped on the wire.
+ * @param opts.parentMsgId - Codec-message-id of the parent user message.
+ * @param opts.regeneratesMsgId - Codec-message-id of the assistant message being regenerated.
+ * @param opts.asstMsgId - Codec-message-id of the new assistant message.
+ * @param opts.asstText - New assistant message text.
+ */
+const publishRegenerateRun = async (
+  channel: Ably.RealtimeChannel,
+  opts: {
+    runId: string;
+    invocationId: string;
+    clientId: string;
+    parentMsgId: string;
+    regeneratesMsgId: string;
+    asstMsgId: string;
+    asstText: string;
+  },
+): Promise<void> => {
+  await channel.publish({
+    name: EVENT_RUN_START,
+    extras: {
+      headers: {
+        [HEADER_RUN_ID]: opts.runId,
+        [HEADER_RUN_CLIENT_ID]: opts.clientId,
+        [HEADER_INVOCATION_ID]: opts.invocationId,
+        'x-ably-parent': opts.parentMsgId,
+        'x-ably-msg-regenerate': opts.regeneratesMsgId,
+      },
+    },
+  });
+
+  const encoderHeaders = buildTransportHeaders({
+    role: 'assistant',
+    runId: opts.runId,
+    codecMessageId: opts.asstMsgId,
+    invocationId: opts.invocationId,
+    runClientId: opts.clientId,
+    parent: opts.parentMsgId,
+  });
+  const encoder = UIMessageCodec.createEncoder(channel, {
+    extras: { headers: encoderHeaders },
+    messageId: opts.asstMsgId,
+  });
+  const stream = textResponseStream(opts.asstMsgId, `text-${opts.asstMsgId}`, opts.asstText);
+  const reader = stream.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    await encoder.publish(value);
+  }
+
+  await publishRunEnd(channel, opts.runId, opts.invocationId, opts.clientId, 'complete');
+};
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -498,6 +638,404 @@ describe('ClientSession integration', () => {
     expect(asstMsg).toBeDefined();
     const textPart = asstMsg?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
     expect(textPart?.text).toBe('History answer');
+  });
+
+  // Spec: AIT-CT11, AIT-773 §7.1 - cross-Run history concatenation.
+  it('loads multi-turn history and concatenates messages across Runs in publish order', async () => {
+    const channelName = uniqueChannelName('ct-multi-turn-history');
+    const serverClient = ablyRealtimeClient();
+
+    agentSession = createAgentSession<VercelEvent, VercelProjection, AI.UIMessage>({
+      client: serverClient,
+      channelName,
+      codec: UIMessageCodec,
+    });
+    await agentSession.connect();
+
+    // Publish three turns. Each turn = one Run with a user prompt and an
+    // assistant reply. Threading is established via parentId on the
+    // MessageNode + the assistant pipe's natural parent default (last
+    // viewMessages msgId).
+    // Captured by closure so the helper doesn't need a parameter for the
+    // already-narrowed agent session reference.
+    const agent = agentSession;
+    const publishTurn = async (turn: number, userParentId?: string): Promise<string> => {
+      const runId = `run-turn-${String(turn)}`;
+      const userMsgId = `u-${String(turn)}`;
+      const run = createRunFromOpts(agent, { runId });
+      await run.start();
+      await run.addMessages([
+        {
+          kind: 'message',
+          message: {
+            id: userMsgId,
+            role: 'user',
+            parts: [{ type: 'text', text: `q${String(turn)}` }],
+          },
+          codecMessageId: userMsgId,
+          parentId: userParentId,
+          forkOf: undefined,
+          headers: {},
+          serial: undefined,
+        },
+      ]);
+      const asstMsgId = `a-${String(turn)}`;
+      await run.pipe(textResponseStream(asstMsgId, `text-turn-${String(turn)}`, `r${String(turn)}`));
+      await run.end('complete');
+      return asstMsgId;
+    };
+
+    const a1 = await publishTurn(1);
+    const a2 = await publishTurn(2, a1);
+    await publishTurn(3, a2);
+
+    const historyClient = ablyRealtimeClient();
+    clientSession = createClientSession<VercelEvent, VercelProjection, AI.UIMessage>({
+      client: historyClient,
+      channelName,
+      codec: UIMessageCodec,
+      clientId: historyClient.auth.clientId,
+      fetch: noopFetch as typeof globalThis.fetch,
+      api: '/test',
+      runStartDeadlineMs: 0,
+    });
+    await clientSession.connect();
+
+    // Run-based pagination: ask for 10 Runs; all three should fit in one page.
+    await clientSession.view.loadOlder(10);
+
+    const nodes = clientSession.view.flattenNodes();
+    expect(nodes.map((n) => n.runId)).toEqual(['run-turn-1', 'run-turn-2', 'run-turn-3']);
+
+    const messages = clientSession.view.getMessages();
+    expect(messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant', 'user', 'assistant']);
+
+    // Per-message text content verifies cross-Run concatenation order.
+    const texts = messages.map((m) => {
+      const textPart = m.parts.find((p): p is AI.TextUIPart => p.type === 'text');
+      return textPart?.text ?? '';
+    });
+    expect(texts).toEqual(['q1', 'r1', 'q2', 'r2', 'q3', 'r3']);
+  });
+
+  it('edit at turn 2: forked Run replaces the original branch, select() restores it', async () => {
+    const channelName = uniqueChannelName('ct-edit-branch');
+    const seedClient = ablyRealtimeClient();
+    const seedChannel = seedClient.channels.get(channelName);
+
+    await publishCompleteRun(seedChannel, {
+      runId: 'run-t1',
+      invocationId: 'inv-t1',
+      clientId: 'seed',
+      userMsgId: 'u1',
+      userText: 'q1',
+      asstMsgId: 'a1',
+      asstText: 'r1',
+    });
+    await publishCompleteRun(seedChannel, {
+      runId: 'run-t2',
+      invocationId: 'inv-t2',
+      clientId: 'seed',
+      userMsgId: 'u2',
+      userText: 'q2',
+      userParentMsgId: 'a1',
+      asstMsgId: 'a2',
+      asstText: 'r2',
+    });
+    // Edit at turn 2: new Run forks the u2 user prompt.
+    await publishCompleteRun(seedChannel, {
+      runId: 'run-t2-edit',
+      invocationId: 'inv-t2-edit',
+      clientId: 'seed',
+      userMsgId: 'u2-edit',
+      userText: 'q2-edited',
+      userParentMsgId: 'a1',
+      userForkOfMsgId: 'u2',
+      asstMsgId: 'a2-edit',
+      asstText: 'r2-edited',
+    });
+
+    const historyClient = ablyRealtimeClient();
+    clientSession = createClientSession<VercelEvent, VercelProjection, AI.UIMessage>({
+      client: historyClient,
+      channelName,
+      codec: UIMessageCodec,
+      clientId: historyClient.auth.clientId,
+      fetch: noopFetch as typeof globalThis.fetch,
+      api: '/test',
+      runStartDeadlineMs: 0,
+    });
+    await clientSession.connect();
+    await clientSession.view.loadOlder(10);
+
+    // Default selection at the fork is the latest sibling — run-t2-edit.
+    const nodesDefault = clientSession.view.flattenNodes();
+    expect(nodesDefault.map((n) => n.runId)).toEqual(['run-t1', 'run-t2-edit']);
+    const messagesDefault = clientSession.view.getMessages();
+    expect(messagesDefault.map((m) => m.id)).toEqual(['u1', 'a1', 'u2-edit', 'a2-edit']);
+
+    // The fork point exposes two siblings.
+    expect(clientSession.view.hasSiblingRuns('run-t2')).toBe(true);
+    const siblings = clientSession.view.getSiblingRuns('run-t2');
+    expect(siblings.map((n) => n.runId).toSorted()).toEqual(['run-t2', 'run-t2-edit'].toSorted());
+
+    // Navigate back to the original branch.
+    const originalIdx = siblings.findIndex((n) => n.runId === 'run-t2');
+    clientSession.view.select('run-t2', originalIdx);
+
+    const nodesOriginal = clientSession.view.flattenNodes();
+    expect(nodesOriginal.map((n) => n.runId)).toEqual(['run-t1', 'run-t2']);
+    const messagesOriginal = clientSession.view.getMessages();
+    expect(messagesOriginal.map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2']);
+  });
+
+  it('regenerate at turn 2: assistant sibling appears, message-anchored nav switches between them', async () => {
+    const channelName = uniqueChannelName('ct-regenerate');
+    const seedClient = ablyRealtimeClient();
+    const seedChannel = seedClient.channels.get(channelName);
+
+    await publishCompleteRun(seedChannel, {
+      runId: 'run-t1',
+      invocationId: 'inv-t1',
+      clientId: 'seed',
+      userMsgId: 'u1',
+      userText: 'q1',
+      asstMsgId: 'a1',
+      asstText: 'r1',
+    });
+    await publishCompleteRun(seedChannel, {
+      runId: 'run-t2',
+      invocationId: 'inv-t2',
+      clientId: 'seed',
+      userMsgId: 'u2',
+      userText: 'q2',
+      userParentMsgId: 'a1',
+      asstMsgId: 'a2',
+      asstText: 'r2-original',
+    });
+
+    await publishRegenerateRun(seedChannel, {
+      runId: 'run-t2-regen',
+      invocationId: 'inv-regen',
+      clientId: 'regen-owner',
+      parentMsgId: 'u2',
+      regeneratesMsgId: 'a2',
+      asstMsgId: 'a2-regen',
+      asstText: 'r2-regen',
+    });
+
+    const historyClient = ablyRealtimeClient();
+    clientSession = createClientSession<VercelEvent, VercelProjection, AI.UIMessage>({
+      client: historyClient,
+      channelName,
+      codec: UIMessageCodec,
+      clientId: historyClient.auth.clientId,
+      fetch: noopFetch as typeof globalThis.fetch,
+      api: '/test',
+      runStartDeadlineMs: 0,
+    });
+    await clientSession.connect();
+    await clientSession.view.loadOlder(10);
+
+    // Default selection picks the newest regenerator.
+    const messagesDefault = clientSession.view.getMessages();
+    const asstDefault = messagesDefault.find((m) => m.role === 'assistant' && m.id !== 'a1');
+    const asstTextDefault = asstDefault?.parts.find((p): p is AI.TextUIPart => p.type === 'text')?.text;
+    expect(asstTextDefault).toBe('r2-regen');
+
+    // a2 is the regenerate-group anchor; both members surface as siblings.
+    expect(clientSession.view.hasMessageSiblings('a2')).toBe(true);
+    const groupSiblings = clientSession.view.getMessageSiblings('a2');
+    expect(groupSiblings.map((n) => n.runId).toSorted()).toEqual(['run-t2', 'run-t2-regen'].toSorted());
+
+    // Navigate back to the original assistant.
+    const originalIdx = groupSiblings.findIndex((n) => n.runId === 'run-t2');
+    clientSession.view.selectMessageSibling('a2', originalIdx);
+
+    const messagesOriginal = clientSession.view.getMessages();
+    const asstOriginal = messagesOriginal.find((m) => m.role === 'assistant' && m.id !== 'a1');
+    const asstTextOriginal = asstOriginal?.parts.find((p): p is AI.TextUIPart => p.type === 'text')?.text;
+    expect(asstTextOriginal).toBe('r2-original');
+  });
+
+  it('two clients on the same channel render the same conversation', async () => {
+    const channelName = uniqueChannelName('ct-concurrent');
+    const serverClient = ablyRealtimeClient();
+    const aClient = ablyRealtimeClient();
+    const bClient = ablyRealtimeClient();
+
+    agentSession = createAgentSession<VercelEvent, VercelProjection, AI.UIMessage>({
+      client: serverClient,
+      channelName,
+      codec: UIMessageCodec,
+    });
+    await agentSession.connect();
+
+    clientSession = createClientSession<VercelEvent, VercelProjection, AI.UIMessage>({
+      client: aClient,
+      channelName,
+      codec: UIMessageCodec,
+      clientId: aClient.auth.clientId,
+      fetch: noopFetch as typeof globalThis.fetch,
+      api: '/test',
+      runStartDeadlineMs: 0,
+    });
+    await clientSession.connect();
+
+    const observer = createClientSession<VercelEvent, VercelProjection, AI.UIMessage>({
+      client: bClient,
+      channelName,
+      codec: UIMessageCodec,
+      clientId: bClient.auth.clientId,
+      fetch: noopFetch as typeof globalThis.fetch,
+      api: '/test',
+      runStartDeadlineMs: 0,
+    });
+    await observer.connect();
+
+    try {
+      const sendPromise = clientSession.view.sendMessage({
+        id: 'u-concurrent-1',
+        role: 'user',
+        parts: [{ type: 'text', text: 'hi from A' }],
+      });
+
+      // Wait for A's optimistic Run to appear, then drive the agent so the
+      // send resolves.
+      await new Promise((r) => setTimeout(r, 100));
+      const aOptimistic = clientSession.view.flattenNodes()[0];
+      if (!aOptimistic) throw new Error('expected A optimistic node');
+      const serverRun = createRunFromOpts(agentSession, {
+        runId: aOptimistic.runId,
+        invocationId: aOptimistic.invocationId,
+      });
+      await serverRun.start();
+      await serverRun.pipe(textResponseStream('a-concurrent-1', 'text-concurrent-1', 'hi from agent'));
+      await serverRun.end('complete');
+      await sendPromise;
+
+      // Both views should now see the same conversation.
+      await waitForMessages(clientSession, 2);
+      await waitForMessages(observer, 2);
+
+      const aMessages = clientSession.view.getMessages();
+      const bMessages = observer.view.getMessages();
+
+      expect(aMessages.map((m) => m.role)).toEqual(['user', 'assistant']);
+      expect(bMessages.map((m) => m.role)).toEqual(['user', 'assistant']);
+
+      expect(aMessages.map((m) => m.id)).toEqual(bMessages.map((m) => m.id));
+      const aText = aMessages[1]?.parts.find((p): p is AI.TextUIPart => p.type === 'text')?.text;
+      const bText = bMessages[1]?.parts.find((p): p is AI.TextUIPart => p.type === 'text')?.text;
+      expect(aText).toBe('hi from agent');
+      expect(bText).toBe('hi from agent');
+
+      // Run identity matches across both views.
+      const aRunIds = clientSession.view.flattenNodes().map((n) => n.runId);
+      const bRunIds = observer.view.flattenNodes().map((n) => n.runId);
+      expect(aRunIds).toEqual(bRunIds);
+    } finally {
+      await observer.close();
+    }
+  });
+
+  it('loadOlder paginates by Run across multiple calls and drains the withhold buffer', async () => {
+    const channelName = uniqueChannelName('ct-paginate');
+    const serverClient = ablyRealtimeClient();
+
+    agentSession = createAgentSession<VercelEvent, VercelProjection, AI.UIMessage>({
+      client: serverClient,
+      channelName,
+      codec: UIMessageCodec,
+    });
+    await agentSession.connect();
+
+    const agent = agentSession;
+    const publishTurn = async (turn: number, parentId: string | undefined): Promise<string> => {
+      const runId = `run-page-${String(turn)}`;
+      const userMsgId = `pu-${String(turn)}`;
+      const run = createRunFromOpts(agent, { runId });
+      await run.start();
+      await run.addMessages([
+        {
+          kind: 'message',
+          message: { id: userMsgId, role: 'user', parts: [{ type: 'text', text: `pq${String(turn)}` }] },
+          codecMessageId: userMsgId,
+          parentId,
+          forkOf: undefined,
+          headers: {},
+          serial: undefined,
+        },
+      ]);
+      const asstMsgId = `pa-${String(turn)}`;
+      await run.pipe(textResponseStream(asstMsgId, `text-page-${String(turn)}`, `pr${String(turn)}`));
+      await run.end('complete');
+      return asstMsgId;
+    };
+
+    // Publish six turns; chained via assistant->user parent links.
+    let parent: string | undefined;
+    for (let i = 1; i <= 6; i++) {
+      parent = await publishTurn(i, parent);
+    }
+
+    const historyClient = ablyRealtimeClient();
+    clientSession = createClientSession<VercelEvent, VercelProjection, AI.UIMessage>({
+      client: historyClient,
+      channelName,
+      codec: UIMessageCodec,
+      clientId: historyClient.auth.clientId,
+      fetch: noopFetch as typeof globalThis.fetch,
+      api: '/test',
+      runStartDeadlineMs: 0,
+    });
+    await clientSession.connect();
+
+    // Reveal two Runs at a time. The loader fetches enough channel pages to
+    // satisfy the Run-unit limit and withholds the rest.
+    await clientSession.view.loadOlder(2);
+    const after1 = clientSession.view.flattenNodes().map((n) => n.runId);
+    expect(after1.length).toBe(2);
+    // Newest two Runs revealed first.
+    expect(after1).toEqual(['run-page-5', 'run-page-6']);
+    expect(clientSession.view.hasOlder()).toBe(true);
+
+    await clientSession.view.loadOlder(2);
+    const after2 = clientSession.view.flattenNodes().map((n) => n.runId);
+    expect(after2).toEqual(['run-page-3', 'run-page-4', 'run-page-5', 'run-page-6']);
+    expect(clientSession.view.hasOlder()).toBe(true);
+
+    await clientSession.view.loadOlder(2);
+    const after3 = clientSession.view.flattenNodes().map((n) => n.runId);
+    expect(after3).toEqual(['run-page-1', 'run-page-2', 'run-page-3', 'run-page-4', 'run-page-5', 'run-page-6']);
+
+    // One more call to let the loader probe past the last page and learn
+    // there is no more history. `hasOlder()` only flips when either the
+    // withhold buffer drains AND a subsequent fetch confirms no next page,
+    // so the UI keeps showing a load-more affordance until probed.
+    await clientSession.view.loadOlder(2);
+    expect(clientSession.view.flattenNodes()).toHaveLength(6);
+    expect(clientSession.view.hasOlder()).toBe(false);
+
+    // Final view: 6 turns x (user + assistant) = 12 messages, fully ordered.
+    const messages = clientSession.view.getMessages();
+    expect(messages).toHaveLength(12);
+    expect(messages.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+    ]);
+    const userIds = messages.filter((m) => m.role === 'user').map((m) => m.id);
+    expect(userIds).toEqual(['pu-1', 'pu-2', 'pu-3', 'pu-4', 'pu-5', 'pu-6']);
   });
 
   it('fires ably-message events for raw Ably messages', async () => {

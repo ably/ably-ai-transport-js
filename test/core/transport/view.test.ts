@@ -2,6 +2,7 @@ import type * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  EVENT_RUN_START,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_FORK_OF,
   HEADER_INVOCATION_ID,
@@ -209,6 +210,130 @@ describe('DefaultView', () => {
     it('returns an empty list for an empty tree', () => {
       expect(view.flattenNodes()).toEqual([]);
       expect(view.getMessages()).toEqual([]);
+    });
+
+    // -----------------------------------------------------------------------
+    // Cross-Run concat edge cases (AIT-773 §2.3)
+    // -----------------------------------------------------------------------
+
+    it('includes a Run that has zero messages in flattenNodes but contributes no messages to getMessages', () => {
+      // A "zero-message" Run can exist transiently: the agent's
+      // `ai-run-start` lifecycle created the Run but no codec events
+      // have folded in yet (regenerate Runs spend their first
+      // microseconds in this state).
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'u1',
+        message: { id: 'u1', content: 'q' },
+        serial: 's1',
+      });
+      tree.applyRunLifecycle(
+        { type: 'ai-run-start', runId: 'R_empty', clientId: '', invocationId: '', parent: 'u1' },
+        's2',
+      );
+
+      // Both Runs flatten; only R1 has messages so getMessages reflects
+      // R1's content with no gap or undefined entry for R_empty.
+      expect(view.flattenNodes().map((n) => n.runId)).toEqual(['R1', 'R_empty']);
+      expect(view.getMessages().map((m) => m.id)).toEqual(['u1']);
+    });
+
+    it('preserves per-Run order across many-message Runs', () => {
+      // A Run can carry several messages (e.g. user + assistant text
+      // + tool call + tool result + continuation assistant text). The
+      // codec folds them in publish order; the View must concatenate
+      // each Run's messages in that order, then concatenate across
+      // Runs by parentRunId chain.
+      apply(tree, { runId: 'R1', codecMessageId: 'a', message: { id: 'a', content: 'a-1' }, serial: 's1' });
+      apply(tree, { runId: 'R1', codecMessageId: 'b', message: { id: 'b', content: 'a-2' }, serial: 's2' });
+      apply(tree, { runId: 'R1', codecMessageId: 'c', message: { id: 'c', content: 'a-3' }, serial: 's3' });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'd',
+        parent: 'c',
+        message: { id: 'd', content: 'b-1' },
+        serial: 's4',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'e',
+        parent: 'd',
+        message: { id: 'e', content: 'b-2' },
+        serial: 's5',
+      });
+
+      expect(view.getMessages().map((m) => m.id)).toEqual(['a', 'b', 'c', 'd', 'e']);
+    });
+
+    it('flattens a five-turn linear conversation in publish order', () => {
+      // Multi-turn baseline: five user+assistant turns.
+      apply(tree, { runId: 'R1', codecMessageId: 'u1', message: { id: 'u1', content: 'q1' }, serial: 's01' });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'a1',
+        parent: 'u1',
+        message: { id: 'a1', content: 'r1' },
+        serial: 's02',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'u2',
+        parent: 'a1',
+        message: { id: 'u2', content: 'q2' },
+        serial: 's03',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'a2',
+        parent: 'u2',
+        message: { id: 'a2', content: 'r2' },
+        serial: 's04',
+      });
+      apply(tree, {
+        runId: 'R3',
+        codecMessageId: 'u3',
+        parent: 'a2',
+        message: { id: 'u3', content: 'q3' },
+        serial: 's05',
+      });
+      apply(tree, {
+        runId: 'R3',
+        codecMessageId: 'a3',
+        parent: 'u3',
+        message: { id: 'a3', content: 'r3' },
+        serial: 's06',
+      });
+      apply(tree, {
+        runId: 'R4',
+        codecMessageId: 'u4',
+        parent: 'a3',
+        message: { id: 'u4', content: 'q4' },
+        serial: 's07',
+      });
+      apply(tree, {
+        runId: 'R4',
+        codecMessageId: 'a4',
+        parent: 'u4',
+        message: { id: 'a4', content: 'r4' },
+        serial: 's08',
+      });
+      apply(tree, {
+        runId: 'R5',
+        codecMessageId: 'u5',
+        parent: 'a4',
+        message: { id: 'u5', content: 'q5' },
+        serial: 's09',
+      });
+      apply(tree, {
+        runId: 'R5',
+        codecMessageId: 'a5',
+        parent: 'u5',
+        message: { id: 'a5', content: 'r5' },
+        serial: 's10',
+      });
+
+      expect(view.flattenNodes().map((n) => n.runId)).toEqual(['R1', 'R2', 'R3', 'R4', 'R5']);
+      expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2', 'u3', 'a3', 'u4', 'a4', 'u5', 'a5']);
     });
   });
 
@@ -1182,6 +1307,80 @@ describe('DefaultView', () => {
       } as unknown as Ably.InboundMessage;
       tree.emitAblyMessage(visibleMsg);
       expect(handler).toHaveBeenCalledWith(visibleMsg);
+    });
+
+    // ---------------------------------------------------------------------
+    // Pagination edge cases (AIT-773 §7.6)
+    // ---------------------------------------------------------------------
+
+    it('handles a Run that spans multiple channel pages by carrying state across decodeHistory.next()', async () => {
+      // Simulate a Run R-multi whose messages appear across two channel
+      // pages: page1 has the first wire, page2 (via .next()) has the
+      // second wire. The Tree folds both into the same RunNode.
+      const headersA = { [HEADER_RUN_ID]: 'R-multi', [HEADER_CODEC_MESSAGE_ID]: 'm-multi-a' };
+      const headersB = { [HEADER_RUN_ID]: 'R-multi', [HEADER_CODEC_MESSAGE_ID]: 'm-multi-b' };
+      const rawA = {
+        name: 'fake',
+        serial: 's01',
+        extras: { headers: headersA },
+      } as unknown as Ably.InboundMessage;
+      const rawB = {
+        name: 'fake',
+        serial: 's02',
+        extras: { headers: headersB },
+      } as unknown as Ably.InboundMessage;
+
+      codec.createDecoder = vi.fn(() => ({
+        decode: (msg: Ably.InboundMessage) => {
+          const id = (msg.extras as { headers: Record<string, string> }).headers[HEADER_CODEC_MESSAGE_ID] ?? '?';
+          return [{ type: 'append-message' as const, message: { id, content: id } }];
+        },
+      }));
+
+      const page2 = makePage(
+        [{ message: { id: 'm-multi-b', content: 'multi-b' }, headers: headersB, serial: 's02' }],
+        [rawB],
+      );
+      const page1 = makePage(
+        [{ message: { id: 'm-multi-a', content: 'multi-a' }, headers: headersA, serial: 's01' }],
+        [rawA],
+        true,
+        // eslint-disable-next-line @typescript-eslint/require-await -- mock
+        async () => page2,
+      );
+      vi.mocked(decodeHistory).mockResolvedValueOnce(page1);
+
+      await view.loadOlder(2);
+
+      // The single Run R-multi materialised from both pages; both messages
+      // belong to one RunNode.
+      const nodes = view.flattenNodes();
+      expect(nodes.map((n) => n.runId)).toEqual(['R-multi']);
+      expect(view.getMessages().map((m) => m.id)).toEqual(['m-multi-a', 'm-multi-b']);
+    });
+
+    it('includes a Run with zero codec-fold output in the visible chain but contributes no messages to getMessages', async () => {
+      // History contains an ai-run-start with no subsequent content wires
+      // (rare; can happen if the agent crashed before publishing any chunk).
+      // The View flattens the Run but getMessages produces nothing for it.
+      const runStartMsg = {
+        name: EVENT_RUN_START,
+        serial: 's01',
+        extras: {
+          headers: {
+            [HEADER_RUN_ID]: 'R-empty',
+            'x-ably-run-client-id': '',
+          },
+        },
+      } as unknown as Ably.InboundMessage;
+
+      vi.mocked(decodeHistory).mockResolvedValueOnce(makePage([], [runStartMsg]));
+
+      await view.loadOlder(1);
+
+      const nodes = view.flattenNodes();
+      expect(nodes.map((n) => n.runId)).toEqual(['R-empty']);
+      expect(view.getMessages()).toEqual([]);
     });
   });
 

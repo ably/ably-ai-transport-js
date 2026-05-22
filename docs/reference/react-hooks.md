@@ -110,12 +110,12 @@ Subscribe to a view and return nodes with pagination, branch navigation, and wri
 const view = useView<TEvent, TMessage>({ session?, view?, limit?, skip? } = {});
 ```
 
-| Prop      | Type                     | Description                                                                    |
-| --------- | ------------------------ | ------------------------------------------------------------------------------ |
-| `session` | `ClientSession \| null?` | Session whose default view to subscribe to; defaults to the nearest provider   |
-| `view`    | `View \| null?`          | A specific `View` to subscribe to directly; takes priority over `session`      |
-| `limit`   | `number?`                | Max older messages per page. When provided, auto-loads the first page on mount |
-| `skip`    | `boolean?`               | When `true`, skip all subscriptions and return an empty handle                 |
+| Prop      | Type                     | Description                                                                  |
+| --------- | ------------------------ | ---------------------------------------------------------------------------- |
+| `session` | `ClientSession \| null?` | Session whose default view to subscribe to; defaults to the nearest provider |
+| `view`    | `View \| null?`          | A specific `View` to subscribe to directly; takes priority over `session`    |
+| `limit`   | `number?`                | Max older Runs per page. When provided, auto-loads the first page on mount   |
+| `skip`    | `boolean?`               | When `true`, skip all subscriptions and return an empty handle               |
 
 **Returns:** `ViewHandle<TEvent, TMessage>`
 

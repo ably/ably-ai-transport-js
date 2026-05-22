@@ -56,18 +56,25 @@ After all wire messages have been decoded, the transport reads `completedMessage
 
 ## Pagination
 
-The `limit` option controls how many completed domain messages appear in each page of results:
+`decodeHistory` itself paginates by completed domain messages; the `View` wraps it to paginate by **Runs**. `View.loadOlder(limit)` reveals up to `limit` Runs per call. The View loops `decodeHistory` pages (using an internal multiplier to amortise round-trips) until enough Runs are buffered, then withholds excess for subsequent calls.
+
+The `limit` option on the lower-level `decodeHistory` still counts completed domain messages (not Runs) and is the contract documented below:
 
 ```typescript
 await view.loadOlder(10);
-// view.flattenNodes() returns up to 10 completed messages
+// view.flattenNodes() returns the visible RunNode[] including up to 10
+//   newly-revealed older Runs.
+// view.getMessages() returns the concatenated flat message list across
+//   all visible Runs.
 // view.hasOlder - more history available
-// view.loadOlder(10) - load more older messages
+// view.loadOlder(10) - load more older Runs
 ```
 
 ### Wire limit multiplier
 
-The implementation requests `limit * 10` Ably messages per page to account for the many-to-one ratio. This is a heuristic - a single assistant message with streaming may produce dozens of Ably messages, so fetching only `limit` Ably messages would almost never yield `limit` complete domain messages.
+`decodeHistory` requests `limit * 10` Ably messages per page to account for the many-to-one ratio between wire and domain messages. This is a heuristic; a single assistant message with streaming may produce dozens of Ably messages, so fetching only `limit` Ably messages would almost never yield `limit` complete domain messages.
+
+The View applies its own multiplier (`_RUN_TO_MESSAGE_FETCH_FACTOR = 3`) on top of this when requesting pages for `loadOlder(limit)`. Because the View paginates by **Runs** but `decodeHistory` paginates by **domain messages**, the factor amortises the typical messages-per-Run ratio (~2 for a user + assistant pair, with headroom for tool calls) so a single round-trip usually satisfies the Run-unit target before `_loadUntilVisible` has to fetch another page.
 
 ### Completed vs partial
 

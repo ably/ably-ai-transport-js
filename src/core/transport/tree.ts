@@ -212,6 +212,18 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
   /** Incremented on structural changes; unchanged on projection-only updates. */
   private _structuralVersion = 0;
 
+  /**
+   * Cached sibling-group lookups keyed by runId. The walk over forkOf
+   * chains and the per-parent fan-out are pure functions of the Run
+   * graph, so the cache is keyed against {@link _structuralVersion}:
+   * any topology mutation drops the cache and the next lookup
+   * recomputes. Hits matter most during a single render pass where
+   * the View calls `getSiblingRuns` once per visible Run plus extra
+   * per-message branch-anchor probes from React components.
+   */
+  private _siblingCache = new Map<string, InternalRunNode<TProjection>[]>();
+  private _siblingCacheVersion = -1;
+
   get structuralVersion(): number {
     return this._structuralVersion;
   }
@@ -327,6 +339,13 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
    */
   // Spec: AIT-CT13b
   private _getSiblingGroup(runId: string): InternalRunNode<TProjection>[] {
+    if (this._siblingCacheVersion !== this._structuralVersion) {
+      this._siblingCache.clear();
+      this._siblingCacheVersion = this._structuralVersion;
+    }
+    const cached = this._siblingCache.get(runId);
+    if (cached) return cached;
+
     const entry = this._runIndex.get(runId);
     if (!entry) return [];
 
@@ -359,6 +378,14 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
     }
 
     siblings.sort((a, b) => this._compareRuns(a, b));
+    // Cache against the queried runId AND every member of the group:
+    // a single sibling group is the same array regardless of which
+    // member triggered the lookup, so subsequent queries against any
+    // member hit without recomputing.
+    for (const sib of siblings) {
+      this._siblingCache.set(sib.node.runId, siblings);
+    }
+    this._siblingCache.set(runId, siblings);
     return siblings;
   }
 

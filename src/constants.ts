@@ -85,6 +85,18 @@ export const HEADER_PARENT = 'x-ably-parent';
 /** Header: the msg-id of the message this one replaces (creates a fork). */
 export const HEADER_FORK_OF = 'x-ably-fork-of';
 
+/**
+ * Header: the msg-id of the assistant message this run regenerates.
+ *
+ * Stamped on the regenerate wire (and echoed on `run-start`) when the
+ * client requested a regeneration. The Tree treats regenerates as
+ * continuations of the prior run (parentRunId chain), not as forks; the
+ * View consults this header to resolve the message-level sibling group
+ * and to drop the regenerated message from earlier Runs in the visible
+ * chain (Spec: AIT-CT13d).
+ */
+export const HEADER_MSG_REGENERATE = 'x-ably-msg-regenerate';
+
 // ---------------------------------------------------------------------------
 // Run lifecycle headers
 // ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@ import {
   EVENT_RUN_START,
   HEADER_FORK_OF,
   HEADER_INVOCATION_ID,
+  HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_CONTINUE,
@@ -33,7 +34,13 @@ export interface RunManager {
     runId: string,
     clientId?: string,
     controller?: AbortController,
-    metadata?: { parent?: string; forkOf?: string; invocationId?: string; continuation?: boolean },
+    metadata?: {
+      parent?: string;
+      forkOf?: string;
+      regenerates?: string;
+      invocationId?: string;
+      continuation?: boolean;
+    },
   ): Promise<AbortSignal>;
   /** End a run. Publishes run-end on the channel. Cleans up internal state. */
   endRun(runId: string, reason: RunEndReason, invocationId?: string): Promise<void>;
@@ -76,7 +83,13 @@ class DefaultRunManager implements RunManager {
     runId: string,
     clientId?: string,
     externalController?: AbortController,
-    metadata?: { parent?: string; forkOf?: string; invocationId?: string; continuation?: boolean },
+    metadata?: {
+      parent?: string;
+      forkOf?: string;
+      regenerates?: string;
+      invocationId?: string;
+      continuation?: boolean;
+    },
   ): Promise<AbortSignal> {
     this._logger?.trace('DefaultRunManager.startRun();', { runId, clientId });
 
@@ -93,6 +106,9 @@ class DefaultRunManager implements RunManager {
     }
     if (metadata?.forkOf !== undefined) {
       headers[HEADER_FORK_OF] = metadata.forkOf;
+    }
+    if (metadata?.regenerates !== undefined) {
+      headers[HEADER_MSG_REGENERATE] = metadata.regenerates;
     }
     // Stamp the invocation-id on run-start so the client's send() promise
     // can match it against its pending invocation and resolve. Without it

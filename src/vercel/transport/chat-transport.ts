@@ -24,7 +24,6 @@
 import * as Ably from 'ably';
 import type * as AI from 'ai';
 
-import { HEADER_RUN_ID } from '../../constants.js';
 import type { ActiveRun, ClientSession, CloseOptions, SendOptions } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
 import type { VercelEvent, VercelProjection } from '../codec/index.js';
@@ -279,14 +278,13 @@ const deriveContinuationEvents = (
   session: ClientSession<VercelEvent, VercelProjection, AI.UIMessage>,
   messages: AI.UIMessage[],
 ): { events: VercelEvent[]; domainMessageIds: string[] } => {
-  const allNodes = session.view.flattenNodes();
+  const allMessages = session.view.getMessages();
   const events: VercelEvent[] = [];
   const domainMessageIds: string[] = [];
   for (const overlay of messages) {
     if (overlay.role !== 'assistant') continue;
-    const node = allNodes.find((n) => n.message.id === overlay.id);
-    if (!node) continue;
-    const treeMessage = node.message;
+    const treeMessage = allMessages.find((m) => m.id === overlay.id);
+    if (!treeMessage) continue;
 
     for (const overlayPart of overlay.parts) {
       if (overlayPart.type !== 'dynamic-tool') continue;
@@ -309,7 +307,7 @@ const deriveContinuationEvents = (
           (approvalEvent as { reason?: string }).reason = overlayPart.approval.reason;
         }
         events.push(approvalEvent);
-        domainMessageIds.push(node.msgId);
+        domainMessageIds.push(treeMessage.id);
         continue;
       }
       if (overlayPart.state === 'output-denied' && (!treePart || treePart.state === 'approval-requested')) {
@@ -318,7 +316,7 @@ const deriveContinuationEvents = (
           toolCallId: overlayPart.toolCallId,
           approved: false,
         });
-        domainMessageIds.push(node.msgId);
+        domainMessageIds.push(treeMessage.id);
         continue;
       }
 
@@ -341,10 +339,23 @@ const deriveContinuationEvents = (
           errorText: overlayPart.errorText,
         });
       }
-      domainMessageIds.push(node.msgId);
+      domainMessageIds.push(treeMessage.id);
     }
   }
   return { events, domainMessageIds };
+};
+
+/**
+ * Find the msg-id immediately preceding `msgId` in the flat conversation.
+ * Returns undefined if `msgId` is the first message or not found.
+ * @param messages - Flat conversation messages from `view.getMessages()`.
+ * @param msgId - The target message id.
+ * @returns The preceding message's id, or undefined.
+ */
+const findPredecessorMsgId = (messages: AI.UIMessage[], msgId: string): string | undefined => {
+  const idx = messages.findIndex((m) => m.id === msgId);
+  if (idx <= 0) return undefined;
+  return messages[idx - 1]?.id;
 };
 
 // ---------------------------------------------------------------------------
@@ -392,7 +403,7 @@ export const createChatTransport = (
   const sendMessages: ChatTransport['sendMessages'] = async (opts) => {
     const { messages, abortSignal, trigger, messageId } = opts;
 
-    const allNodes = session.view.flattenNodes();
+    const allMessages = session.view.getMessages();
 
     // useChat calls sendMessages in three distinct modes. We disambiguate
     // by (trigger, last-message role) so each mode dispatches correctly:
@@ -410,8 +421,8 @@ export const createChatTransport = (
     // treat messageId as a fork target — useChat v6's sendAutomaticallyWhen
     // path always sets messageId to the last message id regardless.
     const lastMessage = messages.at(-1);
-    const lastMessageNode = lastMessage ? allNodes.find((n) => n.message.id === lastMessage.id) : undefined;
-    const isContinuation = trigger === 'submit-message' && lastMessage?.role === 'assistant' && !!lastMessageNode;
+    const lastMessageInTree = lastMessage ? allMessages.find((m) => m.id === lastMessage.id) : undefined;
+    const isContinuation = trigger === 'submit-message' && lastMessage?.role === 'assistant' && !!lastMessageInTree;
 
     // Fork-on-unresolved-tool: user sent a new message while the preceding
     // assistant has an unresolved tool call (approval-requested, input-*).
@@ -421,11 +432,15 @@ export const createChatTransport = (
     //
     // Only applies to fresh user-message submits (not continuations, not
     // regenerates, not edits-with-messageId).
+    //
+    // `messages.at(-1)` is the fresh user-prompt being submitted right now;
+    // `messages.at(-2)` is therefore the prior assistant whose tool state
+    // we need to inspect for the unresolved-tool gate below.
     const precedingMessage =
       trigger === 'submit-message' && !messageId && lastMessage?.role === 'user' ? messages.at(-2) : undefined;
-    const forkSource =
+    const forkSourceMsgId =
       precedingMessage && hasUnresolvedToolCall(precedingMessage)
-        ? allNodes.find((n) => n.message.id === precedingMessage.id)
+        ? allMessages.find((m) => m.id === precedingMessage.id)?.id
         : undefined;
 
     // Determine the history/messages split based on mode.
@@ -449,7 +464,7 @@ export const createChatTransport = (
       // When forking off an unresolved tool call, drop the unresolved
       // assistant from history too — it belongs on the sibling branch, not
       // the ancestor chain of the new message.
-      history = forkSource ? messages.slice(0, -2) : messages.slice(0, -1);
+      history = forkSourceMsgId ? messages.slice(0, -2) : messages.slice(0, -1);
     }
 
     // Compute fork metadata for edit (submit-message with messageId) and
@@ -461,18 +476,15 @@ export const createChatTransport = (
 
     if (trigger === 'submit-message' && messageId && !isContinuation) {
       // Edit: messageId identifies the user message being replaced. forkOf =
-      // its tree msg-id, parent = its parent in the tree.
+      // its msg-id, parent = the immediately-preceding msg-id in the flat
+      // conversation.
       forkOf = messageId;
-      const node = allNodes.find((n) => n.message.id === messageId);
-      if (node) {
-        forkOf = node.msgId;
-        parent = node.parentId;
-      }
-    } else if (forkSource) {
+      parent = findPredecessorMsgId(allMessages, messageId);
+    } else if (forkSourceMsgId) {
       // Fork off the preceding assistant — the new user message becomes a
       // sibling of the unresolved tool call assistant, rooted at its parent.
-      forkOf = forkSource.msgId;
-      parent = forkSource.parentId;
+      forkOf = forkSourceMsgId;
+      parent = findPredecessorMsgId(allMessages, forkSourceMsgId);
     }
 
     let sendBody: Record<string, unknown>;
@@ -504,11 +516,10 @@ export const createChatTransport = (
     if (parent !== undefined) sendOpts.parent = parent;
     // Continuations reuse the suspended assistant's runId so the agent's
     // existing run resumes under a fresh invocation rather than spinning
-    // up a brand-new run. `lastMessageNode` is non-undefined whenever
-    // `isContinuation` is true.
+    // up a brand-new run. `isContinuation` implies `lastMessage` is defined.
     if (isContinuation) {
-      const suspendedRunId = lastMessageNode.headers[HEADER_RUN_ID];
-      if (suspendedRunId) sendOpts.runId = suspendedRunId;
+      const owningRun = session.view.getRunByMsgId(lastMessage.id);
+      if (owningRun) sendOpts.runId = owningRun.runId;
     }
 
     // Dispatch by mode:

@@ -30,12 +30,13 @@ The client session subscribes to the Ably channel **before** attaching. When you
 import { useView } from '@ably/ai-transport/react';
 
 // Auto-loads first page on mount (passing options = enabled)
-const { nodes, hasOlder, loading, loadOlder } = useView({ session, limit: 30 });
+const { nodes, messages, hasOlder, loading, loadOlder } = useView({ session, limit: 30 });
 
-// nodes - MessageNode[] for the current branch
+// nodes - RunNode[] for the current branch (one Run per turn)
+// messages - flat TMessage[] concatenated across all visible Runs
 // hasOlder - are there older pages?
 // loading - is a page being fetched?
-// loadOlder() - load more older messages
+// loadOlder() - load more older Runs
 ```
 
 Pass `null` or omit the options to disable auto-load:
@@ -66,7 +67,7 @@ const { nodes, hasOlder, loading, loadOlder } = useView({ session, limit: 30 });
 
 History messages carry the same `x-ably-parent` and `x-ably-fork-of` headers as live messages. When loaded, they're inserted into the conversation tree with their full branch structure intact. A client loading history sees the same tree of branches and can navigate siblings just like a client that was present for the original conversation.
 
-Because the tree may contain multiple branches, the view's `flattenNodes()` returns only the messages along the currently selected path - not every message ever published. To see alternative branches, use `useView()` or the view's `getSiblings()` / `select()` methods.
+Because the tree may contain multiple branches, the view's `flattenNodes()` returns only the Runs along the currently selected path — not every Run ever published. To see alternative branches, use `useView()` or the view's `getSiblingRuns()` / `select()` methods.
 
 See [Conversation branching](branching.md) for the tree model.
 

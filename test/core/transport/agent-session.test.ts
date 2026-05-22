@@ -319,6 +319,12 @@ interface DeliverUserPromptOpts {
   parent?: string;
   /** Optional `x-ably-fork-of` header — resolves the run's forkOf during prompt lookup. */
   forkOf?: string;
+  /**
+   * Optional `x-ably-msg-regenerate` header — resolves the run's regenerate
+   * anchor during prompt lookup. Mutually exclusive with `forkOf` per
+   * AITRFC-014 (edits and regenerates anchor at different headers).
+   */
+  regenerates?: string;
   /** Optional `x-ably-run-continue` flag — marks the publish as a continuation user-message. */
   runContinue?: boolean;
 }
@@ -345,6 +351,7 @@ const deliverUserPrompt = (ch: MockChannel, opts: DeliverUserPromptOpts): void =
   if (opts.runClientId) headers['x-ably-run-client-id'] = opts.runClientId;
   if (opts.parent) headers[HEADER_PARENT] = opts.parent;
   if (opts.forkOf) headers['x-ably-fork-of'] = opts.forkOf;
+  if (opts.regenerates) headers['x-ably-msg-regenerate'] = opts.regenerates;
   if (opts.runContinue) headers['x-ably-run-continue'] = 'true';
   const msg = {
     name: opts.name ?? 'text',
@@ -603,6 +610,45 @@ describe('AgentSession', () => {
       expect(headers?.['x-ably-run-continue']).toBeUndefined();
     });
 
+    it('start() stamps x-ably-msg-regenerate on run-start when the prompt-lookup result carries the regenerate anchor', async () => {
+      // Regenerate is a Run-level continuation, not a fork: the agent
+      // re-stamps the `x-ably-msg-regenerate` it observed on the prompt
+      // wire onto run-start so the client Tree can record the
+      // regeneratesMsgId for message-level replacement.
+      const ch = createMockChannel();
+      const c = codecWithFunctionalDecoder();
+      const s = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'regen',
+        codec: c,
+        promptLookupTimeoutMs: 5000,
+      });
+      await s.connect();
+
+      const runId = 'run-regen';
+      const invocationId = 'inv-regen';
+      const promptId = 'p-regen';
+      const run = createRunFromOpts(s, { runId, invocationId, promptIds: [promptId] });
+      const startPromise = run.start();
+      deliverUserPrompt(ch, {
+        invocationId,
+        runId,
+        msgId: 'm-regen',
+        serial: 's-regen',
+        promptId,
+        parent: 'orig-user',
+        regenerates: 'orig-asst',
+      });
+      await startPromise;
+
+      const startMsg = ch.publishCalls.find((m) => m.name === 'ai-run-start');
+      const headers = (startMsg?.extras as { headers: Record<string, string> } | undefined)?.headers;
+      expect(headers?.['x-ably-msg-regenerate']).toBe('orig-asst');
+      expect(headers?.['x-ably-parent']).toBe('orig-user');
+      expect(headers?.['x-ably-fork-of']).toBeUndefined();
+      s.close();
+    });
+
     it('end() publishes run-end with reason', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
@@ -859,6 +905,58 @@ describe('AgentSession', () => {
 
       const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
       expect(headers[HEADER_PARENT]).toBe('parent-msg');
+    });
+
+    it('echoes x-ably-msg-regenerate from the prompt-lookup onto the assistant pipe headers (race-condition safety)', async () => {
+      // The lifecycle event is the canonical source for `regenerates`,
+      // but if the assistant wire arrives before run-start on the client
+      // (history pagination boundary or out-of-order delivery), the Tree
+      // creates the Run from headers and needs `x-ably-msg-regenerate` on
+      // the assistant wire to populate `RunNode.regeneratesMsgId`.
+      // Mirrors how the agent echoes `x-ably-fork-of` for edit runs.
+      const ch = createMockChannel();
+      const base = codecWithFunctionalDecoder();
+      let capturedHeaders: Record<string, string> | undefined;
+      const c: Codec<TestEvent, TestProjection, TestMessage> = {
+        ...base,
+        createEncoder: (writer: ChannelWriter, opts?: EncoderOptions) => {
+          capturedHeaders = opts?.extras?.headers;
+          return createMockEncoder();
+        },
+      };
+      const s = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'pipe-regen-echo',
+        codec: c,
+        promptLookupTimeoutMs: 5000,
+      });
+      await s.connect();
+
+      const runId = 'r-rg';
+      const invocationId = 'inv-rg';
+      const promptId = 'p-rg';
+      const run = createRunFromOpts(s, { runId, invocationId, promptIds: [promptId] });
+      const startPromise = run.start();
+      deliverUserPrompt(ch, {
+        invocationId,
+        runId,
+        msgId: 'm-rg',
+        serial: 's-rg',
+        promptId,
+        parent: 'orig-user',
+        regenerates: 'orig-asst',
+      });
+      await startPromise;
+
+      await run.pipe(streamOf({ type: 'text', text: 'reply' }));
+
+      // The regenerate anchor is echoed on the assistant wire so that a
+      // race between assistant chunks and ai-run-start doesn't drop the
+      // regenerate metadata. `parent` resolution is exercised elsewhere;
+      // here we only assert the regenerate header survives the pipe.
+      expect(capturedHeaders?.['x-ably-msg-regenerate']).toBe('orig-asst');
+      expect(capturedHeaders?.['x-ably-fork-of']).toBeUndefined();
+      s.close();
     });
 
     it('defaults assistant parent to the most recently looked-up user prompt', async () => {

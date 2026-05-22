@@ -9,9 +9,9 @@
  */
 
 import * as Ably from 'ably';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
-import type { ActiveRun, MessageNode, SendOptions, View } from '../core/transport/types.js';
+import type { ActiveRun, RunNode, SendOptions, View } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
 import type { BaseSessionOption } from './internal/use-resolved-session.js';
 import { useResolvedSession } from './internal/use-resolved-session.js';
@@ -31,12 +31,14 @@ export interface UseViewOptions<TEvent, TProjection, TMessage> extends BaseSessi
 }
 
 /** Handle for the paginated, branch-aware conversation view. */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- TProjection is part of the codec generic triple kept symmetric with View
 export interface ViewHandle<TEvent, TProjection, TMessage> {
-  /** The visible domain messages along the selected branch. */
+  /**
+   * The visible domain messages along the selected branch, concatenated
+   * across all visible Runs.
+   */
   messages: TMessage[];
-  /** Visible conversation nodes along the selected branch. */
-  nodes: MessageNode<TMessage>[];
+  /** Visible Run nodes along the selected branch. */
+  nodes: RunNode<TProjection>[];
   /** Whether there are older messages that can be revealed via `loadOlder`. */
   hasOlder: boolean;
   /** Whether a page load is currently in progress. */
@@ -52,20 +54,40 @@ export interface ViewHandle<TEvent, TProjection, TMessage> {
    * On failure, `error` is set; on success, `error` is cleared.
    */
   loadOlder: () => Promise<void>;
-  /** Select a sibling at a fork point by index. Triggers a view update with the new branch. */
-  select: (msgId: string, index: number) => void;
-  /** Index of the currently selected sibling at a fork point. */
-  getSelectedIndex: (msgId: string) => number;
-  /** Get all sibling messages at a fork point, ordered chronologically by serial. */
-  getSiblings: (msgId: string) => TMessage[];
-  /** Whether a message has sibling alternatives (i.e., show navigation arrows). */
-  hasSiblings: (msgId: string) => boolean;
-  /** Get a node by msgId, or undefined if not found. */
-  getNode: (msgId: string) => MessageNode<TMessage> | undefined;
+  /** Select a sibling Run at a fork point by index. Triggers a view update with the new branch. */
+  select: (runId: string, index: number) => void;
+  /** Index of the currently selected sibling Run at a fork point. */
+  getSelectedIndex: (runId: string) => number;
+  /** Get all sibling Runs at a fork point, ordered chronologically by startSerial. */
+  getSiblingRuns: (runId: string) => RunNode<TProjection>[];
+  /** Whether a Run has sibling alternatives (i.e., show navigation arrows). */
+  hasSiblingRuns: (runId: string) => boolean;
+  /**
+   * Whether the message at `msgId` is a branch-point anchor. Use this for
+   * per-bubble UI decisions about rendering navigation arrows; see
+   * {@link View.hasMessageSiblings}.
+   */
+  hasMessageSiblings: (msgId: string) => boolean;
+  /**
+   * Sibling Runs for the branch point anchored at `msgId`. Empty when
+   * `msgId` is not a branch anchor; see {@link View.getMessageSiblings}.
+   */
+  getMessageSiblings: (msgId: string) => RunNode<TProjection>[];
+  /** Index of the currently selected sibling for the branch point anchored at `msgId`. */
+  getSelectedMessageSiblingIndex: (msgId: string) => number;
+  /** Select a sibling at the branch point anchored at `msgId`. */
+  selectMessageSibling: (msgId: string, index: number) => void;
+  /** Get a Run by runId, or undefined if not found. */
+  getRunNode: (runId: string) => RunNode<TProjection> | undefined;
+  /** Get the Run that owns a given msg-id, or undefined if not observed. */
+  getRunByMsgId: (msgId: string) => RunNode<TProjection> | undefined;
   /** Send one or more user messages on the channel and fire a POST. See {@link View.sendMessage}. */
   sendMessage: (messages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>;
   /** Send one or more TEvents on the channel and fire a POST. See {@link View.sendEvent}. */
-  sendEvent: (events: TEvent | TEvent[], options?: SendOptions) => Promise<ActiveRun<TEvent>>;
+  sendEvent: (
+    events: TEvent | TEvent[] | { event: TEvent; domainMessageId?: string }[],
+    options?: SendOptions,
+  ) => Promise<ActiveRun<TEvent>>;
   /** Regenerate an assistant message, using this view's branch for history. */
   regenerate: (messageId: string, options?: SendOptions) => Promise<ActiveRun<TEvent>>;
   /** Edit a user message, forking from this view's branch. */
@@ -94,7 +116,8 @@ export const useView = <TEvent, TProjection, TMessage>({
   const resolvedSession = useResolvedSession({ session, skip });
   const resolvedView = skip ? undefined : (view ?? resolvedSession?.view);
 
-  const [nodes, setNodes] = useState<MessageNode<TMessage>[]>(() => resolvedView?.flattenNodes() ?? []);
+  const [nodes, setNodes] = useState<RunNode<TProjection>[]>(() => resolvedView?.flattenNodes() ?? []);
+  const [messages, setMessages] = useState<TMessage[]>(() => resolvedView?.getMessages() ?? []);
   const [hasOlder, setHasOlder] = useState(() => resolvedView?.hasOlder() ?? false);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<Ably.ErrorInfo | undefined>();
@@ -110,6 +133,7 @@ export const useView = <TEvent, TProjection, TMessage>({
   useEffect(() => {
     if (!resolvedView) {
       setNodes([]);
+      setMessages([]);
       setHasOlder(false);
       setLoadError(undefined);
       return;
@@ -120,11 +144,13 @@ export const useView = <TEvent, TProjection, TMessage>({
 
     // Sync initial state
     setNodes(resolvedView.flattenNodes());
+    setMessages(resolvedView.getMessages());
     setHasOlder(resolvedView.hasOlder());
     setLoadError(undefined);
 
     const unsub = resolvedView.on('update', () => {
       setNodes(resolvedView.flattenNodes());
+      setMessages(resolvedView.getMessages());
       setHasOlder(resolvedView.hasOlder());
     });
     return unsub;
@@ -155,36 +181,58 @@ export const useView = <TEvent, TProjection, TMessage>({
     void loadOlder();
   }, [autoLoad, resolvedView, loadOlder]);
 
-  const messages = useMemo(() => nodes.map((n) => n.message), [nodes]);
-
   // Branch navigation callbacks
   const select = useCallback(
-    (msgId: string, index: number) => {
-      resolvedView?.select(msgId, index);
+    (runId: string, index: number) => {
+      resolvedView?.select(runId, index);
     },
     [resolvedView],
   );
 
-  const getSelectedIndex = useCallback((msgId: string) => resolvedView?.getSelectedIndex(msgId) ?? 0, [resolvedView]);
+  const getSelectedIndex = useCallback((runId: string) => resolvedView?.getSelectedIndex(runId) ?? 0, [resolvedView]);
 
-  const getSiblings = useCallback((msgId: string) => resolvedView?.getSiblings(msgId) ?? [], [resolvedView]);
+  const getSiblingRuns = useCallback((runId: string) => resolvedView?.getSiblingRuns(runId) ?? [], [resolvedView]);
 
-  const hasSiblings = useCallback((msgId: string) => resolvedView?.hasSiblings(msgId) ?? false, [resolvedView]);
+  const hasSiblingRuns = useCallback((runId: string) => resolvedView?.hasSiblingRuns(runId) ?? false, [resolvedView]);
 
-  const getNode = useCallback((msgId: string) => resolvedView?.getNode(msgId), [resolvedView]);
+  const hasMessageSiblings = useCallback(
+    (msgId: string) => resolvedView?.hasMessageSiblings(msgId) ?? false,
+    [resolvedView],
+  );
+
+  const getMessageSiblings = useCallback(
+    (msgId: string) => resolvedView?.getMessageSiblings(msgId) ?? [],
+    [resolvedView],
+  );
+
+  const getSelectedMessageSiblingIndex = useCallback(
+    (msgId: string) => resolvedView?.getSelectedMessageSiblingIndex(msgId) ?? 0,
+    [resolvedView],
+  );
+
+  const selectMessageSibling = useCallback(
+    (msgId: string, index: number) => {
+      resolvedView?.selectMessageSibling(msgId, index);
+    },
+    [resolvedView],
+  );
+
+  const getRunNode = useCallback((runId: string) => resolvedView?.getRunNode(runId), [resolvedView]);
+
+  const getRunByMsgId = useCallback((msgId: string) => resolvedView?.getRunByMsgId(msgId), [resolvedView]);
 
   // Write operation callbacks
   const sendMessage = useCallback(
-    async (messages: TMessage | TMessage[], opts?: SendOptions) => {
+    async (msgs: TMessage | TMessage[], opts?: SendOptions) => {
       if (!resolvedView)
         throw new Ably.ErrorInfo('unable to send; view is not available', ErrorCode.InvalidArgument, 400);
-      return resolvedView.sendMessage(messages, opts);
+      return resolvedView.sendMessage(msgs, opts);
     },
     [resolvedView],
   );
 
   const sendEvent = useCallback(
-    async (events: TEvent | TEvent[], opts?: SendOptions) => {
+    async (events: TEvent | TEvent[] | { event: TEvent; domainMessageId?: string }[], opts?: SendOptions) => {
       if (!resolvedView)
         throw new Ably.ErrorInfo('unable to send; view is not available', ErrorCode.InvalidArgument, 400);
       return resolvedView.sendEvent(events, opts);
@@ -219,9 +267,14 @@ export const useView = <TEvent, TProjection, TMessage>({
     loadOlder,
     select,
     getSelectedIndex,
-    getSiblings,
-    hasSiblings,
-    getNode,
+    getSiblingRuns,
+    hasSiblingRuns,
+    hasMessageSiblings,
+    getMessageSiblings,
+    getSelectedMessageSiblingIndex,
+    selectMessageSibling,
+    getRunNode,
+    getRunByMsgId,
     sendMessage,
     sendEvent,
     regenerate,

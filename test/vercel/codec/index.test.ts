@@ -71,13 +71,13 @@ describe('UIMessageCodec', () => {
       expect(result).toEqual({ kind: 'other' });
     });
 
-    it('classifies ait-regenerate as regenerate with parent + forkOf surfaced', () => {
+    it('classifies ait-regenerate as regenerate with parent + regenerates surfaced', () => {
       const result = UIMessageCodec.classifyEvent({
         type: 'ait-regenerate',
-        forkOfMsgId: 'asst-A1',
+        regeneratesMsgId: 'asst-A1',
         parentMsgId: 'user-U1',
       });
-      expect(result).toEqual({ kind: 'regenerate', parent: 'user-U1', forkOf: 'asst-A1' });
+      expect(result).toEqual({ kind: 'regenerate', parent: 'user-U1', regenerates: 'asst-A1' });
     });
   });
 
@@ -86,7 +86,7 @@ describe('UIMessageCodec', () => {
       const event = UIMessageCodec.createRegenerateEvent('asst-A1', 'user-U1');
       expect(event).toEqual({
         type: 'ait-regenerate',
-        forkOfMsgId: 'asst-A1',
+        regeneratesMsgId: 'asst-A1',
         parentMsgId: 'user-U1',
       });
     });

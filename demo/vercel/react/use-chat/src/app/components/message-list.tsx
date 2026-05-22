@@ -2,19 +2,21 @@
 
 import { useRef, useEffect } from 'react';
 import type { UIMessage } from 'ai';
-import type { MessageNode } from '@ably/ai-transport';
+import type { RunNode } from '@ably/ai-transport';
+import type { VercelProjection } from '@ably/ai-transport/vercel';
 import { MessageBubble } from './message-bubble';
 import { IntroCard } from './intro-card';
 
 interface SiblingApi {
-  hasSiblings: (msgId: string) => boolean;
-  getSiblings: (msgId: string) => UIMessage[];
-  getSelectedIndex: (msgId: string) => number;
-  select: (msgId: string, index: number) => void;
+  hasMessageSiblings: (msgId: string) => boolean;
+  getMessageSiblings: (msgId: string) => RunNode<VercelProjection>[];
+  getSelectedMessageSiblingIndex: (msgId: string) => number;
+  selectMessageSibling: (msgId: string, index: number) => void;
+  getRunByMsgId: (msgId: string) => RunNode<VercelProjection> | undefined;
 }
 
 interface MessageListProps {
-  nodes: MessageNode<UIMessage>[];
+  messages: UIMessage[];
   hasOlder: boolean;
   loading: boolean;
   siblings: SiblingApi;
@@ -26,7 +28,7 @@ interface MessageListProps {
 }
 
 export function MessageList({
-  nodes,
+  messages,
   hasOlder,
   loading,
   siblings,
@@ -41,12 +43,12 @@ export function MessageList({
   const prevLastIdRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
-    const lastId = nodes.length > 0 ? nodes[nodes.length - 1].message.id : undefined;
+    const lastId = messages.length > 0 ? messages[messages.length - 1].id : undefined;
     if (lastId && lastId !== prevLastIdRef.current) {
       prevLastIdRef.current = lastId;
       endRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [nodes]);
+  }, [messages]);
 
   const handleScroll = () => {
     const el = scrollRef.current;
@@ -75,18 +77,19 @@ export function MessageList({
         </div>
       )}
       {loading && <div className="text-center text-xs text-zinc-600 animate-pulse">Loading history...</div>}
-      {nodes.map((node) => {
-        const { message, headers, msgId } = node;
-        const hasSiblings = siblings.hasSiblings(msgId);
+      {messages.map((message) => {
+        const owningRun = siblings.getRunByMsgId(message.id);
+        const hasSiblings = siblings.hasMessageSiblings(message.id);
         return (
           <MessageBubble
             key={message.id}
             message={message}
-            headers={headers}
+            owningRun={owningRun}
+            clientId={owningRun?.clientId || undefined}
             hasSiblings={hasSiblings}
-            siblingCount={hasSiblings ? siblings.getSiblings(msgId).length : undefined}
-            selectedIndex={hasSiblings ? siblings.getSelectedIndex(msgId) : undefined}
-            onSelectSibling={hasSiblings ? (index) => siblings.select(msgId, index) : undefined}
+            siblingCount={hasSiblings ? siblings.getMessageSiblings(message.id).length : undefined}
+            selectedIndex={hasSiblings ? siblings.getSelectedMessageSiblingIndex(message.id) : undefined}
+            onSelectSibling={hasSiblings ? (index) => siblings.selectMessageSibling(message.id, index) : undefined}
             onRegenerate={message.role === 'assistant' ? () => onRegenerate(message.id) : undefined}
             onEdit={message.role === 'user' ? (text) => onEdit(message.id, text) : undefined}
             onToolApprove={onToolApprove}

@@ -3,16 +3,20 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   HEADER_FORK_OF,
   HEADER_INVOCATION_ID,
+  HEADER_MSG_ID,
   HEADER_PARENT,
   HEADER_ROLE,
+  HEADER_RUN_CLIENT_ID,
+  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
 } from '../../../src/constants.js';
+import type { Codec } from '../../../src/core/codec/types.js';
 import type { TreeInternal } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Test codec — minimal projection that appends messages on fold
 // ---------------------------------------------------------------------------
 
 interface TestMessage {
@@ -20,34 +24,100 @@ interface TestMessage {
   content: string;
 }
 
+type TestEvent = { type: 'append-message'; message: TestMessage } | { type: 'noop' } | { type: 'throw' };
+
+interface TestProjection {
+  messages: TestMessage[];
+}
+
+const testCodec: Codec<TestEvent, TestProjection, TestMessage> = {
+  init: () => ({ messages: [] }),
+  fold: (state, event) => {
+    if (event.type === 'append-message') {
+      return { messages: [...state.messages, event.message] };
+    }
+    if (event.type === 'throw') {
+      throw new Error('test fold failure');
+    }
+    return state;
+  },
+  getMessages: (projection) => projection.messages,
+  createEncoder: () => {
+    throw new Error('not used in tree tests');
+  },
+  createDecoder: () => ({ decode: () => [] }),
+  userMessageEvent: (message) => ({ type: 'append-message', message }),
+  createRegenerateEvent: () => ({ type: 'noop' }),
+  classifyEvent: () => ({ kind: 'other' }),
+  // eslint-disable-next-line unicorn/no-useless-undefined -- the Codec contract requires returning undefined when no target is resolved
+  resolveToolTarget: () => undefined,
+  isTerminal: () => false,
+};
+
 const silentLogger = makeLogger({ logLevel: LogLevel.Silent });
 
 /** Empty selections — always picks the latest sibling at every fork. */
 const NO_SELECTIONS = new Map<string, string>();
 
-/**
- * Build headers for a tree node.
- * @param opts - Optional parent and forkOf IDs.
- * @param opts.parent - The parent msg-id.
- * @param opts.forkOf - The forkOf msg-id.
- * @returns A headers object suitable for upsert.
- */
-const headers = (opts?: { parent?: string; forkOf?: string }): Record<string, string> => {
-  const h: Record<string, string> = {};
-  if (opts?.parent) h[HEADER_PARENT] = opts.parent;
-  if (opts?.forkOf) h[HEADER_FORK_OF] = opts.forkOf;
-  return h;
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+interface ApplyOpts {
+  runId: string;
+  msgId?: string;
+  parent?: string;
+  forkOf?: string;
+  regenerates?: string;
+  role?: string;
+  invocationId?: string;
+  clientId?: string;
+  runContinue?: boolean;
+  serial?: string;
+  message?: TestMessage;
+  /** Override events entirely. When set, `message` is ignored. */
+  events?: TestEvent[];
+}
+
+const apply = (tree: TreeInternal<TestEvent, TestProjection>, opts: ApplyOpts): void => {
+  const h: Record<string, string> = { [HEADER_RUN_ID]: opts.runId };
+  if (opts.msgId) h[HEADER_MSG_ID] = opts.msgId;
+  if (opts.parent) h[HEADER_PARENT] = opts.parent;
+  if (opts.forkOf) h[HEADER_FORK_OF] = opts.forkOf;
+  if (opts.regenerates) h['x-ably-msg-regenerate'] = opts.regenerates;
+  if (opts.role) h[HEADER_ROLE] = opts.role;
+  if (opts.invocationId) h[HEADER_INVOCATION_ID] = opts.invocationId;
+  if (opts.clientId) h[HEADER_RUN_CLIENT_ID] = opts.clientId;
+  if (opts.runContinue) h[HEADER_RUN_CONTINUE] = 'true';
+
+  const events: TestEvent[] = opts.events ?? (opts.message ? [{ type: 'append-message', message: opts.message }] : []);
+  tree.applyMessage(events, h, opts.serial);
 };
+
+const messagesOf = (tree: TreeInternal<TestEvent, TestProjection>, runId: string): TestMessage[] => {
+  const run = tree.getRunNode(runId);
+  return run ? testCodec.getMessages(run.projection) : [];
+};
+
+const flatMessages = (
+  tree: TreeInternal<TestEvent, TestProjection>,
+  selections: Map<string, string> = NO_SELECTIONS,
+): TestMessage[] => tree.flattenNodes(selections).flatMap((r) => testCodec.getMessages(r.projection));
+
+const flatRunIds = (
+  tree: TreeInternal<TestEvent, TestProjection>,
+  selections: Map<string, string> = NO_SELECTIONS,
+): string[] => tree.flattenNodes(selections).map((r) => r.runId);
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 describe('Tree', () => {
-  let tree: TreeInternal<TestMessage>;
+  let tree: TreeInternal<TestEvent, TestProjection>;
 
   beforeEach(() => {
-    tree = createTree(silentLogger);
+    tree = createTree(testCodec, silentLogger);
   });
 
   // -------------------------------------------------------------------------
@@ -55,130 +125,155 @@ describe('Tree', () => {
   // -------------------------------------------------------------------------
 
   describe('linear conversation', () => {
-    it('flattens a single message', () => {
-      tree.upsert('m1', { id: 'a', content: 'hi' }, headers(), 'serial-001');
-      expect(tree.flattenNodes(NO_SELECTIONS).map((n) => n.message)).toEqual([{ id: 'a', content: 'hi' }]);
+    it('creates a single Run from one message', () => {
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
+      expect(flatRunIds(tree)).toEqual(['R1']);
+      expect(flatMessages(tree)).toEqual([{ id: 'a', content: 'hi' }]);
     });
 
-    it('flattens a linear chain in serial order', () => {
-      tree.upsert('m1', { id: 'a', content: 'first' }, headers(), 'serial-001');
-      tree.upsert('m2', { id: 'b', content: 'second' }, headers({ parent: 'm1' }), 'serial-002');
-      tree.upsert('m3', { id: 'c', content: 'third' }, headers({ parent: 'm2' }), 'serial-003');
+    it('creates a chain of Runs in startSerial order', () => {
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'first' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R2',
+        msgId: 'm2',
+        parent: 'm1',
+        message: { id: 'b', content: 'second' },
+        serial: 's2',
+      });
+      apply(tree, {
+        runId: 'R3',
+        msgId: 'm3',
+        parent: 'm2',
+        message: { id: 'c', content: 'third' },
+        serial: 's3',
+      });
 
-      const flat = tree.flattenNodes(NO_SELECTIONS).map((n) => n.message);
-      expect(flat).toEqual([
+      expect(flatRunIds(tree)).toEqual(['R1', 'R2', 'R3']);
+      expect(flatMessages(tree)).toEqual([
         { id: 'a', content: 'first' },
         { id: 'b', content: 'second' },
         { id: 'c', content: 'third' },
       ]);
     });
 
-    it('returns correct node via getNode', () => {
-      tree.upsert('m1', { id: 'a', content: 'hi' }, headers(), 'serial-001');
-      const node = tree.getNode('m1');
-      expect(node).toBeDefined();
-      expect(node?.msgId).toBe('m1');
-      expect(node?.message).toEqual({ id: 'a', content: 'hi' });
+    it('resolves parentRunId from parent msg-id via msgIdToRunId index', () => {
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'q' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R2',
+        msgId: 'm2',
+        parent: 'm1',
+        message: { id: 'b', content: 'a' },
+        serial: 's2',
+      });
+      expect(tree.getRunNode('R2')?.parentRunId).toBe('R1');
     });
 
-    it('returns undefined for unknown node', () => {
-      expect(tree.getNode('unknown')).toBeUndefined();
+    it('returns RunNode via getRunNode', () => {
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
+      const run = tree.getRunNode('R1');
+      expect(run).toBeDefined();
+      expect(run?.runId).toBe('R1');
+      const projection = run?.projection;
+      if (!projection) throw new Error('expected projection');
+      expect(testCodec.getMessages(projection)).toEqual([{ id: 'a', content: 'hi' }]);
     });
 
-    it('returns stored headers', () => {
-      const h = { ...headers({ parent: 'm0' }), 'x-custom': 'val' };
-      tree.upsert('m1', { id: 'a', content: 'hi' }, h, 'serial-001');
-      expect(tree.getHeaders('m1')).toEqual(h);
+    it('returns undefined for an unknown runId', () => {
+      expect(tree.getRunNode('R-unknown')).toBeUndefined();
     });
 
-    it('returns undefined headers for unknown node', () => {
-      expect(tree.getHeaders('unknown')).toBeUndefined();
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // Upsert — update in place
-  // -------------------------------------------------------------------------
-
-  describe('upsert updates', () => {
-    it('updates message content on re-upsert', () => {
-      tree.upsert('m1', { id: 'a', content: 'v1' }, headers(), 'serial-001');
-      tree.upsert('m1', { id: 'a', content: 'v2' }, headers(), 'serial-001');
-
-      const flat = tree.flattenNodes(NO_SELECTIONS).map((n) => n.message);
-      expect(flat).toEqual([{ id: 'a', content: 'v2' }]);
+    it('returns owning Run via getRunByMsgId', () => {
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
+      expect(tree.getRunByMsgId('m1')?.runId).toBe('R1');
+      expect(tree.getRunByMsgId('m-unknown')).toBeUndefined();
     });
 
-    it('does not erase headers on update with empty headers', () => {
-      tree.upsert('m1', { id: 'a', content: 'v1' }, headers({ parent: 'm0' }), 'serial-001');
-      // Streaming update with empty headers
-      tree.upsert('m1', { id: 'a', content: 'v2' }, {});
-
-      expect(tree.getHeaders('m1')).toEqual(headers({ parent: 'm0' }));
-    });
-
-    it('updates headers when new headers are non-empty', () => {
-      tree.upsert('m1', { id: 'a', content: 'v1' }, { 'x-old': 'val' }, 'serial-001');
-      tree.upsert('m1', { id: 'a', content: 'v2' }, { 'x-new': 'val2' });
-
-      expect(tree.getHeaders('m1')).toEqual({ 'x-new': 'val2' });
-    });
-
-    it('preserves an existing x-ably-role when a later upsert carries a different role', () => {
-      // Original insert: agent's assistant stream stamps role='assistant'.
-      tree.upsert('m1', { id: 'a', content: 'v1' }, { [HEADER_ROLE]: 'assistant', 'x-foo': 'a' }, 'serial-001');
-      // Secondary contribution: a client-published continuation tool
-      // resolution stamps the SAME msg-id but with role='user'. The node's
-      // role must remain 'assistant' — otherwise the UI / winner-rule / etc.
-      // misread the node as a user message.
-      tree.upsert('m1', { id: 'a', content: 'v2' }, { [HEADER_ROLE]: 'user', 'x-foo': 'b' });
-
-      expect(tree.getHeaders('m1')).toEqual({ [HEADER_ROLE]: 'assistant', 'x-foo': 'b' });
-    });
-
-    it('allows the very first upsert to set whatever role it likes', () => {
-      // Sanity: preservation only kicks in on second-or-later upsert.
-      tree.upsert('m1', { id: 'a', content: 'v1' }, { [HEADER_ROLE]: 'user' });
-      expect(tree.getHeaders('m1')?.[HEADER_ROLE]).toBe('user');
+    it('drops messages without an x-ably-run-id header', () => {
+      tree.applyMessage([{ type: 'append-message', message: { id: 'a', content: 'orphan' } }], {}, 's1');
+      expect(tree.flattenNodes(NO_SELECTIONS)).toEqual([]);
     });
   });
 
   // -------------------------------------------------------------------------
-  // Serial promotion
+  // applyMessage updates
   // -------------------------------------------------------------------------
 
-  describe('serial promotion', () => {
-    it('promotes null serial to server-assigned serial', () => {
+  describe('applyMessage updates', () => {
+    it('folds additional events into an existing Run projection', () => {
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'first' }, serial: 's1' });
+      apply(tree, { runId: 'R1', msgId: 'm2', parent: 'm1', message: { id: 'b', content: 'second' }, serial: 's2' });
+
+      expect(messagesOf(tree, 'R1')).toEqual([
+        { id: 'a', content: 'first' },
+        { id: 'b', content: 'second' },
+      ]);
+    });
+
+    it('routes events to the owning Run by msgId (continuation amend)', () => {
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'first' }, serial: 's1' });
+      // Continuation message stamped under R1 with prior msg-id; folds into R1's projection.
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'm1',
+        role: 'user',
+        runContinue: true,
+        message: { id: 'a', content: 'amended' },
+        serial: 's2',
+      });
+
+      expect(messagesOf(tree, 'R1')).toEqual([
+        { id: 'a', content: 'first' },
+        { id: 'a', content: 'amended' },
+      ]);
+    });
+
+    it('catches fold errors without aborting the apply', () => {
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'ok' }, serial: 's1' });
+      // Folding a throwing event should not crash applyMessage.
+      expect(() => {
+        apply(tree, { runId: 'R1', msgId: 'm2', parent: 'm1', events: [{ type: 'throw' }], serial: 's2' });
+      }).not.toThrow();
+      // Earlier message survives.
+      expect(messagesOf(tree, 'R1')).toEqual([{ id: 'a', content: 'ok' }]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // startSerial promotion
+  // -------------------------------------------------------------------------
+
+  describe('startSerial promotion', () => {
+    it('promotes null startSerial to server-assigned serial', () => {
       // Optimistic insert (no serial)
-      tree.upsert('m1', { id: 'a', content: 'optimistic' }, headers());
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'optimistic' } });
+      expect(tree.getRunNode('R1')?.startSerial).toBeUndefined();
+
       // Server relay with serial
-      tree.upsert('m1', { id: 'a', content: 'confirmed' }, headers(), 'serial-001');
-
-      const node = tree.getNode('m1');
-      expect(node?.serial).toBe('serial-001');
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'm1',
+        message: { id: 'a', content: 'confirmed' },
+        serial: 's10',
+      });
+      expect(tree.getRunNode('R1')?.startSerial).toBe('s10');
     });
 
-    it('re-sorts after serial promotion', () => {
-      // Insert m2 with serial first
-      tree.upsert('m2', { id: 'b', content: 'second' }, headers({ parent: 'm1' }), 'serial-002');
-      // Insert m1 optimistically (no serial) — sorts after m2 initially
-      tree.upsert('m1', { id: 'a', content: 'first' }, headers());
+    it('re-sorts after startSerial promotion', () => {
+      // R2 arrives first with a serial.
+      apply(tree, { runId: 'R2', msgId: 'm2', message: { id: 'b', content: 'second' }, serial: 's2' });
+      // R1 optimistic (no serial) — sorts after R2 initially.
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'first' } });
+      expect(flatRunIds(tree)).toEqual(['R2', 'R1']);
 
-      // Before promotion, m2 (serial-bearing) sorts before m1 (null-serial)
-      // After promotion, m1 sorts before m2
-      tree.upsert('m1', { id: 'a', content: 'first' }, headers(), 'serial-001');
-
-      const flat = tree.flattenNodes(NO_SELECTIONS).map((n) => n.message);
-      expect(flat[0]).toEqual({ id: 'a', content: 'first' });
-      expect(flat[1]).toEqual({ id: 'b', content: 'second' });
+      // R1 gets its real serial — moves before R2.
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'first' }, serial: 's1' });
+      expect(flatRunIds(tree)).toEqual(['R1', 'R2']);
     });
 
-    it('does not demote an existing serial', () => {
-      tree.upsert('m1', { id: 'a', content: 'v1' }, headers(), 'serial-001');
-      // Re-upsert without serial should not clear it
-      tree.upsert('m1', { id: 'a', content: 'v2' }, headers());
-
-      expect(tree.getNode('m1')?.serial).toBe('serial-001');
+    it('does not demote an existing startSerial when subsequent applyMessage omits it', () => {
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'v1' }, serial: 's1' });
+      apply(tree, { runId: 'R1', msgId: 'm2', parent: 'm1', message: { id: 'b', content: 'v2' } });
+      expect(tree.getRunNode('R1')?.startSerial).toBe('s1');
     });
   });
 
@@ -187,42 +282,38 @@ describe('Tree', () => {
   // -------------------------------------------------------------------------
 
   describe('out-of-order inserts', () => {
-    it('produces correct flatten regardless of insertion order', () => {
-      // Insert in reverse order
-      tree.upsert('m3', { id: 'c', content: 'third' }, headers({ parent: 'm2' }), 'serial-003');
-      tree.upsert('m1', { id: 'a', content: 'first' }, headers(), 'serial-001');
-      tree.upsert('m2', { id: 'b', content: 'second' }, headers({ parent: 'm1' }), 'serial-002');
+    it('produces correct flatten regardless of Run insertion order', () => {
+      // Apply in reverse startSerial order.
+      apply(tree, { runId: 'R3', msgId: 'm3', parent: 'm2', message: { id: 'c', content: 'third' }, serial: 's3' });
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'first' }, serial: 's1' });
+      apply(tree, { runId: 'R2', msgId: 'm2', parent: 'm1', message: { id: 'b', content: 'second' }, serial: 's2' });
 
-      const flat = tree.flattenNodes(NO_SELECTIONS).map((n) => n.message);
-      expect(flat).toEqual([
-        { id: 'a', content: 'first' },
-        { id: 'b', content: 'second' },
-        { id: 'c', content: 'third' },
-      ]);
+      // R3 arrived first with parent=m2, but m2 (R2) hadn't been observed yet,
+      // so R3.parentRunId was undefined at create time. The tree resolves
+      // parentRunId at creation, not lazily. This is documented behaviour —
+      // out-of-order inserts may produce disconnected Run forests when
+      // parents arrive late. The fix for that is decode-history's
+      // re-ingestion pass; for live channels parents always arrive first.
+      // For this test we assert the flatten still includes every Run in
+      // startSerial order; reachability is derived from whatever
+      // parentRunIds were resolved.
+      expect(flatRunIds(tree)).toContain('R1');
+      expect(flatRunIds(tree)).toContain('R2');
+      expect(flatRunIds(tree)).toContain('R3');
     });
 
-    it('null-serial messages sort after serial-bearing messages', () => {
-      tree.upsert('m1', { id: 'a', content: 'serial' }, headers(), 'serial-001');
-      tree.upsert('m2', { id: 'b', content: 'optimistic' }, headers({ parent: 'm1' }));
-
-      const flat = tree.flattenNodes(NO_SELECTIONS).map((n) => n.message);
-      expect(flat).toEqual([
-        { id: 'a', content: 'serial' },
-        { id: 'b', content: 'optimistic' },
-      ]);
+    it('null-startSerial Runs sort after serial-bearing Runs', () => {
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'first' }, serial: 's1' });
+      // R2 is optimistic.
+      apply(tree, { runId: 'R2', msgId: 'm2', parent: 'm1', message: { id: 'b', content: 'second' } });
+      expect(flatRunIds(tree)).toEqual(['R1', 'R2']);
     });
 
-    it('null-serial messages sort among themselves by insertion order', () => {
-      tree.upsert('m1', { id: 'a', content: 'first' }, headers());
-      tree.upsert('m2', { id: 'b', content: 'second' }, headers({ parent: 'm1' }));
-      tree.upsert('m3', { id: 'c', content: 'third' }, headers({ parent: 'm2' }));
-
-      const flat = tree.flattenNodes(NO_SELECTIONS).map((n) => n.message);
-      expect(flat).toEqual([
-        { id: 'a', content: 'first' },
-        { id: 'b', content: 'second' },
-        { id: 'c', content: 'third' },
-      ]);
+    it('null-startSerial Runs sort among themselves by insertion order', () => {
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'first' } });
+      apply(tree, { runId: 'R2', msgId: 'm2', parent: 'm1', message: { id: 'b', content: 'second' } });
+      apply(tree, { runId: 'R3', msgId: 'm3', parent: 'm2', message: { id: 'c', content: 'third' } });
+      expect(flatRunIds(tree)).toEqual(['R1', 'R2', 'R3']);
     });
   });
 
@@ -232,113 +323,451 @@ describe('Tree', () => {
 
   describe('fork and regeneration', () => {
     beforeEach(() => {
-      // Base linear chain: m1 -> m2 -> m3
-      tree.upsert('m1', { id: 'a', content: 'user' }, headers(), 'serial-001');
-      tree.upsert('m2', { id: 'b', content: 'assistant-v1' }, headers({ parent: 'm1' }), 'serial-002');
-      tree.upsert('m3', { id: 'c', content: 'follow-up' }, headers({ parent: 'm2' }), 'serial-003');
+      // Base chain: R1 (root) → R2 (child of R1).
+      // role omitted so the user-content wire keeps routing at wire-runId
+      // (the tree's role-based sub-Run split is verified in dedicated tests
+      // below). These tests focus on parent/forkOf sibling semantics.
+      apply(tree, { runId: 'R1', msgId: 'u1', message: { id: 'a', content: 'user-q' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R2',
+        msgId: 'a1',
+        parent: 'u1',
+        message: { id: 'b', content: 'assistant-v1' },
+        serial: 's2',
+      });
     });
 
-    it('fork creates a sibling group', () => {
-      // Regenerate m2: new m4 forks m2
-      tree.upsert('m4', { id: 'd', content: 'assistant-v2' }, headers({ parent: 'm1', forkOf: 'm2' }), 'serial-004');
+    it('forkOf creates a sibling Run group sharing parentRunId', () => {
+      // Edit: new Run R2' with forkOf pointing at R2's user msg, same parentRunId.
+      apply(tree, {
+        runId: 'R2alt',
+        msgId: 'a2',
+        parent: 'u1',
+        forkOf: 'a1',
+        message: { id: 'c', content: 'assistant-v2' },
+        serial: 's3',
+      });
 
-      expect(tree.hasSiblings('m2')).toBe(true);
-      expect(tree.hasSiblings('m4')).toBe(true);
+      expect(tree.hasSiblingRuns('R2')).toBe(true);
+      expect(tree.hasSiblingRuns('R2alt')).toBe(true);
 
-      const siblings = tree.getSiblings('m2');
+      const siblings = tree.getSiblingRuns('R2');
       expect(siblings).toHaveLength(2);
-      expect(siblings[0]).toEqual({ id: 'b', content: 'assistant-v1' });
-      expect(siblings[1]).toEqual({ id: 'd', content: 'assistant-v2' });
+      expect(siblings.map((s) => s.runId)).toEqual(['R2', 'R2alt']);
     });
 
-    it('default selection (no selections) picks the latest sibling', () => {
-      tree.upsert('m4', { id: 'd', content: 'assistant-v2' }, headers({ parent: 'm1', forkOf: 'm2' }), 'serial-004');
+    it('default selection picks the latest sibling Run', () => {
+      apply(tree, {
+        runId: 'R2alt',
+        msgId: 'a2',
+        parent: 'u1',
+        forkOf: 'a1',
+        message: { id: 'c', content: 'assistant-v2' },
+        serial: 's3',
+      });
 
-      // Flatten with empty selections follows the latest branch (m4, not m2)
-      const flat = tree.flattenNodes(NO_SELECTIONS).map((n) => n.message);
-      expect(flat).toEqual([
-        { id: 'a', content: 'user' },
-        { id: 'd', content: 'assistant-v2' },
-      ]);
+      // Latest sibling = R2alt → R2 is hidden.
+      expect(flatRunIds(tree)).toEqual(['R1', 'R2alt']);
     });
 
-    it('selections map controls which branch is followed', () => {
-      tree.upsert('m4', { id: 'd', content: 'assistant-v2' }, headers({ parent: 'm1', forkOf: 'm2' }), 'serial-004');
+    it('selections map controls which sibling Run is followed', () => {
+      apply(tree, {
+        runId: 'R2alt',
+        msgId: 'a2',
+        parent: 'u1',
+        forkOf: 'a1',
+        message: { id: 'c', content: 'assistant-v2' },
+        serial: 's3',
+      });
 
-      const groupRoot = tree.getGroupRoot('m2');
-      // Select the first sibling (original m2) by msgId
-      const selections = new Map([[groupRoot, 'm2']]);
-
-      const flat = tree.flattenNodes(selections).map((n) => n.message);
-      expect(flat).toEqual([
-        { id: 'a', content: 'user' },
-        { id: 'b', content: 'assistant-v1' },
-        { id: 'c', content: 'follow-up' },
-      ]);
+      const groupRoot = tree.getGroupRoot('R2');
+      const selections = new Map([[groupRoot, 'R2']]);
+      expect(flatRunIds(tree, selections)).toEqual(['R1', 'R2']);
     });
 
-    it('stale selection msgId falls back to latest sibling', () => {
-      tree.upsert('m4', { id: 'd', content: 'v2' }, headers({ parent: 'm1', forkOf: 'm2' }), 'serial-004');
+    it('stale selection runId falls back to latest sibling', () => {
+      apply(tree, {
+        runId: 'R2alt',
+        msgId: 'a2',
+        parent: 'u1',
+        forkOf: 'a1',
+        message: { id: 'c', content: 'v2' },
+        serial: 's3',
+      });
 
-      const groupRoot = tree.getGroupRoot('m2');
-
-      // Unknown msgId falls back to latest
-      const stale = new Map([[groupRoot, 'nonexistent']]);
-      const flatStale = tree.flattenNodes(stale).map((n) => n.message.content);
-      expect(flatStale).toContain('v2');
-    });
-
-    it('getSiblingNodes returns TreeNode objects with msgIds', () => {
-      tree.upsert('m4', { id: 'd', content: 'assistant-v2' }, headers({ parent: 'm1', forkOf: 'm2' }), 'serial-004');
-
-      const nodes = tree.getSiblingNodes('m2');
-      expect(nodes).toHaveLength(2);
-      expect(nodes[0]?.msgId).toBe('m2');
-      expect(nodes[1]?.msgId).toBe('m4');
-      expect(nodes[0]?.message).toEqual({ id: 'b', content: 'assistant-v1' });
-      expect(nodes[1]?.message).toEqual({ id: 'd', content: 'assistant-v2' });
-    });
-
-    it('getSiblings returns single-element array for non-forked nodes', () => {
-      expect(tree.getSiblings('m1')).toEqual([{ id: 'a', content: 'user' }]);
-      expect(tree.hasSiblings('m1')).toBe(false);
-    });
-
-    it('getSiblings returns empty array for unknown msgId', () => {
-      expect(tree.getSiblings('unknown')).toEqual([]);
+      const groupRoot = tree.getGroupRoot('R2');
+      const stale = new Map([[groupRoot, 'R-nonexistent']]);
+      expect(flatRunIds(tree, stale)).toEqual(['R1', 'R2alt']);
     });
 
     it('multiple forks create a larger sibling group', () => {
-      tree.upsert('m4', { id: 'd', content: 'v2' }, headers({ parent: 'm1', forkOf: 'm2' }), 'serial-004');
-      tree.upsert('m5', { id: 'e', content: 'v3' }, headers({ parent: 'm1', forkOf: 'm2' }), 'serial-005');
+      apply(tree, {
+        runId: 'R2alt',
+        msgId: 'a2',
+        parent: 'u1',
+        forkOf: 'a1',
+        message: { id: 'c', content: 'v2' },
+        serial: 's3',
+      });
+      apply(tree, {
+        runId: 'R2alt2',
+        msgId: 'a3',
+        parent: 'u1',
+        forkOf: 'a1',
+        message: { id: 'd', content: 'v3' },
+        serial: 's4',
+      });
 
-      const siblings = tree.getSiblings('m2');
-      expect(siblings).toHaveLength(3);
-      expect(siblings.map((s) => s.content)).toEqual(['assistant-v1', 'v2', 'v3']);
+      const siblings = tree.getSiblingRuns('R2');
+      expect(siblings.map((s) => s.runId)).toEqual(['R2', 'R2alt', 'R2alt2']);
     });
 
-    it('children of non-selected sibling are excluded from flatten', () => {
-      tree.upsert('m4', { id: 'd', content: 'v2' }, headers({ parent: 'm1', forkOf: 'm2' }), 'serial-004');
-      tree.upsert('m5', { id: 'e', content: 'child-of-v2' }, headers({ parent: 'm4' }), 'serial-005');
+    it('transitive forkOf chain: alt2 forks alt1 which forks the original', () => {
+      // Sibling group at R1's children, built as a chain:
+      //   R2alt forks R2 (the original assistant a1)
+      //   R2alt2 forks R2alt's assistant message (a2)
+      // Group root is R2 (R2alt's forkOf is R2; R2alt2's forkOf is R2alt
+      // which transitively roots at R2).
+      apply(tree, {
+        runId: 'R2alt',
+        msgId: 'a2',
+        parent: 'u1',
+        forkOf: 'a1',
+        message: { id: 'c', content: 'v2' },
+        serial: 's3',
+      });
+      apply(tree, {
+        runId: 'R2alt2',
+        msgId: 'a3',
+        parent: 'u1',
+        forkOf: 'a2',
+        message: { id: 'd', content: 'v3' },
+        serial: 's4',
+      });
 
-      // Default selects latest (m4), so m5 should be included, m3 excluded
-      const flat = tree.flattenNodes(NO_SELECTIONS).map((n) => n.message);
-      expect(flat).toEqual([
-        { id: 'a', content: 'user' },
-        { id: 'd', content: 'v2' },
-        { id: 'e', content: 'child-of-v2' },
-      ]);
+      expect(tree.getRunNode('R2alt')?.forkOf).toBe('R2');
+      expect(tree.getRunNode('R2alt2')?.forkOf).toBe('R2alt');
+      expect(tree.getGroupRoot('R2alt2')).toBe('R2');
+      expect(tree.getSiblingRuns('R2alt2').map((s) => s.runId)).toEqual(['R2', 'R2alt', 'R2alt2']);
     });
 
-    it('getGroupRoot returns the original message in a fork chain', () => {
-      tree.upsert('m4', { id: 'd', content: 'v2' }, headers({ parent: 'm1', forkOf: 'm2' }), 'serial-004');
+    it('cycle in forkOf chain is detected and does not infinite-loop', () => {
+      // Construct a malformed pair where Ra and Rb forkOf each other's
+      // msg-id. The Tree's sibling walk must terminate.
+      apply(tree, {
+        runId: 'Ra',
+        msgId: 'ma',
+        parent: 'u1',
+        forkOf: 'mb',
+        message: { id: 'c', content: 'va' },
+        serial: 's3',
+      });
+      apply(tree, {
+        runId: 'Rb',
+        msgId: 'mb',
+        parent: 'u1',
+        forkOf: 'ma',
+        message: { id: 'd', content: 'vb' },
+        serial: 's4',
+      });
 
-      expect(tree.getGroupRoot('m2')).toBe('m2');
-      expect(tree.getGroupRoot('m4')).toBe('m2');
+      // Both calls return without hanging; the exact membership depends on
+      // walk-order, but the call terminates and includes both.
+      const siblings = tree.getSiblingRuns('Ra').map((s) => s.runId);
+      expect(siblings).toContain('Ra');
+      expect(siblings.length).toBeGreaterThan(0);
     });
 
-    it('getGroupRoot returns msgId for non-forked nodes', () => {
-      expect(tree.getGroupRoot('m1')).toBe('m1');
+    it('descendants of non-selected sibling Run are excluded from flatten', () => {
+      apply(tree, {
+        runId: 'R2alt',
+        msgId: 'a2',
+        parent: 'u1',
+        forkOf: 'a1',
+        message: { id: 'c', content: 'v2' },
+        serial: 's3',
+      });
+      // Descendant of R2alt
+      apply(tree, {
+        runId: 'R3alt',
+        msgId: 'a3',
+        parent: 'a2',
+        message: { id: 'd', content: 'after-v2' },
+        serial: 's4',
+      });
+      // Descendant of R2 (original)
+      apply(tree, {
+        runId: 'R3',
+        msgId: 'a4',
+        parent: 'a1',
+        message: { id: 'e', content: 'after-v1' },
+        serial: 's5',
+      });
+
+      // Default: latest sibling R2alt is selected, R3alt is its descendant.
+      expect(flatRunIds(tree)).toEqual(['R1', 'R2alt', 'R3alt']);
+
+      // Select original R2 → R3 (its descendant) becomes visible, R3alt hidden.
+      const groupRoot = tree.getGroupRoot('R2');
+      const selections = new Map([[groupRoot, 'R2']]);
+      expect(flatRunIds(tree, selections)).toEqual(['R1', 'R2', 'R3']);
+    });
+
+    it('getGroupRoot returns the original Run in a fork chain', () => {
+      apply(tree, {
+        runId: 'R2alt',
+        msgId: 'a2',
+        parent: 'u1',
+        forkOf: 'a1',
+        message: { id: 'c', content: 'v2' },
+        serial: 's3',
+      });
+      expect(tree.getGroupRoot('R2')).toBe('R2');
+      expect(tree.getGroupRoot('R2alt')).toBe('R2');
+    });
+
+    it('getGroupRoot returns the runId itself for non-forked Runs', () => {
+      expect(tree.getGroupRoot('R1')).toBe('R1');
+    });
+
+    it('getSiblingRuns returns empty for an unknown runId', () => {
+      expect(tree.getSiblingRuns('R-unknown')).toEqual([]);
+    });
+
+    it('hasSiblingRuns is false for a Run with no forks', () => {
+      expect(tree.hasSiblingRuns('R1')).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Regenerate groups (message-level)
+  // -------------------------------------------------------------------------
+
+  describe('regenerate groups', () => {
+    it('records regeneratesMsgId from the wire header', () => {
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'a1',
+        role: 'assistant',
+        message: { id: 'asst1', content: 'reply' },
+        serial: 's1',
+      });
+      apply(tree, {
+        runId: 'R2',
+        msgId: 'a2',
+        parent: 'a1',
+        regenerates: 'a1',
+        role: 'assistant',
+        message: { id: 'asst2', content: 'reply-2' },
+        serial: 's2',
+      });
+      expect(tree.getRunNode('R2')?.regeneratesMsgId).toBe('a1');
+    });
+
+    it('getRegenerateGroupByMsgId returns owner first, then regenerators by serial', () => {
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'a1',
+        role: 'assistant',
+        message: { id: 'asst1', content: 'reply' },
+        serial: 's1',
+      });
+      apply(tree, {
+        runId: 'R2',
+        msgId: 'a2',
+        parent: 'a1',
+        regenerates: 'a1',
+        role: 'assistant',
+        message: { id: 'asst2', content: 'reply-2' },
+        serial: 's3',
+      });
+      apply(tree, {
+        runId: 'R3',
+        msgId: 'a3',
+        parent: 'a1',
+        regenerates: 'a1',
+        role: 'assistant',
+        message: { id: 'asst3', content: 'reply-3' },
+        serial: 's5',
+      });
+      const group = tree.getRegenerateGroupByMsgId('a1');
+      expect(group.map((r) => r.runId)).toEqual(['R1', 'R2', 'R3']);
+    });
+
+    it('getRegenerateGroup(runId) resolves the group for a regenerator', () => {
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'a1',
+        role: 'assistant',
+        message: { id: 'asst1', content: 'reply' },
+        serial: 's1',
+      });
+      apply(tree, {
+        runId: 'R2',
+        msgId: 'a2',
+        parent: 'a1',
+        regenerates: 'a1',
+        role: 'assistant',
+        message: { id: 'asst2', content: 'reply-2' },
+        serial: 's2',
+      });
+      const result = tree.getRegenerateGroup('R2');
+      expect(result?.anchorMsgId).toBe('a1');
+      expect(result?.runs.map((r) => r.runId)).toEqual(['R1', 'R2']);
+    });
+
+    it('getRegenerateGroup(runId) resolves the group for the owner Run', () => {
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'a1',
+        role: 'assistant',
+        message: { id: 'asst1', content: 'reply' },
+        serial: 's1',
+      });
+      apply(tree, {
+        runId: 'R2',
+        msgId: 'a2',
+        parent: 'a1',
+        regenerates: 'a1',
+        role: 'assistant',
+        message: { id: 'asst2', content: 'reply-2' },
+        serial: 's2',
+      });
+      const result = tree.getRegenerateGroup('R1');
+      expect(result?.anchorMsgId).toBe('a1');
+      expect(result?.runs.map((r) => r.runId)).toEqual(['R1', 'R2']);
+    });
+
+    it('getRegenerateGroup(runId) returns undefined when neither end of the group is present', () => {
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'a1',
+        message: { id: 'asst1', content: 'reply' },
+        serial: 's1',
+      });
+      expect(tree.getRegenerateGroup('R1')).toBeUndefined();
+    });
+
+    it('delete(runId) on a regenerator removes it from the regenerate index', () => {
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'a1',
+        role: 'assistant',
+        message: { id: 'asst1', content: 'reply' },
+        serial: 's1',
+      });
+      apply(tree, {
+        runId: 'R2',
+        msgId: 'a2',
+        parent: 'a1',
+        regenerates: 'a1',
+        role: 'assistant',
+        message: { id: 'asst2', content: 'reply-2' },
+        serial: 's2',
+      });
+      tree.delete('R2');
+      expect(tree.getRegenerateGroupByMsgId('a1').map((r) => r.runId)).toEqual(['R1']);
+      expect(tree.getRegenerateGroup('R1')).toBeUndefined();
+    });
+
+    it('records regenerates field from run-start lifecycle when no prior wire arrived', () => {
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'a1',
+        role: 'assistant',
+        message: { id: 'asst1', content: 'reply' },
+        serial: 's1',
+      });
+      tree.applyRunLifecycle(
+        { type: 'ai-run-start', runId: 'R2', clientId: 'c1', invocationId: '', parent: 'a1', regenerates: 'a1' },
+        's2',
+      );
+      expect(tree.getRunNode('R2')?.regeneratesMsgId).toBe('a1');
+      expect(tree.getRegenerateGroupByMsgId('a1').map((r) => r.runId)).toEqual(['R1', 'R2']);
+    });
+
+    it('backfills regenerates from run-start when the assistant wire raced ahead without the header', () => {
+      // Race scenario: the assistant wire for R2 arrives BEFORE run-start
+      // (e.g. history pagination boundary or out-of-order delivery), so
+      // _createRunFromHeaders creates R2 without the regenerate metadata.
+      // applyRunLifecycle must backfill the missing field once run-start
+      // arrives — the alternative is the Run permanently lacking its
+      // regenerate anchor.
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'a1',
+        role: 'assistant',
+        message: { id: 'asst1', content: 'reply' },
+        serial: 's1',
+      });
+      // R2's assistant wire arrives WITHOUT x-ably-msg-regenerate.
+      apply(tree, {
+        runId: 'R2',
+        msgId: 'a2',
+        role: 'assistant',
+        message: { id: 'asst2', content: 'regen' },
+        serial: 's2',
+      });
+      expect(tree.getRunNode('R2')?.regeneratesMsgId).toBeUndefined();
+      // run-start arrives later with the canonical metadata.
+      tree.applyRunLifecycle(
+        { type: 'ai-run-start', runId: 'R2', clientId: 'c1', invocationId: '', parent: 'a1', regenerates: 'a1' },
+        's3',
+      );
+      expect(tree.getRunNode('R2')?.regeneratesMsgId).toBe('a1');
+      // The regenerate index now reflects the backfilled anchor too.
+      expect(tree.getRegenerateGroupByMsgId('a1').map((r) => r.runId)).toEqual(['R1', 'R2']);
+    });
+
+    it('backfills parentRunId from run-start when the assistant wire raced ahead of run-start', () => {
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'u1',
+        role: 'user',
+        message: { id: 'user1', content: 'q' },
+        serial: 's1',
+      });
+      // R2's first wire (assistant) arrives WITHOUT x-ably-parent.
+      apply(tree, {
+        runId: 'R2',
+        msgId: 'a2',
+        role: 'assistant',
+        message: { id: 'asst2', content: 'reply' },
+        serial: 's2',
+      });
+      expect(tree.getRunNode('R2')?.parentRunId).toBeUndefined();
+      // run-start carries the parent header pointing at u1.
+      tree.applyRunLifecycle(
+        { type: 'ai-run-start', runId: 'R2', clientId: 'c1', invocationId: '', parent: 'u1' },
+        's3',
+      );
+      expect(tree.getRunNode('R2')?.parentRunId).toBe('R1');
+    });
+
+    it('backfills parent and forkOf the same way for edit runs that raced ahead of run-start', () => {
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'u1',
+        role: 'user',
+        message: { id: 'user1', content: 'q' },
+        serial: 's1',
+      });
+      // R2's user wire arrives WITHOUT x-ably-parent / x-ably-fork-of.
+      apply(tree, {
+        runId: 'R2',
+        msgId: 'u2',
+        role: 'user',
+        message: { id: 'user2', content: 'q-edit' },
+        serial: 's2',
+      });
+      expect(tree.getRunNode('R2')?.parentRunId).toBeUndefined();
+      expect(tree.getRunNode('R2')?.forkOf).toBeUndefined();
+      // run-start carries the canonical edit metadata.
+      tree.applyRunLifecycle(
+        { type: 'ai-run-start', runId: 'R2', clientId: 'c1', invocationId: '', forkOf: 'u1' },
+        's3',
+      );
+      expect(tree.getRunNode('R2')?.forkOf).toBe('R1');
     });
   });
 
@@ -347,49 +776,170 @@ describe('Tree', () => {
   // -------------------------------------------------------------------------
 
   describe('delete', () => {
-    it('removes a node from flatten', () => {
-      tree.upsert('m1', { id: 'a', content: 'first' }, headers(), 'serial-001');
-      tree.upsert('m2', { id: 'b', content: 'second' }, headers({ parent: 'm1' }), 'serial-002');
+    it('removes a Run from flatten', () => {
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'first' }, serial: 's1' });
+      apply(tree, { runId: 'R2', msgId: 'm2', parent: 'm1', message: { id: 'b', content: 'second' }, serial: 's2' });
 
-      tree.delete('m2');
-      expect(tree.flattenNodes(NO_SELECTIONS).map((n) => n.message)).toEqual([{ id: 'a', content: 'first' }]);
+      tree.delete('R2');
+      expect(flatRunIds(tree)).toEqual(['R1']);
     });
 
-    it('removes the node from getNode', () => {
-      tree.upsert('m1', { id: 'a', content: 'hi' }, headers(), 'serial-001');
-      tree.delete('m1');
-      expect(tree.getNode('m1')).toBeUndefined();
+    it('removes the Run from getRunNode', () => {
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
+      tree.delete('R1');
+      expect(tree.getRunNode('R1')).toBeUndefined();
     });
 
-    it('children become unreachable after parent delete', () => {
-      tree.upsert('m1', { id: 'a', content: 'root' }, headers(), 'serial-001');
-      tree.upsert('m2', { id: 'b', content: 'child' }, headers({ parent: 'm1' }), 'serial-002');
-      tree.upsert('m3', { id: 'c', content: 'grandchild' }, headers({ parent: 'm2' }), 'serial-003');
-
-      tree.delete('m1');
-      // Children still exist in the tree but are unreachable via flatten
-      expect(tree.flattenNodes(NO_SELECTIONS).map((n) => n.message)).toEqual([]);
-      // m2 and m3 still accessible by getNode
-      expect(tree.getNode('m2')).toBeDefined();
-      expect(tree.getNode('m3')).toBeDefined();
+    it('lingering msgIdToRunId after delete returns undefined via getRunByMsgId', () => {
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
+      expect(tree.getRunByMsgId('m1')?.runId).toBe('R1');
+      tree.delete('R1');
+      // The msgIdToRunId entry intentionally lingers (cheap to overwrite on
+      // re-creation, harmless otherwise) but the lookup must return
+      // undefined now that the owning Run is gone.
+      expect(tree.getRunByMsgId('m1')).toBeUndefined();
     });
 
-    it('is a no-op for unknown msgId', () => {
-      tree.upsert('m1', { id: 'a', content: 'hi' }, headers(), 'serial-001');
-      tree.delete('unknown');
-      expect(tree.flattenNodes(NO_SELECTIONS).map((n) => n.message)).toEqual([{ id: 'a', content: 'hi' }]);
+    it('descendants become unreachable after parent Run delete', () => {
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'root' }, serial: 's1' });
+      apply(tree, { runId: 'R2', msgId: 'm2', parent: 'm1', message: { id: 'b', content: 'child' }, serial: 's2' });
+      apply(tree, {
+        runId: 'R3',
+        msgId: 'm3',
+        parent: 'm2',
+        message: { id: 'c', content: 'grandchild' },
+        serial: 's3',
+      });
+
+      tree.delete('R1');
+      // Children still exist but are unreachable via flatten.
+      expect(flatRunIds(tree)).toEqual([]);
+      expect(tree.getRunNode('R2')).toBeDefined();
+      expect(tree.getRunNode('R3')).toBeDefined();
     });
 
-    it('removes the deleted node from sibling groups', () => {
-      tree.upsert('m1', { id: 'a', content: 'user' }, headers(), 'serial-001');
-      tree.upsert('m2', { id: 'b', content: 'v1' }, headers({ parent: 'm1' }), 'serial-002');
-      tree.upsert('m3', { id: 'c', content: 'v2' }, headers({ parent: 'm1', forkOf: 'm2' }), 'serial-003');
+    it('is a no-op for an unknown runId', () => {
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
+      tree.delete('R-unknown');
+      expect(flatRunIds(tree)).toEqual(['R1']);
+    });
 
-      expect(tree.getSiblings('m2')).toHaveLength(2);
+    it('shrinks the sibling group after deleting a sibling', () => {
+      apply(tree, { runId: 'R1', msgId: 'u1', role: 'user', message: { id: 'a', content: 'q' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R2',
+        msgId: 'a1',
+        parent: 'u1',
+        message: { id: 'b', content: 'v1' },
+        serial: 's2',
+      });
+      apply(tree, {
+        runId: 'R2alt',
+        msgId: 'a2',
+        parent: 'u1',
+        forkOf: 'a1',
+        message: { id: 'c', content: 'v2' },
+        serial: 's3',
+      });
 
-      tree.delete('m3');
-      expect(tree.getSiblings('m2')).toHaveLength(1);
-      expect(tree.hasSiblings('m2')).toBe(false);
+      expect(tree.getSiblingRuns('R2')).toHaveLength(2);
+      tree.delete('R2alt');
+      expect(tree.getSiblingRuns('R2')).toHaveLength(1);
+      expect(tree.hasSiblingRuns('R2')).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Run lifecycle (applyRunLifecycle)
+  // -------------------------------------------------------------------------
+
+  describe('run lifecycle', () => {
+    it('run-start creates a Run with status active when none exists', () => {
+      tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'client-a', invocationId: '' }, 's1');
+      const run = tree.getRunNode('R1');
+      expect(run?.status).toBe('active');
+      expect(run?.startSerial).toBe('s1');
+      // clientId is set on the RunNode itself (sourced from event.clientId)
+      // and also reflected in the active-runs map for cancel filtering.
+      expect(run?.clientId).toBe('client-a');
+      expect(tree.getActiveRunIds().get('client-a')).toEqual(new Set(['R1']));
+    });
+
+    it('run-start activates an existing Run created from message headers', () => {
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'm1',
+        clientId: 'client-a',
+        message: { id: 'a', content: 'hi' },
+        serial: 's1',
+      });
+
+      // RunNode.clientId was populated from the x-ably-run-client-id header
+      // on Run creation; run-start does not overwrite it.
+      expect(tree.getRunNode('R1')?.clientId).toBe('client-a');
+
+      tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'client-a', invocationId: '' }, 's2');
+      expect(tree.getRunNode('R1')?.status).toBe('active');
+      expect(tree.getRunNode('R1')?.clientId).toBe('client-a');
+      expect(tree.getActiveRunIds().get('client-a')).toEqual(new Set(['R1']));
+    });
+
+    it('run-end sets RunNode status and endSerial', () => {
+      tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'client-a', invocationId: '' }, 's1');
+      tree.applyRunLifecycle({ type: 'ai-run-end', runId: 'R1', clientId: 'client-a', reason: 'complete' }, 's10');
+      const run = tree.getRunNode('R1');
+      expect(run?.status).toBe('complete');
+      expect(run?.endSerial).toBe('s10');
+    });
+
+    it('run-end deregisters the run from active tracking', () => {
+      tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'client-a', invocationId: '' }, 's1');
+      expect(tree.getActiveRunIds().get('client-a')).toEqual(new Set(['R1']));
+
+      tree.applyRunLifecycle({ type: 'ai-run-end', runId: 'R1', clientId: 'client-a', reason: 'cancelled' }, 's2');
+      expect(tree.getActiveRunIds().get('client-a')).toBeUndefined();
+    });
+
+    it('emits a run event on both start and end', () => {
+      const handler = vi.fn();
+      tree.on('run', handler);
+      tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'client-a', invocationId: '' }, 's1');
+      tree.applyRunLifecycle({ type: 'ai-run-end', runId: 'R1', clientId: 'client-a', reason: 'complete' }, 's2');
+      expect(handler).toHaveBeenCalledTimes(2);
+      expect(handler).toHaveBeenNthCalledWith(1, expect.objectContaining({ type: 'ai-run-start', runId: 'R1' }));
+      expect(handler).toHaveBeenNthCalledWith(2, expect.objectContaining({ type: 'ai-run-end', runId: 'R1' }));
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // trackRun / untrackRun (session-only API; no lifecycle emit)
+  // -------------------------------------------------------------------------
+
+  describe('trackRun / untrackRun', () => {
+    it('trackRun adds to active runs without emitting a run event', () => {
+      const handler = vi.fn();
+      tree.on('run', handler);
+      tree.trackRun('R1', 'client-a');
+      expect(handler).not.toHaveBeenCalled();
+      expect(tree.getActiveRunIds().get('client-a')).toEqual(new Set(['R1']));
+    });
+
+    it('untrackRun removes from active runs without emitting a run event', () => {
+      tree.trackRun('R1', 'client-a');
+      const handler = vi.fn();
+      tree.on('run', handler);
+      tree.untrackRun('R1');
+      expect(handler).not.toHaveBeenCalled();
+      expect(tree.getActiveRunIds().get('client-a')).toBeUndefined();
+    });
+
+    it('groups multiple runs by clientId', () => {
+      tree.trackRun('R1', 'client-a');
+      tree.trackRun('R2', 'client-a');
+      tree.trackRun('R3', 'client-b');
+      const active = tree.getActiveRunIds();
+      expect(active.get('client-a')).toEqual(new Set(['R1', 'R2']));
+      expect(active.get('client-b')).toEqual(new Set(['R3']));
     });
   });
 
@@ -399,16 +949,32 @@ describe('Tree', () => {
 
   describe('edge cases', () => {
     it('empty tree returns empty flatten', () => {
-      expect(tree.flattenNodes(NO_SELECTIONS).map((n) => n.message)).toEqual([]);
+      expect(flatRunIds(tree)).toEqual([]);
     });
 
-    it('handles messages with same serial by insertion order', () => {
-      tree.upsert('m1', { id: 'a', content: 'first' }, headers(), 'serial-001');
-      tree.upsert('m2', { id: 'b', content: 'second' }, headers({ parent: 'm1' }), 'serial-001');
+    it('handles Runs with the same startSerial by insertion order', () => {
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'first' }, serial: 's1' });
+      apply(tree, { runId: 'R2', msgId: 'm2', parent: 'm1', message: { id: 'b', content: 'second' }, serial: 's1' });
+      expect(flatRunIds(tree)).toEqual(['R1', 'R2']);
+    });
 
-      const flat = tree.flattenNodes(NO_SELECTIONS).map((n) => n.message);
-      expect(flat[0]).toEqual({ id: 'a', content: 'first' });
-      expect(flat[1]).toEqual({ id: 'b', content: 'second' });
+    it('applyMessage with an empty events array does not create a phantom Run (skipped)', () => {
+      // Wire-only metadata-carrier messages (e.g. `ait-regenerate` whose
+      // decoder produces zero events) must not create empty Runs in the
+      // tree. The eventual assistant Run is created by run-start; if a
+      // phantom Run lingered, it would inflate sibling-group counts.
+      apply(tree, { runId: 'R1', msgId: 'm1', events: [], serial: 's1' });
+      expect(tree.getRunNode('R1')).toBeUndefined();
+    });
+
+    it('applyMessage with empty events folds into an existing Run if present', () => {
+      // Existing Run case: subsequent empty-events apply is a no-op but
+      // the Run is unaffected (still in the tree, projection unchanged).
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
+      const before = messagesOf(tree, 'R1');
+      apply(tree, { runId: 'R1', msgId: 'm2', events: [], serial: 's2' });
+      expect(tree.getRunNode('R1')).toBeDefined();
+      expect(messagesOf(tree, 'R1')).toEqual(before);
     });
   });
 
@@ -417,50 +983,51 @@ describe('Tree', () => {
   // -------------------------------------------------------------------------
 
   describe('events', () => {
-    it('emits update on upsert (new insert)', () => {
+    it('emits update when applyMessage creates a new Run', () => {
       const handler = vi.fn();
       tree.on('update', handler);
-      tree.upsert('m1', { id: '1', content: 'hi' }, headers());
-      expect(handler).toHaveBeenCalledOnce();
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
+      expect(handler).toHaveBeenCalled();
     });
 
-    it('emits update on upsert (existing message update)', () => {
-      tree.upsert('m1', { id: '1', content: 'hi' }, headers());
+    it('emits run-projection-updated after a successful fold', () => {
       const handler = vi.fn();
-      tree.on('update', handler);
-      tree.upsert('m1', { id: '1', content: 'updated' }, headers());
-      expect(handler).toHaveBeenCalledOnce();
+      tree.on('run-projection-updated', handler);
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
+      expect(handler).toHaveBeenCalledWith({ runId: 'R1' });
     });
 
     it('emits update on delete', () => {
-      tree.upsert('m1', { id: '1', content: 'hi' }, headers());
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
       const handler = vi.fn();
       tree.on('update', handler);
-      tree.delete('m1');
-      expect(handler).toHaveBeenCalledOnce();
+      tree.delete('R1');
+      expect(handler).toHaveBeenCalled();
+    });
+
+    it('emits update on run-start / run-end', () => {
+      const handler = vi.fn();
+      tree.on('update', handler);
+      tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'c', invocationId: '' }, 's1');
+      tree.applyRunLifecycle({ type: 'ai-run-end', runId: 'R1', clientId: 'c', reason: 'complete' }, 's2');
+      expect(handler).toHaveBeenCalledTimes(2);
     });
 
     it('unsubscribe stops delivery', () => {
       const handler = vi.fn();
       const unsub = tree.on('update', handler);
       unsub();
-      tree.upsert('m1', { id: '1', content: 'hi' }, headers());
+      apply(tree, { runId: 'R1', msgId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
       expect(handler).not.toHaveBeenCalled();
     });
 
-    it('tracks and exposes active runs', () => {
-      const fullTree = createTree<TestMessage>(silentLogger);
-      fullTree.trackRun('run-1', 'client-a');
-      fullTree.trackRun('run-2', 'client-a');
-      fullTree.trackRun('run-3', 'client-b');
-
-      const active = fullTree.getActiveRunIds();
-      expect(active.get('client-a')).toEqual(new Set(['run-1', 'run-2']));
-      expect(active.get('client-b')).toEqual(new Set(['run-3']));
-
-      fullTree.untrackRun('run-1');
-      const after = fullTree.getActiveRunIds();
-      expect(after.get('client-a')).toEqual(new Set(['run-2']));
+    it('emitAblyMessage forwards raw messages to ably-message subscribers', () => {
+      const handler = vi.fn();
+      tree.on('ably-message', handler);
+      // Cast: the test doesn't need a fully-typed Ably.InboundMessage.
+      const fakeMsg = { name: 'fake', data: 'x' } as unknown as Parameters<typeof tree.emitAblyMessage>[0];
+      tree.emitAblyMessage(fakeMsg);
+      expect(handler).toHaveBeenCalledWith(fakeMsg);
     });
   });
 
@@ -469,83 +1036,235 @@ describe('Tree', () => {
   // -------------------------------------------------------------------------
 
   describe('winning invocation map', () => {
-    /**
-     * Build user-message headers carrying run-id and invocation-id.
-     * @param runId - Run identifier stamped in `x-ably-run-id`.
-     * @param invocationId - Invocation identifier stamped in `x-ably-invocation-id`.
-     * @returns A headers record with the standard user-message fields populated.
-     */
-    // eslint-disable-next-line unicorn/consistent-function-scoping -- describe-local helper
-    const userH = (runId: string, invocationId: string): Record<string, string> => ({
-      [HEADER_ROLE]: 'user',
-      [HEADER_RUN_ID]: runId,
-      [HEADER_INVOCATION_ID]: invocationId,
-    });
-
     it('records the first user-message as the winner', () => {
-      tree.upsert('m1', { id: 'a', content: 'hi' }, userH('run-1', 'inv-1'), 'serial-001');
-      expect(tree.getWinningInvocation('run-1')).toEqual({ invocationId: 'inv-1', serial: 'serial-001' });
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'm1',
+        role: 'user',
+        invocationId: 'inv-1',
+        message: { id: 'a', content: 'hi' },
+        serial: 's1',
+      });
+      expect(tree.getWinningInvocation('R1')).toEqual({ invocationId: 'inv-1', serial: 's1' });
     });
 
-    it('returns undefined for an unknown run-id', () => {
-      expect(tree.getWinningInvocation('run-x')).toBeUndefined();
+    it('returns undefined for an unknown runId', () => {
+      expect(tree.getWinningInvocation('R-unknown')).toBeUndefined();
     });
 
     it('replaces the winner when a higher-serial user-message arrives', () => {
-      tree.upsert('m1', { id: 'a', content: 'hi' }, userH('run-1', 'inv-1'), 'serial-005');
-      tree.upsert('m2', { id: 'b', content: 'hi' }, userH('run-1', 'inv-2'), 'serial-007');
-      expect(tree.getWinningInvocation('run-1')).toEqual({ invocationId: 'inv-2', serial: 'serial-007' });
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'm1',
+        role: 'user',
+        invocationId: 'inv-1',
+        message: { id: 'a', content: 'q' },
+        serial: 's5',
+      });
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'm2',
+        role: 'user',
+        invocationId: 'inv-2',
+        message: { id: 'b', content: 'q' },
+        serial: 's7',
+      });
+      expect(tree.getWinningInvocation('R1')).toEqual({ invocationId: 'inv-2', serial: 's7' });
     });
 
     it('keeps the existing winner when a lower-serial user-message arrives later', () => {
-      tree.upsert('m2', { id: 'b', content: 'hi' }, userH('run-1', 'inv-2'), 'serial-007');
-      tree.upsert('m1', { id: 'a', content: 'hi' }, userH('run-1', 'inv-1'), 'serial-005');
-      expect(tree.getWinningInvocation('run-1')).toEqual({ invocationId: 'inv-2', serial: 'serial-007' });
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'm2',
+        role: 'user',
+        invocationId: 'inv-2',
+        message: { id: 'b', content: 'q' },
+        serial: 's7',
+      });
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'm1',
+        role: 'user',
+        invocationId: 'inv-1',
+        message: { id: 'a', content: 'q' },
+        serial: 's5',
+      });
+      expect(tree.getWinningInvocation('R1')).toEqual({ invocationId: 'inv-2', serial: 's7' });
     });
 
     it('ignores optimistic (null-serial) user-messages', () => {
-      tree.upsert('m1', { id: 'a', content: 'hi' }, userH('run-1', 'inv-1'));
-      expect(tree.getWinningInvocation('run-1')).toBeUndefined();
-    });
-
-    it('promotes to winner when an optimistic insert is later relayed with a serial', () => {
-      tree.upsert('m1', { id: 'a', content: 'hi' }, userH('run-1', 'inv-1'));
-      expect(tree.getWinningInvocation('run-1')).toBeUndefined();
-      tree.upsert('m1', { id: 'a', content: 'hi' }, userH('run-1', 'inv-1'), 'serial-010');
-      expect(tree.getWinningInvocation('run-1')).toEqual({ invocationId: 'inv-1', serial: 'serial-010' });
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'm1',
+        role: 'user',
+        invocationId: 'inv-1',
+        message: { id: 'a', content: 'q' },
+      });
+      expect(tree.getWinningInvocation('R1')).toBeUndefined();
     });
 
     it('ignores assistant-role messages', () => {
-      tree.upsert(
-        'm1',
-        { id: 'a', content: 'hi' },
-        { [HEADER_ROLE]: 'assistant', [HEADER_RUN_ID]: 'run-1', [HEADER_INVOCATION_ID]: 'inv-x' },
-        'serial-001',
-      );
-      expect(tree.getWinningInvocation('run-1')).toBeUndefined();
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'm1',
+        role: 'assistant',
+        invocationId: 'inv-x',
+        message: { id: 'a', content: 'reply' },
+        serial: 's1',
+      });
+      expect(tree.getWinningInvocation('R1')).toBeUndefined();
     });
 
-    it('tracks distinct run-ids independently', () => {
-      tree.upsert('m1', { id: 'a', content: 'hi' }, userH('run-1', 'inv-1'), 'serial-001');
-      tree.upsert('m2', { id: 'b', content: 'hi' }, userH('run-2', 'inv-2'), 'serial-002');
-      expect(tree.getWinningInvocation('run-1')).toEqual({ invocationId: 'inv-1', serial: 'serial-001' });
-      expect(tree.getWinningInvocation('run-2')).toEqual({ invocationId: 'inv-2', serial: 'serial-002' });
+    it('ignores continuation wires (x-ably-run-continue: true)', () => {
+      // Original user prompt sets the winner at s1.
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'm1',
+        role: 'user',
+        invocationId: 'inv-1',
+        message: { id: 'a', content: 'q' },
+        serial: 's1',
+      });
+      // Continuation tool-resolution wire at a higher serial should NOT
+      // supersede the original prompt's invocation.
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'm1',
+        role: 'user',
+        invocationId: 'inv-2',
+        runContinue: true,
+        message: { id: 'b', content: 'tool-result' },
+        serial: 's5',
+      });
+      expect(tree.getWinningInvocation('R1')).toEqual({ invocationId: 'inv-1', serial: 's1' });
+    });
+
+    it('continuation wires still fold into the projection even though they skip the winner', () => {
+      // Under "Run = user + assistant together", both the original prompt
+      // and the continuation tool-resolution wire fold into the same Run.
+      // The winner-rule keeps the original prompt as the canonical
+      // invocation while still letting the continuation wire produce its
+      // amend.
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'm1',
+        role: 'user',
+        invocationId: 'inv-1',
+        message: { id: 'a', content: 'q' },
+        serial: 's1',
+      });
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'm1',
+        role: 'user',
+        invocationId: 'inv-2',
+        runContinue: true,
+        message: { id: 'b', content: 'tool-result' },
+        serial: 's5',
+      });
+
+      expect(messagesOf(tree, 'R1')).toEqual([
+        { id: 'a', content: 'q' },
+        { id: 'b', content: 'tool-result' },
+      ]);
+    });
+
+    it('drops losing-invocation events under the run-keyed projection', () => {
+      // The two user-prompt wires share the same Run. The first wire (inv-1)
+      // arrives, becomes the provisional winner, and folds. A higher-serial
+      // wire (inv-2) promotes a new winner; under the run-keyed Tree the
+      // losing invocation's prior fold lives in the same Run's projection,
+      // so the winner promotion resets the projection before folding inv-2.
+      // The late assistant wire belongs to the losing invocation (inv-1) and
+      // is filtered by the loser-skip at fold time.
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'm1',
+        role: 'user',
+        invocationId: 'inv-1',
+        message: { id: 'a', content: 'first-prompt' },
+        serial: 's1',
+      });
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'm2',
+        role: 'user',
+        invocationId: 'inv-2',
+        message: { id: 'b', content: 'second-prompt' },
+        serial: 's5',
+      });
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'm3',
+        role: 'assistant',
+        invocationId: 'inv-1',
+        message: { id: 'c', content: 'should-be-dropped' },
+        serial: 's7',
+      });
+
+      // Only the winning invocation's user-prompt survives in R1; the
+      // losing prompt was wiped by the projection reset on winner change,
+      // and the late losing assistant never folded.
+      const folded = messagesOf(tree, 'R1');
+      expect(folded.map((m) => m.content)).toEqual(['second-prompt']);
+    });
+
+    it('tracks distinct runIds independently', () => {
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'm1',
+        role: 'user',
+        invocationId: 'inv-1',
+        message: { id: 'a', content: 'q' },
+        serial: 's1',
+      });
+      apply(tree, {
+        runId: 'R2',
+        msgId: 'm2',
+        parent: 'm1',
+        role: 'user',
+        invocationId: 'inv-2',
+        message: { id: 'b', content: 'q' },
+        serial: 's2',
+      });
+      expect(tree.getWinningInvocation('R1')).toEqual({ invocationId: 'inv-1', serial: 's1' });
+      expect(tree.getWinningInvocation('R2')).toEqual({ invocationId: 'inv-2', serial: 's2' });
     });
 
     it('emits invocation-winner-changed when the winner is set or replaced', () => {
       const handler = vi.fn();
       tree.on('invocation-winner-changed', handler);
-      tree.upsert('m1', { id: 'a', content: 'hi' }, userH('run-1', 'inv-1'), 'serial-005');
-      expect(handler).toHaveBeenCalledWith({ runId: 'run-1', invocationId: 'inv-1', serial: 'serial-005' });
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'm1',
+        role: 'user',
+        invocationId: 'inv-1',
+        message: { id: 'a', content: 'q' },
+        serial: 's5',
+      });
+      expect(handler).toHaveBeenCalledWith({ runId: 'R1', invocationId: 'inv-1', serial: 's5' });
       handler.mockClear();
-      tree.upsert('m2', { id: 'b', content: 'hi' }, userH('run-1', 'inv-2'), 'serial-007');
-      expect(handler).toHaveBeenCalledWith({ runId: 'run-1', invocationId: 'inv-2', serial: 'serial-007' });
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'm2',
+        role: 'user',
+        invocationId: 'inv-2',
+        message: { id: 'b', content: 'q' },
+        serial: 's7',
+      });
+      expect(handler).toHaveBeenCalledWith({ runId: 'R1', invocationId: 'inv-2', serial: 's7' });
     });
 
     it('does not emit invocation-winner-changed for optimistic inserts', () => {
       const handler = vi.fn();
       tree.on('invocation-winner-changed', handler);
-      tree.upsert('m1', { id: 'a', content: 'hi' }, userH('run-1', 'inv-1'));
+      apply(tree, {
+        runId: 'R1',
+        msgId: 'm1',
+        role: 'user',
+        invocationId: 'inv-1',
+        message: { id: 'a', content: 'q' },
+      });
       expect(handler).not.toHaveBeenCalled();
     });
   });

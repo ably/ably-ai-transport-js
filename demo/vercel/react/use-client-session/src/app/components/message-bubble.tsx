@@ -2,13 +2,15 @@
 
 import { useState } from 'react';
 import type { UIMessage, DynamicToolUIPart } from 'ai';
+import type { RunNode } from '@ably/ai-transport';
+import type { VercelProjection } from '@ably/ai-transport/vercel';
 import { ToolInvocation } from './tool-invocation';
 
 interface MessageBubbleProps {
   message: UIMessage;
-  headers: Record<string, string> | undefined;
+  owningRun: RunNode<VercelProjection> | undefined;
   hasSiblings: boolean;
-  siblings: UIMessage[];
+  siblings: RunNode<VercelProjection>[];
   selectedIndex: number;
   onSelectSibling: (index: number) => void;
   onRegenerate?: () => void;
@@ -170,7 +172,7 @@ function EditForm({
 
 export function MessageBubble({
   message,
-  headers,
+  owningRun,
   hasSiblings,
   siblings,
   selectedIndex,
@@ -183,10 +185,10 @@ export function MessageBubble({
   const isUser = message.role === 'user';
   const [isEditing, setIsEditing] = useState(false);
 
-  const role = headers?.['x-ably-role'] ?? message.role;
-  const clientId = headers?.['x-ably-run-client-id'];
-  const runId = headers?.['x-ably-run-id'];
-  const status = headers?.['x-ably-status'];
+  const role = message.role;
+  const runId = owningRun?.runId;
+  const clientId = owningRun?.clientId;
+  const status = owningRun?.status === 'active' ? 'streaming' : 'finished';
 
   const messageText = message.parts
     .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
@@ -216,13 +218,13 @@ export function MessageBubble({
                       key={i}
                       part={toolPart}
                       onApprove={
-                        toolPart.state === 'approval-requested' && onToolApprove && headers?.['x-ably-msg-id']
-                          ? () => onToolApprove(headers['x-ably-msg-id'], toolPart.toolCallId, toolPart.input)
+                        toolPart.state === 'approval-requested' && onToolApprove
+                          ? () => onToolApprove(message.id, toolPart.toolCallId, toolPart.input)
                           : undefined
                       }
                       onDeny={
-                        toolPart.state === 'approval-requested' && onToolDeny && headers?.['x-ably-msg-id']
-                          ? () => onToolDeny(headers['x-ably-msg-id'], toolPart.toolCallId, toolPart.input)
+                        toolPart.state === 'approval-requested' && onToolDeny
+                          ? () => onToolDeny(message.id, toolPart.toolCallId, toolPart.input)
                           : undefined
                       }
                     />
@@ -269,7 +271,7 @@ export function MessageBubble({
               )}
 
               {/* Debug badges */}
-              {headers && (
+              {owningRun && (
                 <>
                   <Badge
                     label="role"
@@ -290,7 +292,7 @@ export function MessageBubble({
                       color="bg-zinc-900 text-zinc-500"
                     />
                   )}
-                  {status && <StatusBadge status={status} />}
+                  <StatusBadge status={status} />
                 </>
               )}
             </div>

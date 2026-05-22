@@ -12,18 +12,20 @@
 
 import { useCallback } from 'react';
 
-import type { MessageNode } from '../core/transport/types.js';
+import type { RunNode } from '../core/transport/types.js';
 import type { BaseSessionOption } from './internal/use-resolved-session.js';
 import { useResolvedSession } from './internal/use-resolved-session.js';
 
 /** Handle for querying the conversation tree structure. */
-export interface TreeHandle<TMessage> {
-  /** Get all sibling messages at a fork point, ordered chronologically by serial. */
-  getSiblings: (msgId: string) => TMessage[];
-  /** Whether a message has sibling alternatives (i.e., show navigation arrows). */
-  hasSiblings: (msgId: string) => boolean;
-  /** Get a node by msgId, or undefined if not found. */
-  getNode: (msgId: string) => MessageNode<TMessage> | undefined;
+export interface TreeHandle<TProjection> {
+  /** Get a Run by runId, or undefined if not found. */
+  getRunNode: (runId: string) => RunNode<TProjection> | undefined;
+  /** Get the Run that owns a given msg-id, or undefined if not observed. */
+  getRunByMsgId: (msgId: string) => RunNode<TProjection> | undefined;
+  /** Get all sibling Runs at a fork point, ordered chronologically by startSerial. */
+  getSiblingRuns: (runId: string) => RunNode<TProjection>[];
+  /** Whether a Run has sibling alternatives (i.e., show navigation arrows). */
+  hasSiblingRuns: (runId: string) => boolean;
 }
 
 /** Options for {@link useTree}. */
@@ -38,21 +40,30 @@ export type UseTreeOptions<TEvent, TProjection, TMessage> = BaseSessionOption<TE
  */
 export const useTree = <TEvent, TProjection, TMessage>({
   session,
-}: UseTreeOptions<TEvent, TProjection, TMessage> = {}): TreeHandle<TMessage> => {
+}: UseTreeOptions<TEvent, TProjection, TMessage> = {}): TreeHandle<TProjection> => {
   const resolved = useResolvedSession({ session });
 
-  const getSiblings = useCallback((msgId: string): TMessage[] => resolved?.tree.getSiblings(msgId) ?? [], [resolved]);
-
-  const hasSiblings = useCallback((msgId: string) => resolved?.tree.hasSiblings(msgId) ?? false, [resolved]);
-
-  const getNode = useCallback(
-    (msgId: string): MessageNode<TMessage> | undefined => resolved?.tree.getNode(msgId),
+  const getRunNode = useCallback(
+    (runId: string): RunNode<TProjection> | undefined => resolved?.tree.getRunNode(runId),
     [resolved],
   );
 
+  const getRunByMsgId = useCallback(
+    (msgId: string): RunNode<TProjection> | undefined => resolved?.tree.getRunByMsgId(msgId),
+    [resolved],
+  );
+
+  const getSiblingRuns = useCallback(
+    (runId: string): RunNode<TProjection>[] => resolved?.tree.getSiblingRuns(runId) ?? [],
+    [resolved],
+  );
+
+  const hasSiblingRuns = useCallback((runId: string) => resolved?.tree.hasSiblingRuns(runId) ?? false, [resolved]);
+
   return {
-    getSiblings,
-    hasSiblings,
-    getNode,
+    getRunNode,
+    getRunByMsgId,
+    getSiblingRuns,
+    hasSiblingRuns,
   };
 };

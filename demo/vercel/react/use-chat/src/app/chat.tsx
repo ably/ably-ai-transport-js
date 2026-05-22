@@ -34,16 +34,7 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
     setStatusLog([]);
   }, []);
 
-  const {
-    setMessages,
-    sendMessage,
-    stop,
-    status,
-    regenerate,
-    addToolResult,
-    addToolApprovalResponse,
-    messages: chatMessages,
-  } = useChat({
+  const { setMessages, sendMessage, stop, status, regenerate, addToolResult, addToolApprovalResponse } = useChat({
     id: chatId,
     transport: chatTransport,
     // Auto-submit after addToolResult resolves tool calls OR
@@ -85,15 +76,26 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
   const hasAnyRuns = activeRuns.size > 0;
 
   // Auto-loads first page on mount
-  const { nodes, hasOlder, loading, loadOlder, hasSiblings, getSiblings, getSelectedIndex, select } = useView({
+  const {
+    messages,
+    hasOlder,
+    loading,
+    loadOlder,
+    hasSiblingRuns,
+    hasMessageSiblings,
+    getMessageSiblings,
+    getSelectedMessageSiblingIndex,
+    selectMessageSibling,
+    getRunByMsgId,
+  } = useView({
     limit: historyLimit ?? 30,
   });
 
-  useClientTools(session, chatMessages, addToolResult, nodes, clientId);
+  useClientTools(session, messages, addToolResult, getRunByMsgId, clientId);
 
   const ablyMessages = useAblyMessages();
 
-  const unfinishedSteps = useDemoProgress(nodes, hasSiblings, ablyMessages);
+  const unfinishedSteps = useDemoProgress(messages, getRunByMsgId, hasSiblingRuns, ablyMessages);
 
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -107,10 +109,16 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
       <div className="flex flex-1 flex-col">
         <Header clientId={clientId} />
         <MessageList
-          nodes={nodes}
+          messages={messages}
           hasOlder={hasOlder}
           loading={loading}
-          siblings={{ hasSiblings, getSiblings, getSelectedIndex, select }}
+          siblings={{
+            hasMessageSiblings,
+            getMessageSiblings,
+            getSelectedMessageSiblingIndex,
+            selectMessageSibling,
+            getRunByMsgId,
+          }}
           onLoadOlder={loadOlder}
           onRegenerate={(messageId) => regenerate({ messageId })}
           onEdit={(messageId, text) => sendMessage({ text, messageId })}
@@ -135,7 +143,7 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
         </div>
       </div>
       <DebugPane
-        messages={nodes.map((n) => n.message)}
+        messages={messages}
         ablyMessages={ablyMessages}
         activeRuns={activeRuns}
         status={status}

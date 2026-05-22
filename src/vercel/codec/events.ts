@@ -54,19 +54,23 @@ export interface ToolApprovalResponseEvent {
 
 /**
  * Wire-only event that starts a regenerate run. Published by the client
- * via `View.regenerate(messageId)` to signal the agent: open a new run
- * forked off the named assistant (`forkOfMsgId`) and thread the new
- * assistant under the existing parent user (`parentMsgId`). Carries no
- * UIMessage content — the agent feeds the LLM from the invocation
- * `history`. Classified as `kind: 'regenerate'` by `classifyEvent` so the
- * client-session publishes it without creating a tree node or folding
- * the projection.
+ * via `View.regenerate(messageId)` to signal the agent: open a new
+ * continuation Run whose assistant message replaces the named one
+ * (`regeneratesMsgId`) and threads under the existing parent user
+ * (`parentMsgId`). Carries no UIMessage content — the agent feeds the
+ * LLM from the invocation `history`. Classified as `kind: 'regenerate'`
+ * by `classifyEvent` so the client-session publishes it without creating
+ * a tree node or folding the projection.
+ *
+ * Regenerate is NOT a Run-level fork: the new Run is a continuation
+ * (parentRunId points at the prior Run's id) and the View handles the
+ * message-level replacement at projection extraction time.
  */
 export interface RegenerateEvent {
   /** Discriminator. */
   type: 'ait-regenerate';
-  /** The assistant being regenerated — becomes `x-ably-fork-of`. */
-  forkOfMsgId: string;
+  /** The assistant being regenerated — becomes `x-ably-msg-regenerate`. */
+  regeneratesMsgId: string;
   /** Parent user msg-id for the new assistant chain — becomes `x-ably-parent`. */
   parentMsgId: string;
 }

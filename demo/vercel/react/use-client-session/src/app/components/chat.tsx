@@ -38,8 +38,7 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
 
   const handleToolApproved = useCallback(
     (msgId: string, toolCallId: string) => {
-      const node = view.getNode(msgId);
-      const runId = node?.headers['x-ably-run-id'];
+      const runId = view.getRunByMsgId(msgId)?.runId;
       if (!runId) return;
       view.sendEvent([{ type: 'tool-approval-response', toolCallId, approved: true }], { runId });
     },
@@ -48,8 +47,7 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
 
   const handleToolDeny = useCallback(
     (msgId: string, toolCallId: string) => {
-      const node = view.getNode(msgId);
-      const runId = node?.headers['x-ably-run-id'];
+      const runId = view.getRunByMsgId(msgId)?.runId;
       if (!runId) return;
       view.sendEvent([{ type: 'tool-approval-response', toolCallId, approved: false, reason: 'User denied' }], {
         runId,
@@ -108,7 +106,7 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
       </div>
       {!split && (
         <DebugPane
-          messages={view.nodes.map((n) => n.message)}
+          messages={view.messages}
           ablyMessages={ablyMessages}
           activeRuns={activeRuns}
         />

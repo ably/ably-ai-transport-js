@@ -1,5 +1,5 @@
 /**
- * useClientTools — automatically executes client-side tools when they appear
+ * useClientTools - automatically executes client-side tools when they appear
  * in the conversation.
  *
  * Watches the view's message list for tool parts in `input-available` state
@@ -9,14 +9,14 @@
  * issued the tool call (matched by `toolCallId`) and marks the wire
  * continuation message as consumed.
  *
- * Skips tool calls that already have a follow-up assistant message — those
+ * Skips tool calls that already have a follow-up assistant message - those
  * were resolved in a previous session and don't need re-execution.
+ * Only executes for runs initiated by this client (matches owningRun.clientId).
  */
 
 import { useEffect, useRef } from 'react';
 import type { DynamicToolUIPart, UIMessage } from 'ai';
 import type { ViewHandle } from '@ably/ai-transport/react';
-import type { MessageNode } from '@ably/ai-transport';
 import type { VercelEvent, VercelProjection } from '@ably/ai-transport/vercel';
 
 type ClientToolExecutor = (input: unknown) => Promise<unknown>;
@@ -53,25 +53,25 @@ export function useClientTools(
   const handledRef = useRef(new Set<string>());
 
   useEffect(() => {
-    const nodes = view.nodes;
-    if (nodes.length === 0) return;
+    const messages = view.messages;
+    if (messages.length === 0) return;
 
-    for (let i = 0; i < nodes.length; i++) {
-      const node = nodes[i];
-      const msg = node.message;
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
       if (msg.role !== 'assistant') continue;
 
       // Only execute client tools for runs initiated by this client.
       // Other clients on the same channel see the tool call but should
-      // not execute it — only the requesting client has the context
+      // not execute it - only the requesting client has the context
       // (e.g. browser geolocation) to provide the result.
-      const runClientId = node.headers['x-ably-run-client-id'];
-      if (runClientId && runClientId !== clientId) continue;
+      const owningRun = view.getRunByMsgId(msg.id);
+      if (!owningRun) continue;
+      if (owningRun.clientId && owningRun.clientId !== clientId) continue;
 
       // If there's a later assistant message, this tool call was already
-      // resolved in a previous session — skip to prevent re-execution
+      // resolved in a previous session - skip to prevent re-execution
       // on page refresh.
-      const hasFollowUpAssistant = nodes.slice(i + 1).some((n) => n.message.role === 'assistant');
+      const hasFollowUpAssistant = messages.slice(i + 1).some((m) => m.role === 'assistant');
       if (hasFollowUpAssistant) continue;
 
       for (const part of msg.parts) {
@@ -84,25 +84,22 @@ export function useClientTools(
 
         handledRef.current.add(toolPart.toolCallId);
 
-        executeClientTool(view, node, toolPart);
+        executeClientTool(view, owningRun.runId, toolPart);
       }
     }
-  }, [view, view.nodes]);
+  }, [view, view.messages, clientId]);
 }
 
+// The tool output amends the suspended assistant message; the continuation
+// reuses that run's runId so the agent's lookupToolOutputs picks the output
+// up off the channel and resumes generation.
 async function executeClientTool(
   view: ViewHandle<VercelEvent, VercelProjection, UIMessage>,
-  node: MessageNode<UIMessage>,
+  runId: string,
   toolPart: DynamicToolUIPart,
 ): Promise<void> {
   const executor = clientTools[toolPart.toolName];
   if (!executor) return;
-
-  // The tool output amends the suspended assistant message; the
-  // continuation reuses that run's runId so the agent's lookupToolOutputs
-  // picks the output up off the channel and resumes generation.
-  const runId = node.headers['x-ably-run-id'];
-  if (!runId) return;
 
   try {
     const output = await executor(toolPart.input);

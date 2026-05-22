@@ -94,17 +94,14 @@ import type { UIMessage } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
 import { Invocation } from '@ably/ai-transport';
-import type { MessageNode } from '@ably/ai-transport';
 import { createAgentSession } from '@ably/ai-transport/vercel';
 
 interface ChatRequestBody {
   runId: string;
-  clientId: string;
-  messages: MessageNode<UIMessage>[];
-  history?: MessageNode<UIMessage>[];
+  invocationId: string;
+  promptIds: string[];
+  history?: UIMessage[];
   chatId: string;
-  forkOf?: string;
-  parent?: string | null;
 }
 
 const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY! });

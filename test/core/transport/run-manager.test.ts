@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   EVENT_RUN_END,
   EVENT_RUN_START,
+  HEADER_FORK_OF,
+  HEADER_MSG_REGENERATE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
@@ -100,6 +102,24 @@ describe('RunManager', () => {
       expect(headersOf(channel.publishCalls.at(0)!)[HEADER_RUN_CONTINUE]).toBeUndefined();
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
       expect(headersOf(channel.publishCalls.at(1)!)[HEADER_RUN_CONTINUE]).toBeUndefined();
+    });
+
+    it('stamps x-ably-fork-of when metadata.forkOf is set (edit run-start)', async () => {
+      await manager.startRun('run-1', 'user-a', undefined, { forkOf: 'orig-user-msg' });
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
+      const headers = headersOf(channel.publishCalls.at(0)!);
+      expect(headers[HEADER_FORK_OF]).toBe('orig-user-msg');
+      expect(headers[HEADER_MSG_REGENERATE]).toBeUndefined();
+    });
+
+    it('stamps x-ably-msg-regenerate when metadata.regenerates is set (regenerate run-start)', async () => {
+      await manager.startRun('run-1', 'user-a', undefined, { regenerates: 'orig-asst-msg' });
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
+      const headers = headersOf(channel.publishCalls.at(0)!);
+      expect(headers[HEADER_MSG_REGENERATE]).toBe('orig-asst-msg');
+      expect(headers[HEADER_FORK_OF]).toBeUndefined();
     });
   });
 

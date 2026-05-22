@@ -23,6 +23,7 @@ import {
   HEADER_FORK_OF,
   HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
+  HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_PROMPT_ID,
   HEADER_RUN_CLIENT_ID,
@@ -987,6 +988,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
     let resolvedClientId: string | undefined;
     let resolvedParent: string | undefined;
     let resolvedForkOf: string | undefined;
+    let resolvedRegenerates: string | undefined;
     let resolvedContinuation = false;
     let firstLookupHeaders: Record<string, string> | undefined;
 
@@ -1096,6 +1098,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
           resolvedClientId = sourceHeaders[HEADER_RUN_CLIENT_ID];
           resolvedParent = sourceHeaders[HEADER_PARENT];
           resolvedForkOf = sourceHeaders[HEADER_FORK_OF];
+          resolvedRegenerates = sourceHeaders[HEADER_MSG_REGENERATE];
           resolvedContinuation = sourceHeaders[HEADER_RUN_CONTINUE] === 'true';
         }
         registration.clientId = resolvedClientId;
@@ -1157,6 +1160,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
           await runManager.startRun(runId, resolvedClientId, controller, {
             parent: resolvedParent,
             forkOf: resolvedForkOf,
+            regenerates: resolvedRegenerates,
             invocationId,
             continuation: resolvedContinuation,
           });
@@ -1328,6 +1332,13 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
         const lastViewMsgId = viewMessages.at(-1)?.msgId;
         const assistantParent = streamOpts?.parent ?? lastViewMsgId ?? resolvedParent;
         const assistantForkOf = streamOpts?.forkOf ?? resolvedForkOf;
+        // Echo `x-ably-msg-regenerate` on the assistant wire so that a
+        // client receiving the assistant chunk before `ai-run-start`
+        // (e.g. via history pagination across a page boundary, or a lost
+        // lifecycle publish) can still populate `RunNode.regeneratesMsgId`
+        // when creating the Run from headers. Mirrors the symmetric
+        // behaviour for `assistantForkOf` on edit runs.
+        const assistantRegenerates = resolvedRegenerates;
 
         const msgId = crypto.randomUUID();
         const defaultHeaders = buildTransportHeaders({
@@ -1337,6 +1348,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
           runClientId: runOwnerClientId,
           parent: assistantParent,
           forkOf: assistantForkOf,
+          regenerates: assistantRegenerates,
         });
         const encoder = codec.createEncoder(channel, {
           extras: { headers: defaultHeaders },

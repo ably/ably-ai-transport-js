@@ -52,11 +52,17 @@ const createMockSlot = (): MockSlot => {
     };
   });
 
+  // `flattenNodes` and `getMessages` are mocked together: tests stage
+  // `{ message }` entries via `viewFlattenNodes.mockReturnValue(...)` and
+  // `getMessages` projects them to the flat `UIMessage[]` the production
+  // code reads.
   const viewFlattenNodes = vi.fn(() => [] as { message: AI.UIMessage }[]);
+  const viewGetMessages = vi.fn(() => viewFlattenNodes().map((n) => n.message));
 
   const view = {
     on: viewOn,
     flattenNodes: viewFlattenNodes,
+    getMessages: viewGetMessages,
     hasOlder: vi.fn(() => false),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     loadOlder: vi.fn(() => Promise.resolve()),

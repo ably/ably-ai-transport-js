@@ -71,7 +71,7 @@ const run = await view.send(userMessage);
 
 // Subscribe to accumulated messages - updates on every token
 const unsubscribe = view.on('update', () => {
-  const messages = view.flattenNodes().map((n) => n.message);
+  const messages = view.getMessages();
   // the last assistant message grows as tokens arrive
 });
 ```

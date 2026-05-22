@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   HEADER_FORK_OF,
   HEADER_MSG_ID,
+  HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
@@ -56,6 +57,17 @@ describe('buildTransportHeaders', () => {
     expect(headers[HEADER_FORK_OF]).toBe('fork-msg');
   });
 
+  it('includes regenerates as x-ably-msg-regenerate when provided', () => {
+    const headers = buildTransportHeaders({
+      role: 'user',
+      runId: 'run-1',
+      msgId: 'msg-1',
+      regenerates: 'asst-original',
+    });
+
+    expect(headers[HEADER_MSG_REGENERATE]).toBe('asst-original');
+  });
+
   it('omits optional headers when undefined', () => {
     const headers = buildTransportHeaders({
       role: 'user',
@@ -66,5 +78,6 @@ describe('buildTransportHeaders', () => {
     expect(headers).not.toHaveProperty(HEADER_RUN_CLIENT_ID);
     expect(headers).not.toHaveProperty(HEADER_PARENT);
     expect(headers).not.toHaveProperty(HEADER_FORK_OF);
+    expect(headers).not.toHaveProperty(HEADER_MSG_REGENERATE);
   });
 });

@@ -2,12 +2,15 @@
 
 import { useState } from 'react';
 import type { UIMessage, DynamicToolUIPart } from 'ai';
+import type { RunNode } from '@ably/ai-transport';
+import type { VercelProjection } from '@ably/ai-transport/vercel';
 import { ToolInvocation } from './tool-invocation';
 import { clientColor } from '../lib/client-color';
 
 interface MessageBubbleProps {
   message: UIMessage;
-  headers: Record<string, string> | undefined;
+  owningRun: RunNode<VercelProjection> | undefined;
+  clientId: string | undefined;
   hasSiblings?: boolean;
   siblingCount?: number;
   selectedIndex?: number;
@@ -163,7 +166,8 @@ function EditForm({
 
 export function MessageBubble({
   message,
-  headers,
+  owningRun,
+  clientId,
   hasSiblings,
   siblingCount,
   selectedIndex,
@@ -176,10 +180,9 @@ export function MessageBubble({
   const isUser = message.role === 'user';
   const [isEditing, setIsEditing] = useState(false);
 
-  const role = headers?.['x-ably-role'] ?? message.role;
-  const clientId = headers?.['x-ably-run-client-id'];
-  const runId = headers?.['x-ably-run-id'];
-  const status = headers?.['x-ably-status'];
+  const role = message.role;
+  const runId = owningRun?.runId;
+  const status = owningRun?.status === 'active' ? 'streaming' : 'finished';
   const colors = clientId ? clientColor(clientId) : undefined;
 
   const messageText = message.parts
@@ -254,7 +257,7 @@ export function MessageBubble({
               )}
 
               {/* Debug badges */}
-              {headers && (
+              {owningRun && (
                 <>
                   <Badge
                     label="role"
@@ -275,7 +278,7 @@ export function MessageBubble({
                       color="bg-zinc-900 text-zinc-500"
                     />
                   )}
-                  {status && <StatusBadge status={status} />}
+                  <StatusBadge status={status} />
                 </>
               )}
             </div>

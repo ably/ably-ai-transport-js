@@ -17,7 +17,7 @@ sequenceDiagram
     participant S as Server
 
     Note over C: generate msg-id, insert into tree (no serial)
-    C->>C: view.flattenNodes() includes the optimistic message
+    C->>C: view.getMessages() includes the optimistic message
     C->>S: HTTP POST (fire-and-forget)
     S->>Ch: publish user message (same msg-id, server-assigned serial)
     Ch->>C: deliver relay
@@ -34,7 +34,7 @@ const view = session.view;
 const run = await view.send(userMessage);
 
 // The user message is already in the view - no waiting for the server
-const messages = view.flattenNodes().map((n) => n.message);
+const messages = view.getMessages();
 // messages includes userMessage at the end of the conversation
 ```
 

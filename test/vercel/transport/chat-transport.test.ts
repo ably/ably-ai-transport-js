@@ -76,19 +76,19 @@ interface MockSession {
   cancel: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
   mockRun: MockRun;
-  tree: Tree<AI.UIMessage>;
+  tree: Tree<VercelProjection>;
   view: View<VercelEvent, VercelProjection, AI.UIMessage>;
 }
 
 const createMockSession = (): MockSession => {
   const mockRun = createMockRun();
-  const tree: Tree<AI.UIMessage> = {
-    getSiblings: vi.fn(() => []),
-    hasSiblings: vi.fn(() => false),
-    getNode: vi.fn(),
-    getHeaders: vi.fn(),
-    upsert: vi.fn(),
-    delete: vi.fn(),
+  const tree: Tree<VercelProjection> = {
+    getRunNode: vi.fn(),
+    getRunByMsgId: vi.fn(),
+    getSiblingRuns: vi.fn(() => []),
+    hasSiblingRuns: vi.fn(() => false),
+    // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires explicit undefined return for the contract
+    getRegenerateGroup: vi.fn(() => undefined),
     getActiveRunIds: vi.fn(() => new Map()),
     getWinningInvocation: vi.fn(),
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
@@ -109,9 +109,10 @@ const createMockSession = (): MockSession => {
     loadOlder: vi.fn(() => Promise.resolve()),
     select: vi.fn(),
     getSelectedIndex: vi.fn(() => 0),
-    getSiblings: vi.fn(() => []),
-    hasSiblings: vi.fn(() => false),
-    getNode: vi.fn(),
+    getSiblingRuns: vi.fn(() => []),
+    hasSiblingRuns: vi.fn(() => false),
+    getRunNode: vi.fn(),
+    getRunByMsgId: vi.fn(),
     sendMessage: vi.fn(),
     sendEvent: send,
     regenerate,
@@ -179,10 +180,10 @@ describe('createChatTransport', () => {
         sessionName: 'chat-1',
         trigger: 'submit-message',
       });
-      // History is no longer built at the chat-transport layer — the client
-      // session adds the projection-folded `history` to the POST body from
-      // its own view. The chat-transport's sendOpts.body intentionally omits
-      // history so the session is the single source of truth.
+      // The client session is the single source of truth for history: it
+      // builds `history` from the View's projection-folded messages and
+      // adds it to the POST body. The chat-transport's sendOpts.body
+      // intentionally omits history.
       expect(opts.body).toBeDefined();
       expect(opts.body?.history).toBeUndefined();
     });
@@ -273,24 +274,19 @@ describe('createChatTransport', () => {
     it('resolves fork metadata from the conversation tree', async () => {
       const { session, send, view, mockRun } = createMockSession();
 
-      const edited = makeMessage('ui-msg-id');
-      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
-        {
-          message: edited,
-          msgId: 'wire-msg-id',
-          parentId: 'wire-parent-id',
-          forkOf: undefined,
-          headers: {},
-          serial: undefined,
-        },
-      ]);
+      // Codec convention: TMessage.id == wire msg-id. The chat-transport's
+      // edit path reads `messageId` (the UIMessage.id == wire msgId) directly
+      // as `forkOf`, and derives `parent` from the flat message list.
+      const previousUser = makeMessage('parent-msg-id');
+      const edited = makeMessage('edit-target-id');
+      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([previousUser, edited]);
 
       const chat = createChatTransport(session);
 
       const streamPromise = chat.sendMessages({
         trigger: 'submit-message',
         chatId: 'chat-1',
-        messageId: 'ui-msg-id',
+        messageId: 'edit-target-id',
         messages: [edited],
         abortSignal: undefined,
       });
@@ -299,8 +295,8 @@ describe('createChatTransport', () => {
       await streamPromise;
 
       const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
-      expect(opts.forkOf).toBe('wire-msg-id');
-      expect(opts.parent).toBe('wire-parent-id');
+      expect(opts.forkOf).toBe('edit-target-id');
+      expect(opts.parent).toBe('parent-msg-id');
     });
 
     it('falls back to raw messageId when node not found in tree', async () => {
@@ -485,6 +481,49 @@ describe('createChatTransport', () => {
       const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
       expect(opts.body).toEqual({ custom: 'body' });
       expect(opts.headers).toEqual({ 'X-Custom': 'header' });
+    });
+
+    it('passes regenerate-message context through prepareSendMessagesRequest', async () => {
+      const { session, regenerate, mockRun } = createMockSession();
+
+      const hook = vi.fn().mockReturnValue({
+        body: { customBody: 'regen' },
+        headers: { 'X-Custom-Regen': 'yes' },
+      });
+
+      const chat = createChatTransport(session, { prepareSendMessagesRequest: hook });
+      const m1 = makeMessage('1');
+      const m2 = makeMessage('2');
+
+      const streamPromise = chat.sendMessages({
+        trigger: 'regenerate-message',
+        chatId: 'chat-regen',
+        messageId: m2.id,
+        messages: [m1, m2],
+        abortSignal: undefined,
+      });
+
+      mockRun.close();
+      await streamPromise;
+
+      // The hook fires with the regenerate-trigger context. For regenerate,
+      // the chat-transport routes through view.regenerate which derives
+      // forkOf/parent internally; the hook is called BEFORE that dispatch
+      // so forkOf/parent are still undefined here.
+      expect(hook).toHaveBeenCalledWith({
+        chatId: 'chat-regen',
+        trigger: 'regenerate-message',
+        messageId: m2.id,
+        history: [m1, m2],
+        messages: [],
+        forkOf: undefined,
+        parent: undefined,
+      });
+
+      // The custom body/headers reach view.regenerate's sendOpts.
+      const [, regenOpts] = regenerate.mock.calls[0] as [string, SendOptions];
+      expect(regenOpts.body).toEqual({ customBody: 'regen' });
+      expect(regenOpts.headers).toEqual({ 'X-Custom-Regen': 'yes' });
     });
   });
 
@@ -715,17 +754,7 @@ describe('createChatTransport', () => {
       });
       const user2 = makeMessage('u2');
 
-      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
-        { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
-        {
-          message: assistant,
-          msgId: 'wire-a1',
-          parentId: 'wire-u1',
-          forkOf: undefined,
-          headers: {},
-          serial: undefined,
-        },
-      ]);
+      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([user1, assistant]);
 
       const chat = createChatTransport(session);
       const streamPromise = chat.sendMessages({
@@ -740,8 +769,8 @@ describe('createChatTransport', () => {
 
       const [events, opts] = send.mock.calls[0] as [VercelEvent[], SendOptions];
       expect(events).toEqual([{ type: 'ait-user-message', message: user2 }]);
-      expect(opts.forkOf).toBe('wire-a1');
-      expect(opts.parent).toBe('wire-u1');
+      expect(opts.forkOf).toBe('a1');
+      expect(opts.parent).toBe('u1');
       // History is built by the client session (not the chat-transport
       // adapter) — the adapter's sendOpts.body intentionally omits it.
       expect(opts.body?.history).toBeUndefined();
@@ -760,17 +789,7 @@ describe('createChatTransport', () => {
       });
       const user2 = makeMessage('u2');
 
-      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
-        { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
-        {
-          message: assistant,
-          msgId: 'wire-a1',
-          parentId: 'wire-u1',
-          forkOf: undefined,
-          headers: {},
-          serial: undefined,
-        },
-      ]);
+      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([user1, assistant]);
 
       const chat = createChatTransport(session);
       const streamPromise = chat.sendMessages({
@@ -784,8 +803,8 @@ describe('createChatTransport', () => {
       await streamPromise;
 
       const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
-      expect(opts.forkOf).toBe('wire-a1');
-      expect(opts.parent).toBe('wire-u1');
+      expect(opts.forkOf).toBe('a1');
+      expect(opts.parent).toBe('u1');
     });
 
     it('forks when the preceding assistant has input-streaming', async () => {
@@ -801,17 +820,7 @@ describe('createChatTransport', () => {
       });
       const user2 = makeMessage('u2');
 
-      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
-        { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
-        {
-          message: assistant,
-          msgId: 'wire-a1',
-          parentId: 'wire-u1',
-          forkOf: undefined,
-          headers: {},
-          serial: undefined,
-        },
-      ]);
+      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([user1, assistant]);
 
       const chat = createChatTransport(session);
       const streamPromise = chat.sendMessages({
@@ -825,8 +834,8 @@ describe('createChatTransport', () => {
       await streamPromise;
 
       const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
-      expect(opts.forkOf).toBe('wire-a1');
-      expect(opts.parent).toBe('wire-u1');
+      expect(opts.forkOf).toBe('a1');
+      expect(opts.parent).toBe('u1');
     });
 
     it('does NOT fork when the preceding assistant has output-available (resolved)', async () => {
@@ -928,18 +937,7 @@ describe('createChatTransport', () => {
       });
       const edited = makeMessage('u2');
 
-      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
-        { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
-        {
-          message: assistant,
-          msgId: 'wire-a1',
-          parentId: 'wire-u1',
-          forkOf: undefined,
-          headers: {},
-          serial: undefined,
-        },
-        { message: edited, msgId: 'wire-u2', parentId: 'wire-a1', forkOf: undefined, headers: {}, serial: undefined },
-      ]);
+      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([user1, assistant, edited]);
 
       const chat = createChatTransport(session);
       const streamPromise = chat.sendMessages({
@@ -954,8 +952,8 @@ describe('createChatTransport', () => {
 
       const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
       // Edit path forks off the edited message, not the assistant.
-      expect(opts.forkOf).toBe('wire-u2');
-      expect(opts.parent).toBe('wire-a1');
+      expect(opts.forkOf).toBe('u2');
+      expect(opts.parent).toBe('a1');
     });
   });
 
@@ -993,17 +991,18 @@ describe('createChatTransport', () => {
         ],
       };
 
-      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
-        { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
-        {
-          message: treeAssistant,
-          msgId: 'wire-a1',
-          parentId: 'wire-u1',
-          forkOf: undefined,
-          headers: {},
-          serial: undefined,
-        },
-      ]);
+      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([user1, treeAssistant]);
+      // Continuation flow calls getRunByMsgId(lastMessage.id) to find the runId.
+      (view.getRunByMsgId as ReturnType<typeof vi.fn>).mockReturnValue({
+        runId: 'run-a1',
+        parentRunId: undefined,
+        forkOf: undefined,
+        status: 'active',
+        projection: undefined,
+        startSerial: undefined,
+        endSerial: undefined,
+        headers: {},
+      });
 
       const chat = createChatTransport(session);
       const streamPromise = chat.sendMessages({
@@ -1022,13 +1021,12 @@ describe('createChatTransport', () => {
 
       // chat-transport passes the richer per-entry shape to view.sendEvent.
       // Each entry pairs a tool-resolution event with the prior assistant's
-      // tree msg-id so the SDK stamps the wire HEADER_MSG_ID to 'wire-a1' —
-      // the reducer's direct-fold path then matches by msg-id and folds
-      // the chunk onto the existing assistant without a cross-message
-      // redirect.
+      // msg-id so the SDK stamps the wire HEADER_MSG_ID to 'a1' — the
+      // reducer's direct-fold path then matches by msg-id and folds the
+      // chunk onto the existing assistant without a cross-message redirect.
       expect(input).toHaveLength(1);
       expect(input[0]?.event.type).toBe('tool-output-available');
-      expect(input[0]?.domainMessageId).toBe('wire-a1');
+      expect(input[0]?.domainMessageId).toBe('a1');
     });
 
     it('passes the prior assistant tree msg-id as domainMessageId for an approval response', async () => {
@@ -1059,17 +1057,17 @@ describe('createChatTransport', () => {
         ],
       };
 
-      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
-        { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
-        {
-          message: treeAssistant,
-          msgId: 'wire-a1',
-          parentId: 'wire-u1',
-          forkOf: undefined,
-          headers: {},
-          serial: undefined,
-        },
-      ]);
+      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([user1, treeAssistant]);
+      (view.getRunByMsgId as ReturnType<typeof vi.fn>).mockReturnValue({
+        runId: 'run-a1',
+        parentRunId: undefined,
+        forkOf: undefined,
+        status: 'active',
+        projection: undefined,
+        startSerial: undefined,
+        endSerial: undefined,
+        headers: {},
+      });
 
       const chat = createChatTransport(session);
       const streamPromise = chat.sendMessages({
@@ -1085,7 +1083,7 @@ describe('createChatTransport', () => {
       const [input] = send.mock.calls[0] as [{ event: VercelEvent; domainMessageId?: string }[]];
       expect(input).toHaveLength(1);
       expect(input[0]?.event.type).toBe('tool-approval-response');
-      expect(input[0]?.domainMessageId).toBe('wire-a1');
+      expect(input[0]?.domainMessageId).toBe('a1');
     });
   });
 });

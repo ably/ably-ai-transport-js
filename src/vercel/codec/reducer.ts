@@ -169,7 +169,7 @@ export const fold = (state: VercelProjection, event: VercelEvent, meta: ReducerM
 
   switch (event.type) {
     case 'ait-user-message': {
-      _foldUserMessage(state, event);
+      _foldUserMessage(state, event, meta);
       break;
     }
     case 'tool-approval-response': {
@@ -272,12 +272,20 @@ const _conflictKeyOf = (event: VercelEvent, meta: ReducerMeta): string | undefin
 // Codec-local event folds
 // ---------------------------------------------------------------------------
 
-const _foldUserMessage = (state: VercelProjection, event: UserMessageEvent): VercelProjection => {
-  const existingIdx = state.messages.findIndex((m) => m.id === event.message.id);
+const _foldUserMessage = (state: VercelProjection, event: UserMessageEvent, meta: ReducerMeta): VercelProjection => {
+  // Align the projection's UIMessage.id with the wire `x-ably-msg-id`
+  // (= meta.messageId) so the Tree's _msgIdToRunId index is reachable from
+  // any consumer holding the UIMessage. Without this, useChat-supplied
+  // domain ids leak through, and downstream lookups (view.regenerate /
+  // view.edit / view.getRunByMsgId) silently miss because the tree only
+  // indexes wire msg-ids.
+  const targetId = meta.messageId ?? event.message.id;
+  const aligned = event.message.id === targetId ? event.message : { ...event.message, id: targetId };
+  const existingIdx = state.messages.findIndex((m) => m.id === targetId);
   if (existingIdx === -1) {
-    state.messages.push(event.message);
+    state.messages.push(aligned);
   } else {
-    state.messages[existingIdx] = event.message;
+    state.messages[existingIdx] = aligned;
   }
   return state;
 };

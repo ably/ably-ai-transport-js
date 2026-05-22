@@ -34,9 +34,9 @@ export const UIMessageCodec: Codec<VercelEvent, VercelProjection, AI.UIMessage> 
   createDecoder,
   getMessages,
   userMessageEvent: (message: AI.UIMessage): VercelEvent => ({ type: 'ait-user-message', message }),
-  createRegenerateEvent: (forkOfMsgId: string, parentMsgId: string): VercelEvent => ({
+  createRegenerateEvent: (regeneratesMsgId: string, parentMsgId: string): VercelEvent => ({
     type: 'ait-regenerate',
-    forkOfMsgId,
+    regeneratesMsgId,
     parentMsgId,
   }),
   classifyEvent: (event: VercelEvent): EventClassification => {
@@ -54,7 +54,7 @@ export const UIMessageCodec: Codec<VercelEvent, VercelProjection, AI.UIMessage> 
       return { kind: 'user-message' };
     }
     if (event.type === 'ait-regenerate') {
-      return { kind: 'regenerate', parent: event.parentMsgId, forkOf: event.forkOfMsgId };
+      return { kind: 'regenerate', parent: event.parentMsgId, regenerates: event.regeneratesMsgId };
     }
     return { kind: 'other' };
   },

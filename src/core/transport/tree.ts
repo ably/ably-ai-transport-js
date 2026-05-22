@@ -1,19 +1,20 @@
 /**
- * Tree — materializes a branching conversation from a flat
- * oplog of Ably messages using serial-first ordering.
+ * Tree — materializes a branching conversation as a forest of Runs,
+ * keyed by `x-ably-run-id`.
  *
- * Serial order (the total order assigned by Ably) is the primary mechanism
- * for linear message sequences. `x-ably-parent` and `x-ably-fork-of` headers
- * are only structurally meaningful at branch points — where the user is
- * interacting with a visible message and the client always has it loaded.
+ * Each Run holds a per-Run codec {@link TProjection} which the Tree folds
+ * from inbound events. The Tree owns the complete conversation state across
+ * every observed Run. The {@link View} walks the parent chain to extract a
+ * flat message list for rendering.
  *
- * `upsert()` is the sole mutation method. Messages can arrive in any order
- * (live subscription, history pages, seed data) and the tree produces the
- * correct `flattenNodes()` output once all messages are present.
+ * `applyMessage()` is the entry point for inbound channel messages — it
+ * routes by `x-ably-run-id`, folds events into the Run's projection, and
+ * maintains a secondary `msgId -> runId` index. `applyRunLifecycle()`
+ * handles run-start / run-end events.
  *
- * The tree owns conversation state. `flattenNodes()` returns the linear node
- * list for the currently selected branches — this is what the transport's
- * `getMessages()` delegates to.
+ * Sibling structure (edits / regenerates) is derived from RunNode.forkOf,
+ * which the Tree resolves from the wire's `x-ably-fork-of` header via the
+ * msgId index.
  */
 
 import type * as Ably from 'ably';
@@ -21,68 +22,126 @@ import type * as Ably from 'ably';
 import {
   HEADER_FORK_OF,
   HEADER_INVOCATION_ID,
+  HEADER_MSG_ID,
+  HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_ROLE,
+  HEADER_RUN_CLIENT_ID,
   HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
 } from '../../constants.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
-import type { MessageNode, RunLifecycleEvent, Tree } from './types.js';
+import type { Reducer } from '../codec/types.js';
+import type { RunLifecycleEvent, RunNode, Tree } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Internal node type
 // ---------------------------------------------------------------------------
 
-interface InternalNode<TMessage> {
-  node: MessageNode<TMessage>;
-  /** Insertion sequence — tiebreaker for null-serial messages. */
+interface InternalRunNode<TProjection> {
+  node: RunNode<TProjection>;
+  /** Insertion sequence — tiebreaker for null-startSerial Runs (optimistic). */
   insertSeq: number;
 }
 
 // ---------------------------------------------------------------------------
-// Internal interface — extended surface consumed by View
+// Internal interface — extended surface consumed by View / ClientSession
 // ---------------------------------------------------------------------------
 
-/** Internal tree surface used by View — not part of the public Tree API. */
-export interface TreeInternal<TMessage> extends Tree<TMessage> {
+/** Internal tree surface used by View and ClientSession — not part of the public Tree API. */
+export interface TreeInternal<TEvent, TProjection> extends Tree<TProjection> {
   /**
-   * Monotonic counter that increments on structural changes (node insert,
-   * delete, serial promotion/reorder) but NOT on content-only updates
-   * (existing node's message replaced). Allows the View to skip full
-   * tree walks when only message content changed.
+   * Monotonic counter that increments on structural changes (Run insert,
+   * delete, startSerial promotion/reorder) but NOT on projection updates
+   * (existing Run's projection mutated by fold). Allows the View to skip
+   * full tree walks when only projection content changed.
    */
   readonly structuralVersion: number;
 
   /**
-   * Flatten the tree along selected branches into a linear node list.
-   * The `selections` map provides the selected sibling's msgId at each
-   * fork point, keyed by group root msgId. Fork points not present in
-   * the map default to the latest sibling. If a selectedMsgId is not
-   * found in the sibling group (stale/deleted), falls back to latest.
+   * Flatten the tree along selected branches into a linear Run list.
+   * The `selections` map provides the selected sibling's runId at each
+   * fork point, keyed by group-root runId. Fork points not present in the
+   * map default to the latest sibling. If a selectedRunId is not found in
+   * the sibling group (stale/deleted), falls back to latest.
    */
-  flattenNodes(selections: Map<string, string>): MessageNode<TMessage>[];
+  flattenNodes(selections: Map<string, string>): RunNode<TProjection>[];
 
   /**
-   * Get the "group root" msgId for a sibling group — the original message
-   * that all forks in the group trace back to.
+   * Get the "group root" runId for a sibling group — the original Run that
+   * all forks in the group trace back to.
    */
-  getGroupRoot(msgId: string): string;
+  getGroupRoot(runId: string): string;
 
   /**
-   * Get the sibling group that `msgId` belongs to, as full MessageNode objects.
-   * Allows callers to resolve index ↔ msgId without losing identity.
+   * Resolve the regenerate sibling group anchored at `msgId`.
+   *
+   * Returned in chronological order: the Run that owns `msgId` first
+   * (lowest startSerial), then every Run with `regeneratesMsgId === msgId`
+   * in serial order. Empty when neither the owner nor any regenerator has
+   * been observed yet.
+   * @param msgId - The msg-id that anchors the group.
+   * @returns Member Runs (owner first, then regenerators).
    */
-  getSiblingNodes(msgId: string): MessageNode<TMessage>[];
+  getRegenerateGroupByMsgId(msgId: string): RunNode<TProjection>[];
+
+  /**
+   * Apply an inbound channel message to the tree.
+   *
+   * Three message kinds flow through here:
+   * 1. Fresh user prompt: creates Run if missing, updates winner, folds events.
+   * 2. Continuation tool-resolution (`x-ably-run-continue: 'true'`): routes to
+   *    existing Run via msgIdToRunId, folds events, skips winner update.
+   * 3. Assistant/agent events: routes to existing Run by runId, folds events.
+   * @param events - Decoded codec events to fold into the Run's projection.
+   * @param headers - Transport headers from the inbound Ably message.
+   * @param serial - Ably channel serial; undefined for optimistic inserts.
+   */
+  applyMessage(events: TEvent[], headers: Record<string, string>, serial?: string): void;
+
+  /**
+   * Apply a run-lifecycle event.
+   *
+   * - `ai-run-start`: creates the Run (if missing) or sets status to 'active'.
+   *   Tracks the run as active.
+   * - `ai-run-end`: sets RunNode.status to the end reason and `endSerial`.
+   *   Untracks the run from active.
+   *
+   * Always emits a 'run' event to subscribers.
+   * @param event - Lifecycle event payload.
+   * @param serial - Ably channel serial of the lifecycle message.
+   */
+  applyRunLifecycle(event: RunLifecycleEvent, serial?: string): void;
+
+  /**
+   * Remove a Run from the tree. Children become unreachable in `flattenNodes()`
+   * because their parent is no longer on the active path.
+   * @param runId - The Run to remove.
+   */
+  delete(runId: string): void;
+
+  /**
+   * Register a run as active (for {@link Tree.getActiveRunIds}) without
+   * emitting a 'run' lifecycle event. Used by the session to mark its own
+   * runs active immediately on `_internalSend()` so they appear in
+   * `cancel({ own: true })` filters before the agent's run-start arrives.
+   * @param runId - The run-id.
+   * @param clientId - The owning clientId.
+   */
+  trackRun(runId: string, clientId: string): void;
+
+  /**
+   * Deregister a run from active tracking (for {@link Tree.getActiveRunIds})
+   * without emitting a 'run' lifecycle event. Used by the session for
+   * local-cleanup cases (e.g. send failure) where the public lifecycle
+   * shouldn't fire a phantom run-end.
+   * @param runId - The run-id.
+   */
+  untrackRun(runId: string): void;
 
   /** Forward a raw Ably message event to tree subscribers. */
   emitAblyMessage(msg: Ably.InboundMessage): void;
-  /** Forward a run lifecycle event to tree subscribers. */
-  emitRun(event: RunLifecycleEvent): void;
-  /** Register an active run. */
-  trackRun(runId: string, clientId: string): void;
-  /** Unregister an active run. */
-  untrackRun(runId: string): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -94,51 +153,71 @@ interface TreeEventsMap {
   update: undefined;
   'ably-message': Ably.InboundMessage;
   run: RunLifecycleEvent;
+  'run-projection-updated': { runId: string };
   'invocation-winner-changed': { runId: string; invocationId: string; serial: string };
 }
 
 // Spec: AIT-CT13
-export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
-  /** All nodes indexed by msgId (x-ably-msg-id). */
-  private readonly _nodeIndex = new Map<string, InternalNode<TMessage>>();
+export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TProjection> {
+  private readonly _codec: Reducer<TEvent, TProjection>;
+  private readonly _logger: Logger;
+  private readonly _emitter: EventEmitter<TreeEventsMap>;
+
+  /** All Run nodes indexed by runId. */
+  private readonly _runIndex = new Map<string, InternalRunNode<TProjection>>();
 
   /**
-   * All nodes sorted by serial (lexicographic). Null-serial messages
-   * (optimistic inserts, seed data) sort after all serial-bearing messages,
-   * ordered among themselves by insertion sequence.
+   * Maps observed `x-ably-msg-id` values to their owning runId. Used to
+   * resolve fork-of msg-ids and parent msg-ids to run-ids, route
+   * continuation amend wires to existing Runs, and back UI lookups that
+   * hold a msg-id.
    */
-  private readonly _sortedList: InternalNode<TMessage>[] = [];
+  private readonly _msgIdToRunId = new Map<string, string>();
 
   /**
-   * Parent index: parentId to set of child msgIds.
-   * Nodes with no parent are indexed under the key `null`.
+   * All Runs sorted by startSerial (lexicographic). Null-startSerial Runs
+   * (optimistic) sort after all serial-bearing Runs, ordered among themselves
+   * by insertion sequence.
+   */
+  private readonly _sortedRuns: InternalRunNode<TProjection>[] = [];
+
+  /**
+   * Parent index: parentRunId to set of child runIds.
+   * Root Runs (no parent) are indexed under the key `undefined`.
    */
   private readonly _parentIndex = new Map<string | undefined, Set<string>>();
 
-  private readonly _emitter: EventEmitter<TreeEventsMap>;
-  private readonly _logger: Logger;
-
-  /** Active runs: runId → clientId. */
+  /** Active runs: runId -> clientId. */
   private readonly _runClientIds = new Map<string, string>();
 
   /**
-   * Winning invocation per run-id: runId → { invocationId, serial }.
-   * Updated only when a user-message with a non-null serial is upserted.
-   * The entry replaces an existing one only if the new serial is higher.
+   * Regenerated msg-id -> set of runIds that regenerate it. A Run with
+   * `regeneratesMsgId` set inserts here on creation; the View uses this
+   * index to resolve message-level regenerate sibling groups in one lookup.
+   */
+  private readonly _regenerateByMsgId = new Map<string, Set<string>>();
+
+  /**
+   * Winning invocation per run-id: runId -> { invocationId, serial }.
+   * Updated only when a non-continuation user-message with a non-null
+   * serial is folded; the entry replaces an existing one only if the new
+   * serial is higher. Messages from losing invocations are filtered at
+   * fold time (see {@link _isLosingInvocation}).
    */
   private readonly _winningInvocations = new Map<string, { invocationId: string; serial: string }>();
 
   /** Monotonically increasing counter for insertion sequence. */
   private _seqCounter = 0;
 
-  /** Incremented on structural changes; unchanged on content-only updates. */
+  /** Incremented on structural changes; unchanged on projection-only updates. */
   private _structuralVersion = 0;
 
   get structuralVersion(): number {
     return this._structuralVersion;
   }
 
-  constructor(logger: Logger) {
+  constructor(codec: Reducer<TEvent, TProjection>, logger: Logger) {
+    this._codec = codec;
     this._logger = logger;
     this._emitter = new EventEmitter<TreeEventsMap>(logger);
   }
@@ -148,82 +227,86 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   // -------------------------------------------------------------------------
 
   /**
-   * Compare two nodes for sorted list ordering.
-   * Serial-bearing nodes sort by serial (lexicographic).
-   * Null-serial nodes sort after all serial-bearing nodes.
-   * Among null-serial nodes, sort by insertion sequence.
-   * @param a - First node to compare.
-   * @param b - Second node to compare.
+   * Compare two Runs for sorted list ordering.
+   * Serial-bearing Runs sort by startSerial (lexicographic).
+   * Null-startSerial Runs sort after all serial-bearing Runs.
+   * Among null-startSerial Runs, sort by insertion sequence.
+   *
+   * Optimistic (null-serial) Runs intentionally tail-sort so they reorder
+   * into place when the server relay arrives and `applyMessage` promotes
+   * startSerial — see {@link applyMessage}'s `_removeSortedRun` /
+   * `_insertSortedRun` pair on the promotion path.
+   * @param a - First Run to compare.
+   * @param b - Second Run to compare.
    * @returns Negative if a sorts before b, positive if after, zero if equal.
    */
   // Spec: AIT-CT13a
-  private _compareNodes(a: InternalNode<TMessage>, b: InternalNode<TMessage>): number {
-    const sa = a.node.serial;
-    const sb = b.node.serial;
+  private _compareRuns(a: InternalRunNode<TProjection>, b: InternalRunNode<TProjection>): number {
+    const sa = a.node.startSerial;
+    const sb = b.node.startSerial;
     if (sa === undefined && sb === undefined) return a.insertSeq - b.insertSeq;
-    if (sa === undefined) return 1; // a sorts after serial-bearing b
-    if (sb === undefined) return -1; // b sorts after serial-bearing a
+    if (sa === undefined) return 1;
+    if (sb === undefined) return -1;
     if (sa < sb) return -1;
     if (sa > sb) return 1;
-    return a.insertSeq - b.insertSeq; // same serial: preserve insertion order
+    return a.insertSeq - b.insertSeq;
   }
 
   /**
-   * Insert a node into sortedList at the correct position via binary search.
-   * @param internal - The node to insert.
+   * Insert a Run into sortedRuns at the correct position via binary search.
+   * @param internal - The Run to insert.
    */
-  private _insertSorted(internal: InternalNode<TMessage>): void {
-    const serial = internal.node.serial;
+  private _insertSortedRun(internal: InternalRunNode<TProjection>): void {
+    const startSerial = internal.node.startSerial;
 
-    // Fast path: null-serial always appends to end (among other null-serials)
-    if (serial === undefined) {
-      this._sortedList.push(internal);
+    // Fast path: null-startSerial always appends to end.
+    if (startSerial === undefined) {
+      this._sortedRuns.push(internal);
       return;
     }
 
-    // Binary search for insertion point among serial-bearing nodes.
     let lo = 0;
-    let hi = this._sortedList.length;
+    let hi = this._sortedRuns.length;
     while (lo < hi) {
       const mid = (lo + hi) >>> 1;
-      const midNode = this._sortedList[mid];
-      if (!midNode) break; // unreachable: mid is always in bounds
-      if (this._compareNodes(midNode, internal) <= 0) {
+      const midRun = this._sortedRuns[mid];
+      if (!midRun) break; // unreachable
+      if (this._compareRuns(midRun, internal) <= 0) {
         lo = mid + 1;
       } else {
         hi = mid;
       }
     }
-    this._sortedList.splice(lo, 0, internal);
+    this._sortedRuns.splice(lo, 0, internal);
   }
 
   /**
-   * Remove a node from sortedList.
-   * @param internal - The node to remove.
+   * Remove a Run from sortedRuns.
+   * @param internal - The Run to remove.
    */
-  private _removeSorted(internal: InternalNode<TMessage>): void {
-    const idx = this._sortedList.indexOf(internal);
-    if (idx !== -1) this._sortedList.splice(idx, 1);
+  private _removeSortedRun(internal: InternalRunNode<TProjection>): void {
+    const idx = this._sortedRuns.indexOf(internal);
+    if (idx !== -1) this._sortedRuns.splice(idx, 1);
   }
 
   // -------------------------------------------------------------------------
   // Parent index maintenance
   // -------------------------------------------------------------------------
 
-  private _addToParentIndex(parentId: string | undefined, msgId: string): void {
-    let set = this._parentIndex.get(parentId);
+  private _addToParentIndex(parentRunId: string | undefined, runId: string): void {
+    let set = this._parentIndex.get(parentRunId);
     if (!set) {
       set = new Set();
-      this._parentIndex.set(parentId, set);
+      this._parentIndex.set(parentRunId, set);
     }
-    set.add(msgId);
+    set.add(runId);
   }
 
-  private _removeFromParentIndex(parentId: string | undefined, msgId: string): void {
-    const set = this._parentIndex.get(parentId);
+  private _removeFromParentIndex(parentRunId: string | undefined, runId: string): void {
+    const set = this._parentIndex.get(parentRunId);
     if (set) {
-      set.delete(msgId);
-      if (set.size === 0) this._parentIndex.delete(parentId);
+      set.delete(runId);
+      if (set.size === 0) this._parentIndex.delete(parentRunId);
     }
   }
 
@@ -232,257 +315,544 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   // -------------------------------------------------------------------------
 
   /**
-   * Get the sibling group that `msgId` belongs to.
+   * Get the sibling group that `runId` belongs to.
    *
-   * A sibling group is: the original message + all messages whose `forkOf`
+   * A sibling group is: the original Run + all Runs whose `forkOf.runId`
    * points to the original (or transitively to a sibling). We find the
    * group root by following `forkOf` chains to the earliest ancestor that
-   * has no `forkOf` (or whose `forkOf` target doesn't share the same parent).
-   * @param msgId - The msg-id to look up the sibling group for.
-   * @returns The ordered list of sibling nodes.
+   * has no `forkOf` (or whose `forkOf` target doesn't share the same
+   * parentRunId).
+   * @param runId - The runId to look up the sibling group for.
+   * @returns The ordered list of sibling Runs.
    */
   // Spec: AIT-CT13b
-  private _getSiblingGroup(msgId: string): MessageNode<TMessage>[] {
-    const entry = this._nodeIndex.get(msgId);
+  private _getSiblingGroup(runId: string): InternalRunNode<TProjection>[] {
+    const entry = this._runIndex.get(runId);
     if (!entry) return [];
 
-    // Find the "original" — the message at the root of the fork chain
-    // that shares the same parentId. Guard against cycles in forkOf chains.
+    // Find the "original" — the Run at the root of the fork chain that
+    // shares the same parentRunId. Guard against cycles in forkOf chains.
     let original = entry.node;
-    const visitedGroup = new Set<string>([original.msgId]);
+    const visitedGroup = new Set<string>([original.runId]);
     while (original.forkOf) {
-      if (visitedGroup.has(original.forkOf)) break; // cycle guard
-      const forkTarget = this._nodeIndex.get(original.forkOf);
-      if (!forkTarget || forkTarget.node.parentId !== original.parentId) break;
+      if (visitedGroup.has(original.forkOf)) break;
+      const forkTarget = this._runIndex.get(original.forkOf);
+      if (!forkTarget || forkTarget.node.parentRunId !== original.parentRunId) break;
       original = forkTarget.node;
-      visitedGroup.add(original.msgId);
+      visitedGroup.add(original.runId);
     }
 
-    // Collect all siblings: nodes with the same parentId that either
-    // ARE the original, or have a forkOf chain leading to the original.
-    const parentId = original.parentId;
-    const originalId = original.msgId;
-    const siblings: InternalNode<TMessage>[] = [];
+    // Collect all siblings: Runs with the same parentRunId that either ARE
+    // the original or have a forkOf chain leading to the original.
+    const parentRunId = original.parentRunId;
+    const originalRunId = original.runId;
+    const siblings: InternalRunNode<TProjection>[] = [];
 
-    const candidateIds = this._parentIndex.get(parentId);
+    const candidateIds = this._parentIndex.get(parentRunId);
     if (candidateIds) {
-      for (const childId of candidateIds) {
-        const childEntry = this._nodeIndex.get(childId);
-        if (childEntry && this._isSiblingOf(childEntry.node, originalId)) {
+      for (const childRunId of candidateIds) {
+        const childEntry = this._runIndex.get(childRunId);
+        if (childEntry && this._isSiblingOf(childEntry.node, originalRunId)) {
           siblings.push(childEntry);
         }
       }
     }
 
-    // Sort by Ably serial (lexicographic). Messages without a serial
-    // (optimistic inserts before server relay) sort after all serial-bearing
-    // siblings — they represent the user's most recent action.
-    siblings.sort((a, b) => this._compareNodes(a, b));
-    return siblings.map((s) => s.node);
+    siblings.sort((a, b) => this._compareRuns(a, b));
+    return siblings;
   }
 
   /**
-   * Check if `node` belongs to the sibling group rooted at `originalId`.
-   * A node is a sibling if it IS the original or its forkOf chain leads
-   * to the original (with the same parentId).
-   * @param node - The node to check.
-   * @param originalId - The group root to match against.
-   * @returns True if the node belongs to the sibling group.
+   * Check if `node` belongs to the sibling group rooted at `originalRunId`.
+   * A Run is a sibling if it IS the original or its forkOf chain leads
+   * to the original (with the same parentRunId).
+   * @param node - The Run to check.
+   * @param originalRunId - The group root to match against.
+   * @returns True if the Run belongs to the sibling group.
    */
-  private _isSiblingOf(node: MessageNode<TMessage>, originalId: string): boolean {
-    if (node.msgId === originalId) return true;
+  private _isSiblingOf(node: RunNode<TProjection>, originalRunId: string): boolean {
+    if (node.runId === originalRunId) return true;
     let current = node;
-    const visited = new Set<string>([current.msgId]);
+    const visited = new Set<string>([current.runId]);
     while (current.forkOf) {
-      if (current.forkOf === originalId) return true;
-      if (visited.has(current.forkOf)) break; // cycle guard
-      const target = this._nodeIndex.get(current.forkOf);
+      if (current.forkOf === originalRunId) return true;
+      if (visited.has(current.forkOf)) break;
+      const target = this._runIndex.get(current.forkOf);
       if (!target) break;
       current = target.node;
-      visited.add(current.msgId);
+      visited.add(current.runId);
     }
     return false;
   }
 
   /**
-   * Get the "group root" msgId for a sibling group — the original message
+   * Get the "group root" runId for a sibling group — the original Run
    * that all forks trace back to.
-   * @param msgId - Any msg-id in the sibling group.
-   * @returns The msg-id of the group root.
+   * @param runId - Any runId in the sibling group.
+   * @returns The runId of the group root.
    */
-  getGroupRoot(msgId: string): string {
-    const entry = this._nodeIndex.get(msgId);
-    if (!entry) return msgId;
+  getGroupRoot(runId: string): string {
+    const entry = this._runIndex.get(runId);
+    if (!entry) return runId;
 
     let current = entry.node;
-    const visited = new Set<string>([current.msgId]);
+    const visited = new Set<string>([current.runId]);
     while (current.forkOf) {
-      if (visited.has(current.forkOf)) break; // cycle guard
-      const forkTarget = this._nodeIndex.get(current.forkOf);
-      if (!forkTarget || forkTarget.node.parentId !== current.parentId) break;
+      if (visited.has(current.forkOf)) break;
+      const forkTarget = this._runIndex.get(current.forkOf);
+      if (!forkTarget || forkTarget.node.parentRunId !== current.parentRunId) break;
       current = forkTarget.node;
-      visited.add(current.msgId);
+      visited.add(current.runId);
     }
-    return current.msgId;
+    return current.runId;
   }
 
   // -------------------------------------------------------------------------
   // Public query methods
   // -------------------------------------------------------------------------
 
-  flattenNodes(selections: Map<string, string>): MessageNode<TMessage>[] {
+  flattenNodes(selections: Map<string, string>): RunNode<TProjection>[] {
     this._logger.trace('DefaultTree.flattenNodes();');
-    const result: MessageNode<TMessage>[] = [];
+    const result: RunNode<TProjection>[] = [];
     const currentPath = new Set<string>();
     // Track which sibling groups we've already resolved to avoid
     // re-resolving for every member of the group.
-    const resolvedGroups = new Map<string, string>(); // groupRootId → selected msgId
+    const resolvedGroups = new Map<string, string>(); // groupRootRunId -> selected runId
 
-    for (const internal of this._sortedList) {
+    for (const internal of this._sortedRuns) {
       const node = internal.node;
-      const { msgId, parentId } = node;
+      const { runId, parentRunId } = node;
 
-      // Step 1: Check parent reachability.
-      if (parentId !== undefined && !currentPath.has(parentId)) {
+      // Step 1: Parent reachability.
+      if (parentRunId !== undefined && !currentPath.has(parentRunId)) {
         continue;
       }
 
-      // Step 2: Check sibling selection.
-      const group = this._getSiblingGroup(msgId);
+      // Step 2: Sibling selection.
+      const group = this._getSiblingGroup(runId);
       if (group.length > 1) {
-        const groupRootId = this.getGroupRoot(msgId);
-        let selectedId = resolvedGroups.get(groupRootId);
-        if (selectedId === undefined) {
-          const preferredId = selections.get(groupRootId);
-          // Verify the preferred msgId is in the group, otherwise default to latest
-          if (preferredId && group.some((n) => n.msgId === preferredId)) {
-            selectedId = preferredId;
+        const groupRootRunId = this.getGroupRoot(runId);
+        let selectedRunId = resolvedGroups.get(groupRootRunId);
+        if (selectedRunId === undefined) {
+          const preferredRunId = selections.get(groupRootRunId);
+          if (preferredRunId && group.some((n) => n.node.runId === preferredRunId)) {
+            selectedRunId = preferredRunId;
           } else {
             const latest = group.at(-1);
             if (!latest) break; // unreachable: group.length > 1
-            selectedId = latest.msgId;
+            selectedRunId = latest.node.runId;
           }
-          resolvedGroups.set(groupRootId, selectedId);
+          resolvedGroups.set(groupRootRunId, selectedRunId);
         }
-        if (msgId !== selectedId) {
+        if (runId !== selectedRunId) {
           continue;
         }
       }
 
-      currentPath.add(msgId);
+      currentPath.add(runId);
       result.push(node);
     }
 
     return result;
   }
 
-  getSiblings(msgId: string): TMessage[] {
-    this._logger.trace('DefaultTree.getSiblings();', { msgId });
-    return this._getSiblingGroup(msgId).map((n) => n.message);
+  getRunNode(runId: string): RunNode<TProjection> | undefined {
+    this._logger.trace('DefaultTree.getRunNode();', { runId });
+    return this._runIndex.get(runId)?.node;
   }
 
-  getSiblingNodes(msgId: string): MessageNode<TMessage>[] {
-    return this._getSiblingGroup(msgId);
+  getRunByMsgId(msgId: string): RunNode<TProjection> | undefined {
+    this._logger.trace('DefaultTree.getRunByMsgId();', { msgId });
+    const runId = this._msgIdToRunId.get(msgId);
+    return runId ? this._runIndex.get(runId)?.node : undefined;
   }
 
-  hasSiblings(msgId: string): boolean {
-    return this._getSiblingGroup(msgId).length > 1;
+  getSiblingRuns(runId: string): RunNode<TProjection>[] {
+    this._logger.trace('DefaultTree.getSiblingRuns();', { runId });
+    return this._getSiblingGroup(runId).map((n) => n.node);
   }
 
-  getNode(msgId: string): MessageNode<TMessage> | undefined {
-    this._logger.trace('DefaultTree.getNode();', { msgId });
-    return this._nodeIndex.get(msgId)?.node;
-  }
-
-  getHeaders(msgId: string): Record<string, string> | undefined {
-    this._logger.trace('DefaultTree.getHeaders();', { msgId });
-    return this._nodeIndex.get(msgId)?.node.headers;
+  hasSiblingRuns(runId: string): boolean {
+    return this._getSiblingGroup(runId).length > 1;
   }
 
   // -------------------------------------------------------------------------
   // Mutation
   // -------------------------------------------------------------------------
 
-  upsert(msgId: string, message: TMessage, headers: Record<string, string>, serial?: string): void {
-    const parentId = headers[HEADER_PARENT] ?? undefined;
-    const forkOf = headers[HEADER_FORK_OF] ?? undefined;
+  applyMessage(events: TEvent[], headers: Record<string, string>, serial?: string): void {
+    const wireRunId = headers[HEADER_RUN_ID];
+    if (!wireRunId) {
+      this._logger.warn('Tree.applyMessage(); message missing run-id header; skipping');
+      return;
+    }
 
-    const existing = this._nodeIndex.get(msgId);
-    if (existing) {
-      // Update in place — message content may have changed (e.g. streaming).
-      // Only update headers if the new headers are non-empty (prevents
-      // streaming updates from erasing canonical headers).
-      existing.node.message = message;
-      if (Object.keys(headers).length > 0) {
-        // Preserve a previously-set `x-ably-role`. Secondary wire
-        // contributions to an existing message (e.g. a client-published
-        // continuation tool resolution stamped with the prior assistant's
-        // msg-id) carry `x-ably-role: 'user'`, but the node's role
-        // belongs to its original contributor (the agent's assistant
-        // stream). Without this carve-out the role flips and downstream
-        // consumers (UI rendering, winner rule, etc.) misread the node.
-        const previousRole = existing.node.headers[HEADER_ROLE];
-        existing.node.headers = { ...headers };
-        if (previousRole !== undefined) {
-          existing.node.headers[HEADER_ROLE] = previousRole;
-        }
+    const msgId = headers[HEADER_MSG_ID];
+    const isContinuation = headers[HEADER_RUN_CONTINUE] === 'true';
+
+    // Wire-only metadata-carrier messages (e.g. `ait-regenerate`) decode to
+    // zero events and don't need a Run at the tree level — the eventual
+    // assistant Run is created later by run-start, and any regenerate /
+    // parent information the wire carried is reread from the run-start
+    // headers. Skipping here avoids a phantom Run with empty projection
+    // that would otherwise inflate sibling-group counts.
+    if (events.length === 0 && !this._runIndex.has(wireRunId)) {
+      return;
+    }
+
+    const runId = wireRunId;
+
+    let run = this._runIndex.get(runId);
+    if (!run) {
+      run = this._createRunFromHeaders(runId, headers, serial);
+      this._runIndex.set(runId, run);
+      this._addToParentIndex(run.node.parentRunId, runId);
+      this._insertSortedRun(run);
+      this._structuralVersion++;
+      this._logger.debug('Tree.applyMessage(); created new Run', { runId, wireRunId, isContinuation });
+    } else if (serial && !run.node.startSerial) {
+      // Promote optimistic startSerial when the relay arrives.
+      this._logger.debug('Tree.applyMessage(); promoting startSerial', { runId, serial });
+      run.node.startSerial = serial;
+      this._removeSortedRun(run);
+      this._insertSortedRun(run);
+      this._structuralVersion++;
+    }
+
+    if (msgId) this._msgIdToRunId.set(msgId, runId);
+
+    // Continuation wires (tool-resolution traffic) publish under the
+    // original prompt's runId but with a higher serial. Skipping the
+    // winner update here prevents them from superseding the original
+    // user-prompt in the winning-invocation map; the corresponding
+    // loser-invocation filter only runs for non-continuation wires too.
+    if (!isContinuation) {
+      const previousWinner = this._winningInvocations.get(runId)?.invocationId;
+      this._maybeUpdateWinningInvocation(headers, serial);
+      const currentWinner = this._winningInvocations.get(runId)?.invocationId;
+      if (previousWinner !== undefined && currentWinner !== undefined && previousWinner !== currentWinner) {
+        // The defensive dual-invocation rule promoted a higher-serial
+        // invocation. Under the run-keyed Tree the loser's prior fold
+        // would otherwise remain inside this Run's projection alongside
+        // the winner. Reset the projection so only the new winner's
+        // events fold in. Later-arriving wires from the loser are
+        // already filtered by _isLosingInvocation below.
+        run.node.projection = this._codec.init();
       }
-      // Spec: AIT-CT13d
-      // Promote serial: optimistic (null) → server-assigned on relay.
-      if (serial && !existing.node.serial) {
-        this._logger.debug('Tree.upsert(); promoting serial', { msgId, serial });
-        existing.node.serial = serial;
-        // Re-sort: remove from current position, re-insert at correct position.
-        this._removeSorted(existing);
-        this._insertSorted(existing);
+      if (this._isLosingInvocation(headers)) {
+        this._logger.debug('Tree.applyMessage(); skipping fold for losing invocation', {
+          runId,
+          invocationId: headers[HEADER_INVOCATION_ID],
+        });
+        return;
+      }
+    }
+
+    for (const event of events) {
+      try {
+        run.node.projection = this._codec.fold(run.node.projection, event, {
+          serial: serial ?? '',
+          messageId: msgId,
+        });
+      } catch (error) {
+        this._logger.error('Tree.applyMessage(); fold threw', { runId, err: error });
+      }
+    }
+
+    this._emitter.emit('run-projection-updated', { runId });
+    this._emitter.emit('update');
+  }
+
+  applyRunLifecycle(event: RunLifecycleEvent, serial?: string): void {
+    this._logger.trace('DefaultTree.applyRunLifecycle();', { type: event.type, runId: event.runId });
+    if (event.type === 'ai-run-start') {
+      let run = this._runIndex.get(event.runId);
+      if (run) {
+        if (run.node.status !== 'active') {
+          run.node.status = 'active';
+        }
+        if (serial && !run.node.startSerial) {
+          run.node.startSerial = serial;
+          this._removeSortedRun(run);
+          this._insertSortedRun(run);
+          this._structuralVersion++;
+        }
+        // Backfill structural metadata if the Run was created from an
+        // assistant wire that arrived before run-start (history pagination
+        // boundary or out-of-order delivery). The lifecycle event is the
+        // canonical source for parent/forkOf/regenerates; only fill in
+        // fields the wire didn't already populate.
+        if (run.node.parentRunId === undefined && event.parent !== undefined) {
+          const parentRunId = this._msgIdToRunId.get(event.parent);
+          if (parentRunId !== undefined) {
+            this._removeFromParentIndex(undefined, event.runId);
+            run.node.parentRunId = parentRunId;
+            this._addToParentIndex(parentRunId, event.runId);
+            this._structuralVersion++;
+          }
+        }
+        if (run.node.forkOf === undefined && event.forkOf !== undefined) {
+          const forkOfRunId = this._msgIdToRunId.get(event.forkOf);
+          if (forkOfRunId !== undefined) {
+            run.node.forkOf = forkOfRunId;
+            this._structuralVersion++;
+          }
+        }
+        if (run.node.regeneratesMsgId === undefined && event.regenerates !== undefined) {
+          run.node.regeneratesMsgId = event.regenerates;
+          this._indexRegenerate(event.runId, event.regenerates);
+          this._structuralVersion++;
+        }
+      } else {
+        run = this._createRunFromLifecycle(event, serial);
+        this._runIndex.set(event.runId, run);
+        this._addToParentIndex(run.node.parentRunId, event.runId);
+        this._insertSortedRun(run);
         this._structuralVersion++;
       }
-      this._maybeUpdateWinningInvocation(headers, serial);
+      this._runClientIds.set(event.runId, event.clientId);
+      this._emitter.emit('run', event);
       this._emitter.emit('update');
       return;
     }
 
-    this._logger.trace('Tree.upsert(); inserting new node', { msgId, parentId, forkOf });
-
-    const node: MessageNode<TMessage> = {
-      kind: 'message',
-      message,
-      msgId,
-      parentId,
-      forkOf,
-      headers: { ...headers },
-      serial,
-    };
-
-    const internal: InternalNode<TMessage> = { node, insertSeq: this._seqCounter++ };
-    this._nodeIndex.set(msgId, internal);
-    this._addToParentIndex(parentId, msgId);
-    this._insertSorted(internal);
-    this._structuralVersion++;
-    this._maybeUpdateWinningInvocation(headers, serial);
+    // ai-run-end
+    const run = this._runIndex.get(event.runId);
+    if (run) {
+      run.node.status = event.reason;
+      run.node.endSerial = serial;
+    }
+    this._runClientIds.delete(event.runId);
+    this._emitter.emit('run', event);
     this._emitter.emit('update');
   }
 
+  delete(runId: string): void {
+    const entry = this._runIndex.get(runId);
+    if (!entry) return;
+
+    this._logger.debug('Tree.delete();', { runId });
+
+    this._removeFromParentIndex(entry.node.parentRunId, runId);
+    this._removeSortedRun(entry);
+    this._runIndex.delete(runId);
+    this._runClientIds.delete(runId);
+    if (entry.node.regeneratesMsgId !== undefined) {
+      const set = this._regenerateByMsgId.get(entry.node.regeneratesMsgId);
+      if (set) {
+        set.delete(runId);
+        if (set.size === 0) this._regenerateByMsgId.delete(entry.node.regeneratesMsgId);
+      }
+    }
+    // msgIdToRunId entries pointing at this run linger but are harmless;
+    // they'll be overwritten if the Run is re-created and remain dangling
+    // otherwise. Cleanup not worth the index walk.
+
+    this._structuralVersion++;
+    this._emitter.emit('update');
+  }
+
+  // -------------------------------------------------------------------------
+  // Internal helpers
+  // -------------------------------------------------------------------------
+
   /**
-   * Update the per-run winning invocation map on user-message upsert.
+   * Build a fresh RunNode from a wire message's headers. Used when an
+   * inbound message arrives before any run-start event for its runId.
+   * @param runId - The run-id from the inbound wire.
+   * @param headers - Transport headers from the inbound Ably message.
+   * @param serial - Ably channel serial; undefined for optimistic inserts.
+   * @returns A newly-allocated internal run node ready for insertion.
+   */
+  private _createRunFromHeaders(
+    runId: string,
+    headers: Record<string, string>,
+    serial: string | undefined,
+  ): InternalRunNode<TProjection> {
+    const parentMsgId = headers[HEADER_PARENT];
+    const parentRunId = parentMsgId ? this._msgIdToRunId.get(parentMsgId) : undefined;
+    const forkOfMsgId = headers[HEADER_FORK_OF];
+    const forkOf = forkOfMsgId ? this._msgIdToRunId.get(forkOfMsgId) : undefined;
+    const regeneratesMsgId = headers[HEADER_MSG_REGENERATE];
+
+    const node: RunNode<TProjection> = {
+      runId,
+      parentRunId,
+      forkOf,
+      regeneratesMsgId,
+      clientId: headers[HEADER_RUN_CLIENT_ID] ?? '',
+      invocationId: headers[HEADER_INVOCATION_ID] ?? '',
+      status: 'active',
+      projection: this._codec.init(),
+      startSerial: serial,
+      endSerial: undefined,
+    };
+
+    if (regeneratesMsgId !== undefined) {
+      this._indexRegenerate(runId, regeneratesMsgId);
+    }
+
+    return { node, insertSeq: this._seqCounter++ };
+  }
+
+  /**
+   * Build a fresh RunNode from a run-start lifecycle event. Used when a
+   * run-start event arrives before any message for its runId.
+   * @param event - The run-start lifecycle event from the agent.
+   * @param serial - Ably channel serial of the run-start message.
+   * @returns A newly-allocated internal run node ready for insertion.
+   */
+  private _createRunFromLifecycle(
+    event: RunLifecycleEvent & { type: 'ai-run-start' },
+    serial: string | undefined,
+  ): InternalRunNode<TProjection> {
+    const parentMsgId = event.parent;
+    const parentRunId = parentMsgId ? this._msgIdToRunId.get(parentMsgId) : undefined;
+    const forkOfMsgId = event.forkOf;
+    const forkOf = forkOfMsgId ? this._msgIdToRunId.get(forkOfMsgId) : undefined;
+    const regeneratesMsgId = event.regenerates;
+
+    const node: RunNode<TProjection> = {
+      runId: event.runId,
+      parentRunId,
+      forkOf,
+      regeneratesMsgId,
+      clientId: event.clientId,
+      invocationId: event.invocationId,
+      status: 'active',
+      projection: this._codec.init(),
+      startSerial: serial,
+      endSerial: undefined,
+    };
+
+    if (regeneratesMsgId !== undefined) {
+      this._indexRegenerate(event.runId, regeneratesMsgId);
+    }
+
+    return { node, insertSeq: this._seqCounter++ };
+  }
+
+  /**
+   * Track a Run as a regenerator of the given msg-id. Maintained as a
+   * forward map (`regenerated msg-id -> set of runIds that regenerate it`)
+   * so the View can resolve regenerate sibling groups in one lookup.
+   * @param runId - The runId of the regenerating Run.
+   * @param regeneratesMsgId - The msg-id the Run regenerates.
+   */
+  private _indexRegenerate(runId: string, regeneratesMsgId: string): void {
+    let set = this._regenerateByMsgId.get(regeneratesMsgId);
+    if (!set) {
+      set = new Set();
+      this._regenerateByMsgId.set(regeneratesMsgId, set);
+    }
+    set.add(runId);
+  }
+
+  /**
+   * Get all Runs (including the Run that owns the msg-id) that participate
+   * in the regenerate sibling group rooted at `msgId`. Returns an empty
+   * array when neither the owner Run nor any regenerator is observed.
+   * @param msgId - The msg-id that anchors the group (the "original" message).
+   * @returns Members ordered chronologically by startSerial — owner first
+   *   (it has the lowest serial), regenerators after.
+   */
+  getRegenerateGroupByMsgId(msgId: string): RunNode<TProjection>[] {
+    const result: RunNode<TProjection>[] = [];
+
+    const ownerRunId = this._msgIdToRunId.get(msgId);
+    if (ownerRunId) {
+      const owner = this._runIndex.get(ownerRunId);
+      if (owner) result.push(owner.node);
+    }
+
+    const regenIds = this._regenerateByMsgId.get(msgId);
+    if (regenIds) {
+      for (const id of regenIds) {
+        const entry = this._runIndex.get(id);
+        if (entry) result.push(entry.node);
+      }
+    }
+
+    result.sort((a, b) => {
+      const ai = this._runIndex.get(a.runId)?.insertSeq ?? 0;
+      const bi = this._runIndex.get(b.runId)?.insertSeq ?? 0;
+      const sa = a.startSerial;
+      const sb = b.startSerial;
+      if (sa === undefined && sb === undefined) return ai - bi;
+      if (sa === undefined) return 1;
+      if (sb === undefined) return -1;
+      if (sa < sb) return -1;
+      if (sa > sb) return 1;
+      return ai - bi;
+    });
+
+    return result;
+  }
+
+  /**
+   * Resolve the regenerate sibling group containing `runId`.
+   *
+   * A Run participates in a regenerate group if either:
+   * - the Run regenerates a known msg-id (the Run is a regenerator), or
+   * - the Run owns a msg-id that has been regenerated by another Run.
+   *
+   * The group's anchor is the "original" msg-id — the one being
+   * regenerated. The Run that owns that msg-id is the group's root.
+   * @param runId - The runId to look up.
+   * @returns The group's anchor msg-id and ordered members, or undefined
+   *   if `runId` is not in any regenerate group.
+   */
+  getRegenerateGroup(runId: string):
+    | {
+        /** The msg-id this group regenerates — anchor of the group. */
+        anchorMsgId: string;
+        /** Ordered group members (owner first, then regenerators by serial). */
+        runs: RunNode<TProjection>[];
+      }
+    | undefined {
+    const entry = this._runIndex.get(runId);
+    if (!entry) return undefined;
+
+    // Case 1: this Run regenerates a known msg-id.
+    const regenTarget = entry.node.regeneratesMsgId;
+    if (regenTarget !== undefined) {
+      const runs = this.getRegenerateGroupByMsgId(regenTarget);
+      return runs.length > 0 ? { anchorMsgId: regenTarget, runs } : undefined;
+    }
+
+    // Case 2: this Run owns a msg-id that has been regenerated. Iterate
+    // the regenerate index and match ownership via `_msgIdToRunId`. The
+    // index is keyed by regenerated msg-id, so the search is bounded by
+    // the number of distinct regen anchors in the tree (small in practice).
+    for (const [anchorMsgId, regenRunIds] of this._regenerateByMsgId) {
+      if (regenRunIds.size === 0) continue;
+      const ownerRunId = this._msgIdToRunId.get(anchorMsgId);
+      if (ownerRunId !== runId) continue;
+      const runs = this.getRegenerateGroupByMsgId(anchorMsgId);
+      if (runs.length > 1) return { anchorMsgId, runs };
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Update the per-run winning invocation map on user-message arrival.
    *
    * Defensive rule: within a run-id, the invocation whose user-message has
    * the highest Ably channel serial is canonical. We only consider messages
    * with `role: user` and a non-null serial — optimistic (null-serial)
    * inserts never win, otherwise a fresh-but-unacked retry would prematurely
-   * supersede the in-flight invocation. Continuation user-messages
-   * (`x-ably-run-continue: 'true'`) are skipped: they publish under the
-   * same run-id as the original prompt but represent tool-resolution
-   * traffic, not a competing user-prompt. Without this exclusion the
-   * continuation's higher serial would supersede the original prompt in
-   * materialised history.
+   * supersede the in-flight invocation. {@link applyMessage} gates this
+   * method on the `x-ably-run-continue` header, so continuation
+   * user-messages (tool-resolution traffic on the original prompt's runId)
+   * never enter here — otherwise their higher serial would supersede the
+   * original prompt.
    * @param headers - Transport headers from the incoming user message.
    * @param serial - Ably channel serial assigned to the published message.
    */
   private _maybeUpdateWinningInvocation(headers: Record<string, string>, serial: string | undefined): void {
     if (!serial) return;
     if (headers[HEADER_ROLE] !== 'user') return;
-    if (headers[HEADER_RUN_CONTINUE] === 'true') return;
     const runId = headers[HEADER_RUN_ID];
     const invocationId = headers[HEADER_INVOCATION_ID];
     if (!runId || !invocationId) return;
@@ -498,27 +868,19 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
     this._emitter.emit('invocation-winner-changed', { runId, invocationId, serial });
   }
 
-  delete(msgId: string): void {
-    const entry = this._nodeIndex.get(msgId);
-    if (!entry) return;
-
-    this._logger.debug('Tree.delete();', { msgId });
-
-    const { node } = entry;
-
-    // Remove from parent index
-    this._removeFromParentIndex(node.parentId, msgId);
-
-    // Remove from sorted list
-    this._removeSorted(entry);
-
-    // Remove from primary index
-    this._nodeIndex.delete(msgId);
-
-    // Children are NOT deleted — they become unreachable in flattenNodes()
-    // because their parent is no longer on the active path.
-    this._structuralVersion++;
-    this._emitter.emit('update');
+  /**
+   * Check if a wire message comes from an invocation that has been
+   * superseded by a higher-serial user-message under the same runId.
+   * @param headers - Transport headers from the incoming message.
+   * @returns True if the message's invocationId is not the current winner.
+   */
+  private _isLosingInvocation(headers: Record<string, string>): boolean {
+    const runId = headers[HEADER_RUN_ID];
+    const invocationId = headers[HEADER_INVOCATION_ID];
+    if (!runId || !invocationId) return false;
+    const winner = this._winningInvocations.get(runId);
+    if (!winner) return false;
+    return invocationId !== winner.invocationId;
   }
 
   // -------------------------------------------------------------------------
@@ -549,16 +911,18 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   on(event: 'update', handler: () => void): () => void;
   on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
   on(event: 'run', handler: (event: RunLifecycleEvent) => void): () => void;
+  on(event: 'run-projection-updated', handler: (event: { runId: string }) => void): () => void;
   on(
     event: 'invocation-winner-changed',
     handler: (event: { runId: string; invocationId: string; serial: string }) => void,
   ): () => void;
   on(
-    event: 'update' | 'ably-message' | 'run' | 'invocation-winner-changed',
+    event: 'update' | 'ably-message' | 'run' | 'run-projection-updated' | 'invocation-winner-changed',
     handler:
       | (() => void)
       | ((msg: Ably.InboundMessage) => void)
       | ((event: RunLifecycleEvent) => void)
+      | ((event: { runId: string }) => void)
       | ((event: { runId: string; invocationId: string; serial: string }) => void),
   ): () => void {
     // CAST: overload signatures enforce correct handler types per event name.
@@ -569,10 +933,6 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
     };
   }
 
-  // -------------------------------------------------------------------------
-  // Internal methods (called by the transport, not part of Tree interface)
-  // -------------------------------------------------------------------------
-
   /**
    * Forward a raw Ably message event to tree subscribers.
    * @param msg - The raw Ably message to emit.
@@ -582,29 +942,11 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
     this._emitter.emit('ably-message', msg);
   }
 
-  /**
-   * Forward a run lifecycle event to tree subscribers.
-   * @param event - The run lifecycle event to emit.
-   */
-  emitRun(event: RunLifecycleEvent): void {
-    this._logger.trace('DefaultTree.emitRun();', { runId: event.runId });
-    this._emitter.emit('run', event);
-  }
-
-  /**
-   * Register an active run.
-   * @param runId - The run's unique identifier.
-   * @param clientId - The client that owns the run.
-   */
   trackRun(runId: string, clientId: string): void {
     this._logger.trace('DefaultTree.trackRun();', { runId, clientId });
     this._runClientIds.set(runId, clientId);
   }
 
-  /**
-   * Unregister an active run.
-   * @param runId - The run to untrack.
-   */
   untrackRun(runId: string): void {
     this._logger.trace('DefaultTree.untrackRun();', { runId });
     this._runClientIds.delete(runId);
@@ -616,10 +958,15 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
 // ---------------------------------------------------------------------------
 
 /**
- * Create a Tree that materializes branching history from a flat oplog.
+ * Create a Tree that materializes branching conversation history from a flat
+ * oplog of Ably messages, keyed by run-id.
+ * @param codec - Codec used to fold inbound events into per-Run projections.
  * @param logger - Logger for diagnostic output.
  * @returns A new {@link DefaultTree} instance. The session uses DefaultTree
- *   directly for internal methods (emitAblyMessage, emitRun, trackRun, untrackRun).
- *   Public consumers see the narrower {@link Tree} interface.
+ *   directly for internal methods (applyMessage, applyRunLifecycle,
+ *   emitAblyMessage). Public consumers see the narrower {@link Tree} interface.
  */
-export const createTree = <TMessage>(logger: Logger): DefaultTree<TMessage> => new DefaultTree(logger);
+export const createTree = <TEvent, TProjection>(
+  codec: Reducer<TEvent, TProjection>,
+  logger: Logger,
+): DefaultTree<TEvent, TProjection> => new DefaultTree(codec, logger);

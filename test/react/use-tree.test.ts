@@ -4,60 +4,79 @@ import { renderHook } from '@testing-library/react';
 import { createElement, type ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ClientSession } from '../../src/core/transport/types.js';
+import type { ClientSession, RunNode } from '../../src/core/transport/types.js';
 import { ClientSessionContext } from '../../src/react/contexts/client-session-context.js';
 import { useTree } from '../../src/react/use-tree.js';
 import { createMockSession } from './helper/mock-session.js';
 
+const makeFakeRun = (runId: string): RunNode<unknown> => ({
+  runId,
+  parentRunId: undefined,
+  forkOf: undefined,
+  regeneratesMsgId: undefined,
+  clientId: '',
+  invocationId: '',
+  status: 'complete',
+  projection: undefined,
+  startSerial: undefined,
+  endSerial: undefined,
+});
+
 describe('useTree', () => {
-  it('delegates getSiblings to tree', () => {
+  it('delegates getSiblingRuns to tree', () => {
     const mock = createMockSession([]);
-    (mock.tree.getSiblings as ReturnType<typeof vi.fn>).mockReturnValue(['a', 'b']);
+    const siblings = [makeFakeRun('a'), makeFakeRun('b')];
+    (mock.tree.getSiblingRuns as ReturnType<typeof vi.fn>).mockReturnValue(siblings);
 
     const { result } = renderHook(() => useTree({ session: mock.session }));
 
-    expect(result.current.getSiblings('msg-1')).toEqual(['a', 'b']);
+    expect(result.current.getSiblingRuns('a')).toEqual(siblings);
     // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
-    expect(mock.tree.getSiblings).toHaveBeenCalledWith('msg-1');
+    expect(mock.tree.getSiblingRuns).toHaveBeenCalledWith('a');
   });
 
-  it('delegates hasSiblings to tree', () => {
+  it('delegates hasSiblingRuns to tree', () => {
     const mock = createMockSession([]);
-    (mock.tree.hasSiblings as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    (mock.tree.hasSiblingRuns as ReturnType<typeof vi.fn>).mockReturnValue(true);
 
     const { result } = renderHook(() => useTree({ session: mock.session }));
 
-    expect(result.current.hasSiblings('msg-1')).toBe(true);
+    expect(result.current.hasSiblingRuns('a')).toBe(true);
   });
 
-  it('delegates getNode to tree', () => {
+  it('delegates getRunNode to tree', () => {
     const mock = createMockSession([]);
-    const fakeNode = {
-      message: 'hi',
-      msgId: 'msg-1',
-      parentId: undefined,
-      forkOf: undefined,
-      headers: {},
-      serial: undefined,
-    };
-    (mock.tree.getNode as ReturnType<typeof vi.fn>).mockReturnValue(fakeNode);
+    const fakeRun = makeFakeRun('run-1');
+    (mock.tree.getRunNode as ReturnType<typeof vi.fn>).mockReturnValue(fakeRun);
 
     const { result } = renderHook(() => useTree({ session: mock.session }));
 
-    expect(result.current.getNode('msg-1')).toBe(fakeNode);
+    expect(result.current.getRunNode('run-1')).toBe(fakeRun);
+  });
+
+  it('delegates getRunByMsgId to tree', () => {
+    const mock = createMockSession([]);
+    const fakeRun = makeFakeRun('run-1');
+    (mock.tree.getRunByMsgId as ReturnType<typeof vi.fn>).mockReturnValue(fakeRun);
+
+    const { result } = renderHook(() => useTree({ session: mock.session }));
+
+    expect(result.current.getRunByMsgId('msg-1')).toBe(fakeRun);
   });
 
   it('returns safe defaults when no session and no nearest context', () => {
     const { result } = renderHook(() => useTree());
 
-    expect(result.current.getSiblings('msg-1')).toEqual([]);
-    expect(result.current.hasSiblings('msg-1')).toBe(false);
-    expect(result.current.getNode('msg-1')).toBeUndefined();
+    expect(result.current.getSiblingRuns('a')).toEqual([]);
+    expect(result.current.hasSiblingRuns('a')).toBe(false);
+    expect(result.current.getRunNode('a')).toBeUndefined();
+    expect(result.current.getRunByMsgId('msg-1')).toBeUndefined();
   });
 
   it('uses nearest session from context when session is omitted', () => {
     const mock = createMockSession([]);
-    (mock.tree.getSiblings as ReturnType<typeof vi.fn>).mockReturnValue(['a', 'b']);
+    const siblings = [makeFakeRun('a'), makeFakeRun('b')];
+    (mock.tree.getSiblingRuns as ReturnType<typeof vi.fn>).mockReturnValue(siblings);
 
     const wrapper = ({ children }: { children: ReactNode }): ReactNode =>
       createElement(
@@ -73,6 +92,6 @@ describe('useTree', () => {
 
     const { result } = renderHook(() => useTree(), { wrapper });
 
-    expect(result.current.getSiblings('msg-1')).toEqual(['a', 'b']);
+    expect(result.current.getSiblingRuns('a')).toEqual(siblings);
   });
 });

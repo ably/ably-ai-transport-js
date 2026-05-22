@@ -15,19 +15,19 @@ interface MessageListProps {
 }
 
 export function MessageList({ view, onRegenerate, onEdit, onToolApprove, onToolDeny }: MessageListProps) {
-  const { nodes, hasOlder, loading, loadOlder } = view;
+  const { messages, hasOlder, loading, loadOlder } = view;
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const prevLastIdRef = useRef<string | undefined>(undefined);
 
   // Auto-scroll to bottom only when the last message changes
   useEffect(() => {
-    const lastId = nodes.length > 0 ? nodes[nodes.length - 1].message.id : undefined;
+    const lastId = messages.length > 0 ? messages[messages.length - 1].id : undefined;
     if (lastId && lastId !== prevLastIdRef.current) {
       prevLastIdRef.current = lastId;
       endRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [nodes]);
+  }, [messages]);
 
   const handleScroll = () => {
     const el = scrollRef.current;
@@ -59,24 +59,34 @@ export function MessageList({ view, onRegenerate, onEdit, onToolApprove, onToolD
         </div>
       )}
       {loading && <div className="text-center text-xs text-zinc-600 animate-pulse">Loading history...</div>}
-      {nodes.length === 0 && !loading && (
+      {messages.length === 0 && !loading && (
         <p className="text-sm text-zinc-600 text-center mt-20">Send a message to start chatting.</p>
       )}
-      {nodes.map((node) => (
-        <MessageBubble
-          key={node.message.id}
-          message={node.message}
-          headers={node.headers}
-          hasSiblings={view.hasSiblings(node.msgId)}
-          siblings={view.getSiblings(node.msgId)}
-          selectedIndex={view.getSelectedIndex(node.msgId)}
-          onSelectSibling={(index) => view.select(node.msgId, index)}
-          onRegenerate={node.message.role === 'assistant' ? () => onRegenerate(node.msgId) : undefined}
-          onEdit={node.message.role === 'user' ? (text) => onEdit(node.msgId, text) : undefined}
-          onToolApprove={onToolApprove}
-          onToolDeny={onToolDeny}
-        />
-      ))}
+      {messages.map((message) => {
+        const owningRun = view.getRunByMsgId(message.id);
+        // Use the msg-anchored branch-nav API so the arrow buttons attach to
+        // the correct bubble: the user prompt for edits, the assistant for
+        // regens. The runId-based hasSiblingRuns(runId) reports true for
+        // every msg in a Run that's in a sibling group, which is too coarse.
+        const hasSiblings = view.hasMessageSiblings(message.id);
+        return (
+          <MessageBubble
+            key={message.id}
+            message={message}
+            owningRun={owningRun}
+            hasSiblings={hasSiblings}
+            siblings={hasSiblings ? view.getMessageSiblings(message.id) : []}
+            selectedIndex={hasSiblings ? view.getSelectedMessageSiblingIndex(message.id) : 0}
+            onSelectSibling={(index) => {
+              view.selectMessageSibling(message.id, index);
+            }}
+            onRegenerate={message.role === 'assistant' ? () => onRegenerate(message.id) : undefined}
+            onEdit={message.role === 'user' ? (text) => onEdit(message.id, text) : undefined}
+            onToolApprove={onToolApprove}
+            onToolDeny={onToolDeny}
+          />
+        );
+      })}
       <div ref={endRef} />
     </div>
   );

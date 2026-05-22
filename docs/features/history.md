@@ -10,13 +10,14 @@ Without persistent history, page refresh means starting over. With AI Transport,
 const view = session.view;
 await view.loadOlder(30);
 
-// view.flattenNodes() - decoded messages including history, in chronological order
-// Call loadOlder again to fetch more older messages
+// view.flattenNodes() - the visible Run nodes including history, oldest-first.
+// view.getMessages() - flat messages concatenated across visible Runs.
+// Call loadOlder again to fetch more older Runs.
 ```
 
-History messages are inserted into the session's conversation tree and trigger an `'update'` notification on the view. After loading history, `view.flattenNodes().map(n => n.message)` returns the combined history + live messages - flattened along the currently selected branch. If the history contains forks (from regeneration or editing), only the active branch is included. Use the conversation tree to navigate between branches (see [Conversation branching](branching.md)).
+History messages are inserted into the session's conversation tree and trigger an `'update'` notification on the view. After loading history, `view.getMessages()` returns the combined history + live messages - flattened across every visible Run along the currently selected branch. If the history contains forks (from regeneration or editing), only the active branch is included. Use the conversation tree to navigate between branches (see [Conversation branching](branching.md)).
 
-The `limit` parameter controls how many **complete domain messages** to return, not how many Ably wire messages to fetch. A single assistant message may span dozens of Ably messages (one per append). The implementation pages through Ably history until `limit` complete messages have been assembled.
+The `limit` parameter controls how many **Runs** to reveal, not how many messages or how many Ably wire messages to fetch. Each Run typically contributes more than one message (e.g. a user prompt + an assistant reply), so revealing `limit` Runs may add several messages to the flat list. The implementation pages through Ably history transparently until enough Runs are buffered.
 
 ## Gapless continuity
 

@@ -1013,7 +1013,10 @@ describe('Vercel decoder', () => {
           [HEADER_CODEC_MESSAGE_ID]: 'regen-codec-message-id',
           [HEADER_ROLE]: 'user',
           'x-ably-parent': 'user-U1',
-          'x-ably-fork-of': 'asst-A1',
+          // The regenerate wire carries the new `x-ably-msg-regenerate`
+          // header introduced for the run-keyed Tree (regenerate is a
+          // continuation, message-level replacement; not a Run-level fork).
+          'x-ably-msg-regenerate': 'asst-A1',
           'x-ably-event-id': 'prompt-1',
         },
       );

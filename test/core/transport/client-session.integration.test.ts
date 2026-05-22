@@ -21,7 +21,6 @@ import {
   EVENT_CANCEL,
   EVENT_RUN_END,
   EVENT_RUN_START,
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
@@ -61,18 +60,18 @@ const drain = async <T>(stream: ReadableStream<T>): Promise<T[]> => {
 
 const waitForMessages = async (ct: ClientSessionT, expected: number, timeout = 10_000): Promise<void> =>
   new Promise<void>((resolve, reject) => {
-    if (ct.view.flattenNodes().length >= expected) {
+    if (ct.view.getMessages().length >= expected) {
       resolve();
       return;
     }
     const timer = setTimeout(() => {
       unsub();
       reject(
-        new Error(`timed out waiting for ${String(expected)} messages (got ${String(ct.view.flattenNodes().length)})`),
+        new Error(`timed out waiting for ${String(expected)} messages (got ${String(ct.view.getMessages().length)})`),
       );
     }, timeout);
     const unsub = ct.view.on('update', () => {
-      if (ct.view.flattenNodes().length >= expected) {
+      if (ct.view.getMessages().length >= expected) {
         clearTimeout(timer);
         unsub();
         resolve();
@@ -236,8 +235,8 @@ describe('ClientSession integration', () => {
     // runId from the optimistic tree node.
     const tree = clientSession.tree;
     const optimisticNode = clientSession.view.flattenNodes()[0];
-    const runId = optimisticNode?.headers[HEADER_RUN_ID];
-    const invocationId = optimisticNode?.headers['x-ably-invocation-id'];
+    const runId = optimisticNode?.runId;
+    const invocationId = optimisticNode?.invocationId;
     expect(runId).toBeDefined();
     expect(invocationId).toBeDefined();
     if (!runId || !invocationId) throw new Error('expected run/invocation ids');
@@ -259,7 +258,7 @@ describe('ClientSession integration', () => {
     expect(types).toContain('finish');
 
     await waitForMessages(clientSession, 2);
-    const messages = clientSession.view.flattenNodes().map((n) => n.message);
+    const messages = clientSession.view.getMessages();
     expect(messages.length).toBeGreaterThanOrEqual(2);
 
     const userMsg = messages.find((m) => m.role === 'user');
@@ -308,8 +307,8 @@ describe('ClientSession integration', () => {
 
     await new Promise((r) => setTimeout(r, 50));
     const optimisticNode = clientSession.view.flattenNodes()[0];
-    const runId = optimisticNode?.headers[HEADER_RUN_ID];
-    const invocationId = optimisticNode?.headers['x-ably-invocation-id'];
+    const runId = optimisticNode?.runId;
+    const invocationId = optimisticNode?.invocationId;
     if (!runId || !invocationId) throw new Error('expected ids');
 
     const serverRun = createRunFromOpts(agentSession, {
@@ -364,8 +363,8 @@ describe('ClientSession integration', () => {
     });
     await new Promise((r) => setTimeout(r, 50));
     const optimisticNode = clientSession.view.flattenNodes()[0];
-    const runId = optimisticNode?.headers[HEADER_RUN_ID];
-    const invocationId = optimisticNode?.headers['x-ably-invocation-id'];
+    const runId = optimisticNode?.runId;
+    const invocationId = optimisticNode?.invocationId;
     if (!runId || !invocationId) throw new Error('expected ids');
 
     const startPromise = waitForRunEvent(clientSession, runId, EVENT_RUN_START);
@@ -394,7 +393,7 @@ describe('ClientSession integration', () => {
     expect(runEvents.some((e) => e.type === EVENT_RUN_END && e.runId === runId)).toBe(true);
   });
 
-  it('client cancel cancels the server stream', async () => {
+  it('client cancel aborts the server stream', async () => {
     const channelName = uniqueChannelName('ct-cancel');
     const serverClient = ablyRealtimeClient();
     const clientClient = ablyRealtimeClient();
@@ -424,8 +423,8 @@ describe('ClientSession integration', () => {
     });
     await new Promise((r) => setTimeout(r, 50));
     const optimisticNode = clientSession.view.flattenNodes()[0];
-    const runId = optimisticNode?.headers[HEADER_RUN_ID];
-    const invocationId = optimisticNode?.headers['x-ably-invocation-id'];
+    const runId = optimisticNode?.runId;
+    const invocationId = optimisticNode?.invocationId;
     if (!runId || !invocationId) throw new Error('expected ids');
 
     const serverRun = createRunFromOpts(agentSession, {
@@ -492,7 +491,7 @@ describe('ClientSession integration', () => {
 
     await clientSession.view.loadOlder(10);
 
-    const messages = clientSession.view.flattenNodes().map((n) => n.message);
+    const messages = clientSession.view.getMessages();
     expect(messages.length).toBeGreaterThanOrEqual(1);
 
     const asstMsg = messages.find((m) => m.role === 'assistant');
@@ -534,8 +533,8 @@ describe('ClientSession integration', () => {
     });
     await new Promise((r) => setTimeout(r, 50));
     const optimisticNode = clientSession.view.flattenNodes()[0];
-    const runId = optimisticNode?.headers[HEADER_RUN_ID];
-    const invocationId = optimisticNode?.headers['x-ably-invocation-id'];
+    const runId = optimisticNode?.runId;
+    const invocationId = optimisticNode?.invocationId;
     if (!runId || !invocationId) throw new Error('expected ids');
 
     const endPromise = waitForRunEvent(clientSession, runId, EVENT_RUN_END);
@@ -589,8 +588,8 @@ describe('ClientSession integration', () => {
     });
     await new Promise((r) => setTimeout(r, 50));
     const optimisticNode = clientSession.view.flattenNodes()[0];
-    const runId = optimisticNode?.headers[HEADER_RUN_ID];
-    const invocationId = optimisticNode?.headers['x-ably-invocation-id'];
+    const runId = optimisticNode?.runId;
+    const invocationId = optimisticNode?.invocationId;
     if (!runId || !invocationId) throw new Error('expected ids');
 
     const run = createRunFromOpts(agentSession, {
@@ -606,22 +605,22 @@ describe('ClientSession integration', () => {
     await drain(clientRun.stream);
     await waitForMessages(clientSession, 2);
 
-    const nodes = clientSession.view.flattenNodes();
-    const userNode = nodes.find((n) => n.message.role === 'user');
-    const asstNode = nodes.find((n) => n.message.role === 'assistant');
+    const messages = clientSession.view.getMessages();
+    const userMsg = messages.find((m) => m.role === 'user');
+    const asstMsg = messages.find((m) => m.role === 'assistant');
 
-    expect(userNode).toBeDefined();
-    expect(asstNode).toBeDefined();
+    expect(userMsg).toBeDefined();
+    expect(asstMsg).toBeDefined();
 
-    if (userNode) {
-      expect(userNode.codecMessageId).toBeDefined();
-      expect(userNode.headers[HEADER_ROLE]).toBe('user');
-      expect(userNode.headers[HEADER_RUN_ID]).toBe(runId);
-      expect(userNode.headers[HEADER_CODEC_MESSAGE_ID]).toBeDefined();
+    if (userMsg) {
+      expect(userMsg.id).toBeDefined();
+      const owningRun = clientSession.view.getRunByCodecMessageId(userMsg.id);
+      expect(owningRun?.runId).toBe(runId);
     }
-    if (asstNode) {
-      expect(asstNode.codecMessageId).toBeDefined();
-      expect(asstNode.headers[HEADER_RUN_ID]).toBe(runId);
+    if (asstMsg) {
+      expect(asstMsg.id).toBeDefined();
+      const owningRun = clientSession.view.getRunByCodecMessageId(asstMsg.id);
+      expect(owningRun?.runId).toBe(runId);
     }
   });
 
@@ -706,18 +705,18 @@ describe('ClientSession integration', () => {
     const runId = crypto.randomUUID();
     const losingInvocationId = crypto.randomUUID();
     const winningInvocationId = crypto.randomUUID();
-    const losingCodecMessageId = crypto.randomUUID();
-    const winningCodecMessageId = crypto.randomUUID();
+    const losingMsgId = crypto.randomUUID();
+    const winningMsgId = crypto.randomUUID();
     const ownerClientId = 'race-owner';
 
     // Publish the LOSING invocation first (lower serial).
-    await publishUserMessage(publisherChannel, runId, losingInvocationId, losingCodecMessageId, 'losing prompt');
+    await publishUserMessage(publisherChannel, runId, losingInvocationId, losingMsgId, 'losing prompt');
     await publishRunStart(publisherChannel, runId, losingInvocationId, ownerClientId);
     await publishRunEnd(publisherChannel, runId, losingInvocationId, ownerClientId, 'complete');
 
     // Then publish the WINNING invocation (higher serial). The view should
     // discard the losing user message and surface only the winning one.
-    await publishUserMessage(publisherChannel, runId, winningInvocationId, winningCodecMessageId, 'winning prompt');
+    await publishUserMessage(publisherChannel, runId, winningInvocationId, winningMsgId, 'winning prompt');
     await publishRunStart(publisherChannel, runId, winningInvocationId, ownerClientId);
     await publishRunEnd(publisherChannel, runId, winningInvocationId, ownerClientId, 'complete');
 
@@ -727,13 +726,14 @@ describe('ClientSession integration', () => {
     // filter were broken — failure of the test would manifest as count > 1.
     await new Promise((r) => setTimeout(r, 300));
 
-    const nodes = clientSession.view.flattenNodes();
-    const userNodes = nodes.filter((n) => n.message.role === 'user');
-    expect(userNodes).toHaveLength(1);
-    expect(userNodes[0]?.headers[HEADER_INVOCATION_ID]).toBe(winningInvocationId);
-    expect(userNodes[0]?.headers[HEADER_CODEC_MESSAGE_ID]).toBe(winningCodecMessageId);
+    const userMsgs = clientSession.view.getMessages().filter((m) => m.role === 'user');
+    expect(userMsgs).toHaveLength(1);
+    const userMsg = userMsgs[0];
+    expect(userMsg?.id).toBe(winningMsgId);
+    const owningRun = userMsg ? clientSession.view.getRunByCodecMessageId(userMsg.id) : undefined;
+    expect(owningRun?.runId).toBe(runId);
+    expect(clientSession.tree.getWinningInvocation(runId)?.invocationId).toBe(winningInvocationId);
 
-    const userMsg = userNodes[0]?.message;
     const textPart = userMsg?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
     expect(textPart?.text).toBe('winning prompt');
 
@@ -755,16 +755,16 @@ describe('ClientSession integration', () => {
     const runId = crypto.randomUUID();
     const losingInvocationId = crypto.randomUUID();
     const winningInvocationId = crypto.randomUUID();
-    const losingCodecMessageId = crypto.randomUUID();
-    const winningCodecMessageId = crypto.randomUUID();
+    const losingMsgId = crypto.randomUUID();
+    const winningMsgId = crypto.randomUUID();
     const ownerClientId = 'race-hydrate-owner';
 
     // Publish both invocations to the channel, losing first so it has the
     // lower serial.
-    await publishUserMessage(publisherChannel, runId, losingInvocationId, losingCodecMessageId, 'losing prompt');
+    await publishUserMessage(publisherChannel, runId, losingInvocationId, losingMsgId, 'losing prompt');
     await publishRunStart(publisherChannel, runId, losingInvocationId, ownerClientId);
     await publishRunEnd(publisherChannel, runId, losingInvocationId, ownerClientId, 'complete');
-    await publishUserMessage(publisherChannel, runId, winningInvocationId, winningCodecMessageId, 'winning prompt');
+    await publishUserMessage(publisherChannel, runId, winningInvocationId, winningMsgId, 'winning prompt');
     await publishRunStart(publisherChannel, runId, winningInvocationId, ownerClientId);
     await publishRunEnd(publisherChannel, runId, winningInvocationId, ownerClientId, 'complete');
 
@@ -785,11 +785,12 @@ describe('ClientSession integration', () => {
     await clientSession.connect();
     await clientSession.view.loadOlder(50);
 
-    const nodes = clientSession.view.flattenNodes();
-    const userNodes = nodes.filter((n) => n.message.role === 'user');
-    expect(userNodes).toHaveLength(1);
-    expect(userNodes[0]?.headers[HEADER_INVOCATION_ID]).toBe(winningInvocationId);
-    expect(userNodes[0]?.headers[HEADER_CODEC_MESSAGE_ID]).toBe(winningCodecMessageId);
+    const userMsgs = clientSession.view.getMessages().filter((m) => m.role === 'user');
+    expect(userMsgs).toHaveLength(1);
+    expect(userMsgs[0]?.id).toBe(winningMsgId);
+    const owningRun = userMsgs[0] ? clientSession.view.getRunByCodecMessageId(userMsgs[0].id) : undefined;
+    expect(owningRun?.runId).toBe(runId);
+    expect(clientSession.tree.getWinningInvocation(runId)?.invocationId).toBe(winningInvocationId);
   });
 
   // -------------------------------------------------------------------------
@@ -921,7 +922,7 @@ describe('ClientSession integration', () => {
     // Cancel only the target run.
     await clientSession.cancel(targetRunId);
 
-    // The target run cancels; the surviving run does not.
+    // The target run aborts; the surviving run does not.
     const targetResult = await targetPipe;
     expect(targetResult.reason).toBe('cancelled');
     expect(targetRun.abortSignal.aborted).toBe(true);

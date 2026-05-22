@@ -97,7 +97,7 @@ export interface SessionHooks<TEvent, TProjection, TMessage> {
   useTree: (props?: {
     /** Override session; defaults to the nearest {@link ClientSessionProvider}. */
     session?: ClientSession<TEvent, TProjection, TMessage>;
-  }) => TreeHandle<TMessage>;
+  }) => TreeHandle<TProjection>;
   /**
    * Subscribe to raw Ably messages on the session channel.
    * Pass `session` to override; defaults to the nearest {@link ClientSessionProvider}.

@@ -604,13 +604,13 @@ describe('Vercel encoder', () => {
     it('publishes a discrete ait-regenerate wire with empty data; routing metadata travels on transport headers', async () => {
       const encoder = createEncoder(writer);
       // The client-session builds transport headers (codec-message-id, event-id,
-      // run-id, parent, fork-of, role) and passes them as `extras.headers`
-      // on the per-write options. The encoder forwards them onto the wire
-      // and carries no domain payload of its own.
+      // run-id, parent, msg-regenerate, role) and passes them as
+      // `extras.headers` on the per-write options. The encoder forwards
+      // them onto the wire and carries no domain payload of its own.
       await encoder.publish(
         {
           type: 'ait-regenerate',
-          forkOfCodecMessageId: 'asst-A1',
+          regeneratesCodecMessageId: 'asst-A1',
           parentCodecMessageId: 'user-U1',
         },
         {
@@ -621,7 +621,7 @@ describe('Vercel encoder', () => {
               'x-ably-event-id': 'prompt-1',
               'x-ably-role': 'user',
               'x-ably-parent': 'user-U1',
-              'x-ably-fork-of': 'asst-A1',
+              'x-ably-msg-regenerate': 'asst-A1',
             },
           },
         },
@@ -636,7 +636,7 @@ describe('Vercel encoder', () => {
       expect(headers['x-ably-event-id']).toBe('prompt-1');
       expect(headers['x-ably-role']).toBe('user');
       expect(headers['x-ably-parent']).toBe('user-U1');
-      expect(headers['x-ably-fork-of']).toBe('asst-A1');
+      expect(headers['x-ably-msg-regenerate']).toBe('asst-A1');
     });
   });
 

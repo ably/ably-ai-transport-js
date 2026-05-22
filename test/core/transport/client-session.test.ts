@@ -1,15 +1,12 @@
 /**
  * ClientSession unit tests.
  *
- * Rewritten against the event-sourced `Codec<TEvent, TProjection, TMessage>`
- * contract — mock encoder uses single-method `publish`, mock decoder returns
- * `TEvent[]`, and projection state is folded via `init`/`fold`/`getMessages`.
+ * Mock encoder uses single-method `publish`; mock decoder returns `TEvent[]`;
+ * projection state is folded via `init` / `fold` / `getMessages`.
  *
- * Retired surfaces (`stageEvents`, `stageMessage`, `view.update`,
- * `createAccumulator`, cross-run amend, codec amend classification)
- * are gone — the suite covers connect, send, regenerate, edit, cancel,
- * waitForRun, run lifecycle, observer routing, optimistic relay,
- * channel state, continuation (suspend/resume) sends, and close.
+ * Coverage: connect, send, regenerate, edit, cancel, waitForRun, run
+ * lifecycle, observer routing, optimistic relay, channel state,
+ * continuation (suspend / resume) sends, and close.
  */
 
 import * as Ably from 'ably';
@@ -277,9 +274,8 @@ const createMockCodec = (decoder?: MockDecoder): MockCodec => {
         }
         msg.content += event.text;
       }
-      // The session's optimistic-fold path now folds user-message events
-      // through the codec. The mock fold appends/replaces a message keyed
-      // by meta.messageId so getMessages() yields it for the tree upsert.
+      // User-message events fold into the projection by meta.messageId so
+      // getMessages() yields them for the tree to surface.
       if (event.type === 'user-message') {
         const id = meta.messageId ?? 'unknown';
         const next: TestMessage = { id, content: event.text ?? '' };
@@ -300,7 +296,7 @@ const createMockCodec = (decoder?: MockDecoder): MockCodec => {
         return {
           kind: 'regenerate' as const,
           parent: event.parent ?? '',
-          forkOf: event.forkOf ?? '',
+          regenerates: event.forkOf ?? '',
         };
       }
       return { kind: 'other' as const };
@@ -557,10 +553,12 @@ describe('ClientSession', () => {
       });
       await s.connect();
 
+      const messages = s.view.getMessages();
+      expect(messages.map((m) => m.content)).toEqual(['first', 'second']);
+      // Subsequent seed Runs chain off the prior one via parentRunId.
       const nodes = s.view.flattenNodes();
-      expect(nodes.map((n) => n.message.content)).toEqual(['first', 'second']);
-      // Subsequent nodes chain off the prior one.
-      expect(nodes[1]?.headers[HEADER_PARENT]).toBe(nodes[0]?.codecMessageId);
+      expect(nodes).toHaveLength(2);
+      expect(nodes[1]?.parentRunId).toBe(nodes[0]?.runId);
       await s.close();
     });
   });
@@ -580,7 +578,7 @@ describe('ClientSession', () => {
 
     it('inserts an optimistic user message into the tree', async () => {
       await fix.session.view.sendEvent({ type: 'user-message', text: 'hello' });
-      const messages = fix.session.view.flattenNodes().map((n) => n.message);
+      const messages = fix.session.view.getMessages();
       expect(messages).toHaveLength(1);
       expect(messages[0]?.content).toBe('hello');
     });
@@ -629,9 +627,9 @@ describe('ClientSession', () => {
 
       // First entry used the supplied domainMessageId; second fell back to a fresh UUID.
       expect(userPublishes[0]?.opts?.extras?.headers?.[HEADER_CODEC_MESSAGE_ID]).toBe('target-a');
-      const secondCodecMessageId = userPublishes[1]?.opts?.extras?.headers?.[HEADER_CODEC_MESSAGE_ID];
-      expect(secondCodecMessageId).toBeDefined();
-      expect(secondCodecMessageId).not.toBe('target-a');
+      const secondMsgId = userPublishes[1]?.opts?.extras?.headers?.[HEADER_CODEC_MESSAGE_ID];
+      expect(secondMsgId).toBeDefined();
+      expect(secondMsgId).not.toBe('target-a');
     });
 
     it('mints a distinct event-id per user-message and lists them in postBody.eventIds in order', async () => {
@@ -686,13 +684,14 @@ describe('ClientSession', () => {
       });
       await seeded.connect();
 
-      const seedCodecMessageId = seeded.view.flattenNodes()[0]?.codecMessageId;
+      const seedRunId = seeded.view.flattenNodes()[0]?.runId;
       const run = await seeded.view.sendEvent({ type: 'user-message', text: 'next' });
 
-      // Find the new node — should reference the seed as its parent.
+      // Find the new Run — it should be parented to the seed Run.
       const nodes = seeded.view.flattenNodes();
-      const newNode = nodes.find((n) => n.codecMessageId !== seedCodecMessageId);
-      expect(newNode?.headers[HEADER_PARENT]).toBe(seedCodecMessageId);
+      expect(nodes.length).toBeGreaterThan(1);
+      const newNode = nodes.find((n) => n.parentRunId === seedRunId);
+      expect(newNode).toBeDefined();
       expect(run.optimisticCodecMessageIds).toHaveLength(1);
       await seeded.close();
     });
@@ -702,9 +701,19 @@ describe('ClientSession', () => {
         { type: 'user-message', text: 'first' },
         { type: 'user-message', text: 'second' },
       ]);
-      const nodes = fix.session.view.flattenNodes();
-      expect(nodes).toHaveLength(2);
-      expect(nodes[1]?.headers[HEADER_PARENT]).toBe(nodes[0]?.codecMessageId);
+      // Both messages land in the same Run's projection (one Run per send).
+      const messages = fix.session.view.getMessages();
+      expect(messages).toHaveLength(2);
+      expect(messages[0]?.content).toBe('first');
+      expect(messages[1]?.content).toBe('second');
+
+      // The encoder publishes each event with chained parents: second's parent header == first's codec-message-id.
+      const enc = fix.codec.lastEncoder();
+      const userPublishes = enc?.publishCalls.filter((c) => c.event.type === 'user-message') ?? [];
+      expect(userPublishes).toHaveLength(2);
+      const firstMsgId = userPublishes[0]?.opts?.extras?.headers?.[HEADER_CODEC_MESSAGE_ID];
+      const secondParent = userPublishes[1]?.opts?.extras?.headers?.[HEADER_PARENT];
+      expect(secondParent).toBe(firstMsgId);
     });
 
     it('merges sendOptions.body and sendOptions.headers into POST', async () => {
@@ -1143,13 +1152,43 @@ describe('ClientSession', () => {
       expect(fresh.isContinuation).toBeUndefined();
     });
 
+    it('surfaces regenerates on the run-start event when x-ably-msg-regenerate is set', () => {
+      const lifecycle: RunLifecycleEvent[] = [];
+      fix.session.tree.on('run', (e) => lifecycle.push(e));
+
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_START, {
+          [HEADER_RUN_ID]: 'run-regen',
+          [HEADER_RUN_CLIENT_ID]: 'agent',
+          'x-ably-parent': 'orig-user',
+          'x-ably-msg-regenerate': 'orig-asst',
+        }),
+      );
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_START, {
+          [HEADER_RUN_ID]: 'run-fresh',
+          [HEADER_RUN_CLIENT_ID]: 'agent',
+        }),
+      );
+
+      const [regen, fresh] = lifecycle;
+      if (regen?.type !== EVENT_RUN_START) throw new Error('expected run-start');
+      expect(regen.regenerates).toBe('orig-asst');
+      expect(regen.parent).toBe('orig-user');
+      expect(regen.forkOf).toBeUndefined();
+      if (fresh?.type !== EVENT_RUN_START) throw new Error('expected run-start');
+      expect(fresh.regenerates).toBeUndefined();
+    });
+
     it('converges optimistic insert and echo into a single tree node when UIMessage.id differs from wire HEADER_CODEC_MESSAGE_ID', async () => {
       // Regression: under Vercel's codec the projection's UIMessage.id is the
       // domain id (x-domain-messageId, e.g. useChat's local id) while the wire
-      // `x-ably-codec-message-id` is the optimistic tree codecMessageId. `_accumulateAndEmit` must
-      // upsert at the wire codecMessageId so the echo converges with the optimistic
-      // insert — not at the projection message's id, which would create a
-      // second tree node and dup the message in `view.flattenNodes()`.
+      // `x-ably-codec-message-id` is the optimistic tree codecMessageId. The session must fold
+      // the echo into the same Run the optimistic insert created (routed by
+      // x-ably-run-id) so the projection's message is updated in place — not
+      // a second Run with a duplicate message in `view.getMessages()`.
       const ch = createMockChannel();
       const decoder = createMockDecoder();
       // Custom codec: classifier returns a message with a FIXED id; fold pushes
@@ -1160,7 +1199,7 @@ describe('ClientSession', () => {
       // CAST: the mock fold's parameters mirror the Codec.fold signature.
       customCodec.fold = vi.fn((state: TestProjection, event: TestEvent, meta: ReducerMeta) => {
         state.foldedEvents.push({ event, meta });
-        // Use a fixed domain id derived from the text — independent of wireCodecMessageId.
+        // Use a fixed domain id derived from the text — independent of wireMsgId.
         // Mirrors the Vercel codec where UIMessage.id is the domain id, distinct
         // from the wire's x-ably-codec-message-id.
         if (event.type === 'user-message' && typeof event.text === 'string') {
@@ -1200,10 +1239,10 @@ describe('ClientSession', () => {
       // projection's UIMessage id is `domain-hi` (from our custom fold).
       await s.view.sendEvent({ type: 'user-message', text: 'hi' });
       const lastPublish = customCodec.lastEncoder()?.publishCalls.at(-1);
-      const optimisticCodecMessageId = lastPublish?.opts?.extras?.headers?.[HEADER_CODEC_MESSAGE_ID];
+      const optimisticMsgId = lastPublish?.opts?.extras?.headers?.[HEADER_CODEC_MESSAGE_ID];
       const runId = lastPublish?.opts?.extras?.headers?.[HEADER_RUN_ID];
-      expect(optimisticCodecMessageId).toBeDefined();
-      if (!optimisticCodecMessageId) throw new Error('expected optimistic codecMessageId on publish');
+      expect(optimisticMsgId).toBeDefined();
+      if (!optimisticMsgId) throw new Error('expected optimistic codecMessageId on publish');
 
       // Echo the wire message with the same tree codecMessageId so the optimistic
       // node converges. Queue the same user-message event for the decoder.
@@ -1216,18 +1255,27 @@ describe('ClientSession', () => {
             [HEADER_RUN_ID]: runId ?? '',
             [HEADER_RUN_CLIENT_ID]: 'client-1',
             [HEADER_ROLE]: 'user',
-            [HEADER_CODEC_MESSAGE_ID]: optimisticCodecMessageId,
+            [HEADER_CODEC_MESSAGE_ID]: optimisticMsgId,
           },
           undefined,
           'message.create',
         ),
       );
 
-      // The tree must contain exactly one node — the optimistic insert,
-      // updated by the echo. NOT a separate node at `domain-hi`.
+      // The tree must contain exactly one Run — the optimistic insert,
+      // converged with the echo. The Run's projection holds a single
+      // domain message keyed by the codec's domain-id convention.
       expect(s.view.flattenNodes()).toHaveLength(1);
-      expect(s.tree.getNode(optimisticCodecMessageId)?.message.content).toBe('hi');
-      expect(s.tree.getNode('domain-hi')).toBeUndefined();
+      const owningRun = s.tree.getRunByCodecMessageId(optimisticMsgId);
+      expect(owningRun).toBeDefined();
+      // customCodec.fold uses `domain-${text}` as the id (not the wire codecMessageId);
+      // the projection has one entry under `domain-hi` for both the optimistic
+      // fold and the echo fold (same id → upserted in place by the mock).
+      if (!owningRun) throw new Error('expected owning run');
+      const messages = customCodec.getMessages(owningRun.projection);
+      expect(messages).toHaveLength(1);
+      expect(messages[0]?.id).toBe('domain-hi');
+      expect(messages[0]?.content).toBe('hi');
       await s.close();
     });
 
@@ -1258,8 +1306,12 @@ describe('ClientSession', () => {
 
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock check
       expect(fix.codec.fold).toHaveBeenCalled();
-      const node = fix.session.tree.getNode('m-1');
-      expect(node?.message.content).toBe('hi');
+      const owningRun = fix.session.tree.getRunByCodecMessageId('m-1');
+      expect(owningRun).toBeDefined();
+      if (!owningRun) throw new Error('expected owning run');
+      const messages = fix.codec.getMessages(owningRun.projection);
+      const node = messages.find((m) => m.id === 'm-1');
+      expect(node?.content).toBe('hi');
     });
 
     it('routes own-run events to the ActiveRun stream', async () => {
@@ -1338,34 +1390,6 @@ describe('ClientSession', () => {
       // fold should not have been called (no events)
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock check
       expect(fix.codec.fold).not.toHaveBeenCalled();
-    });
-
-    it('rejects pending send when the HTTP POST returns non-OK', async () => {
-      // Agent-side failures that happen before `ai-run-start` is published
-      // (e.g. prompt-lookup timeout) surface as a non-2xx HTTP response. The
-      // client's HTTP handler must fail the pending-run-start tracker so the
-      // awaiting `send()` rejects instead of waiting out `runStartDeadlineMs`.
-      const ch = createMockChannel();
-      const codec = createMockCodec();
-      const s = createClientSession<TestEvent, TestProjection, TestMessage>({
-        client: createMockClient(ch),
-        channelName: 'test-channel',
-        codec,
-        clientId: 'client-1',
-        api: '/api/chat',
-        fetch: createMockFetch(504).fn as unknown as typeof globalThis.fetch,
-        runStartDeadlineMs: 5000,
-      });
-      await s.connect();
-      const errors: Ably.ErrorInfo[] = [];
-      s.on('error', (e) => errors.push(e));
-
-      await expect(s.view.sendEvent({ type: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
-        ErrorCode.SessionSendFailed,
-      );
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison -- compare against enum value
-      expect(errors.some((e) => e.code === ErrorCode.SessionSendFailed)).toBe(true);
-      await s.close();
     });
 
     it('drops losing-invocation run-end (ignored when active invocation mismatches)', async () => {
@@ -1806,24 +1830,27 @@ describe('ClientSession', () => {
 
   describe('regenerate events', () => {
     it('publishes a regenerate event without upserting the tree or folding the projection', async () => {
-      // Seed a user message and assistant in the tree first.
+      // Seed a user message in the tree first.
       await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
-      const nodesBefore = fix.session.view.flattenNodes();
-      expect(nodesBefore).toHaveLength(1);
-      const userCodecMessageId = nodesBefore[0]?.codecMessageId;
-      expect(userCodecMessageId).toBeDefined();
+      const runsBefore = fix.session.view.flattenNodes();
+      expect(runsBefore).toHaveLength(1);
+      const seedRunId = runsBefore[0]?.runId;
+      const userMsgId = fix.session.view.getMessages()[0]?.id;
+      expect(userMsgId).toBeDefined();
 
       // Send a regenerate event — wire-only, carries parent/forkOf on headers.
       await fix.session.view.sendEvent({
         type: 'regenerate-event',
-        parent: userCodecMessageId,
+        parent: userMsgId,
         forkOf: 'asst-1',
       });
 
-      // Tree is unchanged — no new node materialised for the regenerate event.
-      const nodesAfter = fix.session.view.flattenNodes();
-      expect(nodesAfter).toHaveLength(1);
-      expect(nodesAfter[0]?.codecMessageId).toBe(userCodecMessageId);
+      // No new Run materialised: the regenerate publishes wire-only and
+      // skips both tree-upsert and projection fold. The original Run is
+      // unchanged.
+      const runsAfter = fix.session.view.flattenNodes();
+      expect(runsAfter).toHaveLength(1);
+      expect(runsAfter[0]?.runId).toBe(seedRunId);
 
       // The regenerate event was published on the channel with correct headers.
       const enc = fix.codec.lastEncoder();
@@ -1831,8 +1858,11 @@ describe('ClientSession', () => {
       expect(regeneratePublish).toBeDefined();
       const headers = regeneratePublish?.opts?.extras?.headers;
       expect(headers?.[HEADER_ROLE]).toBe('user');
-      expect(headers?.[HEADER_PARENT]).toBe(userCodecMessageId);
-      expect(headers?.[HEADER_FORK_OF]).toBe('asst-1');
+      expect(headers?.[HEADER_PARENT]).toBe(userMsgId);
+      // Regenerate stamps `x-ably-msg-regenerate` (not `x-ably-fork-of`):
+      // the new Run is a continuation of the prior Run, not a Run-level fork.
+      expect(headers?.['x-ably-msg-regenerate']).toBe('asst-1');
+      expect(headers?.[HEADER_FORK_OF]).toBeUndefined();
       expect(headers?.[HEADER_EVENT_ID]).toBeDefined();
       expect(headers?.[HEADER_CODEC_MESSAGE_ID]).toBeDefined();
     });

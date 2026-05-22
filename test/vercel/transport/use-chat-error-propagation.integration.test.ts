@@ -190,7 +190,7 @@ describe('useChat error propagation', () => {
     const ct = clientSession;
     await waitFor(
       () => {
-        const messages = ct.view.flattenNodes().map((n) => n.message);
+        const messages = ct.view.getMessages();
         expect(messages.find((m) => m.role === 'assistant')).toBeDefined();
       },
       { timeout: 10_000 },

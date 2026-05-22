@@ -261,10 +261,10 @@ export type EventClassification =
   | {
       /** Discriminator — wire-only regenerate event variant. */
       kind: 'regenerate';
-      /** Wire `x-ably-parent` for this regenerate event. */
+      /** Wire `x-ably-parent` for this regenerate event — the user prompt the regenerated assistant threads under. */
       parent: string;
-      /** Wire `x-ably-fork-of` for this regenerate event. */
-      forkOf: string;
+      /** Wire `x-ably-msg-regenerate` for this regenerate event — the assistant msg-id being regenerated. */
+      regenerates: string;
     }
   | {
       /** Discriminator — unrecognized / not-sendable event variant. */
@@ -304,14 +304,20 @@ export interface Codec<TEvent, TProjection, TMessage> extends Reducer<TEvent, TP
    * Build a regenerate TEvent. The View calls this from
    * `regenerate(messageId)`; the resulting event is classified as
    * `kind: 'regenerate'` and published as a wire-only channel message
-   * carrying `parent` / `forkOf` headers. No TMessage materialises on
-   * either client or agent — the agent's prompt-lookup picks the event
-   * up via its `eventId` and reads run-routing metadata from headers.
-   * @param forkOfCodecMessageId - The assistant being regenerated (wire `x-ably-fork-of`).
+   * carrying `parent` / `x-ably-msg-regenerate` headers. No TMessage
+   * materialises on either client or agent — the agent's prompt-lookup
+   * picks the event up via its `eventId` and reads run-routing metadata
+   * from headers.
+   *
+   * The new Run is a CONTINUATION of the regenerated message's Run,
+   * not a fork: it has no `forkOf` at the Run level. The message-level
+   * replacement (the new assistant supersedes the original) happens at
+   * the View's projection-extraction step (Spec: AIT-CT13d).
+   * @param regeneratesCodecMessageId - The assistant being regenerated (wire `x-ably-msg-regenerate`).
    * @param parentCodecMessageId - Parent user codec-message-id for the new assistant chain (wire `x-ably-parent`).
    * @returns A TEvent that `classifyEvent` will classify as `regenerate`.
    */
-  createRegenerateEvent(forkOfCodecMessageId: string, parentCodecMessageId: string): TEvent;
+  createRegenerateEvent(regeneratesCodecMessageId: string, parentCodecMessageId: string): TEvent;
   /**
    * Classify a TEvent for `View.sendEvent` dispatch. The session inspects the
    * returned discriminant to decide whether the event opens a new run

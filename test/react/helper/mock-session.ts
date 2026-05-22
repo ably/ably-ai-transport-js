@@ -4,9 +4,9 @@
 
 import { vi } from 'vitest';
 
-import type { ClientSession, RunLifecycleEvent, Tree, View } from '../../../src/core/transport/types.js';
+import type { ClientSession, RunLifecycleEvent, RunNode, Tree, View } from '../../../src/core/transport/types.js';
 
-type TreeEventType = 'update' | 'ably-message' | 'run';
+type TreeEventType = 'update' | 'ably-message' | 'run' | 'run-projection-updated';
 type SessionEventType = 'error';
 type Handler = ((...args: never[]) => void) | (() => void);
 
@@ -23,9 +23,9 @@ export interface MockSession {
   on: ReturnType<typeof vi.fn>;
   /** Fire an event on the session (only 'error'). */
   emit: (event: SessionEventType, ...args: unknown[]) => void;
-  /** Fire an event on tree/view (update, ably-message, run). */
+  /** Fire an event on tree/view (update, ably-message, run, run-projection-updated). */
   emitTree: (event: TreeEventType, ...args: unknown[]) => void;
-  tree: Tree<string>;
+  tree: Tree<unknown>;
   view: View<unknown, unknown, string>;
 }
 
@@ -79,23 +79,28 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
       };
     });
 
-  const initialNodes = initialMessages.map((m, i) => ({
-    kind: 'message' as const,
-    message: m,
-    codecMessageId: `msg-${String(i)}`,
-    parentId: undefined,
-    forkOf: undefined,
-    headers: {},
-    serial: undefined,
-  }));
+  const initialNodes: RunNode<unknown>[] = initialMessages.map(
+    (_, i): RunNode<unknown> => ({
+      runId: `run-${String(i)}`,
+      parentRunId: i > 0 ? `run-${String(i - 1)}` : undefined,
+      forkOf: undefined,
+      regeneratesCodecMessageId: undefined,
+      clientId: '',
+      invocationId: '',
+      status: 'complete',
+      projection: undefined,
+      startSerial: undefined,
+      endSerial: undefined,
+    }),
+  );
 
-  const tree: Tree<string> = {
-    getSiblings: vi.fn((codecMessageId: string) => [codecMessageId]),
-    hasSiblings: vi.fn(() => false),
-    getNode: vi.fn(),
-    getHeaders: vi.fn(),
-    upsert: vi.fn(),
-    delete: vi.fn(),
+  const tree: Tree<unknown> = {
+    getRunNode: vi.fn(),
+    getRunByCodecMessageId: vi.fn(),
+    getSiblingRuns: vi.fn(() => []),
+    hasSiblingRuns: vi.fn(() => false),
+    // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires explicit undefined return for the contract
+    getRegenerateGroup: vi.fn(() => undefined),
     getActiveRunIds: vi.fn(() => new Map<string, Set<string>>()),
     getWinningInvocation: vi.fn(),
     on: makeTreeOn(treeHandlers),
@@ -128,9 +133,14 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
     loadOlder: vi.fn(() => Promise.resolve()),
     select: vi.fn(),
     getSelectedIndex: vi.fn(() => 0),
-    getSiblings: vi.fn((codecMessageId: string) => [codecMessageId]),
-    hasSiblings: vi.fn(() => false),
-    getNode: vi.fn(),
+    getSiblingRuns: vi.fn(() => []),
+    hasSiblingRuns: vi.fn(() => false),
+    hasMessageSiblings: vi.fn(() => false),
+    getMessageSiblings: vi.fn(() => []),
+    getSelectedMessageSiblingIndex: vi.fn(() => 0),
+    selectMessageSibling: vi.fn(),
+    getRunNode: vi.fn(),
+    getRunByCodecMessageId: vi.fn(),
     sendMessage,
     sendEvent,
     regenerate,
@@ -196,7 +206,7 @@ export const makeRunEvent = (
   reason?: 'complete' | 'cancelled' | 'error',
 ): RunLifecycleEvent => {
   if (type === 'ai-run-start') {
-    return { type, runId, clientId };
+    return { type, runId, clientId, invocationId: '' };
   }
   return { type, runId, clientId, reason: reason ?? 'complete' };
 };

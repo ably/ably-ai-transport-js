@@ -8,7 +8,7 @@ Without tree-based history, regeneration and editing destroy the original respon
 
 Every message in the tree has:
 
-- **`codecMessageId`** - unique identifier (stamped as `x-ably-codec-message-id`)
+- **`msgId`** - unique identifier (stamped as `x-ably-msg-id`)
 - **`parentId`** - the preceding message in the thread (`x-ably-parent`)
 - **`forkOf`** - the message this one replaces (`x-ably-fork-of`), if it's a fork
 
@@ -32,7 +32,7 @@ import { useView } from '@ably/ai-transport/react';
 const { regenerate } = useView();
 
 // Fork the assistant message - starts a new run with no new user messages.
-// nodeId is the x-ably-codec-message-id (see treeMsgId helper in the quickstart).
+// nodeId is the x-ably-msg-id (see treeMsgId helper in the quickstart).
 await regenerate(nodeId);
 ```
 
@@ -55,52 +55,56 @@ const newMessage = {
 };
 
 // Fork the user message with new content.
-// nodeId is the x-ably-codec-message-id (see treeMsgId helper in the quickstart).
+// nodeId is the x-ably-msg-id (see treeMsgId helper in the quickstart).
 await edit(nodeId, [newMessage]);
 ```
 
 ## Branch navigation
 
-`useView()` provides branch navigation alongside message state:
+`useView()` provides branch navigation alongside message state. The tree is keyed by **runId** (one Run per turn), so branch navigation operates at the Run level:
 
 ```typescript
 import { useView } from '@ably/ai-transport/react';
 
 const view = useView();
 
-// view.hasSiblings(nodeId) - does this message have alternatives?
-// view.getSiblings(nodeId) - all alternatives at this fork point
-// view.getSelectedIndex(nodeId) - which sibling is currently selected
-// view.select(nodeId, index) - switch to a different sibling
-// view.getNode(nodeId) - look up a node by codec-message-id
+// view.hasSiblingRuns(runId) - does this Run have alternatives?
+// view.getSiblingRuns(runId) - all alternative Runs at this fork point
+// view.getSelectedIndex(runId) - which sibling Run is currently selected
+// view.select(runId, index) - switch to a different sibling Run
+// view.getRunNode(runId) - look up a Run by runId
+// view.getRunByMsgId(msgId) - resolve the owning Run for a given message id
 //
-// nodeId is the codecMessageId on each MessageNode — iterate view.nodes:
-//   view.nodes.map((node) => {
-//     const nodeId = node.codecMessageId;
+// Iterate view.nodes (RunNode[]):
+//   view.nodes.map((run) => {
+//     // run.runId - branch navigation key
+//     // run.projection - codec-folded per-Run state
 //   });
 ```
 
-Build a sibling navigator (where `nodeId` is the resolved `x-ably-codec-message-id` for the message):
+Build a sibling navigator at a Run fork point:
 
 ```typescript
-{view.hasSiblings(nodeId) && (
+{view.hasSiblingRuns(runId) && (
   <div>
     <button
-      onClick={() => view.select(nodeId, view.getSelectedIndex(nodeId) - 1)}
-      disabled={view.getSelectedIndex(nodeId) === 0}
+      onClick={() => view.select(runId, view.getSelectedIndex(runId) - 1)}
+      disabled={view.getSelectedIndex(runId) === 0}
     >
       ←
     </button>
-    <span>{view.getSelectedIndex(nodeId) + 1} / {view.getSiblings(nodeId).length}</span>
+    <span>{view.getSelectedIndex(runId) + 1} / {view.getSiblingRuns(runId).length}</span>
     <button
-      onClick={() => view.select(nodeId, view.getSelectedIndex(nodeId) + 1)}
-      disabled={view.getSelectedIndex(nodeId) === view.getSiblings(nodeId).length - 1}
+      onClick={() => view.select(runId, view.getSelectedIndex(runId) + 1)}
+      disabled={view.getSelectedIndex(runId) === view.getSiblingRuns(runId).length - 1}
     >
       →
     </button>
   </div>
 )}
 ```
+
+If your UI holds a message id (e.g. from a previous render) rather than a runId, use `view.getRunByMsgId(msgId)?.runId` to resolve it.
 
 Calling `select` updates the view's active branch and re-renders with the selected path.
 

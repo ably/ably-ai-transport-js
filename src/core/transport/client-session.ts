@@ -24,6 +24,7 @@ import {
   HEADER_ERROR_MESSAGE,
   HEADER_FORK_OF,
   HEADER_INVOCATION_ID,
+  HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
@@ -37,7 +38,7 @@ import type { Logger } from '../../logger.js';
 import { LogLevel, makeLogger } from '../../logger.js';
 import { getHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
-import type { Decoder, Encoder, ReducerMeta } from '../codec/types.js';
+import type { Decoder, Encoder } from '../codec/types.js';
 import { buildTransportHeaders } from './headers.js';
 import type { StreamRouter } from './stream-router.js';
 import { createStreamRouter } from './stream-router.js';
@@ -47,7 +48,6 @@ import type {
   ActiveRun,
   ClientSession,
   ClientSessionOptions,
-  MessageNode,
   RunEndReason,
   RunLifecycleEvent,
   SendOptions,
@@ -78,16 +78,6 @@ enum ClientSessionState {
 
 interface ClientSessionEventsMap {
   error: Ably.ErrorInfo;
-}
-
-// ---------------------------------------------------------------------------
-// Per-run observer state — consolidated to avoid parallel-map bookkeeping
-// ---------------------------------------------------------------------------
-
-interface RunObserverState<TProjection> {
-  headers: Record<string, string>;
-  serial: string | undefined;
-  projection: TProjection;
 }
 
 // ---------------------------------------------------------------------------
@@ -122,15 +112,11 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
   // Track codecMessageIds per run for cleanup on run-end
   private readonly _runCodecMessageIds = new Map<string, Set<string>>();
 
-  // Per-run observer state: headers, serial, and accumulator in one map.
-  // A single .delete(runId) cleans up all three.
-  private readonly _runObservers = new Map<string, RunObserverState<TProjection>>();
-
   // Callbacks to resolve pending waitForRun promises on close, preventing leaked subscriptions.
   private readonly _closeResolvers: (() => void)[] = [];
 
   // Sub-components
-  private readonly _tree: DefaultTree<TMessage>;
+  private readonly _tree: DefaultTree<TEvent, TProjection>;
   private readonly _view: DefaultView<TEvent, TProjection, TMessage>;
   private readonly _views = new Set<DefaultView<TEvent, TProjection, TMessage>>();
   private readonly _router: StreamRouter<TEvent>;
@@ -143,7 +129,7 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
   private readonly _encoder: Encoder<TEvent>;
 
   // Spec: AIT-CT10, AIT-CT10a
-  readonly tree: Tree<TMessage>;
+  readonly tree: Tree<TProjection>;
   readonly view: View<TEvent, TProjection, TMessage>;
 
   // Channel subscription is established lazily on connect()
@@ -201,7 +187,7 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     this._hasAttachedOnce = this._channel.state === 'attached';
 
     // Compose sub-components
-    this._tree = createTree<TMessage>(this._logger);
+    this._tree = createTree<TEvent, TProjection>(this._codec, this._logger);
     this._view = createView<TEvent, TProjection, TMessage>({
       tree: this._tree,
       channel: this._channel,
@@ -224,15 +210,22 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     this.tree = this._tree;
     this.view = this._view;
 
-    // Seed tree with initial messages — session assigns its own codecMessageId
+    // Seed tree with initial messages — session assigns its own runId / codecMessageId
+    // per seed message. Each seed message becomes a single-message Run; the
+    // parent chain mirrors the original seed sequence.
     if (options.messages) {
-      let prevCodecMessageId: string | undefined;
+      let prevMsgId: string | undefined;
       for (const msg of options.messages) {
+        const seedRunId = crypto.randomUUID();
         const codecMessageId = crypto.randomUUID();
-        const seedHeaders: Record<string, string> = { [HEADER_CODEC_MESSAGE_ID]: codecMessageId };
-        if (prevCodecMessageId) seedHeaders[HEADER_PARENT] = prevCodecMessageId;
-        this._tree.upsert(codecMessageId, msg, seedHeaders);
-        prevCodecMessageId = codecMessageId;
+        const seedHeaders: Record<string, string> = {
+          [HEADER_RUN_ID]: seedRunId,
+          [HEADER_CODEC_MESSAGE_ID]: codecMessageId,
+          [HEADER_ROLE]: 'user',
+        };
+        if (prevMsgId) seedHeaders[HEADER_PARENT] = prevMsgId;
+        this._tree.applyMessage([this._codec.userMessageEvent(msg)], seedHeaders);
+        prevMsgId = codecMessageId;
       }
     }
 
@@ -312,18 +305,23 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
         const runCid = headers[HEADER_RUN_CLIENT_ID] ?? '';
         const invocationId = headers[HEADER_INVOCATION_ID];
         if (runId) {
-          this._tree.trackRun(runId, runCid);
           const parentRaw = headers[HEADER_PARENT];
           const forkOf = headers[HEADER_FORK_OF];
+          const regenerates = headers[HEADER_MSG_REGENERATE];
           const isContinuation = headers[HEADER_RUN_CONTINUE] === 'true';
-          this._tree.emitRun({
-            type: EVENT_RUN_START,
-            runId,
-            clientId: runCid,
-            ...(parentRaw !== undefined && { parent: parentRaw }),
-            ...(forkOf !== undefined && { forkOf }),
-            ...(isContinuation && { isContinuation: true }),
-          });
+          this._tree.applyRunLifecycle(
+            {
+              type: EVENT_RUN_START,
+              runId,
+              clientId: runCid,
+              invocationId: invocationId ?? '',
+              ...(parentRaw !== undefined && { parent: parentRaw }),
+              ...(forkOf !== undefined && { forkOf }),
+              ...(regenerates !== undefined && { regenerates }),
+              ...(isContinuation && { isContinuation: true }),
+            },
+            ablyMessage.serial,
+          );
           if (invocationId) {
             const pending = this._pendingRunStarts.get(invocationId);
             if (pending) {
@@ -399,13 +397,11 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
             return;
           }
           // `suspended` keeps the run live so a continuation that reuses
-          // the runId picks up where it left off. Router stream, observer
-          // state, and tree run-tracking survive. The `run` event still
-          // fires so listeners can react to the suspend.
+          // the runId picks up where it left off. Router stream and tree
+          // run-tracking survive. The `run` event still fires so listeners
+          // can react to the suspend.
           if (reason !== 'suspended') {
             this._router.closeStream(runId);
-            this._runObservers.delete(runId);
-            this._tree.untrackRun(runId);
             const codecMessageIds = this._runCodecMessageIds.get(runId);
             if (codecMessageIds) {
               for (const mid of codecMessageIds) this._ownCodecMessageIds.delete(mid);
@@ -413,7 +409,7 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
             }
             this._ownRunIds.delete(runId);
           }
-          this._tree.emitRun({ type: EVENT_RUN_END, runId, clientId: runCid, reason });
+          this._tree.applyRunLifecycle({ type: EVENT_RUN_END, runId, clientId: runCid, reason }, ablyMessage.serial);
         }
         this._tree.emitAblyMessage(ablyMessage);
         return;
@@ -423,29 +419,28 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
       const events = this._decoder.decode(ablyMessage);
       const headers = getHeaders(ablyMessage);
       const serial = ablyMessage.serial;
-      const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
-      // Wire `HEADER_CODEC_MESSAGE_ID` is THE routing key for the reducer's
-      // per-message-id fold path. Events that modify a previously-published
-      // message (client tool outputs, approval responses, agent
-      // approved-tool outputs) carry the original message's id here.
-      const routingCodecMessageId = codecMessageId;
-
-      // Always update observer headers, even when the decoder produces no events.
-      // This ensures header transitions (e.g. x-ably-status: streaming → cancelled)
-      // are captured for events that the decoder suppresses (AIT-CD8: cancelled
-      // stream appends emit no events but still carry the updated status header).
       const runId = headers[HEADER_RUN_ID];
+      const invocationId = headers[HEADER_INVOCATION_ID];
+
+      // Fold into the Tree's per-Run projection. The Tree handles
+      // winning-invocation filtering and `x-ably-run-continue` carve-out.
+      // This must run BEFORE router routing so the active stream's listeners
+      // see the projection updates when they consume the routed events.
+      if (events.length > 0 || runId) {
+        this._tree.applyMessage(events, headers, serial);
+      }
+
+      // Route per-event to the active stream (if any). The router drops
+      // events from a losing invocation under the same runId.
       if (runId) {
-        this._updateRunObserverHeaders(runId, headers, serial);
+        for (const event of events) {
+          this._router.route(runId, invocationId, event);
+        }
       }
 
-      for (const event of events) {
-        this._handleEvent(event, headers, { serial: serial ?? '', messageId: routingCodecMessageId });
-      }
-
-      // Emit ably-message AFTER decode/upsert so that View subscribers can
-      // find the node in _lastVisibleIds (which is refreshed by tree 'update'
-      // events triggered during upsert).
+      // Emit ably-message AFTER applyMessage so View subscribers can find
+      // the owning Run in `_lastVisibleRunIdSet`, which is refreshed by the
+      // tree 'update' events that applyMessage triggers.
       this._tree.emitAblyMessage(ablyMessage);
     } catch (error) {
       const cause = error instanceof Ably.ErrorInfo ? error : undefined;
@@ -459,36 +454,6 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
         ),
       );
     }
-  }
-
-  /**
-   * Handle a decoded TEvent: route to the active stream (own run) and fold into
-   * the observer's projection. Observer cleanup happens on `run-end` (with a
-   * non-suspended reason) in `_handleMessage` — keeping observer state alive
-   * past a stream-terminal event lets late amend events (e.g. tool-output
-   * resolutions) fold into the same assistant message.
-   * @param event - The decoded TEvent.
-   * @param headers - Ably headers from the wire message.
-   * @param meta - Reducer meta — serial and codec-message-id for routing.
-   */
-  private _handleEvent(event: TEvent, headers: Record<string, string>, meta: ReducerMeta): void {
-    const runId = headers[HEADER_RUN_ID];
-    if (!runId) return;
-
-    const invocationId = headers[HEADER_INVOCATION_ID];
-
-    // Active own run — route to the ReadableStream. Events from a different
-    // invocation under the same runId (a losing retry) are dropped by the
-    // router. Note: the router closes its stream on terminal events (per
-    // `isTerminal`), but the observer state below stays alive until run-end.
-    if (this._router.route(runId, invocationId, event)) {
-      this._accumulateAndEmit(runId, event, meta);
-      return;
-    }
-
-    // Spec: AIT-CT16
-    // Observer run — fold into projection and emit.
-    this._accumulateAndEmit(runId, event, meta);
   }
 
   // ---------------------------------------------------------------------------
@@ -528,146 +493,20 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
       stateChange.reason,
     );
 
-    // As with cancellation (_closeRunStream), do not clear _ownRunIds
-    // or _runObservers here — late events must still accumulate into the
-    // tree. The run-end handler cleans up observers.
+    // As with cancellation, do not clear _ownRunIds here — late events
+    // must still accumulate into the tree. The run-end handler cleans up
+    // local maps.
+    //
+    // Only own-runs get an errored stream because only own-runs have a
+    // ReadableStream<TEvent> the caller is consuming. Observer-run state
+    // lives entirely in the Tree's projection and remains consistent
+    // regardless of channel continuity loss; nothing on this client is
+    // waiting on it.
     for (const runId of this._ownRunIds.keys()) {
       this._router.errorStream(runId, err);
     }
 
     this._emitter.emit('error', err);
-  }
-
-  // ---------------------------------------------------------------------------
-  // Observer accumulation
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Ensure a RunObserverState exists for runId, updating headers and serial as new events arrive.
-   * @param runId - The run to track.
-   * @param headers - Headers from the current event.
-   * @param serial - Ably serial from the current event.
-   */
-  private _updateRunObserverHeaders(runId: string, headers: Record<string, string>, serial: string | undefined): void {
-    const existing = this._runObservers.get(runId);
-    if (existing) {
-      if (Object.keys(headers).length > 0) {
-        Object.assign(existing.headers, headers);
-      }
-      // Always advance the serial so the tree node sorts after all
-      // earlier messages in the run (e.g. user-message relays that
-      // arrive before the assistant response).
-      if (serial !== undefined) {
-        existing.serial = serial;
-      }
-    } else {
-      this._runObservers.set(runId, {
-        headers: { ...headers },
-        serial,
-        projection: this._codec.init(),
-      });
-    }
-  }
-
-  /**
-   * Fold an event into the run's projection and emit the matching message.
-   * Wraps `fold` in try/catch — a throwing reducer is treated as a
-   * developer/codec bug: emit a session-level error, drop the event, leave
-   * projection state unchanged for that event.
-   * @param runId - The run this event belongs to.
-   * @param event - The decoded TEvent.
-   * @param meta - Reducer meta (serial + codec-message-id).
-   */
-  private _accumulateAndEmit(runId: string, event: TEvent, meta: ReducerMeta): void {
-    const observer = this._runObservers.get(runId);
-    if (!observer) return;
-
-    try {
-      observer.projection = this._codec.fold(observer.projection, event, meta);
-    } catch (error) {
-      this._logger.error('ClientSession._accumulateAndEmit(); fold threw', { runId, error });
-      this._emitter.emit(
-        'error',
-        new Ably.ErrorInfo(
-          `unable to fold event; ${error instanceof Error ? error.message : String(error)}`,
-          ErrorCode.SessionSubscriptionError,
-          500,
-          error instanceof Ably.ErrorInfo ? error : undefined,
-        ),
-      );
-      return;
-    }
-
-    const messages = this._codec.getMessages(observer.projection);
-    if (messages.length === 0) return;
-
-    // Locate the projection message this event belongs to:
-    // - Normal echo (user msg or assistant chunk): the wire `HEADER_CODEC_MESSAGE_ID`
-    //   matches an owner in the projection. Use it.
-    // - Tool-resolution redirect: the wire `HEADER_CODEC_MESSAGE_ID` is the
-    //   continuation's own tree codecMessageId, but the reducer redirected the
-    //   payload onto a prior assistant (and added the continuation codecMessageId
-    //   to `consumedCodecMessageIds`, filtering it from `getMessages`). The fallback
-    //   `.at(-1)` lands on the mutated assistant.
-    const wireCodecMessageId = observer.headers[HEADER_CODEC_MESSAGE_ID];
-    // CAST: TMessage is opaque to the core session, but the projection
-    // lookup needs to match by domain `id` (the codec sets each message's
-    // `id` to the wire codec-message-id). Tracked for removal via the codec-method
-    // follow-up noted below.
-    const message =
-      wireCodecMessageId === undefined
-        ? messages.at(-1)
-        : (messages.find((m) => (m as { id?: string }).id === wireCodecMessageId) ?? messages.at(-1));
-    if (!message) return;
-
-    let cloned: TMessage;
-    try {
-      cloned = structuredClone(message);
-    } catch {
-      // structuredClone can fail if the message contains non-cloneable
-      // values (e.g. functions). Fall back to the reference — the tree
-      // upsert below copies headers independently.
-      cloned = message;
-    }
-
-    // Distinguish the two upsert keys via role:
-    // - Wire role 'user' + projection fallback is role 'assistant' →
-    //   tool-resolution redirect. Upsert at the assistant's id (= its
-    //   tree codecMessageId by reducer convention) so the existing assistant tree
-    //   node updates instead of a phantom node being created at the
-    //   consumed continuation codecMessageId. Preserve the existing tree headers
-    //   so the assistant's `parent` / `forkOf` / `role` aren't overwritten
-    //   by the continuation wire's headers.
-    // - Otherwise (normal echo, includes user-msg echo where UIMessage.id
-    //   != wireCodecMessageId because the codec keeps the domain id distinct from
-    //   the wire's `x-ably-codec-message-id`) → upsert at `wireCodecMessageId`. The optimistic
-    //   insert used the same key; the echo converges with that node.
-    //
-    // TODO(follow-up): this is a residual codec-specific peek in the core
-    // layer (mirrors the send-path duck-type that this refactor removed).
-    // To eliminate it cleanly the codec needs to expose "which projection
-    // codecMessageId did this fold land on?" — proposed for a follow-up PR.
-    const wireRole = observer.headers[HEADER_ROLE];
-    // CAST: TMessage is opaque to the core session, but the tool-resolution
-    // redirect (see comment above) needs to read its `role` to distinguish
-    // a user-message echo from an assistant-redirected fold. Tracked for
-    // removal via a codec-method follow-up.
-    const messageRole = (message as { role?: string }).role;
-    const isRedirect = wireRole === 'user' && messageRole === 'assistant';
-
-    if (isRedirect) {
-      // CAST: see `messageRole` cast above — same follow-up applies.
-      const actualCodecMessageId = (message as { id?: string }).id;
-      if (!actualCodecMessageId) return;
-      const existing = this._tree.getHeaders(actualCodecMessageId);
-      const upsertHeaders = existing
-        ? { ...existing }
-        : { ...observer.headers, [HEADER_CODEC_MESSAGE_ID]: actualCodecMessageId };
-      this._tree.upsert(actualCodecMessageId, cloned, upsertHeaders, observer.serial);
-    } else {
-      if (wireCodecMessageId === undefined) return;
-      this._tree.upsert(wireCodecMessageId, cloned, { ...observer.headers }, observer.serial);
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -688,21 +527,22 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
   private _cleanupFailedSend(runId: string, options: { removeOptimistic: boolean }): void {
     const codecMessageIds = this._runCodecMessageIds.get(runId);
     if (codecMessageIds) {
-      if (options.removeOptimistic) {
-        for (const codecMessageId of codecMessageIds) {
-          const node = this._tree.getNode(codecMessageId);
-          if (node && node.serial === undefined) {
-            this._tree.delete(codecMessageId);
-          }
-        }
-      }
       for (const codecMessageId of codecMessageIds) {
         this._ownCodecMessageIds.delete(codecMessageId);
       }
     }
+    if (options.removeOptimistic) {
+      // Drop the optimistic Run only if the publish never produced a
+      // server-assigned serial (i.e. nothing live observed the Run). A
+      // server-acked Run is part of the canonical channel state and must
+      // stay; the View / observers already see it.
+      const run = this._tree.getRunNode(runId);
+      if (run && run.startSerial === undefined) {
+        this._tree.delete(runId);
+      }
+    }
     this._ownRunIds.delete(runId);
     this._runCodecMessageIds.delete(runId);
-    this._runObservers.delete(runId);
     this._tree.untrackRun(runId);
   }
 
@@ -732,7 +572,8 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
   private async _internalSend(
     input: { event: TEvent; domainMessageId?: string }[],
     sendOptions: SendOptions | undefined,
-    history: MessageNode<TMessage>[],
+    history: TMessage[],
+    parentCodecMessageId: string | undefined,
   ): Promise<ActiveRun<TEvent>> {
     if (this._state === ClientSessionState.CLOSED) {
       throw new Ably.ErrorInfo('unable to send; session is closed', ErrorCode.SessionClosed, 400);
@@ -784,7 +625,7 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
           kind: 'regenerate';
           event: TEvent;
           parent: string;
-          forkOf: string;
+          regenerates: string;
           /** Allocated below in the publish-headers phase. */
           state?: { codecMessageId: string; headers: Record<string, string> };
         };
@@ -799,7 +640,7 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
         );
       }
       if (cls.kind === 'regenerate') {
-        classified.push({ kind: 'regenerate', event: entry.event, parent: cls.parent, forkOf: cls.forkOf });
+        classified.push({ kind: 'regenerate', event: entry.event, parent: cls.parent, regenerates: cls.regenerates });
       } else {
         classified.push({
           kind: 'user-message',
@@ -832,21 +673,18 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
       this._tree.trackRun(runId, this._clientId ?? '');
     }
 
-    // The View pre-computed the visible branch before calling this delegate,
-    // so preInsertHistory reflects the state before any optimistic inserts.
+    // The View pre-computed the visible branch's flat message list and the
+    // codec-message-id of its tail message before calling this delegate, so neither
+    // value reflects any optimistic insert.
     const preInsertHistory = history;
 
     // Spec: AIT-CT3d
-    // Auto-compute parent from the current thread if not explicitly provided.
-    // Continuations rely on this rule too — `preInsertHistory.at(-1)` is the
-    // suspended assistant, so tool-resolution user-messages parent off it
-    // without any explicit `sendOptions.parent`.
+    // Auto-compute parent from the visible branch tail when not explicitly
+    // provided. The View pre-resolves the codec-message-id of the last visible message
+    // since the session is codec-agnostic and can't extract it from TMessage.
     let autoParent: string | undefined;
     if (sendOptions?.parent === undefined && !sendOptions?.forkOf) {
-      const lastNode = preInsertHistory.at(-1);
-      if (lastNode) {
-        autoParent = lastNode.codecMessageId;
-      }
+      autoParent = parentCodecMessageId;
     }
 
     const codecMessageIds = new Set<string>();
@@ -859,10 +697,12 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     for (const item of classified) {
       if (item.kind === 'regenerate') {
         // Regenerate events publish wire-only. Mint a fresh codecMessageId/eventId,
-        // build headers from the event's parent/forkOf (not from
+        // build headers from the event's parent/regenerates (not from
         // autoParent / sendOptions), then leave tree and projection
         // untouched. The agent's prompt-lookup picks the event up by
-        // its eventId and reads parent/forkOf from these headers.
+        // its eventId and reads parent/regenerates from these headers,
+        // which the agent then re-stamps on run-start so the Tree can
+        // record the regenerate relationship on the new Run.
         const codecMessageId = crypto.randomUUID();
         const eventId = crypto.randomUUID();
         this._ownCodecMessageIds.add(codecMessageId);
@@ -875,7 +715,7 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
           codecMessageId,
           runClientId: this._clientId,
           parent: item.parent,
-          forkOf: item.forkOf,
+          regenerates: item.regenerates,
           invocationId,
           eventId,
           runContinue: isContinuation,
@@ -911,15 +751,13 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
       });
 
       // Spec: AIT-CT3c
-      // Optimistic update via the reducer. Fresh user prompts and tool
+      // Optimistic update via the Tree. Fresh user prompts and tool
       // resolutions both flow through the same path: fold the event into
-      // the run's projection, then upsert from the projection. The reducer
-      // handles fresh prompts by appending a UIMessage; tool resolutions
-      // are redirected onto the prior assistant via `consumedCodecMessageIds`. The
-      // session stays codec-agnostic — no peek inside TMessage.
-      // eslint-disable-next-line unicorn/no-useless-undefined -- `_updateRunObserverHeaders` distinguishes "no serial yet" from a known serial via `undefined`.
-      this._updateRunObserverHeaders(runId, optimisticHeaders, undefined);
-      this._accumulateAndEmit(runId, item.event, { serial: '', messageId: codecMessageId });
+      // the Run's projection inside the Tree. The reducer handles fresh
+      // prompts by appending a UIMessage; tool resolutions are redirected
+      // onto the prior assistant via `consumedMsgIds`. The session stays
+      // codec-agnostic — no peek inside TMessage.
+      this._tree.applyMessage([item.event], optimisticHeaders);
 
       item.state = { codecMessageId, headers: optimisticHeaders };
 
@@ -1026,15 +864,12 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     const resolvedHeaders = this._headersFn?.() ?? {};
     const resolvedBody = this._bodyFn?.() ?? {};
 
-    // History as projection-folded TMessage[]. The tree stores each node's
-    // codec-folded `.message`, so projecting the selected branch is just
-    // a per-node `.message` extraction — no re-fold required. The agent
-    // feeds this straight to the LLM as prior conversation context.
-    const postHistory = preInsertHistory.map((n) => n.message);
-
+    // History is the projection-folded TMessage[] for the visible branch,
+    // pre-computed by the View. The agent feeds this straight to the LLM
+    // as prior conversation context.
     const postBody: Record<string, unknown> = {
       ...resolvedBody,
-      history: postHistory,
+      history: preInsertHistory,
       ...sendOptions?.body,
       runId,
       invocationId,
@@ -1163,6 +998,7 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
   // Spec: AIT-CT8, AIT-CT8c, AIT-CT8d
   on(event: 'error', handler: (error: Ably.ErrorInfo) => void): () => void {
     if (this._state === ClientSessionState.CLOSED) return noopUnsubscribe;
+    // CAST: the overload signature enforces the correct handler type.
     const cb = handler;
     this._emitter.on(event, cb);
     return () => {
@@ -1186,7 +1022,6 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
       this._router.closeStream(runId);
     }
 
-    this._runObservers.clear();
     this._emitter.off();
     for (const v of this._views) v.close();
     this._views.clear();

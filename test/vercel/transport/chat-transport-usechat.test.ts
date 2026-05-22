@@ -92,15 +92,13 @@ const createMockRun = (runId = 'run-1'): MockRun => {
 const createMockTree = () =>
   ({
     flattenNodes: vi.fn(() => []),
-    getSiblings: vi.fn(() => []),
-    hasSiblings: vi.fn(() => false),
+    getSiblingRuns: vi.fn(() => []),
+    hasSiblingRuns: vi.fn(() => false),
     getSelectedIndex: vi.fn(() => 0),
     select: vi.fn(),
-    getNode: vi.fn(),
-    getHeaders: vi.fn(),
-    upsert: vi.fn(),
-    delete: vi.fn(),
-  }) as unknown as Tree<AI.UIMessage>;
+    getRunNode: vi.fn(),
+    getRunByCodecMessageId: vi.fn(),
+  }) as unknown as Tree<VercelProjection>;
 
 const createMockSession = () => {
   const mockRun = createMockRun();
@@ -111,6 +109,8 @@ const createMockSession = () => {
 
   const view = {
     flattenNodes: vi.fn(() => []),
+    getMessages: vi.fn(() => []),
+    getRunByCodecMessageId: vi.fn(),
     sendEvent: send,
     regenerate: vi.fn(),
     edit: vi.fn(),
@@ -148,6 +148,8 @@ const createMultiRunMockSession = () => {
 
   const view = {
     flattenNodes: vi.fn(() => []),
+    getMessages: vi.fn(() => []),
+    getRunByCodecMessageId: vi.fn(),
     sendEvent: send,
     regenerate: vi.fn(),
     edit: vi.fn(),

@@ -97,32 +97,41 @@ Watch for tool parts in the `input-available` state, execute the browser API, th
 ```typescript
 import type { EventsNode } from '@ably/ai-transport';
 
-// 1. Find the pending tool call in the assistant message
-const node = view.nodes.find(
-  (n) =>
-    n.message.role === 'assistant' &&
-    n.message.parts.some(
-      (p) => p.type === 'dynamic-tool' && p.toolName === 'getLocation' && p.state === 'input-available',
-    ),
+// 1. Find the pending tool call in the assistant message (walk the flat TMessage[])
+const assistant = view.messages.find(
+  (m) =>
+    m.role === 'assistant' &&
+    m.parts.some((p) => p.type === 'dynamic-tool' && p.toolName === 'getLocation' && p.state === 'input-available'),
 );
 
-// 2. Execute the browser API
+// 2. Resolve the owning Run so the continuation reuses its runId
+const owningRun = view.getRunByMsgId(assistant.id);
+
+// 3. Execute the browser API
 const position = await new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject));
 
-// 3. Update the assistant message with the result and start a continuation run
-await view.update(node.codecMessageId, [
-  {
-    type: 'tool-output-available',
-    toolCallId: toolPart.toolCallId,
-    output: {
-      latitude: position.coords.latitude,
-      longitude: position.coords.longitude,
+// 4. Send a continuation tool-resolution event under the existing runId.
+//    `domainMessageId` stamps the wire's `x-ably-msg-id` to the assistant's id
+//    so the reducer's direct fold path runs.
+await view.sendEvent(
+  [
+    {
+      event: {
+        type: 'tool-output-available',
+        toolCallId: toolPart.toolCallId,
+        output: {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+        },
+      },
+      domainMessageId: assistant.id,
     },
-  },
-]);
+  ],
+  { runId: owningRun?.runId },
+);
 ```
 
-`update` updates the existing assistant message and starts a continuation [run](../concepts/runs.md) in a single call. The tree updates optimistically, then the events are sent to the server in the POST body. The server publishes them to the channel (with `x-ably-amend` header targeting the assistant message's `x-ably-codec-message-id`) and calls `streamText()` again with the tool result in the conversation history. All clients see the tool part transition from `input-available` to `output-available`.
+`sendEvent` with the richer per-entry shape publishes the continuation as a `role: 'user'` wire stamped with `x-ably-run-continue: 'true'`. The Tree's `applyMessage` routes it to the existing Run via `_msgIdToRunId`, folds the tool resolution onto the assistant's projection (no winner update, since continuation wires skip that path), and emits `update`. The agent's `loadProjection()` picks up the new event from the channel and resumes `streamText()` with the tool result in the conversation history. All clients see the tool part transition from `input-available` to `output-available`.
 
 ## Multi-client tool execution
 
@@ -151,7 +160,7 @@ await run.start();
 await run.addEvents([
   {
     kind: 'event',
-    codecMessageId: previousAssistantCodecMessageId,
+    msgId: previousAssistantMsgId,
     events: [{ type: 'tool-output-available', toolCallId, output: result }],
   },
 ]);

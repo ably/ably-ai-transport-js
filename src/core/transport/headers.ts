@@ -12,6 +12,7 @@ import {
   HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
   HEADER_INVOCATION_ID,
+  HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
@@ -27,7 +28,11 @@ import {
  * @param opts.codecMessageId - Message identity — the wire `x-ably-codec-message-id` for this message.
  * @param opts.runClientId - ClientId of the run initiator.
  * @param opts.parent - Preceding message's codec-message-id (for branching).
- * @param opts.forkOf - Forked message's codec-message-id (for edit/regen).
+ * @param opts.forkOf - Forked user-prompt's codec-message-id (for edits — creates a Run-level fork sibling).
+ * @param opts.regenerates - Assistant codec-message-id this run regenerates. Stamps
+ *   `x-ably-msg-regenerate`. Distinct from `forkOf`: regenerate is a
+ *   continuation of the prior run (no Run-level fork), with the message
+ *   replacement resolved at projection extraction time.
  * @param opts.invocationId - Invocation correlation ID. Set on the user-prompt message so the agent can locate the prompt by invocation.
  * @param opts.inputClientId - ClientId of the input event (the `ai-input`) that
  *   drove the current invocation. The agent reads it from the publisher's
@@ -48,6 +53,7 @@ export const buildTransportHeaders = (opts: {
   runClientId?: string;
   parent?: string;
   forkOf?: string;
+  regenerates?: string;
   invocationId?: string;
   inputClientId?: string;
   eventId?: string;
@@ -61,6 +67,7 @@ export const buildTransportHeaders = (opts: {
   if (opts.runClientId !== undefined) h[HEADER_RUN_CLIENT_ID] = opts.runClientId;
   if (opts.parent) h[HEADER_PARENT] = opts.parent;
   if (opts.forkOf) h[HEADER_FORK_OF] = opts.forkOf;
+  if (opts.regenerates) h[HEADER_MSG_REGENERATE] = opts.regenerates;
   if (opts.invocationId) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.inputClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.inputClientId;
   if (opts.eventId) h[HEADER_EVENT_ID] = opts.eventId;

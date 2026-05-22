@@ -150,6 +150,22 @@ const _normaliseSendInput = <TEvent>(
 };
 
 // ---------------------------------------------------------------------------
+// Fetch tuning
+// ---------------------------------------------------------------------------
+
+/**
+ * Multiplier applied to the user-supplied Run-unit `loadOlder(limit)`
+ * when issuing the first `decodeHistory` page request. `decodeHistory`
+ * counts complete domain *messages* per page, not Runs; a typical Run
+ * produces ~2 messages (user + assistant). Asking for `limit * factor`
+ * messages on the first page reduces extra round-trips when the actual
+ * messages-per-Run ratio is around the factor. `_loadUntilVisible`
+ * still loops on the Run count regardless, so this is purely a
+ * fetch-efficiency hint.
+ */
+const _RUN_TO_MESSAGE_FETCH_FACTOR = 3;
+
+// ---------------------------------------------------------------------------
 // Helper: extract a TMessage's id via codec convention
 // ---------------------------------------------------------------------------
 
@@ -437,20 +453,33 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     return this._withheldBuffer.length > 0 || this._hasMoreHistory;
   }
 
+  /**
+   * Reveal up to `limit` older Runs in this view.
+   *
+   * The pagination unit is the **Run**, not the message. A single Run
+   * typically materialises into multiple messages (e.g. user + assistant
+   * pair) so revealing `limit` Runs may add several messages to the flat
+   * list returned by {@link getMessages}. Channel pages don't align to
+   * Run boundaries, so {@link _loadUntilVisible} keeps fetching channel
+   * pages until at least `limit` Runs are buffered (or the channel is
+   * exhausted).
+   * @param limit - Maximum number of older Runs to reveal. Defaults to 100.
+   */
   async loadOlder(limit = 100): Promise<void> {
     if (this._closed || this._loadingOlder) return;
     this._loadingOlder = true;
     this._logger.trace('DefaultView.loadOlder();', { limit });
 
     try {
-      // Drain withheld buffer first (older Runs, released newest-first)
+      // Drain withheld buffer first (older Runs, released newest-first).
+      // Each Run in the buffer counts as one toward the limit.
       if (this._withheldBuffer.length > 0) {
         const batch = this._withheldBuffer.splice(-limit, limit);
         this._releaseWithheld(batch);
         return;
       }
 
-      // Buffer exhausted — load from channel history
+      // Buffer exhausted - load from channel history.
       if (!this._hasMoreHistory && !this._lastHistoryPage) {
         await this._loadFirstPage(limit);
         return;
@@ -1039,10 +1068,13 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   // -------------------------------------------------------------------------
 
   private async _loadFirstPage(limit: number): Promise<void> {
-    // Snapshot before loading — every Run already in the tree stays visible
+    // Snapshot before loading: every Run already in the tree stays visible.
     const beforeRunIds = new Set(this._tree.flattenNodes(this._resolveSelections()).map((n) => n.runId));
 
-    const firstPage = await decodeHistory(this._channel, this._codec, { limit }, this._logger);
+    // decodeHistory's limit counts complete domain messages per page (not
+    // Runs); see `_RUN_TO_MESSAGE_FETCH_FACTOR` for the scaling rationale.
+    const messageLimit = limit * _RUN_TO_MESSAGE_FETCH_FACTOR;
+    const firstPage = await decodeHistory(this._channel, this._codec, { limit: messageLimit }, this._logger);
     if (this._closed) return;
     const { newVisible, lastPage } = await this._loadUntilVisible(firstPage, limit, beforeRunIds);
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- close() may be called during await
@@ -1050,14 +1082,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
 
     this._lastHistoryPage = lastPage;
     this._hasMoreHistory = lastPage.hasNext();
-
-    const released = newVisible.slice(-limit);
-    const withheld = newVisible.slice(0, -limit);
-    for (const n of withheld) {
-      this._withheldRunIds.add(n.runId);
-    }
-    this._withheldBuffer.push(...withheld);
-    this._releaseWithheld(released);
+    this._splitReveal(newVisible, limit);
   }
 
   private async _loadAndReveal(page: HistoryPage<TMessage>, limit: number): Promise<void> {
@@ -1067,7 +1092,18 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     if (this._closed) return;
     this._lastHistoryPage = lastPage;
     this._hasMoreHistory = lastPage.hasNext();
+    this._splitReveal(newVisible, limit);
+  }
 
+  /**
+   * Reveal the newest `limit` Runs from `newVisible` and withhold the rest
+   * so subsequent `loadOlder` calls can drain them. Shared between
+   * {@link _loadFirstPage} and {@link _loadAndReveal} so both follow the
+   * same Run-unit pagination contract.
+   * @param newVisible - Newly observed Runs from the history fetch.
+   * @param limit - Max Runs to reveal in this batch.
+   */
+  private _splitReveal(newVisible: RunNode<TProjection>[], limit: number): void {
     const batch = newVisible.slice(-limit);
     const withheld = newVisible.slice(0, -limit);
     for (const n of withheld) {

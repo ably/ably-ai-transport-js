@@ -829,14 +829,20 @@ export interface View<TEvent, TProjection, TMessage> {
   /** Visible Runs along the selected branch, filtered by the pagination window. */
   flattenNodes(): RunNode<TProjection>[];
 
-  /** Whether there are older messages that can be loaded or revealed. */
+  /** Whether there are older Runs that can be loaded or revealed. */
   hasOlder(): boolean;
 
   /**
-   * Reveal older messages. Loads from channel history if the tree doesn't
-   * have enough, then advances the window to show up to `limit` more messages.
+   * Reveal older Runs. Loads from channel history if the tree doesn't have
+   * enough, then advances the pagination window by up to `limit` Runs.
    * Emits 'update' when the visible list changes.
-   * @param limit - Maximum number of older messages to reveal. Defaults to 100.
+   *
+   * The pagination unit is the **Run**, not the message. A single Run
+   * typically contributes more than one message to the flat list returned
+   * by {@link View.getMessages} (e.g. a user prompt + assistant reply
+   * pair). Revealing `limit` Runs may add 1..N messages each to the
+   * visible window.
+   * @param limit - Maximum number of older Runs to reveal. Defaults to 100.
    */
   loadOlder(limit?: number): Promise<void>;
 

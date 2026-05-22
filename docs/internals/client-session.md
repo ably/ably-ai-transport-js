@@ -84,9 +84,9 @@ Closing the stream router entry does **not** clear the observer state - late ser
 
 ## History
 
-`view.loadOlder()` loads older messages from the Ably channel using [`untilAttach`](glossary.md#untilattach-ably) for gapless continuity with the live subscription. Pages are decoded through the codec and upserted into the conversation tree.
+`view.loadOlder()` loads older Runs from the Ably channel using [`untilAttach`](glossary.md#untilattach-ably) for gapless continuity with the live subscription. Pages are decoded through the codec, lifecycle events are dispatched to `tree.applyRunLifecycle`, and per-Run events fold into the owning Run's projection via `tree.applyMessage`.
 
-The view implements a **withholding** mechanism for pagination: newly loaded messages are initially hidden from `flattenNodes()`. The newest batch is released immediately, while older messages are buffered and released in subsequent `loadOlder()` calls. This prevents the UI from jumping to show hundreds of messages at once.
+The view paginates at **Run** granularity. `loadOlder(limit)` reveals up to `limit` Runs per call. A single channel page may materialise more than `limit` Runs, so the view applies a **withholding** buffer: the newest `limit` Runs are released immediately, and the rest are held back for subsequent `loadOlder()` calls. This prevents the UI from jumping to show many Runs at once and gives the consumer a predictable Run-unit page size regardless of how channel pages happen to align with Run boundaries.
 
 ## Stream delivery guarantee
 

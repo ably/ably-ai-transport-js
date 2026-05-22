@@ -501,6 +501,84 @@ describe('ClientSession integration', () => {
     expect(textPart?.text).toBe('History answer');
   });
 
+  // Spec: AIT-CT11, AIT-773 §7.1 - cross-Run history concatenation.
+  it('loads multi-turn history and concatenates messages across Runs in publish order', async () => {
+    const channelName = uniqueChannelName('ct-multi-turn-history');
+    const serverClient = ablyRealtimeClient();
+
+    agentSession = createAgentSession<VercelEvent, VercelProjection, AI.UIMessage>({
+      client: serverClient,
+      channelName,
+      codec: UIMessageCodec,
+    });
+    await agentSession.connect();
+
+    // Publish three turns. Each turn = one Run with a user prompt and an
+    // assistant reply. Threading is established via parentId on the
+    // MessageNode + the assistant pipe's natural parent default (last
+    // viewMessages msgId).
+    // Captured by closure so the helper doesn't need a parameter for the
+    // already-narrowed agent session reference.
+    const agent = agentSession;
+    const publishTurn = async (turn: number, userParentId?: string): Promise<string> => {
+      const runId = `run-turn-${String(turn)}`;
+      const userMsgId = `u-${String(turn)}`;
+      const run = createRunFromOpts(agent, { runId });
+      await run.start();
+      await run.addMessages([
+        {
+          kind: 'message',
+          message: {
+            id: userMsgId,
+            role: 'user',
+            parts: [{ type: 'text', text: `q${String(turn)}` }],
+          },
+          msgId: userMsgId,
+          parentId: userParentId,
+          forkOf: undefined,
+          headers: {},
+          serial: undefined,
+        },
+      ]);
+      const asstMsgId = `a-${String(turn)}`;
+      await run.pipe(textResponseStream(asstMsgId, `text-turn-${String(turn)}`, `r${String(turn)}`));
+      await run.end('complete');
+      return asstMsgId;
+    };
+
+    const a1 = await publishTurn(1);
+    const a2 = await publishTurn(2, a1);
+    await publishTurn(3, a2);
+
+    const historyClient = ablyRealtimeClient();
+    clientSession = createClientSession<VercelEvent, VercelProjection, AI.UIMessage>({
+      client: historyClient,
+      channelName,
+      codec: UIMessageCodec,
+      clientId: historyClient.auth.clientId,
+      fetch: noopFetch as typeof globalThis.fetch,
+      api: '/test',
+      runStartDeadlineMs: 0,
+    });
+    await clientSession.connect();
+
+    // Run-based pagination: ask for 10 Runs; all three should fit in one page.
+    await clientSession.view.loadOlder(10);
+
+    const nodes = clientSession.view.flattenNodes();
+    expect(nodes.map((n) => n.runId)).toEqual(['run-turn-1', 'run-turn-2', 'run-turn-3']);
+
+    const messages = clientSession.view.getMessages();
+    expect(messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant', 'user', 'assistant']);
+
+    // Per-message text content verifies cross-Run concatenation order.
+    const texts = messages.map((m) => {
+      const textPart = m.parts.find((p): p is AI.TextUIPart => p.type === 'text');
+      return textPart?.text ?? '';
+    });
+    expect(texts).toEqual(['q1', 'r1', 'q2', 'r2', 'q3', 'r3']);
+  });
+
   it('fires ably-message events for raw Ably messages', async () => {
     const channelName = uniqueChannelName('ct-raw');
     const serverClient = ablyRealtimeClient();

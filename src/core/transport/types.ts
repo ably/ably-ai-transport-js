@@ -91,7 +91,8 @@ export interface AgentSessionOptions<TEvent, TProjection, TMessage> {
   /**
    * How long `Run.start()` will wait for the user-prompt message tagged with
    * the run's `invocationId` to arrive on the channel (rewind + live wait)
-   * before publishing an `ai-error` with `PromptNotFound` and rejecting.
+   * before publishing an `ai-run-end` with `reason: 'error'` carrying
+   * `PromptNotFound` and rejecting.
    * Default: 30000 (30 seconds).
    */
   promptLookupTimeoutMs?: number;
@@ -349,8 +350,33 @@ export interface Run<TEvent, TProjection, TMessage> {
    */
   loadProjection(): Promise<TProjection>;
 
-  /** Publish run-end event to the channel and clean up. */
-  end(reason: RunEndReason): Promise<void>;
+  /**
+   * Publish run-end event to the channel and clean up.
+   * @param reason - Why the run ended.
+   * @param error - When `reason === 'error'`, optional error metadata
+   *   stamped onto the run-end event via `x-ably-error-code` /
+   *   `x-ably-error-message` so the client can rebuild the underlying
+   *   `Ably.ErrorInfo`. Ignored for non-error reasons. Opt-in per
+   *   AIT-ST6b4 — server implementations choose whether to surface
+   *   error details.
+   */
+  end(reason: RunEndReason, error?: RunEndError): Promise<void>;
+}
+
+/**
+ * Error metadata an agent may attach to an `ai-run-end` event whose
+ * `reason` is `'error'`. Carried on the wire via the
+ * `x-ably-error-code` / `x-ably-error-message` headers; the client
+ * reconstructs an `Ably.ErrorInfo` from these and surfaces it on its
+ * 'error' emitter and pending send promise.
+ */
+export interface RunEndError {
+  /** Numeric Ably.ErrorInfo error code. Stringified onto the wire. */
+  code: number;
+  /** Optional HTTP-style status code. Defaults are derived by the receiver. */
+  statusCode?: number;
+  /** Human-readable error message. */
+  message: string;
 }
 
 // ---------------------------------------------------------------------------

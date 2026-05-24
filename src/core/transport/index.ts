@@ -14,6 +14,7 @@ export type {
   MessageNode,
   PipeOptions,
   Run,
+  RunEndError,
   RunEndReason,
   RunLifecycleEvent,
   RunNode,

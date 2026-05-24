@@ -18,7 +18,7 @@ import type * as AI from 'ai';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
-  EVENT_CANCEL,
+  EVENT_ABORT,
   EVENT_RUN_END,
   EVENT_RUN_START,
   HEADER_CANCEL_INVOCATION_ID,
@@ -950,7 +950,7 @@ describe('ClientSession integration', () => {
     // Observer captures cancel publishes to verify wire shape.
     const observerChannel = observerClient.channels.get(channelName);
     const cancelMessages: Ably.InboundMessage[] = [];
-    await observerChannel.subscribe(EVENT_CANCEL, (msg) => {
+    await observerChannel.subscribe(EVENT_ABORT, (msg) => {
       cancelMessages.push(msg);
     });
 

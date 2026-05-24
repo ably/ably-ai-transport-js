@@ -11,6 +11,9 @@ import type * as Ably from 'ably';
 import {
   EVENT_RUN_END,
   EVENT_RUN_START,
+  HEADER_ERROR_CODE,
+  HEADER_ERROR_MESSAGE,
+  HEADER_ERROR_STATUS_CODE,
   HEADER_FORK_OF,
   HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
@@ -22,6 +25,21 @@ import {
 } from '../../constants.js';
 import type { Logger } from '../../logger.js';
 import type { RunEndReason } from './types.js';
+
+/**
+ * Optional error payload stamped onto an `ai-run-end` event whose
+ * `reason` is `'error'`. Carried on the wire via
+ * {@link HEADER_ERROR_CODE} and {@link HEADER_ERROR_MESSAGE} so clients
+ * can surface the underlying failure without an out-of-band signal.
+ */
+export interface EndRunError {
+  /** Numeric Ably.ErrorInfo error code. Stringified onto the wire. */
+  code: number;
+  /** Optional HTTP-style status code. Currently echoed back via Ably.ErrorInfo on the receiver. */
+  statusCode?: number;
+  /** Human-readable error message. */
+  message: string;
+}
 
 // ---------------------------------------------------------------------------
 // Interface
@@ -42,8 +60,16 @@ export interface RunManager {
       continuation?: boolean;
     },
   ): Promise<AbortSignal>;
-  /** End a run. Publishes run-end on the channel. Cleans up internal state. */
-  endRun(runId: string, reason: RunEndReason, invocationId?: string): Promise<void>;
+  /**
+   * End a run. Publishes run-end on the channel. Cleans up internal state.
+   * @param runId - The run to end.
+   * @param reason - Why the run ended.
+   * @param invocationId - The invocation-id that this end belongs to.
+   * @param error - When `reason === 'error'`, optional error metadata
+   *   stamped onto the run-end event so the client can reconstruct the
+   *   underlying failure.
+   */
+  endRun(runId: string, reason: RunEndReason, invocationId?: string, error?: EndRunError): Promise<void>;
   /** Get the AbortSignal for a run. */
   getSignal(runId: string): AbortSignal | undefined;
   /** Get the clientId that owns a run. */
@@ -130,7 +156,7 @@ class DefaultRunManager implements RunManager {
     return controller.signal;
   }
 
-  async endRun(runId: string, reason: RunEndReason, invocationId?: string): Promise<void> {
+  async endRun(runId: string, reason: RunEndReason, invocationId?: string, error?: EndRunError): Promise<void> {
     this._logger?.trace('DefaultRunManager.endRun();', { runId, reason });
 
     const state = this._activeRuns.get(runId);
@@ -146,6 +172,16 @@ class DefaultRunManager implements RunManager {
     // under the same run-id.
     if (invocationId !== undefined) {
       headers[HEADER_INVOCATION_ID] = invocationId;
+    }
+    // When the run is ending in error, fold the underlying ErrorInfo's
+    // code, message, and (optional) statusCode onto the run-end event so
+    // the client can rebuild it without an out-of-band signal.
+    if (error) {
+      headers[HEADER_ERROR_CODE] = String(error.code);
+      headers[HEADER_ERROR_MESSAGE] = error.message;
+      if (error.statusCode !== undefined) {
+        headers[HEADER_ERROR_STATUS_CODE] = String(error.statusCode);
+      }
     }
 
     // Publish before deleting local state so that if publish fails,

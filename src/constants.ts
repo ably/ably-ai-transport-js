@@ -114,12 +114,32 @@ export const HEADER_RUN_REASON = 'x-ably-run-reason';
  */
 export const HEADER_RUN_CONTINUE = 'x-ably-run-continue';
 
+/**
+ * Header: numeric error code on an `ai-run-end` event whose reason is
+ * `error`. Stringified `Ably.ErrorInfo.code` value; consumers parse it back
+ * to a number. Paired with {@link HEADER_ERROR_MESSAGE} to surface the
+ * underlying failure to the client.
+ */
+export const HEADER_ERROR_CODE = 'x-ably-error-code';
+
+/**
+ * Header: human-readable error message on an `ai-run-end` event whose
+ * reason is `error`. Paired with {@link HEADER_ERROR_CODE}.
+ */
+export const HEADER_ERROR_MESSAGE = 'x-ably-error-message';
+
+/**
+ * Header: optional HTTP-style status code on an `ai-run-end` event whose
+ * reason is `error`. Stringified integer; omitted when the agent did not
+ * supply one. Used by the client to populate
+ * `Ably.ErrorInfo.statusCode` faithfully for custom (104xxx-style) codes
+ * where the derivation from `code` is lossy.
+ */
+export const HEADER_ERROR_STATUS_CODE = 'x-ably-error-status-code';
+
 // ---------------------------------------------------------------------------
 // Message / event names
 // ---------------------------------------------------------------------------
-
-/** Message name: client->server cancel signal. */
-export const EVENT_CANCEL = 'ai-cancel';
 
 /** Message name: server publishes this to signal a run has started. */
 export const EVENT_RUN_START = 'ai-run-start';
@@ -127,11 +147,14 @@ export const EVENT_RUN_START = 'ai-run-start';
 /** Message name: server publishes this to signal a run has ended. */
 export const EVENT_RUN_END = 'ai-run-end';
 
-/** Message name: transport-level abort signal (stream cancelled). */
+/**
+ * Message name: client→agent abort signal. Published by the client to
+ * request that one or more runs be aborted. The agent reacts by aborting
+ * its in-flight work and (eventually) publishing `ai-run-end` with
+ * `reason: 'cancelled'`. Cancel scope is carried via the
+ * `x-ably-cancel-*` headers (see {@link HEADER_CANCEL_RUN_ID} etc.).
+ */
 export const EVENT_ABORT = 'ai-abort';
-
-/** Message name: transport-level error signal. */
-export const EVENT_ERROR = 'ai-error';
 
 // ---------------------------------------------------------------------------
 // Domain header prefix (used by codec implementations)

@@ -16,8 +16,7 @@
 import * as Ably from 'ably';
 
 import {
-  EVENT_CANCEL,
-  EVENT_ERROR,
+  EVENT_ABORT,
   EVENT_RUN_END,
   EVENT_RUN_START,
   HEADER_CANCEL_ALL,
@@ -25,6 +24,9 @@ import {
   HEADER_CANCEL_INVOCATION_ID,
   HEADER_CANCEL_OWN,
   HEADER_CANCEL_RUN_ID,
+  HEADER_ERROR_CODE,
+  HEADER_ERROR_MESSAGE,
+  HEADER_ERROR_STATUS_CODE,
   HEADER_FORK_OF,
   HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
@@ -303,41 +305,6 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     if (this._state === ClientSessionState.CLOSED) return;
 
     try {
-      // --- Agent-side error event ---
-      // Agent emits `ai-error` to surface failures that occur before any
-      // assistant message can be streamed (most importantly, prompt-not-found
-      // after the rewind + live wait lapses). The error carries
-      // `x-ably-run-id` and `x-ably-invocation-id` so we can match it against
-      // the pending run-start tracker and the active stream.
-      if (ablyMessage.name === EVENT_ERROR) {
-        const headers = getHeaders(ablyMessage);
-        const runId = headers[HEADER_RUN_ID];
-        const invocationId = headers[HEADER_INVOCATION_ID];
-        const payload =
-          (ablyMessage.data as { code?: number; statusCode?: number; message?: string } | undefined) ?? {};
-        const code = typeof payload.code === 'number' ? payload.code : ErrorCode.SessionSubscriptionError;
-        const statusCode = typeof payload.statusCode === 'number' ? payload.statusCode : 500;
-        const message = typeof payload.message === 'string' ? payload.message : 'agent reported an error';
-        const errInfo = new Ably.ErrorInfo(message, code, statusCode);
-        if (invocationId) {
-          const pending = this._pendingRunStarts.get(invocationId);
-          if (pending) {
-            clearTimeout(pending.timer);
-            this._pendingRunStarts.delete(invocationId);
-            pending.reject(errInfo);
-          }
-        }
-        if (runId) this._router.errorStream(runId, errInfo);
-        this._logger.error('ClientSession._handleMessage(); agent error received', {
-          runId,
-          invocationId,
-          code,
-        });
-        this._emitter.emit('error', errInfo);
-        this._tree.emitAblyMessage(ablyMessage);
-        return;
-      }
-
       // Spec: AIT-CT16a
       // --- Run lifecycle events from the agent ---
       if (ablyMessage.name === EVENT_RUN_START) {
@@ -383,6 +350,31 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
         const invocationId = headers[HEADER_INVOCATION_ID];
         // CAST: agent always writes a valid RunEndReason; default to 'complete' for robustness
         const reason = (headers[HEADER_RUN_REASON] ?? 'complete') as RunEndReason;
+        // When the agent ends a run with `reason: error`, the underlying
+        // failure rides along on the run-end via `x-ably-error-code` /
+        // `x-ably-error-message`. We reconstitute an `Ably.ErrorInfo` so
+        // pending-send rejection, router errorStream, and session 'error'
+        // emit all see the same typed error.
+        const isError = reason === 'error';
+        let errInfo: Ably.ErrorInfo | undefined;
+        if (isError) {
+          const rawCode = headers[HEADER_ERROR_CODE];
+          const parsedCode = rawCode === undefined ? Number.NaN : Number.parseInt(rawCode, 10);
+          const code = Number.isFinite(parsedCode) ? parsedCode : ErrorCode.SessionSubscriptionError;
+          const message = headers[HEADER_ERROR_MESSAGE] ?? 'agent reported an error';
+          // Prefer the wire-stamped statusCode (preserves accuracy for
+          // custom 104xxx codes where derivation from `code` is lossy);
+          // fall back to first-three-digits-of-code for codes in the
+          // 10000-59999 range; default to 500 otherwise.
+          const rawStatusCode = headers[HEADER_ERROR_STATUS_CODE];
+          const parsedStatusCode = rawStatusCode === undefined ? Number.NaN : Number.parseInt(rawStatusCode, 10);
+          const statusCode = Number.isFinite(parsedStatusCode)
+            ? parsedStatusCode
+            : code >= 10000 && code < 60000
+              ? Math.floor(code / 100)
+              : 500;
+          errInfo = new Ably.ErrorInfo(message, code, statusCode);
+        }
         if (runId) {
           // Defensive run-end gating: when a run has multiple invocations
           // (e.g. developer manually retried under the same runId, OR the
@@ -413,12 +405,39 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
             this._tree.emitAblyMessage(ablyMessage);
             return;
           }
+          // When `reason: error`, surface the failure on three channels:
+          // the run's pending send() promise (matched by invocation-id),
+          // the router's stream, and the session-level 'error' emitter.
+          // Done BEFORE the stream is closed below so the stream errors
+          // out with the underlying ErrorInfo instead of resolving with
+          // no events. `errorStream` also deletes the router entry, so
+          // the subsequent `closeStream` is gated on `!isError` to skip
+          // a guaranteed no-op call.
+          if (isError && errInfo) {
+            if (invocationId !== undefined) {
+              const pending = this._pendingRunStarts.get(invocationId);
+              if (pending) {
+                clearTimeout(pending.timer);
+                this._pendingRunStarts.delete(invocationId);
+                pending.reject(errInfo);
+              }
+            }
+            this._router.errorStream(runId, errInfo);
+            this._logger.error('ClientSession._handleMessage(); agent reported run-end error', {
+              runId,
+              invocationId,
+              code: errInfo.code,
+            });
+            this._emitter.emit('error', errInfo);
+          }
           // `suspended` keeps the run live so a continuation that reuses
           // the runId picks up where it left off. Router stream and tree
           // run-tracking survive. The `run` event still fires so listeners
-          // can react to the suspend.
+          // can react to the suspend. For the error path the router
+          // stream was already errored (and the entry deleted) above; we
+          // still need to drop msg-id tracking and the active run record.
           if (reason !== 'suspended') {
-            this._router.closeStream(runId);
+            if (!isError) this._router.closeStream(runId);
             const msgIds = this._runMsgIds.get(runId);
             if (msgIds) {
               for (const mid of msgIds) this._ownMsgIds.delete(mid);
@@ -427,6 +446,15 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
             this._ownRunIds.delete(runId);
           }
           this._tree.applyRunLifecycle({ type: EVENT_RUN_END, runId, clientId: runCid, reason }, ablyMessage.serial);
+        } else if (isError && errInfo) {
+          // A malformed `ai-run-end { reason: error }` with no run-id
+          // can't be matched to a run, but the agent still asked us to
+          // surface an error — emit on the session 'error' channel so
+          // observers see something rather than a silent drop.
+          this._logger.error('ClientSession._handleMessage(); run-end error with no runId', {
+            code: errInfo.code,
+          });
+          this._emitter.emit('error', errInfo);
         }
         this._tree.emitAblyMessage(ablyMessage);
         return;
@@ -547,7 +575,7 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     }
 
     await this._channel.publish({
-      name: EVENT_CANCEL,
+      name: EVENT_ABORT,
       extras: { headers },
     });
   }

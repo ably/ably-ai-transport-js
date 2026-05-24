@@ -13,8 +13,7 @@
 import * as Ably from 'ably';
 
 import {
-  EVENT_CANCEL,
-  EVENT_ERROR,
+  EVENT_ABORT,
   HEADER_CANCEL_ALL,
   HEADER_CANCEL_CLIENT_ID,
   HEADER_CANCEL_INVOCATION_ID,
@@ -51,6 +50,7 @@ import type {
   MessageNode,
   PipeOptions,
   Run,
+  RunEndError,
   RunEndReason,
   RunRuntime,
   RunView,
@@ -809,7 +809,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
 
   private _handleChannelMessage(msg: Ably.InboundMessage): void {
     try {
-      if (msg.name === EVENT_CANCEL) {
+      if (msg.name === EVENT_ABORT) {
         // Fire-and-forget async handler — errors are caught internally.
         this._handleCancelMessage(msg).catch((error: unknown) => {
           const errInfo = new Ably.ErrorInfo(
@@ -1061,20 +1061,29 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
                     ErrorCode.PromptNotFound,
                     504,
                   );
-            // Best-effort publish of an error event so the client can see it.
+            // Surface the failure via `ai-run-end { reason: 'error' }` with
+            // the underlying error code/message folded into its headers.
+            // The run was never registered in the RunManager (we failed
+            // before `startRun`), so `endRun` publishes without state —
+            // the run-id and invocation-id are enough for the client's
+            // pending-send tracker and stream router to pick it up.
+            // Best-effort: a publish failure here leaves the client to
+            // notice the run never ended via its own staleness handling.
             try {
-              await channel.publish({
-                name: EVENT_ERROR,
-                extras: {
-                  headers: {
-                    [HEADER_RUN_ID]: runId,
-                    [HEADER_INVOCATION_ID]: invocationId,
-                  },
-                },
-                data: { code: errInfo.code, statusCode: errInfo.statusCode, message: errInfo.message },
+              await runManager.endRun(runId, 'error', invocationId, {
+                code: errInfo.code,
+                statusCode: errInfo.statusCode,
+                message: errInfo.message,
               });
-            } catch {
-              // swallow — best-effort
+            } catch (error_) {
+              // best-effort: log so operators can correlate silent
+              // producer-side failures; do not propagate (we're already
+              // throwing the original lookup error below).
+              logger?.warn('Run.start(); error run-end publish failed', {
+                runId,
+                invocationId,
+                error: error_ instanceof Error ? error_.message : String(error_),
+              });
             }
             // Tear down the registration so buffered cancels for this run
             // don't leak — they're best-effort against an aborted run.
@@ -1392,7 +1401,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
       },
 
       // Spec: AIT-ST7, AIT-ST7a, AIT-ST7b
-      end: async (reason: RunEndReason): Promise<void> => {
+      end: async (reason: RunEndReason, error?: RunEndError): Promise<void> => {
         logger?.trace('Run.end();', { runId, reason });
 
         await requireConnected('end');
@@ -1408,13 +1417,16 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
         state = RunState.ENDED;
 
         try {
-          await runManager.endRun(runId, reason, invocationId);
-        } catch (error) {
+          // Stamp error headers only for `reason: 'error'`. The agent is
+          // explicit about whether to surface error details to the client
+          // — AIT-ST6b4 keeps automatic propagation off by default.
+          await runManager.endRun(runId, reason, invocationId, reason === 'error' ? error : undefined);
+        } catch (publishError) {
           const errInfo = new Ably.ErrorInfo(
-            `unable to publish run-end for run ${runId}; ${error instanceof Error ? error.message : String(error)}`,
+            `unable to publish run-end for run ${runId}; ${publishError instanceof Error ? publishError.message : String(publishError)}`,
             ErrorCode.RunLifecycleError,
             500,
-            error instanceof Ably.ErrorInfo ? error : undefined,
+            publishError instanceof Ably.ErrorInfo ? publishError : undefined,
           );
           logger?.error('Run.end(); failed to publish run-end', { runId });
           throw errInfo;

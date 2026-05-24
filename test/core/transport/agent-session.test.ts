@@ -14,18 +14,22 @@ import * as Ably from 'ably';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  EVENT_CANCEL,
+  EVENT_ABORT,
+  EVENT_RUN_END,
   HEADER_CANCEL_ALL,
   HEADER_CANCEL_CLIENT_ID,
   HEADER_CANCEL_INVOCATION_ID,
   HEADER_CANCEL_OWN,
   HEADER_CANCEL_RUN_ID,
+  HEADER_ERROR_CODE,
+  HEADER_ERROR_MESSAGE,
   HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
   HEADER_PARENT,
   HEADER_PROMPT_ID,
   HEADER_ROLE,
   HEADER_RUN_ID,
+  HEADER_RUN_REASON,
 } from '../../../src/constants.js';
 import type {
   ChannelWriter,
@@ -144,7 +148,7 @@ const simulateInitialAttach = (ch: MockChannel): void => {
 const simulateCancel = (channel: MockChannel, headers: Record<string, string>, clientId?: string): void => {
   if (!channel.listener) return;
   const msg = {
-    name: EVENT_CANCEL,
+    name: EVENT_ABORT,
     clientId,
     extras: { headers },
   } as unknown as Ably.InboundMessage;
@@ -1286,6 +1290,56 @@ describe('AgentSession', () => {
       await expect(run.end('complete')).rejects.toBeErrorInfoWithCode(ErrorCode.RunLifecycleError);
     });
 
+    it('end("error", { ... }) stamps error code, message, and statusCode on the run-end', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-err', invocationId: 'inv-err' });
+      await run.start();
+      // Clear the run-start publish so the assertion targets the run-end.
+      channel.publishCalls.length = 0;
+      await run.end('error', {
+        code: ErrorCode.StreamError,
+        statusCode: 503,
+        message: 'rate limit exceeded',
+      });
+      const runEnd = channel.publishCalls.find((m) => m.name === EVENT_RUN_END);
+      expect(runEnd).toBeDefined();
+      const headers = (runEnd?.extras as { headers?: Record<string, string> } | undefined)?.headers ?? {};
+      expect(headers[HEADER_RUN_REASON]).toBe('error');
+      expect(headers[HEADER_ERROR_CODE]).toBe(String(ErrorCode.StreamError));
+      expect(headers[HEADER_ERROR_MESSAGE]).toBe('rate limit exceeded');
+      // statusCode round-trips on `x-ably-error-status-code` so the
+      // client can preserve it for custom (104xxx) codes whose derivation
+      // from `code` is lossy.
+      expect(headers['x-ably-error-status-code']).toBe('503');
+    });
+
+    it('end("error", { ... }) omits the statusCode header when not supplied', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-no-st', invocationId: 'inv-no-st' });
+      await run.start();
+      channel.publishCalls.length = 0;
+      await run.end('error', { code: ErrorCode.StreamError, message: 'boom' });
+      const runEnd = channel.publishCalls.find((m) => m.name === EVENT_RUN_END);
+      const headers = (runEnd?.extras as { headers?: Record<string, string> } | undefined)?.headers ?? {};
+      expect(headers['x-ably-error-status-code']).toBeUndefined();
+    });
+
+    it('end("complete", { ... }) ignores the error payload', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-noerr', invocationId: 'inv-noerr' });
+      await run.start();
+      channel.publishCalls.length = 0;
+      // Passing an error on a non-error reason is a no-op — error headers
+      // are reserved for `reason: 'error'` so observers can rely on them.
+      await run.end('complete', {
+        code: ErrorCode.StreamError,
+        statusCode: 500,
+        message: 'should be dropped',
+      });
+      const runEnd = channel.publishCalls.find((m) => m.name === EVENT_RUN_END);
+      const headers = (runEnd?.extras as { headers?: Record<string, string> } | undefined)?.headers ?? {};
+      expect(headers[HEADER_ERROR_CODE]).toBeUndefined();
+      expect(headers[HEADER_ERROR_MESSAGE]).toBeUndefined();
+      expect(headers['x-ably-error-status-code']).toBeUndefined();
+    });
+
     it('pipe() calls onError when the stream errors', async () => {
       const onError = vi.fn();
       const run = createRunFromOpts(session, { runId: 'run-1', onError });
@@ -1778,9 +1832,17 @@ describe('AgentSession prompt lookup', () => {
     });
 
     await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.PromptNotFound);
-    // The agent should have published an error event
-    const errMsg = channel.publishCalls.find((m) => m.name === 'ai-error');
+    // The agent should surface the failure as `ai-run-end { reason: 'error' }`
+    // carrying the underlying ErrorInfo's code and message in headers.
+    const errMsg = channel.publishCalls.find((m) => m.name === EVENT_RUN_END);
     expect(errMsg).toBeDefined();
+    const errHeaders = (errMsg?.extras as { headers?: Record<string, string> } | undefined)?.headers ?? {};
+    expect(errHeaders[HEADER_RUN_ID]).toBe('run-1');
+    expect(errHeaders[HEADER_INVOCATION_ID]).toBe('inv-needs-prompt');
+    expect(errHeaders[HEADER_RUN_REASON]).toBe('error');
+    expect(errHeaders[HEADER_ERROR_CODE]).toBe(String(ErrorCode.PromptNotFound));
+    expect(errHeaders[HEADER_ERROR_MESSAGE]).toContain('received 0 of 1');
+    expect(errHeaders['x-ably-error-status-code']).toBe('504');
     session.close();
   });
 });

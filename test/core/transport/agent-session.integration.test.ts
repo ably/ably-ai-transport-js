@@ -20,7 +20,7 @@ import type * as AI from 'ai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  EVENT_CANCEL,
+  EVENT_ABORT,
   EVENT_RUN_END,
   EVENT_RUN_START,
   HEADER_CANCEL_RUN_ID,
@@ -247,7 +247,7 @@ describe('AgentSession integration', () => {
     await new Promise((r) => setTimeout(r, 500));
 
     await cancelChannel.publish({
-      name: EVENT_CANCEL,
+      name: EVENT_ABORT,
       extras: { headers: { [HEADER_CANCEL_RUN_ID]: 'run-cancel-1' } },
     });
 

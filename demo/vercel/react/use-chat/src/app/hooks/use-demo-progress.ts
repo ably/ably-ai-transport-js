@@ -18,7 +18,7 @@
 import { useMemo } from 'react';
 import type * as Ably from 'ably';
 import type { DynamicToolUIPart, UIMessage } from 'ai';
-import { EVENT_CANCEL, type RunNode } from '@ably/ai-transport';
+import { EVENT_ABORT, type RunNode } from '@ably/ai-transport';
 import type { VercelProjection } from '@ably/ai-transport/vercel';
 
 export type DemoStepId =
@@ -104,7 +104,7 @@ export function useDemoProgress(
   return useMemo(() => {
     const completed = new Set<DemoStepId>();
 
-    if (ablyMessages.some((m) => m.name === EVENT_CANCEL)) {
+    if (ablyMessages.some((m) => m.name === EVENT_ABORT)) {
       completed.add('cancel');
     }
 

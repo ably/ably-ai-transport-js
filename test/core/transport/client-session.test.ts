@@ -13,7 +13,7 @@ import * as Ably from 'ably';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  EVENT_ERROR,
+  EVENT_ABORT,
   EVENT_RUN_END,
   EVENT_RUN_START,
   HEADER_CANCEL_ALL,
@@ -21,6 +21,8 @@ import {
   HEADER_CANCEL_INVOCATION_ID,
   HEADER_CANCEL_OWN,
   HEADER_CANCEL_RUN_ID,
+  HEADER_ERROR_CODE,
+  HEADER_ERROR_MESSAGE,
   HEADER_FORK_OF,
   HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
@@ -1391,7 +1393,7 @@ describe('ClientSession', () => {
       expect(fix.codec.fold).not.toHaveBeenCalled();
     });
 
-    it('surfaces agent error events on session error and rejects pending send', async () => {
+    it('surfaces agent run-end error on session error and rejects pending send', async () => {
       const ch = createMockChannel();
       const codec = createMockCodec();
       const s = createClientSession<TestEvent, TestProjection, TestMessage>({
@@ -1416,18 +1418,135 @@ describe('ClientSession', () => {
       const invocationId = opts?.extras?.headers?.[HEADER_INVOCATION_ID] ?? '';
       const runId = opts?.extras?.headers?.[HEADER_RUN_ID] ?? '';
 
+      // Agent surfaces the failure on `ai-run-end` with `reason: 'error'`
+      // and the underlying ErrorInfo's code / message in headers.
       simulateMessage(
         ch,
-        ablyMsg(
-          EVENT_ERROR,
-          { [HEADER_RUN_ID]: runId, [HEADER_INVOCATION_ID]: invocationId },
-          { code: ErrorCode.PromptNotFound, statusCode: 504, message: 'lookup failed' },
-        ),
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: runId,
+          [HEADER_INVOCATION_ID]: invocationId,
+          [HEADER_RUN_REASON]: 'error',
+          [HEADER_ERROR_CODE]: String(ErrorCode.PromptNotFound),
+          [HEADER_ERROR_MESSAGE]: 'lookup failed',
+        }),
       );
 
       await expect(sendPromise).rejects.toBeErrorInfoWithCode(ErrorCode.PromptNotFound);
       // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison -- compare against enum value
       expect(errors.some((e) => e.code === ErrorCode.PromptNotFound)).toBe(true);
+      await s.close();
+    });
+
+    it('error run-end with missing/malformed error code falls back to SessionSubscriptionError / 500', async () => {
+      const ch = createMockChannel();
+      const codec = createMockCodec();
+      const s = createClientSession<TestEvent, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec,
+        clientId: 'client-1',
+        api: '/api/chat',
+        fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
+        runStartDeadlineMs: 5000,
+      });
+      await s.connect();
+      const errors: Ably.ErrorInfo[] = [];
+      s.on('error', (e) => errors.push(e));
+
+      // Run-end with `reason: error` but no error headers — the client must
+      // still reconstruct a usable ErrorInfo. Wire bug or stripped-headers
+      // proxy is the realistic scenario.
+      simulateMessage(
+        ch,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: 'run-malformed',
+          [HEADER_RUN_REASON]: 'error',
+        }),
+      );
+
+      expect(errors).toHaveLength(1);
+      const err = errors[0];
+      expect(err).toBeDefined();
+      expect(err?.code).toBe(ErrorCode.SessionSubscriptionError);
+      expect(err?.statusCode).toBe(500);
+      expect(err?.message).toBe('agent reported an error');
+      await s.close();
+    });
+
+    it('error run-end stream consumer reads the ErrorInfo (surface before close)', async () => {
+      const ch = createMockChannel();
+      const codec = createMockCodec();
+      const s = createClientSession<TestEvent, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec,
+        clientId: 'client-1',
+        api: '/api/chat',
+        fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
+        runStartDeadlineMs: 5000,
+      });
+      await s.connect();
+      s.on('error', () => {
+        /* consume */
+      });
+
+      const sendPromise = s.view.sendEvent({ type: 'user-message', text: 'hi' });
+      const { runId, invocationId } = await ackPendingSend(ch, codec);
+      const run = await sendPromise;
+
+      // Drive an error run-end at the active invocation. The stream
+      // consumer must see the ErrorInfo on read(), not a clean done.
+      simulateMessage(
+        ch,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: runId,
+          [HEADER_INVOCATION_ID]: invocationId,
+          [HEADER_RUN_REASON]: 'error',
+          [HEADER_ERROR_CODE]: String(ErrorCode.StreamError),
+          [HEADER_ERROR_MESSAGE]: 'rate limit',
+        }),
+      );
+
+      const reader = run.stream.getReader();
+      const readResult = reader.read().catch((error: unknown) => error);
+      const surfaced = await readResult;
+      expect((surfaced as Ably.ErrorInfo).code).toBe(ErrorCode.StreamError);
+      await s.close();
+    });
+
+    it('error run-end stamps wire statusCode (preserves accuracy for 104xxx codes)', async () => {
+      const ch = createMockChannel();
+      const codec = createMockCodec();
+      const s = createClientSession<TestEvent, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec,
+        clientId: 'client-1',
+        api: '/api/chat',
+        fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
+        runStartDeadlineMs: 5000,
+      });
+      await s.connect();
+      const errors: Ably.ErrorInfo[] = [];
+      s.on('error', (e) => errors.push(e));
+
+      // ErrorCode.PromptNotFound = 104003 → derived statusCode would be 1040
+      // (out of the 10000-59999 range so the fallback kicks in to 500).
+      // Wire-stamping `x-ably-error-status-code: 504` preserves the agent's
+      // chosen status code unambiguously.
+      simulateMessage(
+        ch,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: 'run-st',
+          [HEADER_RUN_REASON]: 'error',
+          [HEADER_ERROR_CODE]: String(ErrorCode.PromptNotFound),
+          [HEADER_ERROR_MESSAGE]: 'no prompt',
+          'x-ably-error-status-code': '504',
+        }),
+      );
+
+      expect(errors).toHaveLength(1);
+      expect(errors[0]?.statusCode).toBe(504);
       await s.close();
     });
 
@@ -1605,7 +1724,7 @@ describe('ClientSession', () => {
   describe('cancel', () => {
     it('publishes a cancel message with own=true by default', async () => {
       await fix.session.cancel();
-      const cancelMsg = fix.channel.publishCalls.find((m) => m.name === 'ai-cancel');
+      const cancelMsg = fix.channel.publishCalls.find((m) => m.name === EVENT_ABORT);
       expect(cancelMsg).toBeDefined();
       const headers = (cancelMsg?.extras as { headers: Record<string, string> } | undefined)?.headers;
       expect(headers?.[HEADER_CANCEL_OWN]).toBe('true');
@@ -1618,7 +1737,7 @@ describe('ClientSession', () => {
       ['all', { all: true }, HEADER_CANCEL_ALL, 'true'],
     ])('publishes cancel with %s filter', async (_, filter, header, expected) => {
       await fix.session.cancel(filter);
-      const cancelMsg = fix.channel.publishCalls.find((m) => m.name === 'ai-cancel');
+      const cancelMsg = fix.channel.publishCalls.find((m) => m.name === EVENT_ABORT);
       expect(cancelMsg).toBeDefined();
       const headers = (cancelMsg?.extras as { headers: Record<string, string> } | undefined)?.headers;
       expect(headers?.[header]).toBe(expected);
@@ -1726,7 +1845,7 @@ describe('ClientSession', () => {
 
     it('publishes a cancel when close({ cancel }) is provided', async () => {
       await fix.session.close({ cancel: { all: true } });
-      const cancelMsg = fix.channel.publishCalls.find((m) => m.name === 'ai-cancel');
+      const cancelMsg = fix.channel.publishCalls.find((m) => m.name === EVENT_ABORT);
       expect(cancelMsg).toBeDefined();
     });
 
@@ -1770,10 +1889,17 @@ describe('ClientSession', () => {
         calls.push('b');
       });
 
-      // Simulate a channel-level error event
+      // Simulate an agent-side `ai-run-end { reason: 'error' }` — the
+      // session reconstructs an ErrorInfo from the error headers and
+      // emits on 'error', firing every registered handler.
       simulateMessage(
         fix.channel,
-        ablyMsg(EVENT_ERROR, {}, { code: ErrorCode.SessionSubscriptionError, statusCode: 500, message: 'oops' }),
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: 'run-err-iso',
+          [HEADER_RUN_REASON]: 'error',
+          [HEADER_ERROR_CODE]: String(ErrorCode.SessionSubscriptionError),
+          [HEADER_ERROR_MESSAGE]: 'oops',
+        }),
       );
       expect(calls).toEqual(['a', 'b']);
     });

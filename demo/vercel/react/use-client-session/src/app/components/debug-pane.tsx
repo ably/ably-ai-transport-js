@@ -4,15 +4,23 @@ import { useState, useRef, useEffect } from 'react';
 import type { UIMessage } from 'ai';
 import type * as Ably from 'ably';
 
+export interface CallbackLogEntry {
+  time: number;
+  type: 'runStart' | 'runEnd' | 'error';
+  summary: string;
+}
+
 interface DebugPaneProps {
   messages: UIMessage[];
   ablyMessages: Ably.InboundMessage[];
   activeRuns: Map<string, Set<string>>;
-  /** When true, render inline (no fixed toggle button). Used in split-pane mode. */
-  inline?: boolean;
+  status: string;
+  callbackLog: CallbackLogEntry[];
+  statusLog: { time: number; status: string }[];
+  onClearLogs: () => void;
 }
 
-type Tab = 'ably' | 'uimessages';
+type Tab = 'ably' | 'uimessages' | 'lifecycle';
 
 function extractHeaders(msg: Ably.InboundMessage): Record<string, string> {
   const extras = msg.extras as { headers?: Record<string, string> } | undefined;
@@ -38,10 +46,9 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
       )}
       {entries.map((entry, idx) => {
         const headers = extractHeaders(entry);
-        const key = entry.serial ?? `idx-${String(idx)}`;
         return (
           <div
-            key={key}
+            key={idx}
             className="rounded border border-zinc-800 bg-zinc-900/50 p-2 text-[11px] font-mono"
           >
             <div className="flex items-center gap-2 text-zinc-500 mb-1">
@@ -76,7 +83,15 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
   );
 }
 
-function UIMessagesTab({ messages, activeRuns }: { messages: UIMessage[]; activeRuns: Map<string, Set<string>> }) {
+function UIMessagesTab({
+  messages,
+  activeRuns,
+  status,
+}: {
+  messages: UIMessage[];
+  activeRuns: Map<string, Set<string>>;
+  status: string;
+}) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -102,9 +117,15 @@ function UIMessagesTab({ messages, activeRuns }: { messages: UIMessage[]; active
       ref={scrollRef}
       className="flex-1 overflow-y-auto p-3"
     >
-      <div className="mb-3 rounded border border-zinc-800 bg-zinc-900/50 px-2 py-1.5 text-[10px]">
-        <span className="text-zinc-600">Active runs: </span>
-        <span className={`font-mono ${activeRuns.size > 0 ? 'text-blue-400' : 'text-zinc-600'}`}>{runsDisplay}</span>
+      <div className="mb-3 flex gap-2">
+        <div className="rounded border border-zinc-800 bg-zinc-900/50 px-2 py-1.5 text-[10px]">
+          <span className="text-zinc-600">Session status: </span>
+          <span className={`font-mono ${status === 'running' ? 'text-emerald-400' : 'text-zinc-600'}`}>{status}</span>
+        </div>
+        <div className="rounded border border-zinc-800 bg-zinc-900/50 px-2 py-1.5 text-[10px]">
+          <span className="text-zinc-600">Active runs: </span>
+          <span className={`font-mono ${activeRuns.size > 0 ? 'text-blue-400' : 'text-zinc-600'}`}>{runsDisplay}</span>
+        </div>
       </div>
       {messages.length === 0 ? (
         <p className="text-xs text-zinc-700 text-center mt-8">Messages will appear here as JSON.</p>
@@ -117,79 +138,100 @@ function UIMessagesTab({ messages, activeRuns }: { messages: UIMessage[]; active
   );
 }
 
-function DebugContent({ messages, ablyMessages, activeRuns, onClose }: DebugPaneProps & { onClose?: () => void }) {
-  const [tab, setTab] = useState<Tab>('ably');
+const callbackTypeColors: Record<string, string> = {
+  runStart: 'text-blue-400',
+  runEnd: 'text-emerald-400',
+  error: 'text-red-400',
+};
+
+const statusColors: Record<string, string> = {
+  idle: 'text-zinc-500',
+  running: 'text-emerald-400',
+};
+
+function LifecycleTab({
+  callbackLog,
+  statusLog,
+  onClear,
+}: {
+  callbackLog: CallbackLogEntry[];
+  statusLog: { time: number; status: string }[];
+  onClear: () => void;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [callbackLog, statusLog]);
 
   return (
-    <div className="w-[420px] flex-shrink-0 border-l border-zinc-800 flex flex-col bg-zinc-950">
-      <div className="flex items-center justify-between border-b border-zinc-800 px-3 py-2">
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => setTab('ably')}
-            className={`text-[10px] px-2 py-1 rounded transition-colors ${
-              tab === 'ably' ? 'bg-zinc-800 text-zinc-300' : 'text-zinc-600 hover:text-zinc-400'
-            }`}
-          >
-            Ably Messages
-            <span className="ml-1 text-zinc-600">{ablyMessages.length}</span>
-          </button>
-          <button
-            onClick={() => setTab('uimessages')}
-            className={`text-[10px] px-2 py-1 rounded transition-colors ${
-              tab === 'uimessages' ? 'bg-zinc-800 text-zinc-300' : 'text-zinc-600 hover:text-zinc-400'
-            }`}
-          >
-            UIMessages
-            <span className="ml-1 text-zinc-600">{messages.length}</span>
-          </button>
-        </div>
-        {onClose && (
-          <button
-            onClick={onClose}
-            className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors"
-          >
-            close
-          </button>
-        )}
+    <div
+      ref={scrollRef}
+      className="flex-1 overflow-y-auto p-3 space-y-3"
+    >
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[10px] text-zinc-400 uppercase tracking-wider">Status transitions</span>
+        <button
+          onClick={onClear}
+          className="text-[10px] text-zinc-600 hover:text-zinc-400 transition-colors"
+        >
+          clear
+        </button>
       </div>
-      {tab === 'ably' ? (
-        <AblyMessagesTab entries={ablyMessages} />
+
+      {statusLog.length === 0 ? (
+        <p className="text-xs text-zinc-500 text-center">No status changes yet.</p>
       ) : (
-        <UIMessagesTab
-          messages={messages}
-          activeRuns={activeRuns}
-        />
+        <div className="rounded border border-zinc-800 bg-zinc-900/50 p-2 text-[11px] font-mono flex flex-wrap gap-1 items-center">
+          {statusLog.map((entry, idx) => (
+            <span
+              key={idx}
+              className="flex items-center gap-1"
+            >
+              {idx > 0 && <span className="text-zinc-700">&rarr;</span>}
+              <span className={statusColors[entry.status] ?? 'text-zinc-500'}>{entry.status}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-4 mb-2">
+        <span className="text-[10px] text-zinc-400 uppercase tracking-wider">Run lifecycle</span>
+      </div>
+
+      {callbackLog.length === 0 ? (
+        <p className="text-xs text-zinc-500 text-center">Run start, run end, and error events will appear here.</p>
+      ) : (
+        callbackLog.map((entry, idx) => (
+          <div
+            key={idx}
+            className="rounded border border-zinc-800 bg-zinc-900/50 p-2 text-[11px] font-mono"
+          >
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-zinc-400">{new Date(entry.time).toLocaleTimeString()}</span>
+              <span className={callbackTypeColors[entry.type] ?? 'text-zinc-400'}>{entry.type}</span>
+            </div>
+            <div className="text-indigo-300 break-all whitespace-pre-wrap">{entry.summary}</div>
+          </div>
+        ))
       )}
     </div>
   );
 }
 
-export function DebugPane({ messages, ablyMessages, activeRuns, inline }: DebugPaneProps) {
-  const [isOpen, setIsOpen] = useState(false);
-
-  if (inline) {
-    return (
-      <>
-        {!isOpen && (
-          <button
-            onClick={() => setIsOpen(true)}
-            className="border-l border-zinc-800 bg-zinc-950 px-1.5 text-xs text-zinc-600 hover:text-zinc-400 transition-colors"
-            title="Show debug pane"
-          >
-            &lsaquo;
-          </button>
-        )}
-        {isOpen && (
-          <DebugContent
-            messages={messages}
-            ablyMessages={ablyMessages}
-            activeRuns={activeRuns}
-            onClose={() => setIsOpen(false)}
-          />
-        )}
-      </>
-    );
-  }
+export function DebugPane({
+  messages,
+  ablyMessages,
+  activeRuns,
+  status,
+  callbackLog,
+  statusLog,
+  onClearLogs,
+}: DebugPaneProps) {
+  const [isOpen, setIsOpen] = useState(true);
+  const [tab, setTab] = useState<Tab>('ably');
 
   return (
     <>
@@ -204,12 +246,60 @@ export function DebugPane({ messages, ablyMessages, activeRuns, inline }: DebugP
       )}
 
       {isOpen && (
-        <DebugContent
-          messages={messages}
-          ablyMessages={ablyMessages}
-          activeRuns={activeRuns}
-          onClose={() => setIsOpen(false)}
-        />
+        <div className="w-[420px] flex-shrink-0 border-l border-zinc-800 flex flex-col bg-zinc-950">
+          <div className="flex h-16 flex-shrink-0 items-center justify-between border-b border-zinc-800 px-3">
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setTab('ably')}
+                className={`text-[10px] px-2 py-1 rounded transition-colors ${
+                  tab === 'ably' ? 'bg-zinc-800 text-zinc-300' : 'text-zinc-600 hover:text-zinc-400'
+                }`}
+              >
+                Ably Messages
+                <span className="ml-1 text-zinc-600">{ablyMessages.length}</span>
+              </button>
+              <button
+                onClick={() => setTab('uimessages')}
+                className={`text-[10px] px-2 py-1 rounded transition-colors ${
+                  tab === 'uimessages' ? 'bg-zinc-800 text-zinc-300' : 'text-zinc-600 hover:text-zinc-400'
+                }`}
+              >
+                UIMessages
+                <span className="ml-1 text-zinc-600">{messages.length}</span>
+              </button>
+              <button
+                onClick={() => setTab('lifecycle')}
+                className={`text-[10px] px-2 py-1 rounded transition-colors ${
+                  tab === 'lifecycle' ? 'bg-zinc-800 text-zinc-300' : 'text-zinc-600 hover:text-zinc-400'
+                }`}
+              >
+                Lifecycle
+                <span className="ml-1 text-zinc-600">{callbackLog.length}</span>
+              </button>
+            </div>
+            <button
+              onClick={() => setIsOpen(false)}
+              className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors"
+            >
+              close
+            </button>
+          </div>
+          {tab === 'ably' ? (
+            <AblyMessagesTab entries={ablyMessages} />
+          ) : tab === 'uimessages' ? (
+            <UIMessagesTab
+              messages={messages}
+              activeRuns={activeRuns}
+              status={status}
+            />
+          ) : (
+            <LifecycleTab
+              callbackLog={callbackLog}
+              statusLog={statusLog}
+              onClear={onClearLogs}
+            />
+          )}
+        </div>
       )}
     </>
   );

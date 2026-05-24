@@ -2,25 +2,44 @@
 
 import { useRef, useEffect } from 'react';
 import type { UIMessage } from 'ai';
-import type { ViewHandle } from '@ably/ai-transport/react';
-import type { VercelEvent, VercelProjection } from '@ably/ai-transport/vercel';
+import type { MessageNode } from '@ably/ai-transport';
 import { MessageBubble } from './message-bubble';
+import { IntroCard } from './intro-card';
 
-interface MessageListProps {
-  view: ViewHandle<VercelEvent, VercelProjection, UIMessage>;
-  onRegenerate: (messageId: string) => void;
-  onEdit: (messageId: string, newText: string) => void;
-  onToolApprove?: (msgId: string, toolCallId: string, input: unknown) => void;
-  onToolDeny?: (msgId: string, toolCallId: string, input: unknown) => void;
+interface SiblingApi {
+  hasSiblings: (msgId: string) => boolean;
+  getSiblings: (msgId: string) => UIMessage[];
+  getSelectedIndex: (msgId: string) => number;
+  select: (msgId: string, index: number) => void;
 }
 
-export function MessageList({ view, onRegenerate, onEdit, onToolApprove, onToolDeny }: MessageListProps) {
-  const { nodes, hasOlder, loading, loadOlder } = view;
+interface MessageListProps {
+  nodes: MessageNode<UIMessage>[];
+  hasOlder: boolean;
+  loading: boolean;
+  siblings: SiblingApi;
+  onLoadOlder: () => void;
+  onRegenerate: (messageId: string) => void;
+  onEdit: (messageId: string, newText: string) => void;
+  onToolApprove?: (msgId: string, toolCallId: string) => void;
+  onToolDeny?: (msgId: string, toolCallId: string) => void;
+}
+
+export function MessageList({
+  nodes,
+  hasOlder,
+  loading,
+  siblings,
+  onLoadOlder,
+  onRegenerate,
+  onEdit,
+  onToolApprove,
+  onToolDeny,
+}: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const prevLastIdRef = useRef<string | undefined>(undefined);
 
-  // Auto-scroll to bottom only when the last message changes
   useEffect(() => {
     const lastId = nodes.length > 0 ? nodes[nodes.length - 1].message.id : undefined;
     if (lastId && lastId !== prevLastIdRef.current) {
@@ -37,16 +56,13 @@ export function MessageList({ view, onRegenerate, onEdit, onToolApprove, onToolD
     }
   };
 
-  const onLoadOlder = () => {
-    void loadOlder();
-  };
-
   return (
     <div
       ref={scrollRef}
       onScroll={handleScroll}
       className="flex-1 overflow-y-auto px-4 py-4 space-y-4"
     >
+      <IntroCard />
       {hasOlder && (
         <div className="text-center">
           <button
@@ -59,24 +75,25 @@ export function MessageList({ view, onRegenerate, onEdit, onToolApprove, onToolD
         </div>
       )}
       {loading && <div className="text-center text-xs text-zinc-600 animate-pulse">Loading history...</div>}
-      {nodes.length === 0 && !loading && (
-        <p className="text-sm text-zinc-600 text-center mt-20">Send a message to start chatting.</p>
-      )}
-      {nodes.map((node) => (
-        <MessageBubble
-          key={node.message.id}
-          message={node.message}
-          headers={node.headers}
-          hasSiblings={view.hasSiblings(node.msgId)}
-          siblings={view.getSiblings(node.msgId)}
-          selectedIndex={view.getSelectedIndex(node.msgId)}
-          onSelectSibling={(index) => view.select(node.msgId, index)}
-          onRegenerate={node.message.role === 'assistant' ? () => onRegenerate(node.msgId) : undefined}
-          onEdit={node.message.role === 'user' ? (text) => onEdit(node.msgId, text) : undefined}
-          onToolApprove={onToolApprove}
-          onToolDeny={onToolDeny}
-        />
-      ))}
+      {nodes.map((node) => {
+        const { message, headers, msgId } = node;
+        const hasSiblingsHere = siblings.hasSiblings(msgId);
+        return (
+          <MessageBubble
+            key={message.id}
+            message={message}
+            headers={headers}
+            hasSiblings={hasSiblingsHere}
+            siblingCount={hasSiblingsHere ? siblings.getSiblings(msgId).length : undefined}
+            selectedIndex={hasSiblingsHere ? siblings.getSelectedIndex(msgId) : undefined}
+            onSelectSibling={hasSiblingsHere ? (index) => siblings.select(msgId, index) : undefined}
+            onRegenerate={message.role === 'assistant' ? () => onRegenerate(msgId) : undefined}
+            onEdit={message.role === 'user' ? (text) => onEdit(msgId, text) : undefined}
+            onToolApprove={onToolApprove}
+            onToolDeny={onToolDeny}
+          />
+        );
+      })}
       <div ref={endRef} />
     </div>
   );

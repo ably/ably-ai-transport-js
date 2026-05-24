@@ -93,7 +93,7 @@ Returns `{ reason }` where reason is `'complete'`, `'cancelled'`, or `'error'`. 
 
 Cancel routing lives in the agent session (`src/core/transport/agent-session.ts`), not in a separate component.
 
-The agent session subscribes to [`ai-cancel`](wire-protocol.md#lifecycle-events) events on channel construction. When a cancel message arrives, it:
+The agent session subscribes to [`ai-abort`](wire-protocol.md#lifecycle-events) events on channel construction. When an abort message arrives, it:
 
 1. Parses the cancel filter from [cancel headers](wire-protocol.md#transport-headers-x-ably) (`x-ably-cancel-run-id`, `x-ably-cancel-invocation-id`, `x-ably-cancel-own`, `x-ably-cancel-client-id`, `x-ably-cancel-all`)
 2. Resolves which active runs match the filter

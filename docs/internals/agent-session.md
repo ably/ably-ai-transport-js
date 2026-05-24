@@ -10,10 +10,10 @@ The session exposes a single factory method - `createRun()` - which returns a `R
 
 `connect()`:
 
-1. Subscribes to `ai-cancel` events on the channel (subscribing before attach per [RTL7g](https://sdk.ably.com/builds/ably/specification/main/features/#RTL7g))
-2. Starts routing cancel messages to registered runs
+1. Subscribes to the channel (unfiltered) before attach (per [RTL7g](https://sdk.ably.com/builds/ably/specification/main/features/#RTL7g))
+2. The same listener routes both `ai-abort` messages to registered runs and user-prompt messages to the active prompt lookup
 
-The method is idempotent - a second call returns the same in-flight promise and does not subscribe twice. The cancel subscription is the session's primary subscription. `Run.start()` may install a transient unfiltered subscription for the duration of the user-prompt lookup (see _Prompt lookup_ below); it unsubscribes as soon as a match is found or the deadline lapses. All other message publishing goes through the RunManager and codec encoder.
+The method is idempotent - a second call returns the same in-flight promise and does not subscribe twice. The single unfiltered subscription is the session's primary subscription; all incoming messages flow through one listener which then dispatches by `name` (abort, user-prompt, etc.). All outbound publishing goes through the RunManager and codec encoder.
 
 ## Prompt lookup
 
@@ -26,7 +26,7 @@ Inside `Run.start()`:
 - Otherwise the lookup waits for exactly `userMessageCount` distinct user-prompt Ably messages tagged with the run's invocation-id. Multi-message `send([m1, m2, …])` publishes each message as its own Ably message under one invocation-id, so all `userMessageCount` arrivals must be collected before the run starts. Dedupe by Ably `serial` (rewind may redeliver a message also seen live); sort the collected messages by `serial` ascending before appending them to `run.view.messages`. The whole collection is bounded by a single `AgentSessionOptions.promptLookupTimeoutMs` budget (default 30 000 ms). Setting `promptLookupTimeoutMs` to `0` skips the lookup entirely.
 - Messages may arrive before `Run.start()` runs (rewind replay on attach). The session buffers user-prompt Ably messages by invocation-id (`Map<string, InboundMessage[]>`) so a later `_registerPromptListener` call drains them on registration. The listener stays registered after the drain to also receive live arrivals until the lookup completes.
 - The buffer is bounded by `AgentSessionOptions.promptBufferLimit` (default 200) — counted by distinct invocation-id entries, not by individual messages. When the limit is exceeded the oldest invocation entry (and all its buffered messages) is FIFO-evicted and a warn is logged with the evicted invocation-id and the limit. The client whose prompt was evicted will fail its lookup with `PromptNotFound`, so the warn is the only operator-visible signal that capacity was the cause.
-- On partial collection at timeout the lookup rejects with `PromptNotFound` and an error message including the count (e.g. `"received 1 of 2"`); a decode failure mid-collection rejects the entire lookup, wrapping the decode error as `cause`. In both cases the agent publishes an `ai-error` event (tagged with `runId` and `invocationId`) and `start()` rejects without publishing run-start.
+- On partial collection at timeout the lookup rejects with `PromptNotFound` and an error message including the count (e.g. `"received 1 of 2"`); a decode failure mid-collection rejects the entire lookup, wrapping the decode error as `cause`. In both cases the agent publishes `ai-run-end` with `x-ably-run-reason: error` and the underlying `Ably.ErrorInfo` folded into `x-ably-error-code` / `x-ably-error-message` headers (tagged with `runId` and `invocationId`), and `start()` rejects without publishing run-start.
 - After a lookup resolves successfully the invocation-id is recorded in a bounded FIFO set (`_completedLookupInvocationIds`). A subsequent user-prompt arrival for an invocation in that set is treated as an over-arrival (client published more than `userMessageCount`); the message is buffered as normal and the agent logs a warn at `over-arrival user-prompt after lookup completed`. The run is not aborted.
 
 ## Run lifecycle

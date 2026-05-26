@@ -33,7 +33,18 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
   const { session } = useClientSession<AI.UIMessageChunk, AI.UIMessage>();
 
   // useView provides message state, navigation, and write operations
-  const { nodes, hasOlder, loading, loadOlder, send, regenerate, hasSiblings, getSiblings, getSelectedIndex, select } = useView({ session, limit: 30 });
+  const {
+    messages,
+    hasOlder,
+    loading,
+    loadOlder,
+    send,
+    regenerate,
+    hasMessageSiblings,
+    getMessageSiblings,
+    getSelectedMessageSiblingIndex,
+    selectMessageSibling,
+  } = useView({ session, limit: 30 });
   const activeRuns = useActiveRuns({ session });
   const ownRunIds = clientId ? activeRuns.get(clientId) : undefined;
 
@@ -70,16 +81,15 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
             part.type === 'text' ? <span key={i}>{part.text}</span> : null
           ))}
 
-          {/* Branch navigation: resolve the message's owning Run for sibling controls */}
-          {(() => {
-            const owningRunId = getRunByMsgId(m.id)?.runId;
-            if (!owningRunId || !hasSiblingRuns(owningRunId)) return null;
-            const idx = getSelectedIndex(owningRunId);
+          {/* Branch navigation: message-keyed sibling controls */}
+          {hasMessageSiblings(m.id) && (() => {
+            const idx = getSelectedMessageSiblingIndex(m.id);
+            const count = getMessageSiblings(m.id).length;
             return (
               <span>
-                {idx + 1} / {getSiblingRuns(owningRunId).length}
-                <button onClick={() => select(owningRunId, idx - 1)}>prev</button>
-                <button onClick={() => select(owningRunId, idx + 1)}>next</button>
+                {idx + 1} / {count}
+                <button onClick={() => selectMessageSibling(m.id, idx - 1)}>prev</button>
+                <button onClick={() => selectMessageSibling(m.id, idx + 1)}>next</button>
               </span>
             );
           })()}
@@ -136,29 +146,16 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
 
 ## Key differences from the useChat path
 
-<<<<<<< HEAD
 |                       | useChat path                              | Generic hooks path                                                          |
 | --------------------- | ----------------------------------------- | --------------------------------------------------------------------------- |
 | **Message state**     | Managed by `useChat()`                    | Managed by `useView()`                                                      |
 | **Send**              | `sendMessage({ text })`                   | `send([uiMessage])` - you construct the `UIMessage`                         |
 | **Regenerate**        | `regenerate({ messageId })`               | `regenerate(messageId)`                                                     |
 | **Edit**              | Not built into `useChat()`                | `edit(messageId, [newMessage])`                                             |
-| **Branch navigation** | Not available                             | `view.getSiblings()`, `view.select()` via `useView()`                       |
+| **Branch navigation** | Not available                             | `view.hasMessageSiblings()`, `view.selectMessageSibling()` via `useView()`  |
 | **Stop**              | `stop()` from `useChat()`                 | `session.cancel(runId)` per active run (iterate `activeRuns.get(clientId)`) |
 | **Observer sync**     | Requires `useMessageSync()`               | Built-in - `useView()` includes all clients                                 |
 | **Hooks needed**      | `useChatTransport()` + `useMessageSync()` | Individual hooks per operation                                              |
-=======
-|                       | useChat path                              | Generic hooks path                                       |
-| --------------------- | ----------------------------------------- | -------------------------------------------------------- |
-| **Message state**     | Managed by `useChat()`                    | Managed by `useView()`                                   |
-| **Send**              | `sendMessage({ text })`                   | `send([uiMessage])` - you construct the `UIMessage`      |
-| **Regenerate**        | `regenerate({ messageId })`               | `regenerate(messageId)`                                  |
-| **Edit**              | Not built into `useChat()`                | `edit(messageId, [newMessage])`                          |
-| **Branch navigation** | Not available                             | `view.getSiblingRuns()`, `view.select()` via `useView()` |
-| **Stop**              | `stop()` from `useChat()`                 | `session.cancel({ own: true })`                          |
-| **Observer sync**     | Requires `useMessageSync()`               | Built-in - `useView()` includes all clients              |
-| **Hooks needed**      | `useChatTransport()` + `useMessageSync()` | Individual hooks per operation                           |
->>>>>>> 5d0ab5e (Tree of Runs: Convert the conversation tree from message-keyed to run-keyed)
 
 Use the **useChat path** when you want the simplest integration and Vercel's `useChat()` handles your needs. Use the **generic hooks path** when you need conversation branching UI, custom message construction, or tighter control over session operations.
 

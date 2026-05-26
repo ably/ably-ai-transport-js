@@ -9,6 +9,7 @@ export type {
   ClientSession,
   ClientSessionOptions,
   EventsNode,
+  MessageMetadata,
   MessageNode,
   PipeOptions,
   Run,

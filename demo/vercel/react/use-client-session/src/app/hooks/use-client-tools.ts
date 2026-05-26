@@ -64,9 +64,9 @@ export function useClientTools(
       // Other clients on the same channel see the tool call but should
       // not execute it - only the requesting client has the context
       // (e.g. browser geolocation) to provide the result.
-      const owningRun = view.getRunByCodecMessageId(msg.id);
-      if (!owningRun) continue;
-      if (owningRun.clientId && owningRun.clientId !== clientId) continue;
+      const metadata = view.getMessageMetadata(msg.id);
+      if (!metadata) continue;
+      if (metadata.clientId && metadata.clientId !== clientId) continue;
 
       // If there's a later assistant message, this tool call was already
       // resolved in a previous session - skip to prevent re-execution
@@ -84,7 +84,7 @@ export function useClientTools(
 
         handledRef.current.add(toolPart.toolCallId);
 
-        executeClientTool(view, owningRun.runId, toolPart);
+        executeClientTool(view, metadata.runId, toolPart);
       }
     }
   }, [view, view.messages, clientId]);

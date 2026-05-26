@@ -785,6 +785,37 @@ export interface Tree<TProjection> {
 // ---------------------------------------------------------------------------
 
 /**
+ * Per-message metadata derived from the owning Run, returned by
+ * {@link View.getMessageMetadata}.
+ *
+ * Mirrors the subset of pre-tree-of-runs `MessageNode` fields that
+ * applications consumed for rendering: identifiers, owner client id,
+ * and stream status. Designed so the rendering layer receives
+ * structured primitives without touching SDK domain types like
+ * {@link RunNode}. If you need the full Run record (projection,
+ * regeneratesMsgId, etc.), reach through the {@link Tree} surface
+ * instead.
+ */
+export interface MessageMetadata {
+  /** The codec-message-id this metadata describes. */
+  codecMessageId: string;
+  /** The runId of the Run that owns this message. */
+  runId: string;
+  /**
+   * The clientId of the Run owner (Ably client that started the Run).
+   * Empty string when the wire did not carry an owner client id.
+   */
+  clientId: string;
+  /**
+   * `'streaming'` while the owning Run is active, `'finished'` once the
+   * Run has ended (for any reason — complete, cancelled, aborted,
+   * error, or suspended). For finer-grained distinctions, read
+   * {@link RunNode.status} directly via the {@link Tree}.
+   */
+  status: 'streaming' | 'finished';
+}
+
+/**
  * A paginated, branch-aware projection of the conversation tree.
  *
  * Returns only the visible portion of the selected branch. New live messages
@@ -836,13 +867,15 @@ export interface View<TEvent, TProjection, TMessage> {
   getSelectedIndex(runId: string): number;
 
   /**
-   * Get all Runs that are siblings (alternatives) at a given fork point.
-   * Returns an array ordered chronologically by startSerial.
+   * Per-message metadata derived from the owning Run. The natural
+   * accessor for the rendering layer: returns primitives (runId,
+   * clientId, status) without leaking {@link RunNode} or the codec's
+   * projection generic into UI components. Returns `undefined` when
+   * the msg-id hasn't been observed.
+   * @param msgId - The msg-id to look up.
+   * @returns Structured per-message metadata, or `undefined`.
    */
-  getSiblingRuns(runId: string): RunNode<TProjection>[];
-
-  /** Whether a Run has sibling alternatives (i.e., show navigation arrows). */
-  hasSiblingRuns(runId: string): boolean;
+  getMessageMetadata(msgId: string): MessageMetadata | undefined;
 
   /**
    * Whether the message at `codecMessageId` is a branch-point anchor — i.e.
@@ -850,29 +883,29 @@ export interface View<TEvent, TProjection, TMessage> {
    *
    * Per AITRFC-014, branch points are message-anchored: edit forks point at
    * the user prompt's codec-message-id, regenerate forks point at the
-   * assistant message's codec-message-id. This is finer-grained than the
-   * Run-keyed `hasSiblingRuns(runId)`: a Run that owns multiple messages
-   * will be "in a sibling group" via its runId, but only the message that
+   * assistant message's codec-message-id. A Run that owns multiple messages
+   * may be "in a sibling group" via its runId, but only the message that
    * corresponds to the branch anchor (the user prompt for edits, the
    * assistant slot for regens) is the actual nav target.
-   *
-   * Use this for UI rendering decisions; use `hasSiblingRuns(runId)` for
-   * Run-level introspection.
    * @param codecMessageId - The codec-message-id of the bubble being rendered.
    * @returns True iff `codecMessageId` is the branch anchor of a sibling group.
    */
   hasMessageSiblings(codecMessageId: string): boolean;
 
   /**
-   * Get the sibling Runs forming the branch point anchored at `codecMessageId`.
-   * Returns the same Runs as {@link getSiblingRuns} would for the owning
-   * Run's group, but only when `codecMessageId` is the actual branch anchor;
-   * for non-anchor codec-message-ids the array is empty even if the owning
-   * Run has siblings.
+   * Resolved sibling messages at the branch point anchored at
+   * `codecMessageId` — one TMessage per sibling Run, picking the message
+   * that occupies the anchor slot in each sibling. For an edit fork
+   * (anchor is the user prompt) this is each sibling's first message;
+   * for a regenerate fork (anchor is an assistant slot) this is each
+   * sibling's content for that slot.
+   *
+   * The returned list includes the currently-selected sibling, in the
+   * same order as the underlying sibling Runs (oldest first). Returns
+   * `[]` when `codecMessageId` is not a branch anchor.
    * @param codecMessageId - The codec-message-id of the bubble being rendered.
-   * @returns Ordered sibling Runs, or `[]` if `codecMessageId` is not a branch anchor.
    */
-  getMessageSiblings(codecMessageId: string): RunNode<TProjection>[];
+  getMessageSiblings(codecMessageId: string): TMessage[];
 
   /**
    * Index of the currently selected sibling Run for the branch point
@@ -893,13 +926,6 @@ export interface View<TEvent, TProjection, TMessage> {
 
   /** Get a Run by runId, or undefined if not found. */
   getRunNode(runId: string): RunNode<TProjection> | undefined;
-
-  /**
-   * Get the Run that owns a given codec-message-id, or undefined if the
-   * codec-message-id hasn't been observed. Useful when the UI holds a
-   * codec-message-id (e.g. from a previous render) and needs the owning Run.
-   */
-  getRunByCodecMessageId(codecMessageId: string): RunNode<TProjection> | undefined;
 
   // --- Write operations ---
 

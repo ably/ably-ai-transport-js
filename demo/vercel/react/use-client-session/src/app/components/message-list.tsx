@@ -2,19 +2,20 @@
 
 import { useRef, useEffect } from 'react';
 import type { UIMessage } from 'ai';
-import type { MessageNode } from '@ably/ai-transport';
+import type { MessageMetadata } from '@ably/ai-transport';
 import { MessageBubble } from './message-bubble';
 import { IntroCard } from './intro-card';
 
 interface SiblingApi {
-  hasSiblings: (codecMessageId: string) => boolean;
-  getSiblings: (codecMessageId: string) => UIMessage[];
-  getSelectedIndex: (codecMessageId: string) => number;
-  select: (codecMessageId: string, index: number) => void;
+  hasMessageSiblings: (codecMessageId: string) => boolean;
+  getMessageSiblings: (codecMessageId: string) => UIMessage[];
+  getSelectedMessageSiblingIndex: (codecMessageId: string) => number;
+  selectMessageSibling: (codecMessageId: string, index: number) => void;
+  getMessageMetadata: (codecMessageId: string) => MessageMetadata | undefined;
 }
 
 interface MessageListProps {
-  nodes: MessageNode<UIMessage>[];
+  messages: UIMessage[];
   hasOlder: boolean;
   loading: boolean;
   siblings: SiblingApi;
@@ -26,7 +27,7 @@ interface MessageListProps {
 }
 
 export function MessageList({
-  nodes,
+  messages,
   hasOlder,
   loading,
   siblings,
@@ -41,12 +42,12 @@ export function MessageList({
   const prevLastIdRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
-    const lastId = nodes.length > 0 ? nodes[nodes.length - 1].message.id : undefined;
+    const lastId = messages.length > 0 ? messages[messages.length - 1].id : undefined;
     if (lastId && lastId !== prevLastIdRef.current) {
       prevLastIdRef.current = lastId;
       endRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [nodes]);
+  }, [messages]);
 
   const handleScroll = () => {
     const el = scrollRef.current;
@@ -75,20 +76,32 @@ export function MessageList({
         </div>
       )}
       {loading && <div className="text-center text-xs text-zinc-600 animate-pulse">Loading history...</div>}
-      {nodes.map((node) => {
-        const { message, headers, codecMessageId } = node;
-        const hasSiblingsHere = siblings.hasSiblings(codecMessageId);
+      {messages.length === 0 && !loading && (
+        <p className="text-sm text-zinc-600 text-center mt-20">Send a message to start chatting.</p>
+      )}
+      {messages.map((message) => {
+        // Project the per-message metadata into primitives at this glue
+        // layer so the MessageBubble component stays free of SDK type
+        // dependencies. Use the msg-anchored branch-nav API so arrows
+        // attach to the correct bubble: the user prompt for edits, the
+        // assistant for regens.
+        const metadata = siblings.getMessageMetadata(message.id);
+        const hasSiblings = siblings.hasMessageSiblings(message.id);
         return (
           <MessageBubble
             key={message.id}
             message={message}
-            headers={headers}
-            hasSiblings={hasSiblingsHere}
-            siblingCount={hasSiblingsHere ? siblings.getSiblings(codecMessageId).length : undefined}
-            selectedIndex={hasSiblingsHere ? siblings.getSelectedIndex(codecMessageId) : undefined}
-            onSelectSibling={hasSiblingsHere ? (index) => siblings.select(codecMessageId, index) : undefined}
-            onRegenerate={message.role === 'assistant' ? () => onRegenerate(codecMessageId) : undefined}
-            onEdit={message.role === 'user' ? (text) => onEdit(codecMessageId, text) : undefined}
+            clientId={metadata?.clientId || undefined}
+            runId={metadata?.runId}
+            status={metadata?.status}
+            hasSiblings={hasSiblings}
+            siblingCount={hasSiblings ? siblings.getMessageSiblings(message.id).length : 0}
+            selectedIndex={hasSiblings ? siblings.getSelectedMessageSiblingIndex(message.id) : 0}
+            onSelectSibling={(index) => {
+              siblings.selectMessageSibling(message.id, index);
+            }}
+            onRegenerate={message.role === 'assistant' ? () => onRegenerate(message.id) : undefined}
+            onEdit={message.role === 'user' ? (text) => onEdit(message.id, text) : undefined}
             onToolApprove={onToolApprove}
             onToolDeny={onToolDeny}
           />

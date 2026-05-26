@@ -81,21 +81,20 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
     hasOlder,
     loading,
     loadOlder,
-    hasSiblingRuns,
     hasMessageSiblings,
     getMessageSiblings,
     getSelectedMessageSiblingIndex,
     selectMessageSibling,
-    getRunByCodecMessageId,
+    getMessageMetadata,
   } = useView({
     limit: historyLimit ?? 30,
   });
 
-  useClientTools(session, messages, addToolResult, getRunByCodecMessageId, clientId);
+  useClientTools(session, messages, addToolResult, getMessageMetadata, clientId);
 
   const ablyMessages = useAblyMessages();
 
-  const unfinishedSteps = useDemoProgress(messages, getRunByCodecMessageId, hasSiblingRuns, ablyMessages);
+  const unfinishedSteps = useDemoProgress(messages, getMessageMetadata, hasMessageSiblings, ablyMessages);
 
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -117,7 +116,7 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
             getMessageSiblings,
             getSelectedMessageSiblingIndex,
             selectMessageSibling,
-            getRunByCodecMessageId,
+            getMessageMetadata,
           }}
           onLoadOlder={loadOlder}
           onRegenerate={(messageId) => regenerate({ messageId })}

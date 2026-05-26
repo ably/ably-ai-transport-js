@@ -11,7 +11,7 @@
 import * as Ably from 'ably';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import type { ActiveRun, RunNode, SendOptions, View } from '../core/transport/types.js';
+import type { ActiveRun, MessageMetadata, RunNode, SendOptions, View } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
 import type { BaseSessionOption } from './internal/use-resolved-session.js';
 import { useResolvedSession } from './internal/use-resolved-session.js';
@@ -58,10 +58,13 @@ export interface ViewHandle<TEvent, TProjection, TMessage> {
   select: (runId: string, index: number) => void;
   /** Index of the currently selected sibling Run at a fork point. */
   getSelectedIndex: (runId: string) => number;
-  /** Get all sibling Runs at a fork point, ordered chronologically by startSerial. */
-  getSiblingRuns: (runId: string) => RunNode<TProjection>[];
-  /** Whether a Run has sibling alternatives (i.e., show navigation arrows). */
-  hasSiblingRuns: (runId: string) => boolean;
+  /**
+   * Per-message metadata derived from the owning Run. The natural
+   * per-message accessor for the rendering layer: returns primitives
+   * without leaking {@link RunNode} or the codec's projection generic
+   * into UI components. See {@link View.getMessageMetadata}.
+   */
+  getMessageMetadata: (msgId: string) => MessageMetadata | undefined;
   /**
    * Whether the message at `codecMessageId` is a branch-point anchor. Use this for
    * per-bubble UI decisions about rendering navigation arrows; see
@@ -69,18 +72,17 @@ export interface ViewHandle<TEvent, TProjection, TMessage> {
    */
   hasMessageSiblings: (codecMessageId: string) => boolean;
   /**
-   * Sibling Runs for the branch point anchored at `codecMessageId`. Empty when
-   * `codecMessageId` is not a branch anchor; see {@link View.getMessageSiblings}.
+   * Resolved sibling messages at the branch point anchored at
+   * `codecMessageId` — one TMessage per sibling. Use `.length` for the
+   * sibling count. See {@link View.getMessageSiblings}.
    */
-  getMessageSiblings: (codecMessageId: string) => RunNode<TProjection>[];
+  getMessageSiblings: (codecMessageId: string) => TMessage[];
   /** Index of the currently selected sibling for the branch point anchored at `codecMessageId`. */
   getSelectedMessageSiblingIndex: (codecMessageId: string) => number;
   /** Select a sibling at the branch point anchored at `codecMessageId`. */
   selectMessageSibling: (codecMessageId: string, index: number) => void;
   /** Get a Run by runId, or undefined if not found. */
   getRunNode: (runId: string) => RunNode<TProjection> | undefined;
-  /** Get the Run that owns a given codec-message-id, or undefined if not observed. */
-  getRunByCodecMessageId: (codecMessageId: string) => RunNode<TProjection> | undefined;
   /** Send one or more user messages on the channel and fire a POST. See {@link View.sendMessage}. */
   sendMessage: (messages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>;
   /** Send one or more TEvents on the channel and fire a POST. See {@link View.sendEvent}. */
@@ -191,9 +193,7 @@ export const useView = <TEvent, TProjection, TMessage>({
 
   const getSelectedIndex = useCallback((runId: string) => resolvedView?.getSelectedIndex(runId) ?? 0, [resolvedView]);
 
-  const getSiblingRuns = useCallback((runId: string) => resolvedView?.getSiblingRuns(runId) ?? [], [resolvedView]);
-
-  const hasSiblingRuns = useCallback((runId: string) => resolvedView?.hasSiblingRuns(runId) ?? false, [resolvedView]);
+  const getMessageMetadata = useCallback((msgId: string) => resolvedView?.getMessageMetadata(msgId), [resolvedView]);
 
   const hasMessageSiblings = useCallback(
     (codecMessageId: string) => resolvedView?.hasMessageSiblings(codecMessageId) ?? false,
@@ -218,11 +218,6 @@ export const useView = <TEvent, TProjection, TMessage>({
   );
 
   const getRunNode = useCallback((runId: string) => resolvedView?.getRunNode(runId), [resolvedView]);
-
-  const getRunByCodecMessageId = useCallback(
-    (codecMessageId: string) => resolvedView?.getRunByCodecMessageId(codecMessageId),
-    [resolvedView],
-  );
 
   // Write operation callbacks
   const sendMessage = useCallback(
@@ -270,14 +265,12 @@ export const useView = <TEvent, TProjection, TMessage>({
     loadOlder,
     select,
     getSelectedIndex,
-    getSiblingRuns,
-    hasSiblingRuns,
+    getMessageMetadata,
     hasMessageSiblings,
     getMessageSiblings,
     getSelectedMessageSiblingIndex,
     selectMessageSibling,
     getRunNode,
-    getRunByCodecMessageId,
     sendMessage,
     sendEvent,
     regenerate,

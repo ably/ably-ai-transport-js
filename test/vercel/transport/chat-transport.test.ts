@@ -109,10 +109,8 @@ const createMockSession = (): MockSession => {
     loadOlder: vi.fn(() => Promise.resolve()),
     select: vi.fn(),
     getSelectedIndex: vi.fn(() => 0),
-    getSiblingRuns: vi.fn(() => []),
-    hasSiblingRuns: vi.fn(() => false),
+    getMessageMetadata: vi.fn(),
     getRunNode: vi.fn(),
-    getRunByCodecMessageId: vi.fn(),
     sendMessage: vi.fn(),
     sendEvent: send,
     regenerate,
@@ -997,16 +995,12 @@ describe('createChatTransport', () => {
       };
 
       (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([user1, treeAssistant]);
-      // Continuation flow calls getRunByCodecMessageId(lastMessage.id) to find the runId.
-      (view.getRunByCodecMessageId as ReturnType<typeof vi.fn>).mockReturnValue({
+      // Continuation flow calls getMessageMetadata(lastMessage.id) to find the runId.
+      (view.getMessageMetadata as ReturnType<typeof vi.fn>).mockReturnValue({
+        codecMessageId: treeAssistant.id,
         runId: 'run-a1',
-        parentRunId: undefined,
-        forkOf: undefined,
-        status: 'active',
-        projection: undefined,
-        startSerial: undefined,
-        endSerial: undefined,
-        headers: {},
+        clientId: '',
+        status: 'streaming',
       });
 
       const chat = createChatTransport(session);
@@ -1063,15 +1057,11 @@ describe('createChatTransport', () => {
       };
 
       (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([user1, treeAssistant]);
-      (view.getRunByCodecMessageId as ReturnType<typeof vi.fn>).mockReturnValue({
+      (view.getMessageMetadata as ReturnType<typeof vi.fn>).mockReturnValue({
+        codecMessageId: treeAssistant.id,
         runId: 'run-a1',
-        parentRunId: undefined,
-        forkOf: undefined,
-        status: 'active',
-        projection: undefined,
-        startSerial: undefined,
-        endSerial: undefined,
-        headers: {},
+        clientId: '',
+        status: 'streaming',
       });
 
       const chat = createChatTransport(session);

@@ -18,7 +18,7 @@
 import { useMemo } from 'react';
 import type * as Ably from 'ably';
 import type { DynamicToolUIPart, UIMessage } from 'ai';
-import { EVENT_CANCEL, type MessageNode } from '@ably/ai-transport';
+import { EVENT_CANCEL } from '@ably/ai-transport';
 
 export type DemoStepId =
   | 'server-weather'
@@ -94,9 +94,12 @@ const ALL_STEPS: DemoStep[] = [
   },
 ];
 
+import type { MessageMetadata } from '@ably/ai-transport';
+
 export function useDemoProgress(
-  nodes: MessageNode<UIMessage>[],
-  hasSiblings: (codecMessageId: string) => boolean,
+  messages: UIMessage[],
+  hasMessageSiblings: (codecMessageId: string) => boolean,
+  getMessageMetadata: (codecMessageId: string) => MessageMetadata | undefined,
   ablyMessages: Ably.InboundMessage[],
 ): DemoStep[] {
   return useMemo(() => {
@@ -106,13 +109,13 @@ export function useDemoProgress(
       completed.add('cancel');
     }
 
-    for (let i = 0; i < nodes.length; i++) {
-      if (nodes[i].message.role !== 'user') continue;
+    for (let i = 0; i < messages.length; i++) {
+      if (messages[i].role !== 'user') continue;
 
       const turnTools = new Set<string>();
       const turnOutputs = new Set<string>();
-      for (let j = i + 1; j < nodes.length; j++) {
-        const m = nodes[j].message;
+      for (let j = i + 1; j < messages.length; j++) {
+        const m = messages[j];
         if (m.role === 'user') break;
         if (m.role !== 'assistant') continue;
         for (const part of m.parts) {
@@ -135,18 +138,18 @@ export function useDemoProgress(
     }
 
     const turnClientIds = new Set<string>();
-    for (const n of nodes) {
-      const cid = n.headers['x-ably-run-client-id'];
-      if (cid) turnClientIds.add(cid);
+    for (const m of messages) {
+      const meta = getMessageMetadata(m.id);
+      if (meta?.clientId) turnClientIds.add(meta.clientId);
     }
     if (turnClientIds.size > 1) completed.add('multi-tab');
 
-    for (const n of nodes) {
-      if (!hasSiblings(n.codecMessageId)) continue;
-      if (n.message.role === 'assistant') completed.add('regenerate');
-      if (n.message.role === 'user') completed.add('edit');
+    for (const m of messages) {
+      if (!hasMessageSiblings(m.id)) continue;
+      if (m.role === 'assistant') completed.add('regenerate');
+      if (m.role === 'user') completed.add('edit');
     }
 
     return ALL_STEPS.filter((s) => !completed.has(s.id));
-  }, [nodes, hasSiblings, ablyMessages]);
+  }, [messages, hasMessageSiblings, getMessageMetadata, ablyMessages]);
 }

@@ -2,15 +2,17 @@
 
 import { useState } from 'react';
 import type { UIMessage, DynamicToolUIPart } from 'ai';
-import type { RunNode } from '@ably/ai-transport';
-import type { VercelProjection } from '@ably/ai-transport/vercel';
 import { ToolInvocation } from './tool-invocation';
 import { clientColor } from '../lib/client-color';
 
 interface MessageBubbleProps {
   message: UIMessage;
-  owningRun: RunNode<VercelProjection> | undefined;
+  // Per-message metadata derived from the View at the list-glue layer
+  // (see MessageList) and passed as primitives so the bubble stays a
+  // pure renderer with no SDK type dependencies.
   clientId: string | undefined;
+  runId: string | undefined;
+  status: 'streaming' | 'finished' | undefined;
   hasSiblings?: boolean;
   siblingCount?: number;
   selectedIndex?: number;
@@ -166,8 +168,9 @@ function EditForm({
 
 export function MessageBubble({
   message,
-  owningRun,
   clientId,
+  runId,
+  status,
   hasSiblings,
   siblingCount,
   selectedIndex,
@@ -181,8 +184,6 @@ export function MessageBubble({
   const [isEditing, setIsEditing] = useState(false);
 
   const role = message.role;
-  const runId = owningRun?.runId;
-  const status = owningRun?.status === 'active' ? 'streaming' : 'finished';
   const colors = clientId ? clientColor(clientId) : undefined;
 
   const messageText = message.parts
@@ -256,8 +257,8 @@ export function MessageBubble({
                 </button>
               )}
 
-              {/* Debug badges */}
-              {owningRun && (
+              {/* Debug badges (only when we know which Run the message belongs to). */}
+              {runId && (
                 <>
                   <Badge
                     label="role"
@@ -271,14 +272,12 @@ export function MessageBubble({
                       color={`bg-zinc-900 ${colors?.text ?? 'text-zinc-500'}`}
                     />
                   )}
-                  {runId && (
-                    <Badge
-                      label="run"
-                      value={runId.slice(0, 8)}
-                      color="bg-zinc-900 text-zinc-500"
-                    />
-                  )}
-                  <StatusBadge status={status} />
+                  <Badge
+                    label="run"
+                    value={runId.slice(0, 8)}
+                    color="bg-zinc-900 text-zinc-500"
+                  />
+                  {status && <StatusBadge status={status} />}
                 </>
               )}
             </div>

@@ -31,7 +31,17 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
   }, []);
 
   const view = useView({ limit: historyLimit ?? 30 });
-  const { nodes, hasOlder, loading, loadOlder, hasSiblings, getSiblings, getSelectedIndex, select } = view;
+  const {
+    messages,
+    hasOlder,
+    loading,
+    loadOlder,
+    hasMessageSiblings,
+    getMessageSiblings,
+    getSelectedMessageSiblingIndex,
+    selectMessageSibling,
+    getMessageMetadata,
+  } = view;
 
   useClientTools(view, clientId);
 
@@ -69,7 +79,7 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
 
   const ablyMessages = useAblyMessages();
 
-  const unfinishedSteps = useDemoProgress(nodes, hasSiblings, ablyMessages);
+  const unfinishedSteps = useDemoProgress(messages, hasMessageSiblings, getMessageMetadata, ablyMessages);
 
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -80,8 +90,7 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
 
   const handleToolApprove = useCallback(
     (codecMessageId: string, toolCallId: string) => {
-      const node = view.getNode(codecMessageId);
-      const runId = node?.headers['x-ably-run-id'];
+      const runId = view.getMessageMetadata(codecMessageId)?.runId;
       if (!runId) return;
       void view.sendEvent([{ type: 'tool-approval-response', toolCallId, approved: true }], { runId });
     },
@@ -90,8 +99,7 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
 
   const handleToolDeny = useCallback(
     (codecMessageId: string, toolCallId: string) => {
-      const node = view.getNode(codecMessageId);
-      const runId = node?.headers['x-ably-run-id'];
+      const runId = view.getMessageMetadata(codecMessageId)?.runId;
       if (!runId) return;
       void view.sendEvent([{ type: 'tool-approval-response', toolCallId, approved: false, reason: 'User denied' }], {
         runId,
@@ -100,17 +108,21 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
     [view],
   );
 
-  const messages = useMemo(() => nodes.map((n) => n.message), [nodes]);
-
   return (
     <div className="flex h-dvh">
       <div className="flex flex-1 flex-col">
         <Header clientId={clientId} />
         <MessageList
-          nodes={nodes}
+          messages={messages}
           hasOlder={hasOlder}
           loading={loading}
-          siblings={{ hasSiblings, getSiblings, getSelectedIndex, select }}
+          siblings={{
+            hasMessageSiblings,
+            getMessageSiblings,
+            getSelectedMessageSiblingIndex,
+            selectMessageSibling,
+            getMessageMetadata,
+          }}
           onLoadOlder={() => void loadOlder()}
           onRegenerate={(codecMessageId) => void view.regenerate(codecMessageId)}
           onEdit={(codecMessageId, text) => void view.edit(codecMessageId, [userMessageEvent(text)])}

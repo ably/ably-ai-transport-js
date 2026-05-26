@@ -14,7 +14,6 @@ import * as Ably from 'ably';
 
 import {
   EVENT_CANCEL,
-  EVENT_ERROR,
   HEADER_CANCEL_ALL,
   HEADER_CANCEL_CLIENT_ID,
   HEADER_CANCEL_INVOCATION_ID,
@@ -1059,23 +1058,11 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
                     ErrorCode.PromptNotFound,
                     504,
                   );
-            // Best-effort publish of an error event so the client can see it.
-            try {
-              await channel.publish({
-                name: EVENT_ERROR,
-                extras: {
-                  headers: {
-                    [HEADER_RUN_ID]: runId,
-                    [HEADER_INVOCATION_ID]: invocationId,
-                  },
-                },
-                data: { code: errInfo.code, statusCode: errInfo.statusCode, message: errInfo.message },
-              });
-            } catch {
-              // swallow — best-effort
-            }
-            // Tear down the registration so buffered cancels for this run
-            // don't leak — they're best-effort against an aborted run.
+            // The rejection bubbles up to the developer's HTTP handler,
+            // which surfaces the failure as a non-2xx response — that is
+            // the signal the client sees. No channel publish: an
+            // `ai-run-end` without a preceding `ai-run-start` would break
+            // the lifecycle invariant for other channel observers.
             bufferedCancels.delete(runId);
             registeredRuns.delete(runId);
             logger?.error('Run.start(); prompt lookup failed', { runId, invocationId });

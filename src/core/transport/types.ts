@@ -91,7 +91,9 @@ export interface AgentSessionOptions<TEvent, TProjection, TMessage> {
   /**
    * How long `Run.start()` will wait for the user-prompt message tagged with
    * the run's `invocationId` to arrive on the channel (rewind + live wait)
-   * before publishing an `ai-error` with `PromptNotFound` and rejecting.
+   * before rejecting with `PromptNotFound`. The rejection bubbles up to the
+   * developer's HTTP handler, which should surface it as a non-2xx response
+   * so the client's pending send fails.
    * Default: 30000 (30 seconds).
    */
   promptLookupTimeoutMs?: number;

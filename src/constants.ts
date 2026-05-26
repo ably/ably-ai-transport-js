@@ -103,6 +103,16 @@ export const HEADER_RUN_REASON = 'x-ably-run-reason';
 export const HEADER_RUN_CONTINUE = 'x-ably-run-continue';
 
 // ---------------------------------------------------------------------------
+// Run-end error headers (set on `ai-run-end` when `x-ably-run-reason: error`)
+// ---------------------------------------------------------------------------
+
+/** Header: numeric error code accompanying an `ai-run-end` with reason `error`. */
+export const HEADER_ERROR_CODE = 'x-ably-error-code';
+
+/** Header: human-readable error message accompanying an `ai-run-end` with reason `error`. */
+export const HEADER_ERROR_MESSAGE = 'x-ably-error-message';
+
+// ---------------------------------------------------------------------------
 // Message / event names
 // ---------------------------------------------------------------------------
 
@@ -117,9 +127,6 @@ export const EVENT_RUN_END = 'ai-run-end';
 
 /** Message name: transport-level abort signal (stream cancelled). */
 export const EVENT_ABORT = 'ai-abort';
-
-/** Message name: transport-level error signal. */
-export const EVENT_ERROR = 'ai-error';
 
 // ---------------------------------------------------------------------------
 // Domain header prefix (used by codec implementations)

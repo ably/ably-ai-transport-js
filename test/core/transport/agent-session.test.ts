@@ -1680,9 +1680,12 @@ describe('AgentSession prompt lookup', () => {
     });
 
     await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.PromptNotFound);
-    // The agent should have published an error event
-    const errMsg = channel.publishCalls.find((m) => m.name === 'ai-error');
-    expect(errMsg).toBeDefined();
+    // The failure surfaces purely as a `Run.start()` rejection; the agent
+    // must not publish a phantom `ai-run-end` (no `ai-run-start` was ever
+    // published, and `run-end` without `run-start` would break the
+    // lifecycle invariant for other channel observers).
+    expect(channel.publishCalls.find((m) => m.name === 'ai-run-end')).toBeUndefined();
+    expect(channel.publishCalls.find((m) => m.name === 'ai-run-start')).toBeUndefined();
     session.close();
   });
 });

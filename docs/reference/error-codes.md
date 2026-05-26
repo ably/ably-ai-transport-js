@@ -41,15 +41,15 @@ session.on('error', (error) => {
 
 Errors reach you through different channels depending on context:
 
-| Context                                                                             | Delivery mechanism                                                                |
-| ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| Invalid argument to a public method                                                 | Thrown synchronously                                                              |
-| HTTP POST failure (send/regenerate/edit)                                            | Emitted via `session.on('error')` and the run's stream is errored                 |
-| Channel continuity loss on the client (FAILED, SUSPENDED, DETACHED, resumed: false) | Emitted via `session.on('error')` and all active run streams are errored          |
-| Channel continuity loss on the server (FAILED, SUSPENDED, DETACHED, resumed: false) | `onError` callback on `AgentSessionOptions` (in-flight runs are not auto-aborted) |
-| Channel subscription error                                                          | Emitted via `session.on('error')`                                                 |
-| Server-side run error                                                               | `onError` callback on `RunRuntime`                                                |
-| Session-level error (not scoped to a run)                                           | `onError` callback on `AgentSessionOptions`                                       |
+| Context                                                                             | Delivery mechanism                                                                  |
+| ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Invalid argument to a public method                                                 | Thrown synchronously                                                                |
+| HTTP POST failure (send/regenerate/edit)                                            | Emitted via `session.on('error')` and the run's stream is errored                   |
+| Channel continuity loss on the client (FAILED, SUSPENDED, DETACHED, resumed: false) | Emitted via `session.on('error')` and all active run streams are errored            |
+| Channel continuity loss on the server (FAILED, SUSPENDED, DETACHED, resumed: false) | `onError` callback on `AgentSessionOptions` (in-flight runs are not auto-cancelled) |
+| Channel subscription error                                                          | Emitted via `session.on('error')`                                                   |
+| Server-side run error                                                               | `onError` callback on `RunRuntime`                                                  |
+| Session-level error (not scoped to a run)                                           | `onError` callback on `AgentSessionOptions`                                         |
 
 ## Error message format
 

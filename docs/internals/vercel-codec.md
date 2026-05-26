@@ -35,9 +35,9 @@ Each `UIMessageChunk` type maps to exactly one encoder core operation:
 
 If a message has no encodable parts, a single `text` message with empty data is published as a placeholder.
 
-### Abort handling
+### Cancel handling
 
-On `abort` chunks, the encoder aborts all in-progress streams (via `abortAllStreams()`), then publishes a discrete `abort` event with `x-ably-status: aborted`. The `_aborted` flag prevents double-abort.
+On `abort` chunks (the AI SDK chunk type), the encoder cancels all in-progress streams (via `cancelAllStreams()`), then publishes a discrete `abort` event with `x-ably-status: cancelled`. The wire `name` mirrors the AI SDK chunk type so wire traces stay consistent for AI-SDK-fluent consumers, while the status header uses the transport's canonical `cancelled` value. The `_cancelled` flag prevents double-cancel.
 
 ## Decoder
 
@@ -85,21 +85,21 @@ The accumulator consumes `DecoderOutput[]` and groups streaming events into `UIM
 Each active message tracks:
 
 - **textStreams** / **reasoningStreams** - `DeltaStreamTracker` instances that map stream IDs to part indices
-- **streamStatus** - per-stream status (`streaming` / `finished` / `aborted`)
+- **streamStatus** - per-stream status (`streaming` / `finished` / `cancelled`)
 
 ### Event processing
 
-| Event type                       | Accumulator action                                       |
-| -------------------------------- | -------------------------------------------------------- |
-| `start`                          | Create or locate message, set `messageId` and `metadata` |
-| `start-step`                     | Push `step-start` part                                   |
-| `text-start` / `reasoning-start` | Push empty text/reasoning part, register stream          |
-| `text-delta` / `reasoning-delta` | Append to registered part's text                         |
-| `text-end` / `reasoning-end`     | Mark stream finished                                     |
-| `finish-step`                    | Reset text/reasoning stream trackers for next step       |
-| `finish`                         | Set final metadata, remove from active messages          |
-| `abort`                          | Mark all streaming parts as aborted, remove from active  |
-| `message` (complete)             | Push directly into message list                          |
+| Event type                       | Accumulator action                                        |
+| -------------------------------- | --------------------------------------------------------- |
+| `start`                          | Create or locate message, set `messageId` and `metadata`  |
+| `start-step`                     | Push `step-start` part                                    |
+| `text-start` / `reasoning-start` | Push empty text/reasoning part, register stream           |
+| `text-delta` / `reasoning-delta` | Append to registered part's text                          |
+| `text-end` / `reasoning-end`     | Mark stream finished                                      |
+| `finish-step`                    | Reset text/reasoning stream trackers for next step        |
+| `finish`                         | Set final metadata, remove from active messages           |
+| `abort`                          | Mark all streaming parts as cancelled, remove from active |
+| `message` (complete)             | Push directly into message list                           |
 
 ### Accessors
 

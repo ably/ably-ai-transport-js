@@ -27,7 +27,7 @@ Inside `Run.start()`:
 - Messages may arrive before `Run.start()` runs (rewind replay on attach). The session buffers user-prompt Ably messages by invocation-id (`Map<string, InboundMessage[]>`) so a later `_registerPromptListener` call drains them on registration. The listener stays registered after the drain to also receive live arrivals until the lookup completes.
 - The buffer is bounded by `AgentSessionOptions.promptBufferLimit` (default 200) — counted by distinct invocation-id entries, not by individual messages. When the limit is exceeded the oldest invocation entry (and all its buffered messages) is FIFO-evicted and a warn is logged with the evicted invocation-id and the limit. The client whose prompt was evicted will fail its lookup with `PromptNotFound`, so the warn is the only operator-visible signal that capacity was the cause.
 - On partial collection at timeout the lookup rejects with `PromptNotFound` and an error message including the count (e.g. `"received 1 of 2"`); a decode failure mid-collection rejects the entire lookup, wrapping the decode error as `cause`. In both cases `Run.start()` rejects without publishing `ai-run-start` **and without publishing any lifecycle event on the channel** — a phantom `ai-run-end` would violate the `run-start → run-end` lifecycle invariant for other channel observers who never saw a start. The developer's HTTP handler surfaces the failure as a non-2xx response, which the client's `send()` translates into a rejection via the HTTP-error path.
-- After a lookup resolves successfully the invocation-id is recorded in a bounded FIFO set (`_completedLookupInvocationIds`). A subsequent user-prompt arrival for an invocation in that set is treated as an over-arrival (client published more than `userMessageCount`); the message is buffered as normal and the agent logs a warn at `over-arrival user-prompt after lookup completed`. The run is not aborted.
+- After a lookup resolves successfully the invocation-id is recorded in a bounded FIFO set (`_completedLookupInvocationIds`). A subsequent user-prompt arrival for an invocation in that set is treated as an over-arrival (client published more than `userMessageCount`); the message is buffered as normal and the agent logs a warn at `over-arrival user-prompt after lookup completed`. The run is not cancelled.
 
 ## Run lifecycle
 
@@ -53,9 +53,9 @@ sequenceDiagram
 
 ### createRun
 
-Synchronous - no channel activity. Creates a `Run` object and registers it for cancel routing immediately, so early cancels (arriving before `start()`) fire the abort signal.
+Synchronous - no channel activity. Creates a `Run` object and registers it for cancel routing immediately, so early cancels (arriving before `start()`) fire the run's `AbortSignal`.
 
-Each run gets its own `AbortController`. If `opts.signal` is provided (typically `req.signal` from the HTTP request), `AbortSignal.any()` composes it with the controller's signal into a single composite signal. The `abortSignal` property exposes this composite signal so the server app can pass it to LLM calls. Either source - an Ably cancel message or the external signal - triggers the same downstream abort.
+Each run gets its own `AbortController`. If `opts.signal` is provided (typically `req.signal` from the HTTP request), `AbortSignal.any()` composes it with the controller's signal into a single composite signal. The `abortSignal` property exposes this composite signal so the server app can pass it to LLM calls. Either source - an Ably cancel message or the external signal - triggers the same downstream cancellation.
 
 ### start
 
@@ -75,7 +75,7 @@ Returns the effective codec-message-ids of all published messages.
 
 Pipes a `ReadableStream<TEvent>` through the codec encoder to the channel via [pipeStream](transport-components.md#pipestream). The stream carries the assistant's response - text deltas, reasoning, lifecycle events.
 
-Headers are built with `role: 'assistant'` and the run's branching metadata (parent, forkOf). The abort signal from the RunManager is passed to pipeStream, so cancel signals propagate through to stream termination.
+Headers are built with `role: 'assistant'` and the run's branching metadata (parent, forkOf). The `AbortSignal` from the RunManager is passed to pipeStream, so cancel signals propagate through to stream termination.
 
 Returns `{ reason }` - `'complete'`, `'cancelled'`, or `'error'`. Does **not** call `end()` - the caller must do that after `pipe()` returns.
 
@@ -89,7 +89,7 @@ The agent session handles cancel messages directly - no separate cancel manager.
 
 Key behaviors:
 
-- Runs are registered for cancel routing on `createRun()`, before `start()`. Early cancels fire the abort signal.
+- Runs are registered for cancel routing on `createRun()`, before `start()`. Early cancels fire the run's `AbortSignal`.
 - The `onCancel` hook (per-run) can return `false` to reject a cancel request.
 - A throwing `onCancel` handler doesn't prevent other matched runs from being cancelled - each is isolated.
 - Cancel resolution uses the sender's `clientId` from the Ably message for `own` filter matching.
@@ -98,11 +98,11 @@ Key behaviors:
 
 The agent session monitors the channel for continuity loss after the initial attach. Continuity is lost when the channel enters FAILED, SUSPENDED, or DETACHED, or re-attaches with `resumed: false`. On loss, the session invokes the session-level `onError` callback with `ChannelContinuityLost` (104006).
 
-Unlike the [client session's handling](client-session.md#stream-delivery-guarantee), the agent does not abort in-flight runs or fan out to per-run `onError`. The agent only consumes cancel messages from the channel, so losing one is survivable; the signal is observability so developers can choose whether to terminate in-flight work themselves (e.g. by aborting their external signals). Per-run `onError` remains scoped to that run's own operations.
+Unlike the [client session's handling](client-session.md#stream-delivery-guarantee), the agent does not cancel in-flight runs or fan out to per-run `onError`. The agent only consumes cancel messages from the channel, so losing one is survivable; the signal is observability so developers can choose whether to terminate in-flight work themselves (e.g. by aborting their external signals). Per-run `onError` remains scoped to that run's own operations.
 
 ## Close
 
-`close()` unsubscribes from cancel messages, stops listening for channel state changes, aborts all active runs (via their AbortControllers), and clears the registration map. It is idempotent. After close, existing Run objects can still call `end()` (to publish run-end) but new runs cannot be created.
+`close()` unsubscribes from cancel messages, stops listening for channel state changes, cancels all active runs (via their `AbortController`s), and clears the registration map. It is idempotent. After close, existing Run objects can still call `end()` (to publish run-end) but new runs cannot be created.
 
 ## Error handling
 

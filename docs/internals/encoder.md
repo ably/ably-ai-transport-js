@@ -1,6 +1,6 @@
 # Encoder core
 
-The encoder core (`src/core/codec/encoder.ts`) translates domain events into Ably publish operations. It implements the [message append](glossary.md#message-actions-ably) lifecycle - creating, appending to, closing, and aborting streamed messages - and handles recovery when appends fail.
+The encoder core (`src/core/codec/encoder.ts`) translates domain events into Ably publish operations. It implements the [message append](glossary.md#message-actions-ably) lifecycle - creating, appending to, closing, and cancelling streamed messages - and handles recovery when appends fail.
 
 Domain codecs don't interact with Ably directly. They call encoder core methods (`startStream()`, `appendStream()`, `closeStream()`) and the core handles serialization, header merging, and error recovery.
 
@@ -47,21 +47,21 @@ Sends a final append with `x-ably-status: "finished"` and any closing headers (e
 
 The closing append carries the closing `data` payload (which is also accumulated for recovery) and repeats all persistent headers.
 
-### abortStream / abortAllStreams
+### cancelStream / cancelAllStreams
 
-Sends an append with `x-ably-status: "aborted"` and empty data. Marks the tracker as aborted so recovery uses the correct status. Then flushes all pending appends - both the prior content appends (already in-flight but unacknowledged) and the abort appends just queued. There is no need to flush before the abort: content appends are already on their way to Ably, and the serial-based ordering guarantees the abort append follows them. The single flush at the end waits for acknowledgement of everything in one pass.
+Sends an append with `x-ably-status: "cancelled"` and empty data. Marks the tracker as cancelled so recovery uses the correct status. Then flushes all pending appends - both the prior content appends (already in-flight but unacknowledged) and the cancel appends just queued. There is no need to flush before the cancel: content appends are already on their way to Ably, and the serial-based ordering guarantees the cancel append follows them. The single flush at the end waits for acknowledgement of everything in one pass.
 
-`abortAllStreams()` aborts every active stream - used when a run is [cancelled](transport-components.md#cancel-routing-agent-session).
+`cancelAllStreams()` cancels every active stream - used when a run is [cancelled](transport-components.md#cancel-routing-agent-session).
 
 ## Recovery mechanism
 
 Appends are fire-and-forget for performance - each token-level delta doesn't wait for the previous one to be acknowledged. But appends can fail (network issues, rate limits). The encoder handles this through batched flush and recovery.
 
-When `closeStream()` or `abortStream()` is called, `_flushPending()` awaits all collected append promises via `Promise.allSettled`. For any failed stream:
+When `closeStream()` or `cancelStream()` is called, `_flushPending()` awaits all collected append promises via `Promise.allSettled`. For any failed stream:
 
 1. Build a recovery message with the **full accumulated text** (not just the failed delta)
 2. Call `channel.updateMessage()` to replace the message content entirely
-3. Set the status to `finished` or `aborted` based on the tracker state
+3. Set the status to `finished` or `cancelled` based on the tracker state
 
 This means: even if intermediate appends are lost, the final message content is correct. The [decoder](decoder.md#known-serial-prefix-match) handles the update action through its prefix-match logic - if the data is a prefix extension of what it's already accumulated, it extracts the delta. If not, it treats it as a [full replacement](decoder.md#known-serial-prefix-match).
 

@@ -59,7 +59,7 @@ await run.end(reason);
 session.close();
 ```
 
-The agent session also handles cancel routing - when a client publishes a cancel signal, the session matches it to the right run and fires the run's abort signal.
+The agent session also handles cancel routing - when a client publishes a cancel signal, the session matches it to the right run and fires the run's `AbortSignal`.
 
 ## Client session
 

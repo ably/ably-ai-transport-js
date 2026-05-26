@@ -34,7 +34,7 @@ async function handleSend(text: string) {
 }
 ```
 
-The cancel publishes a signal to the channel (see [Cancel](cancel.md)), the server aborts the current run, and the new run starts cleanly.
+The cancel publishes a signal to the channel (see [Cancel](cancel.md)), the server cancels the current run, and the new run starts cleanly.
 
 ## Send alongside (concurrent runs)
 

@@ -13,7 +13,7 @@ Transport headers are set by the generic transport layer. They handle run correl
 | Header                        | Values                                                   | Purpose                                                                                                                                                                                                         |
 | ----------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `x-ably-stream`               | `"true"` / `"false"`                                     | Whether this message uses the message append lifecycle                                                                                                                                                          |
-| `x-ably-status`               | `"streaming"` / `"finished"` / `"aborted"`               | Current lifecycle state of a streamed message                                                                                                                                                                   |
+| `x-ably-status`               | `"streaming"` / `"finished"` / `"cancelled"`             | Current lifecycle state of a streamed message                                                                                                                                                                   |
 | `x-ably-stream-id`            | string                                                   | Identity of the streamed message (correlates create → appends → close)                                                                                                                                          |
 | `x-ably-run-id`               | string                                                   | [Run](glossary.md#run-id-vs-message-id) correlation ID. Every message in a run carries this                                                                                                                     |
 | `x-ably-codec-message-id`     | string                                                   | [Message identity](#message-identity-x-ably-codec-message-id). One per domain message (user or assistant). Used for [optimistic reconciliation](#optimistic-reconciliation)                                     |
@@ -53,12 +53,11 @@ The `x-domain-` prefix is defined in `constants.ts` as `DOMAIN_HEADER_PREFIX`. C
 
 Lifecycle events are published by the transport layer to coordinate run state. They use Ably message `name` as the event type and carry metadata in headers. They have no `data` payload.
 
-| Event name     | Direction        | Required headers                                             | Optional headers                                                                                       | Purpose                                         |
-| -------------- | ---------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------- |
-| `ai-run-start` | Server → Channel | `x-ably-run-id`, `x-ably-run-client-id`                      | `x-ably-parent`, `x-ably-fork-of`, `x-ably-invocation-id`, `x-ably-run-continue`                       | Signal that a run has started                   |
-| `ai-run-end`   | Server → Channel | `x-ably-run-id`, `x-ably-run-client-id`, `x-ably-run-reason` | `x-ably-invocation-id`, `x-ably-error-code` + `x-ably-error-message` (when `x-ably-run-reason: error`) | Signal that a run has ended                     |
-| `ai-cancel`    | Client → Channel | one of the cancel filter headers                             | -                                                                                                      | Request cancellation of one or more runs        |
-| `ai-abort`     | Server → Channel | `x-ably-run-id`                                              | -                                                                                                      | Transport-level abort signal (stream cancelled) |
+| Event name     | Direction        | Required headers                                             | Optional headers                                                                                       | Purpose                                  |
+| -------------- | ---------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ | ---------------------------------------- |
+| `ai-run-start` | Server → Channel | `x-ably-run-id`, `x-ably-run-client-id`                      | `x-ably-parent`, `x-ably-fork-of`, `x-ably-invocation-id`, `x-ably-run-continue`                       | Signal that a run has started            |
+| `ai-run-end`   | Server → Channel | `x-ably-run-id`, `x-ably-run-client-id`, `x-ably-run-reason` | `x-ably-invocation-id`, `x-ably-error-code` + `x-ably-error-message` (when `x-ably-run-reason: error`) | Signal that a run has ended              |
+| `ai-cancel`    | Client → Channel | one of the cancel filter headers                             | -                                                                                                      | Request cancellation of one or more runs |
 
 ## Content messages
 
@@ -93,7 +92,7 @@ The lifecycle has three states:
 | ----------- | ------------------------------------ |
 | `streaming` | Stream is active, more data expected |
 | `finished`  | Stream completed normally            |
-| `aborted`   | Stream was cancelled                 |
+| `cancelled` | Stream was cancelled                 |
 
 A streamed message progresses through these Ably message actions:
 
@@ -105,10 +104,10 @@ A streamed message progresses through these Ably message actions:
 3. message.append    x-ably-status: "finished"       (close the stream)
 ```
 
-On abort:
+On cancel:
 
 ```
-3. message.append    x-ably-status: "aborted"        (abort the stream)
+3. message.append    x-ably-status: "cancelled"      (cancel the stream)
 ```
 
 The `data` field on the create is the initial content (often empty string). Each append carries a delta. The [decoder](decoder.md) accumulates deltas via string concatenation and uses [prefix-matching](decoder.md#known-serial-prefix-match) to detect whether an update is an incremental delta or a full replacement.
@@ -156,7 +155,7 @@ sequenceDiagram
 
     A->>Ch: publish ai-cancel
     Note over Ch,S: cancel listener matches run
-    S->>Ch: message.append (aborted)
+    S->>Ch: message.append (cancelled)
     S->>Ch: ai-run-end (cancelled)
 ```
 

@@ -36,13 +36,13 @@ A codec-message-id is **started** when any of these is seen on a message carryin
 A codec-message-id is **terminated** when:
 
 - `x-ably-discrete` is present on the create.
-- `x-ably-status` is `"finished"` or `"cancelled"` on any later action.
+- `x-ably-status` is `"complete"` or `"cancelled"` on any later action.
 
 Messages with `x-ably-amend` are skipped - amendments target an existing message rather than producing a new completion. Messages without `x-ably-codec-message-id` (run lifecycle events) are skipped too. `message.delete` is never a start signal: it clears the decoder's tracker and emits nothing.
 
 Requiring both halves matters when a streaming run spans a page boundary. The terminal arrives in the newer (first-fetched) page while the start sits in an older page. Counting the terminal alone would stop the fetch loop prematurely - the decoder would have no stream state to resolve, and the message wouldn't make it into the result.
 
-Accepting `message.update` and `message.append` as starts matters because Ably history can compact a live `create + append + ... + append{status:finished}` sequence into a single `message.update` with the accumulated data and terminal status - the decoder handles that via first-contact, and the counter has to recognise it or the loop pages past compacted runs without ever marking them complete.
+Accepting `message.update` and `message.append` as starts matters because Ably history can compact a live `create + append + ... + append{status:complete}` sequence into a single `message.update` with the accumulated data and terminal status - the decoder handles that via first-contact, and the counter has to recognise it or the loop pages past compacted runs without ever marking them complete.
 
 The counter is an approximation, not a proof: a truncated history where every start signal for a codec-message-id has rolled off but a terminal survives will never complete that codec-message-id in the counter. The loop keeps fetching until it exhausts Ably pages, then returns whatever the decoder actually produced - which for this pathological case is nothing for that codec-message-id.
 
@@ -114,7 +114,7 @@ Each `next()` call either slices more completed messages from the cached decode,
 
 Each completed domain message needs its canonical transport headers and Ably serial for the conversation tree. The implementation tracks:
 
-- **Per-run headers by codec-message-id** - the last-seen headers for each [`x-ably-codec-message-id`](wire-protocol.md#message-identity-x-ably-codec-message-id) within a run (closing appends override earlier headers, e.g. [status](wire-protocol.md#streamed-messages) changes from `"streaming"` to `"finished"`)
+- **Per-run headers by codec-message-id** - the last-seen headers for each [`x-ably-codec-message-id`](wire-protocol.md#message-identity-x-ably-codec-message-id) within a run (closing appends override earlier headers, e.g. [status](wire-protocol.md#streamed-messages) changes from `"streaming"` to `"complete"`)
 - **Discrete message headers** - captured when the decoder produces a `kind: 'message'` output
 - **Serials** - from the first Ably message for each codec-message-id
 

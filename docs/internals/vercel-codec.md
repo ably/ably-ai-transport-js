@@ -85,7 +85,7 @@ The accumulator consumes `DecoderOutput[]` and groups streaming events into `UIM
 Each active message tracks:
 
 - **textStreams** / **reasoningStreams** - `DeltaStreamTracker` instances that map stream IDs to part indices
-- **streamStatus** - per-stream status (`streaming` / `finished` / `cancelled`)
+- **streamStatus** - per-stream status (`streaming` / `complete` / `cancelled`)
 
 ### Event processing
 
@@ -95,7 +95,7 @@ Each active message tracks:
 | `start-step`                     | Push `step-start` part                                    |
 | `text-start` / `reasoning-start` | Push empty text/reasoning part, register stream           |
 | `text-delta` / `reasoning-delta` | Append to registered part's text                          |
-| `text-end` / `reasoning-end`     | Mark stream finished                                      |
+| `text-end` / `reasoning-end`     | Mark stream complete                                      |
 | `finish-step`                    | Reset text/reasoning stream trackers for next step        |
 | `finish`                         | Set final metadata, remove from active messages           |
 | `abort`                          | Mark all streaming parts as cancelled, remove from active |

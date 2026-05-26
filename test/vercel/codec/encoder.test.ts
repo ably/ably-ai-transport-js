@@ -30,8 +30,7 @@ const createMockWriter = (): MockWriter => {
     publishCalls: [],
     appendCalls: [],
     updateCalls: [],
-    // CAST: Tests construct a minimal Ably.PublishResult; full shape isn't needed.
-    nextPublishResult: { serials: ['serial-1'] } as Ably.PublishResult,
+    nextPublishResult: { serials: ['serial-1'] },
     // CAST: Tests construct a minimal Ably.UpdateDeleteResult; full shape isn't needed.
     nextAppendResult: {} as Ably.UpdateDeleteResult,
     publish: vi.fn(async (message: Ably.Message | Ably.Message[]) => {

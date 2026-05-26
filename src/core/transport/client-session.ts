@@ -1224,8 +1224,7 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
   // Spec: AIT-CT8, AIT-CT8c, AIT-CT8d
   on(event: 'error', handler: (error: Ably.ErrorInfo) => void): () => void {
     if (this._state === ClientSessionState.CLOSED) return noopUnsubscribe;
-    // CAST: the overload signature enforces the correct handler type.
-    const cb = handler as (arg: ClientSessionEventsMap[keyof ClientSessionEventsMap]) => void;
+    const cb = handler;
     this._emitter.on(event, cb);
     return () => {
       this._emitter.off(event, cb);

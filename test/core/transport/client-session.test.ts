@@ -100,7 +100,7 @@ const createMockFetch = (status = 200): MockFetch => {
   });
 
   return {
-    fn: fn as unknown as ReturnType<typeof vi.fn>,
+    fn: fn,
     calls,
     waitForCalls: async (n: number) => {
       while (calls.length < n) {
@@ -744,7 +744,7 @@ describe('ClientSession', () => {
         channelName: 'test-channel',
         codec: createMockCodec(),
         api: '/api/chat',
-        fetch: blockingFetch as unknown as typeof globalThis.fetch,
+        fetch: blockingFetch,
         runStartDeadlineMs: 0,
       });
       await s.connect();
@@ -766,7 +766,7 @@ describe('ClientSession', () => {
           current: 'attached',
           previous: 'attaching',
           resumed: false,
-        } as Ably.ChannelStateChange);
+        });
         fix.channel.state = state;
         await expect(fix.session.view.sendEvent({ type: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
           ErrorCode.ChannelNotReady,
@@ -779,7 +779,7 @@ describe('ClientSession', () => {
         current: 'attached',
         previous: 'attaching',
         resumed: false,
-      } as Ably.ChannelStateChange);
+      });
       fix.channel.state = 'attaching';
       const run = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
       expect(run.stream).toBeInstanceOf(ReadableStream);
@@ -1013,7 +1013,7 @@ describe('ClientSession', () => {
         codec: createMockCodec(),
         clientId: 'client-1',
         api: '/api/chat',
-        fetch: fetchFn as unknown as typeof globalThis.fetch,
+        fetch: fetchFn,
         runStartDeadlineMs: 0,
       });
       await s.connect();
@@ -1744,7 +1744,7 @@ describe('ClientSession', () => {
           current: 'attached',
           previous: 'attaching',
           resumed: false,
-        } as Ably.ChannelStateChange);
+        });
 
         const errors: Ably.ErrorInfo[] = [];
         fix.session.on('error', (e) => errors.push(e));
@@ -1752,7 +1752,7 @@ describe('ClientSession', () => {
           current: state,
           previous: 'attached',
           resumed: false,
-        } as Ably.ChannelStateChange);
+        });
         // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison -- compare against enum value
         expect(errors.some((e) => e.code === ErrorCode.ChannelContinuityLost)).toBe(true);
       },
@@ -1763,7 +1763,7 @@ describe('ClientSession', () => {
         current: 'attached',
         previous: 'attaching',
         resumed: false,
-      } as Ably.ChannelStateChange);
+      });
 
       const errors: Ably.ErrorInfo[] = [];
       fix.session.on('error', (e) => errors.push(e));
@@ -1771,7 +1771,7 @@ describe('ClientSession', () => {
         current: 'attached',
         previous: 'attaching',
         resumed: false,
-      } as Ably.ChannelStateChange);
+      });
       // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison -- compare against enum value
       expect(errors.some((e) => e.code === ErrorCode.ChannelContinuityLost)).toBe(true);
     });
@@ -1797,7 +1797,7 @@ describe('ClientSession', () => {
         current: 'attached',
         previous: 'attaching',
         resumed: false,
-      } as Ably.ChannelStateChange);
+      });
       expect(errors).toHaveLength(0);
       await s.close();
     });

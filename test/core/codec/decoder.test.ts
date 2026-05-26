@@ -406,12 +406,7 @@ describe('createDecoderCore', () => {
   describe('unknown action', () => {
     it('returns empty array', () => {
       const decoder = createDecoderCore(hooks);
-      expect(
-        decoder.decode(
-          // CAST: testing an action value outside the typed union.
-          withHeaders({ action: 'message.summary' as Ably.InboundMessage['action'] }, {}),
-        ),
-      ).toEqual([]);
+      expect(decoder.decode(withHeaders({ action: 'message.summary' }, {}))).toEqual([]);
     });
   });
 

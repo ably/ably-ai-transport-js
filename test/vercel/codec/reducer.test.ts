@@ -27,14 +27,10 @@ const meta = (serial: string, messageId?: string): ReducerMeta =>
  */
 const seedToolCall = (toolCallId: string, messageId: string): VercelProjection => {
   let state = init();
+  state = fold(state, { type: 'tool-input-start', toolCallId, toolName: 'echo', dynamic: true }, meta('s0', messageId));
   state = fold(
     state,
-    { type: 'tool-input-start', toolCallId, toolName: 'echo', dynamic: true } as VercelEvent,
-    meta('s0', messageId),
-  );
-  state = fold(
-    state,
-    { type: 'tool-input-available', toolCallId, toolName: 'echo', input: {}, dynamic: true } as VercelEvent,
+    { type: 'tool-input-available', toolCallId, toolName: 'echo', input: {}, dynamic: true },
     meta('s1', messageId),
   );
   return state;
@@ -147,7 +143,7 @@ describe('Vercel reducer', () => {
       // should be folded.
       state = fold(
         state,
-        { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'echo', dynamic: true } as VercelEvent,
+        { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'echo', dynamic: true },
         meta('s10', 'm-asst'),
       );
 
@@ -162,9 +158,9 @@ describe('Vercel reducer', () => {
       // text-delta has no conflict key — the reducer trusts upstream
       // ordering. Two distinct delta events accumulate.
       let state = init();
-      state = fold(state, { type: 'text-start', id: 't-1' } as VercelEvent, meta('s1', 'msg-1'));
-      state = fold(state, { type: 'text-delta', id: 't-1', delta: 'hello ' } as VercelEvent, meta('s2', 'msg-1'));
-      state = fold(state, { type: 'text-delta', id: 't-1', delta: 'world' } as VercelEvent, meta('s3', 'msg-1'));
+      state = fold(state, { type: 'text-start', id: 't-1' }, meta('s1', 'msg-1'));
+      state = fold(state, { type: 'text-delta', id: 't-1', delta: 'hello ' }, meta('s2', 'msg-1'));
+      state = fold(state, { type: 'text-delta', id: 't-1', delta: 'world' }, meta('s3', 'msg-1'));
       const part = state.messages.find((m) => m.id === 'msg-1')?.parts.find((p) => p.type === 'text');
       expect(part?.type === 'text' && part.text).toBe('hello world');
     });

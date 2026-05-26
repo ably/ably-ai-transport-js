@@ -138,7 +138,7 @@ const simulateInitialAttach = (ch: MockChannel): void => {
     current: 'attached',
     previous: 'attaching',
     resumed: false,
-  } as Ably.ChannelStateChange);
+  });
 };
 
 const simulateCancel = (channel: MockChannel, headers: Record<string, string>, clientId?: string): void => {
@@ -1305,7 +1305,7 @@ describe('AgentSession', () => {
         current: 'attached',
         previous: 'attached',
         resumed: false,
-      } as Ably.ChannelStateChange);
+      });
 
       expect(onError).toHaveBeenCalledWith(
         expect.toBeErrorInfo({ code: ErrorCode.ChannelContinuityLost, statusCode: 500 }),

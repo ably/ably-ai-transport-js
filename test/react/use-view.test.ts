@@ -5,7 +5,6 @@ import * as Ably from 'ably';
 import { createElement, type ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ClientSession } from '../../src/core/transport/types.js';
 import { ErrorCode } from '../../src/errors.js';
 import { ClientSessionContext } from '../../src/react/contexts/client-session-context.js';
 import { useView } from '../../src/react/use-view.js';
@@ -173,7 +172,7 @@ describe('useView', () => {
         ClientSessionContext.Provider,
         {
           value: {
-            nearest: { session: mock.session as ClientSession<unknown, unknown, unknown> },
+            nearest: { session: mock.session },
             providers: {},
           },
         },

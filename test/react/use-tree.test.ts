@@ -4,7 +4,6 @@ import { renderHook } from '@testing-library/react';
 import { createElement, type ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ClientSession } from '../../src/core/transport/types.js';
 import { ClientSessionContext } from '../../src/react/contexts/client-session-context.js';
 import { useTree } from '../../src/react/use-tree.js';
 import { createMockSession } from './helper/mock-session.js';
@@ -64,7 +63,7 @@ describe('useTree', () => {
         ClientSessionContext.Provider,
         {
           value: {
-            nearest: { session: mock.session as ClientSession<unknown, unknown, unknown> },
+            nearest: { session: mock.session },
             providers: {},
           },
         },

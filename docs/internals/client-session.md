@@ -50,7 +50,7 @@ The channel subscription handler (`_handleMessage`) processes every inbound Ably
 ### Run lifecycle events
 
 - **`ai-run-start`** - records the run's clientId, emits a `run` event
-- **`ai-run-end`** - closes the stream router entry, cleans up observer state and relay-detection state, emits a `run` event
+- **`ai-run-end`** - closes the stream router entry, cleans up observer state and relay-detection state, emits a `run` event. When `x-ably-run-reason: error`, the client first reifies an `Ably.ErrorInfo` from `x-ably-error-code` / `x-ably-error-message`, routes it to the active stream, and emits `error` on the session before the regular teardown. `statusCode` is derived from the code (`Math.floor(code / 100)` for codes in `10000–59999`, else `500`)
 
 ### Codec-decoded messages
 
@@ -120,11 +120,11 @@ After close, all methods that create runs throw `SessionClosed`. Event subscript
 
 ## Events
 
-| Event                    | Payload             | When                                                                                                                                      |
-| ------------------------ | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `update` (on view)       | (none)              | View state changed - call `view.flattenNodes()` for current state                                                                         |
-| `run` (on tree or view)  | `RunLifecycleEvent` | Run started or ended (includes runId, clientId, reason)                                                                                   |
-| `error`                  | `Ably.ErrorInfo`    | Non-fatal error (HTTP POST failure, channel continuity loss, subscription error). POST and channel failures also error active run streams |
-| `ably-message` (on tree) | (none)              | Raw Ably message added - subscribe via `tree.on('ably-message')`                                                                          |
+| Event                    | Payload             | When                                                                                                                                                                                                                    |
+| ------------------------ | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `update` (on view)       | (none)              | View state changed - call `view.flattenNodes()` for current state                                                                                                                                                       |
+| `run` (on tree or view)  | `RunLifecycleEvent` | Run started or ended (includes runId, clientId, reason)                                                                                                                                                                 |
+| `error`                  | `Ably.ErrorInfo`    | Non-fatal error (HTTP POST failure, channel continuity loss, subscription error, agent-reported mid-run failure via `ai-run-end` with `reason: error`). POST, channel, and agent failures also error active run streams |
+| `ably-message` (on tree) | (none)              | Raw Ably message added - subscribe via `tree.on('ably-message')`                                                                                                                                                        |
 
 See [Sessions concept](../concepts/sessions.md) for the public API perspective. See [Transport components](transport-components.md) for the sub-component internals. See [Message lifecycle](message-lifecycle.md) for the end-to-end message flow.

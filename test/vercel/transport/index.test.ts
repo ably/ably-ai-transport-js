@@ -94,7 +94,7 @@ describe('Vercel createClientSession', () => {
     const session = createClientSession({
       client: createMockClient(channel),
       channelName: 'test-channel',
-      fetch: mockFetch as unknown as typeof globalThis.fetch,
+      fetch: mockFetch,
     });
     await session.connect();
 

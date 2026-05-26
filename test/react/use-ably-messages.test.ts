@@ -4,7 +4,6 @@ import { act, renderHook } from '@testing-library/react';
 import { createElement, type ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 
-import type { ClientSession } from '../../src/core/transport/types.js';
 import { ClientSessionContext } from '../../src/react/contexts/client-session-context.js';
 import { useAblyMessages } from '../../src/react/use-ably-messages.js';
 import { createMockSession } from './helper/mock-session.js';
@@ -52,7 +51,7 @@ describe('useAblyMessages', () => {
         ClientSessionContext.Provider,
         {
           value: {
-            nearest: { session: mock.session as ClientSession<unknown, unknown, unknown> },
+            nearest: { session: mock.session },
             providers: {},
           },
         },

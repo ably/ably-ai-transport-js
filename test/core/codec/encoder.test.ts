@@ -30,7 +30,7 @@ const createMockWriter = (): MockWriter => {
     publishCalls: [],
     appendCalls: [],
     updateCalls: [],
-    nextPublishResult: { serials: ['serial-1'] } as Ably.PublishResult,
+    nextPublishResult: { serials: ['serial-1'] },
     nextAppendResult: {} as Ably.UpdateDeleteResult,
     nextUpdateResult: {} as Ably.UpdateDeleteResult,
     publish: vi.fn(async (message: Ably.Message | Ably.Message[]) => {
@@ -220,7 +220,7 @@ describe('createEncoderCore', () => {
     });
 
     it('throws when no serial returned', async () => {
-      writer.nextPublishResult = { serials: [] } as unknown as Ably.PublishResult;
+      writer.nextPublishResult = { serials: [] };
       const core = createEncoderCore(writer);
       await expect(core.startStream('s1', streamPayload({ name: 'text' }))).rejects.toBeErrorInfoWithCode(
         ErrorCode.BadRequest,
@@ -319,11 +319,11 @@ describe('createEncoderCore', () => {
     });
 
     it('only aborts the specified stream, not others', async () => {
-      writer.nextPublishResult = { serials: ['serial-1'] } as Ably.PublishResult;
+      writer.nextPublishResult = { serials: ['serial-1'] };
       const core = createEncoderCore(writer);
       await core.startStream('s1', streamPayload({ name: 'text' }));
 
-      writer.nextPublishResult = { serials: ['serial-2'] } as Ably.PublishResult;
+      writer.nextPublishResult = { serials: ['serial-2'] };
       await core.startStream('s2', streamPayload({ name: 'reasoning' }));
 
       await core.abortStream('s1');
@@ -348,11 +348,11 @@ describe('createEncoderCore', () => {
 
   describe('abortAllStreams', () => {
     it('sends aborted status for all active streams', async () => {
-      writer.nextPublishResult = { serials: ['serial-1'] } as Ably.PublishResult;
+      writer.nextPublishResult = { serials: ['serial-1'] };
       const core = createEncoderCore(writer);
       await core.startStream('s1', streamPayload({ name: 'text' }));
 
-      writer.nextPublishResult = { serials: ['serial-2'] } as Ably.PublishResult;
+      writer.nextPublishResult = { serials: ['serial-2'] };
       await core.startStream('s2', streamPayload({ name: 'reasoning' }));
 
       await core.abortAllStreams();
@@ -469,9 +469,9 @@ describe('createEncoderCore', () => {
       writer.nextAppendResult = async () => await Promise.reject(new Error('fail'));
 
       const core = createEncoderCore(writer);
-      writer.nextPublishResult = { serials: ['s1'] } as Ably.PublishResult;
+      writer.nextPublishResult = { serials: ['s1'] };
       await core.startStream('stream-1', streamPayload({ name: 'text' }));
-      writer.nextPublishResult = { serials: ['s2'] } as Ably.PublishResult;
+      writer.nextPublishResult = { serials: ['s2'] };
       await core.startStream('stream-2', streamPayload({ name: 'reasoning' }));
 
       core.appendStream('stream-1', 'text-data');

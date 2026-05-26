@@ -458,8 +458,6 @@ const _approvalTransition = (
   reason: string | undefined,
 ): AI.DynamicToolUIPart => {
   if (approved) {
-    // CAST: AI SDK's discriminated union per-state shape constraints; mint
-    // a fresh part with only fields valid for `approval-responded`.
     return {
       ...toolBase(part),
       state: 'approval-responded',
@@ -469,15 +467,13 @@ const _approvalTransition = (
         approved: true,
         ...(reason === undefined ? {} : { reason }),
       },
-    } as AI.DynamicToolUIPart;
+    };
   }
   return transitionToolPart(part, {
     type: 'tool-output-denied',
     toolCallId: part.toolCallId,
     ...(reason === undefined ? {} : { reason }),
-    // CAST: transitionToolPart accepts the wider chunk union; the
-    // minimal record below carries only the fields it reads.
-  } as Parameters<typeof transitionToolPart>[1]);
+  });
 };
 
 /**

@@ -31,7 +31,7 @@ class TestChat extends AbstractChat<AI.UIMessage> {
     super({
       ...options,
       state: {
-        status: 'ready' as AI.ChatStatus,
+        status: 'ready',
         error: undefined,
         messages,
         pushMessage: (msg: AI.UIMessage) => messages.push(msg),
@@ -237,8 +237,7 @@ const simulateServerRun = (run: MockRun): void => {
     input: { city: 'London' },
     dynamic: true,
   });
-  // CAST: data-custom is a valid UIMessageChunk variant; TS cannot narrow the string union from a literal.
-  run.enqueue({ type: 'data-custom', data: { value: 42 }, id: 'data-1' } as AI.UIMessageChunk);
+  run.enqueue({ type: 'data-custom', data: { value: 42 }, id: 'data-1' });
   run.enqueue({ type: 'finish-step' });
   run.enqueue({ type: 'finish', finishReason: 'tool-calls' });
   run.close();
@@ -645,13 +644,9 @@ describe('ChatTransport useChat integration — features work with the real stre
       expect(msgs[3]?.role).toBe('assistant');
 
       expect(msgs[1]?.id).toBe('assistant-a');
-      expect(getAssistantText(msgs[1] ?? ({ id: '', role: 'assistant', parts: [] } as AI.UIMessage))).toBe(
-        'Response A.',
-      );
+      expect(getAssistantText(msgs[1] ?? { id: '', role: 'assistant', parts: [] })).toBe('Response A.');
       expect(msgs[3]?.id).toBe('assistant-b');
-      expect(getAssistantText(msgs[3] ?? ({ id: '', role: 'assistant', parts: [] } as AI.UIMessage))).toBe(
-        'Response B.',
-      );
+      expect(getAssistantText(msgs[3] ?? { id: '', role: 'assistant', parts: [] })).toBe('Response B.');
 
       // onFinish fires twice with the correct messages
       expect(onFinish).toHaveBeenCalledTimes(2);
@@ -707,12 +702,8 @@ describe('ChatTransport useChat integration — features work with the real stre
         expect(msgs.map((m) => m.role)).toEqual(['user', 'user', 'assistant', 'assistant']);
 
         // Content correct for both responses.
-        expect(getAssistantText(msgs[2] ?? ({ id: '', role: 'assistant', parts: [] } as AI.UIMessage))).toBe(
-          'Response A.',
-        );
-        expect(getAssistantText(msgs[3] ?? ({ id: '', role: 'assistant', parts: [] } as AI.UIMessage))).toBe(
-          'Response B.',
-        );
+        expect(getAssistantText(msgs[2] ?? { id: '', role: 'assistant', parts: [] })).toBe('Response A.');
+        expect(getAssistantText(msgs[3] ?? { id: '', role: 'assistant', parts: [] })).toBe('Response B.');
 
         // onFinish still fires once — the activeResponse overwrite happens
         // before sendMessages, so our queue can't prevent it.

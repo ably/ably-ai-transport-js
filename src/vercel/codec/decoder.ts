@@ -429,8 +429,7 @@ const decodeDiscreteMessagePart = (input: MessagePayload): VercelEvent[] => {
     }
     default: {
       if (isDataEventName(input.name)) {
-        // CAST: data-* part type matches the DataUIPart shape.
-        part = stripUndefined({ type: input.name, id: r.str('id'), data: input.data }) as AI.UIMessage['parts'][number];
+        part = stripUndefined({ type: input.name, id: r.str('id'), data: input.data });
       }
       break;
     }

@@ -218,7 +218,7 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
-      fetch: noopFetch as typeof globalThis.fetch,
+      fetch: noopFetch,
       api: '/test',
       runStartDeadlineMs: 5000,
     });
@@ -295,7 +295,7 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
-      fetch: noopFetch as typeof globalThis.fetch,
+      fetch: noopFetch,
       api: '/test',
       runStartDeadlineMs: 5000,
     });
@@ -349,7 +349,7 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
-      fetch: noopFetch as typeof globalThis.fetch,
+      fetch: noopFetch,
       api: '/test',
       runStartDeadlineMs: 5000,
     });
@@ -412,7 +412,7 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
-      fetch: noopFetch as typeof globalThis.fetch,
+      fetch: noopFetch,
       api: '/test',
       runStartDeadlineMs: 5000,
     });
@@ -485,7 +485,7 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: historyClient.auth.clientId,
-      fetch: noopFetch as typeof globalThis.fetch,
+      fetch: noopFetch,
       api: '/test',
       runStartDeadlineMs: 0,
     });
@@ -519,7 +519,7 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
-      fetch: noopFetch as typeof globalThis.fetch,
+      fetch: noopFetch,
       api: '/test',
       runStartDeadlineMs: 5000,
     });
@@ -577,7 +577,7 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
-      fetch: noopFetch as typeof globalThis.fetch,
+      fetch: noopFetch,
       api: '/test',
       runStartDeadlineMs: 5000,
     });
@@ -645,7 +645,7 @@ describe('ClientSession integration', () => {
       codec: UIMessageCodec,
       runStartDeadlineMs: 0,
       clientId: clientClient.auth.clientId,
-      fetch: noopFetch as typeof globalThis.fetch,
+      fetch: noopFetch,
       api: '/test',
     });
     await clientSession.connect();
@@ -697,7 +697,7 @@ describe('ClientSession integration', () => {
       codec: UIMessageCodec,
       runStartDeadlineMs: 0,
       clientId: observerClient.auth.clientId,
-      fetch: noopFetch as typeof globalThis.fetch,
+      fetch: noopFetch,
       api: '/test',
     });
     await clientSession.connect();
@@ -780,7 +780,7 @@ describe('ClientSession integration', () => {
       codec: UIMessageCodec,
       runStartDeadlineMs: 0,
       clientId: historyClient.auth.clientId,
-      fetch: noopFetch as typeof globalThis.fetch,
+      fetch: noopFetch,
       api: '/test',
     });
     await clientSession.connect();
@@ -812,7 +812,7 @@ describe('ClientSession integration', () => {
       codec: UIMessageCodec,
       runStartDeadlineMs: 500,
       clientId: clientClient.auth.clientId,
-      fetch: noopFetch as typeof globalThis.fetch,
+      fetch: noopFetch,
       api: '/test',
     });
     await clientSession.connect();
@@ -863,7 +863,7 @@ describe('ClientSession integration', () => {
       codec: UIMessageCodec,
       runStartDeadlineMs: 0,
       clientId: clientClient.auth.clientId,
-      fetch: noopFetch as typeof globalThis.fetch,
+      fetch: noopFetch,
       api: '/test',
     });
     await clientSession.connect();
@@ -985,7 +985,7 @@ describe('ClientSession integration', () => {
       codec: UIMessageCodec,
       // No `runStartDeadlineMs` override — the default (30s) wait is the SUT.
       clientId: clientClient.auth.clientId,
-      fetch: noopFetch as typeof globalThis.fetch,
+      fetch: noopFetch,
       api: '/test',
     });
     await clientSession.connect();

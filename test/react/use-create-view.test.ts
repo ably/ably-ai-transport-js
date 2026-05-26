@@ -54,7 +54,7 @@ describe('useCreateView', () => {
     const mock2 = createMockSession(['second']);
 
     const { result, rerender } = renderHook(({ session }) => useCreateView({ session }), {
-      initialProps: { session: mock1.session as ClientSession<unknown, unknown, string> | undefined },
+      initialProps: { session: mock1.session },
     });
 
     expect(result.current.messages).toEqual(['first']);
@@ -71,8 +71,11 @@ describe('useCreateView', () => {
   it('closes the view and returns empty handle when session changes to undefined', () => {
     const mock = createMockSession(['hello']);
 
+    const initialProps: { session: ClientSession<unknown, unknown, string> | undefined } = {
+      session: mock.session,
+    };
     const { result, rerender } = renderHook(({ session }) => useCreateView({ session }), {
-      initialProps: { session: mock.session as ClientSession<unknown, unknown, string> | undefined },
+      initialProps,
     });
 
     expect(result.current.messages).toEqual(['hello']);
@@ -113,7 +116,7 @@ describe('useCreateView', () => {
         ClientSessionContext.Provider,
         {
           value: {
-            nearest: { session: mock.session as ClientSession<unknown, unknown, unknown> },
+            nearest: { session: mock.session },
             providers: {},
           },
         },

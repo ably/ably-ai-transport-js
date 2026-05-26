@@ -59,6 +59,15 @@ When the client session receives messages from the channel, it routes them diffe
 
 Both paths use the same accumulation logic. The only difference is that own runs additionally expose a `ReadableStream` for framework integration. See [Message lifecycle](message-lifecycle.md#own-runs-vs-observer-runs) for the full routing picture.
 
+### Client identity tiers
+
+The protocol attributes each event to a client at two concentric scopes:
+
+- **`runClientId`** (`x-ably-run-client-id`) — the client that **owns** the run, the one whose initiating `ai-input` started it. Constant for the lifetime of the run, even when later inputs come from other clients.
+- **`inputClientId`** (`x-ably-input-client-id`) — the clientId of the input event (the `ai-input`) that drove the current invocation. The agent reads it from the publisher's Ably-level `clientId` on the triggering wire message and re-stamps it on its own published events for that invocation. Updates on a continuation `ai-run-start` if the triggering input came from a different client (e.g. a tool-result publish from a non-owner).
+
+For a fresh run the two are equal. They diverge on continuation invocations triggered by an input event from someone other than the run owner. The Ably channel-level `clientId` on each message is a third, orthogonal identity field — the publisher of that particular event. See [Wire protocol: client identity](wire-protocol.md#client-identity).
+
 ### Run ID vs message ID
 
 Two different identity headers serve different purposes:

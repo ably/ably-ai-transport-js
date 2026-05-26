@@ -30,6 +30,8 @@ Transport headers are set by the generic transport layer. They handle run correl
 | `x-ably-cancel-all`           | `"true"`                                                 | Cancel all runs on the channel                                                                                                                                                                                  |
 | `x-ably-cancel-invocation-id` | string                                                   | Cancel the run bound to a specific invocation                                                                                                                                                                   |
 | `x-ably-run-reason`           | `"complete"` / `"cancelled"` / `"error"` / `"suspended"` | Why a run ended (on run-end events). `suspended` signals the run is paused awaiting a continuation invocation (e.g. tool approval)                                                                              |
+| `x-ably-error-code`           | numeric string                                           | Set on `ai-run-end` when `x-ably-run-reason: error`. Numeric `Ably.ErrorInfo` code. The client derives `statusCode` from this — `Math.floor(code / 100)` for codes in `10000–59999`, else `500`                 |
+| `x-ably-error-message`        | string                                                   | Set on `ai-run-end` when `x-ably-run-reason: error`. Human-readable error message                                                                                                                               |
 
 ### Domain headers (`x-domain-*`)
 
@@ -51,13 +53,12 @@ The `x-domain-` prefix is defined in `constants.ts` as `DOMAIN_HEADER_PREFIX`. C
 
 Lifecycle events are published by the transport layer to coordinate run state. They use Ably message `name` as the event type and carry metadata in headers. They have no `data` payload.
 
-| Event name     | Direction        | Required headers                                             | Optional headers                                                                 | Purpose                                         |
-| -------------- | ---------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------- | ----------------------------------------------- |
-| `ai-run-start` | Server → Channel | `x-ably-run-id`, `x-ably-run-client-id`                      | `x-ably-parent`, `x-ably-fork-of`, `x-ably-invocation-id`, `x-ably-run-continue` | Signal that a run has started                   |
-| `ai-run-end`   | Server → Channel | `x-ably-run-id`, `x-ably-run-client-id`, `x-ably-run-reason` | `x-ably-invocation-id`                                                           | Signal that a run has ended                     |
-| `ai-cancel`    | Client → Channel | one of the cancel filter headers                             | -                                                                                | Request cancellation of one or more runs        |
-| `ai-abort`     | Server → Channel | `x-ably-run-id`                                              | -                                                                                | Transport-level abort signal (stream cancelled) |
-| `ai-error`     | Server → Channel | -                                                            | `x-ably-run-id`, `x-ably-invocation-id`                                          | Transport-level error signal                    |
+| Event name     | Direction        | Required headers                                             | Optional headers                                                                                       | Purpose                                         |
+| -------------- | ---------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------- |
+| `ai-run-start` | Server → Channel | `x-ably-run-id`, `x-ably-run-client-id`                      | `x-ably-parent`, `x-ably-fork-of`, `x-ably-invocation-id`, `x-ably-run-continue`                       | Signal that a run has started                   |
+| `ai-run-end`   | Server → Channel | `x-ably-run-id`, `x-ably-run-client-id`, `x-ably-run-reason` | `x-ably-invocation-id`, `x-ably-error-code` + `x-ably-error-message` (when `x-ably-run-reason: error`) | Signal that a run has ended                     |
+| `ai-cancel`    | Client → Channel | one of the cancel filter headers                             | -                                                                                                      | Request cancellation of one or more runs        |
+| `ai-abort`     | Server → Channel | `x-ably-run-id`                                              | -                                                                                                      | Transport-level abort signal (stream cancelled) |
 
 ## Content messages
 
@@ -67,7 +68,7 @@ Content messages carry domain data - user messages, assistant text. They are pub
 
 A discrete message is a single, immutable Ably publish. It carries `x-ably-stream: "false"` and appears as a `message.create` action on the subscriber.
 
-Used for: user messages, data parts, lifecycle events (start, finish, error).
+Used for: user messages, data parts, lifecycle events (start, finish).
 
 ```
 Ably message:

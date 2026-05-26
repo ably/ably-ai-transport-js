@@ -7,10 +7,10 @@ import { MessageBubble } from './message-bubble';
 import { IntroCard } from './intro-card';
 
 interface SiblingApi {
-  hasSiblings: (msgId: string) => boolean;
-  getSiblings: (msgId: string) => UIMessage[];
-  getSelectedIndex: (msgId: string) => number;
-  select: (msgId: string, index: number) => void;
+  hasSiblings: (codecMessageId: string) => boolean;
+  getSiblings: (codecMessageId: string) => UIMessage[];
+  getSelectedIndex: (codecMessageId: string) => number;
+  select: (codecMessageId: string, index: number) => void;
 }
 
 interface MessageListProps {
@@ -21,8 +21,8 @@ interface MessageListProps {
   onLoadOlder: () => void;
   onRegenerate: (messageId: string) => void;
   onEdit: (messageId: string, newText: string) => void;
-  onToolApprove?: (msgId: string, toolCallId: string) => void;
-  onToolDeny?: (msgId: string, toolCallId: string) => void;
+  onToolApprove?: (codecMessageId: string, toolCallId: string) => void;
+  onToolDeny?: (codecMessageId: string, toolCallId: string) => void;
 }
 
 export function MessageList({
@@ -76,19 +76,19 @@ export function MessageList({
       )}
       {loading && <div className="text-center text-xs text-zinc-600 animate-pulse">Loading history...</div>}
       {nodes.map((node) => {
-        const { message, headers, msgId } = node;
-        const hasSiblingsHere = siblings.hasSiblings(msgId);
+        const { message, headers, codecMessageId } = node;
+        const hasSiblingsHere = siblings.hasSiblings(codecMessageId);
         return (
           <MessageBubble
             key={message.id}
             message={message}
             headers={headers}
             hasSiblings={hasSiblingsHere}
-            siblingCount={hasSiblingsHere ? siblings.getSiblings(msgId).length : undefined}
-            selectedIndex={hasSiblingsHere ? siblings.getSelectedIndex(msgId) : undefined}
-            onSelectSibling={hasSiblingsHere ? (index) => siblings.select(msgId, index) : undefined}
-            onRegenerate={message.role === 'assistant' ? () => onRegenerate(msgId) : undefined}
-            onEdit={message.role === 'user' ? (text) => onEdit(msgId, text) : undefined}
+            siblingCount={hasSiblingsHere ? siblings.getSiblings(codecMessageId).length : undefined}
+            selectedIndex={hasSiblingsHere ? siblings.getSelectedIndex(codecMessageId) : undefined}
+            onSelectSibling={hasSiblingsHere ? (index) => siblings.select(codecMessageId, index) : undefined}
+            onRegenerate={message.role === 'assistant' ? () => onRegenerate(codecMessageId) : undefined}
+            onEdit={message.role === 'user' ? (text) => onEdit(codecMessageId, text) : undefined}
             onToolApprove={onToolApprove}
             onToolDeny={onToolDeny}
           />

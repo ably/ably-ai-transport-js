@@ -4,8 +4,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DOMAIN_HEADER_PREFIX as D,
+  HEADER_CODEC_MESSAGE_ID,
   HEADER_DISCRETE,
-  HEADER_MSG_ID,
   HEADER_ROLE,
   HEADER_RUN_ID,
   HEADER_STATUS,
@@ -821,7 +821,7 @@ describe('Vercel decoder', () => {
           [HEADER_STREAM]: 'false',
           [HEADER_DISCRETE]: 'true',
           [HEADER_ROLE]: 'user',
-          [HEADER_MSG_ID]: 'msg-1',
+          [HEADER_CODEC_MESSAGE_ID]: 'msg-1',
           [`${D}messageId`]: 'ui-1',
         },
       );
@@ -847,7 +847,7 @@ describe('Vercel decoder', () => {
           [HEADER_STREAM]: 'false',
           [HEADER_DISCRETE]: 'true',
           [HEADER_ROLE]: 'user',
-          [HEADER_MSG_ID]: 'msg-2',
+          [HEADER_CODEC_MESSAGE_ID]: 'msg-2',
           [`${D}messageId`]: 'ui-2',
           [`${D}mediaType`]: 'image/png',
         },
@@ -872,7 +872,12 @@ describe('Vercel decoder', () => {
       // and should not produce a message output — even if x-ably-role is present
       const msg = withHeaders(
         { name: 'text', data: 'delta' },
-        { [HEADER_STREAM]: 'false', [HEADER_ROLE]: 'assistant', [HEADER_RUN_ID]: 'run-1', [HEADER_MSG_ID]: 'msg-3' },
+        {
+          [HEADER_STREAM]: 'false',
+          [HEADER_ROLE]: 'assistant',
+          [HEADER_RUN_ID]: 'run-1',
+          [HEADER_CODEC_MESSAGE_ID]: 'msg-3',
+        },
       );
 
       const outputs = decoder.decode(msg);
@@ -889,7 +894,7 @@ describe('Vercel decoder', () => {
           [HEADER_STREAM]: 'false',
           [HEADER_DISCRETE]: 'true',
           [HEADER_ROLE]: 'user',
-          [HEADER_MSG_ID]: 'msg-d1',
+          [HEADER_CODEC_MESSAGE_ID]: 'msg-d1',
           [`${D}messageId`]: 'ui-d1',
           [`${D}id`]: 'dp-1',
         },
@@ -915,7 +920,12 @@ describe('Vercel decoder', () => {
       // accumulator can merge them into the streamed response message.
       const msg = withHeaders(
         { name: 'data-agent-progress', data: { agentLabel: 'Returns', tasks: [] } },
-        { [HEADER_STREAM]: 'false', [HEADER_ROLE]: 'assistant', [HEADER_RUN_ID]: 'run-1', [HEADER_MSG_ID]: 'msg-d2' },
+        {
+          [HEADER_STREAM]: 'false',
+          [HEADER_ROLE]: 'assistant',
+          [HEADER_RUN_ID]: 'run-1',
+          [HEADER_CODEC_MESSAGE_ID]: 'msg-d2',
+        },
       );
 
       const outputs = decoder.decode(msg);
@@ -937,7 +947,7 @@ describe('Vercel decoder', () => {
           [HEADER_STREAM]: 'false',
           [HEADER_DISCRETE]: 'true',
           [HEADER_ROLE]: 'system',
-          [HEADER_MSG_ID]: 'msg-4',
+          [HEADER_CODEC_MESSAGE_ID]: 'msg-4',
           [`${D}messageId`]: 'ui-4',
         },
       );
@@ -957,7 +967,7 @@ describe('Vercel decoder', () => {
           [HEADER_STREAM]: 'false',
           [HEADER_DISCRETE]: 'true',
           [HEADER_ROLE]: 'user',
-          [HEADER_MSG_ID]: 'msg-5',
+          [HEADER_CODEC_MESSAGE_ID]: 'msg-5',
           [`${D}messageId`]: 'ui-5',
         },
       );
@@ -973,7 +983,7 @@ describe('Vercel decoder', () => {
         { name: 'tool-approval-response', data: '' },
         {
           [HEADER_STREAM]: 'false',
-          [HEADER_MSG_ID]: 'continuation-msg-id',
+          [HEADER_CODEC_MESSAGE_ID]: 'continuation-codec-message-id',
           [`${D}toolCallId`]: 'tc-1',
           [`${D}approved`]: 'true',
           [`${D}reason`]: 'ok',
@@ -1000,11 +1010,11 @@ describe('Vercel decoder', () => {
         { name: 'ait-regenerate', data: '' },
         {
           [HEADER_STREAM]: 'false',
-          [HEADER_MSG_ID]: 'regen-msg-id',
+          [HEADER_CODEC_MESSAGE_ID]: 'regen-codec-message-id',
           [HEADER_ROLE]: 'user',
           'x-ably-parent': 'user-U1',
           'x-ably-fork-of': 'asst-A1',
-          'x-ably-prompt-id': 'prompt-1',
+          'x-ably-event-id': 'prompt-1',
         },
       );
 

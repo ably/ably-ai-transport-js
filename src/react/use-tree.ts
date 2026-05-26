@@ -19,11 +19,11 @@ import { useResolvedSession } from './internal/use-resolved-session.js';
 /** Handle for querying the conversation tree structure. */
 export interface TreeHandle<TMessage> {
   /** Get all sibling messages at a fork point, ordered chronologically by serial. */
-  getSiblings: (msgId: string) => TMessage[];
+  getSiblings: (codecMessageId: string) => TMessage[];
   /** Whether a message has sibling alternatives (i.e., show navigation arrows). */
-  hasSiblings: (msgId: string) => boolean;
-  /** Get a node by msgId, or undefined if not found. */
-  getNode: (msgId: string) => MessageNode<TMessage> | undefined;
+  hasSiblings: (codecMessageId: string) => boolean;
+  /** Get a node by codecMessageId, or undefined if not found. */
+  getNode: (codecMessageId: string) => MessageNode<TMessage> | undefined;
 }
 
 /** Options for {@link useTree}. */
@@ -41,12 +41,18 @@ export const useTree = <TEvent, TProjection, TMessage>({
 }: UseTreeOptions<TEvent, TProjection, TMessage> = {}): TreeHandle<TMessage> => {
   const resolved = useResolvedSession({ session });
 
-  const getSiblings = useCallback((msgId: string): TMessage[] => resolved?.tree.getSiblings(msgId) ?? [], [resolved]);
+  const getSiblings = useCallback(
+    (codecMessageId: string): TMessage[] => resolved?.tree.getSiblings(codecMessageId) ?? [],
+    [resolved],
+  );
 
-  const hasSiblings = useCallback((msgId: string) => resolved?.tree.hasSiblings(msgId) ?? false, [resolved]);
+  const hasSiblings = useCallback(
+    (codecMessageId: string) => resolved?.tree.hasSiblings(codecMessageId) ?? false,
+    [resolved],
+  );
 
   const getNode = useCallback(
-    (msgId: string): MessageNode<TMessage> | undefined => resolved?.tree.getNode(msgId),
+    (codecMessageId: string): MessageNode<TMessage> | undefined => resolved?.tree.getNode(codecMessageId),
     [resolved],
   );
 

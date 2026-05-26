@@ -18,7 +18,7 @@ interface RunOpts<TEvent, TMessage = unknown> {
    * (no prompt lookup, `Run.start` resolves synchronously). Tests that
    * exercise the channel prompt-lookup path supply one or more ids here.
    */
-  promptIds?: string[];
+  eventIds?: string[];
   /** Prior-conversation history seeded onto the invocation. Defaults to `[]`. */
   history?: TMessage[];
   signal?: AbortSignal;
@@ -35,9 +35,9 @@ interface RunOpts<TEvent, TMessage = unknown> {
  * longer carried by the invocation body — the agent reads it from the
  * channel via the prompt-lookup result. Tests that exercise those code
  * paths should publish user-messages on the channel with the appropriate
- * transport headers and supply matching `promptIds`.
+ * transport headers and supply matching `eventIds`.
  * @param session - The agent session to create the run on.
- * @param opts - Run identity (runId, invocationId, promptIds) plus runtime hooks.
+ * @param opts - Run identity (runId, invocationId, eventIds) plus runtime hooks.
  * @returns The created Run.
  */
 export const createRunFromOpts = <TEvent, TProjection, TMessage>(
@@ -49,7 +49,7 @@ export const createRunFromOpts = <TEvent, TProjection, TMessage>(
     invocationId: opts.invocationId ?? `${opts.runId}-inv`,
     sessionName: 'test',
     history: opts.history ?? [],
-    ...(opts.promptIds !== undefined && { promptIds: opts.promptIds }),
+    ...(opts.eventIds !== undefined && { eventIds: opts.eventIds }),
   });
   return session.createRun(invocation, {
     signal: opts.signal,

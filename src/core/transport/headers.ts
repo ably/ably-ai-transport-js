@@ -7,11 +7,11 @@
  */
 
 import {
+  HEADER_CODEC_MESSAGE_ID,
+  HEADER_EVENT_ID,
   HEADER_FORK_OF,
   HEADER_INVOCATION_ID,
-  HEADER_MSG_ID,
   HEADER_PARENT,
-  HEADER_PROMPT_ID,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_CONTINUE,
@@ -23,12 +23,12 @@ import {
  * @param opts - The header values to include.
  * @param opts.role - Message role (e.g. "user", "assistant").
  * @param opts.runId - Run correlation ID.
- * @param opts.msgId - Message identity — the wire `x-ably-msg-id` for this message.
+ * @param opts.codecMessageId - Message identity — the wire `x-ably-codec-message-id` for this message.
  * @param opts.runClientId - ClientId of the run initiator.
- * @param opts.parent - Preceding message's msg-id (for branching).
- * @param opts.forkOf - Forked message's msg-id (for edit/regen).
+ * @param opts.parent - Preceding message's codec-message-id (for branching).
+ * @param opts.forkOf - Forked message's codec-message-id (for edit/regen).
  * @param opts.invocationId - Invocation correlation ID. Set on the user-prompt message so the agent can locate the prompt by invocation.
- * @param opts.promptId - Per-prompt identifier. Set on each client-published user-prompt message; the invocation body's `promptIds` lists the ids the agent should look up.
+ * @param opts.eventId - Per-event identifier. Set on each client-published user-prompt message; the invocation body's `eventIds` lists the ids the agent should look up.
  * @param opts.runContinue - When `true`, stamps `x-ably-run-continue: 'true'` to mark
  *   the message as a continuation user-message (e.g. a tool-resolution publish under
  *   a suspended run). Continuation user-messages are skipped by the Tree's
@@ -38,24 +38,24 @@ import {
 export const buildTransportHeaders = (opts: {
   role: string;
   runId: string;
-  msgId: string;
+  codecMessageId: string;
   runClientId?: string;
   parent?: string;
   forkOf?: string;
   invocationId?: string;
-  promptId?: string;
+  eventId?: string;
   runContinue?: boolean;
 }): Record<string, string> => {
   const h: Record<string, string> = {
     [HEADER_ROLE]: opts.role,
     [HEADER_RUN_ID]: opts.runId,
-    [HEADER_MSG_ID]: opts.msgId,
+    [HEADER_CODEC_MESSAGE_ID]: opts.codecMessageId,
   };
   if (opts.runClientId !== undefined) h[HEADER_RUN_CLIENT_ID] = opts.runClientId;
   if (opts.parent) h[HEADER_PARENT] = opts.parent;
   if (opts.forkOf) h[HEADER_FORK_OF] = opts.forkOf;
   if (opts.invocationId) h[HEADER_INVOCATION_ID] = opts.invocationId;
-  if (opts.promptId) h[HEADER_PROMPT_ID] = opts.promptId;
+  if (opts.eventId) h[HEADER_EVENT_ID] = opts.eventId;
   if (opts.runContinue) h[HEADER_RUN_CONTINUE] = 'true';
   return h;
 };

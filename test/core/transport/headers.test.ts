@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  HEADER_CODEC_MESSAGE_ID,
   HEADER_FORK_OF,
-  HEADER_MSG_ID,
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
@@ -11,23 +11,23 @@ import {
 import { buildTransportHeaders } from '../../../src/core/transport/headers.js';
 
 describe('buildTransportHeaders', () => {
-  it('includes role, runId, and msgId', () => {
+  it('includes role, runId, and codecMessageId', () => {
     const headers = buildTransportHeaders({
       role: 'user',
       runId: 'run-1',
-      msgId: 'msg-1',
+      codecMessageId: 'msg-1',
     });
 
     expect(headers[HEADER_ROLE]).toBe('user');
     expect(headers[HEADER_RUN_ID]).toBe('run-1');
-    expect(headers[HEADER_MSG_ID]).toBe('msg-1');
+    expect(headers[HEADER_CODEC_MESSAGE_ID]).toBe('msg-1');
   });
 
   it('includes runClientId when provided', () => {
     const headers = buildTransportHeaders({
       role: 'assistant',
       runId: 'run-1',
-      msgId: 'msg-1',
+      codecMessageId: 'msg-1',
       runClientId: 'user-a',
     });
 
@@ -38,7 +38,7 @@ describe('buildTransportHeaders', () => {
     const headers = buildTransportHeaders({
       role: 'user',
       runId: 'run-1',
-      msgId: 'msg-1',
+      codecMessageId: 'msg-1',
       parent: 'parent-msg',
     });
 
@@ -49,7 +49,7 @@ describe('buildTransportHeaders', () => {
     const headers = buildTransportHeaders({
       role: 'user',
       runId: 'run-1',
-      msgId: 'msg-1',
+      codecMessageId: 'msg-1',
       forkOf: 'fork-msg',
     });
 
@@ -60,7 +60,7 @@ describe('buildTransportHeaders', () => {
     const headers = buildTransportHeaders({
       role: 'user',
       runId: 'run-1',
-      msgId: 'msg-1',
+      codecMessageId: 'msg-1',
     });
 
     expect(headers).not.toHaveProperty(HEADER_RUN_CLIENT_ID);

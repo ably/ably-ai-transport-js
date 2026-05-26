@@ -18,8 +18,8 @@
  * Client-published continuation tool-resolution events (tool outputs /
  * approval responses published as `role: 'user'` channel messages) are
  * redirected by `toolCallId` onto the prior assistant in the same
- * projection — the wire `messageId` (the continuation's own new msg-id)
- * is added to a `consumedMsgIds` set so the user-message never appears
+ * projection — the wire `messageId` (the continuation's own new codec-message-id)
+ * is added to a `consumedCodecMessageIds` set so the user-message never appears
  * in `getMessages()` output. Continuation flow runs the standard fold
  * paths but with a per-event toolCallId lookup; no separate code path.
  */
@@ -48,7 +48,7 @@ interface ToolPartTracker {
   inputText: string;
 }
 
-/** Per-msgId tracking state for in-progress streams within a UIMessage. */
+/** Per-codecMessageId tracking state for in-progress streams within a UIMessage. */
 interface MessageTrackers {
   /** Text stream id → partIndex. */
   text: Map<string, number>;
@@ -82,16 +82,16 @@ export interface VercelProjection {
    * unconditionally.
    */
   conflictSerials: Map<string, string>;
-  /** Per-msgId tracker state for streamed parts. Internal — do not access. */
+  /** Per-codecMessageId tracker state for streamed parts. Internal — do not access. */
   trackers: Map<string, MessageTrackers>;
   /**
-   * Wire `x-ably-msg-id`s that have been consumed by tool-resolution
+   * Wire `x-ably-codec-message-id`s that have been consumed by tool-resolution
    * redirection — the message carried only tool outputs / approvals which
    * were folded onto a prior assistant by `toolCallId`. `getMessages()`
    * filters these out so the consumed wire message never materialises as
    * its own UIMessage / Tree node.
    */
-  consumedMsgIds: Set<string>;
+  consumedCodecMessageIds: Set<string>;
   /**
    * Tool-resolution events that arrived before any assistant in this
    * projection had a matching `toolCallId`. Re-evaluated on every
@@ -108,8 +108,8 @@ export interface VercelProjection {
  * is added to the projection.
  */
 interface PendingToolResolution {
-  /** Wire `x-ably-msg-id` to mark consumed once the resolution promotes. */
-  consumedMsgId: string;
+  /** Wire `x-ably-codec-message-id` to mark consumed once the resolution promotes. */
+  consumedCodecMessageId: string;
   /** Tool call this resolution targets. */
   toolCallId: string;
   /** Serial of the wire message — used by the conflict-key check on promotion. */
@@ -133,7 +133,7 @@ export const init = (): VercelProjection => ({
   messages: [],
   conflictSerials: new Map(),
   trackers: new Map(),
-  consumedMsgIds: new Set(),
+  consumedCodecMessageIds: new Set(),
   pendingToolResolutions: [],
 });
 
@@ -214,7 +214,7 @@ export const fold = (state: VercelProjection, event: VercelEvent, meta: ReducerM
  * `tool-output-available` for the same `toolCallId`) rather than to every
  * event in the stream.
  * @param event - The event being folded.
- * @param meta - Transport-derived metadata (used for events keyed by msg-id).
+ * @param meta - Transport-derived metadata (used for events keyed by codec-message-id).
  * @returns The conflict key, or `undefined` if the event is additive / independent.
  */
 const _conflictKeyOf = (event: VercelEvent, meta: ReducerMeta): string | undefined => {
@@ -243,7 +243,7 @@ const _conflictKeyOf = (event: VercelEvent, meta: ReducerMeta): string | undefin
     }
 
     // Per-stream start/end markers: duplicates would create phantom parts
-    // or wipe accumulated text. Keyed by (msg-id, stream-id).
+    // or wipe accumulated text. Keyed by (codec-message-id, stream-id).
     case 'text-start':
     case 'text-end':
     case 'reasoning-start':
@@ -251,7 +251,7 @@ const _conflictKeyOf = (event: VercelEvent, meta: ReducerMeta): string | undefin
       return `${event.type}:${meta.messageId ?? ''}:${event.id}`;
     }
 
-    // Message-level markers, keyed by msg-id.
+    // Message-level markers, keyed by codec-message-id.
     case 'finish':
     case 'message-metadata': {
       return `${event.type}:${meta.messageId ?? ''}`;
@@ -286,12 +286,12 @@ const _foldUserMessage = (state: VercelProjection, event: UserMessageEvent): Ver
  * Fold a client-published `tool-approval-response` event by redirecting
  * the resolution onto the prior assistant in this projection whose
  * `dynamic-tool` part matches the response's `toolCallId`. The wire
- * message-id is recorded in `consumedMsgIds` so the response never
+ * message-id is recorded in `consumedCodecMessageIds` so the response never
  * surfaces as its own UIMessage. Orphans (no matching assistant) are
  * buffered and re-evaluated on each subsequent fold.
  * @param state - Projection to fold into.
  * @param event - The approval-response event (toolCallId, approved, optional reason).
- * @param meta - Transport-derived metadata; `messageId` is the wire `x-ably-msg-id` consumed on success.
+ * @param meta - Transport-derived metadata; `messageId` is the wire `x-ably-codec-message-id` consumed on success.
  * @returns The same projection reference.
  */
 const _foldToolApprovalResponse = (
@@ -314,10 +314,10 @@ const _foldToolApprovalResponse = (
 
   const promoted = _promoteApprovalOntoAssistant(state, event.toolCallId, event.approved, event.reason);
   if (promoted) {
-    if (messageId) state.consumedMsgIds.add(messageId);
+    if (messageId) state.consumedCodecMessageIds.add(messageId);
   } else if (messageId) {
     state.pendingToolResolutions.push({
-      consumedMsgId: messageId,
+      consumedCodecMessageId: messageId,
       toolCallId: event.toolCallId,
       serial: meta.serial,
       resolution: {
@@ -335,12 +335,12 @@ const _foldToolApprovalResponse = (
  * If `meta.messageId` matches an existing message with the toolCallId
  * present as a `dynamic-tool` part, fold onto that message (standard
  * agent-side path). Otherwise — typically a client-published continuation
- * carrying its own wire `msgId` — scan the projection for the prior
+ * carrying its own wire `codecMessageId` — scan the projection for the prior
  * assistant whose tool part matches and redirect the fold there,
- * consuming the wire `msgId`. Orphans pend until the assistant arrives.
+ * consuming the wire `codecMessageId`. Orphans pend until the assistant arrives.
  * @param state - Projection to fold into.
  * @param chunk - The tool-output UIMessageChunk.
- * @param meta - Transport-derived metadata; `messageId` is the wire `x-ably-msg-id`.
+ * @param meta - Transport-derived metadata; `messageId` is the wire `x-ably-codec-message-id`.
  * @returns The same projection reference.
  */
 const _foldToolOutputChunk = (
@@ -360,17 +360,17 @@ const _foldToolOutputChunk = (
   }
 
   // No direct owner — redirect by toolCallId. Client-published
-  // continuation outputs land here: the wire msgId is the continuation's
+  // continuation outputs land here: the wire codecMessageId is the continuation's
   // own new id, not the suspended assistant's.
   const promoted = _promoteToolChunkOntoAssistant(state, chunk);
   if (promoted) {
-    if (messageId) state.consumedMsgIds.add(messageId);
+    if (messageId) state.consumedCodecMessageIds.add(messageId);
     return state;
   }
 
   if (messageId) {
     state.pendingToolResolutions.push({
-      consumedMsgId: messageId,
+      consumedCodecMessageId: messageId,
       toolCallId: chunk.toolCallId,
       serial: meta.serial,
       resolution:
@@ -482,8 +482,8 @@ const _approvalTransition = (
 
 /**
  * Re-attempt every pending tool resolution against the current projection.
- * Successfully promoted entries are removed and their wire msgIds added to
- * `consumedMsgIds`. Cheap: bounded by the number of pending entries.
+ * Successfully promoted entries are removed and their wire codecMessageIds added to
+ * `consumedCodecMessageIds`. Cheap: bounded by the number of pending entries.
  * @param state - Projection to walk and mutate.
  */
 const _retryPendingResolutions = (state: VercelProjection): void => {
@@ -518,7 +518,7 @@ const _retryPendingResolutions = (state: VercelProjection): void => {
       }
     }
     if (promoted) {
-      state.consumedMsgIds.add(pending.consumedMsgId);
+      state.consumedCodecMessageIds.add(pending.consumedCodecMessageId);
     } else {
       next.push(pending);
     }
@@ -533,7 +533,7 @@ const _retryPendingResolutions = (state: VercelProjection): void => {
 const _foldChunk = (state: VercelProjection, chunk: AI.UIMessageChunk, meta: ReducerMeta): VercelProjection => {
   const messageId = meta.messageId;
   if (messageId === undefined) {
-    // Without a target msg-id, a chunk has nowhere to land. Drop.
+    // Without a target codec-message-id, a chunk has nowhere to land. Drop.
     return state;
   }
 
@@ -641,7 +641,7 @@ const _foldLifecycle = (
 ): VercelProjection => {
   switch (chunk.type) {
     case 'start': {
-      // The wire HEADER_MSG_ID (carried via `meta.messageId`) is the
+      // The wire HEADER_CODEC_MESSAGE_ID (carried via `meta.messageId`) is the
       // canonical identity for the message inside the projection — every
       // subsequent chunk for this message keys on it. The Vercel `start`
       // chunk also carries an LLM-provided `messageId`, but rewriting
@@ -924,6 +924,6 @@ const _foldDataPart = (
  * @returns The visible UIMessages, in publication order.
  */
 export const getMessages = (projection: VercelProjection): AI.UIMessage[] => {
-  if (projection.consumedMsgIds.size === 0) return projection.messages;
-  return projection.messages.filter((m) => !projection.consumedMsgIds.has(m.id));
+  if (projection.consumedCodecMessageIds.size === 0) return projection.messages;
+  return projection.messages.filter((m) => !projection.consumedCodecMessageIds.has(m.id));
 };

@@ -13,9 +13,9 @@ import type * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  HEADER_CODEC_MESSAGE_ID,
   HEADER_DISCRETE,
   HEADER_INVOCATION_ID,
-  HEADER_MSG_ID,
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CONTINUE,
@@ -42,9 +42,9 @@ interface TestMessage {
 }
 
 interface TestProjection {
-  /** Map of msg-id → in-progress message (mirrors the runtime tracker pattern). */
+  /** Map of codec-message-id → in-progress message (mirrors the runtime tracker pattern). */
   byId: Map<string, TestMessage>;
-  /** Ordered list of msg-ids (insertion order). */
+  /** Ordered list of codec-message-ids (insertion order). */
   order: string[];
 }
 
@@ -90,11 +90,15 @@ const withEvents = (msg: Ably.InboundMessage, events: TestEvent[]): Ably.Inbound
   return msg;
 };
 
-const discreteMsg = (msgId: string, content: string, extraHeaders: Record<string, string> = {}): Ably.InboundMessage =>
+const discreteMsg = (
+  codecMessageId: string,
+  content: string,
+  extraHeaders: Record<string, string> = {},
+): Ably.InboundMessage =>
   withEvents(
     ablyMsg({
       headers: {
-        [HEADER_MSG_ID]: msgId,
+        [HEADER_CODEC_MESSAGE_ID]: codecMessageId,
         [HEADER_STREAM]: 'false',
         [HEADER_DISCRETE]: 'true',
         ...extraHeaders,
@@ -103,11 +107,11 @@ const discreteMsg = (msgId: string, content: string, extraHeaders: Record<string
     [{ type: 'text', text: content }, { type: 'finish' }],
   );
 
-const streamingRun = (runId: string, msgId: string, deltas: string[]): Ably.InboundMessage[] => {
+const streamingRun = (runId: string, codecMessageId: string, deltas: string[]): Ably.InboundMessage[] => {
   const serial = nextSerial();
   const baseHeaders = {
     [HEADER_RUN_ID]: runId,
-    [HEADER_MSG_ID]: msgId,
+    [HEADER_CODEC_MESSAGE_ID]: codecMessageId,
     [HEADER_STREAM]: 'true',
   };
 
@@ -130,7 +134,7 @@ const streamingRun = (runId: string, msgId: string, deltas: string[]): Ably.Inbo
 
 const userMsg = (
   runId: string,
-  msgId: string,
+  codecMessageId: string,
   content: string,
   invocationId: string,
   serial?: string,
@@ -140,7 +144,7 @@ const userMsg = (
       action: 'message.create',
       headers: {
         [HEADER_RUN_ID]: runId,
-        [HEADER_MSG_ID]: msgId,
+        [HEADER_CODEC_MESSAGE_ID]: codecMessageId,
         [HEADER_ROLE]: 'user',
         [HEADER_INVOCATION_ID]: invocationId,
         [HEADER_STREAM]: 'false',
@@ -183,7 +187,7 @@ const createMockChannel = (pages: Ably.InboundMessage[][] = []): Ably.RealtimeCh
 
 // ---------------------------------------------------------------------------
 // Mock codec — decoder pulls events from the per-message registry; the
-// reducer accumulates text per msg-id (drawn from meta.messageId).
+// reducer accumulates text per codec-message-id (drawn from meta.messageId).
 // ---------------------------------------------------------------------------
 
 const createMockDecoder = (): Decoder<TestEvent> => ({
@@ -379,7 +383,7 @@ describe('decodeHistory', () => {
       const serial = nextSerial();
       const baseHeaders = {
         [HEADER_RUN_ID]: 'T1',
-        [HEADER_MSG_ID]: 'asst-abort',
+        [HEADER_CODEC_MESSAGE_ID]: 'asst-abort',
         [HEADER_STREAM]: 'true',
       };
       const aborted = withEvents(
@@ -400,7 +404,7 @@ describe('decodeHistory', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Headers + canonical serial captured per msg-id
+  // Headers + canonical serial captured per codec-message-id
   // -------------------------------------------------------------------------
 
   describe('headers capture', () => {
@@ -412,7 +416,7 @@ describe('decodeHistory', () => {
       const page = await decodeHistory(channel, codec, { limit: 1 }, silentLogger);
 
       expect(page.items[0]?.serial).toBe(m.serial);
-      expect(page.items[0]?.headers).toMatchObject({ [HEADER_MSG_ID]: 'u1', 'x-extra': 'v1' });
+      expect(page.items[0]?.headers).toMatchObject({ [HEADER_CODEC_MESSAGE_ID]: 'u1', 'x-extra': 'v1' });
     });
 
     it('per-run runs include their HEADER_RUN_ID in the returned headers', async () => {
@@ -435,7 +439,7 @@ describe('decodeHistory', () => {
   describe('same-run message routing', () => {
     it('folds a follow-up message with matching HEADER_RUN_ID into the same run projection', async () => {
       // Run T1 streams the original message; a later wire message in the SAME
-      // run T1 carries HEADER_MSG_ID = 'asst-1' to extend it. The reducer
+      // run T1 carries HEADER_CODEC_MESSAGE_ID = 'asst-1' to extend it. The reducer
       // routes via meta.messageId === 'asst-1', so the follow-up appends
       // into the same message.
       const [finish, delta, create] = streamingRun('T1', 'asst-1', ['original']);
@@ -446,7 +450,7 @@ describe('decodeHistory', () => {
           action: 'message.create',
           headers: {
             [HEADER_RUN_ID]: 'T1',
-            [HEADER_MSG_ID]: 'asst-1',
+            [HEADER_CODEC_MESSAGE_ID]: 'asst-1',
             [HEADER_STREAM]: 'false',
             [HEADER_DISCRETE]: 'true',
           },
@@ -463,14 +467,14 @@ describe('decodeHistory', () => {
       expect(asst?.message.content).toBe('original + extended');
     });
 
-    it('preserves identity headers from the first wire when later amend wires target the same msg-id', async () => {
+    it('preserves identity headers from the first wire when later amend wires target the same codec-message-id', async () => {
       // Regression: under Option X the continuation tool-resolution wire
-      // publishes under the prior assistant's msg-id (so the reducer's
+      // publishes under the prior assistant's codec-message-id (so the reducer's
       // direct-fold path runs). The wire carries `role: user, parent: <self>`
       // because it's a continuation publish — its headers describe the
       // continuation, not the assistant. The agent-side amend wire
       // (`tool-output-available`) also publishes under the assistant's
-      // msg-id but with `parent: <self>` (the run.pipe default parent
+      // codec-message-id but with `parent: <self>` (the run.pipe default parent
       // points at the assistant being amended).
       //
       // Without identity-preservation in decode-history, those amends
@@ -488,7 +492,7 @@ describe('decodeHistory', () => {
           action: 'message.create',
           headers: {
             [HEADER_RUN_ID]: 'T1',
-            [HEADER_MSG_ID]: 'asst-1',
+            [HEADER_CODEC_MESSAGE_ID]: 'asst-1',
             [HEADER_STREAM]: 'true',
             [HEADER_ROLE]: 'assistant',
             [HEADER_PARENT]: 'u1',
@@ -498,14 +502,14 @@ describe('decodeHistory', () => {
         [],
       );
 
-      // Option X continuation tool-resolution wire: same msg-id, role=user,
+      // Option X continuation tool-resolution wire: same codec-message-id, role=user,
       // parent=self, run-continue=true. Different invocation.
       const continuationAmend = withEvents(
         ablyMsg({
           action: 'message.create',
           headers: {
             [HEADER_RUN_ID]: 'T1',
-            [HEADER_MSG_ID]: 'asst-1',
+            [HEADER_CODEC_MESSAGE_ID]: 'asst-1',
             [HEADER_ROLE]: 'user',
             [HEADER_PARENT]: 'asst-1',
             [HEADER_RUN_CONTINUE]: 'true',
@@ -518,14 +522,14 @@ describe('decodeHistory', () => {
         [],
       );
 
-      // Agent-side amend (tool-output-available): same msg-id,
+      // Agent-side amend (tool-output-available): same codec-message-id,
       // role=assistant, parent=self.
       const agentAmend = withEvents(
         ablyMsg({
           action: 'message.create',
           headers: {
             [HEADER_RUN_ID]: 'T1',
-            [HEADER_MSG_ID]: 'asst-1',
+            [HEADER_CODEC_MESSAGE_ID]: 'asst-1',
             [HEADER_ROLE]: 'assistant',
             [HEADER_PARENT]: 'asst-1',
             [HEADER_STREAM]: 'false',
@@ -561,7 +565,7 @@ describe('decodeHistory', () => {
           action: 'message.create',
           headers: {
             [HEADER_RUN_ID]: 'T2',
-            [HEADER_MSG_ID]: 'asst-1',
+            [HEADER_CODEC_MESSAGE_ID]: 'asst-1',
             [HEADER_STREAM]: 'false',
             [HEADER_DISCRETE]: 'true',
           },

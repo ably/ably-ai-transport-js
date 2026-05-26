@@ -1,7 +1,7 @@
 import type * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { HEADER_INVOCATION_ID, HEADER_MSG_ID, HEADER_ROLE, HEADER_RUN_ID } from '../../../src/constants.js';
+import { HEADER_CODEC_MESSAGE_ID, HEADER_INVOCATION_ID, HEADER_ROLE, HEADER_RUN_ID } from '../../../src/constants.js';
 import type { Codec } from '../../../src/core/codec/types.js';
 // Vitest hoists vi.mock above imports, so this static import gets the mock.
 import { decodeHistory } from '../../../src/core/transport/decode-history.js';
@@ -69,13 +69,13 @@ const createMockSendDelegate = (): SendDelegate<TestEvent, TestMessage> =>
       invocationId: 'mock-inv',
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
       cancel: () => Promise.resolve(),
-      optimisticMsgIds: [],
-      promptIds: [],
+      optimisticCodecMessageIds: [],
+      eventIds: [],
     }),
   );
 
-const makeHeaders = (msgId: string, runId?: string): Record<string, string> => {
-  const h: Record<string, string> = { [HEADER_MSG_ID]: msgId };
+const makeHeaders = (codecMessageId: string, runId?: string): Record<string, string> => {
+  const h: Record<string, string> = { [HEADER_CODEC_MESSAGE_ID]: codecMessageId };
   if (runId) h[HEADER_RUN_ID] = runId;
   return h;
 };
@@ -152,8 +152,8 @@ describe('DefaultView', () => {
 
       const nodes = view.flattenNodes();
       expect(nodes).toHaveLength(2);
-      expect(nodes[0]?.msgId).toBe('m1');
-      expect(nodes[1]?.msgId).toBe('m2');
+      expect(nodes[0]?.codecMessageId).toBe('m1');
+      expect(nodes[1]?.codecMessageId).toBe('m2');
     });
 
     it('delegates to tree when nothing is withheld', () => {
@@ -182,7 +182,7 @@ describe('DefaultView', () => {
       const handler = vi.fn();
       view.on('update', handler);
 
-      // Update m1's content — the msgId list hasn't changed, but the
+      // Update m1's content — the codecMessageId list hasn't changed, but the
       // message reference differs, so the view emits.
       tree.upsert('m1', { id: '1', content: 'updated' }, makeHeaders('m1'), 'serial-1');
 
@@ -195,7 +195,7 @@ describe('DefaultView', () => {
         'm2',
         { id: '2', content: 'fork' },
         {
-          [HEADER_MSG_ID]: 'm2',
+          [HEADER_CODEC_MESSAGE_ID]: 'm2',
           'x-ably-fork-of': 'm1',
         },
         'serial-2',
@@ -213,7 +213,7 @@ describe('DefaultView', () => {
         'm2',
         { id: '2', content: 'updated fork' },
         {
-          [HEADER_MSG_ID]: 'm2',
+          [HEADER_CODEC_MESSAGE_ID]: 'm2',
           'x-ably-fork-of': 'm1',
         },
         'serial-2',
@@ -228,7 +228,7 @@ describe('DefaultView', () => {
         'm2',
         { id: '2', content: 'fork' },
         {
-          [HEADER_MSG_ID]: 'm2',
+          [HEADER_CODEC_MESSAGE_ID]: 'm2',
           'x-ably-fork-of': 'm1',
         },
         'serial-2',
@@ -262,7 +262,7 @@ describe('DefaultView', () => {
       const handler = vi.fn();
       view.on('ably-message', handler);
 
-      const msg = { extras: { headers: { [HEADER_MSG_ID]: 'm1' } } } as unknown as Ably.InboundMessage;
+      const msg = { extras: { headers: { [HEADER_CODEC_MESSAGE_ID]: 'm1' } } } as unknown as Ably.InboundMessage;
       tree.emitAblyMessage(msg);
 
       expect(handler).toHaveBeenCalledOnce();
@@ -275,7 +275,7 @@ describe('DefaultView', () => {
         'm2',
         { id: '2', content: 'v1' },
         {
-          [HEADER_MSG_ID]: 'm2',
+          [HEADER_CODEC_MESSAGE_ID]: 'm2',
           'x-ably-parent': 'm1',
         },
         'serial-2',
@@ -285,7 +285,7 @@ describe('DefaultView', () => {
         'm3',
         { id: '3', content: 'v2' },
         {
-          [HEADER_MSG_ID]: 'm3',
+          [HEADER_CODEC_MESSAGE_ID]: 'm3',
           'x-ably-parent': 'm1',
           'x-ably-fork-of': 'm2',
         },
@@ -296,13 +296,13 @@ describe('DefaultView', () => {
       view.on('ably-message', handler);
 
       // Message for m3 (off-branch) should NOT be forwarded
-      const msg = { extras: { headers: { [HEADER_MSG_ID]: 'm3' } } } as unknown as Ably.InboundMessage;
+      const msg = { extras: { headers: { [HEADER_CODEC_MESSAGE_ID]: 'm3' } } } as unknown as Ably.InboundMessage;
       tree.emitAblyMessage(msg);
 
       expect(handler).not.toHaveBeenCalled();
     });
 
-    it('forwards ably-message without msg-id (run events)', () => {
+    it('forwards ably-message without codec-message-id (run events)', () => {
       const handler = vi.fn();
       view.on('ably-message', handler);
 
@@ -368,7 +368,7 @@ describe('DefaultView', () => {
         'm2',
         { id: '2', content: 'v1' },
         {
-          [HEADER_MSG_ID]: 'm2',
+          [HEADER_CODEC_MESSAGE_ID]: 'm2',
           'x-ably-parent': 'm1',
         },
         'serial-2',
@@ -377,7 +377,7 @@ describe('DefaultView', () => {
         'm3',
         { id: '3', content: 'v2' },
         {
-          [HEADER_MSG_ID]: 'm3',
+          [HEADER_CODEC_MESSAGE_ID]: 'm3',
           'x-ably-parent': 'm1',
           'x-ably-fork-of': 'm2',
         },
@@ -481,7 +481,7 @@ describe('DefaultView', () => {
 
       const nodes = view.flattenNodes();
       expect(nodes).toHaveLength(3);
-      expect(nodes[0]?.msgId).toBe('h1');
+      expect(nodes[0]?.codecMessageId).toBe('h1');
       expect(view.hasOlder()).toBe(false);
     });
 
@@ -601,12 +601,14 @@ describe('DefaultView', () => {
       view.on('ably-message', handler);
 
       // Emit for a withheld node — should be suppressed
-      const withheldMsg = { extras: { headers: { [HEADER_MSG_ID]: 'h1' } } } as unknown as Ably.InboundMessage;
+      const withheldMsg = {
+        extras: { headers: { [HEADER_CODEC_MESSAGE_ID]: 'h1' } },
+      } as unknown as Ably.InboundMessage;
       tree.emitAblyMessage(withheldMsg);
       expect(handler).not.toHaveBeenCalled();
 
       // Emit for a visible node — should be forwarded
-      const visibleMsg = { extras: { headers: { [HEADER_MSG_ID]: 'h3' } } } as unknown as Ably.InboundMessage;
+      const visibleMsg = { extras: { headers: { [HEADER_CODEC_MESSAGE_ID]: 'h3' } } } as unknown as Ably.InboundMessage;
       tree.emitAblyMessage(visibleMsg);
       expect(handler).toHaveBeenCalledOnce();
       expect(handler).toHaveBeenCalledWith(visibleMsg);
@@ -624,7 +626,7 @@ describe('DefaultView', () => {
         'm2',
         { id: '2', content: 'v1' },
         {
-          [HEADER_MSG_ID]: 'm2',
+          [HEADER_CODEC_MESSAGE_ID]: 'm2',
           'x-ably-parent': 'm1',
         },
         'serial-2',
@@ -633,7 +635,7 @@ describe('DefaultView', () => {
         'm3',
         { id: '3', content: 'v2' },
         {
-          [HEADER_MSG_ID]: 'm3',
+          [HEADER_CODEC_MESSAGE_ID]: 'm3',
           'x-ably-parent': 'm1',
           'x-ably-fork-of': 'm2',
         },
@@ -684,7 +686,7 @@ describe('DefaultView', () => {
     });
 
     it('getNode delegates to tree', () => {
-      expect(view.getNode('m1')?.msgId).toBe('m1');
+      expect(view.getNode('m1')?.codecMessageId).toBe('m1');
       expect(view.getNode('unknown')).toBeUndefined();
     });
   });
@@ -700,7 +702,7 @@ describe('DefaultView', () => {
         'm2',
         { id: '2', content: 'v1' },
         {
-          [HEADER_MSG_ID]: 'm2',
+          [HEADER_CODEC_MESSAGE_ID]: 'm2',
           'x-ably-parent': 'm1',
         },
         'serial-2',
@@ -709,7 +711,7 @@ describe('DefaultView', () => {
         'm3',
         { id: '3', content: 'v2' },
         {
-          [HEADER_MSG_ID]: 'm3',
+          [HEADER_CODEC_MESSAGE_ID]: 'm3',
           'x-ably-parent': 'm1',
           'x-ably-fork-of': 'm2',
         },
@@ -755,7 +757,7 @@ describe('DefaultView', () => {
       view.on('update', handler1);
       view2.on('update', handler2);
 
-      tree.upsert('m2', { id: '2', content: 'hello' }, { [HEADER_MSG_ID]: 'm2', 'x-ably-parent': 'm1' });
+      tree.upsert('m2', { id: '2', content: 'hello' }, { [HEADER_CODEC_MESSAGE_ID]: 'm2', 'x-ably-parent': 'm1' });
 
       expect(handler1).toHaveBeenCalledOnce();
       expect(handler2).toHaveBeenCalledOnce();
@@ -769,7 +771,7 @@ describe('DefaultView', () => {
         'm2',
         { id: '2', content: 'asst' },
         {
-          [HEADER_MSG_ID]: 'm2',
+          [HEADER_CODEC_MESSAGE_ID]: 'm2',
           'x-ably-parent': 'm1',
         },
         'serial-2',
@@ -784,15 +786,15 @@ describe('DefaultView', () => {
       });
 
       // Both show [m1, m2]
-      expect(view.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
-      expect(view2.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
+      expect(view.flattenNodes().map((n) => n.codecMessageId)).toEqual(['m1', 'm2']);
+      expect(view2.flattenNodes().map((n) => n.codecMessageId)).toEqual(['m1', 'm2']);
 
       // Fork m2 — simulates an edit/regenerate from view2
       tree.upsert(
         'm3',
         { id: '3', content: 'fork' },
         {
-          [HEADER_MSG_ID]: 'm3',
+          [HEADER_CODEC_MESSAGE_ID]: 'm3',
           'x-ably-parent': 'm1',
           'x-ably-fork-of': 'm2',
         },
@@ -800,14 +802,14 @@ describe('DefaultView', () => {
       );
 
       // view stays on m2 (pinned), view2 also pinned to m2
-      expect(view.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
-      expect(view2.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
+      expect(view.flattenNodes().map((n) => n.codecMessageId)).toEqual(['m1', 'm2']);
+      expect(view2.flattenNodes().map((n) => n.codecMessageId)).toEqual(['m1', 'm2']);
 
       // view2 navigates to the fork
       view2.select('m2', 1);
-      expect(view2.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
+      expect(view2.flattenNodes().map((n) => n.codecMessageId)).toEqual(['m1', 'm3']);
       // view unaffected
-      expect(view.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
+      expect(view.flattenNodes().map((n) => n.codecMessageId)).toEqual(['m1', 'm2']);
 
       view2.close();
     });
@@ -820,7 +822,7 @@ describe('DefaultView', () => {
           'm3',
           { id: '3', content: 'fork' },
           {
-            [HEADER_MSG_ID]: 'm3',
+            [HEADER_CODEC_MESSAGE_ID]: 'm3',
             'x-ably-parent': 'm1',
             'x-ably-fork-of': 'm2',
           },
@@ -831,8 +833,8 @@ describe('DefaultView', () => {
           runId: 'run-1',
           invocationId: 'inv-1',
           cancel: vi.fn(),
-          optimisticMsgIds: ['m3'],
-          promptIds: [],
+          optimisticCodecMessageIds: ['m3'],
+          eventIds: [],
         });
       });
 
@@ -849,7 +851,7 @@ describe('DefaultView', () => {
         'm2',
         { id: '2', content: 'asst' },
         {
-          [HEADER_MSG_ID]: 'm2',
+          [HEADER_CODEC_MESSAGE_ID]: 'm2',
           'x-ably-parent': 'm1',
         },
         'serial-2',
@@ -858,7 +860,7 @@ describe('DefaultView', () => {
       await forkView.sendEvent([], { forkOf: 'm2', parent: 'm1' });
 
       // forkView auto-selected the new fork (m3, latest sibling)
-      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
+      expect(forkView.flattenNodes().map((n) => n.codecMessageId)).toEqual(['m1', 'm3']);
 
       forkView.close();
     });
@@ -873,8 +875,8 @@ describe('DefaultView', () => {
           runId: 'run-1',
           invocationId: 'inv-1',
           cancel: vi.fn(),
-          optimisticMsgIds: [],
-          promptIds: [],
+          optimisticCodecMessageIds: [],
+          eventIds: [],
         }),
       );
 
@@ -891,7 +893,7 @@ describe('DefaultView', () => {
         'm2',
         { id: '2', content: 'asst' },
         {
-          [HEADER_MSG_ID]: 'm2',
+          [HEADER_CODEC_MESSAGE_ID]: 'm2',
           'x-ably-parent': 'm1',
         },
         'serial-2',
@@ -901,7 +903,7 @@ describe('DefaultView', () => {
       await forkView.sendEvent([], { forkOf: 'm2', parent: 'm1' });
 
       // Still on original branch — no sibling yet
-      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
+      expect(forkView.flattenNodes().map((n) => n.codecMessageId)).toEqual(['m1', 'm2']);
 
       const handler = vi.fn();
       forkView.on('update', handler);
@@ -911,7 +913,7 @@ describe('DefaultView', () => {
         'm3',
         { id: '3', content: 'regenerated' },
         {
-          [HEADER_MSG_ID]: 'm3',
+          [HEADER_CODEC_MESSAGE_ID]: 'm3',
           'x-ably-parent': 'm1',
           'x-ably-fork-of': 'm2',
           'x-ably-run-id': 'run-1',
@@ -920,7 +922,7 @@ describe('DefaultView', () => {
       );
 
       // forkView auto-selected the new fork (m3, latest sibling)
-      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
+      expect(forkView.flattenNodes().map((n) => n.codecMessageId)).toEqual(['m1', 'm3']);
       expect(handler).toHaveBeenCalled();
 
       // Pending state was consumed — a second fork from a different run doesn't force re-selection
@@ -929,7 +931,7 @@ describe('DefaultView', () => {
         'm4',
         { id: '4', content: 'another fork' },
         {
-          [HEADER_MSG_ID]: 'm4',
+          [HEADER_CODEC_MESSAGE_ID]: 'm4',
           'x-ably-parent': 'm1',
           'x-ably-fork-of': 'm2',
           'x-ably-run-id': 'run-other',
@@ -938,7 +940,7 @@ describe('DefaultView', () => {
       );
 
       // View stays pinned on m3, does not jump to m4
-      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
+      expect(forkView.flattenNodes().map((n) => n.codecMessageId)).toEqual(['m1', 'm3']);
 
       forkView.close();
     });
@@ -954,8 +956,8 @@ describe('DefaultView', () => {
           runId: 'run-1',
           invocationId: 'inv-1',
           cancel: vi.fn(),
-          optimisticMsgIds: [],
-          promptIds: [],
+          optimisticCodecMessageIds: [],
+          eventIds: [],
         }),
       );
 
@@ -973,7 +975,7 @@ describe('DefaultView', () => {
         'm2',
         { id: '2', content: 'asst v1' },
         {
-          [HEADER_MSG_ID]: 'm2',
+          [HEADER_CODEC_MESSAGE_ID]: 'm2',
           'x-ably-parent': 'm1',
         },
         'serial-2',
@@ -982,7 +984,7 @@ describe('DefaultView', () => {
         'm3',
         { id: '3', content: 'asst v2' },
         {
-          [HEADER_MSG_ID]: 'm3',
+          [HEADER_CODEC_MESSAGE_ID]: 'm3',
           'x-ably-parent': 'm1',
           'x-ably-fork-of': 'm2',
         },
@@ -991,20 +993,20 @@ describe('DefaultView', () => {
 
       // View is showing m3 (latest sibling, index 1)
       forkView.select('m2', 1);
-      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
+      expect(forkView.flattenNodes().map((n) => n.codecMessageId)).toEqual(['m1', 'm3']);
 
       // Regenerate again: forkOf m2, no optimistic insert
       await forkView.sendEvent([], { forkOf: 'm2', parent: 'm1' });
 
       // Still showing m3 — no new sibling yet
-      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
+      expect(forkView.flattenNodes().map((n) => n.codecMessageId)).toEqual(['m1', 'm3']);
 
       // Server response arrives, creating a third sibling (stamped with the pending run's ID)
       tree.upsert(
         'm4',
         { id: '4', content: 'asst v3' },
         {
-          [HEADER_MSG_ID]: 'm4',
+          [HEADER_CODEC_MESSAGE_ID]: 'm4',
           'x-ably-parent': 'm1',
           'x-ably-fork-of': 'm2',
           'x-ably-run-id': 'run-1',
@@ -1013,7 +1015,7 @@ describe('DefaultView', () => {
       );
 
       // forkView auto-selected the newest sibling (m4, index 2)
-      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm4']);
+      expect(forkView.flattenNodes().map((n) => n.codecMessageId)).toEqual(['m1', 'm4']);
 
       forkView.close();
     });
@@ -1029,8 +1031,8 @@ describe('DefaultView', () => {
           runId: 'run-1',
           invocationId: 'inv-1',
           cancel: vi.fn(),
-          optimisticMsgIds: [],
-          promptIds: [],
+          optimisticCodecMessageIds: [],
+          eventIds: [],
         }),
       );
 
@@ -1047,7 +1049,7 @@ describe('DefaultView', () => {
         'm2',
         { id: '2', content: 'asst v1' },
         {
-          [HEADER_MSG_ID]: 'm2',
+          [HEADER_CODEC_MESSAGE_ID]: 'm2',
           'x-ably-parent': 'm1',
         },
         'serial-2',
@@ -1056,7 +1058,7 @@ describe('DefaultView', () => {
         'm3',
         { id: '3', content: 'asst v2' },
         {
-          [HEADER_MSG_ID]: 'm3',
+          [HEADER_CODEC_MESSAGE_ID]: 'm3',
           'x-ably-parent': 'm1',
           'x-ably-fork-of': 'm2',
         },
@@ -1066,7 +1068,7 @@ describe('DefaultView', () => {
       // Navigate to original (m2) then back to m3
       forkView.select('m2', 0);
       forkView.select('m2', 1);
-      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
+      expect(forkView.flattenNodes().map((n) => n.codecMessageId)).toEqual(['m1', 'm3']);
 
       // Regenerate while viewing m3 — forkOf is m3, not the group root m2
       await forkView.sendEvent([], { forkOf: 'm3', parent: 'm1' });
@@ -1076,7 +1078,7 @@ describe('DefaultView', () => {
         'm4',
         { id: '4', content: 'asst v3' },
         {
-          [HEADER_MSG_ID]: 'm4',
+          [HEADER_CODEC_MESSAGE_ID]: 'm4',
           'x-ably-parent': 'm1',
           'x-ably-fork-of': 'm3',
           'x-ably-run-id': 'run-1',
@@ -1085,7 +1087,7 @@ describe('DefaultView', () => {
       );
 
       // Auto-selected the newest sibling
-      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm4']);
+      expect(forkView.flattenNodes().map((n) => n.codecMessageId)).toEqual(['m1', 'm4']);
 
       forkView.close();
     });
@@ -1100,8 +1102,8 @@ describe('DefaultView', () => {
           runId: 'run-cleanup',
           invocationId: 'inv-cleanup',
           cancel: vi.fn(),
-          optimisticMsgIds: [],
-          promptIds: [],
+          optimisticCodecMessageIds: [],
+          eventIds: [],
         }),
       );
 
@@ -1118,7 +1120,7 @@ describe('DefaultView', () => {
         'm2',
         { id: '2', content: 'asst' },
         {
-          [HEADER_MSG_ID]: 'm2',
+          [HEADER_CODEC_MESSAGE_ID]: 'm2',
           'x-ably-parent': 'm1',
         },
         'serial-2',
@@ -1135,7 +1137,7 @@ describe('DefaultView', () => {
         'm3',
         { id: '3', content: 'external fork' },
         {
-          [HEADER_MSG_ID]: 'm3',
+          [HEADER_CODEC_MESSAGE_ID]: 'm3',
           'x-ably-parent': 'm1',
           'x-ably-fork-of': 'm2',
         },
@@ -1143,7 +1145,7 @@ describe('DefaultView', () => {
       );
 
       // View pins to m2 (external fork), does NOT jump to m3
-      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
+      expect(forkView.flattenNodes().map((n) => n.codecMessageId)).toEqual(['m1', 'm2']);
 
       forkView.close();
     });
@@ -1164,7 +1166,7 @@ describe('DefaultView', () => {
       // view still works
       const handler = vi.fn();
       view.on('update', handler);
-      tree.upsert('m2', { id: '2', content: 'hello' }, { [HEADER_MSG_ID]: 'm2', 'x-ably-parent': 'm1' });
+      tree.upsert('m2', { id: '2', content: 'hello' }, { [HEADER_CODEC_MESSAGE_ID]: 'm2', 'x-ably-parent': 'm1' });
       expect(handler).toHaveBeenCalledOnce();
     });
   });
@@ -1191,7 +1193,7 @@ describe('DefaultView', () => {
         'm2',
         { id: '2', content: 'assistant' },
         {
-          [HEADER_MSG_ID]: 'm2',
+          [HEADER_CODEC_MESSAGE_ID]: 'm2',
           'x-ably-parent': 'm1',
         },
         'serial-2',
@@ -1200,7 +1202,7 @@ describe('DefaultView', () => {
         'm3',
         { id: '3', content: 'follow-up' },
         {
-          [HEADER_MSG_ID]: 'm3',
+          [HEADER_CODEC_MESSAGE_ID]: 'm3',
           'x-ably-parent': 'm2',
         },
         'serial-3',
@@ -1212,7 +1214,7 @@ describe('DefaultView', () => {
       expect(mockDelegate).toHaveBeenCalledOnce();
       const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
       const history = call[2] as MessageNode<TestMessage>[];
-      expect(history.map((n) => n.msgId)).toEqual(['m1', 'm2', 'm3']);
+      expect(history.map((n) => n.codecMessageId)).toEqual(['m1', 'm2', 'm3']);
     });
 
     it('send forwards options to delegate', async () => {
@@ -1231,12 +1233,12 @@ describe('DefaultView', () => {
       const options = call[1] as SendOptions;
       // The delegate receives the regenerate event the codec minted via
       // createRegenerateEvent (the mock returns { type: 'user-message' });
-      // no republishMsgId argument is passed — the regenerate event is
+      // no republishCodecMessageId argument is passed — the regenerate event is
       // wire-only.
       expect(input).toEqual([{ event: { type: 'user-message' } }]);
-      expect(call).toHaveLength(3); // no 4th republishMsgId argument
+      expect(call).toHaveLength(3); // no 4th republishCodecMessageId argument
       // forkOf targets the assistant being regenerated; parent is the
-      // user msg-id under which the new assistant streams as a sibling.
+      // user codec-message-id under which the new assistant streams as a sibling.
       expect(options.forkOf).toBe('m2');
       expect(options.parent).toBe('m1');
     });
@@ -1281,7 +1283,7 @@ describe('DefaultView', () => {
         'm4',
         { id: '4', content: 'v2' },
         {
-          [HEADER_MSG_ID]: 'm4',
+          [HEADER_CODEC_MESSAGE_ID]: 'm4',
           'x-ably-parent': 'm1',
           'x-ably-fork-of': 'm2',
         },
@@ -1295,7 +1297,7 @@ describe('DefaultView', () => {
       const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
       const history = call[2] as MessageNode<TestMessage>[];
       // Should follow m1 -> m2 -> m3 (selected branch), not m1 -> m4
-      expect(history.map((n) => n.msgId)).toEqual(['m1', 'm2', 'm3']);
+      expect(history.map((n) => n.codecMessageId)).toEqual(['m1', 'm2', 'm3']);
     });
   });
 
@@ -1327,7 +1329,7 @@ describe('DefaultView', () => {
         'm2',
         { id: '2', content: 'v1' },
         {
-          [HEADER_MSG_ID]: 'm2',
+          [HEADER_CODEC_MESSAGE_ID]: 'm2',
           'x-ably-parent': 'm1',
         },
         'serial-2',
@@ -1336,7 +1338,7 @@ describe('DefaultView', () => {
         'm3',
         { id: '3', content: 'v2' },
         {
-          [HEADER_MSG_ID]: 'm3',
+          [HEADER_CODEC_MESSAGE_ID]: 'm3',
           'x-ably-parent': 'm1',
           'x-ably-fork-of': 'm2',
         },
@@ -1364,7 +1366,10 @@ describe('DefaultView', () => {
 
       // Trigger tree events — view handlers should not fire
       tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1', 'run-1'), 'serial-1');
-      tree.emitAblyMessage({ name: 'test', extras: { headers: { [HEADER_MSG_ID]: 'm1' } } } as Ably.InboundMessage);
+      tree.emitAblyMessage({
+        name: 'test',
+        extras: { headers: { [HEADER_CODEC_MESSAGE_ID]: 'm1' } },
+      } as Ably.InboundMessage);
       tree.emitRun({ type: 'ai-run-end', runId: 'run-1', clientId: 'c1', reason: 'complete' });
 
       expect(updateHandler).not.toHaveBeenCalled();
@@ -1423,7 +1428,7 @@ describe('DefaultView', () => {
       const spy = vi.spyOn(tree, 'flattenNodes');
       spy.mockClear();
 
-      // Content-only update: same msgId, different message content, no serial change
+      // Content-only update: same codecMessageId, different message content, no serial change
       tree.upsert('m2', { id: '2', content: 'streaming token' }, makeHeaders('m2', 'run-1'), 'serial-2');
 
       // The view should detect this is a content-only update and skip the
@@ -1474,8 +1479,13 @@ describe('DefaultView', () => {
       const msg1 = { id: '1', content: 'user msg' };
       const msg2 = { id: '2', content: 'assistant msg' };
       tree.upsert('m1', msg1, makeHeaders('m1'), 'serial-1');
-      tree.upsert('m2', msg2, { [HEADER_MSG_ID]: 'm2', 'x-ably-parent': 'm1' }, 'serial-2');
-      tree.upsert('m3', { id: '3', content: '' }, { [HEADER_MSG_ID]: 'm3', 'x-ably-parent': 'm2' }, 'serial-3');
+      tree.upsert('m2', msg2, { [HEADER_CODEC_MESSAGE_ID]: 'm2', 'x-ably-parent': 'm1' }, 'serial-2');
+      tree.upsert(
+        'm3',
+        { id: '3', content: '' },
+        { [HEADER_CODEC_MESSAGE_ID]: 'm3', 'x-ably-parent': 'm2' },
+        'serial-3',
+      );
 
       const snap0 = view.flattenNodes();
       const m1Ref0 = snap0[0]?.message;
@@ -1503,14 +1513,14 @@ describe('DefaultView', () => {
   describe('latest-serial-wins invocation filter', () => {
     /**
      * Build user-message headers carrying run-id and invocation-id.
-     * @param msgId - Message identifier stamped in `x-ably-msg-id`.
+     * @param codecMessageId - Message identifier stamped in `x-ably-codec-message-id`.
      * @param runId - Run identifier stamped in `x-ably-run-id`.
      * @param invocationId - Invocation identifier stamped in `x-ably-invocation-id`.
      * @returns A headers record with role=user and the three identifiers populated.
      */
     // eslint-disable-next-line unicorn/consistent-function-scoping -- describe-local helper
-    const userH = (msgId: string, runId: string, invocationId: string): Record<string, string> => ({
-      [HEADER_MSG_ID]: msgId,
+    const userH = (codecMessageId: string, runId: string, invocationId: string): Record<string, string> => ({
+      [HEADER_CODEC_MESSAGE_ID]: codecMessageId,
       [HEADER_ROLE]: 'user',
       [HEADER_RUN_ID]: runId,
       [HEADER_INVOCATION_ID]: invocationId,
@@ -1518,13 +1528,13 @@ describe('DefaultView', () => {
 
     /**
      * Build assistant-message headers (no invocation-id by design).
-     * @param msgId - Message identifier stamped in `x-ably-msg-id`.
+     * @param codecMessageId - Message identifier stamped in `x-ably-codec-message-id`.
      * @param runId - Run identifier stamped in `x-ably-run-id`.
      * @returns A headers record with role=assistant and the two identifiers populated.
      */
     // eslint-disable-next-line unicorn/consistent-function-scoping -- describe-local helper
-    const assistantH = (msgId: string, runId: string): Record<string, string> => ({
-      [HEADER_MSG_ID]: msgId,
+    const assistantH = (codecMessageId: string, runId: string): Record<string, string> => ({
+      [HEADER_CODEC_MESSAGE_ID]: codecMessageId,
       [HEADER_ROLE]: 'assistant',
       [HEADER_RUN_ID]: runId,
     });
@@ -1536,7 +1546,7 @@ describe('DefaultView', () => {
       tree.upsert('m2', { id: '2', content: 'retry' }, userH('m2', 'run-1', 'inv-2'), 'serial-010');
       tree.upsert('m2a', { id: '2a', content: 'asst-2' }, assistantH('m2a', 'run-1'), 'serial-011');
 
-      const visibleIds = view.flattenNodes().map((n) => n.msgId);
+      const visibleIds = view.flattenNodes().map((n) => n.codecMessageId);
       expect(visibleIds).toEqual(['m2', 'm2a']);
     });
 
@@ -1546,7 +1556,7 @@ describe('DefaultView', () => {
       // Optimistic retry — null serial.
       tree.upsert('m2', { id: '2', content: 'retry' }, userH('m2', 'run-1', 'inv-2'));
 
-      const visibleIds = view.flattenNodes().map((n) => n.msgId);
+      const visibleIds = view.flattenNodes().map((n) => n.codecMessageId);
       // Both visible: m1 is current winner, m2 is optimistic.
       expect(visibleIds).toContain('m1');
       expect(visibleIds).toContain('m2');
@@ -1561,7 +1571,7 @@ describe('DefaultView', () => {
       tree.upsert('m2', { id: '2', content: 'retry' }, userH('m2', 'run-1', 'inv-2'), 'serial-010');
 
       expect(handler).toHaveBeenCalled();
-      const visibleIds = view.flattenNodes().map((n) => n.msgId);
+      const visibleIds = view.flattenNodes().map((n) => n.codecMessageId);
       expect(visibleIds).toEqual(['m2']);
     });
 
@@ -1570,7 +1580,7 @@ describe('DefaultView', () => {
       tree.upsert('m1', { id: '1', content: 'first' }, userH('m1', 'run-1', 'inv-1'), 'serial-005');
       tree.upsert('m2', { id: '2', content: 'second' }, userH('m2', 'run-2', 'inv-2'), 'serial-010');
 
-      const visibleIds = view.flattenNodes().map((n) => n.msgId);
+      const visibleIds = view.flattenNodes().map((n) => n.codecMessageId);
       expect(visibleIds).toContain('m1');
       expect(visibleIds).toContain('m2');
     });

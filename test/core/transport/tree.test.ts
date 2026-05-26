@@ -28,8 +28,8 @@ const NO_SELECTIONS = new Map<string, string>();
 /**
  * Build headers for a tree node.
  * @param opts - Optional parent and forkOf IDs.
- * @param opts.parent - The parent msg-id.
- * @param opts.forkOf - The forkOf msg-id.
+ * @param opts.parent - The parent codec-message-id.
+ * @param opts.forkOf - The forkOf codec-message-id.
  * @returns A headers object suitable for upsert.
  */
 const headers = (opts?: { parent?: string; forkOf?: string }): Record<string, string> => {
@@ -77,7 +77,7 @@ describe('Tree', () => {
       tree.upsert('m1', { id: 'a', content: 'hi' }, headers(), 'serial-001');
       const node = tree.getNode('m1');
       expect(node).toBeDefined();
-      expect(node?.msgId).toBe('m1');
+      expect(node?.codecMessageId).toBe('m1');
       expect(node?.message).toEqual({ id: 'a', content: 'hi' });
     });
 
@@ -128,7 +128,7 @@ describe('Tree', () => {
       // Original insert: agent's assistant stream stamps role='assistant'.
       tree.upsert('m1', { id: 'a', content: 'v1' }, { [HEADER_ROLE]: 'assistant', 'x-foo': 'a' }, 'serial-001');
       // Secondary contribution: a client-published continuation tool
-      // resolution stamps the SAME msg-id but with role='user'. The node's
+      // resolution stamps the SAME codec-message-id but with role='user'. The node's
       // role must remain 'assistant' — otherwise the UI / winner-rule / etc.
       // misread the node as a user message.
       tree.upsert('m1', { id: 'a', content: 'v2' }, { [HEADER_ROLE]: 'user', 'x-foo': 'b' });
@@ -266,7 +266,7 @@ describe('Tree', () => {
       tree.upsert('m4', { id: 'd', content: 'assistant-v2' }, headers({ parent: 'm1', forkOf: 'm2' }), 'serial-004');
 
       const groupRoot = tree.getGroupRoot('m2');
-      // Select the first sibling (original m2) by msgId
+      // Select the first sibling (original m2) by codecMessageId
       const selections = new Map([[groupRoot, 'm2']]);
 
       const flat = tree.flattenNodes(selections).map((n) => n.message);
@@ -277,24 +277,24 @@ describe('Tree', () => {
       ]);
     });
 
-    it('stale selection msgId falls back to latest sibling', () => {
+    it('stale selection codecMessageId falls back to latest sibling', () => {
       tree.upsert('m4', { id: 'd', content: 'v2' }, headers({ parent: 'm1', forkOf: 'm2' }), 'serial-004');
 
       const groupRoot = tree.getGroupRoot('m2');
 
-      // Unknown msgId falls back to latest
+      // Unknown codecMessageId falls back to latest
       const stale = new Map([[groupRoot, 'nonexistent']]);
       const flatStale = tree.flattenNodes(stale).map((n) => n.message.content);
       expect(flatStale).toContain('v2');
     });
 
-    it('getSiblingNodes returns TreeNode objects with msgIds', () => {
+    it('getSiblingNodes returns TreeNode objects with codecMessageIds', () => {
       tree.upsert('m4', { id: 'd', content: 'assistant-v2' }, headers({ parent: 'm1', forkOf: 'm2' }), 'serial-004');
 
       const nodes = tree.getSiblingNodes('m2');
       expect(nodes).toHaveLength(2);
-      expect(nodes[0]?.msgId).toBe('m2');
-      expect(nodes[1]?.msgId).toBe('m4');
+      expect(nodes[0]?.codecMessageId).toBe('m2');
+      expect(nodes[1]?.codecMessageId).toBe('m4');
       expect(nodes[0]?.message).toEqual({ id: 'b', content: 'assistant-v1' });
       expect(nodes[1]?.message).toEqual({ id: 'd', content: 'assistant-v2' });
     });
@@ -304,7 +304,7 @@ describe('Tree', () => {
       expect(tree.hasSiblings('m1')).toBe(false);
     });
 
-    it('getSiblings returns empty array for unknown msgId', () => {
+    it('getSiblings returns empty array for unknown codecMessageId', () => {
       expect(tree.getSiblings('unknown')).toEqual([]);
     });
 
@@ -337,7 +337,7 @@ describe('Tree', () => {
       expect(tree.getGroupRoot('m4')).toBe('m2');
     });
 
-    it('getGroupRoot returns msgId for non-forked nodes', () => {
+    it('getGroupRoot returns codecMessageId for non-forked nodes', () => {
       expect(tree.getGroupRoot('m1')).toBe('m1');
     });
   });
@@ -374,7 +374,7 @@ describe('Tree', () => {
       expect(tree.getNode('m3')).toBeDefined();
     });
 
-    it('is a no-op for unknown msgId', () => {
+    it('is a no-op for unknown codecMessageId', () => {
       tree.upsert('m1', { id: 'a', content: 'hi' }, headers(), 'serial-001');
       tree.delete('unknown');
       expect(tree.flattenNodes(NO_SELECTIONS).map((n) => n.message)).toEqual([{ id: 'a', content: 'hi' }]);

@@ -39,16 +39,16 @@ export const HEADER_INVOCATION_ID = 'x-ably-invocation-id';
  * Header: per-event identifier stamped by the client on every
  * client-published event in a send — user-message events AND amend
  * events (tool-approval responses, client tool outputs). Distinct from
- * `x-ably-msg-id` so it survives edits/retries that reuse the same
- * msg-id, and so amend events that target an existing message can
+ * `x-ably-codec-message-id` so it survives edits/retries that reuse the same
+ * codec-message-id, and so amend events that target an existing message can
  * carry their own per-send identity. The invocation body lists every
- * promptId the agent must observe on the channel before starting LLM
+ * eventId the agent must observe on the channel before starting LLM
  * work — see `Run.start()`'s prompt lookup.
  */
-export const HEADER_PROMPT_ID = 'x-ably-prompt-id';
+export const HEADER_EVENT_ID = 'x-ably-event-id';
 
 /** Header: message identity. Assigned per message (user or assistant). Used for optimistic reconciliation on the client. */
-export const HEADER_MSG_ID = 'x-ably-msg-id';
+export const HEADER_CODEC_MESSAGE_ID = 'x-ably-codec-message-id';
 
 /** Header: clientId of the user who initiated the run. Set by the server on stream messages. */
 export const HEADER_RUN_CLIENT_ID = 'x-ably-run-client-id';
@@ -79,10 +79,10 @@ export const HEADER_CANCEL_INVOCATION_ID = 'x-ably-cancel-invocation-id';
 // Fork / branching headers
 // ---------------------------------------------------------------------------
 
-/** Header: the msg-id of the immediately preceding message in this branch. */
+/** Header: the codec-message-id of the immediately preceding message in this branch. */
 export const HEADER_PARENT = 'x-ably-parent';
 
-/** Header: the msg-id of the message this one replaces (creates a fork). */
+/** Header: the codec-message-id of the message this one replaces (creates a fork). */
 export const HEADER_FORK_OF = 'x-ably-fork-of';
 
 // ---------------------------------------------------------------------------

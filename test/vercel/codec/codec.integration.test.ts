@@ -15,7 +15,7 @@ import type * as Ably from 'ably';
 import type * as AI from 'ai';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { HEADER_MSG_ID, HEADER_RUN_ID } from '../../../src/constants.js';
+import { HEADER_CODEC_MESSAGE_ID, HEADER_RUN_ID } from '../../../src/constants.js';
 import { UIMessageCodec, type VercelEvent, type VercelProjection } from '../../../src/vercel/codec/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
@@ -33,19 +33,19 @@ const stampHeaders = (runId: string, messageId: string) => (msg: Ably.Message) =
   const headers = (msg.extras as { headers?: Record<string, string> } | undefined)?.headers;
   if (headers) {
     headers[HEADER_RUN_ID] = runId;
-    headers[HEADER_MSG_ID] = messageId;
+    headers[HEADER_CODEC_MESSAGE_ID] = messageId;
   }
 };
 
 /**
- * Read `x-ably-msg-id` and serial from an Ably inbound message for the reducer meta.
+ * Read `x-ably-codec-message-id` and serial from an Ably inbound message for the reducer meta.
  * @param msg - The Ably inbound message to read meta from.
  * @returns A ReducerMeta-shaped object carrying serial and optional messageId.
  */
 const metaOf = (msg: Ably.InboundMessage): { serial: string; messageId?: string } => {
   // CAST: Ably SDK types `extras` as `any`; we trust the runtime shape.
   const headers = (msg.extras as { headers?: Record<string, string> } | undefined)?.headers ?? {};
-  const messageId = headers[HEADER_MSG_ID];
+  const messageId = headers[HEADER_CODEC_MESSAGE_ID];
   return messageId === undefined ? { serial: msg.serial ?? '' } : { serial: msg.serial ?? '', messageId };
 };
 

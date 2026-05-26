@@ -16,7 +16,7 @@
  *   `approval-responded` part in the messages, so `streamText` executes
  *   it without re-pausing. `run.pipe`'s internal `resolveToolTarget`
  *   redirects the resulting tool-output wire message back to the original
- *   assistant message via `HEADER_MSG_ID`.
+ *   assistant message via `HEADER_CODEC_MESSAGE_ID`.
  */
 
 import { after } from 'next/server';

@@ -402,7 +402,7 @@ const decodeNonStreamingToolInput = (
 /**
  * Decode a single discrete message part (from the user-message multi-part
  * wire format) into a UserMessageEvent carrying a one-part UIMessage. The
- * reducer's `_foldUserMessage` merges parts that share the same msg-id.
+ * reducer's `_foldUserMessage` merges parts that share the same codec-message-id.
  * @param input - The discrete message payload (name, data, headers).
  * @returns A single `ait-user-message` event, or an empty array when the part type is unrecognised.
  */

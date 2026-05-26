@@ -15,7 +15,7 @@
 
 import * as Ably from 'ably';
 
-import { EVENT_RUN_END, EVENT_RUN_START, HEADER_MSG_ID, HEADER_RUN_ID } from '../../constants.js';
+import { EVENT_RUN_END, EVENT_RUN_START, HEADER_CODEC_MESSAGE_ID, HEADER_RUN_ID } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
@@ -50,7 +50,7 @@ interface ViewEventsMap {
  * this shape so the delegate always sees the same structure.
  *
  * When `domainMessageId` is set on an entry, the SDK uses that value as
- * the wire `x-ably-msg-id` (and the optimistic fold's `meta.messageId`)
+ * the wire `x-ably-codec-message-id` (and the optimistic fold's `meta.messageId`)
  * for that event instead of minting a fresh `crypto.randomUUID()`. Used
  * by chat-transport to publish continuation tool resolutions onto an
  * existing assistant's tree key.
@@ -146,18 +146,18 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   private readonly _onClose?: () => void;
 
   /**
-   * View-local branch selections: group root msgId → selection intent.
+   * View-local branch selections: group root codecMessageId → selection intent.
    * Fork points not present here default to the latest sibling.
    * Replaces the previous numeric-index _selections and _pendingForkSelections
-   * with a single tagged-union map that carries the selected msgId (not index)
+   * with a single tagged-union map that carries the selected codecMessageId (not index)
    * and the reason for the selection.
    */
   private readonly _branchSelections = new Map<string, BranchSelection>();
 
-  /** Spec: AIT-CT11c — msg-ids loaded from history but not yet revealed to the UI. */
-  private readonly _withheldMsgIds = new Set<string>();
+  /** Spec: AIT-CT11c — codec-message-ids loaded from history but not yet revealed to the UI. */
+  private readonly _withheldCodecMessageIds = new Set<string>();
 
-  /** Snapshot of visible msgIds — used to detect structural changes and for selection pinning. */
+  /** Snapshot of visible codecMessageIds — used to detect structural changes and for selection pinning. */
   private _lastVisibleIds: string[] = [];
 
   /** Snapshot of visible message references — used to detect in-place content updates (streaming). */
@@ -233,7 +233,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   private _onTreeWinningChange(): void {
     if (this._processingHistory) return;
     const nodes = this._computeFlatNodes();
-    const newIds = nodes.map((n) => n.msgId);
+    const newIds = nodes.map((n) => n.codecMessageId);
     const newMessages = nodes.map((n) => n.message);
     if (this._visibleChanged(newIds, newMessages)) {
       this._cachedNodes = nodes;
@@ -266,7 +266,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   private _computeFlatNodes(): MessageNode<TMessage>[] {
     const nodes = this._tree.flattenNodes(this._resolveSelections());
     return nodes.filter((n) => {
-      if (this._withheldMsgIds.has(n.msgId)) return false;
+      if (this._withheldCodecMessageIds.has(n.codecMessageId)) return false;
       return !this._isLosingInvocationNode(n);
     });
   }
@@ -345,43 +345,47 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   // -------------------------------------------------------------------------
 
   // Spec: AIT-CT13c
-  select(msgId: string, index: number): void {
-    this._logger.trace('DefaultView.select();', { msgId, index });
-    const nodes = this._tree.getSiblingNodes(msgId);
+  select(codecMessageId: string, index: number): void {
+    this._logger.trace('DefaultView.select();', { codecMessageId, index });
+    const nodes = this._tree.getSiblingNodes(codecMessageId);
     if (nodes.length <= 1) return;
-    const groupRootId = this._tree.getGroupRoot(msgId);
+    const groupRootId = this._tree.getGroupRoot(codecMessageId);
     const clamped = Math.max(0, Math.min(index, nodes.length - 1));
     const selected = nodes[clamped];
     if (!selected) return; // unreachable: clamped is always in bounds
-    this._branchSelections.set(groupRootId, { kind: 'user', selectedId: selected.msgId });
-    this._logger.debug('DefaultView.select();', { msgId, index: clamped, selectedId: selected.msgId });
+    this._branchSelections.set(groupRootId, { kind: 'user', selectedId: selected.codecMessageId });
+    this._logger.debug('DefaultView.select();', {
+      codecMessageId,
+      index: clamped,
+      selectedId: selected.codecMessageId,
+    });
     this._cachedNodes = this._computeFlatNodes();
     this._updateVisibleSnapshot(this._cachedNodes);
     this._emitter.emit('update');
   }
 
-  getSelectedIndex(msgId: string): number {
-    this._logger.trace('DefaultView.getSelectedIndex();', { msgId });
-    const nodes = this._tree.getSiblingNodes(msgId);
+  getSelectedIndex(codecMessageId: string): number {
+    this._logger.trace('DefaultView.getSelectedIndex();', { codecMessageId });
+    const nodes = this._tree.getSiblingNodes(codecMessageId);
     if (nodes.length <= 1) return 0;
-    const groupRootId = this._tree.getGroupRoot(msgId);
+    const groupRootId = this._tree.getGroupRoot(codecMessageId);
     const sel = this._branchSelections.get(groupRootId);
     if (!sel || sel.kind === 'pending') return nodes.length - 1; // default: latest
-    const idx = nodes.findIndex((n) => n.msgId === sel.selectedId);
+    const idx = nodes.findIndex((n) => n.codecMessageId === sel.selectedId);
     if (idx === -1) return nodes.length - 1; // fallback if stale
     return idx;
   }
 
-  getSiblings(msgId: string): TMessage[] {
-    return this._tree.getSiblings(msgId);
+  getSiblings(codecMessageId: string): TMessage[] {
+    return this._tree.getSiblings(codecMessageId);
   }
 
-  hasSiblings(msgId: string): boolean {
-    return this._tree.hasSiblings(msgId);
+  hasSiblings(codecMessageId: string): boolean {
+    return this._tree.hasSiblings(codecMessageId);
   }
 
-  getNode(msgId: string): MessageNode<TMessage> | undefined {
-    return this._tree.getNode(msgId);
+  getNode(codecMessageId: string): MessageNode<TMessage> | undefined {
+    return this._tree.getNode(codecMessageId);
   }
 
   // -------------------------------------------------------------------------
@@ -428,13 +432,13 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
 
     const groupRoot = this._tree.getGroupRoot(options.forkOf);
 
-    if (result.optimisticMsgIds.length > 0) {
+    if (result.optimisticCodecMessageIds.length > 0) {
       // The delegate optimistically inserted user messages (edit path).
-      // Auto-select the last optimistic msgId — this is deterministic and
+      // Auto-select the last optimistic codecMessageId — this is deterministic and
       // avoids the sibling-count race that exists when inferring from tree state.
-      const lastMsgId = result.optimisticMsgIds.at(-1);
-      if (lastMsgId) {
-        this._branchSelections.set(groupRoot, { kind: 'auto', selectedId: lastMsgId });
+      const lastCodecMessageId = result.optimisticCodecMessageIds.at(-1);
+      if (lastCodecMessageId) {
+        this._branchSelections.set(groupRoot, { kind: 'auto', selectedId: lastCodecMessageId });
         this._cachedNodes = this._computeFlatNodes();
         this._updateVisibleSnapshot(this._cachedNodes);
         this._emitter.emit('update');
@@ -443,7 +447,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     }
 
     // No optimistic insert (e.g. regenerate reuses the existing user
-    // msg-id, so no new node appears upfront). Defer auto-selection until
+    // codec-message-id, so no new node appears upfront). Defer auto-selection until
     // the server response creates the new assistant sibling. Store the
     // group root (not the raw forkOf) so _pinBranchSelections can match
     // regardless of which sibling is currently visible.
@@ -500,7 +504,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     // History runs through U1 inclusive — the LLM receives the user
     // message it should re-answer. U1 is NOT republished on the wire;
     // the body carries it directly.
-    const history = this._getHistoryThrough(parentNode.msgId);
+    const history = this._getHistoryThrough(parentNode.codecMessageId);
 
     const sendOptions: SendOptions = {
       ...options,
@@ -508,8 +512,8 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
         history: history.map((n) => n.message),
         ...options?.body,
       },
-      forkOf: targetNode.msgId,
-      parent: parentNode.msgId,
+      forkOf: targetNode.codecMessageId,
+      parent: parentNode.codecMessageId,
     };
 
     // Mint a regenerate event via the codec. The event is classified
@@ -517,9 +521,9 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     // (with `x-ably-fork-of: A1`, `x-ably-parent: U1` on transport
     // headers) without creating a tree node or folding the projection.
     // The agent's prompt-lookup catches the regenerate event by
-    // `promptId` and reads the routing headers off the inbound wire
+    // `eventId` and reads the routing headers off the inbound wire
     // message.
-    const regenerateEvent = this._codec.createRegenerateEvent(targetNode.msgId, parentNode.msgId);
+    const regenerateEvent = this._codec.createRegenerateEvent(targetNode.codecMessageId, parentNode.codecMessageId);
     const result = await this._sendDelegate([{ event: regenerateEvent }], sendOptions, history);
     this._applyForkAutoSelect(result, sendOptions);
     return result;
@@ -528,7 +532,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   private _getHistoryThrough(messageId: string): MessageNode<TMessage>[] {
     this._logger.trace('DefaultView._getHistoryThrough();', { messageId });
     const all = this.flattenNodes();
-    const idx = all.findIndex((n) => n.msgId === messageId);
+    const idx = all.findIndex((n) => n.codecMessageId === messageId);
     if (idx === -1) {
       this._logger.warn('DefaultView._getHistoryThrough(); target not in visible nodes, returning full list', {
         messageId,
@@ -566,7 +570,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   private _getHistoryBefore(messageId: string): MessageNode<TMessage>[] {
     this._logger.trace('DefaultView._getHistoryBefore();', { messageId });
     const all = this.flattenNodes();
-    const idx = all.findIndex((n) => n.msgId === messageId);
+    const idx = all.findIndex((n) => n.codecMessageId === messageId);
     if (idx === -1) {
       this._logger.warn('DefaultView._getHistoryBefore(); target not in visible nodes, returning full list', {
         messageId,
@@ -584,7 +588,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   getActiveRunIds(): Map<string, Set<string>> {
     this._logger.trace('DefaultView.getActiveRunIds();');
     const allRuns = this._tree.getActiveRunIds();
-    if (this._withheldMsgIds.size === 0) return allRuns;
+    if (this._withheldCodecMessageIds.size === 0) return allRuns;
 
     // Filter to runs that have at least one visible message
     const result = new Map<string, Set<string>>();
@@ -633,7 +637,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     this._unsubs.length = 0;
     this._emitter.off();
     this._branchSelections.clear();
-    this._withheldMsgIds.clear();
+    this._withheldCodecMessageIds.clear();
     this._withheldBuffer.length = 0;
     this._onClose?.();
   }
@@ -644,11 +648,13 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
 
   private async _loadFirstPage(limit: number): Promise<void> {
     // Snapshot before loading — everything already in the tree stays visible
-    const beforeMsgIds = new Set(this._tree.flattenNodes(this._resolveSelections()).map((n) => n.msgId));
+    const beforeCodecMessageIds = new Set(
+      this._tree.flattenNodes(this._resolveSelections()).map((n) => n.codecMessageId),
+    );
 
     const firstPage = await decodeHistory(this._channel, this._codec, { limit }, this._logger);
     if (this._closed) return;
-    const { newVisible, lastPage } = await this._loadUntilVisible(firstPage, limit, beforeMsgIds);
+    const { newVisible, lastPage } = await this._loadUntilVisible(firstPage, limit, beforeCodecMessageIds);
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- close() may be called during await
     if (this._closed) return;
 
@@ -662,7 +668,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     const released = newVisible.slice(-limit);
     const withheld = newVisible.slice(0, -limit);
     for (const n of withheld) {
-      this._withheldMsgIds.add(n.msgId);
+      this._withheldCodecMessageIds.add(n.codecMessageId);
     }
     this._withheldBuffer.push(...withheld);
     this._releaseWithheld(released);
@@ -670,7 +676,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
 
   private async _loadAndReveal(page: HistoryPage<TMessage>, limit: number): Promise<void> {
     // Everything currently in the tree is "already known"
-    const alreadyKnown = new Set(this._tree.flattenNodes(this._resolveSelections()).map((n) => n.msgId));
+    const alreadyKnown = new Set(this._tree.flattenNodes(this._resolveSelections()).map((n) => n.codecMessageId));
 
     const { newVisible, lastPage } = await this._loadUntilVisible(page, limit, alreadyKnown);
     if (this._closed) return;
@@ -684,7 +690,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     const batch = newVisible.slice(-limit);
     const withheld = newVisible.slice(0, -limit);
     for (const n of withheld) {
-      this._withheldMsgIds.add(n.msgId);
+      this._withheldCodecMessageIds.add(n.codecMessageId);
     }
     this._withheldBuffer.push(...withheld);
     this._releaseWithheld(batch);
@@ -694,9 +700,9 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     this._processingHistory = true;
     try {
       for (const item of page.items) {
-        const msgId = item.headers[HEADER_MSG_ID];
-        if (!msgId) continue;
-        this._tree.upsert(msgId, item.message, item.headers, item.serial);
+        const codecMessageId = item.headers[HEADER_CODEC_MESSAGE_ID];
+        if (!codecMessageId) continue;
+        this._tree.upsert(codecMessageId, item.message, item.headers, item.serial);
       }
 
       for (const msg of page.rawMessages) {
@@ -710,7 +716,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   private async _loadUntilVisible(
     firstPage: HistoryPage<TMessage>,
     target: number,
-    beforeMsgIds: Set<string>,
+    beforeCodecMessageIds: Set<string>,
   ): Promise<{ newVisible: MessageNode<TMessage>[]; lastPage: HistoryPage<TMessage> }> {
     this._processHistoryPage(firstPage);
     let page = firstPage;
@@ -718,7 +724,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     const newVisibleCount = (): number => {
       let count = 0;
       for (const n of this._tree.flattenNodes(this._resolveSelections())) {
-        if (!beforeMsgIds.has(n.msgId)) count++;
+        if (!beforeCodecMessageIds.has(n.codecMessageId)) count++;
       }
       return count;
     };
@@ -730,14 +736,16 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
       page = nextPage;
     }
 
-    const newVisible = this._tree.flattenNodes(this._resolveSelections()).filter((n) => !beforeMsgIds.has(n.msgId));
+    const newVisible = this._tree
+      .flattenNodes(this._resolveSelections())
+      .filter((n) => !beforeCodecMessageIds.has(n.codecMessageId));
     return { newVisible, lastPage: page };
   }
 
   // Spec: AIT-CT11a
   private _releaseWithheld(nodes: MessageNode<TMessage>[]): void {
     for (const n of nodes) {
-      this._withheldMsgIds.delete(n.msgId);
+      this._withheldCodecMessageIds.delete(n.codecMessageId);
     }
     if (nodes.length > 0) {
       this._cachedNodes = this._computeFlatNodes();
@@ -752,7 +760,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
 
   private _updateVisibleSnapshot(nodes?: MessageNode<TMessage>[]): void {
     const resolved = nodes ?? this.flattenNodes();
-    this._lastVisibleIds = resolved.map((n) => n.msgId);
+    this._lastVisibleIds = resolved.map((n) => n.codecMessageId);
     this._lastVisibleMessages = resolved.map((n) => n.message);
     this._lastVisibleRunIds = new Set<string>();
     for (const n of resolved) {
@@ -764,7 +772,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   private _onTreeUpdate(): void {
     // Suppress update forwarding while processing history pages. During
     // _processHistoryPage, each tree.upsert() fires this handler synchronously
-    // — but _withheldMsgIds hasn't been populated yet, so flattenNodes() would
+    // — but _withheldCodecMessageIds hasn't been populated yet, so flattenNodes() would
     // return unfiltered history. Without this guard, subscribers briefly see all
     // history messages before the pagination window is applied. The final update
     // is emitted by _releaseWithheld after withholding is set up.
@@ -800,7 +808,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     this._resolvePendingSelections();
 
     const nodes = this._computeFlatNodes();
-    const newIds = nodes.map((n) => n.msgId);
+    const newIds = nodes.map((n) => n.codecMessageId);
     const newMessages = nodes.map((n) => n.message);
     if (this._visibleChanged(newIds, newMessages)) {
       this._cachedNodes = nodes;
@@ -813,7 +821,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
    * Build a resolved selections map from `_branchSelections` for passing
    * to `tree.flattenNodes()`. Pending entries (no sibling yet) are omitted,
    * causing the tree to use the default (latest sibling).
-   * @returns Resolved map of groupRoot → selectedMsgId.
+   * @returns Resolved map of groupRoot → selectedCodecMessageId.
    */
   private _resolveSelections(): Map<string, string> {
     const resolved = new Map<string, string>();
@@ -826,7 +834,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
 
   /**
    * For each previously-visible message that now has siblings but no
-   * explicit selection, pin the selection to that message's msgId.
+   * explicit selection, pin the selection to that message's codecMessageId.
    * This preserves the current branch when new forks appear from
    * other views or external sources.
    *
@@ -836,9 +844,9 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
    * insert was possible at send time.
    */
   private _pinBranchSelections(): void {
-    for (const msgId of this._lastVisibleIds) {
-      if (!this._tree.hasSiblings(msgId)) continue;
-      const groupRoot = this._tree.getGroupRoot(msgId);
+    for (const codecMessageId of this._lastVisibleIds) {
+      if (!this._tree.hasSiblings(codecMessageId)) continue;
+      const groupRoot = this._tree.getGroupRoot(codecMessageId);
       const existing = this._branchSelections.get(groupRoot);
 
       // Spec: AIT-CT13e
@@ -847,17 +855,17 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
       // pending run. Without this check, a sibling from another view's
       // concurrent fork would be incorrectly auto-selected.
       if (existing?.kind === 'pending') {
-        const nodes = this._tree.getSiblingNodes(msgId);
+        const nodes = this._tree.getSiblingNodes(codecMessageId);
         const newest = nodes.at(-1);
-        if (newest && newest.msgId !== msgId) {
+        if (newest && newest.codecMessageId !== codecMessageId) {
           const newestRunId = newest.headers[HEADER_RUN_ID];
           if (newestRunId === existing.runId) {
             this._logger.debug('DefaultView._pinBranchSelections(); auto-selecting pending fork', {
-              msgId,
-              newestId: newest.msgId,
+              codecMessageId,
+              newestId: newest.codecMessageId,
               runId: existing.runId,
             });
-            this._branchSelections.set(groupRoot, { kind: 'auto', selectedId: newest.msgId });
+            this._branchSelections.set(groupRoot, { kind: 'auto', selectedId: newest.codecMessageId });
           }
         }
         continue;
@@ -866,7 +874,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
       // Spec: AIT-CT13f
       // External fork — pin to the currently-visible sibling.
       if (existing) continue; // already have a selection
-      this._branchSelections.set(groupRoot, { kind: 'pinned', selectedId: msgId });
+      this._branchSelections.set(groupRoot, { kind: 'pinned', selectedId: codecMessageId });
     }
   }
 
@@ -882,15 +890,15 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
       const nodes = this._tree.getSiblingNodes(groupRoot);
       if (nodes.length <= 1) continue;
       const newest = nodes.at(-1);
-      if (!newest || newest.msgId === groupRoot) continue;
+      if (!newest || newest.codecMessageId === groupRoot) continue;
       const newestRunId = newest.headers[HEADER_RUN_ID];
       if (newestRunId === sel.runId) {
         this._logger.debug('DefaultView._resolvePendingSelections(); resolving off-branch pending', {
           groupRoot,
-          newestId: newest.msgId,
+          newestId: newest.codecMessageId,
           runId: sel.runId,
         });
-        this._branchSelections.set(groupRoot, { kind: 'auto', selectedId: newest.msgId });
+        this._branchSelections.set(groupRoot, { kind: 'auto', selectedId: newest.codecMessageId });
       }
     }
   }
@@ -898,14 +906,14 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   private _onTreeAblyMessage(msg: Ably.InboundMessage): void {
     // Re-emit only if the message corresponds to a visible node
     const headers = getHeaders(msg);
-    const msgId = headers[HEADER_MSG_ID];
-    if (!msgId) {
+    const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
+    if (!codecMessageId) {
       // Non-message events (run-start, run-end, cancel) — always forward
       this._emitter.emit('ably-message', msg);
       return;
     }
-    // Check that msgId is on the visible branch and not withheld
-    if (this._lastVisibleIds.includes(msgId)) {
+    // Check that codecMessageId is on the visible branch and not withheld
+    if (this._lastVisibleIds.includes(codecMessageId)) {
       this._emitter.emit('ably-message', msg);
     }
   }

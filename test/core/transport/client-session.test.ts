@@ -23,13 +23,13 @@ import {
   HEADER_CANCEL_INVOCATION_ID,
   HEADER_CANCEL_OWN,
   HEADER_CANCEL_RUN_ID,
+  HEADER_CODEC_MESSAGE_ID,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
+  HEADER_EVENT_ID,
   HEADER_FORK_OF,
   HEADER_INVOCATION_ID,
-  HEADER_MSG_ID,
   HEADER_PARENT,
-  HEADER_PROMPT_ID,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
@@ -331,19 +331,19 @@ const createMockCodec = (decoder?: MockDecoder): MockCodec => {
 /**
  * Wait for at least one user-message publish, then simulate the matching
  * agent run-start so a pending send() can resolve. Returns the simulated
- * runId / invocationId / msgId triple.
+ * runId / invocationId / codecMessageId triple.
  *
  * Use when the test creates a session with `runStartDeadlineMs > 0` (the
  * default). Tests that don't care about the wait can construct the session
  * with `runStartDeadlineMs: 0`.
  * @param channel - Mock channel.
  * @param codec - Mock codec.
- * @returns The published msgId/runId/invocationId.
+ * @returns The published codecMessageId/runId/invocationId.
  */
 const ackPendingSend = async (
   channel: MockChannel,
   codec: MockCodec,
-): Promise<{ runId: string; invocationId: string; msgId: string }> => {
+): Promise<{ runId: string; invocationId: string; codecMessageId: string }> => {
   // Wait for an encoder.publish() call (the user-message)
   let publishedHeaders: Record<string, string> | undefined;
   for (let i = 0; i < 100; i++) {
@@ -359,7 +359,7 @@ const ackPendingSend = async (
 
   const runId = publishedHeaders[HEADER_RUN_ID] ?? '';
   const invocationId = publishedHeaders[HEADER_INVOCATION_ID] ?? '';
-  const msgId = publishedHeaders[HEADER_MSG_ID] ?? '';
+  const codecMessageId = publishedHeaders[HEADER_CODEC_MESSAGE_ID] ?? '';
   simulateMessage(
     channel,
     ablyMsg(EVENT_RUN_START, {
@@ -368,7 +368,7 @@ const ackPendingSend = async (
       [HEADER_INVOCATION_ID]: invocationId,
     }),
   );
-  return { runId, invocationId, msgId };
+  return { runId, invocationId, codecMessageId };
 };
 
 // ---------------------------------------------------------------------------
@@ -565,7 +565,7 @@ describe('ClientSession', () => {
       const nodes = s.view.flattenNodes();
       expect(nodes.map((n) => n.message.content)).toEqual(['first', 'second']);
       // Subsequent nodes chain off the prior one.
-      expect(nodes[1]?.headers[HEADER_PARENT]).toBe(nodes[0]?.msgId);
+      expect(nodes[1]?.headers[HEADER_PARENT]).toBe(nodes[0]?.codecMessageId);
       await s.close();
     });
   });
@@ -609,15 +609,15 @@ describe('ClientSession', () => {
       expect(opts?.extras?.headers?.[HEADER_RUN_ID]).toBeDefined();
       expect(opts?.extras?.headers?.[HEADER_INVOCATION_ID]).toBeDefined();
       expect(opts?.extras?.headers?.[HEADER_ROLE]).toBe('user');
-      expect(opts?.extras?.headers?.['x-ably-prompt-id']).toBeDefined();
+      expect(opts?.extras?.headers?.['x-ably-event-id']).toBeDefined();
     });
 
-    it('accepts the richer `{event, domainMessageId}` shape and uses domainMessageId as the wire HEADER_MSG_ID', async () => {
+    it('accepts the richer `{event, domainMessageId}` shape and uses domainMessageId as the wire HEADER_CODEC_MESSAGE_ID', async () => {
       // When the caller passes `Array<{event, domainMessageId?}>`, each
-      // entry's `domainMessageId` overrides the msg-id the SDK would
+      // entry's `domainMessageId` overrides the codec-message-id the SDK would
       // otherwise mint. Used by chat-transport to publish continuation
       // tool resolutions onto the prior assistant's tree key — the
-      // reducer's direct-fold path then matches by msg-id and no
+      // reducer's direct-fold path then matches by codec-message-id and no
       // cross-message redirect runs.
       await fix.session.view.sendEvent([
         { event: { type: 'user-message', text: 'first' }, domainMessageId: 'target-a' },
@@ -629,13 +629,13 @@ describe('ClientSession', () => {
       expect(userPublishes).toHaveLength(2);
 
       // First entry used the supplied domainMessageId; second fell back to a fresh UUID.
-      expect(userPublishes[0]?.opts?.extras?.headers?.[HEADER_MSG_ID]).toBe('target-a');
-      const secondMsgId = userPublishes[1]?.opts?.extras?.headers?.[HEADER_MSG_ID];
-      expect(secondMsgId).toBeDefined();
-      expect(secondMsgId).not.toBe('target-a');
+      expect(userPublishes[0]?.opts?.extras?.headers?.[HEADER_CODEC_MESSAGE_ID]).toBe('target-a');
+      const secondCodecMessageId = userPublishes[1]?.opts?.extras?.headers?.[HEADER_CODEC_MESSAGE_ID];
+      expect(secondCodecMessageId).toBeDefined();
+      expect(secondCodecMessageId).not.toBe('target-a');
     });
 
-    it('mints a distinct prompt-id per user-message and lists them in postBody.promptIds in order', async () => {
+    it('mints a distinct event-id per user-message and lists them in postBody.eventIds in order', async () => {
       await fix.session.view.sendEvent([
         { type: 'user-message', text: 'first' },
         { type: 'user-message', text: 'second' },
@@ -644,17 +644,17 @@ describe('ClientSession', () => {
       const enc = fix.codec.lastEncoder();
       const userPublishes = enc?.publishCalls.filter((c) => c.event.type === 'user-message') ?? [];
       expect(userPublishes).toHaveLength(2);
-      const stampedIds = userPublishes.map((c) => c.opts?.extras?.headers?.['x-ably-prompt-id']);
+      const stampedIds = userPublishes.map((c) => c.opts?.extras?.headers?.['x-ably-event-id']);
       expect(stampedIds[0]).toBeDefined();
       expect(stampedIds[1]).toBeDefined();
       expect(stampedIds[0]).not.toBe(stampedIds[1]);
 
       await fix.fetch.waitForCalls(1);
       const body = fix.fetch.body(0);
-      expect(body.promptIds).toEqual(stampedIds);
+      expect(body.eventIds).toEqual(stampedIds);
     });
 
-    it('fires HTTP POST with runId, invocationId, history, promptIds', async () => {
+    it('fires HTTP POST with runId, invocationId, history, eventIds', async () => {
       const run = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
       await fix.fetch.waitForCalls(1);
 
@@ -666,8 +666,8 @@ describe('ClientSession', () => {
       // longer in the POST body — those fields live on channel headers and
       // are resolved by the agent's prompt-lookup result.
       expect(body.clientId).toBeUndefined();
-      expect(Array.isArray(body.promptIds)).toBe(true);
-      expect((body.promptIds as string[]).length).toBe(1);
+      expect(Array.isArray(body.eventIds)).toBe(true);
+      expect((body.eventIds as string[]).length).toBe(1);
       expect(Array.isArray(body.history)).toBe(true);
       // history excludes the brand-new optimistic message
       expect((body.history as unknown[]).length).toBe(0);
@@ -686,14 +686,14 @@ describe('ClientSession', () => {
       });
       await seeded.connect();
 
-      const seedMsgId = seeded.view.flattenNodes()[0]?.msgId;
+      const seedCodecMessageId = seeded.view.flattenNodes()[0]?.codecMessageId;
       const run = await seeded.view.sendEvent({ type: 'user-message', text: 'next' });
 
       // Find the new node — should reference the seed as its parent.
       const nodes = seeded.view.flattenNodes();
-      const newNode = nodes.find((n) => n.msgId !== seedMsgId);
-      expect(newNode?.headers[HEADER_PARENT]).toBe(seedMsgId);
-      expect(run.optimisticMsgIds).toHaveLength(1);
+      const newNode = nodes.find((n) => n.codecMessageId !== seedCodecMessageId);
+      expect(newNode?.headers[HEADER_PARENT]).toBe(seedCodecMessageId);
+      expect(run.optimisticCodecMessageIds).toHaveLength(1);
       await seeded.close();
     });
 
@@ -704,7 +704,7 @@ describe('ClientSession', () => {
       ]);
       const nodes = fix.session.view.flattenNodes();
       expect(nodes).toHaveLength(2);
-      expect(nodes[1]?.headers[HEADER_PARENT]).toBe(nodes[0]?.msgId);
+      expect(nodes[1]?.headers[HEADER_PARENT]).toBe(nodes[0]?.codecMessageId);
     });
 
     it('merges sendOptions.body and sendOptions.headers into POST', async () => {
@@ -829,7 +829,7 @@ describe('ClientSession', () => {
       expect(headers?.['x-ably-amend']).toBeUndefined();
     });
 
-    it('posts one promptId per continuation event', async () => {
+    it('posts one eventId per continuation event', async () => {
       const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
 
       const cont = await fix.session.view.sendEvent([{ type: 'user-message', text: 'more' }], {
@@ -838,16 +838,16 @@ describe('ClientSession', () => {
 
       await fix.fetch.waitForCalls(2);
       const body = fix.fetch.body(1);
-      // Every client-published event in an invocation carries a promptId
+      // Every client-published event in an invocation carries a eventId
       // — the agent waits for all of them on the channel before starting
       // LLM work.
-      expect(Array.isArray(body.promptIds)).toBe(true);
-      expect((body.promptIds as string[]).length).toBe(1);
+      expect(Array.isArray(body.eventIds)).toBe(true);
+      expect((body.eventIds as string[]).length).toBe(1);
       expect(body.runId).toBe(cont.runId);
       expect(body.invocationId).toBe(cont.invocationId);
     });
 
-    it('stamps the matching x-ably-prompt-id on each continuation publish', async () => {
+    it('stamps the matching x-ably-event-id on each continuation publish', async () => {
       const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
       const before = fix.codec.lastEncoder()?.publishCalls.length ?? 0;
 
@@ -855,12 +855,12 @@ describe('ClientSession', () => {
 
       const enc = fix.codec.lastEncoder();
       const contPublish = enc?.publishCalls.slice(before).find((c) => c.event.type === 'user-message');
-      const stampedId = contPublish?.opts?.extras?.headers?.['x-ably-prompt-id'];
+      const stampedId = contPublish?.opts?.extras?.headers?.['x-ably-event-id'];
       expect(stampedId).toBeDefined();
 
       await fix.fetch.waitForCalls(2);
       const body = fix.fetch.body(1);
-      expect(body.promptIds).toEqual([stampedId]);
+      expect(body.eventIds).toEqual([stampedId]);
     });
 
     it('continuation publishes carry HEADER_RUN_CONTINUE=true while fresh sends do not', async () => {
@@ -1143,11 +1143,11 @@ describe('ClientSession', () => {
       expect(fresh.isContinuation).toBeUndefined();
     });
 
-    it('converges optimistic insert and echo into a single tree node when UIMessage.id differs from wire HEADER_MSG_ID', async () => {
+    it('converges optimistic insert and echo into a single tree node when UIMessage.id differs from wire HEADER_CODEC_MESSAGE_ID', async () => {
       // Regression: under Vercel's codec the projection's UIMessage.id is the
       // domain id (x-domain-messageId, e.g. useChat's local id) while the wire
-      // `x-ably-msg-id` is the optimistic tree msgId. `_accumulateAndEmit` must
-      // upsert at the wire msgId so the echo converges with the optimistic
+      // `x-ably-codec-message-id` is the optimistic tree codecMessageId. `_accumulateAndEmit` must
+      // upsert at the wire codecMessageId so the echo converges with the optimistic
       // insert — not at the projection message's id, which would create a
       // second tree node and dup the message in `view.flattenNodes()`.
       const ch = createMockChannel();
@@ -1155,14 +1155,14 @@ describe('ClientSession', () => {
       // Custom codec: classifier returns a message with a FIXED id; fold pushes
       // the message into the projection keyed by that fixed id (NOT meta.messageId).
       // Mirrors how the Vercel codec produces UIMessages with x-domain-messageId
-      // as the id field rather than the wire's x-ably-msg-id.
+      // as the id field rather than the wire's x-ably-codec-message-id.
       const customCodec = createMockCodec(decoder);
       // CAST: the mock fold's parameters mirror the Codec.fold signature.
       customCodec.fold = vi.fn((state: TestProjection, event: TestEvent, meta: ReducerMeta) => {
         state.foldedEvents.push({ event, meta });
-        // Use a fixed domain id derived from the text — independent of wireMsgId.
+        // Use a fixed domain id derived from the text — independent of wireCodecMessageId.
         // Mirrors the Vercel codec where UIMessage.id is the domain id, distinct
-        // from the wire's x-ably-msg-id.
+        // from the wire's x-ably-codec-message-id.
         if (event.type === 'user-message' && typeof event.text === 'string') {
           const domainId = `domain-${event.text}`;
           let msg = state.messages.find((m) => m.id === domainId);
@@ -1196,16 +1196,16 @@ describe('ClientSession', () => {
       });
       await s.connect();
 
-      // Optimistic insert. The session mints a random tree msgId; the
+      // Optimistic insert. The session mints a random tree codecMessageId; the
       // projection's UIMessage id is `domain-hi` (from our custom fold).
       await s.view.sendEvent({ type: 'user-message', text: 'hi' });
       const lastPublish = customCodec.lastEncoder()?.publishCalls.at(-1);
-      const optimisticMsgId = lastPublish?.opts?.extras?.headers?.[HEADER_MSG_ID];
+      const optimisticCodecMessageId = lastPublish?.opts?.extras?.headers?.[HEADER_CODEC_MESSAGE_ID];
       const runId = lastPublish?.opts?.extras?.headers?.[HEADER_RUN_ID];
-      expect(optimisticMsgId).toBeDefined();
-      if (!optimisticMsgId) throw new Error('expected optimistic msgId on publish');
+      expect(optimisticCodecMessageId).toBeDefined();
+      if (!optimisticCodecMessageId) throw new Error('expected optimistic codecMessageId on publish');
 
-      // Echo the wire message with the same tree msgId so the optimistic
+      // Echo the wire message with the same tree codecMessageId so the optimistic
       // node converges. Queue the same user-message event for the decoder.
       decoder.queue.push({ type: 'user-message', text: 'hi' });
       simulateMessage(
@@ -1216,7 +1216,7 @@ describe('ClientSession', () => {
             [HEADER_RUN_ID]: runId ?? '',
             [HEADER_RUN_CLIENT_ID]: 'client-1',
             [HEADER_ROLE]: 'user',
-            [HEADER_MSG_ID]: optimisticMsgId,
+            [HEADER_CODEC_MESSAGE_ID]: optimisticCodecMessageId,
           },
           undefined,
           'message.create',
@@ -1226,7 +1226,7 @@ describe('ClientSession', () => {
       // The tree must contain exactly one node — the optimistic insert,
       // updated by the echo. NOT a separate node at `domain-hi`.
       expect(s.view.flattenNodes()).toHaveLength(1);
-      expect(s.tree.getNode(optimisticMsgId)?.message.content).toBe('hi');
+      expect(s.tree.getNode(optimisticCodecMessageId)?.message.content).toBe('hi');
       expect(s.tree.getNode('domain-hi')).toBeUndefined();
       await s.close();
     });
@@ -1249,7 +1249,7 @@ describe('ClientSession', () => {
           {
             [HEADER_RUN_ID]: 'run-A',
             [HEADER_RUN_CLIENT_ID]: 'someone-else',
-            [HEADER_MSG_ID]: 'm-1',
+            [HEADER_CODEC_MESSAGE_ID]: 'm-1',
           },
           undefined,
           'message.create',
@@ -1289,7 +1289,7 @@ describe('ClientSession', () => {
         ablyMsg('text', {
           [HEADER_RUN_ID]: runId,
           [HEADER_INVOCATION_ID]: invocationId,
-          [HEADER_MSG_ID]: 'a-1',
+          [HEADER_CODEC_MESSAGE_ID]: 'a-1',
         }),
       );
       // Push finish to terminate the stream
@@ -1299,7 +1299,7 @@ describe('ClientSession', () => {
         ablyMsg('text', {
           [HEADER_RUN_ID]: runId,
           [HEADER_INVOCATION_ID]: invocationId,
-          [HEADER_MSG_ID]: 'a-1',
+          [HEADER_CODEC_MESSAGE_ID]: 'a-1',
         }),
       );
       // Close stream via run-end
@@ -1332,7 +1332,7 @@ describe('ClientSession', () => {
         ablyMsg('noop', {
           [HEADER_RUN_ID]: 'run-Z',
           [HEADER_RUN_CLIENT_ID]: 'other',
-          [HEADER_MSG_ID]: 'm-z',
+          [HEADER_CODEC_MESSAGE_ID]: 'm-z',
         }),
       );
       // fold should not have been called (no events)
@@ -1446,7 +1446,7 @@ describe('ClientSession', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Same-run message routing — successive wire messages routed by HEADER_MSG_ID
+  // Same-run message routing — successive wire messages routed by HEADER_CODEC_MESSAGE_ID
   // -------------------------------------------------------------------------
 
   describe('same-run message routing', () => {
@@ -1466,19 +1466,19 @@ describe('ClientSession', () => {
         ablyMsg('text', {
           [HEADER_RUN_ID]: 'run-A',
           [HEADER_RUN_CLIENT_ID]: 'other',
-          [HEADER_MSG_ID]: 'm-1',
+          [HEADER_CODEC_MESSAGE_ID]: 'm-1',
         }),
       );
 
       // Follow-up message targeting m-1 from the SAME run — encoder stamps
-      // HEADER_MSG_ID = 'm-1', so the reducer folds with meta.messageId === 'm-1'.
+      // HEADER_CODEC_MESSAGE_ID = 'm-1', so the reducer folds with meta.messageId === 'm-1'.
       fix.decoder.queue.push({ type: 'text', text: '-extended' });
       simulateMessage(
         fix.channel,
         ablyMsg('text', {
           [HEADER_RUN_ID]: 'run-A',
           [HEADER_RUN_CLIENT_ID]: 'other',
-          [HEADER_MSG_ID]: 'm-1',
+          [HEADER_CODEC_MESSAGE_ID]: 'm-1',
         }),
       );
 
@@ -1488,7 +1488,7 @@ describe('ClientSession', () => {
       // CAST: tuple shape comes from vi.mocked
       const firstCall = calls[0] as unknown as [TestProjection, TestEvent, ReducerMeta];
       const secondCall = calls[1] as unknown as [TestProjection, TestEvent, ReducerMeta];
-      // Both events routed under HEADER_MSG_ID = 'm-1'
+      // Both events routed under HEADER_CODEC_MESSAGE_ID = 'm-1'
       expect(firstCall[2].messageId).toBe('m-1');
       expect(secondCall[2].messageId).toBe('m-1');
       // Both folded into the SAME projection (observer for run-A)
@@ -1518,7 +1518,7 @@ describe('ClientSession', () => {
         ablyMsg('text', {
           [HEADER_RUN_ID]: 'run-B',
           [HEADER_RUN_CLIENT_ID]: 'other',
-          [HEADER_MSG_ID]: 'm-1',
+          [HEADER_CODEC_MESSAGE_ID]: 'm-1',
         }),
       );
 
@@ -1823,20 +1823,20 @@ describe('ClientSession', () => {
       await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
       const nodesBefore = fix.session.view.flattenNodes();
       expect(nodesBefore).toHaveLength(1);
-      const userMsgId = nodesBefore[0]?.msgId;
-      expect(userMsgId).toBeDefined();
+      const userCodecMessageId = nodesBefore[0]?.codecMessageId;
+      expect(userCodecMessageId).toBeDefined();
 
       // Send a regenerate event — wire-only, carries parent/forkOf on headers.
       await fix.session.view.sendEvent({
         type: 'regenerate-event',
-        parent: userMsgId,
+        parent: userCodecMessageId,
         forkOf: 'asst-1',
       });
 
       // Tree is unchanged — no new node materialised for the regenerate event.
       const nodesAfter = fix.session.view.flattenNodes();
       expect(nodesAfter).toHaveLength(1);
-      expect(nodesAfter[0]?.msgId).toBe(userMsgId);
+      expect(nodesAfter[0]?.codecMessageId).toBe(userCodecMessageId);
 
       // The regenerate event was published on the channel with correct headers.
       const enc = fix.codec.lastEncoder();
@@ -1844,13 +1844,13 @@ describe('ClientSession', () => {
       expect(regeneratePublish).toBeDefined();
       const headers = regeneratePublish?.opts?.extras?.headers;
       expect(headers?.[HEADER_ROLE]).toBe('user');
-      expect(headers?.[HEADER_PARENT]).toBe(userMsgId);
+      expect(headers?.[HEADER_PARENT]).toBe(userCodecMessageId);
       expect(headers?.[HEADER_FORK_OF]).toBe('asst-1');
-      expect(headers?.[HEADER_PROMPT_ID]).toBeDefined();
-      expect(headers?.[HEADER_MSG_ID]).toBeDefined();
+      expect(headers?.[HEADER_EVENT_ID]).toBeDefined();
+      expect(headers?.[HEADER_CODEC_MESSAGE_ID]).toBeDefined();
     });
 
-    it('mints a fresh prompt-id for the regenerate event and lists it in postBody.promptIds', async () => {
+    it('mints a fresh event-id for the regenerate event and lists it in postBody.eventIds', async () => {
       await fix.session.view.sendEvent({
         type: 'regenerate-event',
         parent: 'u1',
@@ -1859,13 +1859,13 @@ describe('ClientSession', () => {
 
       await fix.fetch.waitForCalls(1);
       const body = fix.fetch.body(0);
-      expect(Array.isArray(body.promptIds)).toBe(true);
-      expect((body.promptIds as string[]).length).toBe(1);
+      expect(Array.isArray(body.eventIds)).toBe(true);
+      expect((body.eventIds as string[]).length).toBe(1);
 
       const enc = fix.codec.lastEncoder();
       const regeneratePublish = enc?.publishCalls.find((c) => c.event.type === 'regenerate-event');
-      const promptId = regeneratePublish?.opts?.extras?.headers?.[HEADER_PROMPT_ID];
-      expect((body.promptIds as string[])[0]).toBe(promptId);
+      const eventId = regeneratePublish?.opts?.extras?.headers?.[HEADER_EVENT_ID];
+      expect((body.eventIds as string[])[0]).toBe(eventId);
     });
   });
 
@@ -1896,7 +1896,7 @@ describe('ClientSession', () => {
         ablyMsg('text', {
           [HEADER_RUN_ID]: 'run-E',
           [HEADER_RUN_CLIENT_ID]: 'other',
-          [HEADER_MSG_ID]: 'm-e',
+          [HEADER_CODEC_MESSAGE_ID]: 'm-e',
         }),
       );
 
@@ -1918,7 +1918,7 @@ describe('ClientSession', () => {
         ablyMsg('text', {
           [HEADER_RUN_ID]: 'run-E',
           [HEADER_RUN_CLIENT_ID]: 'other',
-          [HEADER_MSG_ID]: 'm-e2',
+          [HEADER_CODEC_MESSAGE_ID]: 'm-e2',
         }),
       );
       // A new observer projection was created (one extra init); fold ran.

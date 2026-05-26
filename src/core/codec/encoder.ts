@@ -11,7 +11,13 @@
 
 import * as Ably from 'ably';
 
-import { HEADER_DISCRETE, HEADER_MSG_ID, HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID } from '../../constants.js';
+import {
+  HEADER_CODEC_MESSAGE_ID,
+  HEADER_DISCRETE,
+  HEADER_STATUS,
+  HEADER_STREAM,
+  HEADER_STREAM_ID,
+} from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import { mergeHeaders } from '../../utils.js';
@@ -419,7 +425,7 @@ class DefaultEncoderCore implements EncoderCore {
     const callerHeaders = mergeHeaders(this._defaultExtras?.headers, opts?.extras?.headers);
     const merged = { ...callerHeaders, ...codecHeaders };
     if (opts?.messageId !== undefined) {
-      merged[HEADER_MSG_ID] = opts.messageId;
+      merged[HEADER_CODEC_MESSAGE_ID] = opts.messageId;
     }
     return merged;
   }

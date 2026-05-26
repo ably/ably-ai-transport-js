@@ -7,10 +7,10 @@ import { MessageBubble } from './message-bubble';
 import { IntroCard } from './intro-card';
 
 interface SiblingApi {
-  hasSiblings: (msgId: string) => boolean;
-  getSiblings: (msgId: string) => UIMessage[];
-  getSelectedIndex: (msgId: string) => number;
-  select: (msgId: string, index: number) => void;
+  hasSiblings: (codecMessageId: string) => boolean;
+  getSiblings: (codecMessageId: string) => UIMessage[];
+  getSelectedIndex: (codecMessageId: string) => number;
+  select: (codecMessageId: string, index: number) => void;
 }
 
 interface MessageListProps {
@@ -76,17 +76,17 @@ export function MessageList({
       )}
       {loading && <div className="text-center text-xs text-zinc-600 animate-pulse">Loading history...</div>}
       {nodes.map((node) => {
-        const { message, headers, msgId } = node;
-        const hasSiblings = siblings.hasSiblings(msgId);
+        const { message, headers, codecMessageId } = node;
+        const hasSiblings = siblings.hasSiblings(codecMessageId);
         return (
           <MessageBubble
             key={message.id}
             message={message}
             headers={headers}
             hasSiblings={hasSiblings}
-            siblingCount={hasSiblings ? siblings.getSiblings(msgId).length : undefined}
-            selectedIndex={hasSiblings ? siblings.getSelectedIndex(msgId) : undefined}
-            onSelectSibling={hasSiblings ? (index) => siblings.select(msgId, index) : undefined}
+            siblingCount={hasSiblings ? siblings.getSiblings(codecMessageId).length : undefined}
+            selectedIndex={hasSiblings ? siblings.getSelectedIndex(codecMessageId) : undefined}
+            onSelectSibling={hasSiblings ? (index) => siblings.select(codecMessageId, index) : undefined}
             onRegenerate={message.role === 'assistant' ? () => onRegenerate(message.id) : undefined}
             onEdit={message.role === 'user' ? (text) => onEdit(message.id, text) : undefined}
             onToolApprove={onToolApprove}

@@ -33,8 +33,8 @@ const mockSendMessage = vi.fn(
       runId: 'run-1',
       invocationId: 'inv-1',
       cancel: async () => {},
-      optimisticMsgIds: [],
-      promptIds: [],
+      optimisticCodecMessageIds: [],
+      eventIds: [],
     }),
 );
 
@@ -91,7 +91,7 @@ import { Chat } from '../components/chat';
 
 const assistantTextNode = (text: string): MessageNode<AI.UIMessage> => ({
   kind: 'message',
-  msgId: 'msg-assistant-1',
+  codecMessageId: 'msg-assistant-1',
   parentId: undefined,
   forkOf: undefined,
   headers: {},

@@ -34,7 +34,7 @@ describe('useTree', () => {
     const mock = createMockSession([]);
     const fakeNode = {
       message: 'hi',
-      msgId: 'msg-1',
+      codecMessageId: 'msg-1',
       parentId: undefined,
       forkOf: undefined,
       headers: {},

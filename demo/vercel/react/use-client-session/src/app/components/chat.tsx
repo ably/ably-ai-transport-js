@@ -79,8 +79,8 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
   }, []);
 
   const handleToolApprove = useCallback(
-    (msgId: string, toolCallId: string) => {
-      const node = view.getNode(msgId);
+    (codecMessageId: string, toolCallId: string) => {
+      const node = view.getNode(codecMessageId);
       const runId = node?.headers['x-ably-run-id'];
       if (!runId) return;
       void view.sendEvent([{ type: 'tool-approval-response', toolCallId, approved: true }], { runId });
@@ -89,8 +89,8 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
   );
 
   const handleToolDeny = useCallback(
-    (msgId: string, toolCallId: string) => {
-      const node = view.getNode(msgId);
+    (codecMessageId: string, toolCallId: string) => {
+      const node = view.getNode(codecMessageId);
       const runId = node?.headers['x-ably-run-id'];
       if (!runId) return;
       void view.sendEvent([{ type: 'tool-approval-response', toolCallId, approved: false, reason: 'User denied' }], {
@@ -112,8 +112,8 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
           loading={loading}
           siblings={{ hasSiblings, getSiblings, getSelectedIndex, select }}
           onLoadOlder={() => void loadOlder()}
-          onRegenerate={(msgId) => void view.regenerate(msgId)}
-          onEdit={(msgId, text) => void view.edit(msgId, [userMessageEvent(text)])}
+          onRegenerate={(codecMessageId) => void view.regenerate(codecMessageId)}
+          onEdit={(codecMessageId, text) => void view.edit(codecMessageId, [userMessageEvent(text)])}
           onToolApprove={handleToolApprove}
           onToolDeny={handleToolDeny}
         />

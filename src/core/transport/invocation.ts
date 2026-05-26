@@ -15,7 +15,7 @@
  * The body carries only what the agent needs out-of-band before the channel
  * is observable: identifiers (`runId`, `invocationId`), the session/channel
  * name, the prior-conversation context (`history`), and the wait-set
- * (`promptIds`). Per-message metadata — `clientId`, `parent`, `forkOf`,
+ * (`eventIds`). Per-message metadata — `clientId`, `parent`, `forkOf`,
  * continuation flag — lives on the channel as `x-ably-*` headers and is
  * resolved by the agent from the prompt-lookup result, not from the body.
  */
@@ -46,10 +46,10 @@ export interface InvocationData<TMessage> {
    * Per-event ids the agent should observe on the channel before starting
    * LLM work — one entry per client-published event in the send (user-message
    * AND continuation tool-resolution publishes). Matched against
-   * `x-ably-prompt-id` on inbound messages. Empty / omitted when the send
+   * `x-ably-event-id` on inbound messages. Empty / omitted when the send
    * carries no prompt-bearing events.
    */
-  promptIds?: string[];
+  eventIds?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -75,16 +75,16 @@ export class Invocation<TMessage> {
   /**
    * Per-event ids — one entry per client-published event in the send. The
    * agent waits for every listed id to appear on the channel (matched via
-   * `x-ably-prompt-id`) before letting the run begin LLM work.
+   * `x-ably-event-id`) before letting the run begin LLM work.
    */
-  readonly promptIds: string[];
+  readonly eventIds: string[];
 
   private constructor(data: InvocationData<TMessage>) {
     this.runId = data.runId;
     this.invocationId = data.invocationId;
     this.sessionName = data.sessionName;
     this.history = data.history ?? [];
-    this.promptIds = data.promptIds ?? [];
+    this.eventIds = data.eventIds ?? [];
   }
 
   /**

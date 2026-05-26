@@ -25,10 +25,10 @@
 import type * as Ably from 'ably';
 
 import {
+  HEADER_CODEC_MESSAGE_ID,
   HEADER_DISCRETE,
   HEADER_FORK_OF,
   HEADER_INVOCATION_ID,
-  HEADER_MSG_ID,
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CONTINUE,
@@ -39,10 +39,10 @@ import {
 
 /**
  * Headers that define a message's identity in the tree (role, parent,
- * fork-of). They are set by the FIRST wire for an `x-ably-msg-id` and
- * must NOT be overwritten by later wires targeting the same msg-id.
+ * fork-of). They are set by the FIRST wire for an `x-ably-codec-message-id` and
+ * must NOT be overwritten by later wires targeting the same codec-message-id.
  *
- * Why: amendment wires legitimately publish under an existing msg-id
+ * Why: amendment wires legitimately publish under an existing codec-message-id
  * (Option X continuation tool-resolutions and agent-side redirected
  * tool-output chunks) but carry their own continuation-scoped headers.
  * For tool-resolution publishes the amend has `role: user, parent: <self>`;
@@ -53,19 +53,19 @@ import {
  *
  * Live channel flow doesn't have this problem because `tree.upsert`
  * already preserves `parentId` (set once on insert) and `x-ably-role`
- * on re-upsert; decode-history aggregates headers per msg-id BEFORE
+ * on re-upsert; decode-history aggregates headers per codec-message-id BEFORE
  * the first upsert, so the protection has to live here too.
  */
 const IDENTITY_HEADERS: ReadonlySet<string> = new Set([HEADER_ROLE, HEADER_PARENT, HEADER_FORK_OF]);
 
 /**
- * Merge `incoming` headers onto `existing` for the same `x-ably-msg-id`.
+ * Merge `incoming` headers onto `existing` for the same `x-ably-codec-message-id`.
  * Identity headers (see {@link IDENTITY_HEADERS}) are sticky — only set
  * when absent on `existing`; never overwritten. Everything else
  * (`status`, domain headers, etc.) merges last-wins so a closing append
  * can update `status: streaming → finished`.
- * @param existing - The accumulated headers for the msg-id.
- * @param incoming - The headers from a subsequent wire targeting the same msg-id.
+ * @param existing - The accumulated headers for the codec-message-id.
+ * @param incoming - The headers from a subsequent wire targeting the same codec-message-id.
  */
 const mergePreservingIdentity = (existing: Record<string, string>, incoming: Record<string, string>): void => {
   for (const [key, value] of Object.entries(incoming)) {
@@ -102,26 +102,26 @@ interface HistoryState<TEvent, TProjection, TMessage> {
   /** `rawMessages.length` at the time {@link cachedDecode} was produced. */
   cachedAtRawLength: number;
   /**
-   * `x-ably-msg-id`s for which the decoder has something to produce output
+   * `x-ably-codec-message-id`s for which the decoder has something to produce output
    * from: any `message.create` / `message.update` / `message.append` with
    * `x-ably-stream: "true"` (establishes a tracker via create or
    * first-contact), or a `message.create` carrying `x-ably-discrete` (a
    * discrete message, created and terminated in one wire message).
    */
-  startedMsgIds: Set<string>;
+  startedCodecMessageIds: Set<string>;
   /**
-   * `x-ably-msg-id`s with a terminal wire signal: either `x-ably-discrete`
+   * `x-ably-codec-message-id`s with a terminal wire signal: either `x-ably-discrete`
    * on a `message.create` (discrete message) or `x-ably-status: "finished"`
    * / `"aborted"` on any action (closed stream).
    */
-  terminatedMsgIds: Set<string>;
+  terminatedCodecMessageIds: Set<string>;
   /**
-   * `x-ably-msg-id`s that are both started AND terminated - ready to appear
+   * `x-ably-codec-message-id`s that are both started AND terminated - ready to appear
    * in the decoded output. The fetch loop reads this set's size to decide
    * when to stop paging, avoiding a full decode per page. Maintained
    * incrementally by {@link countNewCompletions}. Grows monotonically.
    */
-  completedMsgIds: Set<string>;
+  completedCodecMessageIds: Set<string>;
   logger: Logger;
 }
 
@@ -155,9 +155,9 @@ const decodeAll = <TEvent, TProjection, TMessage>(
     {
       projection: TProjection;
       firstSeen: number;
-      /** Headers from the first Ably message per x-ably-msg-id within this run. */
+      /** Headers from the first Ably message per x-ably-codec-message-id within this run. */
       msgHeaders: Map<string, Record<string, string>>;
-      /** Ably serial from the first Ably message per x-ably-msg-id within this run. */
+      /** Ably serial from the first Ably message per x-ably-codec-message-id within this run. */
       msgSerials: Map<string, string>;
     }
   >();
@@ -165,10 +165,10 @@ const decodeAll = <TEvent, TProjection, TMessage>(
   let defaultProjection = state.codec.init();
   let orderCounter = 0;
 
-  // Headers and serials for non-run discrete messages, keyed by x-ably-msg-id.
+  // Headers and serials for non-run discrete messages, keyed by x-ably-codec-message-id.
   // Recorded in publication order so messages and headers can be paired
   // positionally after fold.
-  const discreteMsgIds: string[] = [];
+  const discreteCodecMessageIds: string[] = [];
   const discreteHeaders = new Map<string, Record<string, string>>();
   const discreteSerials = new Map<string, string>();
 
@@ -176,15 +176,15 @@ const decodeAll = <TEvent, TProjection, TMessage>(
     const events = decoder.decode(msg);
     const headers = getHeaders(msg);
     const runId = headers[HEADER_RUN_ID];
-    const msgId = headers[HEADER_MSG_ID];
+    const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
     const serial = msg.serial ?? '';
 
-    // Wire `HEADER_MSG_ID` is the reducer's routing key. Events that
+    // Wire `HEADER_CODEC_MESSAGE_ID` is the reducer's routing key. Events that
     // modify a previously-published message carry the original message's
     // id here (the encoder stamps `messageId` accordingly for client
     // tool outputs / approval responses / agent's redirected
     // approved-tool outputs).
-    const routingMsgId = msgId;
+    const routingCodecMessageId = codecMessageId;
 
     if (runId) {
       let run = runs.get(runId);
@@ -197,36 +197,36 @@ const decodeAll = <TEvent, TProjection, TMessage>(
         };
         runs.set(runId, run);
       }
-      // Capture headers per msg-id within this run. Update on later
+      // Capture headers per codec-message-id within this run. Update on later
       // messages too (e.g. closing append overrides status from
       // "streaming" to "finished"/"aborted"). Only merge when the
       // incoming message has non-empty headers.
-      if (msgId) {
-        const existing = run.msgHeaders.get(msgId);
+      if (codecMessageId) {
+        const existing = run.msgHeaders.get(codecMessageId);
         if (!existing) {
-          run.msgHeaders.set(msgId, { ...headers });
-          if (serial) run.msgSerials.set(msgId, serial);
+          run.msgHeaders.set(codecMessageId, { ...headers });
+          if (serial) run.msgSerials.set(codecMessageId, serial);
         } else if (Object.keys(headers).length > 0) {
           mergePreservingIdentity(existing, headers);
         }
       }
       for (const event of events) {
-        run.projection = state.codec.fold(run.projection, event, { serial, messageId: routingMsgId });
+        run.projection = state.codec.fold(run.projection, event, { serial, messageId: routingCodecMessageId });
       }
     } else {
       const beforeCount = state.codec.getMessages(defaultProjection).length;
       for (const event of events) {
-        defaultProjection = state.codec.fold(defaultProjection, event, { serial, messageId: routingMsgId });
+        defaultProjection = state.codec.fold(defaultProjection, event, { serial, messageId: routingCodecMessageId });
       }
       const afterCount = state.codec.getMessages(defaultProjection).length;
       // Record headers/serial in publication order for any newly-folded messages.
       for (let i = beforeCount; i < afterCount; i++) {
-        if (msgId) {
-          discreteMsgIds.push(msgId);
-          const existing = discreteHeaders.get(msgId);
+        if (codecMessageId) {
+          discreteCodecMessageIds.push(codecMessageId);
+          const existing = discreteHeaders.get(codecMessageId);
           if (!existing) {
-            discreteHeaders.set(msgId, { ...headers });
-            if (serial) discreteSerials.set(msgId, serial);
+            discreteHeaders.set(codecMessageId, { ...headers });
+            if (serial) discreteSerials.set(codecMessageId, serial);
           } else if (Object.keys(headers).length > 0) {
             mergePreservingIdentity(existing, headers);
           }
@@ -239,7 +239,7 @@ const decodeAll = <TEvent, TProjection, TMessage>(
   const completed: DecodedItem<TMessage>[] = [];
 
   for (const [i, msg] of state.codec.getMessages(defaultProjection).entries()) {
-    const mid = discreteMsgIds[i];
+    const mid = discreteCodecMessageIds[i];
     completed.push({
       message: msg,
       headers: mid ? (discreteHeaders.get(mid) ?? {}) : {},
@@ -319,11 +319,11 @@ const decodeAllCached = <TEvent, TProjection, TMessage>(
 // ---------------------------------------------------------------------------
 
 /**
- * Scan newly-added raw messages and track which `x-ably-msg-id`s have
+ * Scan newly-added raw messages and track which `x-ably-codec-message-id`s have
  * become complete. Used by {@link fetchUntilLimit} to decide when enough
  * completed messages have been collected, without running the decoder.
  *
- * A msg-id is considered complete only when BOTH of these have been seen:
+ * A codec-message-id is considered complete only when BOTH of these have been seen:
  * - a "start" signal: either `x-ably-discrete` on a `message.create`
  *   (discrete messages are created and terminated by the same wire
  *   message), OR any `message.create` / `message.update` / `message.append`
@@ -346,20 +346,20 @@ const decodeAllCached = <TEvent, TProjection, TMessage>(
  * resolve, and the message wouldn't make it into the result.
  *
  * Messages skipped for counting:
- * - Missing `x-ably-msg-id`: lifecycle events not tied to a domain message.
+ * - Missing `x-ably-codec-message-id`: lifecycle events not tied to a domain message.
  * - `message.delete`: clears the tracker, doesn't produce output.
  *
  * Amend-class wire messages (events targeting an existing message via
- * `HEADER_MSG_ID`) flow through the same counter — the Sets naturally
- * dedup so a tool-output amend on an already-seen msg-id is idempotent.
- * If an amend is encountered before any chunks for its target msg-id
- * (newest-first scan), the msg-id gets counted as one new completion;
+ * `HEADER_CODEC_MESSAGE_ID`) flow through the same counter — the Sets naturally
+ * dedup so a tool-output amend on an already-seen codec-message-id is idempotent.
+ * If an amend is encountered before any chunks for its target codec-message-id
+ * (newest-first scan), the codec-message-id gets counted as one new completion;
  * subsequent pages still produce the correct decoded output because the
  * decoder runs once on the full collected log.
  *
  * Known edge case: if Ably history is truncated and a terminal survives
- * while every start signal for its msg-id has rolled off, the counter will
- * never mark that `msg-id` complete. The loop keeps fetching until it runs
+ * while every start signal for its codec-message-id has rolled off, the counter will
+ * never mark that `codec-message-id` complete. The loop keeps fetching until it runs
  * out of pages, then returns whatever the decoder actually produced.
  * Matches the existing behaviour for the same truncation scenario.
  * @param state - The shared history traversal state.
@@ -371,8 +371,8 @@ const countNewCompletions = <TEvent, TProjection, TMessage>(
 ): void => {
   for (const msg of newMessages) {
     const headers = getHeaders(msg);
-    const msgId = headers[HEADER_MSG_ID];
-    if (!msgId) continue;
+    const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
+    if (!codecMessageId) continue;
 
     const action = msg.action;
     const isDiscreteCreate = action === 'message.create' && HEADER_DISCRETE in headers;
@@ -386,10 +386,10 @@ const countNewCompletions = <TEvent, TProjection, TMessage>(
     const status = headers[HEADER_STATUS];
     const isTerminal = status === 'finished' || status === 'aborted';
 
-    if (isDiscreteCreate || hasStreamContent) state.startedMsgIds.add(msgId);
-    if (isDiscreteCreate || isTerminal) state.terminatedMsgIds.add(msgId);
-    if (state.startedMsgIds.has(msgId) && state.terminatedMsgIds.has(msgId)) {
-      state.completedMsgIds.add(msgId);
+    if (isDiscreteCreate || hasStreamContent) state.startedCodecMessageIds.add(codecMessageId);
+    if (isDiscreteCreate || isTerminal) state.terminatedCodecMessageIds.add(codecMessageId);
+    if (state.startedCodecMessageIds.has(codecMessageId) && state.terminatedCodecMessageIds.has(codecMessageId)) {
+      state.completedCodecMessageIds.add(codecMessageId);
     }
   }
 };
@@ -419,10 +419,10 @@ const fetchUntilLimit = async <TEvent, TProjection, TMessage>(
   countNewCompletions(state, ablyPage.items);
 
   const target = state.returnedCount + limit;
-  while (state.completedMsgIds.size < target && ablyPage.hasNext()) {
+  while (state.completedCodecMessageIds.size < target && ablyPage.hasNext()) {
     state.logger.debug('decodeHistory.fetchUntilLimit(); fetching next page', {
       collected: state.rawMessages.length,
-      completed: state.completedMsgIds.size,
+      completed: state.completedCodecMessageIds.size,
     });
     const nextPage = await ablyPage.next();
     if (!nextPage) break;
@@ -515,9 +515,9 @@ export const decodeHistory = async <TEvent, TProjection, TMessage>(
     lastAblyPage: undefined,
     cachedDecode: undefined,
     cachedAtRawLength: 0,
-    startedMsgIds: new Set<string>(),
-    terminatedMsgIds: new Set<string>(),
-    completedMsgIds: new Set<string>(),
+    startedCodecMessageIds: new Set<string>(),
+    terminatedCodecMessageIds: new Set<string>(),
+    completedCodecMessageIds: new Set<string>(),
     logger,
   };
 

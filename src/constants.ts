@@ -16,7 +16,7 @@
 /** Header: whether this Ably message uses streaming (message appends) or is discrete. Always "true" or "false". */
 export const HEADER_STREAM = 'x-ably-stream';
 
-/** Header: lifecycle status of a streamed message. Only set when x-ably-stream is "true". */
+/** Header: lifecycle status of a streamed message. Only set when x-ably-stream is "true". One of "streaming", "complete", or "cancelled". */
 export const HEADER_STATUS = 'x-ably-status';
 
 /** Header: stream identity. Set by the encoder on every streamed message; read by the decoder to correlate streams. */

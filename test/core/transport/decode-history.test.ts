@@ -122,7 +122,7 @@ const streamingRun = (runId: string, codecMessageId: string, deltas: string[]): 
   const finish = withEvents(
     ablyMsg({
       action: 'message.append',
-      headers: { ...baseHeaders, [HEADER_STATUS]: 'finished' },
+      headers: { ...baseHeaders, [HEADER_STATUS]: 'complete' },
       serial,
     }),
     [{ type: 'finish' }],
@@ -379,7 +379,7 @@ describe('decodeHistory', () => {
 
     it('treats x-ably-status:cancelled as terminal for counting', async () => {
       // A cancelled-stream message satisfies the wire-level counter the same
-      // way as finished: append + stream=true + status=cancelled = complete.
+      // way as complete: append + stream=true + status=cancelled = complete.
       const serial = nextSerial();
       const baseHeaders = {
         [HEADER_RUN_ID]: 'T1',

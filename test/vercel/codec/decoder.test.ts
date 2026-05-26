@@ -160,7 +160,7 @@ describe('Vercel decoder', () => {
       expect(eventsOf(outputs)).toEqual([expect.objectContaining({ type: 'text-delta', id: 'txt-1', delta: 'hello' })]);
     });
 
-    it('emits text-end on finished append', () => {
+    it('emits text-end on complete append', () => {
       const decoder = createDecoder();
       decoder.decode(
         withHeaders(
@@ -178,7 +178,7 @@ describe('Vercel decoder', () => {
       const outputs = decoder.decode(
         withHeaders(
           { action: 'message.append', serial: 's1', name: 'text', data: '' },
-          { [HEADER_STATUS]: 'finished', [HEADER_RUN_ID]: 'run-1' },
+          { [HEADER_STATUS]: 'complete', [HEADER_RUN_ID]: 'run-1' },
         ),
       );
 
@@ -220,7 +220,7 @@ describe('Vercel decoder', () => {
       const endOutputs = decoder.decode(
         withHeaders(
           { action: 'message.append', serial: 's1', name: 'reasoning', data: '' },
-          { [HEADER_STATUS]: 'finished', [HEADER_RUN_ID]: 'run-1' },
+          { [HEADER_STATUS]: 'complete', [HEADER_RUN_ID]: 'run-1' },
         ),
       );
       expect(eventTypesOf(endOutputs)).toContain('reasoning-end');
@@ -262,11 +262,11 @@ describe('Vercel decoder', () => {
         expect.objectContaining({ type: 'tool-input-delta', inputTextDelta: '{"q":"test"}' }),
       ]);
 
-      // Available (finished)
+      // Available (complete)
       const endOutputs = decoder.decode(
         withHeaders(
           { action: 'message.append', serial: 's1', name: 'tool-input', data: '' },
-          { [HEADER_STATUS]: 'finished', [HEADER_RUN_ID]: 'run-1', [`${D}toolName`]: 'search' },
+          { [HEADER_STATUS]: 'complete', [HEADER_RUN_ID]: 'run-1', [`${D}toolName`]: 'search' },
         ),
       );
       const availChunk = eventsOf(endOutputs).find((e) => e.type === 'tool-input-available');
@@ -783,14 +783,14 @@ describe('Vercel decoder', () => {
   // -- first-contact update -------------------------------------------------
 
   describe('first-contact update (history hydration)', () => {
-    it('emits full lifecycle for finished streamed message', () => {
+    it('emits full lifecycle for complete streamed message', () => {
       const decoder = createDecoder();
       const outputs = decoder.decode(
         withHeaders(
           { action: 'message.update', serial: 's1', name: 'text', data: 'hello world' },
           {
             [HEADER_STREAM]: 'true',
-            [HEADER_STATUS]: 'finished',
+            [HEADER_STATUS]: 'complete',
             [HEADER_STREAM_ID]: 'txt-1',
             [HEADER_RUN_ID]: 'run-1',
             [`${D}id`]: 'txt-1',

@@ -1,8 +1,8 @@
 # Cancel
 
-Cancellation in AI Transport is a channel-level operation - the client publishes a cancel signal on the Ably channel, the server receives it and aborts the matching runs.
+Cancellation in AI Transport is a channel-level operation - the client publishes a cancel signal on the Ably channel, the server receives it and cancels the matching runs.
 
-Without a cancel protocol, stopping a generation requires either dropping the HTTP connection (which the server may not notice) or building custom signaling. AI Transport handles the full cancel chain: client signal, server abort, stream cleanup, and lifecycle notification to all clients.
+Without a cancel protocol, stopping a generation requires either dropping the HTTP connection (which the server may not notice) or building custom signaling. AI Transport handles the full cancel chain: client signal, server-side cancellation, stream cleanup, and lifecycle notification to all clients.
 
 ## Client side
 
@@ -61,14 +61,14 @@ const run = session.createRun(Invocation.fromJSON({ runId, clientId }), {
     // Return false to reject the cancel (run continues)
     return true;
   },
-  onAbort: async (write) => {
-    // Runs after the abort signal fires, before the stream closes.
+  onCancelled: async (write) => {
+    // Runs after the AbortSignal fires, before the stream closes.
     // Use write() to publish final events before the encoder closes, e.g.:
     // await write({ type: 'text-delta', textDelta: '[generation cancelled]' });
   },
 });
 
-// Pass the abort signal to the LLM to stop generation
+// Pass the AbortSignal to the LLM to stop generation
 const result = streamText({
   model,
   messages,
@@ -78,7 +78,7 @@ const result = streamText({
 
 The `onCancel` hook authorizes the cancel - return `false` to reject it. Use this to prevent one user from cancelling another user's run. If `onCancel` is not provided, all cancels are accepted.
 
-The `onAbort` hook runs after the signal fires. The `write` function lets you publish final events (e.g., a partial result summary) before the encoder closes.
+The `onCancelled` hook runs after the signal fires. The `write` function lets you publish final events (e.g., a partial result summary) before the encoder closes.
 
 ## Wire sequence
 
@@ -94,8 +94,8 @@ sequenceDiagram
     Note right of S: match filter to runs
     Note right of S: onCancel() → true
     Note right of S: fire AbortSignal
-    Note right of S: onAbort(write)
-    S->>Ch: publish abort append
+    Note right of S: onCancelled(write)
+    S->>Ch: publish cancel append
     S->>Ch: publish run-end (cancelled)
     Ch->>C: deliver run-end
 ```
@@ -104,9 +104,9 @@ The client closes its local streams immediately on cancel - it doesn't wait for 
 
 ## Platform-level cancellation
 
-Ably cancel messages are the primary cancellation path, but the server may also need to abort a run when the platform signals shutdown - the HTTP request is cancelled, or a serverless function hits its execution timeout.
+Ably cancel messages are the primary cancellation path, but the server may also need to cancel a run when the platform signals shutdown - the HTTP request is cancelled, or a serverless function hits its execution timeout.
 
-Pass the platform's abort signal to `createRun()` via the `signal` option:
+Pass the platform's `AbortSignal` to `createRun()` via the `signal` option:
 
 ```typescript
 const run = session.createRun(
@@ -115,9 +115,9 @@ const run = session.createRun(
 );
 ```
 
-When the external signal fires, it aborts the run through the same path as an Ably cancel message - `run.abortSignal` fires, `streamText` stops generation, and `pipeStream` closes the stream. The `onCancel` hook is **not** called for platform-level signals (it only fires for Ably cancel messages), but `onAbort` runs normally.
+When the external signal fires, it cancels the run through the same path as an Ably cancel message - `run.abortSignal` fires, `streamText` stops generation, and `pipeStream` closes the stream. The `onCancel` hook is **not** called for platform-level signals (it only fires for Ably cancel messages), but `onCancelled` runs normally.
 
-Internally, `AbortSignal.any()` composes the external signal with the run's own abort controller, so either source triggers the same downstream abort.
+Internally, `AbortSignal.any()` composes the external signal with the run's own `AbortController`, so either source triggers the same downstream cancellation.
 
 ## Cancel on close
 

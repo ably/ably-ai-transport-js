@@ -28,7 +28,7 @@ The agent session uses `createEncoder()` to get a `StreamEncoder`. For each run:
 
 1. `writeMessages()` - publishes user messages as discrete Ably messages
 2. `appendEvent()` - streams LLM response events as message appends
-3. `close()` / `abort()` - finalizes the stream
+3. `close()` / `cancel()` - finalizes the stream
 
 The encoder translates domain events into [encoder core](encoder.md#stream-lifecycle) operations (`startStream()`, `appendStream()`, `closeStream()`). The encoder core handles Ably primitives.
 

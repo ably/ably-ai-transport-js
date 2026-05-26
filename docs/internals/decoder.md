@@ -25,7 +25,7 @@ interface StreamTrackerState {
   streamId: string; // From x-ably-stream-id header
   accumulated: string; // Full text accumulated so far
   headers: Record<string, string>; // Current headers
-  closed: boolean; // Whether stream has finished or aborted
+  closed: boolean; // Whether stream has finished or been cancelled
 }
 ```
 
@@ -53,7 +53,7 @@ When a `message.append` arrives:
 3. Extract the string delta from `message.data`
 4. Accumulate: `tracker.accumulated += delta`
 5. Call `buildDeltaEvents()` to emit domain events
-6. Check `x-ably-status`: if `"finished"`, call `buildEndEvents()` and mark closed - the event is [terminal](glossary.md#terminal-event). If `"aborted"`, mark closed (no end events for aborts)
+6. Check `x-ably-status`: if `"finished"`, call `buildEndEvents()` and mark closed - the event is [terminal](glossary.md#terminal-event). If `"cancelled"`, mark closed (no end events for cancels)
 
 ## Update handling: first-contact vs prefix-match
 

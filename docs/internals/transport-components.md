@@ -42,15 +42,15 @@ The run manager tracks active runs and publishes [run lifecycle events](wire-pro
 | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `startRun(runId, clientId?, controller?, metadata?)` | Registers the run, publishes `ai-run-start`, returns an `AbortSignal`. `metadata` optionally stamps `parent`, `forkOf`, `invocationId`, and a `continuation` flag (→ `x-ably-run-continue: "true"`) on the lifecycle event headers |
 | `endRun(runId, reason, invocationId?)`               | Publishes `ai-run-end` with the reason (and `invocationId` if provided), removes the run                                                                                                                                           |
-| `abort(runId)`                                       | Fires the run's `AbortController.abort()` immediately                                                                                                                                                                              |
+| `cancel(runId)`                                      | Fires the run's `AbortController.abort()` immediately                                                                                                                                                                              |
 | `getSignal(runId)`                                   | Returns the `AbortSignal` for a run                                                                                                                                                                                                |
 | `getClientId(runId)`                                 | Returns the clientId that owns a run                                                                                                                                                                                               |
 | `getActiveRunIds()`                                  | Returns all active run IDs                                                                                                                                                                                                         |
-| `close()`                                            | Aborts all active runs and clears state                                                                                                                                                                                            |
+| `close()`                                            | Cancels all active runs and clears state                                                                                                                                                                                           |
 
 ### AbortController per run
 
-Each run gets its own `AbortController`. The agent session can pass an external controller to `startRun()` to share abort control with the cancel routing system. The signal is passed to the LLM call and to `pipeStream`, so cancellation propagates from the channel (cancel signal → abort controller → abort signal → stream reader stops → encoder aborts).
+Each run gets its own `AbortController`. The agent session can pass an external controller to `startRun()` to share cancel control with the cancel routing system. The signal is passed to the LLM call and to `pipeStream`, so cancellation propagates from the channel (cancel signal → AbortController → AbortSignal → stream reader stops → encoder cancels its streams).
 
 The run manager publishes `ai-run-end` **before** deleting local state. If the publish fails, the run remains in the active set and can be retried or cleaned up.
 
@@ -58,27 +58,27 @@ The run manager publishes `ai-run-end` **before** deleting local state. If the p
 
 `src/core/transport/pipe-stream.ts` - server-side only.
 
-A pure function that reads events from a `ReadableStream`, writes them through a [streaming encoder](codec-interface.md#encoder-architecture), and handles abort/error. No dependencies on run state or transport internals.
+A pure function that reads events from a `ReadableStream`, writes them through a [streaming encoder](codec-interface.md#encoder-architecture), and handles cancel/error. No dependencies on run state or transport internals.
 
 ### Flow
 
 ```
 while true:
   race(reader.read(), abortPromise)
-    → aborted?  call onAbort(), then encoder.abort('cancelled')
-    → done?     call encoder.close()
-    → value?    call encoder.appendEvent(value)
-    → error?    call encoder.close() (best-effort), return 'error'
+    → cancelled?  call onCancelled(), then encoder.cancel('cancelled')
+    → done?       call encoder.close()
+    → value?      call encoder.publish(value)
+    → error?      call encoder.close() (best-effort), return 'error'
 ```
 
-### Abort handling
+### Cancel handling
 
-The abort signal is converted to a promise and raced against `reader.read()`. The `.then(() => 'aborted')` pattern creates a tagged discriminant for `Promise.race` - this is one of the documented exceptions to the async/await rule (see `.claude/rules/PROMISES.md`).
+The `AbortSignal` is converted to a promise (`abortPromise`) and raced against `reader.read()`. The `.then(() => 'cancelled')` pattern creates a tagged discriminant for `Promise.race` - this is one of the documented exceptions to the async/await rule (see `.claude/rules/PROMISES.md`).
 
 When cancelled:
 
-1. The `onAbort` callback fires (if provided) - the server can write final events before the stream closes (e.g. `[generation cancelled]`)
-2. `encoder.abort('cancelled')` aborts all in-progress streams
+1. The `onCancelled` callback fires (if provided) - the server can write final events before the stream closes (e.g. `[generation cancelled]`)
+2. `encoder.cancel('cancelled')` cancels all in-progress streams
 3. The reader lock is released
 
 ### Error handling

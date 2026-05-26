@@ -28,7 +28,7 @@ const { reason } = await run.pipe(llmStream);
 await run.end(reason);
 ```
 
-`createRun()` is synchronous - it creates the run and registers it for cancel routing, but doesn't touch the channel. This means a cancel signal that arrives before `start()` still fires the run's abort signal.
+`createRun()` is synchronous - it creates the run and registers it for cancel routing, but doesn't touch the channel. This means a cancel signal that arrives before `start()` still fires the run's `AbortSignal`.
 
 `pipe()` returns a `StreamResult` with a `reason` field:
 
@@ -110,7 +110,7 @@ await Promise.all([
 
 On the client, each `send()` call returns its own `ActiveRun`. Cancellation is scoped - you can cancel one run without affecting others. See [Concurrent runs](../features/concurrent-runs.md) for patterns.
 
-## The abort signal
+## The cancel signal
 
 Each server-side run exposes an `AbortSignal` that fires when the run is cancelled. The signal has two sources: Ably cancel messages from clients, and an optional external signal (typically `req.signal`) for platform-level cancellation like request cancellation or serverless function timeout.
 
@@ -124,7 +124,7 @@ const run = session.createRun(Invocation.fromJSON({ runId, clientId }), {
     // Return true to allow it (abortSignal fires)
     return true;
   },
-  onAbort: async (write) => {
+  onCancelled: async (write) => {
     // Called after abortSignal fires, before the stream closes.
     // Use write() to publish final events before the encoder closes, e.g.:
     // await write({ type: 'text-delta', textDelta: '[generation cancelled]' });
@@ -135,8 +135,8 @@ const run = session.createRun(Invocation.fromJSON({ runId, clientId }), {
 const result = streamText({ model, messages, abortSignal: run.abortSignal });
 ```
 
-The `onCancel` hook lets you authorize cancellation - useful for preventing one user from cancelling another user's run. It only fires for Ably cancel messages, not for the external signal. The `onAbort` hook runs after the signal fires from either source, giving you a chance to write final data before the stream closes.
+The `onCancel` hook lets you authorize cancellation - useful for preventing one user from cancelling another user's run. It only fires for Ably cancel messages, not for the external signal. The `onCancelled` hook runs after the signal fires from either source, giving you a chance to write final data before the stream closes.
 
 See [Platform-level cancellation](../features/cancel.md#platform-level-cancellation) for details on the `signal` option.
 
-For the internal mechanics, see [RunManager](../internals/transport-components.md#runmanager) and [pipeStream](../internals/transport-components.md#pipestream) for how abort signals flow through the system, and [Wire protocol](../internals/wire-protocol.md#run-lifecycle-over-the-wire) for the message sequence on the channel.
+For the internal mechanics, see [RunManager](../internals/transport-components.md#runmanager) and [pipeStream](../internals/transport-components.md#pipestream) for how cancel signals flow through the system, and [Wire protocol](../internals/wire-protocol.md#run-lifecycle-over-the-wire) for the message sequence on the channel.

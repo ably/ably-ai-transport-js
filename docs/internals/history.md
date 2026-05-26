@@ -36,7 +36,7 @@ A codec-message-id is **started** when any of these is seen on a message carryin
 A codec-message-id is **terminated** when:
 
 - `x-ably-discrete` is present on the create.
-- `x-ably-status` is `"finished"` or `"aborted"` on any later action.
+- `x-ably-status` is `"finished"` or `"cancelled"` on any later action.
 
 Messages with `x-ably-amend` are skipped - amendments target an existing message rather than producing a new completion. Messages without `x-ably-codec-message-id` (run lifecycle events) are skipped too. `message.delete` is never a start signal: it clears the decoder's tracker and emits nothing.
 

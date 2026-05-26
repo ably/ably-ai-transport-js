@@ -89,7 +89,7 @@ The conversation tree handles the fork: the new message becomes a sibling of the
 
 `cancel(filter?)` publishes a cancel message to the channel and closes matching local streams. The filter defaults to `{ own: true }` (all runs started by this client). See [Transport components: cancel routing](transport-components.md#cancel-routing-agent-session) for how the agent session processes cancel messages.
 
-Closing the stream router entry does **not** clear the observer state - late server events (e.g. abort status, final metadata) arriving before `run-end` are still accumulated into the conversation tree.
+Closing the stream router entry does **not** clear the observer state - late server events (e.g. cancel status, final metadata) arriving before `run-end` are still accumulated into the conversation tree.
 
 ## History
 

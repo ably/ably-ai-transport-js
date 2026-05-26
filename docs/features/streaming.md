@@ -32,7 +32,7 @@ Each stream has a lifecycle tracked by the `x-ably-status` header:
 | ----------- | ------------------------------------- |
 | `streaming` | Stream is open, more appends expected |
 | `finished`  | Stream completed normally             |
-| `aborted`   | Stream was cancelled or errored       |
+| `cancelled` | Stream was cancelled                  |
 
 ## Server
 
@@ -114,4 +114,4 @@ The transport streams whatever events the codec produces. For the Vercel AI SDK 
 
 Multiple content streams can be active within a single run (e.g., reasoning + text). Each gets its own message with its own stream ID.
 
-See [Tool calling](tool-calling.md) for how tool input deltas and results are streamed. See [React hooks reference](../reference/react-hooks.md) for the full `useView()` and `useClientSession()` API. See [Cancel](cancel.md) for how streams are aborted. For the internal mechanics of message encoding, decoding, and recovery, see the [Encoder](../internals/encoder.md), [Decoder](../internals/decoder.md), and [Wire protocol](../internals/wire-protocol.md) internals pages.
+See [Tool calling](tool-calling.md) for how tool input deltas and results are streamed. See [React hooks reference](../reference/react-hooks.md) for the full `useView()` and `useClientSession()` API. See [Cancel](cancel.md) for how streams are cancelled. For the internal mechanics of message encoding, decoding, and recovery, see the [Encoder](../internals/encoder.md), [Decoder](../internals/decoder.md), and [Wire protocol](../internals/wire-protocol.md) internals pages.

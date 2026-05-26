@@ -110,7 +110,7 @@ const node = view.nodes.find(
 const position = await new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject));
 
 // 3. Update the assistant message with the result and start a continuation run
-await view.update(node.msgId, [
+await view.update(node.codecMessageId, [
   {
     type: 'tool-output-available',
     toolCallId: toolPart.toolCallId,
@@ -122,7 +122,7 @@ await view.update(node.msgId, [
 ]);
 ```
 
-`update` updates the existing assistant message and starts a continuation [run](../concepts/runs.md) in a single call. The tree updates optimistically, then the events are sent to the server in the POST body. The server publishes them to the channel (with `x-ably-amend` header targeting the assistant message's `x-ably-msg-id`) and calls `streamText()` again with the tool result in the conversation history. All clients see the tool part transition from `input-available` to `output-available`.
+`update` updates the existing assistant message and starts a continuation [run](../concepts/runs.md) in a single call. The tree updates optimistically, then the events are sent to the server in the POST body. The server publishes them to the channel (with `x-ably-amend` header targeting the assistant message's `x-ably-codec-message-id`) and calls `streamText()` again with the tool result in the conversation history. All clients see the tool part transition from `input-available` to `output-available`.
 
 ## Multi-client tool execution
 
@@ -151,7 +151,7 @@ await run.start();
 await run.addEvents([
   {
     kind: 'event',
-    msgId: previousAssistantMsgId,
+    codecMessageId: previousAssistantCodecMessageId,
     events: [{ type: 'tool-output-available', toolCallId, output: result }],
   },
 ]);

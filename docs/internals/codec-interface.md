@@ -113,7 +113,7 @@ The transport creates accumulators in two situations, and reads different proper
 
 ### Identity and ownership
 
-The accumulator does not own message identity. The transport assigns [`x-ably-msg-id`](wire-protocol.md#message-identity-x-ably-msg-id) and headers; the accumulator routes events to the correct in-progress message using the `messageId` field on decoder event outputs. The accumulator builds the domain object - the transport handles identity, headers, and tree placement.
+The accumulator does not own message identity. The transport assigns [`x-ably-codec-message-id`](wire-protocol.md#message-identity-x-ably-codec-message-id) and headers; the accumulator routes events to the correct in-progress message using the `messageId` field on decoder event outputs. The accumulator builds the domain object - the transport handles identity, headers, and tree placement.
 
 ## Lifecycle tracker
 

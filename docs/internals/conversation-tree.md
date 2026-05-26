@@ -16,11 +16,11 @@ Note that serial order is not necessarily delivery order - messages published co
 ## Data structures
 
 ```
-_nodeIndex:          Map<msgId, InternalNode>        Primary index
-_sortedList:         InternalNode[]                  All nodes, sorted by serial
-_parentIndex:        Map<parentId, Set<msgId>>       Children of each parent
-_selections:         Map<groupRootId, index>         Selected sibling at each fork
-_structuralVersion:  number                          Monotonic counter (see below)
+_nodeIndex:          Map<codecMessageId, InternalNode>        Primary index
+_sortedList:         InternalNode[]                           All nodes, sorted by serial
+_parentIndex:        Map<parentId, Set<codecMessageId>>       Children of each parent
+_selections:         Map<groupRootId, index>                  Selected sibling at each fork
+_structuralVersion:  number                                   Monotonic counter (see below)
 ```
 
 Each `MessageNode` stores:
@@ -28,7 +28,7 @@ Each `MessageNode` stores:
 ```typescript
 {
   message: TMessage; // The domain message
-  msgId: string; // From x-ably-msg-id
+  codecMessageId: string; // From x-ably-codec-message-id
   parentId: string | undefined; // From x-ably-parent
   forkOf: string | undefined; // From x-ably-fork-of
   headers: Record<string, string>;
@@ -38,15 +38,15 @@ Each `MessageNode` stores:
 
 ## Upsert: the sole mutation
 
-`upsert(msgId, message, headers, serial?)` is the only way to add or update messages:
+`upsert(codecMessageId, message, headers, serial?)` is the only way to add or update messages:
 
-**Insert (new msgId):**
+**Insert (new codecMessageId):**
 
 1. Create a `MessageNode` from the message, headers, and serial
 2. Add to the node index and parent index
 3. Insert into the sorted list at the correct position (binary search for serial-bearing, append for null-serial)
 
-**Update (existing msgId):**
+**Update (existing codecMessageId):**
 
 1. Update the message content and headers in place
 2. If a serial is provided and the existing node has no serial (optimistic → relay), promote the serial: remove from sorted list, re-insert at correct position
@@ -59,7 +59,7 @@ The tree maintains a `structuralVersion` counter (exposed via `TreeInternal`) th
 
 ## Sibling groups and fork chains
 
-When a user calls `regenerate(msgId)` or `edit(msgId)`, the new message carries an [`x-ably-fork-of`](wire-protocol.md#branching-headers) header pointing to `msgId`. Messages that fork the same target (or transitively fork each other) form a **sibling group** - alternative messages at the same point in the conversation.
+When a user calls `regenerate(messageId)` or `edit(messageId)`, the new message carries an [`x-ably-fork-of`](wire-protocol.md#branching-headers) header pointing to `messageId`. Messages that fork the same target (or transitively fork each other) form a **sibling group** - alternative messages at the same point in the conversation.
 
 ### Finding the group
 
@@ -73,7 +73,7 @@ Cycle detection guards against malformed `forkOf` chains.
 
 ### Selection
 
-Each sibling group has a selected index (default: last, i.e. the most recent fork). Selection state is managed by the View - `view.select(msgId, index)` changes which sibling is active. The selection is stored by the group root's msgId.
+Each sibling group has a selected index (default: last, i.e. the most recent fork). Selection state is managed by the View - `view.select(codecMessageId, index)` changes which sibling is active. The selection is stored by the group root's codec-message-id.
 
 ## Flatten: producing the linear path
 
@@ -85,45 +85,45 @@ for each node in sorted order:
      (Root messages with no parent are always reachable)
   2. Check sibling selection - if this node is in a sibling group,
      is it the selected sibling?
-  3. If both pass: add to the path and mark this msgId as reachable
+  3. If both pass: add to the path and mark this codec-message-id as reachable
 ```
 
 Messages that fail either check are skipped - they're on unselected branches. This produces a linear sequence that follows the currently selected forks through the conversation tree.
 
 ### Resolved group cache
 
-Sibling group resolution is cached per `flattenNodes()` call using a `resolvedGroups` map. Once a sibling group is resolved to a selected msgId, all other members of that group are skipped without re-resolving.
+Sibling group resolution is cached per `flattenNodes()` call using a `resolvedGroups` map. Once a sibling group is resolved to a selected codec-message-id, all other members of that group are skipped without re-resolving.
 
 ## Querying
 
 The public `Tree` interface exposes:
 
-| Method               | Returns                                              |
-| -------------------- | ---------------------------------------------------- |
-| `getSiblings(msgId)` | All messages in the sibling group containing `msgId` |
-| `hasSiblings(msgId)` | Whether the message has alternative versions         |
-| `getNode(msgId)`     | The `MessageNode` by message ID                      |
-| `getHeaders(msgId)`  | Headers for a specific message                       |
+| Method                        | Returns                                                       |
+| ----------------------------- | ------------------------------------------------------------- |
+| `getSiblings(codecMessageId)` | All messages in the sibling group containing `codecMessageId` |
+| `hasSiblings(codecMessageId)` | Whether the message has alternative versions                  |
+| `getNode(codecMessageId)`     | The `MessageNode` by codec-message-id                         |
+| `getHeaders(codecMessageId)`  | Headers for a specific message                                |
 
 The following are on the `View`, not the public `Tree` interface:
 
-| Method                    | Returns                                         |
-| ------------------------- | ----------------------------------------------- |
-| `flattenNodes()`          | Linear message list following selected branches |
-| `select(msgId, index)`    | Switch to a different sibling at a fork point   |
-| `getSelectedIndex(msgId)` | Currently selected index in the sibling group   |
+| Method                             | Returns                                         |
+| ---------------------------------- | ----------------------------------------------- |
+| `flattenNodes()`                   | Linear message list following selected branches |
+| `select(codecMessageId, index)`    | Switch to a different sibling at a fork point   |
+| `getSelectedIndex(codecMessageId)` | Currently selected index in the sibling group   |
 
 ## Delete
 
-`delete(msgId)` removes a node from all indexes. Children are **not** cascade-deleted - they become unreachable in `flattenNodes()` because their parent is no longer on the active path. This preserves the ability to restore deleted messages if needed (e.g. undo).
+`delete(codecMessageId)` removes a node from all indexes. Children are **not** cascade-deleted - they become unreachable in `flattenNodes()` because their parent is no longer on the active path. This preserves the ability to restore deleted messages if needed (e.g. undo).
 
 ## Example: regeneration fork
 
 ```
-User: "What is 2+2?"        msgId: m1, parent: undefined
-Assistant: "4"               msgId: m2, parent: m1
+User: "What is 2+2?"        codecMessageId: m1, parent: undefined
+Assistant: "4"               codecMessageId: m2, parent: m1
   → user regenerates m2
-Assistant: "Four"            msgId: m3, parent: m1, forkOf: m2
+Assistant: "Four"            codecMessageId: m3, parent: m1, forkOf: m2
 
 Sibling group for m2: [m2, m3]
 Selection default: index 1 (m3, the latest)

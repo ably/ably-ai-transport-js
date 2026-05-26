@@ -65,11 +65,11 @@ Publishes `ai-run-start` to the channel via the [RunManager](transport-component
 
 Publishes user messages to the channel through the codec encoder. Each message gets:
 
-- A generated `x-ably-msg-id`
+- A generated `x-ably-codec-message-id`
 - [Transport headers](wire-protocol.md#transport-headers-x-ably) via [buildTransportHeaders](transport-components.md#buildtransportheaders) (role, run IDs, parent, forkOf)
-- Per-message headers from the client override transport-generated defaults - this lets `x-ably-msg-id` from the client's optimistic insert pass through for [reconciliation](glossary.md#optimistic-reconciliation)
+- Per-message headers from the client override transport-generated defaults - this lets `x-ably-codec-message-id` from the client's optimistic insert pass through for [reconciliation](glossary.md#optimistic-reconciliation)
 
-Returns the effective message IDs of all published messages.
+Returns the effective codec-message-ids of all published messages.
 
 ### pipe
 

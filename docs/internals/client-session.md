@@ -22,9 +22,9 @@ All sub-components are created in the constructor and share a single Ably channe
 
 `view.send()` is the primary entry point for starting a new run. It delegates to the session's internal `_internalSend` (exposed to views via a `SendDelegate`). The send flow:
 
-1. **Generate identifiers** — a fresh `runId`, a fresh `invocationId`, and per-message `msgId`s (all `crypto.randomUUID()`).
+1. **Generate identifiers** — a fresh `runId`, a fresh `invocationId`, and per-message `codecMessageId`s (all `crypto.randomUUID()`).
 2. **Auto-compute parent** — if no explicit `parent` or `forkOf` is provided, reads the last message in the [flattened tree](conversation-tree.md#flatten-producing-the-linear-path) to chain messages into a linear thread.
-3. **Optimistic insert** — each user message is inserted into the conversation tree immediately with [transport headers](wire-protocol.md#transport-headers-x-ably) (`role: "user"`, `run-id`, `invocation-id`, `msg-id`, parent). This makes the message visible to the view before the publish ack lands.
+3. **Optimistic insert** — each user message is inserted into the conversation tree immediately with [transport headers](wire-protocol.md#transport-headers-x-ably) (`role: "user"`, `run-id`, `invocation-id`, `codec-message-id`, parent). This makes the message visible to the view before the publish ack lands.
 4. **Create stream** — the [stream router](transport-components.md#streamrouter) creates a `ReadableStream` bound to `(runId, invocationId)`. Events from a different invocation under the same `runId` are dropped.
 5. **Publish on the channel** — the session's shared encoder publishes the user message(s) via `writeMessages`. Capability errors (Ably 401/403) are translated to `MissingPublishCapability` and reject `send()` before exposing the stream.
 6. **POST in parallel** — the HTTP POST is fired in parallel with the publish. The body carries `runId`, `invocationId`, `clientId`, `history` (and `events`, `forkOf`, `parent` when applicable). It does **not** carry a `messages` field — the prompt is on the channel.
@@ -39,7 +39,7 @@ When `send()` receives multiple messages, it chains them into a linear thread: e
 
 ## Optimistic reconciliation
 
-When the server relays user messages back onto the channel, the client receives them like any other message. The transport detects own-message relays by matching the `x-ably-msg-id` against the set of optimistically inserted message IDs (`_ownMsgIds`).
+When the server relays user messages back onto the channel, the client receives them like any other message. The transport detects own-message relays by matching the `x-ably-codec-message-id` against the set of optimistically inserted codec-message-ids (`_ownCodecMessageIds`).
 
 On relay match, the transport upserts the message with the server-assigned [serial](glossary.md#serial-ably), which triggers [serial promotion](glossary.md#serial-promotion) in the conversation tree - the optimistic entry (null serial, sorted last) moves to its correct position in serial order.
 

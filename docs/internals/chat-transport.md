@@ -20,7 +20,7 @@ The adapter splits the message array based on `trigger`:
 | `submit-message`     | Last message in array | Everything before it | None                                                         |
 | `regenerate-message` | None (empty array)    | Entire array         | `forkOf` = messageId, `parent` = tree parent of that message |
 
-For regeneration, the adapter looks up the target message in the [conversation tree](conversation-tree.md) to compute the correct `forkOf` and `parent` values using the tree's `x-ably-msg-id` (not the `UIMessage.id`).
+For regeneration, the adapter looks up the target message in the [conversation tree](conversation-tree.md) to compute the correct `forkOf` and `parent` values using the tree's `x-ably-codec-message-id` (not the `UIMessage.id`).
 
 ### Request customization
 
@@ -34,7 +34,7 @@ The adapter returns the real run stream from `sendMessages()`. `useChat` consume
 
 Both `useChat` and `useMessageSync` accumulate messages in parallel: `useChat` builds from the stream, while `useMessageSync` pushes from the session's message store via `setMessages` (a full replacement). The session's version is always authoritative - both accumulators produce identical messages from the same chunks, and `setMessages` overwrites `useChat`'s state on every session event.
 
-The server encoder ensures `messageId` alignment by stamping the transport-assigned `x-ably-msg-id` as a fallback domain `messageId` on the `start` chunk. This ensures both accumulators assign the same message ID.
+The server encoder ensures `messageId` alignment by stamping the transport-assigned `x-ably-codec-message-id` as a fallback domain `messageId` on the `start` chunk. This ensures both accumulators assign the same codec-message-id.
 
 ### Abort signal
 

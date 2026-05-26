@@ -8,7 +8,7 @@ Without tree-based history, regeneration and editing destroy the original respon
 
 Every message in the tree has:
 
-- **`msgId`** - unique identifier (stamped as `x-ably-msg-id`)
+- **`codecMessageId`** - unique identifier (stamped as `x-ably-codec-message-id`)
 - **`parentId`** - the preceding message in the thread (`x-ably-parent`)
 - **`forkOf`** - the message this one replaces (`x-ably-fork-of`), if it's a fork
 
@@ -32,7 +32,7 @@ import { useView } from '@ably/ai-transport/react';
 const { regenerate } = useView();
 
 // Fork the assistant message - starts a new run with no new user messages.
-// nodeId is the x-ably-msg-id (see treeMsgId helper in the quickstart).
+// nodeId is the x-ably-codec-message-id (see treeMsgId helper in the quickstart).
 await regenerate(nodeId);
 ```
 
@@ -55,7 +55,7 @@ const newMessage = {
 };
 
 // Fork the user message with new content.
-// nodeId is the x-ably-msg-id (see treeMsgId helper in the quickstart).
+// nodeId is the x-ably-codec-message-id (see treeMsgId helper in the quickstart).
 await edit(nodeId, [newMessage]);
 ```
 
@@ -72,15 +72,15 @@ const view = useView();
 // view.getSiblings(nodeId) - all alternatives at this fork point
 // view.getSelectedIndex(nodeId) - which sibling is currently selected
 // view.select(nodeId, index) - switch to a different sibling
-// view.getNode(nodeId) - look up a node by msgId
+// view.getNode(nodeId) - look up a node by codec-message-id
 //
-// nodeId is the msgId on each MessageNode — iterate view.nodes:
+// nodeId is the codecMessageId on each MessageNode — iterate view.nodes:
 //   view.nodes.map((node) => {
-//     const nodeId = node.msgId;
+//     const nodeId = node.codecMessageId;
 //   });
 ```
 
-Build a sibling navigator (where `nodeId` is the resolved `x-ably-msg-id` for the message):
+Build a sibling navigator (where `nodeId` is the resolved `x-ably-codec-message-id` for the message):
 
 ```typescript
 {view.hasSiblings(nodeId) && (

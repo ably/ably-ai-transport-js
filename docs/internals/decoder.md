@@ -97,7 +97,7 @@ On `message.delete`:
 
 ## Message ID tagging
 
-After decoding, the decoder tags every event output with the [`x-ably-msg-id`](wire-protocol.md#message-identity-x-ably-msg-id) from the message headers. This ID is used by the [accumulator](codec-interface.md#accumulator) to route events to the correct in-progress domain message - for example, correlating a `text-delta` event to the `UIMessage` it belongs to.
+After decoding, the decoder tags every event output with the [`x-ably-codec-message-id`](wire-protocol.md#message-identity-x-ably-codec-message-id) from the message headers. This ID is used by the [accumulator](codec-interface.md#accumulator) to route events to the correct in-progress domain message - for example, correlating a `text-delta` event to the `UIMessage` it belongs to.
 
 ## Decoder output types
 

@@ -16,13 +16,13 @@ Transport headers are set by the generic transport layer. They handle run correl
 | `x-ably-status`               | `"streaming"` / `"finished"` / `"aborted"`               | Current lifecycle state of a streamed message                                                                                                                                                                   |
 | `x-ably-stream-id`            | string                                                   | Identity of the streamed message (correlates create → appends → close)                                                                                                                                          |
 | `x-ably-run-id`               | string                                                   | [Run](glossary.md#run-id-vs-message-id) correlation ID. Every message in a run carries this                                                                                                                     |
-| `x-ably-msg-id`               | string                                                   | [Message identity](#message-identity-x-ably-msg-id). One per domain message (user or assistant). Used for [optimistic reconciliation](#optimistic-reconciliation)                                               |
+| `x-ably-codec-message-id`     | string                                                   | [Message identity](#message-identity-x-ably-codec-message-id). One per domain message (user or assistant). Used for [optimistic reconciliation](#optimistic-reconciliation)                                     |
 | `x-ably-run-client-id`        | string                                                   | ClientId of the user who initiated the run                                                                                                                                                                      |
 | `x-ably-role`                 | `"user"` / `"assistant"`                                 | Message role                                                                                                                                                                                                    |
 | `x-ably-parent`               | message ID                                               | Preceding message in the branch. See [Branching headers](#branching-headers) for the rendering rules                                                                                                            |
 | `x-ably-fork-of`              | message ID                                               | Message being replaced (creates a sibling in the conversation tree). See [Branching headers](#branching-headers)                                                                                                |
 | `x-ably-invocation-id`        | string                                                   | Per-invocation correlator. Stamped on every client-published event in a send (user-message AND amend events) and echoed on `run-start` / `run-end` so the client can match lifecycle events to its pending send |
-| `x-ably-prompt-id`            | string                                                   | Per-event identifier on each client-published event in a send. The invocation body lists every promptId; the agent's prompt lookup waits for all of them on the channel before starting LLM work                |
+| `x-ably-event-id`             | string                                                   | Per-event identifier on each client-published event in a send. The invocation body lists every eventId; the agent's prompt lookup waits for all of them on the channel before starting LLM work                 |
 | `x-ably-run-continue`         | `"true"`                                                 | Marks a `run-start` as a continuation of an already-started run rather than the first start of that `runId`                                                                                                     |
 | `x-ably-cancel-run-id`        | string                                                   | Cancel a specific run                                                                                                                                                                                           |
 | `x-ably-cancel-own`           | `"true"`                                                 | Cancel all runs belonging to the sender                                                                                                                                                                         |
@@ -78,7 +78,7 @@ Ably message:
   extras.headers:
     x-ably-stream: "false"
     x-ably-run-id: "run-1"
-    x-ably-msg-id: "msg-1"
+    x-ably-codec-message-id: "msg-1"
     x-ably-role: "user"
     x-domain-id: "ui-msg-1"   (codec-specific)
 ```
@@ -160,31 +160,31 @@ sequenceDiagram
     S->>Ch: ai-run-end (cancelled)
 ```
 
-## Message identity (`x-ably-msg-id`)
+## Message identity (`x-ably-codec-message-id`)
 
-Every domain message - user or assistant - gets a unique `x-ably-msg-id` (a `crypto.randomUUID()`). This is the primary identity for a message throughout the system: the [conversation tree](conversation-tree.md) is indexed by it, the [accumulator](codec-interface.md#accumulator) routes streaming events by it, and [optimistic reconciliation](#optimistic-reconciliation) matches on it.
+Every domain message - user or assistant - gets a unique `x-ably-codec-message-id` (a `crypto.randomUUID()`). This is the primary identity for a message throughout the system: the [conversation tree](conversation-tree.md) is indexed by it, the [accumulator](codec-interface.md#accumulator) routes streaming events by it, and [optimistic reconciliation](#optimistic-reconciliation) matches on it.
 
 ### Who generates it
 
-| Scenario                    | Generator                                       | Location                                                                                                                    |
-| --------------------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| User message (optimistic)   | Client session `send()`                         | One UUID per message in the batch                                                                                           |
-| User message (server relay) | Agent session `Run.addMessages()`               | One UUID per input; if the input already carries an `x-ably-msg-id` header (from the POST body), the existing value is kept |
-| Assistant response          | Agent session `Run.pipeStream()` / `Run.pipe()` | One UUID for the entire streamed response                                                                                   |
+| Scenario                    | Generator                                       | Location                                                                                                                              |
+| --------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| User message (optimistic)   | Client session `send()`                         | One UUID per message in the batch                                                                                                     |
+| User message (server relay) | Agent session `Run.addMessages()`               | One UUID per input; if the input already carries an `x-ably-codec-message-id` header (from the POST body), the existing value is kept |
+| Assistant response          | Agent session `Run.pipeStream()` / `Run.pipe()` | One UUID for the entire streamed response                                                                                             |
 
 ### How it's stamped
 
 The message ID flows through the header pipeline:
 
-1. The transport calls `buildTransportHeaders({ msgId, ... })` which sets `headers['x-ably-msg-id'] = msgId`.
+1. The transport calls `buildTransportHeaders({ codecMessageId, ... })` which sets `headers['x-ably-codec-message-id'] = codecMessageId`.
 2. For **discrete messages** (user messages, lifecycle events), these headers are passed to the encoder via `WriteOptions.messageId`. The [encoder core's](encoder.md#header-merging) `_buildHeaders()` stamps it into the Ably message's `extras.headers`.
-3. For **streamed messages** (assistant text, reasoning), the message ID is included in the persistent headers captured at `startStream()`. Every append - including the closing append - carries the same `x-ably-msg-id`, so the entire message append lifecycle shares one identity.
+3. For **streamed messages** (assistant text, reasoning), the codec-message-id is included in the persistent headers captured at `startStream()`. Every append - including the closing append - carries the same `x-ably-codec-message-id`, so the entire message append lifecycle shares one identity.
 
 ### How it's consumed
 
 | Consumer                                                  | What it does with the message ID                                                                                                                                                               |
 | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [Decoder core](decoder.md#message-id-tagging)             | Reads `x-ably-msg-id` from inbound message headers and tags every emitted `DecoderOutput` event with it                                                                                        |
+| [Decoder core](decoder.md#message-id-tagging)             | Reads `x-ably-codec-message-id` from inbound message headers and tags every emitted `DecoderOutput` event with it                                                                              |
 | [Accumulator](codec-interface.md#accumulator)             | Uses `output.messageId` to route decoded events to the correct in-progress domain message (e.g. the `UIMessage` being built). The message ID becomes the `UIMessage.id` for assistant messages |
 | [Conversation tree](conversation-tree.md#data-structures) | Uses the message ID as the primary key (`_nodeIndex`). Branching headers (`x-ably-parent`, `x-ably-fork-of`) reference other messages by their message ID                                      |
 | [Optimistic reconciliation](#optimistic-reconciliation)   | Matches relayed messages to optimistic inserts (see below)                                                                                                                                     |
@@ -192,7 +192,7 @@ The message ID flows through the header pipeline:
 
 ### Optimistic reconciliation
 
-When a client calls `send()`, it inserts an optimistic message into the conversation tree (with no serial) and records the message ID in an internal set. The server then relays that message onto the channel. When the client receives the relayed message, it matches by `x-ably-msg-id` and reconciles the optimistic entry with the server-assigned serial - [serial promotion](conversation-tree.md#upsert-the-sole-mutation) - rather than creating a duplicate.
+When a client calls `send()`, it inserts an optimistic message into the conversation tree (with no serial) and records the codec-message-id in an internal set. The server then relays that message onto the channel. When the client receives the relayed message, it matches by `x-ably-codec-message-id` and reconciles the optimistic entry with the server-assigned serial - [serial promotion](conversation-tree.md#upsert-the-sole-mutation) - rather than creating a duplicate.
 
 ## Branching headers
 
@@ -201,7 +201,7 @@ Branching uses two headers:
 - `x-ably-parent` - points to the preceding message in the conversation. Establishes linear order at branch points.
 - `x-ably-fork-of` - points to the message being replaced. Creates a sibling group in the conversation tree.
 
-When a user calls `regenerate(msgId)`, the new assistant message carries `x-ably-fork-of: msgId`. When a user calls `edit(msgId, newMessages)`, the new user message carries `x-ably-fork-of: msgId`. The [conversation tree](conversation-tree.md#sibling-groups-and-fork-chains) uses these to build sibling groups - alternative responses at the same point in the conversation.
+When a user calls `regenerate(messageId)`, the new assistant message carries `x-ably-fork-of: messageId`. When a user calls `edit(messageId, newMessages)`, the new user message carries `x-ably-fork-of: messageId`. The [conversation tree](conversation-tree.md#sibling-groups-and-fork-chains) uses these to build sibling groups - alternative responses at the same point in the conversation.
 
 In linear sequences (no branching), `x-ably-parent` establishes ordering. Serial-based ordering handles the common case; parent headers are only structurally meaningful at branch points.
 
@@ -209,12 +209,12 @@ In linear sequences (no branching), `x-ably-parent` establishes ordering. Serial
 
 Each wire message can carry `x-ably-parent`. The value comes from different sources depending on which side of the protocol produces the message:
 
-| Wire message            | Who sets it                   | Source of the parent value                                                                                                                                                                                                                                         |
-| ----------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| User-prompt message     | Client                        | `autoParent` - the last visible msgId before the new prompt in the sender's view, or `sendOptions.parent` when the caller overrides                                                                                                                                |
-| `run-start`             | Agent (`RunManager.startRun`) | `invocation.parent` from the POST body (= the client's `autoParent`). On continuations the chat-transport adapter sets this to the suspended assistant's msgId, so `run-start` carries a "resume anchor" rather than a tree-shaping parent                         |
-| Assistant message       | Agent (`Run.pipe`)            | Priority: explicit `streamOpts.parent` → the most recent user-prompt msgId in `run.view.messages` (populated by the channel-rewind prompt lookup) → `runParent` (= `invocation.parent`). Keeps user → assistant chains explicit without the route having to opt in |
-| Continuation amendments | Codec / `Run.pipe`            | Tool outputs and approval responses fold back onto the original assistant message via `x-ably-msg-id` routing - they don't reshape parent edges                                                                                                                    |
+| Wire message            | Who sets it                   | Source of the parent value                                                                                                                                                                                                                                                    |
+| ----------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| User-prompt message     | Client                        | `autoParent` - the last visible codec-message-id before the new prompt in the sender's view, or `sendOptions.parent` when the caller overrides                                                                                                                                |
+| `run-start`             | Agent (`RunManager.startRun`) | `invocation.parent` from the POST body (= the client's `autoParent`). On continuations the chat-transport adapter sets this to the suspended assistant's codec-message-id, so `run-start` carries a "resume anchor" rather than a tree-shaping parent                         |
+| Assistant message       | Agent (`Run.pipe`)            | Priority: explicit `streamOpts.parent` → the most recent user-prompt codec-message-id in `run.view.messages` (populated by the channel-rewind prompt lookup) → `runParent` (= `invocation.parent`). Keeps user → assistant chains explicit without the route having to opt in |
+| Continuation amendments | Codec / `Run.pipe`            | Tool outputs and approval responses fold back onto the original assistant message via `x-ably-codec-message-id` routing - they don't reshape parent edges                                                                                                                     |
 
 Agent routes do not normally need to pass `{ parent: ... }` to `Run.pipe`. The default chains the assistant under the user prompt that triggered it, which is what the conversation tree needs to keep edit-then-regenerate sibling resolution correct - see [What renders](conversation-tree.md#what-renders).
 

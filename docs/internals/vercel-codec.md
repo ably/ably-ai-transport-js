@@ -59,7 +59,7 @@ Start hooks also call `ensurePhases()` on the [lifecycle tracker](lifecycle-trac
 
 Handles non-streamed messages. Two categories:
 
-**Discrete message parts** (from `writeMessages()`) are identified by the presence of `x-ably-role` in headers. These are reconstructed into single-part `UIMessage` objects - the [conversation tree](conversation-tree.md) merges parts sharing the same `x-ably-msg-id`.
+**Discrete message parts** (from `writeMessages()`) are identified by the presence of `x-ably-role` in headers. These are reconstructed into single-part `UIMessage` objects - the [conversation tree](conversation-tree.md) merges parts sharing the same `x-ably-codec-message-id`.
 
 **Lifecycle events** are dispatched by Ably message name:
 
@@ -78,7 +78,7 @@ Handles non-streamed messages. Two categories:
 
 `src/vercel/codec/accumulator.ts` - builds and maintains a `UIMessage[]` list from decoder outputs.
 
-The accumulator consumes `DecoderOutput[]` and groups streaming events into `UIMessage` objects using lifecycle boundaries (`start` / `finish`). Multiple messages can be in-progress concurrently - each identified by the `messageId` field on decoder output (read from `x-ably-msg-id`).
+The accumulator consumes `DecoderOutput[]` and groups streaming events into `UIMessage` objects using lifecycle boundaries (`start` / `finish`). Multiple messages can be in-progress concurrently - each identified by the `messageId` field on decoder output (read from `x-ably-codec-message-id`).
 
 ### Message state management
 

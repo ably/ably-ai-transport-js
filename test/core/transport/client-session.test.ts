@@ -610,6 +610,10 @@ describe('ClientSession', () => {
       expect(opts?.extras?.headers?.[HEADER_INVOCATION_ID]).toBeDefined();
       expect(opts?.extras?.headers?.[HEADER_ROLE]).toBe('user');
       expect(opts?.extras?.headers?.['x-ably-event-id']).toBeDefined();
+      // `ai-input` events do not carry `x-ably-input-client-id` — the wire
+      // publisher's Ably `clientId` already conveys that on the input event
+      // itself. The agent re-stamps it on its own subsequent publishes.
+      expect(opts?.extras?.headers?.['x-ably-input-client-id']).toBeUndefined();
     });
 
     it('accepts the richer `{event, domainMessageId}` shape and uses domainMessageId as the wire HEADER_CODEC_MESSAGE_ID', async () => {
@@ -662,9 +666,10 @@ describe('ClientSession', () => {
       const body = fix.fetch.body(0);
       expect(body.runId).toBe(run.runId);
       expect(body.invocationId).toBe(run.invocationId);
-      // Per-message metadata (clientId/parent/forkOf/isContinuation) is no
-      // longer in the POST body — those fields live on channel headers and
-      // are resolved by the agent's prompt-lookup result.
+      // Per-message metadata (clientId/parent/forkOf/isContinuation) is not
+      // in the POST body — those fields live on channel headers and are
+      // resolved by the agent's prompt-lookup result. The agent reads the
+      // input event's publisher `clientId` directly off the wire.
       expect(body.clientId).toBeUndefined();
       expect(Array.isArray(body.eventIds)).toBe(true);
       expect((body.eventIds as string[]).length).toBe(1);

@@ -12,6 +12,7 @@ import {
   EVENT_RUN_END,
   EVENT_RUN_START,
   HEADER_FORK_OF,
+  HEADER_INPUT_CLIENT_ID,
   HEADER_INVOCATION_ID,
   HEADER_PARENT,
   HEADER_RUN_CLIENT_ID,
@@ -33,10 +34,16 @@ export interface RunManager {
     runId: string,
     clientId?: string,
     controller?: AbortController,
-    metadata?: { parent?: string; forkOf?: string; invocationId?: string; continuation?: boolean },
+    metadata?: {
+      parent?: string;
+      forkOf?: string;
+      invocationId?: string;
+      inputClientId?: string;
+      continuation?: boolean;
+    },
   ): Promise<AbortSignal>;
   /** End a run. Publishes run-end on the channel. Cleans up internal state. */
-  endRun(runId: string, reason: RunEndReason, invocationId?: string): Promise<void>;
+  endRun(runId: string, reason: RunEndReason, invocationId?: string, inputClientId?: string): Promise<void>;
   /** Get the AbortSignal for a run. */
   getSignal(runId: string): AbortSignal | undefined;
   /** Get the clientId that owns a run. */
@@ -76,7 +83,13 @@ class DefaultRunManager implements RunManager {
     runId: string,
     clientId?: string,
     externalController?: AbortController,
-    metadata?: { parent?: string; forkOf?: string; invocationId?: string; continuation?: boolean },
+    metadata?: {
+      parent?: string;
+      forkOf?: string;
+      invocationId?: string;
+      inputClientId?: string;
+      continuation?: boolean;
+    },
   ): Promise<AbortSignal> {
     this._logger?.trace('DefaultRunManager.startRun();', { runId, clientId });
 
@@ -101,6 +114,9 @@ class DefaultRunManager implements RunManager {
     if (metadata?.invocationId !== undefined) {
       headers[HEADER_INVOCATION_ID] = metadata.invocationId;
     }
+    if (metadata?.inputClientId !== undefined) {
+      headers[HEADER_INPUT_CLIENT_ID] = metadata.inputClientId;
+    }
     if (metadata?.continuation) {
       headers[HEADER_RUN_CONTINUE] = 'true';
     }
@@ -114,7 +130,7 @@ class DefaultRunManager implements RunManager {
     return controller.signal;
   }
 
-  async endRun(runId: string, reason: RunEndReason, invocationId?: string): Promise<void> {
+  async endRun(runId: string, reason: RunEndReason, invocationId?: string, inputClientId?: string): Promise<void> {
     this._logger?.trace('DefaultRunManager.endRun();', { runId, reason });
 
     const state = this._activeRuns.get(runId);
@@ -130,6 +146,9 @@ class DefaultRunManager implements RunManager {
     // under the same run-id.
     if (invocationId !== undefined) {
       headers[HEADER_INVOCATION_ID] = invocationId;
+    }
+    if (inputClientId !== undefined) {
+      headers[HEADER_INPUT_CLIENT_ID] = inputClientId;
     }
 
     // Publish before deleting local state so that if publish fails,

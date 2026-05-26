@@ -25,6 +25,7 @@ import {
   EVENT_RUN_START,
   HEADER_CANCEL_RUN_ID,
   HEADER_CODEC_MESSAGE_ID,
+  HEADER_INPUT_CLIENT_ID,
   HEADER_INVOCATION_ID,
   HEADER_PARENT,
   HEADER_ROLE,
@@ -167,6 +168,163 @@ describe('AgentSession integration', () => {
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
       expect(headers[HEADER_CODEC_MESSAGE_ID]).toBeDefined();
     }
+  });
+
+  it('stamps inputClientId from the triggering input event publisher; a continuation invocation from a different publisher stamps the new value', async () => {
+    // Verifies that the agent reads the publisher's Ably-level `clientId`
+    // off the triggering `ai-input` event on the channel and re-stamps it
+    // as `x-ably-input-client-id` on every event it publishes for that
+    // invocation. A second invocation triggered by an input from a
+    // different publisher stamps the new value while `runClientId` (the
+    // run owner) stays the same. Today the continuation is materialised
+    // as a second `ai-run-start` with `x-ably-run-continue: 'true'`; PR 8
+    // reframes this as `ai-run-resume` — the assertions track today's
+    // wire shape.
+    const channelName = uniqueChannelName('st-input-client-id');
+    const serverClient = ablyRealtimeClient();
+    const publisherA = ablyRealtimeClient({ clientId: 'user-a' });
+    const publisherB = ablyRealtimeClient({ clientId: 'user-b' });
+    const subClient = ablyRealtimeClient();
+    const subChannel = subClient.channels.get(channelName);
+
+    session = createAgentSession<VercelEvent, VercelProjection, AI.UIMessage>({
+      client: serverClient,
+      channelName,
+      codec: UIMessageCodec,
+    });
+    await session.connect();
+
+    const lifecycleMessages: Ably.InboundMessage[] = [];
+    const assistantMessages: Ably.InboundMessage[] = [];
+    let runEndCount = 0;
+    let resolveTwoEnds: () => void;
+    const twoEnds = new Promise<void>((r) => {
+      resolveTwoEnds = r;
+    });
+
+    await subChannel.subscribe((msg) => {
+      if (msg.name === EVENT_RUN_START || msg.name === EVENT_RUN_END) {
+        lifecycleMessages.push(msg);
+        if (msg.name === EVENT_RUN_END) {
+          runEndCount++;
+          if (runEndCount === 2) resolveTwoEnds();
+        }
+      } else if (getHeaders(msg)[HEADER_ROLE] === 'assistant') {
+        assistantMessages.push(msg);
+      }
+    });
+
+    // Capture session into a local so the closure below can reference it
+    // without TS widening it back to `AgentSessionT | undefined` across
+    // its `await`s.
+    const agentSession = session;
+
+    /**
+     * Publish a user-prompt input on the channel from the given publisher,
+     * then start a run that picks it up via the prompt-lookup. The
+     * publisher's Ably-level `clientId` becomes the `inputClientId` the
+     * agent stamps on every published event of the invocation.
+     * @param opts - Scenario inputs.
+     * @param opts.publisher - Ably Realtime client that publishes the input event.
+     * @param opts.runId - Run identifier the agent uses.
+     * @param opts.invocationId - Invocation identifier the agent uses.
+     * @param opts.codecMessageId - `x-ably-codec-message-id` for the published input.
+     * @param opts.streamArgs - Forwarded to `textResponseStream` for the agent's reply.
+     */
+    const runWithInput = async (opts: {
+      publisher: Ably.Realtime;
+      runId: string;
+      invocationId: string;
+      codecMessageId: string;
+      streamArgs: [string, string, string];
+    }): Promise<void> => {
+      const eventId = crypto.randomUUID();
+      const publisherChannel = opts.publisher.channels.get(channelName);
+      const headers = buildTransportHeaders({
+        role: 'user',
+        runId: opts.runId,
+        codecMessageId: opts.codecMessageId,
+        invocationId: opts.invocationId,
+        eventId,
+      });
+      const encoder = UIMessageCodec.createEncoder(publisherChannel, { extras: { headers } });
+      const userEvent = UIMessageCodec.userMessageEvent({
+        id: opts.codecMessageId,
+        role: 'user',
+        parts: [{ type: 'text', text: 'hi' }],
+      });
+      await encoder.publish(userEvent);
+
+      const run = createRunFromOpts(agentSession, {
+        runId: opts.runId,
+        invocationId: opts.invocationId,
+        eventIds: [eventId],
+      });
+      await run.start();
+      await run.pipe(textResponseStream(...opts.streamArgs));
+      await run.end('complete');
+    };
+
+    const runId = 'run-input-client-id';
+
+    // First invocation: triggered by an input event from user-a.
+    await runWithInput({
+      publisher: publisherA,
+      runId,
+      invocationId: 'inv-a',
+      codecMessageId: 'm-user-a',
+      streamArgs: ['msg-a', 'text-a', 'first reply'],
+    });
+
+    // Second invocation: same runId, input event from user-b — emulates
+    // a non-owner-driven continuation (e.g. a tool-result publish from
+    // 'user-b'). The agent stamps inputClientId: user-b on every event
+    // of this invocation.
+    await runWithInput({
+      publisher: publisherB,
+      runId,
+      invocationId: 'inv-b',
+      codecMessageId: 'm-user-b',
+      streamArgs: ['msg-b', 'text-b', 'second reply'],
+    });
+
+    await twoEnds;
+
+    const startMsgs = lifecycleMessages.filter((m) => m.name === EVENT_RUN_START);
+    const endMsgs = lifecycleMessages.filter((m) => m.name === EVENT_RUN_END);
+    expect(startMsgs).toHaveLength(2);
+    expect(endMsgs).toHaveLength(2);
+
+    const startA = startMsgs.find((m) => getHeaders(m)[HEADER_INVOCATION_ID] === 'inv-a');
+    const startB = startMsgs.find((m) => getHeaders(m)[HEADER_INVOCATION_ID] === 'inv-b');
+    expect(startA).toBeDefined();
+    expect(startB).toBeDefined();
+    if (!startA || !startB) return;
+    expect(getHeaders(startA)[HEADER_INPUT_CLIENT_ID]).toBe('user-a');
+    expect(getHeaders(startB)[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
+
+    const endA = endMsgs.find((m) => getHeaders(m)[HEADER_INVOCATION_ID] === 'inv-a');
+    const endB = endMsgs.find((m) => getHeaders(m)[HEADER_INVOCATION_ID] === 'inv-b');
+    expect(endA).toBeDefined();
+    expect(endB).toBeDefined();
+    if (!endA || !endB) return;
+    expect(getHeaders(endA)[HEADER_INPUT_CLIENT_ID]).toBe('user-a');
+    expect(getHeaders(endB)[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
+
+    // Assistant outputs of each invocation also carry the input event's
+    // publisher id. Both invocations share `runId`, so we partition by
+    // serial: messages before the second run-start belong to inv-a, the
+    // rest to inv-b. Serials are lexicographically ordered across the channel.
+    const cutoffSerial = startB.serial;
+    expect(cutoffSerial).toBeDefined();
+    if (cutoffSerial === undefined) return;
+    const assistantA = assistantMessages.find((m) => (m.serial ?? '') < cutoffSerial);
+    const assistantB = assistantMessages.find((m) => (m.serial ?? '') >= cutoffSerial);
+    expect(assistantA).toBeDefined();
+    expect(assistantB).toBeDefined();
+    if (!assistantA || !assistantB) return;
+    expect(getHeaders(assistantA)[HEADER_INPUT_CLIENT_ID]).toBe('user-a');
+    expect(getHeaders(assistantB)[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
   });
 
   it('publishes run-start and run-end events', async () => {

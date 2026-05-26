@@ -10,6 +10,7 @@ import {
   HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
   HEADER_FORK_OF,
+  HEADER_INPUT_CLIENT_ID,
   HEADER_INVOCATION_ID,
   HEADER_PARENT,
   HEADER_ROLE,
@@ -28,6 +29,11 @@ import {
  * @param opts.parent - Preceding message's codec-message-id (for branching).
  * @param opts.forkOf - Forked message's codec-message-id (for edit/regen).
  * @param opts.invocationId - Invocation correlation ID. Set on the user-prompt message so the agent can locate the prompt by invocation.
+ * @param opts.inputClientId - ClientId of the input event (the `ai-input`) that
+ *   drove the current invocation. The agent reads it from the publisher's
+ *   Ably-level `clientId` on the matched input event and re-stamps it on its
+ *   own publishes (run lifecycle + outputs). Differs from `runClientId` on
+ *   continuation invocations driven by an input from a non-owner.
  * @param opts.eventId - Per-event identifier. Set on each client-published user-prompt message; the invocation body's `eventIds` lists the ids the agent should look up.
  * @param opts.runContinue - When `true`, stamps `x-ably-run-continue: 'true'` to mark
  *   the message as a continuation user-message (e.g. a tool-resolution publish under
@@ -43,6 +49,7 @@ export const buildTransportHeaders = (opts: {
   parent?: string;
   forkOf?: string;
   invocationId?: string;
+  inputClientId?: string;
   eventId?: string;
   runContinue?: boolean;
 }): Record<string, string> => {
@@ -55,6 +62,7 @@ export const buildTransportHeaders = (opts: {
   if (opts.parent) h[HEADER_PARENT] = opts.parent;
   if (opts.forkOf) h[HEADER_FORK_OF] = opts.forkOf;
   if (opts.invocationId) h[HEADER_INVOCATION_ID] = opts.invocationId;
+  if (opts.inputClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.inputClientId;
   if (opts.eventId) h[HEADER_EVENT_ID] = opts.eventId;
   if (opts.runContinue) h[HEADER_RUN_CONTINUE] = 'true';
   return h;

@@ -53,6 +53,19 @@ export const HEADER_CODEC_MESSAGE_ID = 'x-ably-codec-message-id';
 /** Header: clientId of the user who initiated the run. Set by the server on stream messages. */
 export const HEADER_RUN_CLIENT_ID = 'x-ably-run-client-id';
 
+/**
+ * Header: clientId of the input event (the `ai-input`) that drove the
+ * current invocation. The agent reads the publisher's Ably-level `clientId`
+ * from the triggering input event on the channel and re-stamps it as
+ * `x-ably-input-client-id` on every event it publishes for that invocation
+ * (run lifecycle and assistant outputs). May differ from
+ * `x-ably-run-client-id` on continuation invocations driven by an input
+ * from a non-owner (e.g. a tool-result publish from a different client).
+ * Not stamped on `ai-input` events themselves — the wire publisher's
+ * Ably `clientId` already conveys that.
+ */
+export const HEADER_INPUT_CLIENT_ID = 'x-ably-input-client-id';
+
 /** Header: message role (e.g. "user", "assistant"). */
 export const HEADER_ROLE = 'x-ably-role';
 

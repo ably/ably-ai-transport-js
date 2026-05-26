@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   HEADER_CODEC_MESSAGE_ID,
   HEADER_FORK_OF,
+  HEADER_INPUT_CLIENT_ID,
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
@@ -56,6 +57,31 @@ describe('buildTransportHeaders', () => {
     expect(headers[HEADER_FORK_OF]).toBe('fork-msg');
   });
 
+  it('includes inputClientId when provided', () => {
+    const headers = buildTransportHeaders({
+      role: 'assistant',
+      runId: 'run-1',
+      codecMessageId: 'msg-1',
+      inputClientId: 'user-b',
+    });
+
+    expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
+  });
+
+  it('includes inputClientId when set to empty string', () => {
+    // Anonymous publishers (no Ably clientId on the connection) surface
+    // as an empty string; the header still lands so receivers can
+    // distinguish "absent" from "anonymous" downstream.
+    const headers = buildTransportHeaders({
+      role: 'assistant',
+      runId: 'run-1',
+      codecMessageId: 'msg-1',
+      inputClientId: '',
+    });
+
+    expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('');
+  });
+
   it('omits optional headers when undefined', () => {
     const headers = buildTransportHeaders({
       role: 'user',
@@ -66,5 +92,6 @@ describe('buildTransportHeaders', () => {
     expect(headers).not.toHaveProperty(HEADER_RUN_CLIENT_ID);
     expect(headers).not.toHaveProperty(HEADER_PARENT);
     expect(headers).not.toHaveProperty(HEADER_FORK_OF);
+    expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
   });
 });

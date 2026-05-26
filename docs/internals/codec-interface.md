@@ -142,7 +142,7 @@ The Vercel codec (`src/vercel/codec/`) is the concrete implementation for the Ve
 | -------------------------- | --------------------------------------------- |
 | `text-start`               | Streamed message create (name: `"text"`)      |
 | `text-delta`               | Streamed message append                       |
-| `text-end`                 | Streamed message close (status: `"finished"`) |
+| `text-end`                 | Streamed message close (status: `"complete"`) |
 | `start`, `finish`, `error` | Discrete message                              |
 | `data-*`                   | Discrete message                              |
 

@@ -25,7 +25,7 @@ interface StreamTrackerState {
   streamId: string; // From x-ably-stream-id header
   accumulated: string; // Full text accumulated so far
   headers: Record<string, string>; // Current headers
-  closed: boolean; // Whether stream has finished or been cancelled
+  closed: boolean; // Whether stream is complete or cancelled
 }
 ```
 
@@ -35,12 +35,12 @@ The tracker is created on the first `message.create` with `x-ably-stream: "true"
 
 The decoder core delegates event building to four hooks provided by the domain codec:
 
-| Hook                                      | Called when                          | Returns                                                  |
-| ----------------------------------------- | ------------------------------------ | -------------------------------------------------------- |
-| `buildStartEvents(tracker)`               | A new stream starts                  | Events for stream start (e.g. `text-start` chunk)        |
-| `buildDeltaEvents(tracker, delta)`        | Text delta received                  | Events for the delta (e.g. `text-delta` chunk)           |
-| `buildEndEvents(tracker, closingHeaders)` | Stream finishes (status: `finished`) | Events for stream end (e.g. `text-end`, `finish` chunks) |
-| `decodeDiscrete(payload)`                 | Discrete message received            | Events or complete messages                              |
+| Hook                                      | Called when                           | Returns                                                  |
+| ----------------------------------------- | ------------------------------------- | -------------------------------------------------------- |
+| `buildStartEvents(tracker)`               | A new stream starts                   | Events for stream start (e.g. `text-start` chunk)        |
+| `buildDeltaEvents(tracker, delta)`        | Text delta received                   | Events for the delta (e.g. `text-delta` chunk)           |
+| `buildEndEvents(tracker, closingHeaders)` | Stream completes (status: `complete`) | Events for stream end (e.g. `text-end`, `finish` chunks) |
+| `decodeDiscrete(payload)`                 | Discrete message received             | Events or complete messages                              |
 
 The hooks receive the tracker state and return arrays of `DecoderOutput<TEvent, TMessage>` - either `{ kind: 'event', event }` or `{ kind: 'message', message }`.
 
@@ -53,7 +53,7 @@ When a `message.append` arrives:
 3. Extract the string delta from `message.data`
 4. Accumulate: `tracker.accumulated += delta`
 5. Call `buildDeltaEvents()` to emit domain events
-6. Check `x-ably-status`: if `"finished"`, call `buildEndEvents()` and mark closed - the event is [terminal](glossary.md#terminal-event). If `"cancelled"`, mark closed (no end events for cancels)
+6. Check `x-ably-status`: if `"complete"`, call `buildEndEvents()` and mark closed - the event is [terminal](glossary.md#terminal-event). If `"cancelled"`, mark closed (no end events for cancels)
 
 ## Update handling: first-contact vs prefix-match
 
@@ -66,7 +66,7 @@ The decoder has no tracker for this serial - the stream started before the subsc
 1. Creates a new tracker with the full `data` as accumulated text
 2. Emits start events via `buildStartEvents()`
 3. If data is non-empty, emits delta events via `buildDeltaEvents()`
-4. If status is `"finished"`, emits end events via `buildEndEvents()`
+4. If status is `"complete"`, emits end events via `buildEndEvents()`
 
 This allows clients that join mid-stream or load from [history](history.md) to reconstruct the full event sequence. The [lifecycle tracker](codec-interface.md#lifecycle-tracker) builds on this by synthesizing any missing phases (e.g. a `start` chunk) that the first-contact path doesn't cover.
 

@@ -72,7 +72,7 @@ A run contains one or more messages. A message belongs to exactly one run. See [
 
 ### Terminal event
 
-An event that signals the end of a stream. For the Vercel codec, terminal events are `finish`, `error`, and `abort` chunks (the AI SDK chunk type, kept verbatim on the wire). The [stream router](transport-components.md#terminal-detection) uses the codec's `isTerminal()` predicate to automatically close the `ReadableStream` when a terminal event arrives. The [decoder](decoder.md#append-handling) checks `x-ably-status` for `"finished"` or `"cancelled"` to detect terminal state on the wire.
+An event that signals the end of a stream. For the Vercel codec, terminal events are `finish`, `error`, and `abort` chunks (the AI SDK chunk type, kept verbatim on the wire). The [stream router](transport-components.md#terminal-detection) uses the codec's `isTerminal()` predicate to automatically close the `ReadableStream` when a terminal event arrives. The [decoder](decoder.md#append-handling) checks `x-ably-status` for `"complete"` or `"cancelled"` to detect terminal state on the wire.
 
 ### Fire-and-forget
 
@@ -84,7 +84,7 @@ The [decoder's](decoder.md#known-serial-prefix-match) strategy for handling `mes
 
 ### First-contact
 
-When the [decoder](decoder.md#first-contact) receives an update for a serial it has never seen - the stream started before this client subscribed (e.g. history, reconnect, late join). The decoder synthesizes the full event sequence from the update: start events, delta events (if data is present), and end events (if status is `"finished"`). This allows late-joining clients to reconstruct the stream state.
+When the [decoder](decoder.md#first-contact) receives an update for a serial it has never seen - the stream started before this client subscribed (e.g. history, reconnect, late join). The decoder synthesizes the full event sequence from the update: start events, delta events (if data is present), and end events (if status is `"complete"`). This allows late-joining clients to reconstruct the stream state.
 
 ### Optimistic reconciliation
 

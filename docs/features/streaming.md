@@ -21,7 +21,7 @@ sequenceDiagram
     SE->>AC: append " world"
     AC->>CD: deliver append
     Note right of CD: accumulate "Hello world"
-    SE->>AC: append (status: finished)
+    SE->>AC: append (status: complete)
     AC->>CD: deliver append
     Note right of CD: stream complete
 ```
@@ -31,7 +31,7 @@ Each stream has a lifecycle tracked by the `x-ably-status` header:
 | Status      | Meaning                               |
 | ----------- | ------------------------------------- |
 | `streaming` | Stream is open, more appends expected |
-| `finished`  | Stream completed normally             |
+| `complete`  | Stream completed normally             |
 | `cancelled` | Stream was cancelled                  |
 
 ## Server

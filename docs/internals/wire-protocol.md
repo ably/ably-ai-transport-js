@@ -13,7 +13,7 @@ Transport headers are set by the generic transport layer. They handle run correl
 | Header                        | Values                                                   | Purpose                                                                                                                                                                                                         |
 | ----------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `x-ably-stream`               | `"true"` / `"false"`                                     | Whether this message uses the message append lifecycle                                                                                                                                                          |
-| `x-ably-status`               | `"streaming"` / `"finished"` / `"cancelled"`             | Current lifecycle state of a streamed message                                                                                                                                                                   |
+| `x-ably-status`               | `"streaming"` / `"complete"` / `"cancelled"`             | Current lifecycle state of a streamed message                                                                                                                                                                   |
 | `x-ably-stream-id`            | string                                                   | Identity of the streamed message (correlates create → appends → close)                                                                                                                                          |
 | `x-ably-run-id`               | string                                                   | [Run](glossary.md#run-id-vs-message-id) correlation ID. Every message in a run carries this                                                                                                                     |
 | `x-ably-codec-message-id`     | string                                                   | [Message identity](#message-identity-x-ably-codec-message-id). One per domain message (user or assistant). Used for [optimistic reconciliation](#optimistic-reconciliation)                                     |
@@ -91,7 +91,7 @@ The lifecycle has three states:
 | Status      | Meaning                              |
 | ----------- | ------------------------------------ |
 | `streaming` | Stream is active, more data expected |
-| `finished`  | Stream completed normally            |
+| `complete`  | Stream completed normally            |
 | `cancelled` | Stream was cancelled                 |
 
 A streamed message progresses through these Ably message actions:
@@ -101,7 +101,7 @@ A streamed message progresses through these Ably message actions:
 2. message.append    (no status change)              (delta data)
    message.append    (no status change)              (delta data)
    ...
-3. message.append    x-ably-status: "finished"       (close the stream)
+3. message.append    x-ably-status: "complete"       (close the stream)
 ```
 
 On cancel:
@@ -139,7 +139,7 @@ sequenceDiagram
     S->>Ch: publish stream appends
     Ch->>C: message.append (delta)
     S->>Ch: publish stream close
-    Ch->>C: message.append (finished)
+    Ch->>C: message.append (complete)
 
     S->>Ch: publish run-end
     Ch->>C: ai-run-end (complete)

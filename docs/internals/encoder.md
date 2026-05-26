@@ -20,7 +20,7 @@ Streamed messages use Ably's [message append lifecycle](wire-protocol.md#streame
 startStream(streamId, payload)   →  channel.publish()        x-ably-status: streaming
 appendStream(streamId, data)     →  channel.appendMessage()   (delta)
 appendStream(streamId, data)     →  channel.appendMessage()   (delta)
-closeStream(streamId, payload)   →  channel.appendMessage()   x-ably-status: finished
+closeStream(streamId, payload)   →  channel.appendMessage()   x-ably-status: complete
 ```
 
 ## Stream lifecycle
@@ -43,7 +43,7 @@ The accumulated text grows with each append: `tracker.accumulated += data`. This
 
 ### closeStream
 
-Sends a final append with `x-ably-status: "finished"` and any closing headers (e.g. finish reason, provider metadata). Then flushes all pending appends to detect and recover from failures.
+Sends a final append with `x-ably-status: "complete"` and any closing headers (e.g. finish reason, provider metadata). Then flushes all pending appends to detect and recover from failures.
 
 The closing append carries the closing `data` payload (which is also accumulated for recovery) and repeats all persistent headers.
 
@@ -61,7 +61,7 @@ When `closeStream()` or `cancelStream()` is called, `_flushPending()` awaits all
 
 1. Build a recovery message with the **full accumulated text** (not just the failed delta)
 2. Call `channel.updateMessage()` to replace the message content entirely
-3. Set the status to `finished` or `cancelled` based on the tracker state
+3. Set the status to `complete` or `cancelled` based on the tracker state
 
 This means: even if intermediate appends are lost, the final message content is correct. The [decoder](decoder.md#known-serial-prefix-match) handles the update action through its prefix-match logic - if the data is a prefix extension of what it's already accumulated, it extracts the delta. If not, it treats it as a [full replacement](decoder.md#known-serial-prefix-match).
 

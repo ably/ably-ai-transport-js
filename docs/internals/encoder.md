@@ -77,7 +77,7 @@ Headers are merged in priority order (later wins):
 2. Per-write overrides - headers passed to individual write calls
 3. Codec headers - domain-specific headers from the payload
 
-If `WriteOptions.messageId` is set, the encoder stamps it as [`x-ably-msg-id`](wire-protocol.md#message-identity-x-ably-msg-id) during header merging. For streamed messages, this header is included in `persistentHeaders` - so every append and the closing append carry the same message ID, giving the entire message append lifecycle a single identity.
+If `WriteOptions.messageId` is set, the encoder stamps it as [`x-ably-codec-message-id`](wire-protocol.md#message-identity-x-ably-codec-message-id) during header merging. For streamed messages, this header is included in `persistentHeaders` - so every append and the closing append carry the same codec-message-id, giving the entire message append lifecycle a single identity.
 
 After the headers are merged, the `onMessage` hook runs as a post-processing step - it receives the fully constructed `Ably.Message` object and can mutate it in place. The transport uses this hook to stamp [transport-level headers](wire-protocol.md#transport-headers-x-ably) (run IDs, role, parent, fork-of) onto every message without the codec needing to know about them.
 

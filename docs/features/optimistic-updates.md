@@ -6,9 +6,9 @@ Without optimistic insertion, the user would see a gap between pressing "send" a
 
 ## How it works
 
-The client generates a unique message ID (`x-ably-msg-id`) for each user message and inserts it into the conversation tree with no [serial](../internals/glossary.md#serial-ably) (Ably's server-assigned ordering identifier). The message is visible via `view.flattenNodes()` immediately. The HTTP POST to the server is [fire-and-forget](../internals/glossary.md#fire-and-forget) - `send()` returns without waiting for the server to respond.
+The client generates a unique codec-message-id (`x-ably-codec-message-id`) for each user message and inserts it into the conversation tree with no [serial](../internals/glossary.md#serial-ably) (Ably's server-assigned ordering identifier). The message is visible via `view.flattenNodes()` immediately. The HTTP POST to the server is [fire-and-forget](../internals/glossary.md#fire-and-forget) - `send()` returns without waiting for the server to respond.
 
-The server receives the user message and relays it onto the Ably channel, preserving the original `x-ably-msg-id`. All clients on the channel - including the sender - receive this relay. The sending client recognises its own message by matching the `x-ably-msg-id` against the set of IDs it optimistically inserted. Instead of creating a duplicate, it updates the existing entry with the server-assigned serial, which moves the message from the end of the list to its correct position in serial order. This process is called [optimistic reconciliation](../internals/glossary.md#optimistic-reconciliation).
+The server receives the user message and relays it onto the Ably channel, preserving the original `x-ably-codec-message-id`. All clients on the channel - including the sender - receive this relay. The sending client recognises its own message by matching the `x-ably-codec-message-id` against the set of IDs it optimistically inserted. Instead of creating a duplicate, it updates the existing entry with the server-assigned serial, which moves the message from the end of the list to its correct position in serial order. This process is called [optimistic reconciliation](../internals/glossary.md#optimistic-reconciliation).
 
 ```mermaid
 sequenceDiagram
@@ -16,12 +16,12 @@ sequenceDiagram
     participant Ch as Ably Channel
     participant S as Server
 
-    Note over C: generate msg-id, insert into tree (no serial)
+    Note over C: generate codec-message-id, insert into tree (no serial)
     C->>C: view.flattenNodes() includes the optimistic message
     C->>S: HTTP POST (fire-and-forget)
-    S->>Ch: publish user message (same msg-id, server-assigned serial)
+    S->>Ch: publish user message (same codec-message-id, server-assigned serial)
     Ch->>C: deliver relay
-    Note over C: msg-id matches → reconcile, not duplicate
+    Note over C: codec-message-id matches → reconcile, not duplicate
     C->>C: tree entry promoted to correct serial position
 ```
 
@@ -61,11 +61,11 @@ Both changes happen inside a single `upsert()` call on the conversation tree. An
 
 ## Server side
 
-No server-side code is needed. The agent session's `run.addMessages()` preserves the `x-ably-msg-id` from the client's POST body when relaying user messages onto the channel. This is what allows the sending client to match the relay against its optimistic entry. See [Streaming: server](streaming.md#server) for the standard server run flow.
+No server-side code is needed. The agent session's `run.addMessages()` preserves the `x-ably-codec-message-id` from the client's POST body when relaying user messages onto the channel. This is what allows the sending client to match the relay against its optimistic entry. See [Streaming: server](streaming.md#server) for the standard server run flow.
 
 ## Multi-message sends
 
-When `send()` receives an array of messages, each gets its own `x-ably-msg-id` and each is optimistically inserted. The messages are chained - each subsequent message parents off the previous one, forming a linear thread rather than siblings. See [Conversation branching](branching.md) for how parent relationships work.
+When `send()` receives an array of messages, each gets its own `x-ably-codec-message-id` and each is optimistically inserted. The messages are chained - each subsequent message parents off the previous one, forming a linear thread rather than siblings. See [Conversation branching](branching.md) for how parent relationships work.
 
 ```typescript
 // Both messages appear immediately, chained in order
@@ -80,4 +80,4 @@ const run = await view.send([questionOne, questionTwo]);
 
 **Cleanup** - the session tracks optimistic message IDs per run. When a [run](../concepts/runs.md) ends (via `ai-run-end` on the channel), the tracking state for that run is cleaned up. This prevents stale message IDs from matching against unrelated messages in future runs.
 
-For the internal implementation details, see [Client session: optimistic reconciliation](../internals/client-session.md#optimistic-reconciliation), [Conversation tree: upsert](../internals/conversation-tree.md#upsert-the-sole-mutation), and [Wire protocol: message identity](../internals/wire-protocol.md#message-identity-x-ably-msg-id).
+For the internal implementation details, see [Client session: optimistic reconciliation](../internals/client-session.md#optimistic-reconciliation), [Conversation tree: upsert](../internals/conversation-tree.md#upsert-the-sole-mutation), and [Wire protocol: message identity](../internals/wire-protocol.md#message-identity-x-ably-codec-message-id).

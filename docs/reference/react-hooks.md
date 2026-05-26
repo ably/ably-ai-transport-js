@@ -127,15 +127,15 @@ const view = useView<TEvent, TMessage>({ session?, view?, limit?, skip? } = {});
 | `loading`                                | `boolean`                                                                                                       | Is a page being fetched?                                                                                                         |
 | `loadError`                              | `Ably.ErrorInfo \| undefined`                                                                                   | Set when the most recent `loadOlder` call failed. Cleared automatically on the next successful load                              |
 | `loadOlder()`                            | `() => Promise<void>`                                                                                           | Load more older messages. No-op if already loading                                                                               |
-| `select(msgId, index)`                   | `(msgId: string, index: number) => void`                                                                        | Switch to a sibling branch. Triggers re-render                                                                                   |
-| `getSelectedIndex(msgId)`                | `(msgId: string) => number`                                                                                     | Index of the currently selected sibling                                                                                          |
-| `getSiblings(msgId)`                     | `(msgId: string) => TMessage[]`                                                                                 | All alternatives at a fork point                                                                                                 |
-| `hasSiblings(msgId)`                     | `(msgId: string) => boolean`                                                                                    | Whether to show navigation arrows                                                                                                |
-| `getNode(msgId)`                         | `(msgId: string) => MessageNode<TMessage> \| undefined`                                                         | Look up a node by msgId                                                                                                          |
+| `select(codecMessageId, index)`          | `(codecMessageId: string, index: number) => void`                                                               | Switch to a sibling branch. Triggers re-render                                                                                   |
+| `getSelectedIndex(codecMessageId)`       | `(codecMessageId: string) => number`                                                                            | Index of the currently selected sibling                                                                                          |
+| `getSiblings(codecMessageId)`            | `(codecMessageId: string) => TMessage[]`                                                                        | All alternatives at a fork point                                                                                                 |
+| `hasSiblings(codecMessageId)`            | `(codecMessageId: string) => boolean`                                                                           | Whether to show navigation arrows                                                                                                |
+| `getNode(codecMessageId)`                | `(codecMessageId: string) => MessageNode<TMessage> \| undefined`                                                | Look up a node by codec-message-id                                                                                               |
 | `send(messages, options?)`               | `(messages: TMessage \| TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>`                       | Send messages in this view's branch context                                                                                      |
 | `regenerate(messageId, options?)`        | `(messageId: string, options?: SendOptions) => Promise<ActiveRun<TEvent>>`                                      | Fork an assistant message with no new user input                                                                                 |
 | `edit(messageId, newMessages, options?)` | `(messageId: string, newMessages: TMessage \| TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>` | Fork a user message with replacement content                                                                                     |
-| `update(msgId, events, options?)`        | `(msgId: string, events: TEvent[], options?: SendOptions) => Promise<ActiveRun<TEvent>>`                        | Update an existing message and start a continuation run (e.g. [tool results](../features/tool-calling.md#client-executed-tools)) |
+| `update(messageId, events, options?)`    | `(messageId: string, events: TEvent[], options?: SendOptions) => Promise<ActiveRun<TEvent>>`                    | Update an existing message and start a continuation run (e.g. [tool results](../features/tool-calling.md#client-executed-tools)) |
 
 Each view has independent branch selections and pagination state. When you pass a session, the hook uses its default view. For [split-pane UIs](../features/branching.md#multiple-views) where each pane needs its own branch and message history, use [`useCreateView()`](#usecreateview) to create independent views with the same API.
 
@@ -207,11 +207,11 @@ const tree = useTree<TEvent, TMessage>({ session? } = {});
 
 **Returns:** `TreeHandle<TMessage>`
 
-| Property/Method      | Type                                                    | Description                       |
-| -------------------- | ------------------------------------------------------- | --------------------------------- |
-| `getSiblings(msgId)` | `(msgId: string) => TMessage[]`                         | All alternatives at a fork point  |
-| `hasSiblings(msgId)` | `(msgId: string) => boolean`                            | Whether to show navigation arrows |
-| `getNode(msgId)`     | `(msgId: string) => MessageNode<TMessage> \| undefined` | Look up a node by msgId           |
+| Property/Method               | Type                                                             | Description                        |
+| ----------------------------- | ---------------------------------------------------------------- | ---------------------------------- |
+| `getSiblings(codecMessageId)` | `(codecMessageId: string) => TMessage[]`                         | All alternatives at a fork point   |
+| `hasSiblings(codecMessageId)` | `(codecMessageId: string) => boolean`                            | Whether to show navigation arrows  |
+| `getNode(codecMessageId)`     | `(codecMessageId: string) => MessageNode<TMessage> \| undefined` | Look up a node by codec-message-id |
 
 Branch navigation (`select()`, `getSelectedIndex()`) and write operations (`send()`, `regenerate()`, `edit()`) are on `ViewHandle` from `useView()`, not `TreeHandle`. The tree provides structural queries that are the same regardless of which branch is selected.
 

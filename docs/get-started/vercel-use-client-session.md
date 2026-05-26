@@ -61,7 +61,7 @@ function ChatInner({ chatId }: { chatId: string }) {
         </button>
       )}
 
-      {/* Message list — each node has a typed msgId for tree navigation */}
+      {/* Message list — each node has a typed codecMessageId for tree navigation */}
       {nodes.map((node) => (
         <div key={node.message.id}>
           <strong>{node.message.role}:</strong>
@@ -70,17 +70,17 @@ function ChatInner({ chatId }: { chatId: string }) {
           ))}
 
           {/* Branch navigation */}
-          {hasSiblings(node.msgId) && (
+          {hasSiblings(node.codecMessageId) && (
             <span>
-              {getSelectedIndex(node.msgId) + 1} / {getSiblings(node.msgId).length}
-              <button onClick={() => select(node.msgId, getSelectedIndex(node.msgId) - 1)}>prev</button>
-              <button onClick={() => select(node.msgId, getSelectedIndex(node.msgId) + 1)}>next</button>
+              {getSelectedIndex(node.codecMessageId) + 1} / {getSiblings(node.codecMessageId).length}
+              <button onClick={() => select(node.codecMessageId, getSelectedIndex(node.codecMessageId) - 1)}>prev</button>
+              <button onClick={() => select(node.codecMessageId, getSelectedIndex(node.codecMessageId) + 1)}>next</button>
             </span>
           )}
 
           {/* Regenerate assistant messages */}
           {node.message.role === 'assistant' && (
-            <button onClick={() => regenerate(node.msgId)}>Regenerate</button>
+            <button onClick={() => regenerate(node.codecMessageId)}>Regenerate</button>
           )}
         </div>
       ))}

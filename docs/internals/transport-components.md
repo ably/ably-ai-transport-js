@@ -123,18 +123,18 @@ A single function that builds the standard [`x-ably-*` header set](wire-protocol
 buildTransportHeaders({
   role: 'assistant', // required - 'user' or 'assistant'
   runId: 'run-1', // required
-  msgId: 'msg-2', // required
+  codecMessageId: 'msg-2', // required
   runClientId: 'user-1', // optional - omits header when undefined
   parent: 'msg-1', // optional - see Branching headers
   forkOf: 'msg-0', // optional - sibling marker for fork chains
   invocationId: 'inv-1', // optional - per-invocation correlator
-  promptId: 'p-1', // optional - per-prompt correlator (client side)
+  eventId: 'e-1', // optional - per-event correlator (client side)
 });
 // → {
 //     'x-ably-role': 'assistant', 'x-ably-run-id': 'run-1',
-//     'x-ably-msg-id': 'msg-2', 'x-ably-run-client-id': 'user-1',
+//     'x-ably-codec-message-id': 'msg-2', 'x-ably-run-client-id': 'user-1',
 //     'x-ably-parent': 'msg-1', 'x-ably-fork-of': 'msg-0',
-//     'x-ably-invocation-id': 'inv-1', 'x-ably-prompt-id': 'p-1',
+//     'x-ably-invocation-id': 'inv-1', 'x-ably-event-id': 'e-1',
 //   }
 ```
 

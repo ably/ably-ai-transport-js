@@ -16,8 +16,10 @@
  * is observable: identifiers (`runId`, `invocationId`), the session/channel
  * name, the prior-conversation context (`history`), and the wait-set
  * (`eventIds`). Per-message metadata — `clientId`, `parent`, `forkOf`,
- * continuation flag — lives on the channel as `x-ably-*` headers and is
- * resolved by the agent from the prompt-lookup result, not from the body.
+ * continuation flag — lives on the channel and is resolved by the agent from
+ * the triggering input event, not from the body. The `inputClientId` the
+ * agent re-stamps on its own publishes comes from the publisher's Ably
+ * `clientId` on the matched input event, not from a body field.
  */
 
 // ---------------------------------------------------------------------------

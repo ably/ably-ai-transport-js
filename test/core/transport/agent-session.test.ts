@@ -315,6 +315,12 @@ interface DeliverUserPromptOpts {
   eventId?: string;
   /** Optional `x-ably-run-client-id` header — populates the run's `clientId` resolution. */
   runClientId?: string;
+  /**
+   * Optional Ably-level publisher `clientId` (set on the inbound message's
+   * `clientId` field, not in `extras.headers`). The agent reads this as the
+   * `inputClientId` for re-stamping on its own published events.
+   */
+  publisherClientId?: string;
   /** Optional `x-ably-parent` header — resolves the run's parent during prompt lookup. */
   parent?: string;
   /** Optional `x-ably-fork-of` header — resolves the run's forkOf during prompt lookup. */
@@ -349,6 +355,7 @@ const deliverUserPrompt = (ch: MockChannel, opts: DeliverUserPromptOpts): void =
   const msg = {
     name: opts.name ?? 'text',
     serial: opts.serial,
+    clientId: opts.publisherClientId,
     extras: { headers },
   } as unknown as Ably.InboundMessage;
   if (ch.listener) ch.listener(msg);
@@ -612,6 +619,54 @@ describe('AgentSession', () => {
       expect(endMsg).toBeDefined();
     });
 
+    it('start() stamps x-ably-input-client-id from the triggering input event publisher', async () => {
+      // The agent reads the publisher's Ably-level clientId off the input
+      // event matched by the prompt-lookup and re-stamps it on its own
+      // published events. Here the synthetic prompt is published by
+      // 'user-b', so every agent-published event in the invocation carries
+      // inputClientId: 'user-b' — independent of who owns the run.
+      const runId = 'run-icid-start';
+      const invocationId = 'inv-icid-start';
+      const eventId = 'p-icid-start';
+      const run = createRunFromOpts(session, { runId, invocationId, eventIds: [eventId] });
+      const startPromise = run.start();
+      deliverUserPrompt(channel, {
+        invocationId,
+        runId,
+        codecMessageId: 'm-icid-start',
+        serial: 's-icid-start',
+        eventId,
+        publisherClientId: 'user-b',
+      });
+      await startPromise;
+
+      const startMsg = channel.publishCalls.find((m) => m.name === 'ai-run-start');
+      const headers = (startMsg?.extras as { headers: Record<string, string> } | undefined)?.headers;
+      expect(headers?.['x-ably-input-client-id']).toBe('user-b');
+    });
+
+    it('end() stamps x-ably-input-client-id from the triggering input event publisher', async () => {
+      const runId = 'run-icid-end';
+      const invocationId = 'inv-icid-end';
+      const eventId = 'p-icid-end';
+      const run = createRunFromOpts(session, { runId, invocationId, eventIds: [eventId] });
+      const startPromise = run.start();
+      deliverUserPrompt(channel, {
+        invocationId,
+        runId,
+        codecMessageId: 'm-icid-end',
+        serial: 's-icid-end',
+        eventId,
+        publisherClientId: 'user-b',
+      });
+      await startPromise;
+      await run.end('complete');
+
+      const endMsg = channel.publishCalls.find((m) => m.name === 'ai-run-end');
+      const headers = (endMsg?.extras as { headers: Record<string, string> } | undefined)?.headers;
+      expect(headers?.['x-ably-input-client-id']).toBe('user-b');
+    });
+
     it('start() is idempotent (subsequent calls are no-ops)', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
@@ -667,6 +722,27 @@ describe('AgentSession', () => {
       expect(headers[HEADER_ROLE]).toBe('user');
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
       expect(headers[HEADER_CODEC_MESSAGE_ID]).toBeDefined();
+    });
+
+    it('stamps x-ably-input-client-id from the triggering input event publisher on addMessages publishes', async () => {
+      const runId = 'run-icid-am';
+      const invocationId = 'inv-icid-am';
+      const eventId = 'p-icid-am';
+      const run = createRunFromOpts(session, { runId, invocationId, eventIds: [eventId] });
+      const startPromise = run.start();
+      deliverUserPrompt(channel, {
+        invocationId,
+        runId,
+        codecMessageId: 'm-icid-am',
+        serial: 's-icid-am',
+        eventId,
+        publisherClientId: 'user-b',
+      });
+      await startPromise;
+      await run.addMessages([makeNode({ id: 'm1', content: 'hi' })]);
+
+      const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
+      expect(headers['x-ably-input-client-id']).toBe('user-b');
     });
 
     it('creates one encoder per message (distinct headers)', async () => {
@@ -752,6 +828,27 @@ describe('AgentSession', () => {
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
     });
 
+    it('stamps x-ably-input-client-id from the triggering input event publisher on addEvents publishes', async () => {
+      const runId = 'run-icid-ae';
+      const invocationId = 'inv-icid-ae';
+      const eventId = 'p-icid-ae';
+      const run = createRunFromOpts(session, { runId, invocationId, eventIds: [eventId] });
+      const startPromise = run.start();
+      deliverUserPrompt(channel, {
+        invocationId,
+        runId,
+        codecMessageId: 'm-icid-ae',
+        serial: 's-icid-ae',
+        eventId,
+        publisherClientId: 'user-b',
+      });
+      await startPromise;
+      await run.addEvents([{ kind: 'event', codecMessageId: 'target-1', events: [{ type: 'ev' }] }]);
+
+      const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
+      expect(headers['x-ably-input-client-id']).toBe('user-b');
+    });
+
     it('calls encoder.publish per event', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
@@ -833,6 +930,27 @@ describe('AgentSession', () => {
       const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
       expect(headers[HEADER_ROLE]).toBe('assistant');
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
+    });
+
+    it('stamps x-ably-input-client-id from the triggering input event publisher on assistant publishes', async () => {
+      const runId = 'run-icid-pipe';
+      const invocationId = 'inv-icid-pipe';
+      const eventId = 'p-icid-pipe';
+      const run = createRunFromOpts(session, { runId, invocationId, eventIds: [eventId] });
+      const startPromise = run.start();
+      deliverUserPrompt(channel, {
+        invocationId,
+        runId,
+        codecMessageId: 'm-icid-pipe',
+        serial: 's-icid-pipe',
+        eventId,
+        publisherClientId: 'user-b',
+      });
+      await startPromise;
+      await run.pipe(streamOf({ type: 'text', text: 'hi' }));
+
+      const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
+      expect(headers['x-ably-input-client-id']).toBe('user-b');
     });
 
     it('publishes each stream event through encoder.publish', async () => {

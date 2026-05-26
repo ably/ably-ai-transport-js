@@ -35,7 +35,10 @@ interface RunOpts<TEvent, TMessage = unknown> {
  * longer carried by the invocation body — the agent reads it from the
  * channel via the prompt-lookup result. Tests that exercise those code
  * paths should publish user-messages on the channel with the appropriate
- * transport headers and supply matching `eventIds`.
+ * transport headers and supply matching `eventIds`. Tests that need a
+ * particular `inputClientId` on the agent's published events must publish
+ * an input event with that publisher `clientId` on the wire (e.g. via
+ * `deliverUserPrompt({ publisherClientId })`).
  * @param session - The agent session to create the run on.
  * @param opts - Run identity (runId, invocationId, eventIds) plus runtime hooks.
  * @returns The created Run.

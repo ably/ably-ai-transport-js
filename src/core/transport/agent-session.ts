@@ -180,11 +180,14 @@ const loadRunProjection = async <TEvent, TProjection, TMessage>(opts: {
  *   decoded to a chunk and produced no node), and the transport headers of
  *   the first matched wire message. `firstHeaders` is the canonical source for
  *   run-level metadata (clientId, parent, forkOf, continuation flag) because
- *   it lands whether or not the decode produced a MessageNode.
+ *   it lands whether or not the decode produced a MessageNode. `firstClientId`
+ *   carries the publisher's Ably-level `clientId` from that same message — the
+ *   source of `inputClientId` re-stamping on the agent's published events.
  */
 interface PromptLookupResult<TMessage> {
   nodes: MessageNode<TMessage>[];
   firstHeaders?: Record<string, string>;
+  firstClientId?: string;
 }
 
 const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
@@ -234,6 +237,7 @@ const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
     const seenSerials = new Set<string>();
     const collected: MessageNode<TMessage>[] = [];
     let firstHeaders: Record<string, string> | undefined;
+    let firstClientId: string | undefined;
     // Forward-declared so that cleanup() and onCancelled() can reference them
     // before they are assigned. cleanup may run synchronously inside
     // `register(...)` (when buffered prompts drain on registration) before
@@ -273,12 +277,17 @@ const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
       if (matchedEventIds.has(eventId)) return;
       if (m.serial !== undefined) seenSerials.add(m.serial);
       matchedEventIds.add(eventId);
-      // Capture the first matched wire message's headers so run-level
-      // metadata (clientId / parent / forkOf / continuation flag) is
-      // available even when the decode produces zero MessageNodes — the
-      // case for continuation tool-resolution wire messages whose chunks
-      // fold into a fresh empty projection without an assistant to land on.
-      if (firstHeaders === undefined) firstHeaders = wireHeaders;
+      // Capture the first matched wire message's headers AND its Ably
+      // channel-level `clientId` so run-level metadata (parent / forkOf /
+      // continuation flag from headers; `inputClientId` from the wire
+      // publisher) is available even when the decode produces zero
+      // MessageNodes — the case for continuation tool-resolution wire
+      // messages whose chunks fold into a fresh empty projection without
+      // an assistant to land on.
+      if (firstHeaders === undefined) {
+        firstHeaders = wireHeaders;
+        firstClientId = m.clientId;
+      }
       let decoded: MessageNode<TMessage>[];
       try {
         decoded = decode(m);
@@ -316,7 +325,7 @@ const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
         invocationId,
         count: collected.length,
       });
-      resolve({ nodes: collected, firstHeaders });
+      resolve({ nodes: collected, firstHeaders, firstClientId });
     });
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the register callback may have settled the promise synchronously during buffered-prompt drain.
     if (settled) {
@@ -983,11 +992,13 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
 
     // Per-run metadata resolved from the prompt-lookup result. The first
     // matched wire message's headers carry the run's `clientId`, `parent`,
-    // `forkOf`, and continuation flag. Captured separately from
-    // `viewMessages` because tool-resolution wire messages
-    // (`tool-output-available` etc.) decode to chunks and produce zero
-    // MessageNodes — the metadata still needs to surface.
+    // `forkOf`, and continuation flag; its Ably-level publisher `clientId`
+    // becomes the `inputClientId` re-stamped on the agent's own publishes.
+    // Captured separately from `viewMessages` because tool-resolution wire
+    // messages (`tool-output-available` etc.) decode to chunks and produce
+    // zero MessageNodes — the metadata still needs to surface.
     let resolvedClientId: string | undefined;
+    let resolvedInputClientId: string | undefined;
     let resolvedParent: string | undefined;
     let resolvedForkOf: string | undefined;
     let resolvedContinuation = false;
@@ -1053,6 +1064,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
             recordCompletedLookup(invocationId, invocationEventIds.length);
             for (const m of found.nodes) viewMessages.push(m);
             if (found.firstHeaders !== undefined) firstLookupHeaders = found.firstHeaders;
+            if (found.firstClientId !== undefined) resolvedInputClientId = found.firstClientId;
           } catch (error) {
             const errInfo =
               error instanceof Ably.ErrorInfo
@@ -1149,6 +1161,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
             parent: resolvedParent,
             forkOf: resolvedForkOf,
             invocationId,
+            inputClientId: resolvedInputClientId,
             continuation: resolvedContinuation,
           });
         } catch (error) {
@@ -1194,6 +1207,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
                 parent: node.parentId,
                 forkOf: node.forkOf,
                 invocationId,
+                inputClientId: resolvedInputClientId,
               }),
               node.headers,
             );
@@ -1246,6 +1260,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
               runId,
               codecMessageId: node.codecMessageId,
               runClientId: runOwnerClientId,
+              inputClientId: resolvedInputClientId,
             });
 
             const encoder = codec.createEncoder(channel, {
@@ -1328,6 +1343,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
           runClientId: runOwnerClientId,
           parent: assistantParent,
           forkOf: assistantForkOf,
+          inputClientId: resolvedInputClientId,
         });
         const encoder = codec.createEncoder(channel, {
           extras: { headers: defaultHeaders },
@@ -1387,7 +1403,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
         state = RunState.ENDED;
 
         try {
-          await runManager.endRun(runId, reason, invocationId);
+          await runManager.endRun(runId, reason, invocationId, resolvedInputClientId);
         } catch (error) {
           const errInfo = new Ably.ErrorInfo(
             `unable to publish run-end for run ${runId}; ${error instanceof Error ? error.message : String(error)}`,

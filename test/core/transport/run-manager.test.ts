@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   EVENT_RUN_END,
   EVENT_RUN_START,
+  HEADER_INPUT_CLIENT_ID,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
@@ -101,6 +102,22 @@ describe('RunManager', () => {
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
       expect(headersOf(channel.publishCalls.at(1)!)[HEADER_RUN_CONTINUE]).toBeUndefined();
     });
+
+    it('stamps x-ably-input-client-id when inputClientId is set', async () => {
+      await manager.startRun('run-1', 'user-a', undefined, { inputClientId: 'user-b' });
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
+      const headers = headersOf(channel.publishCalls.at(0)!);
+      expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
+    });
+
+    it('omits x-ably-input-client-id when inputClientId is unset', async () => {
+      await manager.startRun('run-1', 'user-a');
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
+      const headers = headersOf(channel.publishCalls.at(0)!);
+      expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
+    });
   });
 
   describe('endRun', () => {
@@ -133,6 +150,24 @@ describe('RunManager', () => {
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
       const headers = headersOf(channel.publishCalls.at(0)!);
       expect(headers[HEADER_RUN_CLIENT_ID]).toBe('');
+    });
+
+    it('stamps x-ably-input-client-id when inputClientId is provided', async () => {
+      await manager.startRun('run-1', 'user-a');
+      await manager.endRun('run-1', 'complete', 'inv-1', 'user-b');
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
+      const headers = headersOf(channel.publishCalls.at(1)!);
+      expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
+    });
+
+    it('omits x-ably-input-client-id when inputClientId is unset', async () => {
+      await manager.startRun('run-1', 'user-a');
+      await manager.endRun('run-1', 'complete');
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
+      const headers = headersOf(channel.publishCalls.at(1)!);
+      expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
     });
   });
 

@@ -146,7 +146,8 @@ describe('Vercel createClientSession', () => {
 
     // Verify the body carries the run identity. Per-message metadata
     // (clientId/parent/forkOf/isContinuation) has moved off the body and
-    // onto channel headers post-AIT-769.
+    // onto channel headers post-AIT-769 — the agent reads the input event's
+    // publisher `clientId` directly off the wire.
     const body = JSON.parse(init.body as string) as Record<string, unknown>;
     expect(body.clientId).toBeUndefined();
     expect(body.runId).toBe(run.runId);

@@ -146,8 +146,8 @@ export interface AddMessageOptions {
 
 /** Result of publishing user messages via addMessages. */
 export interface AddMessagesResult {
-  /** The `x-ably-msg-id` of each published message, in order. */
-  msgIds: string[];
+  /** The `x-ably-codec-message-id` of each published message, in order. */
+  codecMessageIds: string[];
 }
 
 /**
@@ -158,8 +158,8 @@ export interface AddMessagesResult {
 export interface EventsNode<TEvent> {
   /** Discriminator — identifies this as an events node. */
   kind: 'event';
-  /** The `x-ably-msg-id` of the existing message to update. */
-  msgId: string;
+  /** The `x-ably-codec-message-id` of the existing message to update. */
+  codecMessageId: string;
   /** Events to apply to the target message. */
   events: TEvent[];
 }
@@ -172,14 +172,14 @@ export type EventNode<TEvent> = EventsNode<TEvent>;
  * @template TEvent - The codec event type carried by the stream; used by the `resolveWriteOptions` hook.
  */
 export interface PipeOptions<TEvent> {
-  /** The msg-id of the immediately preceding message in this branch. */
+  /** The codec-message-id of the immediately preceding message in this branch. */
   parent?: string;
-  /** The msg-id of the message this response replaces (for regeneration). */
+  /** The codec-message-id of the message this response replaces (for regeneration). */
   forkOf?: string;
   /**
    * Optional per-event hook invoked before each event is encoded. The
    * returned {@link WriteOptions} (if any) override the stream's default
-   * headers and `msgId` for that one encode call only; return `undefined`
+   * headers and `codecMessageId` for that one encode call only; return `undefined`
    * to use the stream defaults.
    *
    * Used to carry a subset of events within the stream to a different
@@ -306,10 +306,10 @@ export interface Run<TEvent, TProjection, TMessage> {
 
   /**
    * Publish user messages to the channel, scoped to this run.
-   * Each node's `msgId`, `parentId`, and `forkOf` are used for message identity
+   * Each node's `codecMessageId`, `parentId`, and `forkOf` are used for message identity
    * and branching. The node's `headers` override session-generated defaults
    * (e.g. for optimistic reconciliation with the client's inserts).
-   * @returns The msg-ids of all published messages, in order.
+   * @returns The codec-message-ids of all published messages, in order.
    */
   addMessages(messages: MessageNode<TMessage>[], options?: AddMessageOptions): Promise<AddMessagesResult>;
 
@@ -322,8 +322,8 @@ export interface Run<TEvent, TProjection, TMessage> {
 
   /**
    * Publish events targeting existing messages in the tree. Each node
-   * specifies a target message (by `msgId`) and the events to apply.
-   * Events are encoded and published with the target's `x-ably-msg-id`,
+   * specifies a target message (by `codecMessageId`) and the events to apply.
+   * Events are encoded and published with the target's `x-ably-codec-message-id`,
    * so receiving clients apply them to the existing node rather than
    * creating a new one.
    *
@@ -446,13 +446,13 @@ export interface SendOptions {
   /** Additional headers for the HTTP POST. */
   headers?: Record<string, string>;
   /**
-   * The msg-id of the message this send replaces (fork).
+   * The codec-message-id of the message this send replaces (fork).
    * Set for regeneration (forkOf an assistant message) or
    * edit (forkOf a user message).
    */
   forkOf?: string;
   /**
-   * The msg-id of the message that precedes this one in the
+   * The codec-message-id of the message that precedes this one in the
    * conversation thread. If omitted, auto-computed from the last
    * message in the view.
    */
@@ -484,9 +484,9 @@ export type RunLifecycleEvent =
       type: 'ai-run-start';
       runId: string;
       clientId: string;
-      /** The msg-id of the parent message, if known. Omitted for root runs. */
+      /** The codec-message-id of the parent message, if known. Omitted for root runs. */
       parent?: string;
-      /** The msg-id being forked/replaced, if this is a regeneration or edit. */
+      /** The codec-message-id being forked/replaced, if this is a regeneration or edit. */
       forkOf?: string;
       /**
        * True when the agent published this `run-start` as a continuation
@@ -519,18 +519,18 @@ export interface ActiveRun<TEvent> {
   /** Cancel this specific run. Publishes a cancel message and closes the local stream. */
   cancel(): Promise<void>;
   /**
-   * The msg-ids of optimistically inserted user messages, in order.
+   * The codec-message-ids of optimistically inserted user messages, in order.
    * Present when the send included user messages (edit); empty for
    * regeneration (no user messages to insert optimistically).
    */
-  optimisticMsgIds: string[];
+  optimisticCodecMessageIds: string[];
   /**
-   * The per-prompt ids minted for this send, in order — one entry per
+   * The per-event ids minted for this send, in order — one entry per
    * user-message event published. Empty when the send carried no
    * user-message events (continuation). The same list is sent in the
-   * POST body's `promptIds` field for the agent to look up.
+   * POST body's `eventIds` field for the agent to look up.
    */
-  promptIds: string[];
+  eventIds: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -585,11 +585,11 @@ export interface MessageNode<TMessage> {
   kind: 'message';
   /** The domain message. */
   message: TMessage;
-  /** The x-ably-msg-id of this node — primary key in the tree. */
-  msgId: string;
-  /** Parent node's msg-id (x-ably-parent), or undefined for root messages. */
+  /** The x-ably-codec-message-id of this node — primary key in the tree. */
+  codecMessageId: string;
+  /** Parent node's codec-message-id (x-ably-parent), or undefined for root messages. */
   parentId: string | undefined;
-  /** The msg-id this node forks from (x-ably-fork-of), or undefined if first version. */
+  /** The codec-message-id this node forks from (x-ably-fork-of), or undefined if first version. */
   forkOf: string | undefined;
   /** Full Ably headers for this message. */
   headers: Record<string, string>;
@@ -615,31 +615,31 @@ export interface Tree<TMessage> {
   /**
    * Get all messages that are siblings (alternatives) at a given
    * fork point. Returns an array ordered chronologically by serial.
-   * The message identified by msgId is always included.
+   * The message identified by codecMessageId is always included.
    */
-  getSiblings(msgId: string): TMessage[];
+  getSiblings(codecMessageId: string): TMessage[];
 
   /** Whether a message has sibling alternatives (i.e., show navigation arrows). */
-  hasSiblings(msgId: string): boolean;
+  hasSiblings(codecMessageId: string): boolean;
 
-  /** Get a node by msgId, or undefined if not found. */
-  getNode(msgId: string): MessageNode<TMessage> | undefined;
+  /** Get a node by codecMessageId, or undefined if not found. */
+  getNode(codecMessageId: string): MessageNode<TMessage> | undefined;
 
-  /** Get the stored headers for a node by msgId, or undefined if not found. */
-  getHeaders(msgId: string): Record<string, string> | undefined;
+  /** Get the stored headers for a node by codecMessageId, or undefined if not found. */
+  getHeaders(codecMessageId: string): Record<string, string> | undefined;
 
   // --- Mutation (used by the session, not the UI) ---
 
   /**
    * Insert or update a message in the tree. Reads parent/forkOf from the
-   * provided headers. If the message already exists (by msgId), updates
+   * provided headers. If the message already exists (by codecMessageId), updates
    * it in place. The optional serial is the Ably message serial used for
    * deterministic sibling ordering.
    */
-  upsert(msgId: string, message: TMessage, headers: Record<string, string>, serial?: string): void;
+  upsert(codecMessageId: string, message: TMessage, headers: Record<string, string>, serial?: string): void;
 
   /** Remove a message from the tree. */
-  delete(msgId: string): void;
+  delete(codecMessageId: string): void;
 
   // --- Events ---
 
@@ -718,22 +718,22 @@ export interface View<TEvent, TProjection, TMessage> {
    * branch selection. Index is clamped to `[0, siblings.length - 1]`.
    * Emits 'update' when the visible output changes.
    */
-  select(msgId: string, index: number): void;
+  select(codecMessageId: string, index: number): void;
 
   /** Get the index of the currently selected sibling at a fork point. */
-  getSelectedIndex(msgId: string): number;
+  getSelectedIndex(codecMessageId: string): number;
 
   /**
    * Get all messages that are siblings (alternatives) at a given
    * fork point. Returns an array ordered chronologically by serial.
    */
-  getSiblings(msgId: string): TMessage[];
+  getSiblings(codecMessageId: string): TMessage[];
 
   /** Whether a message has sibling alternatives (i.e., show navigation arrows). */
-  hasSiblings(msgId: string): boolean;
+  hasSiblings(codecMessageId: string): boolean;
 
-  /** Get a node by msgId, or undefined if not found. */
-  getNode(msgId: string): MessageNode<TMessage> | undefined;
+  /** Get a node by codecMessageId, or undefined if not found. */
+  getNode(codecMessageId: string): MessageNode<TMessage> | undefined;
 
   // --- Write operations ---
 
@@ -755,14 +755,14 @@ export interface View<TEvent, TProjection, TMessage> {
    *
    * Two input shapes are accepted:
    *
-   * - `TEvent` / `TEvent[]` — the SDK mints a fresh `x-ably-msg-id` per
+   * - `TEvent` / `TEvent[]` — the SDK mints a fresh `x-ably-codec-message-id` per
    *   event for the wire publish.
    * - `Array<{ event, domainMessageId? }>` — per-event publish hint.
-   *   `domainMessageId`, when set, is used as the wire `HEADER_MSG_ID`
+   *   `domainMessageId`, when set, is used as the wire `HEADER_CODEC_MESSAGE_ID`
    *   for that event instead of a freshly-minted UUID. Used by the
    *   chat-transport adapter to publish continuation tool resolutions
    *   onto an existing assistant's tree key: the wire stamps the
-   *   assistant's `x-ably-msg-id`, the reducer's direct fold path
+   *   assistant's `x-ably-codec-message-id`, the reducer's direct fold path
    *   runs, and the chunk lands on the assistant's projection entry
    *   without a cross-message redirect.
    *

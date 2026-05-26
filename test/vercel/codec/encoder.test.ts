@@ -4,8 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DOMAIN_HEADER_PREFIX as D,
+  HEADER_CODEC_MESSAGE_ID,
   HEADER_DISCRETE,
-  HEADER_MSG_ID,
   HEADER_STATUS,
   HEADER_STREAM,
   HEADER_STREAM_ID,
@@ -265,18 +265,18 @@ describe('Vercel encoder', () => {
       expect(headersOf(msg)[`${D}messageId`]).toBe('chunk-id');
     });
 
-    it('stamps x-ably-msg-id from WriteOptions on all publishes', async () => {
+    it('stamps x-ably-codec-message-id from WriteOptions on all publishes', async () => {
       const encoder = createEncoder(writer);
       const perWrite = { messageId: 'msg-1' };
       await encoder.publish({ type: 'start', messageId: 'msg-1' }, perWrite);
       await encoder.publish({ type: 'text-start', id: 'txt-1' }, perWrite);
 
       const startMsg = firstPublish(writer);
-      expect(headersOf(startMsg)[HEADER_MSG_ID]).toBe('msg-1');
+      expect(headersOf(startMsg)[HEADER_CODEC_MESSAGE_ID]).toBe('msg-1');
 
       const second = writer.publishCalls[1];
       if (!second || Array.isArray(second)) throw new Error('expected single-message second publish');
-      expect(headersOf(second)[HEADER_MSG_ID]).toBe('msg-1');
+      expect(headersOf(second)[HEADER_CODEC_MESSAGE_ID]).toBe('msg-1');
     });
 
     it('encodes finish-step', async () => {
@@ -581,7 +581,7 @@ describe('Vercel encoder', () => {
           approved: true,
           reason: 'looks good',
         },
-        { messageId: 'continuation-msg-id' },
+        { messageId: 'continuation-codec-message-id' },
       );
 
       expect(writer.publishCalls).toHaveLength(1);
@@ -590,10 +590,10 @@ describe('Vercel encoder', () => {
       expect(headersOf(msg)[`${D}toolCallId`]).toBe('tc-1');
       expect(headersOf(msg)[`${D}approved`]).toBe('true');
       expect(headersOf(msg)[`${D}reason`]).toBe('looks good');
-      // HEADER_MSG_ID comes from perWrite.messageId — the continuation's
+      // HEADER_CODEC_MESSAGE_ID comes from perWrite.messageId — the continuation's
       // own new wire id. The reducer routes to the original assistant by
-      // toolCallId, not by msg-id.
-      expect(headersOf(msg)[HEADER_MSG_ID]).toBe('continuation-msg-id');
+      // toolCallId, not by codec-message-id.
+      expect(headersOf(msg)[HEADER_CODEC_MESSAGE_ID]).toBe('continuation-codec-message-id');
       // No HEADER_AMEND on the wire — the amend concept has been retired.
       expect(headersOf(msg)['x-ably-amend']).toBeUndefined();
     });
@@ -604,22 +604,22 @@ describe('Vercel encoder', () => {
   describe('publishing ait-regenerate events', () => {
     it('publishes a discrete ait-regenerate wire with empty data; routing metadata travels on transport headers', async () => {
       const encoder = createEncoder(writer);
-      // The client-session builds transport headers (msg-id, prompt-id,
+      // The client-session builds transport headers (codec-message-id, event-id,
       // run-id, parent, fork-of, role) and passes them as `extras.headers`
       // on the per-write options. The encoder forwards them onto the wire
       // and carries no domain payload of its own.
       await encoder.publish(
         {
           type: 'ait-regenerate',
-          forkOfMsgId: 'asst-A1',
-          parentMsgId: 'user-U1',
+          forkOfCodecMessageId: 'asst-A1',
+          parentCodecMessageId: 'user-U1',
         },
         {
-          messageId: 'regen-msg-id',
+          messageId: 'regen-codec-message-id',
           extras: {
             headers: {
-              [HEADER_MSG_ID]: 'regen-msg-id',
-              'x-ably-prompt-id': 'prompt-1',
+              [HEADER_CODEC_MESSAGE_ID]: 'regen-codec-message-id',
+              'x-ably-event-id': 'prompt-1',
               'x-ably-role': 'user',
               'x-ably-parent': 'user-U1',
               'x-ably-fork-of': 'asst-A1',
@@ -633,8 +633,8 @@ describe('Vercel encoder', () => {
       expect(msg.name).toBe('ait-regenerate');
       expect(msg.data).toBe('');
       const headers = headersOf(msg);
-      expect(headers[HEADER_MSG_ID]).toBe('regen-msg-id');
-      expect(headers['x-ably-prompt-id']).toBe('prompt-1');
+      expect(headers[HEADER_CODEC_MESSAGE_ID]).toBe('regen-codec-message-id');
+      expect(headers['x-ably-event-id']).toBe('prompt-1');
       expect(headers['x-ably-role']).toBe('user');
       expect(headers['x-ably-parent']).toBe('user-U1');
       expect(headers['x-ably-fork-of']).toBe('asst-A1');
@@ -647,7 +647,7 @@ describe('Vercel encoder', () => {
     it('publishes a tool-output-available UIMessageChunk via the standard discrete path', async () => {
       const encoder = createEncoder(writer);
       // Client-published continuation tool outputs ride as standard
-      // `tool-output-available` chunks — the wire's HEADER_MSG_ID is the
+      // `tool-output-available` chunks — the wire's HEADER_CODEC_MESSAGE_ID is the
       // continuation's own id (from perWrite.messageId), not the target
       // assistant's. The reducer redirects by toolCallId.
       await encoder.publish(
@@ -656,14 +656,14 @@ describe('Vercel encoder', () => {
           toolCallId: 'tc-1',
           output: { latitude: 51.5, longitude: -0.1 },
         },
-        { messageId: 'continuation-msg-id' },
+        { messageId: 'continuation-codec-message-id' },
       );
 
       expect(writer.publishCalls).toHaveLength(1);
       const msg = firstPublish(writer);
       expect(msg.name).toBe('tool-output-available');
       expect(headersOf(msg)[`${D}toolCallId`]).toBe('tc-1');
-      expect(headersOf(msg)[HEADER_MSG_ID]).toBe('continuation-msg-id');
+      expect(headersOf(msg)[HEADER_CODEC_MESSAGE_ID]).toBe('continuation-codec-message-id');
       expect(headersOf(msg)['x-ably-amend']).toBeUndefined();
       // CAST: data is unknown — we know the encoder shape from above.
       const data = msg.data as { output: unknown };
@@ -678,14 +678,14 @@ describe('Vercel encoder', () => {
           toolCallId: 'tc-1',
           errorText: 'geolocation denied',
         },
-        { messageId: 'continuation-msg-id' },
+        { messageId: 'continuation-codec-message-id' },
       );
 
       expect(writer.publishCalls).toHaveLength(1);
       const msg = firstPublish(writer);
       expect(msg.name).toBe('tool-output-error');
       expect(headersOf(msg)[`${D}toolCallId`]).toBe('tc-1');
-      expect(headersOf(msg)[HEADER_MSG_ID]).toBe('continuation-msg-id');
+      expect(headersOf(msg)[HEADER_CODEC_MESSAGE_ID]).toBe('continuation-codec-message-id');
       expect(headersOf(msg)['x-ably-amend']).toBeUndefined();
       // CAST: data is unknown — we know the encoder shape from above.
       const data = msg.data as { errorText: string };

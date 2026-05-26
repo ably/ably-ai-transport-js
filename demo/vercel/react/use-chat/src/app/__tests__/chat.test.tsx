@@ -88,7 +88,7 @@ const emptyChunkStream = (): ReadableStream<AI.UIMessageChunk> =>
 
 const assistantTextNode = (text: string): MessageNode<AI.UIMessage> => ({
   kind: 'message',
-  msgId: 'msg-assistant-1',
+  codecMessageId: 'msg-assistant-1',
   parentId: undefined,
   forkOf: undefined,
   headers: {},

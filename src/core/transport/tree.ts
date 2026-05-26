@@ -56,24 +56,24 @@ export interface TreeInternal<TMessage> extends Tree<TMessage> {
 
   /**
    * Flatten the tree along selected branches into a linear node list.
-   * The `selections` map provides the selected sibling's msgId at each
-   * fork point, keyed by group root msgId. Fork points not present in
-   * the map default to the latest sibling. If a selectedMsgId is not
+   * The `selections` map provides the selected sibling's codecMessageId at each
+   * fork point, keyed by group root codecMessageId. Fork points not present in
+   * the map default to the latest sibling. If a selectedCodecMessageId is not
    * found in the sibling group (stale/deleted), falls back to latest.
    */
   flattenNodes(selections: Map<string, string>): MessageNode<TMessage>[];
 
   /**
-   * Get the "group root" msgId for a sibling group — the original message
+   * Get the "group root" codecMessageId for a sibling group — the original message
    * that all forks in the group trace back to.
    */
-  getGroupRoot(msgId: string): string;
+  getGroupRoot(codecMessageId: string): string;
 
   /**
-   * Get the sibling group that `msgId` belongs to, as full MessageNode objects.
-   * Allows callers to resolve index ↔ msgId without losing identity.
+   * Get the sibling group that `codecMessageId` belongs to, as full MessageNode objects.
+   * Allows callers to resolve index ↔ codecMessageId without losing identity.
    */
-  getSiblingNodes(msgId: string): MessageNode<TMessage>[];
+  getSiblingNodes(codecMessageId: string): MessageNode<TMessage>[];
 
   /** Forward a raw Ably message event to tree subscribers. */
   emitAblyMessage(msg: Ably.InboundMessage): void;
@@ -99,7 +99,7 @@ interface TreeEventsMap {
 
 // Spec: AIT-CT13
 export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
-  /** All nodes indexed by msgId (x-ably-msg-id). */
+  /** All nodes indexed by codecMessageId (x-ably-codec-message-id). */
   private readonly _nodeIndex = new Map<string, InternalNode<TMessage>>();
 
   /**
@@ -110,7 +110,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   private readonly _sortedList: InternalNode<TMessage>[] = [];
 
   /**
-   * Parent index: parentId to set of child msgIds.
+   * Parent index: parentId to set of child codecMessageIds.
    * Nodes with no parent are indexed under the key `null`.
    */
   private readonly _parentIndex = new Map<string | undefined, Set<string>>();
@@ -210,19 +210,19 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   // Parent index maintenance
   // -------------------------------------------------------------------------
 
-  private _addToParentIndex(parentId: string | undefined, msgId: string): void {
+  private _addToParentIndex(parentId: string | undefined, codecMessageId: string): void {
     let set = this._parentIndex.get(parentId);
     if (!set) {
       set = new Set();
       this._parentIndex.set(parentId, set);
     }
-    set.add(msgId);
+    set.add(codecMessageId);
   }
 
-  private _removeFromParentIndex(parentId: string | undefined, msgId: string): void {
+  private _removeFromParentIndex(parentId: string | undefined, codecMessageId: string): void {
     const set = this._parentIndex.get(parentId);
     if (set) {
-      set.delete(msgId);
+      set.delete(codecMessageId);
       if (set.size === 0) this._parentIndex.delete(parentId);
     }
   }
@@ -232,36 +232,36 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
   // -------------------------------------------------------------------------
 
   /**
-   * Get the sibling group that `msgId` belongs to.
+   * Get the sibling group that `codecMessageId` belongs to.
    *
    * A sibling group is: the original message + all messages whose `forkOf`
    * points to the original (or transitively to a sibling). We find the
    * group root by following `forkOf` chains to the earliest ancestor that
    * has no `forkOf` (or whose `forkOf` target doesn't share the same parent).
-   * @param msgId - The msg-id to look up the sibling group for.
+   * @param codecMessageId - The codec-message-id to look up the sibling group for.
    * @returns The ordered list of sibling nodes.
    */
   // Spec: AIT-CT13b
-  private _getSiblingGroup(msgId: string): MessageNode<TMessage>[] {
-    const entry = this._nodeIndex.get(msgId);
+  private _getSiblingGroup(codecMessageId: string): MessageNode<TMessage>[] {
+    const entry = this._nodeIndex.get(codecMessageId);
     if (!entry) return [];
 
     // Find the "original" — the message at the root of the fork chain
     // that shares the same parentId. Guard against cycles in forkOf chains.
     let original = entry.node;
-    const visitedGroup = new Set<string>([original.msgId]);
+    const visitedGroup = new Set<string>([original.codecMessageId]);
     while (original.forkOf) {
       if (visitedGroup.has(original.forkOf)) break; // cycle guard
       const forkTarget = this._nodeIndex.get(original.forkOf);
       if (!forkTarget || forkTarget.node.parentId !== original.parentId) break;
       original = forkTarget.node;
-      visitedGroup.add(original.msgId);
+      visitedGroup.add(original.codecMessageId);
     }
 
     // Collect all siblings: nodes with the same parentId that either
     // ARE the original, or have a forkOf chain leading to the original.
     const parentId = original.parentId;
-    const originalId = original.msgId;
+    const originalId = original.codecMessageId;
     const siblings: InternalNode<TMessage>[] = [];
 
     const candidateIds = this._parentIndex.get(parentId);
@@ -290,40 +290,40 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
    * @returns True if the node belongs to the sibling group.
    */
   private _isSiblingOf(node: MessageNode<TMessage>, originalId: string): boolean {
-    if (node.msgId === originalId) return true;
+    if (node.codecMessageId === originalId) return true;
     let current = node;
-    const visited = new Set<string>([current.msgId]);
+    const visited = new Set<string>([current.codecMessageId]);
     while (current.forkOf) {
       if (current.forkOf === originalId) return true;
       if (visited.has(current.forkOf)) break; // cycle guard
       const target = this._nodeIndex.get(current.forkOf);
       if (!target) break;
       current = target.node;
-      visited.add(current.msgId);
+      visited.add(current.codecMessageId);
     }
     return false;
   }
 
   /**
-   * Get the "group root" msgId for a sibling group — the original message
+   * Get the "group root" codecMessageId for a sibling group — the original message
    * that all forks trace back to.
-   * @param msgId - Any msg-id in the sibling group.
-   * @returns The msg-id of the group root.
+   * @param codecMessageId - Any codec-message-id in the sibling group.
+   * @returns The codec-message-id of the group root.
    */
-  getGroupRoot(msgId: string): string {
-    const entry = this._nodeIndex.get(msgId);
-    if (!entry) return msgId;
+  getGroupRoot(codecMessageId: string): string {
+    const entry = this._nodeIndex.get(codecMessageId);
+    if (!entry) return codecMessageId;
 
     let current = entry.node;
-    const visited = new Set<string>([current.msgId]);
+    const visited = new Set<string>([current.codecMessageId]);
     while (current.forkOf) {
       if (visited.has(current.forkOf)) break; // cycle guard
       const forkTarget = this._nodeIndex.get(current.forkOf);
       if (!forkTarget || forkTarget.node.parentId !== current.parentId) break;
       current = forkTarget.node;
-      visited.add(current.msgId);
+      visited.add(current.codecMessageId);
     }
-    return current.msgId;
+    return current.codecMessageId;
   }
 
   // -------------------------------------------------------------------------
@@ -336,11 +336,11 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
     const currentPath = new Set<string>();
     // Track which sibling groups we've already resolved to avoid
     // re-resolving for every member of the group.
-    const resolvedGroups = new Map<string, string>(); // groupRootId → selected msgId
+    const resolvedGroups = new Map<string, string>(); // groupRootId → selected codecMessageId
 
     for (const internal of this._sortedList) {
       const node = internal.node;
-      const { msgId, parentId } = node;
+      const { codecMessageId, parentId } = node;
 
       // Step 1: Check parent reachability.
       if (parentId !== undefined && !currentPath.has(parentId)) {
@@ -348,66 +348,66 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
       }
 
       // Step 2: Check sibling selection.
-      const group = this._getSiblingGroup(msgId);
+      const group = this._getSiblingGroup(codecMessageId);
       if (group.length > 1) {
-        const groupRootId = this.getGroupRoot(msgId);
+        const groupRootId = this.getGroupRoot(codecMessageId);
         let selectedId = resolvedGroups.get(groupRootId);
         if (selectedId === undefined) {
           const preferredId = selections.get(groupRootId);
-          // Verify the preferred msgId is in the group, otherwise default to latest
-          if (preferredId && group.some((n) => n.msgId === preferredId)) {
+          // Verify the preferred codecMessageId is in the group, otherwise default to latest
+          if (preferredId && group.some((n) => n.codecMessageId === preferredId)) {
             selectedId = preferredId;
           } else {
             const latest = group.at(-1);
             if (!latest) break; // unreachable: group.length > 1
-            selectedId = latest.msgId;
+            selectedId = latest.codecMessageId;
           }
           resolvedGroups.set(groupRootId, selectedId);
         }
-        if (msgId !== selectedId) {
+        if (codecMessageId !== selectedId) {
           continue;
         }
       }
 
-      currentPath.add(msgId);
+      currentPath.add(codecMessageId);
       result.push(node);
     }
 
     return result;
   }
 
-  getSiblings(msgId: string): TMessage[] {
-    this._logger.trace('DefaultTree.getSiblings();', { msgId });
-    return this._getSiblingGroup(msgId).map((n) => n.message);
+  getSiblings(codecMessageId: string): TMessage[] {
+    this._logger.trace('DefaultTree.getSiblings();', { codecMessageId });
+    return this._getSiblingGroup(codecMessageId).map((n) => n.message);
   }
 
-  getSiblingNodes(msgId: string): MessageNode<TMessage>[] {
-    return this._getSiblingGroup(msgId);
+  getSiblingNodes(codecMessageId: string): MessageNode<TMessage>[] {
+    return this._getSiblingGroup(codecMessageId);
   }
 
-  hasSiblings(msgId: string): boolean {
-    return this._getSiblingGroup(msgId).length > 1;
+  hasSiblings(codecMessageId: string): boolean {
+    return this._getSiblingGroup(codecMessageId).length > 1;
   }
 
-  getNode(msgId: string): MessageNode<TMessage> | undefined {
-    this._logger.trace('DefaultTree.getNode();', { msgId });
-    return this._nodeIndex.get(msgId)?.node;
+  getNode(codecMessageId: string): MessageNode<TMessage> | undefined {
+    this._logger.trace('DefaultTree.getNode();', { codecMessageId });
+    return this._nodeIndex.get(codecMessageId)?.node;
   }
 
-  getHeaders(msgId: string): Record<string, string> | undefined {
-    this._logger.trace('DefaultTree.getHeaders();', { msgId });
-    return this._nodeIndex.get(msgId)?.node.headers;
+  getHeaders(codecMessageId: string): Record<string, string> | undefined {
+    this._logger.trace('DefaultTree.getHeaders();', { codecMessageId });
+    return this._nodeIndex.get(codecMessageId)?.node.headers;
   }
 
   // -------------------------------------------------------------------------
   // Mutation
   // -------------------------------------------------------------------------
 
-  upsert(msgId: string, message: TMessage, headers: Record<string, string>, serial?: string): void {
+  upsert(codecMessageId: string, message: TMessage, headers: Record<string, string>, serial?: string): void {
     const parentId = headers[HEADER_PARENT] ?? undefined;
     const forkOf = headers[HEADER_FORK_OF] ?? undefined;
 
-    const existing = this._nodeIndex.get(msgId);
+    const existing = this._nodeIndex.get(codecMessageId);
     if (existing) {
       // Update in place — message content may have changed (e.g. streaming).
       // Only update headers if the new headers are non-empty (prevents
@@ -417,7 +417,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
         // Preserve a previously-set `x-ably-role`. Secondary wire
         // contributions to an existing message (e.g. a client-published
         // continuation tool resolution stamped with the prior assistant's
-        // msg-id) carry `x-ably-role: 'user'`, but the node's role
+        // codec-message-id) carry `x-ably-role: 'user'`, but the node's role
         // belongs to its original contributor (the agent's assistant
         // stream). Without this carve-out the role flips and downstream
         // consumers (UI rendering, winner rule, etc.) misread the node.
@@ -430,7 +430,7 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
       // Spec: AIT-CT13d
       // Promote serial: optimistic (null) → server-assigned on relay.
       if (serial && !existing.node.serial) {
-        this._logger.debug('Tree.upsert(); promoting serial', { msgId, serial });
+        this._logger.debug('Tree.upsert(); promoting serial', { codecMessageId, serial });
         existing.node.serial = serial;
         // Re-sort: remove from current position, re-insert at correct position.
         this._removeSorted(existing);
@@ -442,12 +442,12 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
       return;
     }
 
-    this._logger.trace('Tree.upsert(); inserting new node', { msgId, parentId, forkOf });
+    this._logger.trace('Tree.upsert(); inserting new node', { codecMessageId, parentId, forkOf });
 
     const node: MessageNode<TMessage> = {
       kind: 'message',
       message,
-      msgId,
+      codecMessageId,
       parentId,
       forkOf,
       headers: { ...headers },
@@ -455,8 +455,8 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
     };
 
     const internal: InternalNode<TMessage> = { node, insertSeq: this._seqCounter++ };
-    this._nodeIndex.set(msgId, internal);
-    this._addToParentIndex(parentId, msgId);
+    this._nodeIndex.set(codecMessageId, internal);
+    this._addToParentIndex(parentId, codecMessageId);
     this._insertSorted(internal);
     this._structuralVersion++;
     this._maybeUpdateWinningInvocation(headers, serial);
@@ -498,22 +498,22 @@ export class DefaultTree<TMessage> implements TreeInternal<TMessage> {
     this._emitter.emit('invocation-winner-changed', { runId, invocationId, serial });
   }
 
-  delete(msgId: string): void {
-    const entry = this._nodeIndex.get(msgId);
+  delete(codecMessageId: string): void {
+    const entry = this._nodeIndex.get(codecMessageId);
     if (!entry) return;
 
-    this._logger.debug('Tree.delete();', { msgId });
+    this._logger.debug('Tree.delete();', { codecMessageId });
 
     const { node } = entry;
 
     // Remove from parent index
-    this._removeFromParentIndex(node.parentId, msgId);
+    this._removeFromParentIndex(node.parentId, codecMessageId);
 
     // Remove from sorted list
     this._removeSorted(entry);
 
     // Remove from primary index
-    this._nodeIndex.delete(msgId);
+    this._nodeIndex.delete(codecMessageId);
 
     // Children are NOT deleted — they become unreachable in flattenNodes()
     // because their parent is no longer on the active path.

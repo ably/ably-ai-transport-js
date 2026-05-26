@@ -24,8 +24,8 @@ import {
   EVENT_RUN_END,
   EVENT_RUN_START,
   HEADER_CANCEL_RUN_ID,
+  HEADER_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
-  HEADER_MSG_ID,
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_ID,
@@ -85,9 +85,9 @@ const collectUntil = (
     const events = decoder.decode(msg);
     allEvents.push(...events);
     const headers = getHeaders(msg);
-    const msgId = headers[HEADER_MSG_ID];
+    const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
     for (const event of events) {
-      projection = UIMessageCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: msgId });
+      projection = UIMessageCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: codecMessageId });
     }
     if (predicate(eventsOf(events))) resolve();
   });
@@ -165,7 +165,7 @@ describe('AgentSession integration', () => {
       const headers = getHeaders(streamMsg);
       expect(headers[HEADER_ROLE]).toBe('assistant');
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
-      expect(headers[HEADER_MSG_ID]).toBeDefined();
+      expect(headers[HEADER_CODEC_MESSAGE_ID]).toBeDefined();
     }
   });
 
@@ -281,9 +281,9 @@ describe('AgentSession integration', () => {
     await subChannel.subscribe((msg) => {
       const events = decoder.decode(msg);
       const headers = getHeaders(msg);
-      const msgId = headers[HEADER_MSG_ID];
+      const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
       for (const event of events) {
-        projection = UIMessageCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: msgId });
+        projection = UIMessageCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: codecMessageId });
       }
       if (eventsOf(events).some((e) => e.type === 'finish')) {
         finishCount++;
@@ -447,7 +447,7 @@ describe('AgentSession integration', () => {
     expect(text2?.text).toBe('Shared response');
   });
 
-  it('addMessages returns msg-ids and explicit parent links assistant', async () => {
+  it('addMessages returns codec-message-ids and explicit parent links assistant', async () => {
     const channelName = uniqueChannelName('st-add-msgs');
     const serverClient = ablyRealtimeClient();
     const subClient = ablyRealtimeClient();
@@ -481,11 +481,11 @@ describe('AgentSession integration', () => {
       role: 'user',
       parts: [{ type: 'text', text: 'What is the weather?' }],
     };
-    const { msgIds } = await run.addMessages([
+    const { codecMessageIds } = await run.addMessages([
       {
         kind: 'message',
         message: userMessage,
-        msgId: crypto.randomUUID(),
+        codecMessageId: crypto.randomUUID(),
         parentId: undefined,
         forkOf: undefined,
         headers: {},
@@ -494,7 +494,7 @@ describe('AgentSession integration', () => {
     ]);
 
     await run.pipe(textResponseStream('msg-reply-1', 'text-reply-1', 'Sunny!'), {
-      parent: msgIds.at(-1),
+      parent: codecMessageIds.at(-1),
     });
     await run.end('complete');
 
@@ -505,14 +505,14 @@ describe('AgentSession integration', () => {
     if (!userRoleMsg) return;
     const userHeaders = getHeaders(userRoleMsg);
     expect(userHeaders[HEADER_RUN_ID]).toBe('run-add-1');
-    const userMsgId = userHeaders[HEADER_MSG_ID];
-    expect(userMsgId).toBeDefined();
+    const userCodecMessageId = userHeaders[HEADER_CODEC_MESSAGE_ID];
+    expect(userCodecMessageId).toBeDefined();
 
     const assistantMsg = rawMessages.find((m) => getHeaders(m)[HEADER_ROLE] === 'assistant');
     expect(assistantMsg).toBeDefined();
     if (!assistantMsg) return;
     const assistantHeaders = getHeaders(assistantMsg);
-    expect(assistantHeaders[HEADER_PARENT]).toBe(userMsgId);
+    expect(assistantHeaders[HEADER_PARENT]).toBe(userCodecMessageId);
   });
 
   it('invokes onError with ChannelContinuityLost when the channel detaches', async () => {
@@ -587,7 +587,7 @@ describe('AgentSession integration', () => {
 
     await run.pipe(stream, {
       resolveWriteOptions: (event: VercelEvent) =>
-        event.type === 'tool-output-available' ? { messageId: 'target-msg-id' } : undefined,
+        event.type === 'tool-output-available' ? { messageId: 'target-codec-message-id' } : undefined,
     });
 
     await done;
@@ -596,14 +596,14 @@ describe('AgentSession integration', () => {
     expect(textStartMsg).toBeDefined();
     if (textStartMsg) {
       const textHeaders = getHeaders(textStartMsg);
-      expect(textHeaders[HEADER_MSG_ID]).not.toBe('target-msg-id');
+      expect(textHeaders[HEADER_CODEC_MESSAGE_ID]).not.toBe('target-codec-message-id');
     }
 
     const toolMsg = rawMessages.find((m) => m.name === 'tool-output-available');
     expect(toolMsg).toBeDefined();
     if (toolMsg) {
       const toolHeaders = getHeaders(toolMsg);
-      expect(toolHeaders[HEADER_MSG_ID]).toBe('target-msg-id');
+      expect(toolHeaders[HEADER_CODEC_MESSAGE_ID]).toBe('target-codec-message-id');
     }
 
     await run.end('complete');
@@ -639,18 +639,18 @@ describe('AgentSession integration', () => {
 
     const runId = crypto.randomUUID();
     const invocationId = crypto.randomUUID();
-    const msgId = crypto.randomUUID();
+    const codecMessageId = crypto.randomUUID();
     const text = 'Live arrival';
 
-    const promptId = crypto.randomUUID();
+    const eventId = crypto.randomUUID();
     const serverRun = createRunFromOpts(session, {
       runId,
       invocationId,
-      promptIds: [promptId],
+      eventIds: [eventId],
     });
 
     // Begin the lookup. `start()` will not resolve until a user prompt
-    // with the expected `promptId` arrives — and that message has not been
+    // with the expected `eventId` arrives — and that message has not been
     // published yet.
     const startPromise = serverRun.start();
 
@@ -661,10 +661,10 @@ describe('AgentSession integration', () => {
     // a few hundred ms is safe.
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
     const publisherChannel = publisherClient.channels.get(channelName);
-    const headers = buildTransportHeaders({ role: 'user', runId, msgId, invocationId, promptId });
+    const headers = buildTransportHeaders({ role: 'user', runId, codecMessageId, invocationId, eventId });
     const encoder = UIMessageCodec.createEncoder(publisherChannel, { extras: { headers } });
     const userEvent = UIMessageCodec.userMessageEvent({
-      id: msgId,
+      id: codecMessageId,
       role: 'user',
       parts: [{ type: 'text', text }],
     });
@@ -674,7 +674,7 @@ describe('AgentSession integration', () => {
 
     expect(serverRun.view.messages).toHaveLength(1);
     const found = serverRun.view.messages[0];
-    expect(found?.msgId).toBe(msgId);
+    expect(found?.codecMessageId).toBe(codecMessageId);
     expect(found?.headers[HEADER_INVOCATION_ID]).toBe(invocationId);
     expect(found?.message.parts[0]).toEqual({ type: 'text', text });
 
@@ -741,7 +741,7 @@ describe('AgentSession integration', () => {
       const serverRun = createRunFromOpts(session, {
         runId: activeRun.runId,
         invocationId: activeRun.invocationId,
-        promptIds: activeRun.promptIds,
+        eventIds: activeRun.eventIds,
       });
       await serverRun.start();
 

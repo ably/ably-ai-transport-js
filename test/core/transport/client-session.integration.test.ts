@@ -22,8 +22,8 @@ import {
   EVENT_RUN_END,
   EVENT_RUN_START,
   HEADER_CANCEL_INVOCATION_ID,
+  HEADER_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
-  HEADER_MSG_ID,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
@@ -160,25 +160,25 @@ const publishRunEnd = async (
 
 /**
  * Publish a user message via the codec encoder under a forced
- * (runId, msgId, invocationId) tuple. Used to simulate a misbehaving client
+ * (runId, codecMessageId, invocationId) tuple. Used to simulate a misbehaving client
  * that reuses a run-id across invocations.
  * @param channel - The channel to publish on.
  * @param runId - The shared run identifier.
  * @param invocationId - The unique invocation identifier.
- * @param msgId - The unique message identifier.
+ * @param codecMessageId - The unique message identifier.
  * @param text - The user message text.
  */
 const publishUserMessage = async (
   channel: Ably.RealtimeChannel,
   runId: string,
   invocationId: string,
-  msgId: string,
+  codecMessageId: string,
   text: string,
 ): Promise<void> => {
-  const headers = buildTransportHeaders({ role: 'user', runId, msgId, invocationId });
+  const headers = buildTransportHeaders({ role: 'user', runId, codecMessageId, invocationId });
   const encoder = UIMessageCodec.createEncoder(channel, { extras: { headers } });
   const event = UIMessageCodec.userMessageEvent({
-    id: msgId,
+    id: codecMessageId,
     role: 'user',
     parts: [{ type: 'text', text }],
   });
@@ -467,7 +467,7 @@ describe('ClientSession integration', () => {
       {
         kind: 'message',
         message: { id: 'user-hist-1', role: 'user', parts: [{ type: 'text', text: 'History question' }] },
-        msgId: crypto.randomUUID(),
+        codecMessageId: crypto.randomUUID(),
         parentId: undefined,
         forkOf: undefined,
         headers: {},
@@ -615,13 +615,13 @@ describe('ClientSession integration', () => {
     expect(asstNode).toBeDefined();
 
     if (userNode) {
-      expect(userNode.msgId).toBeDefined();
+      expect(userNode.codecMessageId).toBeDefined();
       expect(userNode.headers[HEADER_ROLE]).toBe('user');
       expect(userNode.headers[HEADER_RUN_ID]).toBe(runId);
-      expect(userNode.headers[HEADER_MSG_ID]).toBeDefined();
+      expect(userNode.headers[HEADER_CODEC_MESSAGE_ID]).toBeDefined();
     }
     if (asstNode) {
-      expect(asstNode.msgId).toBeDefined();
+      expect(asstNode.codecMessageId).toBeDefined();
       expect(asstNode.headers[HEADER_RUN_ID]).toBe(runId);
     }
   });
@@ -707,18 +707,18 @@ describe('ClientSession integration', () => {
     const runId = crypto.randomUUID();
     const losingInvocationId = crypto.randomUUID();
     const winningInvocationId = crypto.randomUUID();
-    const losingMsgId = crypto.randomUUID();
-    const winningMsgId = crypto.randomUUID();
+    const losingCodecMessageId = crypto.randomUUID();
+    const winningCodecMessageId = crypto.randomUUID();
     const ownerClientId = 'race-owner';
 
     // Publish the LOSING invocation first (lower serial).
-    await publishUserMessage(publisherChannel, runId, losingInvocationId, losingMsgId, 'losing prompt');
+    await publishUserMessage(publisherChannel, runId, losingInvocationId, losingCodecMessageId, 'losing prompt');
     await publishRunStart(publisherChannel, runId, losingInvocationId, ownerClientId);
     await publishRunEnd(publisherChannel, runId, losingInvocationId, ownerClientId, 'complete');
 
     // Then publish the WINNING invocation (higher serial). The view should
     // discard the losing user message and surface only the winning one.
-    await publishUserMessage(publisherChannel, runId, winningInvocationId, winningMsgId, 'winning prompt');
+    await publishUserMessage(publisherChannel, runId, winningInvocationId, winningCodecMessageId, 'winning prompt');
     await publishRunStart(publisherChannel, runId, winningInvocationId, ownerClientId);
     await publishRunEnd(publisherChannel, runId, winningInvocationId, ownerClientId, 'complete');
 
@@ -732,7 +732,7 @@ describe('ClientSession integration', () => {
     const userNodes = nodes.filter((n) => n.message.role === 'user');
     expect(userNodes).toHaveLength(1);
     expect(userNodes[0]?.headers[HEADER_INVOCATION_ID]).toBe(winningInvocationId);
-    expect(userNodes[0]?.headers[HEADER_MSG_ID]).toBe(winningMsgId);
+    expect(userNodes[0]?.headers[HEADER_CODEC_MESSAGE_ID]).toBe(winningCodecMessageId);
 
     const userMsg = userNodes[0]?.message;
     const textPart = userMsg?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
@@ -756,16 +756,16 @@ describe('ClientSession integration', () => {
     const runId = crypto.randomUUID();
     const losingInvocationId = crypto.randomUUID();
     const winningInvocationId = crypto.randomUUID();
-    const losingMsgId = crypto.randomUUID();
-    const winningMsgId = crypto.randomUUID();
+    const losingCodecMessageId = crypto.randomUUID();
+    const winningCodecMessageId = crypto.randomUUID();
     const ownerClientId = 'race-hydrate-owner';
 
     // Publish both invocations to the channel, losing first so it has the
     // lower serial.
-    await publishUserMessage(publisherChannel, runId, losingInvocationId, losingMsgId, 'losing prompt');
+    await publishUserMessage(publisherChannel, runId, losingInvocationId, losingCodecMessageId, 'losing prompt');
     await publishRunStart(publisherChannel, runId, losingInvocationId, ownerClientId);
     await publishRunEnd(publisherChannel, runId, losingInvocationId, ownerClientId, 'complete');
-    await publishUserMessage(publisherChannel, runId, winningInvocationId, winningMsgId, 'winning prompt');
+    await publishUserMessage(publisherChannel, runId, winningInvocationId, winningCodecMessageId, 'winning prompt');
     await publishRunStart(publisherChannel, runId, winningInvocationId, ownerClientId);
     await publishRunEnd(publisherChannel, runId, winningInvocationId, ownerClientId, 'complete');
 
@@ -790,7 +790,7 @@ describe('ClientSession integration', () => {
     const userNodes = nodes.filter((n) => n.message.role === 'user');
     expect(userNodes).toHaveLength(1);
     expect(userNodes[0]?.headers[HEADER_INVOCATION_ID]).toBe(winningInvocationId);
-    expect(userNodes[0]?.headers[HEADER_MSG_ID]).toBe(winningMsgId);
+    expect(userNodes[0]?.headers[HEADER_CODEC_MESSAGE_ID]).toBe(winningCodecMessageId);
   });
 
   // -------------------------------------------------------------------------
@@ -996,8 +996,8 @@ describe('ClientSession integration', () => {
     // effectively instant — a separate observer client would risk
     // missing the publish while it attaches.
     const observerChannel = serverClient.channels.get(channelName);
-    let resolveIds!: (ids: { runId: string; invocationId: string; promptId: string }) => void;
-    const idsPromise = new Promise<{ runId: string; invocationId: string; promptId: string }>((resolve) => {
+    let resolveIds!: (ids: { runId: string; invocationId: string; eventId: string }) => void;
+    const idsPromise = new Promise<{ runId: string; invocationId: string; eventId: string }>((resolve) => {
       resolveIds = resolve;
     });
     const observerListener = (msg: Ably.InboundMessage): void => {
@@ -1005,10 +1005,10 @@ describe('ClientSession integration', () => {
       if (headers[HEADER_ROLE] !== 'user') return;
       const runId = headers[HEADER_RUN_ID];
       const invocationId = headers[HEADER_INVOCATION_ID];
-      const promptId = headers['x-ably-prompt-id'];
-      if (!runId || !invocationId || !promptId) return;
+      const eventId = headers['x-ably-event-id'];
+      if (!runId || !invocationId || !eventId) return;
       observerChannel.unsubscribe(observerListener);
-      resolveIds({ runId, invocationId, promptId });
+      resolveIds({ runId, invocationId, eventId });
     };
     await observerChannel.subscribe(observerListener);
 
@@ -1020,14 +1020,14 @@ describe('ClientSession integration', () => {
       parts: [{ type: 'text', text: 'Need a run-start' }],
     });
 
-    const { runId, invocationId, promptId } = await idsPromise;
+    const { runId, invocationId, eventId } = await idsPromise;
 
     // Stand up the server-side run; its `start()` triggers the real
     // lookup (which finds the user message) and publishes run-start.
     const serverRun = createRunFromOpts(agentSession, {
       runId,
       invocationId,
-      promptIds: [promptId],
+      eventIds: [eventId],
     });
     await serverRun.start();
     const responseStream = textResponseStream('asst-rs-happy-1', 'text-rs-happy-1', 'Started');

@@ -96,7 +96,7 @@ const ALL_STEPS: DemoStep[] = [
 
 export function useDemoProgress(
   nodes: MessageNode<UIMessage>[],
-  hasSiblings: (msgId: string) => boolean,
+  hasSiblings: (codecMessageId: string) => boolean,
   ablyMessages: Ably.InboundMessage[],
 ): DemoStep[] {
   return useMemo(() => {
@@ -142,7 +142,7 @@ export function useDemoProgress(
     if (turnClientIds.size > 1) completed.add('multi-tab');
 
     for (const n of nodes) {
-      if (!hasSiblings(n.msgId)) continue;
+      if (!hasSiblings(n.codecMessageId)) continue;
       if (n.message.role === 'assistant') completed.add('regenerate');
       if (n.message.role === 'user') completed.add('edit');
     }

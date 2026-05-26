@@ -82,7 +82,7 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
   const initialNodes = initialMessages.map((m, i) => ({
     kind: 'message' as const,
     message: m,
-    msgId: `msg-${String(i)}`,
+    codecMessageId: `msg-${String(i)}`,
     parentId: undefined,
     forkOf: undefined,
     headers: {},
@@ -90,7 +90,7 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
   }));
 
   const tree: Tree<string> = {
-    getSiblings: vi.fn((msgId: string) => [msgId]),
+    getSiblings: vi.fn((codecMessageId: string) => [codecMessageId]),
     hasSiblings: vi.fn(() => false),
     getNode: vi.fn(),
     getHeaders: vi.fn(),
@@ -107,8 +107,8 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
     invocationId: 'inv-1',
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     cancel: vi.fn(() => Promise.resolve()),
-    optimisticMsgIds: [] as string[],
-    promptIds: [] as string[],
+    optimisticCodecMessageIds: [] as string[],
+    eventIds: [] as string[],
   };
 
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
@@ -128,7 +128,7 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
     loadOlder: vi.fn(() => Promise.resolve()),
     select: vi.fn(),
     getSelectedIndex: vi.fn(() => 0),
-    getSiblings: vi.fn((msgId: string) => [msgId]),
+    getSiblings: vi.fn((codecMessageId: string) => [codecMessageId]),
     hasSiblings: vi.fn(() => false),
     getNode: vi.fn(),
     sendMessage,

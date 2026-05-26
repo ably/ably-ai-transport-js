@@ -34,7 +34,7 @@ interface MockRun {
   runId: string;
   invocationId: string;
   cancel: ReturnType<typeof vi.fn>;
-  optimisticMsgIds: string[];
+  optimisticCodecMessageIds: string[];
   /** Enqueue a chunk into the run stream. */
   enqueue: (chunk: AI.UIMessageChunk) => void;
   /** Resolve the stream by closing it. */
@@ -56,7 +56,7 @@ const createMockRun = (): MockRun => {
     runId: 'run-1',
     invocationId: 'inv-1',
     cancel,
-    optimisticMsgIds: [],
+    optimisticCodecMessageIds: [],
     enqueue: (chunk: AI.UIMessageChunk) => {
       controller.enqueue(chunk);
     },
@@ -155,9 +155,9 @@ describe('createChatTransport', () => {
       const m3 = makeMessage('3');
 
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
-        { message: m1, msgId: 'n1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
-        { message: m2, msgId: 'n2', parentId: 'n1', forkOf: undefined, headers: {}, serial: undefined },
-        { message: m3, msgId: 'n3', parentId: 'n2', forkOf: undefined, headers: {}, serial: undefined },
+        { message: m1, codecMessageId: 'n1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+        { message: m2, codecMessageId: 'n2', parentId: 'n1', forkOf: undefined, headers: {}, serial: undefined },
+        { message: m3, codecMessageId: 'n3', parentId: 'n2', forkOf: undefined, headers: {}, serial: undefined },
       ]);
 
       const streamPromise = chat.sendMessages({
@@ -216,7 +216,7 @@ describe('createChatTransport', () => {
       // so the View mints an `ait-regenerate` event. The event publishes
       // wire-only with `x-ably-fork-of: A1`, `x-ably-parent: U1` headers
       // — U1 is never re-published. The agent's prompt-lookup catches the
-      // regenerate event by its promptId and reads parent/forkOf from those
+      // regenerate event by its eventId and reads parent/forkOf from those
       // transport headers; the LLM receives history through U1 inclusive
       // via the body. Routing through `sendEvent([])` would skip this
       // entirely and the agent would have no way to learn the run's
@@ -240,8 +240,8 @@ describe('createChatTransport', () => {
 
       expect(regenerate).toHaveBeenCalledOnce();
       expect(send).not.toHaveBeenCalled();
-      const [msgId, opts] = regenerate.mock.calls[0] as [string, SendOptions];
-      expect(msgId).toBe('m2-id');
+      const [codecMessageId, opts] = regenerate.mock.calls[0] as [string, SendOptions];
+      expect(codecMessageId).toBe('m2-id');
       expect(opts.body).toMatchObject({
         sessionName: 'chat-1',
         trigger: 'regenerate-message',
@@ -273,11 +273,11 @@ describe('createChatTransport', () => {
     it('resolves fork metadata from the conversation tree', async () => {
       const { session, send, view, mockRun } = createMockSession();
 
-      const edited = makeMessage('ui-msg-id');
+      const edited = makeMessage('ui-codec-message-id');
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
         {
           message: edited,
-          msgId: 'wire-msg-id',
+          codecMessageId: 'wire-codec-message-id',
           parentId: 'wire-parent-id',
           forkOf: undefined,
           headers: {},
@@ -290,7 +290,7 @@ describe('createChatTransport', () => {
       const streamPromise = chat.sendMessages({
         trigger: 'submit-message',
         chatId: 'chat-1',
-        messageId: 'ui-msg-id',
+        messageId: 'ui-codec-message-id',
         messages: [edited],
         abortSignal: undefined,
       });
@@ -299,7 +299,7 @@ describe('createChatTransport', () => {
       await streamPromise;
 
       const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
-      expect(opts.forkOf).toBe('wire-msg-id');
+      expect(opts.forkOf).toBe('wire-codec-message-id');
       expect(opts.parent).toBe('wire-parent-id');
     });
 
@@ -332,8 +332,8 @@ describe('createChatTransport', () => {
       const edited = makeMessage('2');
 
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
-        { message: m1, msgId: 'n1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
-        { message: edited, msgId: 'n2', parentId: 'n1', forkOf: undefined, headers: {}, serial: undefined },
+        { message: m1, codecMessageId: 'n1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+        { message: edited, codecMessageId: 'n2', parentId: 'n1', forkOf: undefined, headers: {}, serial: undefined },
       ]);
 
       const chat = createChatTransport(session);
@@ -498,26 +498,26 @@ describe('createChatTransport', () => {
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
         {
           message: m1,
-          msgId: 'h1',
+          codecMessageId: 'h1',
           parentId: undefined,
           forkOf: undefined,
-          headers: { 'x-ably-msg-id': 'h1' },
+          headers: { 'x-ably-codec-message-id': 'h1' },
           serial: undefined,
         },
         {
           message: m2,
-          msgId: 'h2',
+          codecMessageId: 'h2',
           parentId: 'h1',
           forkOf: undefined,
-          headers: { 'x-ably-msg-id': 'h2' },
+          headers: { 'x-ably-codec-message-id': 'h2' },
           serial: undefined,
         },
         {
           message: m3,
-          msgId: 'h3',
+          codecMessageId: 'h3',
           parentId: 'h2',
           forkOf: undefined,
-          headers: { 'x-ably-msg-id': 'h3' },
+          headers: { 'x-ably-codec-message-id': 'h3' },
           serial: undefined,
         },
       ]);
@@ -716,10 +716,17 @@ describe('createChatTransport', () => {
       const user2 = makeMessage('u2');
 
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
-        { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+        {
+          message: user1,
+          codecMessageId: 'wire-u1',
+          parentId: undefined,
+          forkOf: undefined,
+          headers: {},
+          serial: undefined,
+        },
         {
           message: assistant,
-          msgId: 'wire-a1',
+          codecMessageId: 'wire-a1',
           parentId: 'wire-u1',
           forkOf: undefined,
           headers: {},
@@ -761,10 +768,17 @@ describe('createChatTransport', () => {
       const user2 = makeMessage('u2');
 
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
-        { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+        {
+          message: user1,
+          codecMessageId: 'wire-u1',
+          parentId: undefined,
+          forkOf: undefined,
+          headers: {},
+          serial: undefined,
+        },
         {
           message: assistant,
-          msgId: 'wire-a1',
+          codecMessageId: 'wire-a1',
           parentId: 'wire-u1',
           forkOf: undefined,
           headers: {},
@@ -802,10 +816,17 @@ describe('createChatTransport', () => {
       const user2 = makeMessage('u2');
 
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
-        { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+        {
+          message: user1,
+          codecMessageId: 'wire-u1',
+          parentId: undefined,
+          forkOf: undefined,
+          headers: {},
+          serial: undefined,
+        },
         {
           message: assistant,
-          msgId: 'wire-a1',
+          codecMessageId: 'wire-a1',
           parentId: 'wire-u1',
           forkOf: undefined,
           headers: {},
@@ -844,10 +865,17 @@ describe('createChatTransport', () => {
       const user2 = makeMessage('u2');
 
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
-        { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+        {
+          message: user1,
+          codecMessageId: 'wire-u1',
+          parentId: undefined,
+          forkOf: undefined,
+          headers: {},
+          serial: undefined,
+        },
         {
           message: assistant,
-          msgId: 'wire-a1',
+          codecMessageId: 'wire-a1',
           parentId: 'wire-u1',
           forkOf: undefined,
           headers: {},
@@ -887,10 +915,17 @@ describe('createChatTransport', () => {
       const user2 = makeMessage('u2');
 
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
-        { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+        {
+          message: user1,
+          codecMessageId: 'wire-u1',
+          parentId: undefined,
+          forkOf: undefined,
+          headers: {},
+          serial: undefined,
+        },
         {
           message: assistant,
-          msgId: 'wire-a1',
+          codecMessageId: 'wire-a1',
           parentId: 'wire-u1',
           forkOf: undefined,
           headers: {},
@@ -929,16 +964,30 @@ describe('createChatTransport', () => {
       const edited = makeMessage('u2');
 
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
-        { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+        {
+          message: user1,
+          codecMessageId: 'wire-u1',
+          parentId: undefined,
+          forkOf: undefined,
+          headers: {},
+          serial: undefined,
+        },
         {
           message: assistant,
-          msgId: 'wire-a1',
+          codecMessageId: 'wire-a1',
           parentId: 'wire-u1',
           forkOf: undefined,
           headers: {},
           serial: undefined,
         },
-        { message: edited, msgId: 'wire-u2', parentId: 'wire-a1', forkOf: undefined, headers: {}, serial: undefined },
+        {
+          message: edited,
+          codecMessageId: 'wire-u2',
+          parentId: 'wire-a1',
+          forkOf: undefined,
+          headers: {},
+          serial: undefined,
+        },
       ]);
 
       const chat = createChatTransport(session);
@@ -964,7 +1013,7 @@ describe('createChatTransport', () => {
   // -------------------------------------------------------------------------
 
   describe('sendMessages — continuation domainMessageId', () => {
-    it('passes the prior assistant tree msg-id as domainMessageId for a client-tool resolution', async () => {
+    it('passes the prior assistant tree codec-message-id as domainMessageId for a client-tool resolution', async () => {
       const { session, send, view, mockRun } = createMockSession();
 
       const user1 = makeMessage('u1');
@@ -994,10 +1043,17 @@ describe('createChatTransport', () => {
       };
 
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
-        { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+        {
+          message: user1,
+          codecMessageId: 'wire-u1',
+          parentId: undefined,
+          forkOf: undefined,
+          headers: {},
+          serial: undefined,
+        },
         {
           message: treeAssistant,
-          msgId: 'wire-a1',
+          codecMessageId: 'wire-a1',
           parentId: 'wire-u1',
           forkOf: undefined,
           headers: {},
@@ -1022,8 +1078,8 @@ describe('createChatTransport', () => {
 
       // chat-transport passes the richer per-entry shape to view.sendEvent.
       // Each entry pairs a tool-resolution event with the prior assistant's
-      // tree msg-id so the SDK stamps the wire HEADER_MSG_ID to 'wire-a1' —
-      // the reducer's direct-fold path then matches by msg-id and folds
+      // tree codec-message-id so the SDK stamps the wire HEADER_CODEC_MESSAGE_ID to 'wire-a1' —
+      // the reducer's direct-fold path then matches by codec-message-id and folds
       // the chunk onto the existing assistant without a cross-message
       // redirect.
       expect(input).toHaveLength(1);
@@ -1031,7 +1087,7 @@ describe('createChatTransport', () => {
       expect(input[0]?.domainMessageId).toBe('wire-a1');
     });
 
-    it('passes the prior assistant tree msg-id as domainMessageId for an approval response', async () => {
+    it('passes the prior assistant tree codec-message-id as domainMessageId for an approval response', async () => {
       const { session, send, view, mockRun } = createMockSession();
 
       const user1 = makeMessage('u1');
@@ -1060,10 +1116,17 @@ describe('createChatTransport', () => {
       };
 
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
-        { message: user1, msgId: 'wire-u1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+        {
+          message: user1,
+          codecMessageId: 'wire-u1',
+          parentId: undefined,
+          forkOf: undefined,
+          headers: {},
+          serial: undefined,
+        },
         {
           message: treeAssistant,
-          msgId: 'wire-a1',
+          codecMessageId: 'wire-a1',
           parentId: 'wire-u1',
           forkOf: undefined,
           headers: {},

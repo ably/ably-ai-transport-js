@@ -290,8 +290,8 @@ class DefaultUIMessageEncoder implements Encoder<VercelEvent> {
   /**
    * Publish a client-side tool-approval response as a discrete
    * `tool-approval-response` Ably message. The publish carries its own
-   * `x-ably-msg-id` (from `perWrite.messageId`) — the reducer matches the
-   * response to the original assistant by `toolCallId`, not by msg-id.
+   * `x-ably-codec-message-id` (from `perWrite.messageId`) — the reducer matches the
+   * response to the original assistant by `toolCallId`, not by codec-message-id.
    * @param event - The approval-response TEvent (toolCallId, approved, optional reason).
    * @param perWrite - Optional per-write overrides (clientId, extras, messageId).
    */
@@ -308,7 +308,7 @@ class DefaultUIMessageEncoder implements Encoder<VercelEvent> {
    * Publish a regenerate event as a discrete `ait-regenerate` Ably message.
    * The wire carries no domain payload — `parent`/`forkOf` are stamped on the
    * transport headers by the client-session (it builds them via
-   * `buildTransportHeaders` from the event's `parentMsgId`/`forkOfMsgId`
+   * `buildTransportHeaders` from the event's `parentCodecMessageId`/`forkOfCodecMessageId`
    * which `classifyEvent` surfaces on the `regenerate` classification).
    * @param _event - The regenerate TEvent (unused — metadata is on transport headers).
    * @param perWrite - Per-write overrides carrying the transport headers built by client-session.

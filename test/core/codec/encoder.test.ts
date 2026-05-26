@@ -2,8 +2,8 @@ import type * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  HEADER_CODEC_MESSAGE_ID,
   HEADER_DISCRETE,
-  HEADER_MSG_ID,
   HEADER_STATUS,
   HEADER_STREAM,
   HEADER_STREAM_ID,
@@ -539,33 +539,33 @@ describe('createEncoderCore', () => {
   // -- WriteOptions.messageId -------------------------------------------------
 
   describe('WriteOptions.messageId', () => {
-    it('stamps x-ably-msg-id on discrete publishes', async () => {
+    it('stamps x-ably-codec-message-id on discrete publishes', async () => {
       const core = createEncoderCore(writer);
       await core.publishDiscrete(payload(), { messageId: 'msg-1' });
 
       const msg = first(writer.publishCalls) as Ably.Message;
-      expect(headersOf(msg)[HEADER_MSG_ID]).toBe('msg-1');
+      expect(headersOf(msg)[HEADER_CODEC_MESSAGE_ID]).toBe('msg-1');
     });
 
-    it('stamps x-ably-msg-id on streamed messages via persistent headers', async () => {
+    it('stamps x-ably-codec-message-id on streamed messages via persistent headers', async () => {
       const core = createEncoderCore(writer);
       await core.startStream('s-1', streamPayload(), { messageId: 'msg-2' });
 
       const startMsg = first(writer.publishCalls) as Ably.Message;
-      expect(headersOf(startMsg)[HEADER_MSG_ID]).toBe('msg-2');
+      expect(headersOf(startMsg)[HEADER_CODEC_MESSAGE_ID]).toBe('msg-2');
 
-      // Appends carry persistent headers, so should include msg-id
+      // Appends carry persistent headers, so should include codec-message-id
       core.appendStream('s-1', 'delta');
       const appendMsg = first(writer.appendCalls);
-      expect(headersOf(appendMsg)[HEADER_MSG_ID]).toBe('msg-2');
+      expect(headersOf(appendMsg)[HEADER_CODEC_MESSAGE_ID]).toBe('msg-2');
     });
 
-    it('does not stamp x-ably-msg-id when messageId is not provided', async () => {
+    it('does not stamp x-ably-codec-message-id when messageId is not provided', async () => {
       const core = createEncoderCore(writer);
       await core.publishDiscrete(payload());
 
       const msg = first(writer.publishCalls) as Ably.Message;
-      expect(headersOf(msg)[HEADER_MSG_ID]).toBeUndefined();
+      expect(headersOf(msg)[HEADER_CODEC_MESSAGE_ID]).toBeUndefined();
     });
   });
 });

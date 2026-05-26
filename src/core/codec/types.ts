@@ -55,7 +55,7 @@ export interface WriteOptions {
   clientId?: string;
   /** Override the default extras for this write. */
   extras?: Extras;
-  /** Message identity for projection routing. Stamped as `x-ably-msg-id`. */
+  /** Message identity for projection routing. Stamped as `x-ably-codec-message-id`. */
   messageId?: string;
 }
 
@@ -136,7 +136,7 @@ export interface ReducerMeta {
    */
   serial: string;
   /**
-   * Optional `x-ably-msg-id` from the inbound Ably message. Reducers use this
+   * Optional `x-ably-codec-message-id` from the inbound Ably message. Reducers use this
    * to route an event to a target message within the projection (e.g. to
    * amend an existing message in the same Run).
    */
@@ -183,7 +183,7 @@ export interface EncoderOptions {
   /** Hook called before each Ably message is published. Mutate the message in place to add transport-level headers. */
   onMessage?: (message: Ably.Message) => void;
   /**
-   * Default `x-ably-msg-id` for messages where the event payload doesn't
+   * Default `x-ably-codec-message-id` for messages where the event payload doesn't
    * supply one. Overridden by `WriteOptions.messageId` per-publish.
    */
   messageId?: string;
@@ -242,10 +242,10 @@ export interface Decoder<TEvent> {
  *   tool-resolution messages (tool outputs / approval responses). Both
  *   ride the same wire path and the same optimistic-fold path; the
  *   reducer (not the classifier) inline-detects tool resolutions and
- *   folds them onto the prior assistant via `consumedMsgIds`.
+ *   folds them onto the prior assistant via `consumedCodecMessageIds`.
  * - `regenerate` — a wire-only channel message that carries run-routing
  *   metadata (`parent`, `forkOf`) in its headers but materialises no
- *   TMessage. The session publishes the wire, mints a `promptId` so the
+ *   TMessage. The session publishes the wire, mints a `eventId` so the
  *   agent's prompt-lookup catches it, and skips tree-upsert / projection
  *   fold entirely. Produced by `View.regenerate` to start a new run forked
  *   off an assistant message without re-publishing the parent user.
@@ -291,7 +291,7 @@ export interface Codec<TEvent, TProjection, TMessage> extends Reducer<TEvent, TP
   createDecoder(): Decoder<TEvent>;
   /**
    * Extract the per-message list from a projection. The SDK uses the result
-   * to upsert per-msgId nodes into the conversation Tree.
+   * to upsert per-codecMessageId nodes into the conversation Tree.
    */
   getMessages(projection: TProjection): TMessage[];
   /**
@@ -306,12 +306,12 @@ export interface Codec<TEvent, TProjection, TMessage> extends Reducer<TEvent, TP
    * `kind: 'regenerate'` and published as a wire-only channel message
    * carrying `parent` / `forkOf` headers. No TMessage materialises on
    * either client or agent — the agent's prompt-lookup picks the event
-   * up via its `promptId` and reads run-routing metadata from headers.
-   * @param forkOfMsgId - The assistant being regenerated (wire `x-ably-fork-of`).
-   * @param parentMsgId - Parent user msg-id for the new assistant chain (wire `x-ably-parent`).
+   * up via its `eventId` and reads run-routing metadata from headers.
+   * @param forkOfCodecMessageId - The assistant being regenerated (wire `x-ably-fork-of`).
+   * @param parentCodecMessageId - Parent user codec-message-id for the new assistant chain (wire `x-ably-parent`).
    * @returns A TEvent that `classifyEvent` will classify as `regenerate`.
    */
-  createRegenerateEvent(forkOfMsgId: string, parentMsgId: string): TEvent;
+  createRegenerateEvent(forkOfCodecMessageId: string, parentCodecMessageId: string): TEvent;
   /**
    * Classify a TEvent for `View.sendEvent` dispatch. The session inspects the
    * returned discriminant to decide whether the event opens a new run
@@ -328,7 +328,7 @@ export interface Codec<TEvent, TProjection, TMessage> extends Reducer<TEvent, TP
   /**
    * Return the existing message id a stream event should be attributed
    * to, based on the projection's current state. Used by `Run.pipe` to
-   * override the wire `HEADER_MSG_ID` when a tool-output event (or
+   * override the wire `HEADER_CODEC_MESSAGE_ID` when a tool-output event (or
    * similar message-modifying event) emitted by `streamText`'s second
    * pass should land on the original message that holds the matching
    * tool call.

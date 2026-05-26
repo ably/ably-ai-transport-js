@@ -53,15 +53,15 @@ export interface ViewHandle<TEvent, TProjection, TMessage> {
    */
   loadOlder: () => Promise<void>;
   /** Select a sibling at a fork point by index. Triggers a view update with the new branch. */
-  select: (msgId: string, index: number) => void;
+  select: (codecMessageId: string, index: number) => void;
   /** Index of the currently selected sibling at a fork point. */
-  getSelectedIndex: (msgId: string) => number;
+  getSelectedIndex: (codecMessageId: string) => number;
   /** Get all sibling messages at a fork point, ordered chronologically by serial. */
-  getSiblings: (msgId: string) => TMessage[];
+  getSiblings: (codecMessageId: string) => TMessage[];
   /** Whether a message has sibling alternatives (i.e., show navigation arrows). */
-  hasSiblings: (msgId: string) => boolean;
-  /** Get a node by msgId, or undefined if not found. */
-  getNode: (msgId: string) => MessageNode<TMessage> | undefined;
+  hasSiblings: (codecMessageId: string) => boolean;
+  /** Get a node by codecMessageId, or undefined if not found. */
+  getNode: (codecMessageId: string) => MessageNode<TMessage> | undefined;
   /** Send one or more user messages on the channel and fire a POST. See {@link View.sendMessage}. */
   sendMessage: (messages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>;
   /** Send one or more TEvents on the channel and fire a POST. See {@link View.sendEvent}. */
@@ -159,19 +159,28 @@ export const useView = <TEvent, TProjection, TMessage>({
 
   // Branch navigation callbacks
   const select = useCallback(
-    (msgId: string, index: number) => {
-      resolvedView?.select(msgId, index);
+    (codecMessageId: string, index: number) => {
+      resolvedView?.select(codecMessageId, index);
     },
     [resolvedView],
   );
 
-  const getSelectedIndex = useCallback((msgId: string) => resolvedView?.getSelectedIndex(msgId) ?? 0, [resolvedView]);
+  const getSelectedIndex = useCallback(
+    (codecMessageId: string) => resolvedView?.getSelectedIndex(codecMessageId) ?? 0,
+    [resolvedView],
+  );
 
-  const getSiblings = useCallback((msgId: string) => resolvedView?.getSiblings(msgId) ?? [], [resolvedView]);
+  const getSiblings = useCallback(
+    (codecMessageId: string) => resolvedView?.getSiblings(codecMessageId) ?? [],
+    [resolvedView],
+  );
 
-  const hasSiblings = useCallback((msgId: string) => resolvedView?.hasSiblings(msgId) ?? false, [resolvedView]);
+  const hasSiblings = useCallback(
+    (codecMessageId: string) => resolvedView?.hasSiblings(codecMessageId) ?? false,
+    [resolvedView],
+  );
 
-  const getNode = useCallback((msgId: string) => resolvedView?.getNode(msgId), [resolvedView]);
+  const getNode = useCallback((codecMessageId: string) => resolvedView?.getNode(codecMessageId), [resolvedView]);
 
   // Write operation callbacks
   const sendMessage = useCallback(

@@ -53,9 +53,9 @@ export interface SendMessagesRequestContext {
   history: AI.UIMessage[];
   /** The new message(s) being sent (to publish to the channel). Empty for regeneration. */
   messages: AI.UIMessage[];
-  /** The msg-id of the message being forked (regenerated or edited). */
+  /** The codec-message-id of the message being forked (regenerated or edited). */
   forkOf?: string;
-  /** The msg-id of the predecessor in the conversation thread. */
+  /** The codec-message-id of the predecessor in the conversation thread. */
   parent?: string;
 }
 
@@ -248,10 +248,10 @@ const UNRESOLVED_TOOL_STATES = new Set(['input-streaming', 'input-available', 'a
  * state hasn't reflected yet.
  *
  * Each TEvent is published as a `role: 'user'` channel message stamped
- * with `x-ably-run-continue: 'true'` AND with `x-ably-msg-id` set to the
- * prior assistant's tree msg-id (the one carrying the original
+ * with `x-ably-run-continue: 'true'` AND with `x-ably-codec-message-id` set to the
+ * prior assistant's tree codec-message-id (the one carrying the original
  * `dynamic-tool` part the resolution targets). The reducer's direct fold
- * path matches by msg-id and the chunk lands on the assistant in one
+ * path matches by codec-message-id and the chunk lands on the assistant in one
  * step — no cross-message redirect-by-toolCallId fallback.
  *
  * The resulting events are passed alongside the continuation `view.sendEvent`
@@ -271,7 +271,7 @@ const UNRESOLVED_TOOL_STATES = new Set(['input-streaming', 'input-available', 'a
  * @param session - The client session (used to read the current tree).
  * @param messages - useChat's local overlay messages.
  * @returns Continuation events to publish, in tree order, paired with
- *   the target msg-id (the prior assistant's tree key) each event should
+ *   the target codec-message-id (the prior assistant's tree key) each event should
  *   fold onto. Arrays are parallel — `domainMessageIds[i]` belongs to
  *   `events[i]`.
  */
@@ -309,7 +309,7 @@ const deriveContinuationEvents = (
           (approvalEvent as { reason?: string }).reason = overlayPart.approval.reason;
         }
         events.push(approvalEvent);
-        domainMessageIds.push(node.msgId);
+        domainMessageIds.push(node.codecMessageId);
         continue;
       }
       if (overlayPart.state === 'output-denied' && (!treePart || treePart.state === 'approval-requested')) {
@@ -318,7 +318,7 @@ const deriveContinuationEvents = (
           toolCallId: overlayPart.toolCallId,
           approved: false,
         });
-        domainMessageIds.push(node.msgId);
+        domainMessageIds.push(node.codecMessageId);
         continue;
       }
 
@@ -341,7 +341,7 @@ const deriveContinuationEvents = (
           errorText: overlayPart.errorText,
         });
       }
-      domainMessageIds.push(node.msgId);
+      domainMessageIds.push(node.codecMessageId);
     }
   }
   return { events, domainMessageIds };
@@ -461,17 +461,17 @@ export const createChatTransport = (
 
     if (trigger === 'submit-message' && messageId && !isContinuation) {
       // Edit: messageId identifies the user message being replaced. forkOf =
-      // its tree msg-id, parent = its parent in the tree.
+      // its tree codec-message-id, parent = its parent in the tree.
       forkOf = messageId;
       const node = allNodes.find((n) => n.message.id === messageId);
       if (node) {
-        forkOf = node.msgId;
+        forkOf = node.codecMessageId;
         parent = node.parentId;
       }
     } else if (forkSource) {
       // Fork off the preceding assistant — the new user message becomes a
       // sibling of the unresolved tool call assistant, rooted at its parent.
-      forkOf = forkSource.msgId;
+      forkOf = forkSource.codecMessageId;
       parent = forkSource.parentId;
     }
 
@@ -514,8 +514,8 @@ export const createChatTransport = (
     // Dispatch by mode:
     //
     // - Continuation: derive tool-resolution events from useChat's overlay
-    //   vs the tree and pair each with the prior assistant's tree msg-id —
-    //   the SDK stamps the wire's `x-ably-msg-id` to that id so the
+    //   vs the tree and pair each with the prior assistant's tree codec-message-id —
+    //   the SDK stamps the wire's `x-ably-codec-message-id` to that id so the
     //   reducer's direct fold path runs (no redirect, no consume).
     // - Regenerate: route through `view.regenerate`. The View mints a
     //   wire-only regenerate event (`ait-regenerate`) carrying

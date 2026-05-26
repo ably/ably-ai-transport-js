@@ -14,8 +14,8 @@ interface MessageBubbleProps {
   onSelectSibling?: (index: number) => void;
   onRegenerate?: () => void;
   onEdit?: (newText: string) => void;
-  onToolApprove?: (msgId: string, toolCallId: string) => void;
-  onToolDeny?: (msgId: string, toolCallId: string) => void;
+  onToolApprove?: (codecMessageId: string, toolCallId: string) => void;
+  onToolDeny?: (codecMessageId: string, toolCallId: string) => void;
 }
 
 function BranchNavigator({
@@ -180,7 +180,7 @@ export function MessageBubble({
   const clientId = headers?.['x-ably-run-client-id'];
   const runId = headers?.['x-ably-run-id'];
   const status = headers?.['x-ably-status'];
-  const msgId = headers?.['x-ably-msg-id'];
+  const codecMessageId = headers?.['x-ably-codec-message-id'];
   const colors = clientId ? clientColor(clientId) : undefined;
 
   const messageText = message.parts
@@ -210,8 +210,14 @@ export function MessageBubble({
                     <ToolInvocation
                       key={i}
                       part={toolPart}
-                      onApprove={onToolApprove && msgId ? () => onToolApprove(msgId, toolPart.toolCallId) : noop}
-                      onDeny={onToolDeny && msgId ? () => onToolDeny(msgId, toolPart.toolCallId) : noop}
+                      onApprove={
+                        onToolApprove && codecMessageId
+                          ? () => onToolApprove(codecMessageId, toolPart.toolCallId)
+                          : noop
+                      }
+                      onDeny={
+                        onToolDeny && codecMessageId ? () => onToolDeny(codecMessageId, toolPart.toolCallId) : noop
+                      }
                     />
                   );
                 }

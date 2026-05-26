@@ -19,11 +19,11 @@ import {
   HEADER_CANCEL_INVOCATION_ID,
   HEADER_CANCEL_OWN,
   HEADER_CANCEL_RUN_ID,
+  HEADER_CODEC_MESSAGE_ID,
+  HEADER_EVENT_ID,
   HEADER_FORK_OF,
   HEADER_INVOCATION_ID,
-  HEADER_MSG_ID,
   HEADER_PARENT,
-  HEADER_PROMPT_ID,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
@@ -121,10 +121,10 @@ const loadRunProjection = async <TEvent, TProjection, TMessage>(opts: {
     const headers = getHeaders(msg);
     if (headers[HEADER_RUN_ID] !== runId) continue;
     const events = decoder.decode(msg);
-    const routingMsgId = headers[HEADER_MSG_ID] ?? '';
+    const routingCodecMessageId = headers[HEADER_CODEC_MESSAGE_ID] ?? '';
     const serial = msg.serial ?? '';
     for (const event of events) {
-      projection = codec.fold(projection, event, { serial, messageId: routingMsgId });
+      projection = codec.fold(projection, event, { serial, messageId: routingCodecMessageId });
     }
     folded++;
   }
@@ -134,7 +134,7 @@ const loadRunProjection = async <TEvent, TProjection, TMessage>(opts: {
 };
 
 /**
- * Wait for every prompt-id in `expectedPromptIds` to arrive as a channel
+ * Wait for every event-id in `expectedEventIds` to arrive as a channel
  * message before letting the run proceed to LLM work. Uses the session's
  * unfiltered channel dispatcher (registered in `connect()`) so that
  * messages replayed via channel rewind on attach reach the lookup — no
@@ -142,10 +142,10 @@ const loadRunProjection = async <TEvent, TProjection, TMessage>(opts: {
  *
  * Each client-published event in a send (user-message AND amend events
  * such as tool-approval responses and client tool outputs) is stamped
- * with its own `x-ably-prompt-id` and listed in `invocation.promptIds`.
+ * with its own `x-ably-event-id` and listed in `invocation.eventIds`.
  * The lookup matches incoming messages against the expected set; ids
  * not in the set are ignored, duplicates (rewind redelivering a message
- * also seen live) are deduped by prompt-id. The wait completes when
+ * also seen live) are deduped by event-id. The wait completes when
  * every expected id has arrived, guaranteeing the channel state is
  * consistent with what the client promised before any downstream
  * processing (loadProjection, streamText) runs.
@@ -167,8 +167,8 @@ const loadRunProjection = async <TEvent, TProjection, TMessage>(opts: {
  * @param opts.codec - Codec used to decode arriving messages.
  * @param opts.invocationId - Invocation identifier the dispatcher keys on.
  * @param opts.runId - Run identifier (used for logging and error messages).
- * @param opts.expectedPromptIds - Prompt-ids the lookup must observe before resolving.
- * @param opts.timeoutMs - Maximum total time to wait for all prompt-id arrivals.
+ * @param opts.expectedEventIds - Prompt-ids the lookup must observe before resolving.
+ * @param opts.timeoutMs - Maximum total time to wait for all event-id arrivals.
  * @param opts.signal - AbortSignal that cancels the wait when the run aborts.
  * @param opts.logger - Optional logger for diagnostic output.
  * @returns The MessageNodes for arriving user-message events (sorted by Ably
@@ -188,13 +188,13 @@ const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
   codec: import('../codec/types.js').Codec<TEvent, TProjection, TMessage>;
   invocationId: string;
   runId: string;
-  expectedPromptIds: readonly string[];
+  expectedEventIds: readonly string[];
   timeoutMs: number;
   signal: AbortSignal;
   logger: Logger | undefined;
 }): Promise<PromptLookupResult<TMessage>> => {
-  const { register, codec, invocationId, runId, expectedPromptIds, timeoutMs, signal, logger } = opts;
-  const expectedSet = new Set(expectedPromptIds);
+  const { register, codec, invocationId, runId, expectedEventIds, timeoutMs, signal, logger } = opts;
+  const expectedSet = new Set(expectedEventIds);
   const expectedCount = expectedSet.size;
 
   /**
@@ -205,16 +205,16 @@ const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
   const decode = (m: Ably.InboundMessage): MessageNode<TMessage>[] => {
     const decoder = codec.createDecoder();
     const headers = getHeaders(m);
-    const msgId = headers[HEADER_MSG_ID] ?? '';
+    const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID] ?? '';
     const events = decoder.decode(m);
     let projection = codec.init();
     for (const event of events) {
-      projection = codec.fold(projection, event, { serial: m.serial ?? '', messageId: msgId });
+      projection = codec.fold(projection, event, { serial: m.serial ?? '', messageId: codecMessageId });
     }
     return codec.getMessages(projection).map((message) => ({
       kind: 'message' as const,
       message,
-      msgId,
+      codecMessageId,
       parentId: headers['x-ably-parent'],
       forkOf: headers['x-ably-fork-of'],
       headers,
@@ -257,18 +257,18 @@ const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
     signal.addEventListener('abort', onAbort, { once: true });
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- onAbort may have settled the promise synchronously above when the signal was already aborted.
     if (settled) return;
-    const matchedPromptIds = new Set<string>();
+    const matchedEventIds = new Set<string>();
     unregister = register((m) => {
       if (settled) return;
       if (m.serial !== undefined && seenSerials.has(m.serial)) return;
-      // Filter by prompt-id: ignore messages whose prompt-id isn't in the
-      // expected set, and dedupe across rewind+live by prompt-id.
+      // Filter by event-id: ignore messages whose event-id isn't in the
+      // expected set, and dedupe across rewind+live by event-id.
       const wireHeaders = getHeaders(m);
-      const promptId = wireHeaders[HEADER_PROMPT_ID];
-      if (promptId === undefined || !expectedSet.has(promptId)) return;
-      if (matchedPromptIds.has(promptId)) return;
+      const eventId = wireHeaders[HEADER_EVENT_ID];
+      if (eventId === undefined || !expectedSet.has(eventId)) return;
+      if (matchedEventIds.has(eventId)) return;
       if (m.serial !== undefined) seenSerials.add(m.serial);
-      matchedPromptIds.add(promptId);
+      matchedEventIds.add(eventId);
       // Capture the first matched wire message's headers so run-level
       // metadata (clientId / parent / forkOf / continuation flag) is
       // available even when the decode produces zero MessageNodes — the
@@ -293,7 +293,7 @@ const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
         return;
       }
       for (const node of decoded) collected.push(node);
-      if (matchedPromptIds.size < expectedCount) return;
+      if (matchedEventIds.size < expectedCount) return;
       settled = true;
       cleanup();
       // Sort by Ably serial ascending so callers see publish order regardless
@@ -408,9 +408,9 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
   private readonly _promptBufferLimit: number;
   /**
    * Bounded FIFO map of invocation-ids whose lookup has resolved
-   * successfully, valued by the number of prompt-ids the lookup resolved at.
+   * successfully, valued by the number of event-ids the lookup resolved at.
    * Used to distinguish over-arrival (extra user-prompt for a lookup that
-   * already completed with N prompt-ids) from a genuine late /
+   * already completed with N event-ids) from a genuine late /
    * never-claimed arrival, so we can warn loudly on the former (with the
    * count the client claimed) without spamming on the latter. Reject paths
    * do not populate this map — their cause is already surfaced via the
@@ -550,10 +550,10 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
    * Record an invocation-id whose lookup has resolved successfully so a
    * subsequent unmatched arrival for the same invocation-id can be flagged
    * as an over-arrival (client published more user-prompts than the
-   * invocation's `promptIds` listed). Bounded FIFO eviction at
+   * invocation's `eventIds` listed). Bounded FIFO eviction at
    * `_completedLookupInvocationIdsLimit`.
    * @param invocationId - The invocation-id whose lookup just completed.
-   * @param expectedCount - The number of prompt-ids the lookup resolved at — surfaced in the over-arrival warn.
+   * @param expectedCount - The number of event-ids the lookup resolved at — surfaced in the over-arrival warn.
    */
   private _recordCompletedLookup(invocationId: string, expectedCount: number): void {
     if (this._completedLookupInvocationIds.has(invocationId)) return;
@@ -825,21 +825,21 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
       // Dispatch client-published prompt-bearing messages to any pending
       // lookup keyed by invocation-id. Every client-originated event in
       // an invocation (user-message AND amend events such as tool-approval
-      // responses and client tool outputs) carries `x-ably-prompt-id`; the
+      // responses and client tool outputs) carries `x-ably-event-id`; the
       // lookup waits for every promised id to arrive before letting the
       // run start LLM work. Server-side lifecycle messages (run-start,
-      // run-end, cancel, abort, error) never stamp `x-ably-prompt-id`, so
+      // run-end, cancel, abort, error) never stamp `x-ably-event-id`, so
       // they're naturally excluded.
       const headers = getHeaders(msg);
       const invocationId = headers[HEADER_INVOCATION_ID];
-      if (invocationId && headers[HEADER_PROMPT_ID] !== undefined) {
+      if (invocationId && headers[HEADER_EVENT_ID] !== undefined) {
         const listener = this._pendingPromptLookups.get(invocationId);
         if (listener) {
           listener(msg);
         } else {
           // Over-arrival: lookup for this invocation already completed
           // successfully (e.g. client published more prompt-bearing
-          // events than the invocation's `promptIds` listed). Warn
+          // events than the invocation's `eventIds` listed). Warn
           // loudly so client-side bugs surface, then drop the message —
           // no listener will ever register for this completed lookup,
           // so buffering would just hold a slot until FIFO eviction.
@@ -851,7 +851,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
               {
                 invocationId,
                 expectedCount: completedExpectedCount,
-                msgId: headers[HEADER_MSG_ID],
+                codecMessageId: headers[HEADER_CODEC_MESSAGE_ID],
               },
             );
             return;
@@ -960,16 +960,16 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
     const recordCompletedLookup = this._recordCompletedLookup.bind(this);
     const drainBufferedCancels = this._drainBufferedCancels.bind(this);
     const bufferedCancels = this._bufferedCancels;
-    const invocationPromptIds = invocation.promptIds;
+    const invocationEventIds = invocation.eventIds;
     // Snapshot the invocation's prior-conversation history. `Run.start()`
     // may overlay this with codec-folded state for continuation tool
     // resolutions; `run.messages` exposes the result.
     let resolvedHistory: TMessage[] = [...invocation.history];
 
     // `viewMessages` starts empty. `Run.start()` populates it via the
-    // channel-rewind prompt lookup when `invocation.promptIds` has entries,
+    // channel-rewind prompt lookup when `invocation.eventIds` has entries,
     // pulling in user-message MessageNodes as they arrive on the channel.
-    // Continuation sends list no promptIds and skip the lookup entirely.
+    // Continuation sends list no eventIds and skip the lookup entirely.
     const viewMessages: MessageNode<TMessage>[] = [];
     const view: RunView<TMessage> = {
       get messages() {
@@ -1028,25 +1028,25 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
         state = RunState.STARTED;
 
         // Look up the user prompt on the channel when the invocation
-        // signals a fresh send (promptIds.length > 0) but didn't carry the
+        // signals a fresh send (eventIds.length > 0) but didn't carry the
         // messages inline. Skip when:
         // - viewMessages already populated (legacy / pre-populated path)
         // - promptLookupTimeoutMs === 0 (tests and in-process drivers)
-        // - promptIds.length === 0 (no client-published prompt-bearing
+        // - eventIds.length === 0 (no client-published prompt-bearing
         //   events — degenerate; agent runs without seeing any user input)
-        if (viewMessages.length === 0 && invocationPromptIds.length > 0 && promptLookupTimeoutMs > 0) {
+        if (viewMessages.length === 0 && invocationEventIds.length > 0 && promptLookupTimeoutMs > 0) {
           try {
             const found = await lookupUserPrompt<TEvent, TProjection, TMessage>({
               register: (callback) => registerPromptListener(invocationId, callback),
               codec,
               invocationId,
               runId,
-              expectedPromptIds: invocationPromptIds,
+              expectedEventIds: invocationEventIds,
               timeoutMs: promptLookupTimeoutMs,
               signal,
               logger,
             });
-            recordCompletedLookup(invocationId, invocationPromptIds.length);
+            recordCompletedLookup(invocationId, invocationEventIds.length);
             for (const m of found.nodes) viewMessages.push(m);
             if (found.firstHeaders !== undefined) firstLookupHeaders = found.firstHeaders;
           } catch (error) {
@@ -1101,7 +1101,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
         // `Run.pipe`'s `resolveToolTarget` hook can redirect tool-output
         // chunks emitted by streamText to the original assistant message
         // (the one carrying the `approval-responded` / `approval-requested`
-        // dynamic-tool part). Without that, the wire `HEADER_MSG_ID` lands
+        // dynamic-tool part). Without that, the wire `HEADER_CODEC_MESSAGE_ID` lands
         // on the new step's assistant and the client reducer redirects via
         // the toolCallId fallback — a path that's correct in isolation but
         // collides with the new assistant's own streamed content (text,
@@ -1175,7 +1175,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
           );
         }
 
-        const msgIds: string[] = [];
+        const codecMessageIds: string[] = [];
 
         try {
           for (const node of nodes) {
@@ -1185,7 +1185,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
               buildTransportHeaders({
                 role: 'user',
                 runId,
-                msgId: node.msgId,
+                codecMessageId: node.codecMessageId,
                 runClientId: opts?.clientId,
                 parent: node.parentId,
                 forkOf: node.forkOf,
@@ -1202,7 +1202,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
             const userEvent = codec.userMessageEvent(node.message);
             await encoder.publish(userEvent, opts?.clientId ? { clientId: opts.clientId } : undefined);
 
-            msgIds.push(node.msgId);
+            codecMessageIds.push(node.codecMessageId);
           }
         } catch (error) {
           const errInfo = new Ably.ErrorInfo(
@@ -1216,7 +1216,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
         }
 
         logger?.debug('Run.addMessages(); messages published', { runId, count: nodes.length });
-        return { msgIds };
+        return { codecMessageIds };
       },
 
       // Spec: AIT-ST5c
@@ -1240,7 +1240,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
             const headers = buildTransportHeaders({
               role: 'assistant',
               runId,
-              msgId: node.msgId,
+              codecMessageId: node.codecMessageId,
               runClientId: runOwnerClientId,
             });
 
@@ -1305,22 +1305,22 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
         //      assistant threads under the user msg that triggered it.
         //   3. `resolvedParent` from the prompt-lookup's `firstLookupHeaders`.
         //      For regenerate wires the lookup matches the event (by
-        //      promptId) but produces no MessageNodes, so `viewMessages` is
+        //      eventId) but produces no MessageNodes, so `viewMessages` is
         //      empty — the regenerate event's `x-ably-parent` header carries
-        //      the parent msg-id we need to thread under.
+        //      the parent codec-message-id we need to thread under.
         // Owning the default here means agent routes don't have to remember
-        // to pass `{ parent: lastUserMsgId }` to keep tree threading correct;
+        // to pass `{ parent: lastUserCodecMessageId }` to keep tree threading correct;
         // edit-then-regenerate sibling resolution relies on the user→assistant
         // chain being explicit.
-        const lastViewMsgId = viewMessages.at(-1)?.msgId;
-        const assistantParent = streamOpts?.parent ?? lastViewMsgId ?? resolvedParent;
+        const lastViewCodecMessageId = viewMessages.at(-1)?.codecMessageId;
+        const assistantParent = streamOpts?.parent ?? lastViewCodecMessageId ?? resolvedParent;
         const assistantForkOf = streamOpts?.forkOf ?? resolvedForkOf;
 
-        const msgId = crypto.randomUUID();
+        const codecMessageId = crypto.randomUUID();
         const defaultHeaders = buildTransportHeaders({
           role: 'assistant',
           runId,
-          msgId,
+          codecMessageId,
           runClientId: runOwnerClientId,
           parent: assistantParent,
           forkOf: assistantForkOf,
@@ -1328,7 +1328,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
         const encoder = codec.createEncoder(channel, {
           extras: { headers: defaultHeaders },
           onMessage,
-          messageId: msgId,
+          messageId: codecMessageId,
         });
 
         // Compose caller-supplied resolveWriteOptions with codec-driven

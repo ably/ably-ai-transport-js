@@ -36,8 +36,22 @@ describe('useView', () => {
 
     // Mutate mock to return a new node list
     const updatedNodes = [
-      { message: 'hello', msgId: 'msg-0', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
-      { message: 'world', msgId: 'msg-1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+      {
+        message: 'hello',
+        codecMessageId: 'msg-0',
+        parentId: undefined,
+        forkOf: undefined,
+        headers: {},
+        serial: undefined,
+      },
+      {
+        message: 'world',
+        codecMessageId: 'msg-1',
+        parentId: undefined,
+        forkOf: undefined,
+        headers: {},
+        serial: undefined,
+      },
     ];
     (mock.view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue(updatedNodes);
     (mock.view.hasOlder as ReturnType<typeof vi.fn>).mockReturnValue(true);
@@ -189,8 +203,22 @@ describe('useView', () => {
     // Simulate streaming update: msg2 changes, msg1 stays (same reference)
     const msg2Updated = 'streaming-message-updated';
     const updatedNodes = [
-      { message: msg1, msgId: 'msg-0', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
-      { message: msg2Updated, msgId: 'msg-1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
+      {
+        message: msg1,
+        codecMessageId: 'msg-0',
+        parentId: undefined,
+        forkOf: undefined,
+        headers: {},
+        serial: undefined,
+      },
+      {
+        message: msg2Updated,
+        codecMessageId: 'msg-1',
+        parentId: undefined,
+        forkOf: undefined,
+        headers: {},
+        serial: undefined,
+      },
     ];
     (mock.view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue(updatedNodes);
 

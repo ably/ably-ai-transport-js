@@ -8,7 +8,7 @@
  * Domain decoders call `createDecoderCore(hooks, options)` and provide hooks
  * for stream classification, event building, and discrete decoding. Hooks
  * return a flat `TEvent[]` — no event-vs-message union. Per-message routing
- * concerns (`x-ably-msg-id`) are handled by the SDK via `ReducerMeta`, not
+ * concerns (`x-ably-codec-message-id`) are handled by the SDK via `ReducerMeta`, not
  * here.
  */
 

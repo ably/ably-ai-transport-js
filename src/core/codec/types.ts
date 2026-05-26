@@ -116,7 +116,7 @@ export interface StreamTrackerState {
   accumulated: string;
   /** Current headers for this stream. Initially set from the first publish, but may be replaced on update. */
   headers: Record<string, string>;
-  /** Whether this stream has been closed (finished or aborted). */
+  /** Whether this stream has been closed (finished or cancelled). */
   closed: boolean;
 }
 
@@ -202,11 +202,11 @@ export interface Encoder<TEvent> {
    */
   publish(event: TEvent, options?: WriteOptions): Promise<void>;
   /**
-   * Abort any in-progress streams and emit a codec-specific abort signal.
-   * Idempotent — safe to call after `abort` or `close`.
-   * @param reason - Optional reason string for the abort (e.g. 'cancelled').
+   * Cancel any in-progress streams and emit a codec-specific cancel signal.
+   * Idempotent — safe to call after `cancel` or `close`.
+   * @param reason - Optional reason string for the cancellation (e.g. 'cancelled').
    */
-  abort(reason?: string): Promise<void>;
+  cancel(reason?: string): Promise<void>;
   /** Flush pending appends and release encoder resources. */
   close(): Promise<void>;
 }

@@ -59,7 +59,6 @@ export { createDecoderCore, createEncoderCore, createLifecycleTracker } from './
 // Constants
 export {
   DOMAIN_HEADER_PREFIX,
-  EVENT_ABORT,
   EVENT_CANCEL,
   EVENT_RUN_END,
   EVENT_RUN_START,

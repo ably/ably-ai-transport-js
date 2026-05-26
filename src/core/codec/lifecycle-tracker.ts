@@ -73,7 +73,7 @@ export interface LifecycleTracker<TEvent> {
 
   /**
    * Remove all tracking state for a scope. Call on run completion
-   * (finish, abort) to free memory.
+   * (finish, cancel) to free memory.
    * @param scopeId - The scope to clear.
    */
   clearScope(scopeId: string): void;

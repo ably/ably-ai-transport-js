@@ -116,7 +116,7 @@ export const HEADER_ERROR_MESSAGE = 'x-ably-error-message';
 // Message / event names
 // ---------------------------------------------------------------------------
 
-/** Message name: client->server cancel signal. */
+/** Message name: client->agent cancel intent. Targets a run, invocation, or scope via `x-ably-cancel-*` headers. */
 export const EVENT_CANCEL = 'ai-cancel';
 
 /** Message name: server publishes this to signal a run has started. */
@@ -124,9 +124,6 @@ export const EVENT_RUN_START = 'ai-run-start';
 
 /** Message name: server publishes this to signal a run has ended. */
 export const EVENT_RUN_END = 'ai-run-end';
-
-/** Message name: transport-level abort signal (stream cancelled). */
-export const EVENT_ABORT = 'ai-abort';
 
 // ---------------------------------------------------------------------------
 // Domain header prefix (used by codec implementations)

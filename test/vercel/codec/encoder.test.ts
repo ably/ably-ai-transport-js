@@ -304,58 +304,58 @@ describe('Vercel encoder', () => {
       expect(msg.data).toBe('something failed');
     });
 
-    it('encodes abort and aborts all streams', async () => {
+    it('encodes abort and cancels all streams', async () => {
       const encoder = createEncoder(writer);
       await encoder.publish({ type: 'text-start', id: 'txt-1' });
       await encoder.publish({ type: 'abort', reason: 'cancelled' });
 
-      // Should have: publish (text-start), append (abort stream), publish (abort event)
-      const abortMsg = lastPublish(writer);
-      expect(abortMsg.name).toBe('abort');
-      expect(abortMsg.data).toBe('cancelled');
-      expect(headersOf(abortMsg)[HEADER_STATUS]).toBe('aborted');
+      // Should have: publish (text-start), append (cancel stream), publish (abort event)
+      const cancelMsg = lastPublish(writer);
+      expect(cancelMsg.name).toBe('abort');
+      expect(cancelMsg.data).toBe('cancelled');
+      expect(headersOf(cancelMsg)[HEADER_STATUS]).toBe('cancelled');
 
-      // The stream should have been aborted
-      const abortAppend = writer.appendCalls.find((m) => headersOf(m)[HEADER_STATUS] === 'aborted');
-      expect(abortAppend).toBeDefined();
+      // The stream should have been cancelled
+      const cancelAppend = writer.appendCalls.find((m) => headersOf(m)[HEADER_STATUS] === 'cancelled');
+      expect(cancelAppend).toBeDefined();
     });
 
-    it('abort() aborts all streams and publishes abort event', async () => {
+    it('cancel() cancels all streams and publishes abort event', async () => {
       const encoder = createEncoder(writer);
       await encoder.publish({ type: 'text-start', id: 'txt-1' });
-      await encoder.abort('cancelled');
+      await encoder.cancel('cancelled');
 
-      const abortMsg = lastPublish(writer);
-      expect(abortMsg.name).toBe('abort');
-      expect(abortMsg.data).toBe('cancelled');
-      expect(headersOf(abortMsg)[HEADER_STATUS]).toBe('aborted');
+      const cancelMsg = lastPublish(writer);
+      expect(cancelMsg.name).toBe('abort');
+      expect(cancelMsg.data).toBe('cancelled');
+      expect(headersOf(cancelMsg)[HEADER_STATUS]).toBe('cancelled');
 
-      const abortAppend = writer.appendCalls.find((m) => headersOf(m)[HEADER_STATUS] === 'aborted');
-      expect(abortAppend).toBeDefined();
+      const cancelAppend = writer.appendCalls.find((m) => headersOf(m)[HEADER_STATUS] === 'cancelled');
+      expect(cancelAppend).toBeDefined();
     });
 
-    it('abort() is idempotent — second call is a no-op', async () => {
+    it('cancel() is idempotent — second call is a no-op', async () => {
       const encoder = createEncoder(writer);
       await encoder.publish({ type: 'text-start', id: 'txt-1' });
 
-      await encoder.abort('cancelled');
+      await encoder.cancel('cancelled');
       const publishCountAfterFirst = writer.publishCalls.length;
       const appendCountAfterFirst = writer.appendCalls.length;
 
-      await encoder.abort('cancelled');
+      await encoder.cancel('cancelled');
       expect(writer.publishCalls.length).toBe(publishCountAfterFirst);
       expect(writer.appendCalls.length).toBe(appendCountAfterFirst);
     });
 
-    it('abort() with no open streams publishes only the abort discrete event with status header', async () => {
+    it('cancel() with no open streams publishes only the abort discrete event with status header', async () => {
       const encoder = createEncoder(writer);
-      await encoder.abort('user-stop');
+      await encoder.cancel('user-stop');
 
       expect(writer.publishCalls).toHaveLength(1);
       const msg = firstPublish(writer);
       expect(msg.name).toBe('abort');
       expect(msg.data).toBe('user-stop');
-      expect(headersOf(msg)[HEADER_STATUS]).toBe('aborted');
+      expect(headersOf(msg)[HEADER_STATUS]).toBe('cancelled');
       expect(writer.appendCalls).toHaveLength(0);
     });
 

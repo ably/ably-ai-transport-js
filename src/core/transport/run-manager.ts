@@ -41,11 +41,11 @@ export interface RunManager {
   getSignal(runId: string): AbortSignal | undefined;
   /** Get the clientId that owns a run. */
   getClientId(runId: string): string | undefined;
-  /** Abort the signal for a run. */
-  abort(runId: string): void;
+  /** Fire the AbortSignal for a run to cancel any in-flight work. */
+  cancel(runId: string): void;
   /** Get all active run IDs. */
   getActiveRunIds(): string[];
-  /** Abort all active runs and clear state. */
+  /** Cancel all active runs and clear state. */
   close(): void;
 }
 
@@ -151,8 +151,8 @@ class DefaultRunManager implements RunManager {
     return this._activeRuns.get(runId)?.clientId;
   }
 
-  abort(runId: string): void {
-    this._logger?.debug('DefaultRunManager.abort();', { runId });
+  cancel(runId: string): void {
+    this._logger?.debug('DefaultRunManager.cancel();', { runId });
     this._activeRuns.get(runId)?.controller.abort();
   }
 

@@ -23,7 +23,7 @@ interface RunOpts<TEvent, TMessage = unknown> {
   history?: TMessage[];
   signal?: AbortSignal;
   onMessage?: (message: Ably.Message) => void;
-  onAbort?: (write: (event: TEvent) => Promise<void>) => void | Promise<void>;
+  onCancelled?: (write: (event: TEvent) => Promise<void>) => void | Promise<void>;
   onCancel?: (request: CancelRequest) => Promise<boolean>;
   onError?: (error: Ably.ErrorInfo) => void;
 }
@@ -54,7 +54,7 @@ export const createRunFromOpts = <TEvent, TProjection, TMessage>(
   return session.createRun(invocation, {
     signal: opts.signal,
     onMessage: opts.onMessage,
-    onAbort: opts.onAbort,
+    onCancelled: opts.onCancelled,
     onCancel: opts.onCancel,
     onError: opts.onError,
   });

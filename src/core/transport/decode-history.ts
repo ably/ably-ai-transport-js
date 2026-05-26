@@ -12,7 +12,7 @@
  * buffered internally and completed when `next()` fetches more pages.
  *
  * Only completed messages appear in `items`. A message is complete when
- * its terminal event (finish/abort/error) has been received.
+ * its terminal event (finish/cancel/error) has been received.
  *
  * Because Ably history returns newest-first while the decoder requires
  * chronological order, all collected Ably messages are re-decoded from
@@ -112,7 +112,7 @@ interface HistoryState<TEvent, TProjection, TMessage> {
   /**
    * `x-ably-codec-message-id`s with a terminal wire signal: either `x-ably-discrete`
    * on a `message.create` (discrete message) or `x-ably-status: "finished"`
-   * / `"aborted"` on any action (closed stream).
+   * / `"cancelled"` on any action (closed stream).
    */
   terminatedCodecMessageIds: Set<string>;
   /**
@@ -199,7 +199,7 @@ const decodeAll = <TEvent, TProjection, TMessage>(
       }
       // Capture headers per codec-message-id within this run. Update on later
       // messages too (e.g. closing append overrides status from
-      // "streaming" to "finished"/"aborted"). Only merge when the
+      // "streaming" to "finished"/"cancelled"). Only merge when the
       // incoming message has non-empty headers.
       if (codecMessageId) {
         const existing = run.msgHeaders.get(codecMessageId);
@@ -330,7 +330,7 @@ const decodeAllCached = <TEvent, TProjection, TMessage>(
  *   with `x-ably-stream: "true"` (the decoder establishes a tracker via
  *   create or first-contact).
  * - a "terminal" signal: `x-ably-discrete` on the create, or
- *   `x-ably-status: "finished"` / `"aborted"` on any later action.
+ *   `x-ably-status: "finished"` / `"cancelled"` on any later action.
  *
  * Why update and append count as starts: Ably history can compact a live
  * `create + append + ... + append{status:finished}` sequence into a single
@@ -384,7 +384,7 @@ const countNewCompletions = <TEvent, TProjection, TMessage>(
       headers[HEADER_STREAM] === 'true' &&
       (action === 'message.create' || action === 'message.update' || action === 'message.append');
     const status = headers[HEADER_STATUS];
-    const isTerminal = status === 'finished' || status === 'aborted';
+    const isTerminal = status === 'finished' || status === 'cancelled';
 
     if (isDiscreteCreate || hasStreamContent) state.startedCodecMessageIds.add(codecMessageId);
     if (isDiscreteCreate || isTerminal) state.terminatedCodecMessageIds.add(codecMessageId);

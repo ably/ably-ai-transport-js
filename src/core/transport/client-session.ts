@@ -438,8 +438,8 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
       const routingCodecMessageId = codecMessageId;
 
       // Always update observer headers, even when the decoder produces no events.
-      // This ensures header transitions (e.g. x-ably-status: streaming → aborted)
-      // are captured for events that the decoder suppresses (AIT-CD8: aborted
+      // This ensures header transitions (e.g. x-ably-status: streaming → cancelled)
+      // are captured for events that the decoder suppresses (AIT-CD8: cancelled
       // stream appends emit no events but still carry the updated status header).
       const runId = headers[HEADER_RUN_ID];
       if (runId) {
@@ -737,8 +737,8 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
 
   private _closeMatchingRunStreams(filter: CancelFilter): void {
     // Only close the router streams here — do NOT clear _runObservers.
-    // The observer must remain alive so that late agent events (e.g. abort,
-    // x-ably-status: aborted) arriving before run-end are still accumulated
+    // The observer must remain alive so that late agent events (e.g. cancel,
+    // x-ably-status: cancelled) arriving before run-end are still accumulated
     // into the message store. The run-end handler cleans up observers.
     for (const runId of this._getMatchingRunIds(filter)) {
       this._router.closeStream(runId);

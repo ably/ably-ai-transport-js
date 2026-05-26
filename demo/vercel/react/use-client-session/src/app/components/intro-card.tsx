@@ -72,7 +72,7 @@ const STEPS: DemoStep[] = [
         writing.
       </>
     ),
-    demonstrates: 'Cancel is published over Ably; the server aborts the stream and the client closes cleanly.',
+    demonstrates: 'Cancel is published over Ably; the server cancels the stream and the client closes cleanly.',
   },
   {
     title: 'Observability',

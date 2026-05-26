@@ -304,9 +304,9 @@ describe('Vercel UIMessageCodec integration', () => {
   });
 
   /**
-   * Scenario 4: Abort mid-stream
+   * Scenario 4: Cancel mid-stream
    */
-  it('abort mid-stream', async () => {
+  it('cancel mid-stream', async () => {
     const channelName = uniqueChannelName('abort');
     const pubClient = ablyRealtimeClient();
     const subClient = ablyRealtimeClient();
@@ -321,9 +321,9 @@ describe('Vercel UIMessageCodec integration', () => {
     const textId = 'text-abort-1';
 
     const allEvents: VercelEvent[] = [];
-    let resolveAbort: () => void;
-    const aborted = new Promise<void>((r) => {
-      resolveAbort = r;
+    let resolveCancel: () => void;
+    const cancelled = new Promise<void>((r) => {
+      resolveCancel = r;
     });
 
     await subChannel.subscribe((msg) => {
@@ -332,7 +332,7 @@ describe('Vercel UIMessageCodec integration', () => {
       projection = foldBatch(projection, events, msg);
 
       if (eventsOf(events).some((e) => e.type === 'abort')) {
-        resolveAbort();
+        resolveCancel();
       }
     });
 
@@ -348,7 +348,7 @@ describe('Vercel UIMessageCodec integration', () => {
     await encoder.publish({ type: 'abort', reason: 'user cancelled' });
     await encoder.close();
 
-    await aborted;
+    await cancelled;
 
     const types = eventTypesOf(allEvents);
     expect(types).toContain('text-start');

@@ -306,19 +306,19 @@ describe('createEncoderCore', () => {
     });
   });
 
-  // -- abortStream ---------------------------------------------------------
+  // -- cancelStream ---------------------------------------------------------
 
-  describe('abortStream', () => {
-    it('sends aborted status for the specified stream', async () => {
+  describe('cancelStream', () => {
+    it('sends cancelled status for the specified stream', async () => {
       const core = createEncoderCore(writer);
       await core.startStream('s1', streamPayload({ name: 'text' }));
-      await core.abortStream('s1');
+      await core.cancelStream('s1');
 
       expect(writer.appendCalls).toHaveLength(1);
-      expect(headersOf(first(writer.appendCalls))[HEADER_STATUS]).toBe('aborted');
+      expect(headersOf(first(writer.appendCalls))[HEADER_STATUS]).toBe('cancelled');
     });
 
-    it('only aborts the specified stream, not others', async () => {
+    it('only cancels the specified stream, not others', async () => {
       writer.nextPublishResult = { serials: ['serial-1'] };
       const core = createEncoderCore(writer);
       await core.startStream('s1', streamPayload({ name: 'text' }));
@@ -326,7 +326,7 @@ describe('createEncoderCore', () => {
       writer.nextPublishResult = { serials: ['serial-2'] };
       await core.startStream('s2', streamPayload({ name: 'reasoning' }));
 
-      await core.abortStream('s1');
+      await core.cancelStream('s1');
 
       expect(writer.appendCalls).toHaveLength(1);
       expect(writer.appendCalls[0]?.serial).toBe('serial-1');
@@ -334,20 +334,20 @@ describe('createEncoderCore', () => {
 
     it('rejects for unknown streamId', async () => {
       const core = createEncoderCore(writer);
-      await expect(core.abortStream('nonexistent')).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await expect(core.cancelStream('nonexistent')).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
 
     it('rejects after close', async () => {
       const core = createEncoderCore(writer);
       await core.close();
-      await expect(core.abortStream('s1')).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await expect(core.cancelStream('s1')).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
   });
 
-  // -- abortAllStreams -----------------------------------------------------
+  // -- cancelAllStreams -----------------------------------------------------
 
-  describe('abortAllStreams', () => {
-    it('sends aborted status for all active streams', async () => {
+  describe('cancelAllStreams', () => {
+    it('sends cancelled status for all active streams', async () => {
       writer.nextPublishResult = { serials: ['serial-1'] };
       const core = createEncoderCore(writer);
       await core.startStream('s1', streamPayload({ name: 'text' }));
@@ -355,28 +355,28 @@ describe('createEncoderCore', () => {
       writer.nextPublishResult = { serials: ['serial-2'] };
       await core.startStream('s2', streamPayload({ name: 'reasoning' }));
 
-      await core.abortAllStreams();
+      await core.cancelAllStreams();
 
       expect(writer.appendCalls).toHaveLength(2);
       for (const msg of writer.appendCalls) {
-        expect(headersOf(msg)[HEADER_STATUS]).toBe('aborted');
+        expect(headersOf(msg)[HEADER_STATUS]).toBe('cancelled');
       }
     });
 
     it('is a no-op with no active streams', async () => {
       const core = createEncoderCore(writer);
-      await core.abortAllStreams();
+      await core.cancelAllStreams();
       expect(writer.appendCalls).toHaveLength(0);
     });
 
     it('rejects after close', async () => {
       const core = createEncoderCore(writer);
       await core.close();
-      await expect(core.abortAllStreams()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await expect(core.cancelAllStreams()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
   });
 
-  // -- recovery (via closeStream / abortAllStreams) ------------------------
+  // -- recovery (via closeStream / cancelAllStreams) ------------------------
 
   describe('recovery', () => {
     it('closeStream flushes pending appends', async () => {
@@ -440,16 +440,16 @@ describe('createEncoderCore', () => {
       expect(headersOf(recovery)[HEADER_STREAM]).toBe('true');
     });
 
-    it('abortAllStreams uses aborted status in recovery', async () => {
+    it('cancelAllStreams uses cancelled status in recovery', async () => {
       writer.nextAppendResult = async () => await Promise.reject(new Error('fail'));
 
       const core = createEncoderCore(writer);
       await core.startStream('s1', streamPayload({ name: 'text' }));
       core.appendStream('s1', 'data');
 
-      await core.abortAllStreams();
+      await core.cancelAllStreams();
 
-      expect(headersOf(first(writer.updateCalls))[HEADER_STATUS]).toBe('aborted');
+      expect(headersOf(first(writer.updateCalls))[HEADER_STATUS]).toBe('cancelled');
     });
 
     it('closeStream throws when recovery also fails', async () => {
@@ -465,7 +465,7 @@ describe('createEncoderCore', () => {
       );
     });
 
-    it('abortAllStreams recovers multiple failed streams independently', async () => {
+    it('cancelAllStreams recovers multiple failed streams independently', async () => {
       writer.nextAppendResult = async () => await Promise.reject(new Error('fail'));
 
       const core = createEncoderCore(writer);
@@ -477,7 +477,7 @@ describe('createEncoderCore', () => {
       core.appendStream('stream-1', 'text-data');
       core.appendStream('stream-2', 'reason-data');
 
-      await core.abortAllStreams();
+      await core.cancelAllStreams();
 
       expect(writer.updateCalls).toHaveLength(2);
     });

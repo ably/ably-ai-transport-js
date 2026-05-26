@@ -30,7 +30,7 @@ import type { RegenerateEvent, ToolApprovalResponseEvent, UserMessageEvent, Verc
 class DefaultUIMessageEncoder implements Encoder<VercelEvent> {
   private readonly _core: EncoderCore;
   private readonly _messageId: string | undefined;
-  private _aborted = false;
+  private _cancelled = false;
 
   constructor(writer: ChannelWriter, options: EncoderCoreOptions = {}) {
     this._core = createEncoderCore(writer, options);
@@ -53,14 +53,17 @@ class DefaultUIMessageEncoder implements Encoder<VercelEvent> {
     await this._publishChunk(event, options);
   }
 
-  async abort(reason?: string): Promise<void> {
-    if (this._aborted) return;
-    this._aborted = true;
-    await this._core.abortAllStreams();
+  async cancel(reason?: string): Promise<void> {
+    if (this._cancelled) return;
+    this._cancelled = true;
+    await this._core.cancelAllStreams();
+    // Wire `name` mirrors the AI SDK chunk type (`'abort'`) so the wire
+    // trace remains readable to AI-SDK-fluent consumers. The
+    // SDK-internal vocabulary aligns on "cancel" everywhere else.
     await this._core.publishDiscrete({
       name: 'abort',
       data: reason ?? '',
-      headers: { [HEADER_STATUS]: 'aborted' },
+      headers: { [HEADER_STATUS]: 'cancelled' },
     });
   }
 
@@ -179,10 +182,12 @@ class DefaultUIMessageEncoder implements Encoder<VercelEvent> {
         return;
       }
       case 'abort': {
-        this._aborted = true;
-        await this._core.abortAllStreams(perWrite);
+        this._cancelled = true;
+        await this._core.cancelAllStreams(perWrite);
+        // Wire `name` mirrors the AI SDK chunk type so wire traces stay
+        // consistent with `start` / `finish` / `error` / ...
         await this._core.publishDiscrete(
-          { name: 'abort', data: chunk.reason ?? '', headers: { [HEADER_STATUS]: 'aborted' } },
+          { name: 'abort', data: chunk.reason ?? '', headers: { [HEADER_STATUS]: 'cancelled' } },
           perWrite,
         );
         return;

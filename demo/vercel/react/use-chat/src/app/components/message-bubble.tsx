@@ -67,7 +67,7 @@ function StatusBadge({ status }: { status: string }) {
       ? 'bg-emerald-950 text-emerald-400'
       : status === 'streaming'
         ? 'bg-amber-950 text-amber-400'
-        : status === 'aborted'
+        : status === 'cancelled'
           ? 'bg-red-950 text-red-400'
           : 'bg-zinc-900 text-zinc-500';
   return (
@@ -92,7 +92,7 @@ function bubbleClasses(isUser: boolean, status: string | undefined, userBgClass?
   if (status === 'finished') {
     return `${base} bg-zinc-900 text-zinc-300 border border-emerald-900/40`;
   }
-  if (status === 'aborted') {
+  if (status === 'cancelled') {
     return `${base} bg-zinc-900 text-zinc-300 border border-red-900/40`;
   }
   return `${base} bg-zinc-900 text-zinc-300 border border-zinc-800`;

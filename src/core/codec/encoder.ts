@@ -1,7 +1,7 @@
 /**
  * Encoder core — message append lifecycle machinery.
  *
- * Provides Ably primitives (publish, append, close, abort, flush) that
+ * Provides Ably primitives (publish, append, close, cancel, flush) that
  * domain-specific encoders wire their event types to.
  *
  * Domain encoders call `createEncoderCore(writer, options)` and use the
@@ -43,7 +43,7 @@ interface StreamState {
   streamId: string;
   accumulated: string;
   persistentHeaders: Record<string, string>;
-  aborted: boolean;
+  cancelled: boolean;
 }
 
 interface PendingAppend {
@@ -79,16 +79,16 @@ export interface EncoderCore {
   closeStream(streamId: string, payload: StreamPayload): Promise<void>;
 
   /**
-   * Abort a single in-progress stream (x-ably-status:aborted) and flush all
+   * Cancel a single in-progress stream (x-ably-status:cancelled) and flush all
    * pending appends for recovery before returning.
    */
-  abortStream(streamId: string, opts?: WriteOptions): Promise<void>;
+  cancelStream(streamId: string, opts?: WriteOptions): Promise<void>;
 
   /**
-   * Abort all in-progress streams (x-ably-status:aborted) and flush all
+   * Cancel all in-progress streams (x-ably-status:cancelled) and flush all
    * pending appends for recovery before returning.
    */
-  abortAllStreams(opts?: WriteOptions): Promise<void>;
+  cancelAllStreams(opts?: WriteOptions): Promise<void>;
 
   /** Flush + clear trackers. Idempotent. */
   close(): Promise<void>;
@@ -182,7 +182,7 @@ class DefaultEncoderCore implements EncoderCore {
       streamId,
       accumulated: payload.data,
       persistentHeaders: allHeaders,
-      aborted: false,
+      cancelled: false,
     });
 
     this._logger?.debug('DefaultEncoderCore.startStream(); stream started', {
@@ -254,23 +254,23 @@ class DefaultEncoderCore implements EncoderCore {
   }
 
   // Spec: AIT-CD5, AIT-CD5b
-  async abortStream(streamId: string, opts?: WriteOptions): Promise<void> {
+  async cancelStream(streamId: string, opts?: WriteOptions): Promise<void> {
     this._assertNotClosed();
-    this._logger?.trace('DefaultEncoderCore.abortStream();', { streamId });
+    this._logger?.trace('DefaultEncoderCore.cancelStream();', { streamId });
 
     const tracker = this._trackers.get(streamId);
     if (!tracker) {
       throw new Ably.ErrorInfo(
-        `unable to abort stream; no active stream for streamId '${streamId}'`,
+        `unable to cancel stream; no active stream for streamId '${streamId}'`,
         ErrorCode.InvalidArgument,
         400,
       );
     }
 
-    tracker.aborted = true;
+    tracker.cancelled = true;
 
     const allHeaders = this._buildClosingHeaders(tracker, {}, opts);
-    allHeaders[HEADER_STATUS] = 'aborted';
+    allHeaders[HEADER_STATUS] = 'cancelled';
 
     const msg: Ably.Message = {
       serial: tracker.serial,
@@ -284,19 +284,19 @@ class DefaultEncoderCore implements EncoderCore {
 
     await this._flushPending();
 
-    this._logger?.debug('DefaultEncoderCore.abortStream(); stream aborted', { streamId });
+    this._logger?.debug('DefaultEncoderCore.cancelStream(); stream cancelled', { streamId });
   }
 
   // Spec: AIT-CD5a
-  async abortAllStreams(opts?: WriteOptions): Promise<void> {
+  async cancelAllStreams(opts?: WriteOptions): Promise<void> {
     this._assertNotClosed();
-    this._logger?.trace('DefaultEncoderCore.abortAllStreams();', { streamCount: this._trackers.size });
+    this._logger?.trace('DefaultEncoderCore.cancelAllStreams();', { streamCount: this._trackers.size });
 
     for (const tracker of this._trackers.values()) {
-      tracker.aborted = true;
+      tracker.cancelled = true;
 
       const allHeaders = this._buildClosingHeaders(tracker, {}, opts);
-      allHeaders[HEADER_STATUS] = 'aborted';
+      allHeaders[HEADER_STATUS] = 'cancelled';
 
       const msg: Ably.Message = {
         serial: tracker.serial,
@@ -360,7 +360,7 @@ class DefaultEncoderCore implements EncoderCore {
       const tracker = this._trackers.get(streamId);
       if (!tracker) continue;
 
-      const recoveryStatus = tracker.aborted ? 'aborted' : 'finished';
+      const recoveryStatus = tracker.cancelled ? 'cancelled' : 'finished';
       const msg: Ably.Message = {
         serial: tracker.serial,
         data: tracker.accumulated,

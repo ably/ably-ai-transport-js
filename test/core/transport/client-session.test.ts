@@ -239,7 +239,7 @@ const createMockEncoder = (): MockEncoder => {
       return Promise.resolve();
     }),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-    abort: vi.fn(() => Promise.resolve()),
+    cancel: vi.fn(() => Promise.resolve()),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
     close: vi.fn(() => Promise.resolve()),
   };

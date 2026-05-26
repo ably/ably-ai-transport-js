@@ -17,7 +17,6 @@ import * as Ably from 'ably';
 
 import {
   EVENT_CANCEL,
-  EVENT_ERROR,
   EVENT_RUN_END,
   EVENT_RUN_START,
   HEADER_CANCEL_ALL,
@@ -25,6 +24,8 @@ import {
   HEADER_CANCEL_INVOCATION_ID,
   HEADER_CANCEL_OWN,
   HEADER_CANCEL_RUN_ID,
+  HEADER_ERROR_CODE,
+  HEADER_ERROR_MESSAGE,
   HEADER_FORK_OF,
   HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
@@ -310,41 +311,6 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     if (this._state === ClientSessionState.CLOSED) return;
 
     try {
-      // --- Agent-side error event ---
-      // Agent emits `ai-error` to surface failures that occur before any
-      // assistant message can be streamed (most importantly, prompt-not-found
-      // after the rewind + live wait lapses). The error carries
-      // `x-ably-run-id` and `x-ably-invocation-id` so we can match it against
-      // the pending run-start tracker and the active stream.
-      if (ablyMessage.name === EVENT_ERROR) {
-        const headers = getHeaders(ablyMessage);
-        const runId = headers[HEADER_RUN_ID];
-        const invocationId = headers[HEADER_INVOCATION_ID];
-        const payload =
-          (ablyMessage.data as { code?: number; statusCode?: number; message?: string } | undefined) ?? {};
-        const code = typeof payload.code === 'number' ? payload.code : ErrorCode.SessionSubscriptionError;
-        const statusCode = typeof payload.statusCode === 'number' ? payload.statusCode : 500;
-        const message = typeof payload.message === 'string' ? payload.message : 'agent reported an error';
-        const errInfo = new Ably.ErrorInfo(message, code, statusCode);
-        if (invocationId) {
-          const pending = this._pendingRunStarts.get(invocationId);
-          if (pending) {
-            clearTimeout(pending.timer);
-            this._pendingRunStarts.delete(invocationId);
-            pending.reject(errInfo);
-          }
-        }
-        if (runId) this._router.errorStream(runId, errInfo);
-        this._logger.error('ClientSession._handleMessage(); agent error received', {
-          runId,
-          invocationId,
-          code,
-        });
-        this._emitter.emit('error', errInfo);
-        this._tree.emitAblyMessage(ablyMessage);
-        return;
-      }
-
       // Spec: AIT-CT16a
       // --- Run lifecycle events from the agent ---
       if (ablyMessage.name === EVENT_RUN_START) {
@@ -385,6 +351,30 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
         const invocationId = headers[HEADER_INVOCATION_ID];
         // CAST: agent always writes a valid RunEndReason; default to 'complete' for robustness
         const reason = (headers[HEADER_RUN_REASON] ?? 'complete') as RunEndReason;
+
+        // When reason is 'error' the agent surfaces a mid-run failure
+        // via the x-ably-error-code / x-ably-error-message headers.
+        // Reify the error, route it to the active stream, and emit the
+        // session error event before falling through to the regular
+        // run-end teardown. The agent only publishes `run-end` after it
+        // has published `run-start`, so no pending-run-start tracker is
+        // outstanding at this point.
+        if (reason === 'error') {
+          const codeRaw = headers[HEADER_ERROR_CODE];
+          const parsedCode = codeRaw === undefined ? Number.NaN : Number(codeRaw);
+          const code = Number.isFinite(parsedCode) ? parsedCode : ErrorCode.SessionSubscriptionError;
+          const message = headers[HEADER_ERROR_MESSAGE] ?? 'agent reported an error';
+          const statusCode = code >= 10000 && code < 60000 ? Math.floor(code / 100) : 500;
+          const errInfo = new Ably.ErrorInfo(message, code, statusCode);
+          if (runId) this._router.errorStream(runId, errInfo);
+          this._logger.error('ClientSession._handleMessage(); agent error received', {
+            runId,
+            invocationId,
+            code,
+          });
+          this._emitter.emit('error', errInfo);
+        }
+
         if (runId) {
           // Defensive run-end gating: when a run has multiple invocations
           // (e.g. developer manually retried under the same runId, OR the

@@ -16,7 +16,6 @@ import * as Ably from 'ably';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  EVENT_ERROR,
   EVENT_RUN_END,
   EVENT_RUN_START,
   HEADER_CANCEL_ALL,
@@ -24,6 +23,8 @@ import {
   HEADER_CANCEL_INVOCATION_ID,
   HEADER_CANCEL_OWN,
   HEADER_CANCEL_RUN_ID,
+  HEADER_ERROR_CODE,
+  HEADER_ERROR_MESSAGE,
   HEADER_FORK_OF,
   HEADER_INVOCATION_ID,
   HEADER_MSG_ID,
@@ -1339,7 +1340,11 @@ describe('ClientSession', () => {
       expect(fix.codec.fold).not.toHaveBeenCalled();
     });
 
-    it('surfaces agent error events on session error and rejects pending send', async () => {
+    it('rejects pending send when the HTTP POST returns non-OK', async () => {
+      // Agent-side failures that happen before `ai-run-start` is published
+      // (e.g. prompt-lookup timeout) surface as a non-2xx HTTP response. The
+      // client's HTTP handler must fail the pending-run-start tracker so the
+      // awaiting `send()` rejects instead of waiting out `runStartDeadlineMs`.
       const ch = createMockChannel();
       const codec = createMockCodec();
       const s = createClientSession<TestEvent, TestProjection, TestMessage>({
@@ -1348,34 +1353,18 @@ describe('ClientSession', () => {
         codec,
         clientId: 'client-1',
         api: '/api/chat',
-        fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
+        fetch: createMockFetch(504).fn as unknown as typeof globalThis.fetch,
         runStartDeadlineMs: 5000,
       });
       await s.connect();
       const errors: Ably.ErrorInfo[] = [];
       s.on('error', (e) => errors.push(e));
 
-      const sendPromise = s.view.sendEvent({ type: 'user-message', text: 'hi' });
-      // Wait for a publish to land so we know the invocation has been registered
-      while (codec.lastEncoder()?.publishCalls.length === 0) {
-        await Promise.resolve();
-      }
-      const opts = codec.lastEncoder()?.publishCalls[0]?.opts;
-      const invocationId = opts?.extras?.headers?.[HEADER_INVOCATION_ID] ?? '';
-      const runId = opts?.extras?.headers?.[HEADER_RUN_ID] ?? '';
-
-      simulateMessage(
-        ch,
-        ablyMsg(
-          EVENT_ERROR,
-          { [HEADER_RUN_ID]: runId, [HEADER_INVOCATION_ID]: invocationId },
-          { code: ErrorCode.PromptNotFound, statusCode: 504, message: 'lookup failed' },
-        ),
+      await expect(s.view.sendEvent({ type: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
+        ErrorCode.SessionSendFailed,
       );
-
-      await expect(sendPromise).rejects.toBeErrorInfoWithCode(ErrorCode.PromptNotFound);
       // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison -- compare against enum value
-      expect(errors.some((e) => e.code === ErrorCode.PromptNotFound)).toBe(true);
+      expect(errors.some((e) => e.code === ErrorCode.SessionSendFailed)).toBe(true);
       await s.close();
     });
 
@@ -1718,10 +1707,25 @@ describe('ClientSession', () => {
         calls.push('b');
       });
 
-      // Simulate a channel-level error event
+      // Simulate a mid-run agent error: run-start followed by run-end with
+      // reason `error`. The error-end fires the session error event, which
+      // is what the handler-isolation assertion observes.
       simulateMessage(
         fix.channel,
-        ablyMsg(EVENT_ERROR, {}, { code: ErrorCode.SessionSubscriptionError, statusCode: 500, message: 'oops' }),
+        ablyMsg(EVENT_RUN_START, {
+          [HEADER_RUN_ID]: 'run-error',
+          [HEADER_RUN_CLIENT_ID]: 'other',
+        }),
+      );
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: 'run-error',
+          [HEADER_RUN_CLIENT_ID]: 'other',
+          [HEADER_RUN_REASON]: 'error',
+          [HEADER_ERROR_CODE]: String(ErrorCode.SessionSubscriptionError),
+          [HEADER_ERROR_MESSAGE]: 'oops',
+        }),
       );
       expect(calls).toEqual(['a', 'b']);
     });

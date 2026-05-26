@@ -50,7 +50,7 @@ export interface DecoderCoreHooks<TEvent> {
 
   /**
    * Build domain events emitted when a stream finishes (x-ably-status:finished).
-   * Not called for aborted streams. The closing headers may differ from
+   * Not called for cancelled streams. The closing headers may differ from
    * tracker.headers if the closing append carried updated headers.
    */
   buildEndEvents(tracker: StreamTrackerState, closingHeaders: Record<string, string>): TEvent[];
@@ -225,9 +225,9 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
       tracker.closed = true;
       outputs.push(...this._hooks.buildEndEvents(tracker, h));
       this._logger?.debug('DefaultDecoderCore._decodeAppend(); stream finished', { streamId: tracker.streamId });
-    } else if (status === 'aborted' && !tracker.closed) {
+    } else if (status === 'cancelled' && !tracker.closed) {
       tracker.closed = true;
-      this._logger?.debug('DefaultDecoderCore._decodeAppend(); stream aborted', { streamId: tracker.streamId });
+      this._logger?.debug('DefaultDecoderCore._decodeAppend(); stream cancelled', { streamId: tracker.streamId });
     }
 
     return outputs;
@@ -269,7 +269,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
       if (status === 'finished' && !tracker.closed) {
         tracker.closed = true;
         outputs.push(...this._hooks.buildEndEvents(tracker, h));
-      } else if (status === 'aborted' && !tracker.closed) {
+      } else if (status === 'cancelled' && !tracker.closed) {
         tracker.closed = true;
       }
 
@@ -312,7 +312,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
       streamId,
       accumulated: data,
       headers: { ...h },
-      closed: status === 'finished' || status === 'aborted',
+      closed: status === 'finished' || status === 'cancelled',
     };
     this._serialState.set(serial, newTracker);
 

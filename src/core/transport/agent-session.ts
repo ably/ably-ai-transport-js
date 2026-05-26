@@ -73,7 +73,7 @@ import type {
  * @param opts.channel - The Ably channel to read history from.
  * @param opts.codec - Codec used to decode and fold events.
  * @param opts.runId - Run identifier whose events should be folded.
- * @param opts.signal - AbortSignal that cancels the wait when the run aborts.
+ * @param opts.signal - AbortSignal that cancels the wait when the run is cancelled.
  * @param opts.logger - Optional logger for diagnostic output.
  * @returns The projection produced by folding all run events in serial order.
  */
@@ -87,7 +87,11 @@ const loadRunProjection = async <TEvent, TProjection, TMessage>(opts: {
   const { channel, codec, runId, signal, logger } = opts;
 
   if (signal.aborted) {
-    throw new Ably.ErrorInfo(`unable to load run projection; run ${runId} was aborted`, ErrorCode.InvalidArgument, 400);
+    throw new Ably.ErrorInfo(
+      `unable to load run projection; run ${runId} was cancelled`,
+      ErrorCode.InvalidArgument,
+      400,
+    );
   }
 
   await channel.attach();
@@ -169,7 +173,7 @@ const loadRunProjection = async <TEvent, TProjection, TMessage>(opts: {
  * @param opts.runId - Run identifier (used for logging and error messages).
  * @param opts.expectedEventIds - Prompt-ids the lookup must observe before resolving.
  * @param opts.timeoutMs - Maximum total time to wait for all event-id arrivals.
- * @param opts.signal - AbortSignal that cancels the wait when the run aborts.
+ * @param opts.signal - AbortSignal that cancels the wait when the run is cancelled.
  * @param opts.logger - Optional logger for diagnostic output.
  * @returns The MessageNodes for arriving user-message events (sorted by Ably
  *   serial — empty when every prompt was a tool-resolution wire message that
@@ -230,7 +234,7 @@ const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
     const seenSerials = new Set<string>();
     const collected: MessageNode<TMessage>[] = [];
     let firstHeaders: Record<string, string> | undefined;
-    // Forward-declared so that cleanup() and onAbort() can reference them
+    // Forward-declared so that cleanup() and onCancelled() can reference them
     // before they are assigned. cleanup may run synchronously inside
     // `register(...)` (when buffered prompts drain on registration) before
     // `unregister`/`timer` have been assigned — the no-op fallback for
@@ -244,18 +248,18 @@ const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
     const cleanup = (): void => {
       unregister();
       if (timer !== undefined) clearTimeout(timer);
-      signal.removeEventListener('abort', onAbort);
+      signal.removeEventListener('abort', onCancelled);
     };
-    const onAbort = (): void => {
+    const onCancelled = (): void => {
       if (settled) return;
       settled = true;
       cleanup();
       reject(
-        new Ably.ErrorInfo(`unable to look up user prompt; run ${runId} was aborted`, ErrorCode.InvalidArgument, 400),
+        new Ably.ErrorInfo(`unable to look up user prompt; run ${runId} was cancelled`, ErrorCode.InvalidArgument, 400),
       );
     };
-    signal.addEventListener('abort', onAbort, { once: true });
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- onAbort may have settled the promise synchronously above when the signal was already aborted.
+    signal.addEventListener('abort', onCancelled, { once: true });
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- onCancelled may have settled the promise synchronously above when the signal was already aborted.
     if (settled) return;
     const matchedEventIds = new Set<string>();
     unregister = register((m) => {
@@ -463,7 +467,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
     // Listen for channel state changes that break message continuity. The
     // session only consumes cancel messages from the channel, so losing one
     // is survivable — but the developer needs to know so they can decide
-    // whether to abort in-flight work. _hasAttachedOnce is seeded from the
+    // whether to cancel in-flight work. _hasAttachedOnce is seeded from the
     // channel's current state so pre-attached channels are handled correctly;
     // it distinguishes the initial attach from a genuine discontinuity.
     this._hasAttachedOnce = this._channel.state === 'attached';
@@ -742,7 +746,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
           }
         }
         reg.controller.abort();
-        this._logger?.debug('DefaultAgentSession._handleCancelMessage(); run aborted', { runId });
+        this._logger?.debug('DefaultAgentSession._handleCancelMessage(); run cancelled', { runId });
       } catch (error) {
         // A throwing onCancel handler must not prevent other runs from being cancelled.
         const errInfo = new Ably.ErrorInfo(
@@ -828,7 +832,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
       // responses and client tool outputs) carries `x-ably-event-id`; the
       // lookup waits for every promised id to arrive before letting the
       // run start LLM work. Server-side lifecycle messages (run-start,
-      // run-end, cancel, abort, error) never stamp `x-ably-event-id`, so
+      // run-end, cancel, error) never stamp `x-ably-event-id`, so
       // they're naturally excluded.
       const headers = getHeaders(msg);
       const invocationId = headers[HEADER_INVOCATION_ID];
@@ -843,7 +847,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
           // loudly so client-side bugs surface, then drop the message —
           // no listener will ever register for this completed lookup,
           // so buffering would just hold a slot until FIFO eviction.
-          // The run is not aborted.
+          // The run is not cancelled.
           const completedExpectedCount = this._completedLookupInvocationIds.get(invocationId);
           if (completedExpectedCount !== undefined) {
             this._logger?.warn(
@@ -924,17 +928,17 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
     const runId = invocation.runId;
     const invocationId = invocation.invocationId;
     const promptLookupTimeoutMs = this._promptLookupTimeoutMs;
-    const { onMessage, onAbort, onCancel, onError: runOnError, signal: externalSignal } = runtime;
+    const { onMessage, onCancelled, onCancel, onError: runOnError, signal: externalSignal } = runtime;
 
     const controller = new AbortController();
     let state = RunState.INITIALIZED;
 
     // Compose the internal controller signal with the external signal (e.g.
     // req.signal) so platform-level cancellation (request cancellation, function
-    // timeout) aborts the run through the same path as Ably cancel messages.
+    // timeout) cancels the run through the same path as Ably cancel messages.
     const signal = externalSignal ? AbortSignal.any([controller.signal, externalSignal]) : controller.signal;
 
-    // Spec: AIT-ST3a — register immediately so early cancels can fire the abort signal.
+    // Spec: AIT-ST3a — register immediately so early cancels can fire the AbortSignal.
     // clientId is undefined until prompt-lookup resolves; cancel filters that
     // need it are buffered in the meantime.
     const registration: RegisteredRun = {
@@ -1349,7 +1353,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
           };
         };
 
-        const result = await pipeStream(stream, encoder, signal, onAbort, composed, logger);
+        const result = await pipeStream(stream, encoder, signal, onCancelled, composed, logger);
 
         if (result.error) {
           const errInfo = new Ably.ErrorInfo(

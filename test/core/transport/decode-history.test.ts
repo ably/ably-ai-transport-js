@@ -201,7 +201,7 @@ const noopEncoderFactory = (): Encoder<TestEvent> => ({
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
   publish: () => Promise.resolve(),
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-  abort: () => Promise.resolve(),
+  cancel: () => Promise.resolve(),
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
   close: () => Promise.resolve(),
 });
@@ -377,28 +377,28 @@ describe('decodeHistory', () => {
       expect(page.items.map((i) => i.message.id)).toEqual(['u1', 'u2']);
     });
 
-    it('treats x-ably-status:aborted as terminal for counting', async () => {
-      // An aborted-stream message satisfies the wire-level counter the same
-      // way as finished: append + stream=true + status=aborted = complete.
+    it('treats x-ably-status:cancelled as terminal for counting', async () => {
+      // A cancelled-stream message satisfies the wire-level counter the same
+      // way as finished: append + stream=true + status=cancelled = complete.
       const serial = nextSerial();
       const baseHeaders = {
         [HEADER_RUN_ID]: 'T1',
-        [HEADER_CODEC_MESSAGE_ID]: 'asst-abort',
+        [HEADER_CODEC_MESSAGE_ID]: 'asst-cancel',
         [HEADER_STREAM]: 'true',
       };
-      const aborted = withEvents(
+      const cancelled = withEvents(
         ablyMsg({
           action: 'message.append',
-          headers: { ...baseHeaders, [HEADER_STATUS]: 'aborted' },
+          headers: { ...baseHeaders, [HEADER_STATUS]: 'cancelled' },
           serial,
         }),
         [{ type: 'finish' }],
       );
 
-      const channel = createMockChannel([[aborted]]);
+      const channel = createMockChannel([[cancelled]]);
       const codec = createMockCodec();
       const page = await decodeHistory(channel, codec, { limit: 1 }, silentLogger);
-      // The aborted message is counted complete and returned in the page.
+      // The cancelled message is counted complete and returned in the page.
       expect(page.items).toHaveLength(1);
     });
   });

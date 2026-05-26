@@ -16,7 +16,7 @@ interface MockEncoder extends Encoder<TestEvent> {
   appendedEvents: TestEvent[];
   appendedOpts: (WriteOptions | undefined)[];
   closed: boolean;
-  abortedReason: string | undefined;
+  cancelledReason: string | undefined;
 }
 
 const createMockEncoder = (): MockEncoder => {
@@ -24,15 +24,15 @@ const createMockEncoder = (): MockEncoder => {
     appendedEvents: [],
     appendedOpts: [],
     closed: false,
-    abortedReason: undefined,
+    cancelledReason: undefined,
     // eslint-disable-next-line @typescript-eslint/require-await -- mock
     publish: vi.fn(async (event: TestEvent, opts?: WriteOptions) => {
       mock.appendedEvents.push(event);
       mock.appendedOpts.push(opts);
     }),
     // eslint-disable-next-line @typescript-eslint/require-await -- mock
-    abort: vi.fn(async (reason?: string) => {
-      mock.abortedReason = reason ?? '';
+    cancel: vi.fn(async (reason?: string) => {
+      mock.cancelledReason = reason ?? '';
     }),
     // eslint-disable-next-line @typescript-eslint/require-await -- mock
     close: vi.fn(async () => {
@@ -142,10 +142,10 @@ describe('pipeStream', () => {
       expect(result.reason).toBe('cancelled');
     });
 
-    it('calls onAbort and writes events through the write function', async () => {
+    it('calls onCancelled and writes events through the write function', async () => {
       const controller = new AbortController();
 
-      const onAbort = vi.fn(async (write: (event: TestEvent) => Promise<void>) => {
+      const onCancelled = vi.fn(async (write: (event: TestEvent) => Promise<void>) => {
         await write({ type: 'custom-abort' });
       });
 
@@ -157,13 +157,13 @@ describe('pipeStream', () => {
       // Abort immediately
       controller.abort();
 
-      await pipeStream(stream, encoder, controller.signal, onAbort);
+      await pipeStream(stream, encoder, controller.signal, onCancelled);
 
-      expect(onAbort).toHaveBeenCalled();
+      expect(onCancelled).toHaveBeenCalled();
       expect(encoder.appendedEvents).toContainEqual({ type: 'custom-abort' });
     });
 
-    it('calls encoder.abort() with reason when cancelled', async () => {
+    it('calls encoder.cancel() with reason when cancelled', async () => {
       const controller = new AbortController();
       controller.abort();
 
@@ -176,22 +176,22 @@ describe('pipeStream', () => {
       await pipeStream(stream, encoder, controller.signal);
 
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
-      expect(encoder.abort).toHaveBeenCalledWith('cancelled');
-      expect(encoder.abortedReason).toBe('cancelled');
+      expect(encoder.cancel).toHaveBeenCalledWith('cancelled');
+      expect(encoder.cancelledReason).toBe('cancelled');
     });
 
-    it('calls encoder.abort() after onAbort callback', async () => {
+    it('calls encoder.cancel() after onCancelled callback', async () => {
       const controller = new AbortController();
       controller.abort();
 
       const callOrder: string[] = [];
       // eslint-disable-next-line @typescript-eslint/require-await -- mock
-      const onAbort = vi.fn(async () => {
-        callOrder.push('onAbort');
+      const onCancelled = vi.fn(async () => {
+        callOrder.push('onCancelled');
       });
       // eslint-disable-next-line @typescript-eslint/unbound-method, @typescript-eslint/require-await -- vi mock
-      vi.mocked(encoder.abort).mockImplementation(async () => {
-        callOrder.push('encoder.abort');
+      vi.mocked(encoder.cancel).mockImplementation(async () => {
+        callOrder.push('encoder.cancel');
       });
 
       const stream = new ReadableStream<TestEvent>({
@@ -200,9 +200,9 @@ describe('pipeStream', () => {
         },
       });
 
-      await pipeStream(stream, encoder, controller.signal, onAbort);
+      await pipeStream(stream, encoder, controller.signal, onCancelled);
 
-      expect(callOrder).toEqual(['onAbort', 'encoder.abort']);
+      expect(callOrder).toEqual(['onCancelled', 'encoder.cancel']);
     });
 
     it('returns cancelled when signal is already aborted at start', async () => {

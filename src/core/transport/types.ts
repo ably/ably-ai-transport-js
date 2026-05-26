@@ -47,7 +47,7 @@ export interface CancelFilter {
 /**
  * Passed to a run's `onCancel` hook for authorization decisions.
  * The hook inspects the incoming cancel message and decides whether to
- * allow each matched run to be aborted.
+ * allow each matched run to be cancelled.
  */
 export interface CancelRequest {
   /** The raw Ably message that carried the cancel signal. */
@@ -212,8 +212,8 @@ export interface StreamResult {
 /** Per-run runtime hooks, signal, and overrides supplied at `createRun()` time. */
 export interface RunRuntime<TEvent> {
   /**
-   * An external abort signal (typically the HTTP request's `req.signal`) that,
-   * when fired, aborts this run. This allows platform-level cancellation —
+   * An external AbortSignal (typically the HTTP request's `req.signal`) that,
+   * when fired, cancels this run. This allows platform-level cancellation —
    * request cancellation, serverless function timeout — to stop LLM generation
    * and stream piping gracefully.
    */
@@ -226,14 +226,14 @@ export interface RunRuntime<TEvent> {
   onMessage?: (message: Ably.Message) => void;
 
   /**
-   * Called when the run's stream is aborted (by cancel or server).
-   * Receives a write function to publish final events before the abort finalises.
+   * Called when the run's stream is cancelled (by client cancel or server).
+   * Receives a write function to publish final events before the cancellation finalises.
    */
-  onAbort?: (write: (event: TEvent) => Promise<void>) => void | Promise<void>;
+  onCancelled?: (write: (event: TEvent) => Promise<void>) => void | Promise<void>;
 
   /**
    * Called when a cancel message arrives matching this run.
-   * Return true to allow cancellation (fires abortSignal, stream aborts).
+   * Return true to allow cancellation (fires `abortSignal`, stream cancels).
    * Return false to reject (cancel ignored, stream continues).
    * If not provided, all cancels are accepted.
    */
@@ -280,7 +280,7 @@ export interface Run<TEvent, TProjection, TMessage> {
   /** The run's unique identifier. */
   readonly runId: string;
 
-  /** Abort signal scoped to this run. Fires when a cancel event arrives for this runId. */
+  /** AbortSignal scoped to this run. Fires when a cancel event arrives for this runId. */
   readonly abortSignal: AbortSignal;
 
   /** Read-only view of the conversation messages associated with this run. */
@@ -369,15 +369,15 @@ export interface AgentSession<TEvent, TProjection, TMessage> {
   /**
    * Create a new run from an invocation. Synchronous — no channel activity
    * until start() is called. The run is registered for cancel routing
-   * immediately so that early cancels fire the abort signal.
+   * immediately so that early cancels fire the AbortSignal.
    * @param invocation - The {@link Invocation} carrying run identity and
    *   conversation messages.
-   * @param runtime - Optional runtime hooks and external abort signal
+   * @param runtime - Optional runtime hooks and external AbortSignal
    *   (e.g. the HTTP request's `req.signal`).
    */
   createRun(invocation: Invocation<TMessage>, runtime?: RunRuntime<TEvent>): Run<TEvent, TProjection, TMessage>;
 
-  /** Unsubscribe from cancel messages, abort all active runs, and clean up. */
+  /** Unsubscribe from cancel messages, cancel all active runs, and clean up. */
   close(): void;
 }
 

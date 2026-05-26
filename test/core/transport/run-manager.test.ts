@@ -158,18 +158,18 @@ describe('RunManager', () => {
     });
   });
 
-  describe('abort', () => {
-    it('fires the abort signal for the run', async () => {
+  describe('cancel', () => {
+    it('fires the AbortSignal for the run', async () => {
       const signal = await manager.startRun('run-1');
       expect(signal.aborted).toBe(false);
 
-      manager.abort('run-1');
+      manager.cancel('run-1');
       expect(signal.aborted).toBe(true);
     });
 
     it('does nothing for unknown run', () => {
       // Should not throw
-      manager.abort('nope');
+      manager.cancel('nope');
     });
   });
 
@@ -186,7 +186,7 @@ describe('RunManager', () => {
   });
 
   describe('close', () => {
-    it('aborts all active runs', async () => {
+    it('cancels all active runs', async () => {
       const signal1 = await manager.startRun('run-1');
       const signal2 = await manager.startRun('run-2');
 

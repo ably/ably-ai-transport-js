@@ -179,7 +179,7 @@ const createMockEncoder = (failWith?: Error): MockEncoder => {
       return Promise.resolve();
     }),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-    abort: vi.fn(() => Promise.resolve()),
+    cancel: vi.fn(() => Promise.resolve()),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
     close: vi.fn(() => Promise.resolve()),
   };
@@ -1008,7 +1008,7 @@ describe('AgentSession', () => {
   // -------------------------------------------------------------------------
 
   describe('cancel routing', () => {
-    it('aborts run when cancel by runId arrives', async () => {
+    it('cancels run when cancel by runId arrives', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
 
@@ -1018,7 +1018,7 @@ describe('AgentSession', () => {
       expect(run.abortSignal.aborted).toBe(true);
     });
 
-    it('aborts own runs when cancel-own arrives from the same clientId', async () => {
+    it('cancels own runs when cancel-own arrives from the same clientId', async () => {
       // Per-run clientId is resolved from the prompt-lookup result —
       // deliver a user-prompt carrying `x-ably-run-client-id` to populate it.
       // Use a functional-decoder session so the lookup populates viewMessages
@@ -1044,7 +1044,7 @@ describe('AgentSession', () => {
       s.close();
     });
 
-    it('aborts runs by clientId', async () => {
+    it('cancels runs by clientId', async () => {
       const ch = createMockChannel();
       const s = createAgentSession({
         client: createMockClient(ch),
@@ -1065,7 +1065,7 @@ describe('AgentSession', () => {
       s.close();
     });
 
-    it('aborts all runs when cancel-all arrives', async () => {
+    it('cancels all runs when cancel-all arrives', async () => {
       const run1 = createRunFromOpts(session, { runId: 'run-1' });
       const run2 = createRunFromOpts(session, { runId: 'run-2' });
       await run1.start();
@@ -1078,7 +1078,7 @@ describe('AgentSession', () => {
       expect(run2.abortSignal.aborted).toBe(true);
     });
 
-    it('onCancel returning false prevents abort', async () => {
+    it('onCancel returning false prevents cancel', async () => {
       const run = createRunFromOpts(session, {
         runId: 'run-1',
         // eslint-disable-next-line @typescript-eslint/require-await -- mock
@@ -1128,7 +1128,7 @@ describe('AgentSession', () => {
   // -------------------------------------------------------------------------
 
   describe('external signal', () => {
-    it('aborts the run when the external signal fires', async () => {
+    it('cancels the run when the external signal fires', async () => {
       const ctl = new AbortController();
       const run = createRunFromOpts(session, { runId: 'run-1', signal: ctl.signal });
       await run.start();
@@ -1211,7 +1211,7 @@ describe('AgentSession', () => {
       expect(onError).not.toHaveBeenCalled();
     });
 
-    it('onCancel throws → onError fires and other runs still get aborted', async () => {
+    it('onCancel throws → onError fires and other runs still get cancelled', async () => {
       const onError = vi.fn();
       const run1 = createRunFromOpts(session, {
         runId: 'run-1',
@@ -1238,7 +1238,7 @@ describe('AgentSession', () => {
   // -------------------------------------------------------------------------
 
   describe('close', () => {
-    it('aborts all registered runs', async () => {
+    it('cancels all registered runs', async () => {
       const run1 = createRunFromOpts(session, { runId: 'run-1' });
       const run2 = createRunFromOpts(session, { runId: 'run-2' });
       await run1.start();
@@ -1530,7 +1530,7 @@ describe('AgentSession', () => {
       s.close();
     });
 
-    it('aborts the lookup when the run signal aborts mid-collection', async () => {
+    it('cancels the lookup when the run signal aborts mid-collection', async () => {
       const ch = createMockChannel();
       const c = codecWithFunctionalDecoder();
       const s = createAgentSession({

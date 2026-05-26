@@ -136,7 +136,7 @@ describe('createDecoderCore', () => {
       expect(outputs).toEqual([{ type: 'end', streamId: 'id-1' }]);
     });
 
-    it('does not emit end after abort (closed flag prevents duplicate)', () => {
+    it('does not emit end after cancel (closed flag prevents duplicate)', () => {
       const decoder = createDecoderCore(hooks);
       decoder.decode(
         withHeaders(
@@ -145,7 +145,9 @@ describe('createDecoderCore', () => {
         ),
       );
 
-      decoder.decode(withHeaders({ action: 'message.append', serial: 's1', data: '' }, { [HEADER_STATUS]: 'aborted' }));
+      decoder.decode(
+        withHeaders({ action: 'message.append', serial: 's1', data: '' }, { [HEADER_STATUS]: 'cancelled' }),
+      );
 
       const outputs = decoder.decode(
         withHeaders({ action: 'message.append', serial: 's1', data: '' }, { [HEADER_STATUS]: 'finished' }),
@@ -246,12 +248,12 @@ describe('createDecoderCore', () => {
       expect(outputs[2]?.type).toBe('end');
     });
 
-    it('emits only start for first-contact aborted stream (no end events)', () => {
+    it('emits only start for first-contact cancelled stream (no end events)', () => {
       const decoder = createDecoderCore(hooks);
       const outputs = decoder.decode(
         withHeaders(
           { action: 'message.update', serial: 's1', name: 'text', data: '' },
-          { [HEADER_STREAM]: 'true', [HEADER_STATUS]: 'aborted', [HEADER_STREAM_ID]: 'id-1' },
+          { [HEADER_STREAM]: 'true', [HEADER_STATUS]: 'cancelled', [HEADER_STREAM_ID]: 'id-1' },
         ),
       );
 
@@ -478,7 +480,7 @@ describe('createDecoderCore', () => {
       expect(end).toEqual([{ type: 'end', streamId: 'id-1' }]);
     });
 
-    it('handles create -> abort (no end events)', () => {
+    it('handles create -> cancel (no end events)', () => {
       const decoder = createDecoderCore(hooks);
 
       decoder.decode(
@@ -488,11 +490,11 @@ describe('createDecoderCore', () => {
         ),
       );
 
-      const abort = decoder.decode(
-        withHeaders({ action: 'message.append', serial: 's1', data: '' }, { [HEADER_STATUS]: 'aborted' }),
+      const cancel = decoder.decode(
+        withHeaders({ action: 'message.append', serial: 's1', data: '' }, { [HEADER_STATUS]: 'cancelled' }),
       );
 
-      expect(abort).toHaveLength(0);
+      expect(cancel).toHaveLength(0);
     });
   });
 });

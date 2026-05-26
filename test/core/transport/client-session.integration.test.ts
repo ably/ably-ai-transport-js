@@ -395,7 +395,7 @@ describe('ClientSession integration', () => {
     expect(runEvents.some((e) => e.type === EVENT_RUN_END && e.runId === runId)).toBe(true);
   });
 
-  it('client cancel aborts the server stream', async () => {
+  it('client cancel cancels the server stream', async () => {
     const channelName = uniqueChannelName('ct-cancel');
     const serverClient = ablyRealtimeClient();
     const clientClient = ablyRealtimeClient();
@@ -838,12 +838,12 @@ describe('ClientSession integration', () => {
 
   /**
    * Scenario: with two concurrent agent runs in flight under different
-   * (runId, invocationId) pairs, `cancel({ invocationId })` must abort only
+   * (runId, invocationId) pairs, `cancel({ invocationId })` must cancel only
    * the targeted run and leave the sibling untouched. The cancel publish on
    * the channel must carry `x-ably-cancel-invocation-id` and no other cancel
    * filter header.
    */
-  it('cancel({ invocationId }) aborts only the targeted invocation', async () => {
+  it('cancel({ invocationId }) cancels only the targeted invocation', async () => {
     const channelName = uniqueChannelName('ct-cancel-by-invocation');
     const serverClient = ablyRealtimeClient();
     const clientClient = ablyRealtimeClient();
@@ -923,7 +923,7 @@ describe('ClientSession integration', () => {
     // Cancel only the target invocation.
     await clientSession.cancel({ invocationId: targetInvocationId });
 
-    // The target run aborts; the surviving run does not.
+    // The target run cancels; the surviving run does not.
     const targetResult = await targetPipe;
     expect(targetResult.reason).toBe('cancelled');
     expect(targetRun.abortSignal.aborted).toBe(true);

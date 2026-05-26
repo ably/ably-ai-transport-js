@@ -61,12 +61,14 @@ Each run gets its own `AbortController`. If `opts.signal` is provided (typically
 
 Publishes `ai-run-start` to the channel via the [RunManager](transport-components.md#runmanager). Must be called before `addMessages()` or `pipe()`.
 
+The lifecycle event carries `x-ably-input-client-id` — the Ably-level publisher `clientId` of the input event that triggered this invocation, read from the wire by the prompt-lookup. On a fresh run this typically matches `x-ably-run-client-id` (the run owner). On a continuation invocation triggered by an input from a non-owner (e.g. a tool-result publish from a different client), the new `x-ably-input-client-id` reflects whoever published that input while `x-ably-run-client-id` stays put. See [Client identity](wire-protocol.md#client-identity).
+
 ### addMessages
 
 Publishes user messages to the channel through the codec encoder. Each message gets:
 
 - A generated `x-ably-codec-message-id`
-- [Transport headers](wire-protocol.md#transport-headers-x-ably) via [buildTransportHeaders](transport-components.md#buildtransportheaders) (role, run IDs, parent, forkOf)
+- [Transport headers](wire-protocol.md#transport-headers-x-ably) via [buildTransportHeaders](transport-components.md#buildtransportheaders) (role, run IDs, parent, forkOf, plus `x-ably-input-client-id` propagated from the triggering input event)
 - Per-message headers from the client override transport-generated defaults - this lets `x-ably-codec-message-id` from the client's optimistic insert pass through for [reconciliation](glossary.md#optimistic-reconciliation)
 
 Returns the effective codec-message-ids of all published messages.
@@ -75,13 +77,13 @@ Returns the effective codec-message-ids of all published messages.
 
 Pipes a `ReadableStream<TEvent>` through the codec encoder to the channel via [pipeStream](transport-components.md#pipestream). The stream carries the assistant's response - text deltas, reasoning, lifecycle events.
 
-Headers are built with `role: 'assistant'` and the run's branching metadata (parent, forkOf). The `AbortSignal` from the RunManager is passed to pipeStream, so cancel signals propagate through to stream termination.
+Headers are built with `role: 'assistant'`, the run's branching metadata (parent, forkOf), and `x-ably-input-client-id` propagated from the triggering input event (so every assistant output of this invocation carries the publisher's id). The `AbortSignal` from the RunManager is passed to pipeStream, so cancel signals propagate through to stream termination.
 
 Returns `{ reason }` - `'complete'`, `'cancelled'`, or `'error'`. Does **not** call `end()` - the caller must do that after `pipe()` returns.
 
 ### end
 
-Publishes `ai-run-end` to the channel and unregisters the run from cancel routing. Idempotent - calling `end()` twice is safe.
+Publishes `ai-run-end` to the channel and unregisters the run from cancel routing. The lifecycle event carries `x-ably-input-client-id` matching the value stamped on `ai-run-start` for the same invocation. Idempotent - calling `end()` twice is safe.
 
 ## Cancel routing
 

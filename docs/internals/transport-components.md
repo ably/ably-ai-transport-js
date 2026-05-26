@@ -38,15 +38,15 @@ The run manager tracks active runs and publishes [run lifecycle events](wire-pro
 
 ### Operations
 
-| Method                                               | What it does                                                                                                                                                                                                                       |
-| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `startRun(runId, clientId?, controller?, metadata?)` | Registers the run, publishes `ai-run-start`, returns an `AbortSignal`. `metadata` optionally stamps `parent`, `forkOf`, `invocationId`, and a `continuation` flag (→ `x-ably-run-continue: "true"`) on the lifecycle event headers |
-| `endRun(runId, reason, invocationId?)`               | Publishes `ai-run-end` with the reason (and `invocationId` if provided), removes the run                                                                                                                                           |
-| `cancel(runId)`                                      | Fires the run's `AbortController.abort()` immediately                                                                                                                                                                              |
-| `getSignal(runId)`                                   | Returns the `AbortSignal` for a run                                                                                                                                                                                                |
-| `getClientId(runId)`                                 | Returns the clientId that owns a run                                                                                                                                                                                               |
-| `getActiveRunIds()`                                  | Returns all active run IDs                                                                                                                                                                                                         |
-| `close()`                                            | Cancels all active runs and clears state                                                                                                                                                                                           |
+| Method                                                 | What it does                                                                                                                                                                                                                                                                     |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `startRun(runId, clientId?, controller?, metadata?)`   | Registers the run, publishes `ai-run-start`, returns an `AbortSignal`. `metadata` optionally stamps `parent`, `forkOf`, `invocationId`, `inputClientId` (→ `x-ably-input-client-id`), and a `continuation` flag (→ `x-ably-run-continue: "true"`) on the lifecycle event headers |
+| `endRun(runId, reason, invocationId?, inputClientId?)` | Publishes `ai-run-end` with the reason (and `invocationId` / `inputClientId` if provided), removes the run                                                                                                                                                                       |
+| `cancel(runId)`                                        | Fires the run's `AbortController.abort()` immediately                                                                                                                                                                                                                            |
+| `getSignal(runId)`                                     | Returns the `AbortSignal` for a run                                                                                                                                                                                                                                              |
+| `getClientId(runId)`                                   | Returns the clientId that owns a run                                                                                                                                                                                                                                             |
+| `getActiveRunIds()`                                    | Returns all active run IDs                                                                                                                                                                                                                                                       |
+| `close()`                                              | Cancels all active runs and clears state                                                                                                                                                                                                                                         |
 
 ### AbortController per run
 
@@ -124,20 +124,22 @@ buildTransportHeaders({
   role: 'assistant', // required - 'user' or 'assistant'
   runId: 'run-1', // required
   codecMessageId: 'msg-2', // required
-  runClientId: 'user-1', // optional - omits header when undefined
+  runClientId: 'user-1', // optional - run owner; omits header when undefined
   parent: 'msg-1', // optional - see Branching headers
   forkOf: 'msg-0', // optional - sibling marker for fork chains
   invocationId: 'inv-1', // optional - per-invocation correlator
+  inputClientId: 'user-2', // optional - publisher clientId of the triggering input event (see Client identity)
   eventId: 'e-1', // optional - per-event correlator (client side)
 });
 // → {
 //     'x-ably-role': 'assistant', 'x-ably-run-id': 'run-1',
 //     'x-ably-codec-message-id': 'msg-2', 'x-ably-run-client-id': 'user-1',
 //     'x-ably-parent': 'msg-1', 'x-ably-fork-of': 'msg-0',
-//     'x-ably-invocation-id': 'inv-1', 'x-ably-event-id': 'e-1',
+//     'x-ably-invocation-id': 'inv-1', 'x-ably-input-client-id': 'user-2',
+//     'x-ably-event-id': 'e-1',
 //   }
 ```
 
-Optional fields are omitted from the result entirely when undefined, not stamped as empty strings. See [Branching headers](wire-protocol.md#branching-headers) for how `parent` and `forkOf` shape the conversation tree, and [Run.pipe parent resolution](wire-protocol.md#how-x-ably-parent-is-resolved) for the default-parent rules.
+Optional fields are omitted from the result entirely when undefined, not stamped as empty strings. The two `*ClientId` fields (`runClientId`, `inputClientId`) treat the empty string `''` as a present value and still stamp the header — so anonymous publishers surface as an explicit empty string rather than vanishing. Other optional fields (`parent`, `forkOf`, `invocationId`, `eventId`, `runContinue`) omit on any falsy value. See [Branching headers](wire-protocol.md#branching-headers) for how `parent` and `forkOf` shape the conversation tree, [Run.pipe parent resolution](wire-protocol.md#how-x-ably-parent-is-resolved) for the default-parent rules, and [Client identity](wire-protocol.md#client-identity) for the two `clientId` tiers.
 
 See [Client session](client-session.md) and [Agent session](agent-session.md) for how these sub-components are composed into the full session implementations. See [Wire protocol](wire-protocol.md) for the full header and event specification. See [Encoder](encoder.md) for how the encoder writes through the channel. See [Decoder](decoder.md) for how decoded events are produced for routing. See [Headers](headers.md) for the domain header reader/writer utilities.

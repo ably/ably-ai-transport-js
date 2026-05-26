@@ -24,10 +24,10 @@ All sub-components are created in the constructor and share a single Ably channe
 
 1. **Generate identifiers** — a fresh `runId`, a fresh `invocationId`, and per-message `codecMessageId`s (all `crypto.randomUUID()`).
 2. **Auto-compute parent** — if no explicit `parent` or `forkOf` is provided, reads the last message in the [flattened tree](conversation-tree.md#flatten-producing-the-linear-path) to chain messages into a linear thread.
-3. **Optimistic insert** — each user message is inserted into the conversation tree immediately with [transport headers](wire-protocol.md#transport-headers-x-ably) (`role: "user"`, `run-id`, `invocation-id`, `codec-message-id`, parent). This makes the message visible to the view before the publish ack lands.
+3. **Optimistic insert** — each user message is inserted into the conversation tree immediately with [transport headers](wire-protocol.md#transport-headers-x-ably) (`role: "user"`, `run-id`, `invocation-id`, `codec-message-id`, parent). The user message itself does not carry `x-ably-input-client-id` — the wire publisher's Ably `clientId` already conveys that. This makes the message visible to the view before the publish ack lands.
 4. **Create stream** — the [stream router](transport-components.md#streamrouter) creates a `ReadableStream` bound to `(runId, invocationId)`. Events from a different invocation under the same `runId` are dropped.
 5. **Publish on the channel** — the session's shared encoder publishes the user message(s) via `writeMessages`. Capability errors (Ably 401/403) are translated to `MissingPublishCapability` and reject `send()` before exposing the stream.
-6. **POST in parallel** — the HTTP POST is fired in parallel with the publish. The body carries `runId`, `invocationId`, `clientId`, `history` (and `events`, `forkOf`, `parent` when applicable). It does **not** carry a `messages` field — the prompt is on the channel.
+6. **POST in parallel** — the HTTP POST is fired in parallel with the publish. The body carries `runId`, `invocationId`, `history`, and `eventIds`. It does **not** carry a `clientId` or `messages` field — the prompt (and its publisher `clientId`) is on the channel, and the agent reads it from there.
 7. **Wait for run-start** — `send()` awaits an `ai-run-start` event for the run+invocation, bounded by `runStartDeadlineMs` (default 30 000 ms). Deadline lapse rejects `send()` with `RunStartDeadlineExceeded`. POST failure also rejects.
 8. **Return `ActiveRun`** — once run-start arrives, the caller receives `{ stream, runId, cancel() }`.
 

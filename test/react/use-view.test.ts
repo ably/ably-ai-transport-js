@@ -177,21 +177,6 @@ describe('useView', () => {
       expect(mock.view.getSelectedIndex).toHaveBeenCalledWith('run-1');
     });
 
-    it('getSiblingRuns forwards to view.getSiblingRuns', () => {
-      const mock = createMockSession();
-      const siblings = [makeRun('a'), makeRun('b')];
-      (mock.view.getSiblingRuns as ReturnType<typeof vi.fn>).mockReturnValue(siblings);
-      const { result } = renderHook(() => useView({ session: mock.session }));
-      expect(result.current.getSiblingRuns('a')).toEqual(siblings);
-    });
-
-    it('hasSiblingRuns forwards to view.hasSiblingRuns', () => {
-      const mock = createMockSession();
-      (mock.view.hasSiblingRuns as ReturnType<typeof vi.fn>).mockReturnValue(true);
-      const { result } = renderHook(() => useView({ session: mock.session }));
-      expect(result.current.hasSiblingRuns('a')).toBe(true);
-    });
-
     it('getRunNode forwards to view.getRunNode', () => {
       const mock = createMockSession();
       const node = makeRun('run-1');
@@ -200,20 +185,23 @@ describe('useView', () => {
       expect(result.current.getRunNode('run-1')).toBe(node);
     });
 
-    it('getRunByCodecMessageId forwards to view.getRunByCodecMessageId', () => {
+    it('getMessageMetadata forwards to view.getMessageMetadata', () => {
       const mock = createMockSession();
-      const node = makeRun('run-1');
-      (mock.view.getRunByCodecMessageId as ReturnType<typeof vi.fn>).mockReturnValue(node);
+      const metadata = {
+        codecMessageId: 'm1',
+        runId: 'run-1',
+        clientId: 'c1',
+        status: 'streaming' as const,
+      };
+      (mock.view.getMessageMetadata as ReturnType<typeof vi.fn>).mockReturnValue(metadata);
       const { result } = renderHook(() => useView({ session: mock.session }));
-      expect(result.current.getRunByCodecMessageId('m1')).toBe(node);
+      expect(result.current.getMessageMetadata('m1')).toEqual(metadata);
     });
 
     it('safe defaults when no session is available', () => {
       const { result } = renderHook(() => useView());
-      expect(result.current.getSiblingRuns('a')).toEqual([]);
-      expect(result.current.hasSiblingRuns('a')).toBe(false);
       expect(result.current.getRunNode('a')).toBeUndefined();
-      expect(result.current.getRunByCodecMessageId('a')).toBeUndefined();
+      expect(result.current.getMessageMetadata('m1')).toBeUndefined();
       expect(result.current.getSelectedIndex('a')).toBe(0);
     });
   });
@@ -230,7 +218,7 @@ describe('useView', () => {
 
     it('getMessageSiblings forwards to view.getMessageSiblings', () => {
       const mock = createMockSession();
-      const siblings = [makeRun('a'), makeRun('b')];
+      const siblings = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
       (mock.view.getMessageSiblings as ReturnType<typeof vi.fn>).mockReturnValue(siblings);
       const { result } = renderHook(() => useView({ session: mock.session }));
       expect(result.current.getMessageSiblings('msg-1')).toEqual(siblings);

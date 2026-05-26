@@ -59,16 +59,19 @@ vi.mock('../providers', () => ({
           setMockViewNodes = null;
         };
       }, []);
+      const messages = nodes.map((n) => n.message);
       return {
+        messages,
         nodes,
         hasOlder: false,
         loading: false,
         loadOlder: async () => {},
-        hasSiblings: () => false,
-        getSiblings: () => [],
-        getSelectedIndex: () => 0,
-        select: () => {},
-        getNode: () => undefined,
+        hasMessageSiblings: () => false,
+        getMessageSiblings: () => [],
+        getSelectedMessageSiblingIndex: () => 0,
+        selectMessageSibling: () => {},
+        getMessageMetadata: () => undefined,
+        getRunNode: () => undefined,
         sendMessage: mockSendMessage,
         sendEvent: vi.fn(),
         regenerate: vi.fn(),

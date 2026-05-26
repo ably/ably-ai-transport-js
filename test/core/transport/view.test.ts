@@ -358,27 +358,10 @@ describe('DefaultView', () => {
       expect(view.getRunNode('R-unknown')).toBeUndefined();
     });
 
-    it('getRunByCodecMessageId resolves the owning Run', () => {
-      expect(view.getRunByCodecMessageId('m1')?.runId).toBe('R1');
-      expect(view.getRunByCodecMessageId('m2')?.runId).toBe('R2');
-      expect(view.getRunByCodecMessageId('m-unknown')).toBeUndefined();
-    });
-
-    it('getSiblingRuns returns siblings for a forked Run', () => {
-      apply(tree, {
-        runId: 'R2alt',
-        codecMessageId: 'm3',
-        parent: 'm1',
-        forkOf: 'm2',
-        message: { id: 'c', content: 'a2' },
-        serial: 's3',
-      });
-      expect(view.getSiblingRuns('R2').map((r) => r.runId)).toEqual(['R2', 'R2alt']);
-      expect(view.hasSiblingRuns('R2')).toBe(true);
-    });
-
-    it('hasSiblingRuns is false for a Run with no forks', () => {
-      expect(view.hasSiblingRuns('R2')).toBe(false);
+    it('getMessageMetadata resolves the owning Run', () => {
+      expect(view.getMessageMetadata('m1')?.runId).toBe('R1');
+      expect(view.getMessageMetadata('m2')?.runId).toBe('R2');
+      expect(view.getMessageMetadata('m-unknown')).toBeUndefined();
     });
 
     it('getActiveRunIds returns active runs', () => {
@@ -1678,16 +1661,6 @@ describe('DefaultView', () => {
       expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a2']);
     });
 
-    it('hasSiblingRuns / getSiblingRuns surface the regenerate group for the regenerator', () => {
-      expect(view.hasSiblingRuns('R2')).toBe(true);
-      expect(view.getSiblingRuns('R2').map((r) => r.runId)).toEqual(['R1', 'R2']);
-    });
-
-    it('hasSiblingRuns / getSiblingRuns surface the regenerate group for the owner Run too', () => {
-      expect(view.hasSiblingRuns('R1')).toBe(true);
-      expect(view.getSiblingRuns('R1').map((r) => r.runId)).toEqual(['R1', 'R2']);
-    });
-
     it('getSelectedIndex defaults to the latest regenerator', () => {
       expect(view.getSelectedIndex('R1')).toBe(1);
       expect(view.getSelectedIndex('R2')).toBe(1);
@@ -1754,9 +1727,9 @@ describe('DefaultView', () => {
         expect(view.hasMessageSiblings('a2')).toBe(true);
       });
 
-      it('getMessageSiblings returns the regen group for an anchor codec-message-id', () => {
-        expect(view.getMessageSiblings('a1').map((r) => r.runId)).toEqual(['R1', 'R2']);
-        expect(view.getMessageSiblings('a2').map((r) => r.runId)).toEqual(['R1', 'R2']);
+      it('getMessageSiblings returns the resolved regen variants at an anchor codec-message-id', () => {
+        expect(view.getMessageSiblings('a1').map((m) => m.id)).toEqual(['a1', 'a2']);
+        expect(view.getMessageSiblings('a2').map((m) => m.id)).toEqual(['a1', 'a2']);
       });
 
       it('getMessageSiblings returns [] for a non-anchor codec-message-id', () => {
@@ -1821,8 +1794,8 @@ describe('DefaultView', () => {
         expect(view.hasMessageSiblings('a2')).toBe(false);
       });
 
-      it('getMessageSiblings returns the fork-of group for the user-prompt anchor', () => {
-        expect(view.getMessageSiblings('u2').map((r) => r.runId)).toEqual(['R1', 'R2']);
+      it('getMessageSiblings returns each sibling user-prompt at the edit anchor', () => {
+        expect(view.getMessageSiblings('u2').map((m) => m.id)).toEqual(['u1', 'u2']);
       });
 
       it('selectMessageSibling on the user-prompt anchor swaps the whole Run', () => {

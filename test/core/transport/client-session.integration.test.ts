@@ -695,7 +695,7 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: historyClient.auth.clientId,
-      fetch: noopFetch as typeof globalThis.fetch,
+      fetch: noopFetch,
       api: '/test',
       runStartDeadlineMs: 0,
     });
@@ -761,7 +761,7 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: historyClient.auth.clientId,
-      fetch: noopFetch as typeof globalThis.fetch,
+      fetch: noopFetch,
       api: '/test',
       runStartDeadlineMs: 0,
     });
@@ -774,9 +774,10 @@ describe('ClientSession integration', () => {
     const messagesDefault = clientSession.view.getMessages();
     expect(messagesDefault.map((m) => m.id)).toEqual(['u1', 'a1', 'u2-edit', 'a2-edit']);
 
-    // The fork point exposes two siblings.
-    expect(clientSession.view.hasSiblingRuns('run-t2')).toBe(true);
-    const siblings = clientSession.view.getSiblingRuns('run-t2');
+    // The fork point exposes two siblings — go through the Tree (the
+    // low-level surface) since the View no longer exposes runId-keyed
+    // sibling enumeration.
+    const siblings = clientSession.tree.getSiblingRuns('run-t2');
     expect(siblings.map((n) => n.runId).toSorted()).toEqual(['run-t2', 'run-t2-edit'].toSorted());
 
     // Navigate back to the original branch.
@@ -830,7 +831,7 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: historyClient.auth.clientId,
-      fetch: noopFetch as typeof globalThis.fetch,
+      fetch: noopFetch,
       api: '/test',
       runStartDeadlineMs: 0,
     });
@@ -845,12 +846,12 @@ describe('ClientSession integration', () => {
 
     // a2 is the regenerate-group anchor; both members surface as siblings.
     expect(clientSession.view.hasMessageSiblings('a2')).toBe(true);
-    const groupSiblings = clientSession.view.getMessageSiblings('a2');
-    expect(groupSiblings.map((n) => n.runId).toSorted()).toEqual(['run-t2', 'run-t2-regen'].toSorted());
+    expect(clientSession.view.getMessageSiblings('a2')).toHaveLength(2);
 
+    // Sibling order is chronological by startSerial — the original
+    // (run-t2) is index 0, the regenerator (run-t2-regen) is index 1.
     // Navigate back to the original assistant.
-    const originalIdx = groupSiblings.findIndex((n) => n.runId === 'run-t2');
-    clientSession.view.selectMessageSibling('a2', originalIdx);
+    clientSession.view.selectMessageSibling('a2', 0);
 
     const messagesOriginal = clientSession.view.getMessages();
     const asstOriginal = messagesOriginal.find((m) => m.role === 'assistant' && m.id !== 'a1');
@@ -876,7 +877,7 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: aClient.auth.clientId,
-      fetch: noopFetch as typeof globalThis.fetch,
+      fetch: noopFetch,
       api: '/test',
       runStartDeadlineMs: 0,
     });
@@ -887,7 +888,7 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: bClient.auth.clientId,
-      fetch: noopFetch as typeof globalThis.fetch,
+      fetch: noopFetch,
       api: '/test',
       runStartDeadlineMs: 0,
     });
@@ -985,7 +986,7 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: historyClient.auth.clientId,
-      fetch: noopFetch as typeof globalThis.fetch,
+      fetch: noopFetch,
       api: '/test',
       runStartDeadlineMs: 0,
     });
@@ -1152,13 +1153,13 @@ describe('ClientSession integration', () => {
 
     if (userMsg) {
       expect(userMsg.id).toBeDefined();
-      const owningRun = clientSession.view.getRunByCodecMessageId(userMsg.id);
-      expect(owningRun?.runId).toBe(runId);
+      const metadata = clientSession.view.getMessageMetadata(userMsg.id);
+      expect(metadata?.runId).toBe(runId);
     }
     if (asstMsg) {
       expect(asstMsg.id).toBeDefined();
-      const owningRun = clientSession.view.getRunByCodecMessageId(asstMsg.id);
-      expect(owningRun?.runId).toBe(runId);
+      const metadata = clientSession.view.getMessageMetadata(asstMsg.id);
+      expect(metadata?.runId).toBe(runId);
     }
   });
 
@@ -1268,8 +1269,8 @@ describe('ClientSession integration', () => {
     expect(userMsgs).toHaveLength(1);
     const userMsg = userMsgs[0];
     expect(userMsg?.id).toBe(winningMsgId);
-    const owningRun = userMsg ? clientSession.view.getRunByCodecMessageId(userMsg.id) : undefined;
-    expect(owningRun?.runId).toBe(runId);
+    const metadata = userMsg ? clientSession.view.getMessageMetadata(userMsg.id) : undefined;
+    expect(metadata?.runId).toBe(runId);
     expect(clientSession.tree.getWinningInvocation(runId)?.invocationId).toBe(winningInvocationId);
 
     const textPart = userMsg?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
@@ -1326,8 +1327,8 @@ describe('ClientSession integration', () => {
     const userMsgs = clientSession.view.getMessages().filter((m) => m.role === 'user');
     expect(userMsgs).toHaveLength(1);
     expect(userMsgs[0]?.id).toBe(winningMsgId);
-    const owningRun = userMsgs[0] ? clientSession.view.getRunByCodecMessageId(userMsgs[0].id) : undefined;
-    expect(owningRun?.runId).toBe(runId);
+    const metadata = userMsgs[0] ? clientSession.view.getMessageMetadata(userMsgs[0].id) : undefined;
+    expect(metadata?.runId).toBe(runId);
     expect(clientSession.tree.getWinningInvocation(runId)?.invocationId).toBe(winningInvocationId);
   });
 

@@ -18,8 +18,7 @@
 import { useMemo } from 'react';
 import type * as Ably from 'ably';
 import type { DynamicToolUIPart, UIMessage } from 'ai';
-import { EVENT_CANCEL, type RunNode } from '@ably/ai-transport';
-import type { VercelProjection } from '@ably/ai-transport/vercel';
+import { EVENT_CANCEL, type MessageMetadata } from '@ably/ai-transport';
 
 export type DemoStepId =
   | 'server-weather'
@@ -97,8 +96,8 @@ const ALL_STEPS: DemoStep[] = [
 
 export function useDemoProgress(
   messages: UIMessage[],
-  getRunByCodecMessageId: (codecMessageId: string) => RunNode<VercelProjection> | undefined,
-  hasSiblingRuns: (runId: string) => boolean,
+  getMessageMetadata: (codecMessageId: string) => MessageMetadata | undefined,
+  hasMessageSiblings: (codecMessageId: string) => boolean,
   ablyMessages: Ably.InboundMessage[],
 ): DemoStep[] {
   return useMemo(() => {
@@ -138,15 +137,15 @@ export function useDemoProgress(
 
     const runClientIds = new Set<string>();
     for (const message of messages) {
-      const owningRun = getRunByCodecMessageId(message.id);
-      if (!owningRun) continue;
-      if (owningRun.clientId) runClientIds.add(owningRun.clientId);
-      if (!hasSiblingRuns(owningRun.runId)) continue;
+      const metadata = getMessageMetadata(message.id);
+      if (!metadata) continue;
+      if (metadata.clientId) runClientIds.add(metadata.clientId);
+      if (!hasMessageSiblings(message.id)) continue;
       if (message.role === 'assistant') completed.add('regenerate');
       if (message.role === 'user') completed.add('edit');
     }
     if (runClientIds.size > 1) completed.add('multi-tab');
 
     return ALL_STEPS.filter((s) => !completed.has(s.id));
-  }, [messages, getRunByCodecMessageId, hasSiblingRuns, ablyMessages]);
+  }, [messages, getMessageMetadata, hasMessageSiblings, ablyMessages]);
 }

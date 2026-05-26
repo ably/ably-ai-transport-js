@@ -105,7 +105,8 @@ const assistant = view.messages.find(
 );
 
 // 2. Resolve the owning Run so the continuation reuses its runId
-const owningRun = view.getRunByMsgId(assistant.id);
+const metadata = view.getMessageMetadata(assistant.id);
+const runId = metadata?.runId;
 
 // 3. Execute the browser API
 const position = await new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject));
@@ -127,7 +128,7 @@ await view.sendEvent(
       domainMessageId: assistant.id,
     },
   ],
-  { runId: owningRun?.runId },
+  { runId },
 );
 ```
 
@@ -138,9 +139,9 @@ await view.sendEvent(
 When multiple clients share a channel, only the client that initiated the run should execute client-side tools. The `x-ably-run-client-id` header on each message identifies which client started the run. Compare it against the local `clientId` to skip observer tool calls:
 
 ```typescript
-const runClientId = node.headers['x-ably-run-client-id'];
-if (runClientId !== myClientId) {
-  // This tool call was triggered by another client — skip execution.
+const metadata = view.getMessageMetadata(assistant.id);
+if (metadata?.clientId && metadata.clientId !== myClientId) {
+  // This tool call was triggered by another client - skip execution.
   // That client will publish the result, and we'll see it via the channel.
   return;
 }

@@ -7,11 +7,16 @@ import { clientColor } from '../lib/client-color';
 
 interface MessageBubbleProps {
   message: UIMessage;
-  headers: Record<string, string> | undefined;
-  hasSiblings?: boolean;
-  siblingCount?: number;
-  selectedIndex?: number;
-  onSelectSibling?: (index: number) => void;
+  // Per-message metadata derived from the View at the list-glue layer
+  // (see MessageList) and passed as primitives so the bubble stays a
+  // pure renderer with no SDK type dependencies.
+  clientId: string | undefined;
+  runId: string | undefined;
+  status: 'streaming' | 'finished' | undefined;
+  hasSiblings: boolean;
+  siblingCount: number;
+  selectedIndex: number;
+  onSelectSibling: (index: number) => void;
   onRegenerate?: () => void;
   onEdit?: (newText: string) => void;
   onToolApprove?: (codecMessageId: string, toolCallId: string) => void;
@@ -163,7 +168,9 @@ function EditForm({
 
 export function MessageBubble({
   message,
-  headers,
+  clientId,
+  runId,
+  status,
   hasSiblings,
   siblingCount,
   selectedIndex,
@@ -176,11 +183,8 @@ export function MessageBubble({
   const isUser = message.role === 'user';
   const [isEditing, setIsEditing] = useState(false);
 
-  const role = headers?.['x-ably-role'] ?? message.role;
-  const clientId = headers?.['x-ably-run-client-id'];
-  const runId = headers?.['x-ably-run-id'];
-  const status = headers?.['x-ably-status'];
-  const codecMessageId = headers?.['x-ably-codec-message-id'];
+  const role = message.role;
+  const codecMessageId = message.id;
   const colors = clientId ? clientColor(clientId) : undefined;
 
   const messageText = message.parts
@@ -259,8 +263,8 @@ export function MessageBubble({
                 </button>
               )}
 
-              {/* Debug badges */}
-              {headers && (
+              {/* Debug badges (only when we know which Run the message belongs to). */}
+              {runId && (
                 <>
                   <Badge
                     label="role"
@@ -274,13 +278,11 @@ export function MessageBubble({
                       color={`bg-zinc-900 ${colors?.text ?? 'text-zinc-500'}`}
                     />
                   )}
-                  {runId && (
-                    <Badge
-                      label="run"
-                      value={runId.slice(0, 8)}
-                      color="bg-zinc-900 text-zinc-500"
-                    />
-                  )}
+                  <Badge
+                    label="run"
+                    value={runId.slice(0, 8)}
+                    color="bg-zinc-900 text-zinc-500"
+                  />
                   {status && <StatusBadge status={status} />}
                 </>
               )}

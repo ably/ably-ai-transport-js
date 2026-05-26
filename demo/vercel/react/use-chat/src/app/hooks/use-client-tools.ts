@@ -14,7 +14,7 @@
 
 import { useEffect, useRef } from 'react';
 import type { ChatAddToolOutputFunction, DynamicToolUIPart, UIMessage } from 'ai';
-import type { ClientSession, RunNode } from '@ably/ai-transport';
+import type { ClientSession, MessageMetadata } from '@ably/ai-transport';
 import type { VercelEvent, VercelProjection } from '@ably/ai-transport/vercel';
 
 type ClientToolExecutor = (input: unknown) => Promise<unknown>;
@@ -47,7 +47,7 @@ export function useClientTools(
   session: ClientSession<VercelEvent, VercelProjection, UIMessage>,
   messages: UIMessage[],
   addToolResult: ChatAddToolOutputFunction<UIMessage>,
-  getRunByCodecMessageId: (msgId: string) => RunNode<VercelProjection> | undefined,
+  getMessageMetadata: (codecMessageId: string) => MessageMetadata | undefined,
   clientId: string | undefined,
 ) {
   const handledRef = useRef(new Set<string>());
@@ -61,9 +61,8 @@ export function useClientTools(
       // Other clients on the same channel see the tool call but should
       // not execute it - only the requesting client has the context
       // (e.g. browser geolocation) to provide the result.
-      const owningRun = getRunByCodecMessageId(msg.id);
-      const runClientId = owningRun?.clientId;
-      if (runClientId && runClientId !== clientId) continue;
+      const metadata = getMessageMetadata(msg.id);
+      if (metadata?.clientId && metadata.clientId !== clientId) continue;
 
       // If there's a later assistant message, this tool call was already
       // resolved in a previous session - skip.
@@ -93,5 +92,5 @@ export function useClientTools(
         });
       }
     }
-  }, [session, messages, addToolResult, getRunByCodecMessageId, clientId]);
+  }, [session, messages, addToolResult, getMessageMetadata, clientId]);
 }

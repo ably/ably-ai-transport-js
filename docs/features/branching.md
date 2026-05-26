@@ -61,42 +61,35 @@ await edit(nodeId, [newMessage]);
 
 ## Branch navigation
 
-`useView()` provides branch navigation alongside message state. The tree is keyed by **runId** (one Run per turn), so branch navigation operates at the Run level:
+`useView()` provides branch navigation alongside message state. Most UIs render a flat list of messages and want to attach navigation arrows to a specific message bubble (the edited user prompt, or the regenerated assistant reply), so the View exposes message-keyed branch navigation:
 
 ```typescript
 import { useView } from '@ably/ai-transport/react';
 
 const view = useView();
 
-// view.hasSiblingRuns(runId) - does this Run have alternatives?
-// view.getSiblingRuns(runId) - all alternative Runs at this fork point
-// view.getSelectedIndex(runId) - which sibling Run is currently selected
-// view.select(runId, index) - switch to a different sibling Run
-// view.getRunNode(runId) - look up a Run by runId
-// view.getRunByMsgId(msgId) - resolve the owning Run for a given message id
-//
-// Iterate view.nodes (RunNode[]):
-//   view.nodes.map((run) => {
-//     // run.runId - branch navigation key
-//     // run.projection - codec-folded per-Run state
-//   });
+// view.hasMessageSiblings(msgId)           - does this message belong to a Run with siblings?
+// view.getMessageSiblings(msgId)           - resolved sibling messages (TMessage[]); use .length for count
+// view.getSelectedMessageSiblingIndex(msgId) - currently selected sibling index
+// view.selectMessageSibling(msgId, index)  - switch to a different sibling Run
+// view.getMessageMetadata(msgId)           - { msgId, runId, clientId, status } primitives for rendering
 ```
 
-Build a sibling navigator at a Run fork point:
+Build a sibling navigator anchored to a message:
 
 ```typescript
-{view.hasSiblingRuns(runId) && (
+{view.hasMessageSiblings(msgId) && (
   <div>
     <button
-      onClick={() => view.select(runId, view.getSelectedIndex(runId) - 1)}
-      disabled={view.getSelectedIndex(runId) === 0}
+      onClick={() => view.selectMessageSibling(msgId, view.getSelectedMessageSiblingIndex(msgId) - 1)}
+      disabled={view.getSelectedMessageSiblingIndex(msgId) === 0}
     >
       ←
     </button>
-    <span>{view.getSelectedIndex(runId) + 1} / {view.getSiblingRuns(runId).length}</span>
+    <span>{view.getSelectedMessageSiblingIndex(msgId) + 1} / {view.getMessageSiblings(msgId).length}</span>
     <button
-      onClick={() => view.select(runId, view.getSelectedIndex(runId) + 1)}
-      disabled={view.getSelectedIndex(runId) === view.getSiblingRuns(runId).length - 1}
+      onClick={() => view.selectMessageSibling(msgId, view.getSelectedMessageSiblingIndex(msgId) + 1)}
+      disabled={view.getSelectedMessageSiblingIndex(msgId) === view.getMessageSiblings(msgId).length - 1}
     >
       →
     </button>
@@ -104,7 +97,7 @@ Build a sibling navigator at a Run fork point:
 )}
 ```
 
-If your UI holds a message id (e.g. from a previous render) rather than a runId, use `view.getRunByMsgId(msgId)?.runId` to resolve it.
+If your UI works with runIds directly (for example navigating an explicit Run tree), `view.select(runId, index)`, `view.getSelectedIndex(runId)`, and `view.getRunNode(runId)` are also available, and `session.tree.getSiblingRuns(runId)` / `session.tree.getRunByMsgId(msgId)` give direct structural access for advanced cases.
 
 Calling `select` updates the view's active branch and re-renders with the selected path.
 

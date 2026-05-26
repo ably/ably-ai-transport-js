@@ -518,8 +518,8 @@ export const createChatTransport = (
     // existing run resumes under a fresh invocation rather than spinning
     // up a brand-new run. `isContinuation` implies `lastMessage` is defined.
     if (isContinuation) {
-      const owningRun = session.view.getRunByCodecMessageId(lastMessage.id);
-      if (owningRun) sendOpts.runId = owningRun.runId;
+      const metadata = session.view.getMessageMetadata(lastMessage.id);
+      if (metadata) sendOpts.runId = metadata.runId;
     }
 
     // Dispatch by mode:

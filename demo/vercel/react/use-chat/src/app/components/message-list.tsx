@@ -2,17 +2,16 @@
 
 import { useRef, useEffect } from 'react';
 import type { UIMessage } from 'ai';
-import type { RunNode } from '@ably/ai-transport';
-import type { VercelProjection } from '@ably/ai-transport/vercel';
+import type { MessageMetadata } from '@ably/ai-transport';
 import { MessageBubble } from './message-bubble';
 import { IntroCard } from './intro-card';
 
 interface SiblingApi {
   hasMessageSiblings: (codecMessageId: string) => boolean;
-  getMessageSiblings: (codecMessageId: string) => RunNode<VercelProjection>[];
+  getMessageSiblings: (codecMessageId: string) => UIMessage[];
   getSelectedMessageSiblingIndex: (codecMessageId: string) => number;
   selectMessageSibling: (codecMessageId: string, index: number) => void;
-  getRunByCodecMessageId: (codecMessageId: string) => RunNode<VercelProjection> | undefined;
+  getMessageMetadata: (codecMessageId: string) => MessageMetadata | undefined;
 }
 
 interface MessageListProps {
@@ -78,14 +77,15 @@ export function MessageList({
       )}
       {loading && <div className="text-center text-xs text-zinc-600 animate-pulse">Loading history...</div>}
       {messages.map((message) => {
-        const owningRun = siblings.getRunByCodecMessageId(message.id);
+        const metadata = siblings.getMessageMetadata(message.id);
         const hasSiblings = siblings.hasMessageSiblings(message.id);
         return (
           <MessageBubble
             key={message.id}
             message={message}
-            owningRun={owningRun}
-            clientId={owningRun?.clientId || undefined}
+            clientId={metadata?.clientId || undefined}
+            runId={metadata?.runId}
+            status={metadata?.status}
             hasSiblings={hasSiblings}
             siblingCount={hasSiblings ? siblings.getMessageSiblings(message.id).length : undefined}
             selectedIndex={hasSiblings ? siblings.getSelectedMessageSiblingIndex(message.id) : undefined}

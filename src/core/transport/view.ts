@@ -33,7 +33,16 @@ import { getHeaders } from '../../utils.js';
 import type { Codec } from '../codec/types.js';
 import { decodeHistory } from './decode-history.js';
 import type { TreeInternal } from './tree.js';
-import type { ActiveRun, HistoryPage, RunEndReason, RunLifecycleEvent, RunNode, SendOptions, View } from './types.js';
+import type {
+  ActiveRun,
+  HistoryPage,
+  MessageMetadata,
+  RunEndReason,
+  RunLifecycleEvent,
+  RunNode,
+  SendOptions,
+  View,
+} from './types.js';
 
 // ---------------------------------------------------------------------------
 // Events map
@@ -575,32 +584,56 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     return 0;
   }
 
-  getSiblingRuns(runId: string): RunNode<TProjection>[] {
-    const forkNodes = this._tree.getSiblingRuns(runId);
-    if (forkNodes.length > 1) return forkNodes;
-    const regenGroup = this._tree.getRegenerateGroup(runId);
-    if (regenGroup && regenGroup.runs.length > 1) return regenGroup.runs;
-    return forkNodes;
-  }
+  // Spec: AIT-CT13c, AIT-CT13d — msg-anchored branch-point API. The
+  // RFC anchors branch points at msg-ids (prompt-id for edits, msg-id
+  // for regens); these methods return per-bubble nav data so the UI
+  // doesn't surface arrows on bubbles whose msg-id is not the actual
+  // anchor. Tree-level introspection (RunNode access, runId-keyed
+  // sibling queries) remains on the {@link Tree} surface.
 
-  hasSiblingRuns(runId: string): boolean {
-    if (this._tree.hasSiblingRuns(runId)) return true;
-    const regenGroup = this._tree.getRegenerateGroup(runId);
-    return regenGroup !== undefined && regenGroup.runs.length > 1;
+  getMessageMetadata(codecMessageId: string): MessageMetadata | undefined {
+    const run = this._tree.getRunByCodecMessageId(codecMessageId);
+    if (!run) return undefined;
+    return {
+      codecMessageId,
+      runId: run.runId,
+      clientId: run.clientId,
+      status: run.status === 'active' ? 'streaming' : 'finished',
+    };
   }
 
   // Spec: AIT-CT13c, AIT-CT13d — msg-anchored branch-point API
   // (companion to runId-based hasSiblingRuns/getSiblingRuns/select). The
-  // RFC anchors branch points at codec-message-ids (event-id for edits, codec-message-id for
-  // regens); these methods return per-bubble nav data so the UI doesn't
-  // surface arrows on bubbles whose codec-message-id is not the actual anchor.
+  // RFC anchors branch points at codec-message-ids; these methods return
+  // per-bubble nav data so the UI doesn't surface arrows on bubbles whose
+  // codec-message-id is not the actual anchor.
 
   hasMessageSiblings(codecMessageId: string): boolean {
     return this._resolveMessageBranchPoint(codecMessageId) !== undefined;
   }
 
-  getMessageSiblings(codecMessageId: string): RunNode<TProjection>[] {
-    return this._resolveMessageBranchPoint(codecMessageId)?.siblings ?? [];
+  getMessageSiblings(codecMessageId: string): TMessage[] {
+    const branch = this._resolveMessageBranchPoint(codecMessageId);
+    if (!branch) return [];
+
+    if (branch.kind === 'fork-of') {
+      // Anchor is the first message of each sibling Run (the user prompt).
+      return branch.siblings.flatMap((s) => {
+        const first = this._codec.getMessages(s.projection).at(0);
+        return first ? [first] : [];
+      });
+    }
+
+    // Regenerate: for the owner Run pick the message at the anchor
+    // codec-message-id; for each regenerator Run pick its first content
+    // message (regenerators contribute the replacement starting at index 0).
+    return branch.siblings.flatMap((s) => {
+      const msgs = this._codec.getMessages(s.projection);
+      const anchored = msgs.find((m) => _readMessageId(m) === branch.anchorCodecMessageId);
+      if (anchored) return [anchored];
+      const first = msgs.at(0);
+      return first ? [first] : [];
+    });
   }
 
   getSelectedMessageSiblingIndex(codecMessageId: string): number {
@@ -704,10 +737,6 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
 
   getRunNode(runId: string): RunNode<TProjection> | undefined {
     return this._tree.getRunNode(runId);
-  }
-
-  getRunByCodecMessageId(codecMessageId: string): RunNode<TProjection> | undefined {
-    return this._tree.getRunByCodecMessageId(codecMessageId);
   }
 
   // -------------------------------------------------------------------------

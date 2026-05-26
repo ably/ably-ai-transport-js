@@ -124,7 +124,7 @@ describe('Vercel encoder', () => {
       await encoder.publish({ type: 'text-end', id: 'txt-1' });
 
       const msg = lastAppend(writer);
-      expect(headersOf(msg)[HEADER_STATUS]).toBe('finished');
+      expect(headersOf(msg)[HEADER_STATUS]).toBe('complete');
     });
 
     it('includes providerMetadata on text-start and text-end', async () => {
@@ -198,7 +198,7 @@ describe('Vercel encoder', () => {
       });
 
       const msg = lastAppend(writer);
-      expect(headersOf(msg)[HEADER_STATUS]).toBe('finished');
+      expect(headersOf(msg)[HEADER_STATUS]).toBe('complete');
     });
 
     it('encodes non-streaming tool-input-available as discrete', async () => {

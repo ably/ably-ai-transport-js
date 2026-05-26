@@ -49,7 +49,7 @@ export interface DecoderCoreHooks<TEvent> {
   buildDeltaEvents(tracker: StreamTrackerState, delta: string): TEvent[];
 
   /**
-   * Build domain events emitted when a stream finishes (x-ably-status:finished).
+   * Build domain events emitted when a stream completes (x-ably-status:complete).
    * Not called for cancelled streams. The closing headers may differ from
    * tracker.headers if the closing append carried updated headers.
    */
@@ -221,10 +221,10 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
       outputs.push(...this._hooks.buildDeltaEvents(tracker, delta));
     }
 
-    if (status === 'finished' && !tracker.closed) {
+    if (status === 'complete' && !tracker.closed) {
       tracker.closed = true;
       outputs.push(...this._hooks.buildEndEvents(tracker, h));
-      this._logger?.debug('DefaultDecoderCore._decodeAppend(); stream finished', { streamId: tracker.streamId });
+      this._logger?.debug('DefaultDecoderCore._decodeAppend(); stream complete', { streamId: tracker.streamId });
     } else if (status === 'cancelled' && !tracker.closed) {
       tracker.closed = true;
       this._logger?.debug('DefaultDecoderCore._decodeAppend(); stream cancelled', { streamId: tracker.streamId });
@@ -266,7 +266,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
         outputs.push(...this._hooks.buildDeltaEvents(tracker, delta));
       }
 
-      if (status === 'finished' && !tracker.closed) {
+      if (status === 'complete' && !tracker.closed) {
         tracker.closed = true;
         outputs.push(...this._hooks.buildEndEvents(tracker, h));
       } else if (status === 'cancelled' && !tracker.closed) {
@@ -312,18 +312,18 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
       streamId,
       accumulated: data,
       headers: { ...h },
-      closed: status === 'finished' || status === 'cancelled',
+      closed: status === 'complete' || status === 'cancelled',
     };
     this._serialState.set(serial, newTracker);
 
-    // Emit start + delta (if any) + end (if finished)
+    // Emit start + delta (if any) + end (if complete)
     const outputs = this._hooks.buildStartEvents(newTracker);
 
     if (data.length > 0) {
       outputs.push(...this._hooks.buildDeltaEvents(newTracker, data));
     }
 
-    if (status === 'finished') {
+    if (status === 'complete') {
       outputs.push(...this._hooks.buildEndEvents(newTracker, h));
     }
 

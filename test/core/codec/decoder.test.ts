@@ -120,7 +120,7 @@ describe('createDecoderCore', () => {
       expect(outputs).toEqual([{ type: 'delta', streamId: 'id-1', delta: 'hello' }]);
     });
 
-    it('emits end events when status is finished', () => {
+    it('emits end events when status is complete', () => {
       const decoder = createDecoderCore(hooks);
       decoder.decode(
         withHeaders(
@@ -130,7 +130,7 @@ describe('createDecoderCore', () => {
       );
 
       const outputs = decoder.decode(
-        withHeaders({ action: 'message.append', serial: 's1', data: '' }, { [HEADER_STATUS]: 'finished' }),
+        withHeaders({ action: 'message.append', serial: 's1', data: '' }, { [HEADER_STATUS]: 'complete' }),
       );
 
       expect(outputs).toEqual([{ type: 'end', streamId: 'id-1' }]);
@@ -150,13 +150,13 @@ describe('createDecoderCore', () => {
       );
 
       const outputs = decoder.decode(
-        withHeaders({ action: 'message.append', serial: 's1', data: '' }, { [HEADER_STATUS]: 'finished' }),
+        withHeaders({ action: 'message.append', serial: 's1', data: '' }, { [HEADER_STATUS]: 'complete' }),
       );
 
       expect(outputs).toHaveLength(0);
     });
 
-    it('emits delta AND end when data and finished status arrive together', () => {
+    it('emits delta AND end when data and complete status arrive together', () => {
       const decoder = createDecoderCore(hooks);
       decoder.decode(
         withHeaders(
@@ -166,7 +166,7 @@ describe('createDecoderCore', () => {
       );
 
       const outputs = decoder.decode(
-        withHeaders({ action: 'message.append', serial: 's1', data: 'final' }, { [HEADER_STATUS]: 'finished' }),
+        withHeaders({ action: 'message.append', serial: 's1', data: 'final' }, { [HEADER_STATUS]: 'complete' }),
       );
 
       expect(outputs).toHaveLength(2);
@@ -195,7 +195,7 @@ describe('createDecoderCore', () => {
       );
 
       const outputs = decoder.decode(
-        withHeaders({ action: 'message.append', serial: 's1', data: '' }, { [HEADER_STATUS]: 'finished' }),
+        withHeaders({ action: 'message.append', serial: 's1', data: '' }, { [HEADER_STATUS]: 'complete' }),
       );
 
       expect(outputs).toEqual([{ type: 'end', streamId: 'id-1' }]);
@@ -233,12 +233,12 @@ describe('createDecoderCore', () => {
       expect(outputs[1]).toEqual({ type: 'delta', streamId: 'id-1', delta: 'accumulated' });
     });
 
-    it('emits start + delta + end for first-contact finished stream', () => {
+    it('emits start + delta + end for first-contact complete stream', () => {
       const decoder = createDecoderCore(hooks);
       const outputs = decoder.decode(
         withHeaders(
           { action: 'message.update', serial: 's1', name: 'text', data: 'all data' },
-          { [HEADER_STREAM]: 'true', [HEADER_STATUS]: 'finished', [HEADER_STREAM_ID]: 'id-1' },
+          { [HEADER_STREAM]: 'true', [HEADER_STATUS]: 'complete', [HEADER_STREAM_ID]: 'id-1' },
         ),
       );
 
@@ -297,7 +297,7 @@ describe('createDecoderCore', () => {
       expect(outputs).toEqual([{ type: 'delta', streamId: 'id-1', delta: ' world' }]);
     });
 
-    it('emits end on prefix-match with finished status', () => {
+    it('emits end on prefix-match with complete status', () => {
       const decoder = createDecoderCore(hooks);
       decoder.decode(
         withHeaders(
@@ -310,7 +310,7 @@ describe('createDecoderCore', () => {
       const outputs = decoder.decode(
         withHeaders(
           { action: 'message.update', serial: 's1', name: 'text', data: 'hello' },
-          { [HEADER_STREAM]: 'true', [HEADER_STATUS]: 'finished' },
+          { [HEADER_STREAM]: 'true', [HEADER_STATUS]: 'complete' },
         ),
       );
 
@@ -475,7 +475,7 @@ describe('createDecoderCore', () => {
       expect(delta2).toEqual([{ type: 'delta', streamId: 'id-1', delta: ' world' }]);
 
       const end = decoder.decode(
-        withHeaders({ action: 'message.append', serial: 's1', data: '' }, { [HEADER_STATUS]: 'finished' }),
+        withHeaders({ action: 'message.append', serial: 's1', data: '' }, { [HEADER_STATUS]: 'complete' }),
       );
       expect(end).toEqual([{ type: 'end', streamId: 'id-1' }]);
     });

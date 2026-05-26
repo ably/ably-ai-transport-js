@@ -63,7 +63,7 @@ const IDENTITY_HEADERS: ReadonlySet<string> = new Set([HEADER_ROLE, HEADER_PAREN
  * Identity headers (see {@link IDENTITY_HEADERS}) are sticky — only set
  * when absent on `existing`; never overwritten. Everything else
  * (`status`, domain headers, etc.) merges last-wins so a closing append
- * can update `status: streaming → finished`.
+ * can update `status: streaming → complete`.
  * @param existing - The accumulated headers for the codec-message-id.
  * @param incoming - The headers from a subsequent wire targeting the same codec-message-id.
  */
@@ -111,7 +111,7 @@ interface HistoryState<TEvent, TProjection, TMessage> {
   startedCodecMessageIds: Set<string>;
   /**
    * `x-ably-codec-message-id`s with a terminal wire signal: either `x-ably-discrete`
-   * on a `message.create` (discrete message) or `x-ably-status: "finished"`
+   * on a `message.create` (discrete message) or `x-ably-status: "complete"`
    * / `"cancelled"` on any action (closed stream).
    */
   terminatedCodecMessageIds: Set<string>;
@@ -199,7 +199,7 @@ const decodeAll = <TEvent, TProjection, TMessage>(
       }
       // Capture headers per codec-message-id within this run. Update on later
       // messages too (e.g. closing append overrides status from
-      // "streaming" to "finished"/"cancelled"). Only merge when the
+      // "streaming" to "complete"/"cancelled"). Only merge when the
       // incoming message has non-empty headers.
       if (codecMessageId) {
         const existing = run.msgHeaders.get(codecMessageId);
@@ -330,11 +330,11 @@ const decodeAllCached = <TEvent, TProjection, TMessage>(
  *   with `x-ably-stream: "true"` (the decoder establishes a tracker via
  *   create or first-contact).
  * - a "terminal" signal: `x-ably-discrete` on the create, or
- *   `x-ably-status: "finished"` / `"cancelled"` on any later action.
+ *   `x-ably-status: "complete"` / `"cancelled"` on any later action.
  *
  * Why update and append count as starts: Ably history can compact a live
- * `create + append + ... + append{status:finished}` sequence into a single
- * `message.update` with `STREAM=true` and `STATUS=finished`. The decoder
+ * `create + append + ... + append{status:complete}` sequence into a single
+ * `message.update` with `STREAM=true` and `STATUS=complete`. The decoder
  * handles that in {@link _decodeUpdate} via first-contact. Counting only
  * `message.create` as a start would cause the fetch loop to page past a
  * compacted run without ever marking it complete.
@@ -384,7 +384,7 @@ const countNewCompletions = <TEvent, TProjection, TMessage>(
       headers[HEADER_STREAM] === 'true' &&
       (action === 'message.create' || action === 'message.update' || action === 'message.append');
     const status = headers[HEADER_STATUS];
-    const isTerminal = status === 'finished' || status === 'cancelled';
+    const isTerminal = status === 'complete' || status === 'cancelled';
 
     if (isDiscreteCreate || hasStreamContent) state.startedCodecMessageIds.add(codecMessageId);
     if (isDiscreteCreate || isTerminal) state.terminatedCodecMessageIds.add(codecMessageId);

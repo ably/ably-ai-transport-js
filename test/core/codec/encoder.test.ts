@@ -267,12 +267,12 @@ describe('createEncoderCore', () => {
   // -- closeStream ---------------------------------------------------------
 
   describe('closeStream', () => {
-    it('appends with finished status', async () => {
+    it('appends with complete status', async () => {
       const core = createEncoderCore(writer);
       await core.startStream('s1', streamPayload({ name: 'text' }));
       await core.closeStream('s1', streamPayload({ name: 'text' }));
 
-      expect(headersOf(first(writer.appendCalls))[HEADER_STATUS]).toBe('finished');
+      expect(headersOf(first(writer.appendCalls))[HEADER_STATUS]).toBe('complete');
     });
 
     it('repeats persistent headers on close', async () => {
@@ -410,7 +410,7 @@ describe('createEncoderCore', () => {
 
       const recovery = first(writer.updateCalls);
       expect(recovery.data).toBe('hello world');
-      expect(headersOf(recovery)[HEADER_STATUS]).toBe('finished');
+      expect(headersOf(recovery)[HEADER_STATUS]).toBe('complete');
     });
 
     it('recovery message includes initial startStream data in accumulation', async () => {
@@ -493,7 +493,7 @@ describe('createEncoderCore', () => {
 
       const recovery = first(writer.updateCalls);
       expect(recovery.data).toBe('hello world');
-      expect(headersOf(recovery)[HEADER_STATUS]).toBe('finished');
+      expect(headersOf(recovery)[HEADER_STATUS]).toBe('complete');
     });
   });
 

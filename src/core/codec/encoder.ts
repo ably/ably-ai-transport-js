@@ -73,7 +73,7 @@ export interface EncoderCore {
   appendStream(streamId: string, data: string): void;
 
   /**
-   * Close a streamed message with x-ably-status:finished. Flushes all pending
+   * Close a streamed message with x-ably-status:complete. Flushes all pending
    * appends for recovery before returning. Repeats persistent and payload headers.
    */
   closeStream(streamId: string, payload: StreamPayload): Promise<void>;
@@ -236,7 +236,7 @@ class DefaultEncoderCore implements EncoderCore {
     tracker.accumulated += payload.data;
 
     const allHeaders = this._buildClosingHeaders(tracker, payload.headers ?? {});
-    allHeaders[HEADER_STATUS] = 'finished';
+    allHeaders[HEADER_STATUS] = 'complete';
 
     const msg: Ably.Message = {
       serial: tracker.serial,
@@ -360,7 +360,7 @@ class DefaultEncoderCore implements EncoderCore {
       const tracker = this._trackers.get(streamId);
       if (!tracker) continue;
 
-      const recoveryStatus = tracker.cancelled ? 'cancelled' : 'finished';
+      const recoveryStatus = tracker.cancelled ? 'cancelled' : 'complete';
       const msg: Ably.Message = {
         serial: tracker.serial,
         data: tracker.accumulated,

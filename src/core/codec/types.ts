@@ -116,7 +116,7 @@ export interface StreamTrackerState {
   accumulated: string;
   /** Current headers for this stream. Initially set from the first publish, but may be replaced on update. */
   headers: Record<string, string>;
-  /** Whether this stream has been closed (finished or cancelled). */
+  /** Whether this stream has been closed (complete or cancelled). */
   closed: boolean;
 }
 

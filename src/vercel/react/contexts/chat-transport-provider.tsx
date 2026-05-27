@@ -28,15 +28,8 @@ import { createChatTransport } from '../../transport/index.js';
 import type { ChatTransportSlot } from './chat-transport-context.js';
 import { ChatTransportContext } from './chat-transport-context.js';
 
-export const {
-  ClientSessionProvider,
-  useAblyMessages,
-  useActiveRuns,
-  useClientSession,
-  useCreateView,
-  useTree,
-  useView,
-} = createSessionHooks<VercelEvent, VercelProjection, AI.UIMessage>();
+export const { ClientSessionProvider, useAblyMessages, useClientSession, useCreateView, useTree, useView } =
+  createSessionHooks<VercelEvent, VercelProjection, AI.UIMessage>();
 
 type CoreClientSessionProviderProps = Omit<
   ClientSessionProviderProps<VercelEvent, VercelProjection, AI.UIMessage>,

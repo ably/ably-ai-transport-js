@@ -50,7 +50,6 @@ vi.mock('@ably/ai-transport/vercel/react', () => ({
     sessionError: undefined,
   }),
   useMessageSync: () => {},
-  useActiveRuns: () => new Map<string, Set<string>>(),
   useAblyMessages: () => [],
   useView: () => {
     const [state, setState] = useState<MockViewState>({ messages: [], runs: new Map() });

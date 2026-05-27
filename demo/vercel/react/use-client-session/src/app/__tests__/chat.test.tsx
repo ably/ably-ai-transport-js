@@ -49,7 +49,6 @@ vi.mock('../providers', () => ({
   SessionHooks: {
     ClientSessionProvider: ({ children }: { children: ReactNode }) => children,
     useClientSession: () => ({ session: mockSession, sessionError: undefined }),
-    useActiveRuns: () => new Map<string, Set<string>>(),
     useAblyMessages: () => [],
     useView: () => {
       const [nodes, setNodes] = useState<MessageNode<AI.UIMessage>[]>([]);

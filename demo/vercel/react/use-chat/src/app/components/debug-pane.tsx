@@ -13,7 +13,6 @@ export interface CallbackLogEntry {
 interface DebugPaneProps {
   messages: UIMessage[];
   ablyMessages: Ably.InboundMessage[];
-  activeRuns: Map<string, Set<string>>;
   status: string;
   callbackLog: CallbackLogEntry[];
   statusLog: { time: number; status: string }[];
@@ -83,15 +82,7 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
   );
 }
 
-function UIMessagesTab({
-  messages,
-  activeRuns,
-  status,
-}: {
-  messages: UIMessage[];
-  activeRuns: Map<string, Set<string>>;
-  status: string;
-}) {
+function UIMessagesTab({ messages, status }: { messages: UIMessage[]; status: string }) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -99,18 +90,6 @@ function UIMessagesTab({
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
-
-  const runsDisplay =
-    activeRuns.size > 0
-      ? Array.from(activeRuns.entries())
-          .map(
-            ([cid, tids]) =>
-              `${cid}: [${Array.from(tids)
-                .map((t) => t.slice(0, 8))
-                .join(', ')}]`,
-          )
-          .join('; ')
-      : 'none';
 
   return (
     <div
@@ -127,10 +106,6 @@ function UIMessagesTab({
           >
             {status}
           </span>
-        </div>
-        <div className="rounded border border-zinc-800 bg-zinc-900/50 px-2 py-1.5 text-[10px]">
-          <span className="text-zinc-600">Active runs: </span>
-          <span className={`font-mono ${activeRuns.size > 0 ? 'text-blue-400' : 'text-zinc-600'}`}>{runsDisplay}</span>
         </div>
       </div>
       {messages.length === 0 ? (
@@ -229,15 +204,7 @@ function LifecycleTab({
   );
 }
 
-export function DebugPane({
-  messages,
-  ablyMessages,
-  activeRuns,
-  status,
-  callbackLog,
-  statusLog,
-  onClearLogs,
-}: DebugPaneProps) {
+export function DebugPane({ messages, ablyMessages, status, callbackLog, statusLog, onClearLogs }: DebugPaneProps) {
   const [isOpen, setIsOpen] = useState(true);
   const [tab, setTab] = useState<Tab>('ably');
 
@@ -297,7 +264,6 @@ export function DebugPane({
           ) : tab === 'uimessages' ? (
             <UIMessagesTab
               messages={messages}
-              activeRuns={activeRuns}
               status={status}
             />
           ) : (

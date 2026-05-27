@@ -499,6 +499,18 @@ describe('DefaultView', () => {
       expect(view.getMessageMetadata('m2')?.runId).toBe('R2');
       expect(view.getMessageMetadata('m-unknown')).toBeUndefined();
     });
+
+    it('getMessageMetadata reports streaming while the Run is active', () => {
+      expect(view.getMessageMetadata('m1')?.status).toBe('streaming');
+    });
+
+    it('getMessageMetadata surfaces the terminal RunEndReason on the Run', () => {
+      tree.applyRunLifecycle({ type: 'ai-run-end', runId: 'R1', clientId: 'c', reason: 'cancelled' }, 's3');
+      expect(view.getMessageMetadata('m1')?.status).toBe('cancelled');
+
+      tree.applyRunLifecycle({ type: 'ai-run-end', runId: 'R2', clientId: 'c', reason: 'complete' }, 's4');
+      expect(view.getMessageMetadata('m2')?.status).toBe('complete');
+    });
   });
 
   // -------------------------------------------------------------------------

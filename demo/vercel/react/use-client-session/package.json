@@ -20,7 +20,8 @@
     "jsonwebtoken": "^9",
     "next": "^16",
     "react": "^19",
-    "react-dom": "^19"
+    "react-dom": "^19",
+    "zod": "^4"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -35,5 +36,13 @@
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^4"
+  },
+  "packageManager": "pnpm@11.3.0",
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "11.3.0",
+      "onFail": "download"
+    }
   }
 }

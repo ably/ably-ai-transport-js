@@ -2,10 +2,10 @@
 
 ## Two tiers
 
-| Tier            | Command                    | Runs against       | What it proves                               |
-| --------------- | -------------------------- | ------------------ | -------------------------------------------- |
-| **Unit**        | `npm test`                 | Mocks only         | Every code path works correctly in isolation |
-| **Integration** | `npm run test:integration` | Real Ably channels | Happy path works end-to-end over real Ably   |
+| Tier            | Command                     | Runs against       | What it proves                               |
+| --------------- | --------------------------- | ------------------ | -------------------------------------------- |
+| **Unit**        | `pnpm test`                 | Mocks only         | Every code path works correctly in isolation |
+| **Integration** | `pnpm run test:integration` | Real Ably channels | Happy path works end-to-end over real Ably   |
 
 Config: `vitest.config.ts` (unit, excludes `*.integration.test.ts`) and `vitest.config.integration.ts` (integration only).
 

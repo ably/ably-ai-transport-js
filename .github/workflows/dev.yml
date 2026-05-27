@@ -19,12 +19,13 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: true
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.BASE_NODE_VERSION }}
-          cache: npm
-      - run: npm ci
-      - run: npm run build
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
 
   check:
     runs-on: ubuntu-latest
@@ -32,15 +33,16 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: true
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.BASE_NODE_VERSION }}
-          cache: npm
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm run format:check
-      - run: npm run lint
-      - run: npm run check:error-codes
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm run format:check
+      - run: pnpm run lint
+      - run: pnpm run check:error-codes
 
   test:
     runs-on: ubuntu-latest
@@ -56,18 +58,19 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: true
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
-          cache: npm
-      - run: npm ci
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       # Only collect coverage on the base Node version to avoid redundant work
       - name: test with coverage
         if: ${{ matrix.node-version == env.BASE_NODE_VERSION }}
-        run: npm test -- --coverage
+        run: pnpm test --coverage
       - name: test
         if: ${{ matrix.node-version != env.BASE_NODE_VERSION }}
-        run: npm test
+        run: pnpm test
       # Post coverage summary as a PR comment. Restricted to PRs from the main
       # repo (not forks) because the action needs write permissions that fork
       # PRs don't have. Runs even if tests fail so we still get the report.
@@ -89,12 +92,13 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: true
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
-          cache: npm
-      - run: npm ci
-      - run: npm run test:integration
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run test:integration
 
   demo-app:
     runs-on: ubuntu-latest
@@ -109,24 +113,25 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: true
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.BASE_NODE_VERSION }}
-          cache: npm
-      - name: npm ci (lib)
-        run: npm ci
-      - name: npm run build (lib)
-        run: npm run build
-      - name: npm ci (demo)
-        run: npm ci
+          cache: pnpm
+      - name: pnpm install (lib)
+        run: pnpm install --frozen-lockfile
+      - name: pnpm run build (lib)
+        run: pnpm run build
+      - name: pnpm install (demo)
+        run: pnpm install --frozen-lockfile
         working-directory: ${{ matrix.demo }}
-      - name: npm run build (demo)
-        run: npm run build
+      - name: pnpm run build (demo)
+        run: pnpm run build
         working-directory: ${{ matrix.demo }}
         # Dummy keys for Next.js build - module-level SDK client initialization
         # runs during bundling even though the routes are never called at build time
         env:
           ABLY_API_KEY: dummy:key
-      - name: npm test (demo)
-        run: npm test
+      - name: pnpm test (demo)
+        run: pnpm test
         working-directory: ${{ matrix.demo }}

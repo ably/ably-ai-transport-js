@@ -1,0 +1,40 @@
+/**
+ * Subagent fan-out — client side (durable execution).
+ *
+ * The client invokes the parent orchestrator workflow. Fan-out into
+ * subagent workflows is an internal concern of the orchestrator's agent
+ * loop — the UI sees the parent's streamed reasoning and every child
+ * run's output side by side without special handling.
+ */
+
+import type * as AI from 'ai';
+
+import type { ClientView, Codec, InvocationData } from '../../../index.js';
+
+/**
+ * Deliver an invocation to the parent workflow HTTP trigger.
+ * @param data - The {@link InvocationData} produced by `run.toInvocation().toJSON()`.
+ * @returns Resolves once the POST has been dispatched.
+ */
+const invokeParent = async (data: InvocationData): Promise<void> => {
+  await fetch('/api/parent-workflow/start', { method: 'POST', body: JSON.stringify(data) });
+};
+
+/**
+ * Handler for the send button. Opens a run, publishes the user's message,
+ * then invokes the parent orchestrator workflow.
+ * @param view - The client view new runs should be positioned on.
+ * @param text - The text the user typed into the composer.
+ * @returns Resolves once the invocation has been dispatched.
+ */
+export const onSendClick = async (
+  view: ClientView<Codec<AI.UIMessageChunk, AI.UIMessage>>,
+  text: string,
+): Promise<void> => {
+  const run = await view.send({
+    id: crypto.randomUUID(),
+    role: 'user',
+    parts: [{ type: 'text', text }],
+  });
+  await invokeParent(run.toInvocation().toJSON());
+};

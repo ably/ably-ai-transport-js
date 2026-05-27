@@ -1,5 +1,12 @@
 {
-  "include": ["./src/**/*.ts", "./src/**/*.tsx", "./test/**/*.ts", "./test/**/*.d.ts", "./examples/**/*.ts"],
+  "include": [
+    "./src/**/*.ts",
+    "./src/**/*.tsx",
+    "./test/**/*.ts",
+    "./test/**/*.d.ts",
+    "./examples/**/*.ts",
+    "./rfc/types/**/*.ts"
+  ],
   "exclude": ["**/vite.config.ts"],
   "compilerOptions": {
     "rootDir": ".",

@@ -15,11 +15,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   EVENT_CANCEL,
-  HEADER_CANCEL_ALL,
-  HEADER_CANCEL_CLIENT_ID,
-  HEADER_CANCEL_INVOCATION_ID,
-  HEADER_CANCEL_OWN,
-  HEADER_CANCEL_RUN_ID,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
   HEADER_INVOCATION_ID,
@@ -37,7 +32,7 @@ import type {
   WriteOptions,
 } from '../../../src/core/codec/types.js';
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
-import type { AgentSession, CancelRequest, MessageNode, Run } from '../../../src/core/transport/types.js';
+import type { AgentSession, MessageNode } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { VERSION } from '../../../src/version.js';
 import { createMockClient } from '../../helper/mock-client.js';
@@ -141,11 +136,10 @@ const simulateInitialAttach = (ch: MockChannel): void => {
   });
 };
 
-const simulateCancel = (channel: MockChannel, headers: Record<string, string>, clientId?: string): void => {
+const simulateCancel = (channel: MockChannel, headers: Record<string, string>): void => {
   if (!channel.listener) return;
   const msg = {
     name: EVENT_CANCEL,
-    clientId,
     extras: { headers },
   } as unknown as Ably.InboundMessage;
   channel.listener(msg);
@@ -359,54 +353,6 @@ const deliverUserPrompt = (ch: MockChannel, opts: DeliverUserPromptOpts): void =
     extras: { headers },
   } as unknown as Ably.InboundMessage;
   if (ch.listener) ch.listener(msg);
-};
-
-/**
- * Create a run whose `clientId` is resolved via a delivered user-prompt
- * carrying `x-ably-run-client-id`. Mirrors the wire-only resolution path
- * that production agents use post-AIT-769. Cancel-routing tests rely on
- * the resolved clientId to match `own` / `clientId` filters.
- * @param session - The agent session.
- * @param ch - Mock channel hosting the session's listener.
- * @param opts - Run identity + the clientId to surface via the prompt.
- * @param opts.runId - Run identifier.
- * @param opts.clientId - ClientId stamped on the delivered prompt as `x-ably-run-client-id`.
- * @param opts.invocationId - Optional invocation identifier; defaults to `${runId}-inv`.
- * @param opts.onCancel - Optional cancel handler forwarded to the run.
- * @param opts.onError - Optional error handler forwarded to the run.
- * @returns The created run, after start() has resolved.
- */
-const startRunWithClientId = async <TEvent, TProjection, TMessage>(
-  session: AgentSession<TEvent, TProjection, TMessage>,
-  ch: MockChannel,
-  opts: {
-    runId: string;
-    clientId: string;
-    invocationId?: string;
-    onCancel?: (req: CancelRequest) => Promise<boolean>;
-    onError?: (e: Ably.ErrorInfo) => void;
-  },
-): Promise<Run<TEvent, TProjection, TMessage>> => {
-  const invocationId = opts.invocationId ?? `${opts.runId}-inv`;
-  const eventId = `p-${opts.runId}`;
-  const run = createRunFromOpts(session, {
-    runId: opts.runId,
-    invocationId,
-    eventIds: [eventId],
-    onCancel: opts.onCancel,
-    onError: opts.onError,
-  });
-  const startPromise = run.start();
-  deliverUserPrompt(ch, {
-    invocationId,
-    runId: opts.runId,
-    codecMessageId: `m-${opts.runId}`,
-    serial: `s-${opts.runId}`,
-    eventId,
-    runClientId: opts.clientId,
-  });
-  await startPromise;
-  return run;
 };
 
 // ---------------------------------------------------------------------------
@@ -1130,70 +1076,10 @@ describe('AgentSession', () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
 
-      simulateCancel(channel, { [HEADER_CANCEL_RUN_ID]: 'run-1' });
+      simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
       await new Promise((r) => setTimeout(r, 5));
 
       expect(run.abortSignal.aborted).toBe(true);
-    });
-
-    it('cancels own runs when cancel-own arrives from the same clientId', async () => {
-      // Per-run clientId is resolved from the prompt-lookup result —
-      // deliver a user-prompt carrying `x-ably-run-client-id` to populate it.
-      // Use a functional-decoder session so the lookup populates viewMessages
-      // with a real MessageNode (the cancel-routing path reads clientId off
-      // the first node's headers).
-      const ch = createMockChannel();
-      const s = createAgentSession({
-        client: createMockClient(ch),
-        channelName: 'cancel-own',
-        codec: codecWithFunctionalDecoder(),
-        promptLookupTimeoutMs: 5000,
-      });
-      await s.connect();
-
-      const run1 = await startRunWithClientId(s, ch, { runId: 'run-1', clientId: 'user-a' });
-      const run2 = await startRunWithClientId(s, ch, { runId: 'run-2', clientId: 'user-b' });
-
-      simulateCancel(ch, { [HEADER_CANCEL_OWN]: 'true' }, 'user-a');
-      await new Promise((r) => setTimeout(r, 5));
-
-      expect(run1.abortSignal.aborted).toBe(true);
-      expect(run2.abortSignal.aborted).toBe(false);
-      s.close();
-    });
-
-    it('cancels runs by clientId', async () => {
-      const ch = createMockChannel();
-      const s = createAgentSession({
-        client: createMockClient(ch),
-        channelName: 'cancel-by-client',
-        codec: codecWithFunctionalDecoder(),
-        promptLookupTimeoutMs: 5000,
-      });
-      await s.connect();
-
-      const run1 = await startRunWithClientId(s, ch, { runId: 'run-1', clientId: 'user-a' });
-      const run2 = await startRunWithClientId(s, ch, { runId: 'run-2', clientId: 'user-b' });
-
-      simulateCancel(ch, { [HEADER_CANCEL_CLIENT_ID]: 'user-b' });
-      await new Promise((r) => setTimeout(r, 5));
-
-      expect(run1.abortSignal.aborted).toBe(false);
-      expect(run2.abortSignal.aborted).toBe(true);
-      s.close();
-    });
-
-    it('cancels all runs when cancel-all arrives', async () => {
-      const run1 = createRunFromOpts(session, { runId: 'run-1' });
-      const run2 = createRunFromOpts(session, { runId: 'run-2' });
-      await run1.start();
-      await run2.start();
-
-      simulateCancel(channel, { [HEADER_CANCEL_ALL]: 'true' });
-      await new Promise((r) => setTimeout(r, 5));
-
-      expect(run1.abortSignal.aborted).toBe(true);
-      expect(run2.abortSignal.aborted).toBe(true);
     });
 
     it('onCancel returning false prevents cancel', async () => {
@@ -1204,20 +1090,44 @@ describe('AgentSession', () => {
       });
       await run.start();
 
-      simulateCancel(channel, { [HEADER_CANCEL_RUN_ID]: 'run-1' });
+      simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
       await new Promise((r) => setTimeout(r, 5));
 
       expect(run.abortSignal.aborted).toBe(false);
     });
 
-    it('no-op when no run matches the filter', async () => {
+    it('no-op when no run matches the runId', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
 
-      simulateCancel(channel, { [HEADER_CANCEL_RUN_ID]: 'run-other' });
+      simulateCancel(channel, { [HEADER_RUN_ID]: 'run-other' });
       await new Promise((r) => setTimeout(r, 5));
 
       expect(run.abortSignal.aborted).toBe(false);
+    });
+
+    it('drops a malformed cancel missing x-ably-run-id with a warn-level log', async () => {
+      const ch = createMockChannel();
+      const { logger, warn } = captureWarnLogger();
+      const s = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'cancel-malformed',
+        codec: createMockCodec(),
+        logger,
+      });
+      await s.connect();
+      const run = createRunFromOpts(s, { runId: 'run-1' });
+      await run.start();
+
+      simulateCancel(ch, {});
+      await new Promise((r) => setTimeout(r, 5));
+
+      expect(run.abortSignal.aborted).toBe(false);
+      const warnCalls = warn.mock.calls.filter(
+        (call) => typeof call[0] === 'string' && call[0].includes('missing x-ably-run-id'),
+      );
+      expect(warnCalls.length).toBe(1);
+      s.close();
     });
   });
 
@@ -1228,14 +1138,14 @@ describe('AgentSession', () => {
   describe('early cancel', () => {
     it('fires abort signal even before start() is called', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
-      simulateCancel(channel, { [HEADER_CANCEL_RUN_ID]: 'run-1' });
+      simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
       await new Promise((r) => setTimeout(r, 5));
       expect(run.abortSignal.aborted).toBe(true);
     });
 
     it('start() throws when run was cancelled early', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
-      simulateCancel(channel, { [HEADER_CANCEL_RUN_ID]: 'run-1' });
+      simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
       await new Promise((r) => setTimeout(r, 5));
       await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
@@ -1329,9 +1239,9 @@ describe('AgentSession', () => {
       expect(onError).not.toHaveBeenCalled();
     });
 
-    it('onCancel throws → onError fires and other runs still get cancelled', async () => {
+    it('onCancel throws → onError fires for the targeted run', async () => {
       const onError = vi.fn();
-      const run1 = createRunFromOpts(session, {
+      const run = createRunFromOpts(session, {
         runId: 'run-1',
         // eslint-disable-next-line @typescript-eslint/require-await -- mock
         onCancel: async () => {
@@ -1339,14 +1249,11 @@ describe('AgentSession', () => {
         },
         onError,
       });
-      const run2 = createRunFromOpts(session, { runId: 'run-2' });
-      await run1.start();
-      await run2.start();
+      await run.start();
 
-      simulateCancel(channel, { [HEADER_CANCEL_ALL]: 'true' });
+      simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
       await new Promise((r) => setTimeout(r, 5));
 
-      expect(run2.abortSignal.aborted).toBe(true);
       expect(onError).toHaveBeenCalled();
     });
   });
@@ -1664,8 +1571,8 @@ describe('AgentSession', () => {
       const run = createRunFromOpts(s, { runId, invocationId, eventIds: ['p-a', 'p-b'] });
       const startPromise = run.start();
 
-      // Cancel-by-invocation-id triggers controller.abort() on the registered run.
-      simulateCancel(ch, { [HEADER_CANCEL_INVOCATION_ID]: invocationId });
+      // Cancel-by-runId triggers controller.abort() on the registered run.
+      simulateCancel(ch, { [HEADER_RUN_ID]: runId });
 
       await expect(startPromise).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
       s.close();

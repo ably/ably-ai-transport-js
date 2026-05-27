@@ -18,11 +18,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   EVENT_RUN_END,
   EVENT_RUN_START,
-  HEADER_CANCEL_ALL,
-  HEADER_CANCEL_CLIENT_ID,
-  HEADER_CANCEL_INVOCATION_ID,
-  HEADER_CANCEL_OWN,
-  HEADER_CANCEL_RUN_ID,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
@@ -494,7 +489,7 @@ describe('ClientSession', () => {
         fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
         runStartDeadlineMs: 0,
       });
-      await expect(s.cancel()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await expect(s.cancel('run-x')).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
       await s.close();
     });
 
@@ -508,7 +503,7 @@ describe('ClientSession', () => {
         fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
         runStartDeadlineMs: 0,
       });
-      await expect(s.waitForRun()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await expect(s.waitForRun('run-x')).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
       await s.close();
     });
 
@@ -1545,28 +1540,15 @@ describe('ClientSession', () => {
   // -------------------------------------------------------------------------
 
   describe('cancel', () => {
-    it('publishes a cancel message with own=true by default', async () => {
-      await fix.session.cancel();
+    it('publishes a cancel message carrying x-ably-run-id', async () => {
+      await fix.session.cancel('run-1');
       const cancelMsg = fix.channel.publishCalls.find((m) => m.name === 'ai-cancel');
       expect(cancelMsg).toBeDefined();
       const headers = (cancelMsg?.extras as { headers: Record<string, string> } | undefined)?.headers;
-      expect(headers?.[HEADER_CANCEL_OWN]).toBe('true');
+      expect(headers?.[HEADER_RUN_ID]).toBe('run-1');
     });
 
-    it.each([
-      ['runId', { runId: 'run-1' }, HEADER_CANCEL_RUN_ID, 'run-1'],
-      ['invocationId', { invocationId: 'inv-1' }, HEADER_CANCEL_INVOCATION_ID, 'inv-1'],
-      ['clientId', { clientId: 'someone' }, HEADER_CANCEL_CLIENT_ID, 'someone'],
-      ['all', { all: true }, HEADER_CANCEL_ALL, 'true'],
-    ])('publishes cancel with %s filter', async (_, filter, header, expected) => {
-      await fix.session.cancel(filter);
-      const cancelMsg = fix.channel.publishCalls.find((m) => m.name === 'ai-cancel');
-      expect(cancelMsg).toBeDefined();
-      const headers = (cancelMsg?.extras as { headers: Record<string, string> } | undefined)?.headers;
-      expect(headers?.[header]).toBe(expected);
-    });
-
-    it('closes any active own run streams', async () => {
+    it('closes the targeted run stream', async () => {
       const ch = createMockChannel();
       const codec = createMockCodec();
       const s = createClientSession<TestEvent, TestProjection, TestMessage>({
@@ -1584,7 +1566,7 @@ describe('ClientSession', () => {
       await ackPendingSend(ch, codec);
       const run = await sendPromise;
 
-      await s.cancel({ runId: run.runId });
+      await s.cancel(run.runId);
       const events = await drain(run.stream);
       expect(events).toEqual([]);
       await s.close();
@@ -1592,7 +1574,7 @@ describe('ClientSession', () => {
 
     it('cancel is a no-op after close', async () => {
       await fix.session.close();
-      await expect(fix.session.cancel()).resolves.toBeUndefined();
+      await expect(fix.session.cancel('run-x')).resolves.toBeUndefined();
     });
   });
 
@@ -1601,11 +1583,11 @@ describe('ClientSession', () => {
   // -------------------------------------------------------------------------
 
   describe('waitForRun', () => {
-    it('resolves immediately when no matching runs are active', async () => {
-      await expect(fix.session.waitForRun({ runId: 'run-nothing' })).resolves.toBeUndefined();
+    it('resolves immediately when the run is not active', async () => {
+      await expect(fix.session.waitForRun('run-nothing')).resolves.toBeUndefined();
     });
 
-    it('resolves when the matching run ends', async () => {
+    it('resolves when the run ends', async () => {
       simulateMessage(
         fix.channel,
         ablyMsg(EVENT_RUN_START, {
@@ -1614,7 +1596,7 @@ describe('ClientSession', () => {
         }),
       );
 
-      const p = fix.session.waitForRun({ runId: 'run-W' });
+      const p = fix.session.waitForRun('run-W');
       // Now end the run
       simulateMessage(
         fix.channel,
@@ -1635,7 +1617,7 @@ describe('ClientSession', () => {
           [HEADER_RUN_CLIENT_ID]: 'other',
         }),
       );
-      const p = fix.session.waitForRun({ all: true });
+      const p = fix.session.waitForRun('run-Q');
       await fix.session.close();
       await expect(p).resolves.toBeUndefined();
     });
@@ -1666,10 +1648,10 @@ describe('ClientSession', () => {
       expect(enc?.close).toHaveBeenCalled();
     });
 
-    it('publishes a cancel when close({ cancel }) is provided', async () => {
-      await fix.session.close({ cancel: { all: true } });
-      const cancelMsg = fix.channel.publishCalls.find((m) => m.name === 'ai-cancel');
-      expect(cancelMsg).toBeDefined();
+    it('does not publish any cancel messages on close()', async () => {
+      await fix.session.close();
+      const cancelMsgs = fix.channel.publishCalls.filter((m) => m.name === 'ai-cancel');
+      expect(cancelMsgs).toHaveLength(0);
     });
 
     it('rejects pending run-starts with SessionClosed', async () => {

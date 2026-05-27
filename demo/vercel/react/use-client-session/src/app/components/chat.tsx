@@ -127,7 +127,11 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
             onChange={setInput}
             inputRef={inputRef}
             onSend={(text) => void view.sendMessage(userMessage(text))}
-            onStop={() => void session.cancel({ own: true })}
+            onStop={() => {
+              const ownRunIds = clientId ? activeRuns.get(clientId) : undefined;
+              if (!ownRunIds) return;
+              for (const runId of ownRunIds) void session.cancel(runId);
+            }}
             hasAnyRuns={hasAnyRuns}
           />
         </div>

@@ -23,7 +23,6 @@ import {
   EVENT_CANCEL,
   EVENT_RUN_END,
   EVENT_RUN_START,
-  HEADER_CANCEL_RUN_ID,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_INPUT_CLIENT_ID,
   HEADER_INVOCATION_ID,
@@ -406,7 +405,7 @@ describe('AgentSession integration', () => {
 
     await cancelChannel.publish({
       name: EVENT_CANCEL,
-      extras: { headers: { [HEADER_CANCEL_RUN_ID]: 'run-cancel-1' } },
+      extras: { headers: { [HEADER_RUN_ID]: 'run-cancel-1' } },
     });
 
     const result = await streamPromise;

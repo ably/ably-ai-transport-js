@@ -417,7 +417,7 @@ describe('createChatTransport', () => {
   });
 
   describe('abort signal', () => {
-    it('wires to session.cancel({ all: true })', async () => {
+    it('wires to session.cancel(runId) for the run just produced', async () => {
       const { session, cancel, mockRun } = createMockSession();
       const chat = createChatTransport(session);
       const abortController = new AbortController();
@@ -431,10 +431,10 @@ describe('createChatTransport', () => {
         abortSignal: abortController.signal,
       });
 
-      // Abort — the listener calls `void session.cancel()` which is fire-and-forget
+      // Abort — the listener calls `void session.cancel(runId)` which is fire-and-forget
       abortController.abort();
 
-      expect(cancel).toHaveBeenCalledWith({ all: true });
+      expect(cancel).toHaveBeenCalledWith(mockRun.runId);
 
       // Clean up
       mockRun.close();
@@ -557,22 +557,13 @@ describe('createChatTransport', () => {
   });
 
   describe('close', () => {
-    it('delegates to session.close with options', async () => {
-      const { session, close } = createMockSession();
-      const chat = createChatTransport(session);
-
-      await chat.close({ cancel: { all: true } });
-
-      expect(close).toHaveBeenCalledWith({ cancel: { all: true } });
-    });
-
-    it('delegates to session.close without options', async () => {
+    it('delegates to session.close', async () => {
       const { session, close } = createMockSession();
       const chat = createChatTransport(session);
 
       await chat.close();
 
-      expect(close).toHaveBeenCalledWith(undefined);
+      expect(close).toHaveBeenCalledWith();
     });
   });
 

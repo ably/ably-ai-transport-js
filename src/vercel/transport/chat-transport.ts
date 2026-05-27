@@ -25,7 +25,7 @@ import * as Ably from 'ably';
 import type * as AI from 'ai';
 
 import { HEADER_RUN_ID } from '../../constants.js';
-import type { ActiveRun, ClientSession, CloseOptions, SendOptions } from '../../core/transport/types.js';
+import type { ActiveRun, ClientSession, SendOptions } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
 import type { VercelEvent, VercelProjection } from '../codec/index.js';
 
@@ -133,7 +133,7 @@ export interface ChatTransport {
   ) => Promise<ReadableStream<AI.UIMessageChunk> | null>;
 
   /** Close the underlying transport, releasing all resources. */
-  close(options?: CloseOptions): Promise<void>;
+  close(): Promise<void>;
 
   /** Whether an own-run stream is currently being consumed by useChat. */
   readonly streaming: boolean;
@@ -548,7 +548,8 @@ export const createChatTransport = (
     }
 
     if (abortSignal) {
-      abortSignal.addEventListener('abort', () => void session.cancel({ all: true }), {
+      const runId = run.runId;
+      abortSignal.addEventListener('abort', () => void session.cancel(runId), {
         once: true,
       });
     }
@@ -577,7 +578,7 @@ export const createChatTransport = (
     // eslint-disable-next-line unicorn/no-null, @typescript-eslint/promise-function-async -- null is required by the AI SDK ChatTransport contract; no await needed
     reconnectToStream: () => Promise.resolve(null),
 
-    close: async (options?: CloseOptions) => session.close(options),
+    close: async () => session.close(),
 
     get streaming(): boolean {
       return _streaming;

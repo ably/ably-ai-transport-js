@@ -14,11 +14,6 @@ import * as Ably from 'ably';
 
 import {
   EVENT_CANCEL,
-  HEADER_CANCEL_ALL,
-  HEADER_CANCEL_CLIENT_ID,
-  HEADER_CANCEL_INVOCATION_ID,
-  HEADER_CANCEL_OWN,
-  HEADER_CANCEL_RUN_ID,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
   HEADER_FORK_OF,
@@ -43,7 +38,6 @@ import type {
   AddMessagesResult,
   AgentSession,
   AgentSessionOptions,
-  CancelFilter,
   CancelRequest,
   EventsNode,
   MessageNode,
@@ -358,14 +352,6 @@ interface RegisteredRun {
   runId: string;
   /** Invocation-id this run is associated with, sourced from the invocation's `invocationId`. */
   invocationId: string;
-  /**
-   * ClientId of the run initiator — populated post-lookup from the first
-   * lookup-result MessageNode's `x-ably-run-client-id` header. Stays
-   * undefined while the lookup is in flight. Cancel filters that need a
-   * concrete clientId (`own`, `clientId`) buffer against runs with
-   * unresolved clientId until this lands.
-   */
-  clientId: string | undefined;
   controller: AbortController;
   /** Composite signal that fires when either the internal controller or the external signal aborts. */
   signal: AbortSignal;
@@ -431,14 +417,6 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
    */
   private readonly _completedLookupInvocationIds = new Map<string, number>();
   private readonly _completedLookupInvocationIdsLimit = 256;
-  /**
-   * Cancel messages received before a run's `clientId` was resolved from
-   * the prompt-lookup result. Keyed by runId, FIFO-bounded per
-   * `_promptBufferLimit` so a stalled run can't grow this unboundedly.
-   * Drained when the run's clientId lands (or discarded when the run
-   * fails its lookup and is torn down).
-   */
-  private readonly _bufferedCancels = new Map<string, Ably.InboundMessage[]>();
   private readonly _channelListener: (msg: Ably.InboundMessage) => void;
   private readonly _promptLookupTimeoutMs: number;
 
@@ -599,7 +577,6 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
     this._pendingPromptLookups.clear();
     this._promptBuffer.clear();
     this._completedLookupInvocationIds.clear();
-    this._bufferedCancels.clear();
     this._runManager.close();
     this._logger?.debug('DefaultAgentSession.close(); session closed');
   }
@@ -608,165 +585,47 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
   // Cancel message routing
   // -------------------------------------------------------------------------
 
-  /**
-   * Resolve which active runs a cancel filter targets.
-   *
-   * `own` and `clientId` filters require the run's `clientId` to be
-   * populated — that field lands only after the prompt-lookup resolves.
-   * Runs whose `clientId` is still undefined are skipped here; the cancel
-   * is buffered against them by `_handleCancelMessage` and re-evaluated
-   * when lookup populates the field.
-   * @param filter - The parsed cancel scope.
-   * @param senderClientId - The clientId of the cancel-message sender (for `own`).
-   * @returns RunIds whose clientId is known and matches the filter.
-   */
-  private _resolveFilter(filter: CancelFilter, senderClientId?: string): string[] {
-    const runIds = [...this._registeredRuns.keys()];
-
-    if (filter.all) return runIds;
-    if (filter.own && senderClientId) {
-      return runIds.filter((id) => this._registeredRuns.get(id)?.clientId === senderClientId);
-    }
-    if (filter.clientId) {
-      return runIds.filter((id) => this._registeredRuns.get(id)?.clientId === filter.clientId);
-    }
-    if (filter.invocationId) {
-      return runIds.filter((id) => this._registeredRuns.get(id)?.invocationId === filter.invocationId);
-    }
-    if (filter.runId && this._registeredRuns.has(filter.runId)) {
-      return [filter.runId];
-    }
-    return [];
-  }
-
-  /**
-   * Whether a cancel filter needs `clientId` to decide a run's match —
-   * i.e. `own` (sender's clientId vs the run's clientId) or `clientId`
-   * (explicit clientId vs the run's clientId). `all`, `runId`, and
-   * `invocationId` filters never need it.
-   * @param filter - The parsed cancel scope.
-   * @returns True when the filter requires `RegisteredRun.clientId` to be populated.
-   */
-  private _filterNeedsClientId(filter: CancelFilter): boolean {
-    return filter.own === true || filter.clientId !== undefined;
-  }
-
-  /**
-   * Buffer an incoming cancel message against runs whose `clientId` is
-   * unresolved. When their lookup completes, `_drainBufferedCancels`
-   * replays the buffered message through the normal cancel-handling
-   * path. Bounded per-run by `_promptBufferLimit` (FIFO eviction).
-   * @param msg - The Ably cancel message to defer.
-   */
-  private _bufferCancelForUnresolvedRuns(msg: Ably.InboundMessage): void {
-    for (const [runId, reg] of this._registeredRuns) {
-      if (reg.clientId !== undefined) continue;
-      const queue = this._bufferedCancels.get(runId) ?? [];
-      if (queue.length >= this._promptBufferLimit) {
-        queue.shift();
-        this._logger?.warn('DefaultAgentSession._bufferCancelForUnresolvedRuns(); evicting oldest', {
-          runId,
-          limit: this._promptBufferLimit,
-        });
-      }
-      queue.push(msg);
-      this._bufferedCancels.set(runId, queue);
-    }
-  }
-
-  /**
-   * Replay every cancel buffered against `runId` through the normal
-   * cancel handler. Called by `Run.start()` after the prompt-lookup
-   * resolves and populates `RegisteredRun.clientId`. Idempotent against
-   * an empty buffer.
-   * @param runId - The run whose cancel buffer should drain.
-   */
-  private _drainBufferedCancels(runId: string): void {
-    const queue = this._bufferedCancels.get(runId);
-    if (!queue || queue.length === 0) return;
-    this._bufferedCancels.delete(runId);
-    for (const msg of queue) {
-      this._handleCancelMessage(msg).catch((error: unknown) => {
-        const errInfo = new Ably.ErrorInfo(
-          `unable to drain buffered cancel; ${error instanceof Error ? error.message : String(error)}`,
-          ErrorCode.CancelListenerError,
-          500,
-          error instanceof Ably.ErrorInfo ? error : undefined,
-        );
-        this._logger?.error('DefaultAgentSession._drainBufferedCancels(); replay failed', { runId });
-        this._onError?.(errInfo);
-      });
-    }
-  }
-
-  // Spec: AIT-ST8, AIT-ST8a, AIT-ST8b, AIT-ST8c, AIT-ST8d, AIT-ST9, AIT-ST9a
   private async _handleCancelMessage(msg: Ably.InboundMessage): Promise<void> {
     const headers = getHeaders(msg);
+    const runId = headers[HEADER_RUN_ID];
 
-    // Spec: AIT-ST8a, AIT-ST8b, AIT-ST8c, AIT-ST8d
-    const filter: CancelFilter = {};
-    if (headers[HEADER_CANCEL_INVOCATION_ID]) {
-      filter.invocationId = headers[HEADER_CANCEL_INVOCATION_ID];
-    } else if (headers[HEADER_CANCEL_RUN_ID]) {
-      filter.runId = headers[HEADER_CANCEL_RUN_ID];
-    } else if (headers[HEADER_CANCEL_OWN] === 'true') {
-      filter.own = true;
-    } else if (headers[HEADER_CANCEL_CLIENT_ID]) {
-      filter.clientId = headers[HEADER_CANCEL_CLIENT_ID];
-    } else if (headers[HEADER_CANCEL_ALL] === 'true') {
-      filter.all = true;
+    // Malformed cancel: drop with warn. The protocol requires a single
+    // `x-ably-run-id` header identifying the target run.
+    if (!runId) {
+      this._logger?.warn('DefaultAgentSession._handleCancelMessage(); missing x-ably-run-id header', {
+        serial: msg.serial,
+      });
+      return;
     }
 
-    const matchedRunIds = this._resolveFilter(filter, msg.clientId);
+    const reg = this._registeredRuns.get(runId);
+    if (!reg) return;
 
-    // `own`/`clientId` filters may match runs whose clientId hasn't landed
-    // yet — buffer the message against them so the cancel re-fires once
-    // the prompt-lookup populates `RegisteredRun.clientId`.
-    if (this._filterNeedsClientId(filter)) {
-      this._bufferCancelForUnresolvedRuns(msg);
-    }
+    this._logger?.debug('DefaultAgentSession._handleCancelMessage(); matched run', { runId });
 
-    if (matchedRunIds.length === 0) return;
+    const request: CancelRequest = { message: msg, runId };
 
-    this._logger?.debug('DefaultAgentSession._handleCancelMessage(); matched runs', {
-      matchedRunIds,
-      filter,
-    });
-
-    const owners = new Map<string, string>();
-    for (const rid of matchedRunIds) {
-      const reg = this._registeredRuns.get(rid);
-      owners.set(rid, reg?.clientId ?? '');
-    }
-    const request: CancelRequest = { message: msg, filter, matchedRunIds, runOwners: owners };
-
-    for (const runId of matchedRunIds) {
-      const reg = this._registeredRuns.get(runId);
-      if (!reg) continue;
-
-      try {
-        if (reg.onCancel) {
-          const allowed = await reg.onCancel(request);
-          if (!allowed) {
-            this._logger?.debug('DefaultAgentSession._handleCancelMessage(); cancel rejected by onCancel', {
-              runId,
-            });
-            continue;
-          }
+    try {
+      if (reg.onCancel) {
+        const allowed = await reg.onCancel(request);
+        if (!allowed) {
+          this._logger?.debug('DefaultAgentSession._handleCancelMessage(); cancel rejected by onCancel', {
+            runId,
+          });
+          return;
         }
-        reg.controller.abort();
-        this._logger?.debug('DefaultAgentSession._handleCancelMessage(); run cancelled', { runId });
-      } catch (error) {
-        // A throwing onCancel handler must not prevent other runs from being cancelled.
-        const errInfo = new Ably.ErrorInfo(
-          `unable to process cancel for run ${runId}; onCancel handler threw: ${error instanceof Error ? error.message : String(error)}`,
-          ErrorCode.CancelListenerError,
-          500,
-          error instanceof Ably.ErrorInfo ? error : undefined,
-        );
-        this._logger?.error('DefaultAgentSession._handleCancelMessage(); onCancel threw', { runId });
-        (reg.onError ?? this._onError)?.(errInfo);
       }
+      reg.controller.abort();
+      this._logger?.debug('DefaultAgentSession._handleCancelMessage(); run cancelled', { runId });
+    } catch (error) {
+      const errInfo = new Ably.ErrorInfo(
+        `unable to process cancel for run ${runId}; onCancel handler threw: ${error instanceof Error ? error.message : String(error)}`,
+        ErrorCode.CancelListenerError,
+        500,
+        error instanceof Ably.ErrorInfo ? error : undefined,
+      );
+      this._logger?.error('DefaultAgentSession._handleCancelMessage(); onCancel threw', { runId });
+      (reg.onError ?? this._onError)?.(errInfo);
     }
   }
 
@@ -948,12 +807,9 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
     const signal = externalSignal ? AbortSignal.any([controller.signal, externalSignal]) : controller.signal;
 
     // Spec: AIT-ST3a — register immediately so early cancels can fire the AbortSignal.
-    // clientId is undefined until prompt-lookup resolves; cancel filters that
-    // need it are buffered in the meantime.
     const registration: RegisteredRun = {
       runId,
       invocationId: invocation.invocationId,
-      clientId: undefined,
       controller,
       signal,
       onCancel,
@@ -971,8 +827,6 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
     const requireConnected = this._requireConnected.bind(this);
     const registerPromptListener = this._registerPromptListener.bind(this);
     const recordCompletedLookup = this._recordCompletedLookup.bind(this);
-    const drainBufferedCancels = this._drainBufferedCancels.bind(this);
-    const bufferedCancels = this._bufferedCancels;
     const invocationEventIds = invocation.eventIds;
     // Snapshot the invocation's prior-conversation history. `Run.start()`
     // may overlay this with codec-folded state for continuation tool
@@ -1079,7 +933,6 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
             // the signal the client sees. No channel publish: an
             // `ai-run-end` without a preceding `ai-run-start` would break
             // the lifecycle invariant for other channel observers.
-            bufferedCancels.delete(runId);
             registeredRuns.delete(runId);
             logger?.error('Run.start(); prompt lookup failed', { runId, invocationId });
             throw errInfo;
@@ -1101,8 +954,6 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
           resolvedForkOf = sourceHeaders[HEADER_FORK_OF];
           resolvedContinuation = sourceHeaders[HEADER_RUN_CONTINUE] === 'true';
         }
-        registration.clientId = resolvedClientId;
-        drainBufferedCancels(runId);
 
         // Continuation overlay: for runs resuming under an existing runId,
         // any client-published tool resolutions on the channel have already

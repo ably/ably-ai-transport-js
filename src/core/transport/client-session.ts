@@ -49,7 +49,6 @@ import type {
   ClientSession,
   ClientSessionOptions,
   RunEndReason,
-  RunLifecycleEvent,
   SendOptions,
   Tree,
   View,
@@ -111,9 +110,6 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
 
   // Track codecMessageIds per run for cleanup on run-end
   private readonly _runCodecMessageIds = new Map<string, Set<string>>();
-
-  // Callbacks to resolve pending waitForRun promises on close, preventing leaked subscriptions.
-  private readonly _closeResolvers: (() => void)[] = [];
 
   // Sub-components
   private readonly _tree: DefaultTree<TEvent, TProjection>;
@@ -964,46 +960,6 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     this._router.closeStream(runId);
   }
 
-  // Spec: AIT-CT18
-  async waitForRun(runId: string): Promise<void> {
-    if (this._state === ClientSessionState.CLOSED) return;
-    await this._requireConnected('waitForRun');
-    // CAST: re-check after await — close() may have been called while waiting for connect.
-    if ((this._state as ClientSessionState) === ClientSessionState.CLOSED) return;
-
-    // Short-circuit if the run is not active in any client's run set.
-    let active = false;
-    for (const runIds of this._tree.getActiveRunIds().values()) {
-      if (runIds.has(runId)) {
-        active = true;
-        break;
-      }
-    }
-    if (!active) return;
-
-    this._logger.debug('ClientSession.waitForRun();', { runId });
-
-    return new Promise<void>((resolve) => {
-      let resolvedFlag = false;
-      const done = (): void => {
-        if (resolvedFlag) return;
-        resolvedFlag = true;
-        unsub();
-        const idx = this._closeResolvers.indexOf(done);
-        if (idx !== -1) this._closeResolvers.splice(idx, 1);
-        resolve();
-      };
-
-      const unsub = this._tree.on('run', (event: RunLifecycleEvent) => {
-        if (event.type !== EVENT_RUN_END) return;
-        if (event.runId === runId) done();
-      });
-
-      // Resolve on session close to prevent leaked subscriptions
-      this._closeResolvers.push(done);
-    });
-  }
-
   // Spec: AIT-CT8, AIT-CT8c, AIT-CT8d
   on(event: 'error', handler: (error: Ably.ErrorInfo) => void): () => void {
     if (this._state === ClientSessionState.CLOSED) return noopUnsubscribe;
@@ -1034,8 +990,6 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     this._emitter.off();
     for (const v of this._views) v.close();
     this._views.clear();
-    for (const resolve of this._closeResolvers) resolve();
-    this._closeResolvers.length = 0;
     // Reject any in-flight pending run-starts and clear their timers so the
     // owning send() promises settle rather than hang.
     if (this._pendingRunStarts.size > 0) {
@@ -1071,7 +1025,7 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
  * The caller owns the client's lifecycle; the session owns its channel.
  * The session is created in a not-yet-connected state — callers must
  * `await session.connect()` before `send`, `regenerate`, `edit`, `update`,
- * `cancel`, or `waitForRun`.
+ * or `cancel`.
  * @param options - Configuration for the client session.
  * @returns A new {@link ClientSession} instance.
  */

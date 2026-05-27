@@ -1031,9 +1031,8 @@ export interface ClientSession<TEvent, TProjection, TMessage> {
   /**
    * Subscribe to the channel and (implicitly) attach. Idempotent —
    * subsequent calls return the same promise. `sendMessage()`,
-   * `sendEvent()`, `regenerate()`, `edit()`, `update()`, `cancel()`, and
-   * `waitForRun()` throw
-   * `InvalidArgument` until `connect()` resolves.
+   * `sendEvent()`, `regenerate()`, `edit()`, `update()`, and `cancel()`
+   * throw `InvalidArgument` until `connect()` resolves.
    */
   connect(): Promise<void>;
 
@@ -1047,12 +1046,6 @@ export interface ClientSession<TEvent, TProjection, TMessage> {
 
   /** Cancel the specified run. Publishes a cancel message and closes the local stream. */
   cancel(runId: string): Promise<void>;
-
-  /**
-   * Returns a promise that resolves when the specified run has completed.
-   * Resolves immediately if the run is not active.
-   */
-  waitForRun(runId: string): Promise<void>;
 
   /**
    * Subscribe to non-fatal session errors. These indicate something went

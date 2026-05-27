@@ -78,7 +78,6 @@ const createMockSlot = (): MockSlot => {
     regenerate: vi.fn(),
     edit: vi.fn(),
     cancel: vi.fn(),
-    waitForRun: vi.fn(),
     close: vi.fn(),
     // CAST: mock object satisfies the subset of ClientSession methods used by useMessageSync
   } as unknown as ClientSession<VercelEvent, VercelProjection, AI.UIMessage>;

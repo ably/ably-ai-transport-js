@@ -332,29 +332,17 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     if (this._processingHistory) return;
     if (!this._lastVisibleRunIdSet.has(event.runId)) return;
 
-    // The Run identity list hasn't changed (no structural mutation), but the
-    // visible projection at this index has new content. Recompute the flat
-    // message list and emit.
-    const messages = this._extractMessages(this._cachedNodes);
-    const projections = this._cachedNodes.map((n) => n.projection);
-
-    // Reference equality short-circuit: fires on every streaming chunk, so
-    // suppressing no-op emits keeps the render loop O(visible_messages)
-    // instead of O(total_subscribers * visible_messages). The Reducer
-    // contract allows `fold` to mutate the projection in place, so a real
-    // streaming delta produces the same projection reference but a new
-    // TMessage at some index — caught by `messagesChanged`. A reducer that
-    // returns the same projection AND the same TMessage references is a
-    // no-op fold (e.g. idempotent re-fold past the high-water-mark serial).
-    const projectionChanged = projections.some((p, i) => p !== this._lastVisibleProjections[i]);
-    const messagesChanged =
-      messages.length !== this._lastVisibleMessages.length ||
-      messages.some((m, i) => m !== this._lastVisibleMessages[i]);
-
-    if (!projectionChanged && !messagesChanged) return;
-
-    this._lastVisibleProjections = projections;
-    this._lastVisibleMessages = messages;
+    // The Tree only emits `run-projection-updated` when fold() actually
+    // ran on this Run's projection, so we always re-emit. The Reducer
+    // contract permits in-place mutation, which means we cannot use
+    // projection-ref or TMessage-ref equality to detect change: a
+    // streaming chunk legitimately mutates the same UIMessage object,
+    // and a ref-equality short-circuit would suppress every update.
+    // React state setters at the subscriber boundary already dedup by
+    // array reference, so a redundant emit is a no-op for unchanged
+    // hook consumers.
+    this._lastVisibleProjections = this._cachedNodes.map((n) => n.projection);
+    this._lastVisibleMessages = this._extractMessages(this._cachedNodes);
     this._emitter.emit('update');
   }
 
@@ -378,13 +366,63 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
    */
   private _computeFlatNodes(): RunNode<TProjection>[] {
     const treeNodes = this._tree.flattenNodes(this._resolveSelections());
-    const visible: RunNode<TProjection>[] = [];
+    const candidates: RunNode<TProjection>[] = [];
     for (const node of treeNodes) {
       if (this._withheldRunIds.has(node.runId)) continue;
       if (this._isRegenHiddenByGroupSelection(node)) continue;
+      candidates.push(node);
+    }
+
+    // Shadow filter: a regenerator whose anchor msg-id is in the
+    // truncated tail of its owner Run (because another regenerator
+    // targets an *earlier* position in the same owner) belongs to a
+    // timeline that's no longer in the visible chain. Drop it.
+    //
+    // Example: R1 = [u1, TC1, TT1]. R2 regenerates TT1; R3 regenerates
+    // TC1. Selecting R3 truncates R1 at TC1 (index 1) — TT1 is no
+    // longer in the chain, so R2's anchor is moot and R2's content
+    // (TT1') shouldn't leak in between u1 and R3's content.
+    const earliestTruncationByOwner = new Map<string, number>();
+    for (const node of candidates) {
+      if (node.regeneratesCodecMessageId === undefined) continue;
+      const anchorIdx = this._anchorIndexInOwner(node.regeneratesCodecMessageId);
+      if (anchorIdx === undefined) continue;
+      const ownerRunId = anchorIdx.ownerRunId;
+      const existing = earliestTruncationByOwner.get(ownerRunId);
+      if (existing === undefined || anchorIdx.index < existing) {
+        earliestTruncationByOwner.set(ownerRunId, anchorIdx.index);
+      }
+    }
+
+    const visible: RunNode<TProjection>[] = [];
+    for (const node of candidates) {
+      if (node.regeneratesCodecMessageId !== undefined) {
+        const anchorIdx = this._anchorIndexInOwner(node.regeneratesCodecMessageId);
+        if (anchorIdx !== undefined) {
+          const earliest = earliestTruncationByOwner.get(anchorIdx.ownerRunId);
+          if (earliest !== undefined && anchorIdx.index > earliest) {
+            continue;
+          }
+        }
+      }
       visible.push(node);
     }
     return visible;
+  }
+
+  /**
+   * Locate `anchorMsgId` inside its owning Run's projection.
+   * @param anchorMsgId - The msg-id to look up.
+   * @returns The owner runId and the message's index in that Run's
+   *   projection, or `undefined` when the msg-id has no owner.
+   */
+  private _anchorIndexInOwner(anchorMsgId: string): { ownerRunId: string; index: number } | undefined {
+    const ownerRun = this._tree.getRunByCodecMessageId(anchorMsgId);
+    if (!ownerRun) return undefined;
+    const messages = this._codec.getMessages(ownerRun.projection);
+    const index = messages.findIndex((m) => _readMessageId(m) === anchorMsgId);
+    if (index === -1) return undefined;
+    return { ownerRunId: ownerRun.runId, index };
   }
 
   /**
@@ -434,32 +472,64 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   }
 
   /**
-   * Extract the flat TMessage[] from a visible Run chain by concatenating
-   * each Run's `codec.getMessages(projection)` in chronological order,
-   * then dropping any message whose codec-message-id has been regenerated by a
-   * later visible Run (message-level replacement).
+   * Extract the flat TMessage[] from a visible Run chain.
+   *
+   * Each owner Run's messages are emitted in projection order, with two
+   * substitutions applied as we walk:
+   *
+   * 1. When a message's codec-message-id is the anchor of a visible
+   *    regenerator Run, the regenerator's content is emitted **in
+   *    place of the anchor** — at the anchor's position, not at the
+   *    end of the visible chain. The owner Run's remaining
+   *    (post-anchor) messages are skipped: they belong to the
+   *    timeline that was replaced; their counterparts live inside
+   *    the regenerator (which we just emitted).
+   * 2. The recursion holds inside the regenerator too — if its own
+   *    content contains an anchor of another visible regenerator
+   *    (nested regen), we recurse and substitute again.
+   *
+   * Regenerator Runs are visited from their owners; we skip them at
+   * the top level so they're emitted exactly once.
+   *
+   * Without (1), a regenerator whose owner is followed by later Runs
+   * (e.g. `R1 = [u1, a1], R2 (parent=a1) = [u2, a2], R3 (regen of a1)
+   * = [a1']`) renders as `[u1, u2, a2, a1']` instead of the natural
+   * `[u1, a1', u2, a2]`, because the Run sort order is by
+   * `startSerial` and R3 is the newest.
    * @param nodes - The visible Runs in chronological order.
-   * @returns The flat message list across all Runs.
+   * @returns The flat message list with regenerator substitutions applied.
    */
   private _extractMessages(nodes: RunNode<TProjection>[]): TMessage[] {
-    // Collect the codec-message-ids that will be replaced by a later visible
-    // regenerator. Only regenerators visible after the regenerated codec-message-id
-    // contribute — if the regenerator is hidden by group selection it
-    // never reaches this collection.
-    const replacedMsgIds = new Set<string>();
+    const regeneratorByAnchor = new Map<string, RunNode<TProjection>>();
+    const regeneratorRunIds = new Set<string>();
     for (const node of nodes) {
       if (node.regeneratesCodecMessageId !== undefined) {
-        replacedMsgIds.add(node.regeneratesCodecMessageId);
+        regeneratorByAnchor.set(node.regeneratesCodecMessageId, node);
+        regeneratorRunIds.add(node.runId);
       }
     }
 
     const messages: TMessage[] = [];
-    for (const node of nodes) {
-      for (const m of this._codec.getMessages(node.projection)) {
+    const emitted = new Set<string>();
+    const emitFromRun = (run: RunNode<TProjection>): void => {
+      if (emitted.has(run.runId)) return;
+      emitted.add(run.runId);
+      for (const m of this._codec.getMessages(run.projection)) {
         const id = _readMessageId(m);
-        if (id !== undefined && replacedMsgIds.has(id)) continue;
+        if (id !== undefined) {
+          const substitute = regeneratorByAnchor.get(id);
+          if (substitute && substitute.runId !== run.runId) {
+            emitFromRun(substitute);
+            return;
+          }
+        }
         messages.push(m);
       }
+    };
+
+    for (const node of nodes) {
+      if (regeneratorRunIds.has(node.runId)) continue;
+      emitFromRun(node);
     }
     return messages;
   }
@@ -719,16 +789,34 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
       }
     }
 
-    // Regen branch point: codec-message-id is either the regen anchor itself (in
-    // the owner Run) or content of a regenerator Run.
-    const regenGroup = this._tree.getRegenerateGroup(run.runId);
-    if (regenGroup && regenGroup.runs.length > 1) {
-      if (codecMessageId === regenGroup.anchorCodecMessageId) {
-        return { kind: 'regen', anchorCodecMessageId: regenGroup.anchorCodecMessageId, siblings: regenGroup.runs };
-      }
-      const ownerRun = this._tree.getRunByCodecMessageId(regenGroup.anchorCodecMessageId);
-      if (ownerRun && run.runId !== ownerRun.runId) {
-        return { kind: 'regen', anchorCodecMessageId: regenGroup.anchorCodecMessageId, siblings: regenGroup.runs };
+    // Regen branch point: codec-message-id is either the regen anchor
+    // itself (in the owner Run) or the *first* content message of a
+    // regenerator Run — the position-equivalent of the anchor in that
+    // variant. Subsequent messages in a regenerator Run are follow-up
+    // content (e.g. the LLM's text response after the regenerated tool
+    // call) and are not branch anchors themselves; surfacing arrows on
+    // them would show "2 / 2" on every message of the regenerated variant.
+    //
+    // Look up the group anchored at `codecMessageId` directly. The
+    // owner-Run may anchor multiple distinct regen groups (e.g. R1
+    // contains both a tool-call assistant and a follow-up text, each
+    // regenerated by a separate Run); resolving the group via
+    // `getRegenerateGroup(runId)` is ambiguous in that case because it
+    // returns only one of them.
+    const directGroup = this._tree.getRegenerateGroupByMsgId(codecMessageId);
+    if (directGroup.length > 1) {
+      return { kind: 'regen', anchorCodecMessageId: codecMessageId, siblings: directGroup };
+    }
+
+    // Otherwise, if `codecMessageId` is the head message of a regenerator
+    // Run, its anchor is the position-equivalent in the owner Run.
+    if (run.regeneratesCodecMessageId !== undefined) {
+      const firstMsg = this._codec.getMessages(run.projection).at(0);
+      if (firstMsg && _readMessageId(firstMsg) === codecMessageId) {
+        const siblings = this._tree.getRegenerateGroupByMsgId(run.regeneratesCodecMessageId);
+        if (siblings.length > 1) {
+          return { kind: 'regen', anchorCodecMessageId: run.regeneratesCodecMessageId, siblings };
+        }
       }
     }
 
@@ -898,13 +986,23 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     }
 
     // Canonical regen anchor: when the user clicks Regenerate on an
-    // already-regenerated assistant, the new alternative belongs to the
-    // SAME branch point as the previous regen, not a nested point. The
-    // anchor is the regen group's owner codec-message-id (the "original assistant"
-    // at this conversation slot). Anchoring every regen at the same
-    // codec-message-id grows a single group of alternatives ("N / N+1") instead
-    // of producing nested two-member groups.
-    const regenAnchorMsgId = targetRun.regeneratesCodecMessageId ?? messageId;
+    // already-regenerated assistant, the new alternative SHOULD belong
+    // to the SAME branch point as the previous regen — but ONLY when
+    // the target is the position-equivalent of the group anchor (the
+    // head message of the regenerator Run). For a trailing follow-up
+    // message inside a regenerator Run (e.g. the LLM text after the
+    // regenerated tool call), the user expects the regen to anchor at
+    // the specific message they clicked, not roll up to the group root.
+    // Rebasing trailing regens to the group root produces a confusing
+    // "N+1 / N+1" counter on the tool-call bubble and runs the whole
+    // turn from scratch instead of just regenerating the text.
+    let regenAnchorMsgId = messageId;
+    if (targetRun.regeneratesCodecMessageId !== undefined) {
+      const firstMsg = this._codec.getMessages(targetRun.projection).at(0);
+      if (firstMsg && _readMessageId(firstMsg) === messageId) {
+        regenAnchorMsgId = targetRun.regeneratesCodecMessageId;
+      }
+    }
 
     const history = this._getHistoryThrough(parentCodecMessageId);
 

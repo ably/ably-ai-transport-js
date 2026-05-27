@@ -787,6 +787,52 @@ describe('Tree', () => {
       );
       expect(tree.getRunNode('R2')?.forkOf).toBe('R1');
     });
+
+    it('continuation run-starts do not backfill parent into a self-cycle when the parent msg-id belongs to the same Run', () => {
+      // Repro for the user-reported regression where a client-side tool
+      // resolution (or approval) made both the user prompt and the
+      // assistant bubble disappear:
+      //   1. User sends u1 -> R1 created, R1.parentRunId = undefined (root run).
+      //   2. Agent streams a1 inside R1.
+      //   3. Client publishes a tool-resolution continuation wire stamped
+      //      with x-ably-msg-id=a1, x-ably-parent=a1, x-ably-run-continue=true.
+      //   4. Agent's continuation run-start arrives carrying parent=a1
+      //      (read from the matched continuation wire's headers).
+      //   5. Pre-fix the backfill resolved msgIdToRunId[a1] = R1 and set
+      //      R1.parentRunId = R1 — a self-parent cycle — so flattenNodes()
+      //      filtered R1 out as unreachable and the View showed nothing.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'u1',
+        role: 'user',
+        message: { id: 'u1', content: 'q' },
+        serial: 's1',
+      });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'a1',
+        role: 'assistant',
+        message: { id: 'a1', content: 'calling tool' },
+        serial: 's2',
+      });
+      expect(tree.getRunNode('R1')?.parentRunId).toBeUndefined();
+
+      tree.applyRunLifecycle(
+        {
+          type: 'ai-run-start',
+          runId: 'R1',
+          clientId: 'c1',
+          invocationId: 'inv-2',
+          parent: 'a1',
+          isContinuation: true,
+        },
+        's3',
+      );
+
+      expect(tree.getRunNode('R1')?.parentRunId).toBeUndefined();
+      const flat = tree.flattenNodes(new Map());
+      expect(flat.map((n) => n.runId)).toEqual(['R1']);
+    });
   });
 
   // -------------------------------------------------------------------------

@@ -74,8 +74,8 @@ vi.mock('@ably/ai-transport/vercel/react', () => ({
       getMessageSiblings: () => [],
       getSelectedMessageSiblingIndex: () => 0,
       selectMessageSibling: () => {},
+      getMessageMetadata: () => undefined,
       getRunNode: (runId: string) => state.runs.get(runId),
-      getRunByCodecMessageId: (_codecMessageId: string) => undefined,
     };
   },
 }));

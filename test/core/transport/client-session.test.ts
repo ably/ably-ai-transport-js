@@ -1438,6 +1438,133 @@ describe('ClientSession', () => {
       await s.close();
     });
 
+    it('continuation run reaches status=complete live after a terminal event closes the router stream mid-continuation', async () => {
+      // End-to-end repro of the user-reported "stuck streaming" bug.
+      // After the continuation streams its content, the codec emits a
+      // terminal event (the Vercel codec marks `finish`/`error`/`abort`
+      // terminal) and `route()` calls `closeStream(runId)` — wiping the
+      // router entry. When the continuation's run-end then arrives the
+      // gate found `routerActive === undefined` and fell back to the
+      // tree's winning-invocation map, which stays pinned to the
+      // original invocation because continuation wires skip the winner
+      // update. The run-end was dropped as a losing-invocation echo and
+      // the Run stayed at status=active forever — every bubble in the
+      // chat showed "streaming". A page refresh recovered because
+      // history replay bypasses the gate entirely.
+      const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
+
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: initial.runId,
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+          [HEADER_INVOCATION_ID]: initial.invocationId,
+          [HEADER_RUN_REASON]: 'suspended',
+        }),
+      );
+
+      const continuation = await fix.session.view.sendEvent([{ type: 'user-message', text: 'continue' }], {
+        runId: initial.runId,
+      });
+
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_START, {
+          [HEADER_RUN_ID]: initial.runId,
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+          [HEADER_INVOCATION_ID]: continuation.invocationId,
+          'x-ably-run-continue': 'true',
+        }),
+      );
+
+      // Simulate a terminal event arriving in the continuation stream —
+      // route() will closeStream(runId) which deletes the router entry.
+      fix.decoder.queue.push({ type: 'finish' });
+      simulateMessage(
+        fix.channel,
+        ablyMsg('finish', {
+          [HEADER_RUN_ID]: initial.runId,
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+          [HEADER_INVOCATION_ID]: continuation.invocationId,
+          'x-ably-run-continue': 'true',
+        }),
+      );
+
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: initial.runId,
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+          [HEADER_INVOCATION_ID]: continuation.invocationId,
+          [HEADER_RUN_REASON]: 'complete',
+        }),
+      );
+
+      // With the fix, the gate consults `_ownRunIds` first (which still
+      // has the continuation's invocation-id), the gate passes, and
+      // applyRunLifecycle marks the Run complete.
+      expect(fix.session.tree.getRunNode(initial.runId)?.status).toBe('complete');
+      expect(fix.session.tree.getActiveRunIds().size).toBe(0);
+    });
+
+    it('continuation run reaches status=complete live after suspended → continuation → complete sequence', async () => {
+      // User-reported regression: after a tool-resolution / approval
+      // continuation completes, the Run stays at status=active in the
+      // live client even though channel-history replay rebuilds it as
+      // status=complete. Repro the full sequence: first send →
+      // run-end suspended → continuation send (rebinds router) →
+      // run-end complete. R1.status must end at the continuation's
+      // reason, otherwise the UI stays stuck on "streaming".
+      const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
+
+      // First invocation suspends (e.g. tool call awaiting client output).
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: initial.runId,
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+          [HEADER_INVOCATION_ID]: initial.invocationId,
+          [HEADER_RUN_REASON]: 'suspended',
+        }),
+      );
+      expect(fix.session.tree.getRunNode(initial.runId)?.status).toBe('suspended');
+
+      // Continuation send under the same runId — rebinds router to inv2.
+      const continuation = await fix.session.view.sendEvent([{ type: 'user-message', text: 'continue' }], {
+        runId: initial.runId,
+      });
+      expect(continuation.invocationId).not.toBe(initial.invocationId);
+
+      // Continuation's run-start (from agent) re-activates the run.
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_START, {
+          [HEADER_RUN_ID]: initial.runId,
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+          [HEADER_INVOCATION_ID]: continuation.invocationId,
+          'x-ably-run-continue': 'true',
+        }),
+      );
+      expect(fix.session.tree.getRunNode(initial.runId)?.status).toBe('active');
+
+      // Continuation run-end (complete).
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: initial.runId,
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+          [HEADER_INVOCATION_ID]: continuation.invocationId,
+          [HEADER_RUN_REASON]: 'complete',
+        }),
+      );
+
+      // The continuation's run-end must apply — otherwise the UI's
+      // useActiveRuns map keeps R1 marked active and the InputBar
+      // shows "Stop" forever.
+      expect(fix.session.tree.getRunNode(initial.runId)?.status).toBe('complete');
+      expect(fix.session.tree.getActiveRunIds().size).toBe(0);
+    });
+
     it('processes continuation run-end (router-active invocation is fresh)', async () => {
       // Continuation rebinds the router stream to a new invocation while the
       // Tree's winner stays on the original user-message's invocation. The

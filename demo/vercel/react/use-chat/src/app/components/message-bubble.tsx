@@ -277,7 +277,7 @@ export function MessageBubble({
                     value={runId.slice(0, 8)}
                     color="bg-zinc-900 text-zinc-500"
                   />
-                  {status && <StatusBadge status={status} />}
+                  {status && !isUser && <StatusBadge status={status} />}
                 </>
               )}
             </div>

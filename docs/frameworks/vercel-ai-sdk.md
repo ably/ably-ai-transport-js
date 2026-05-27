@@ -43,14 +43,14 @@ const { messages, setMessages, sendMessage, stop } = useChat({
 useMessageSync({ setMessages });
 ```
 
-`ChatTransportProvider` creates both a `ClientSession` and a `ChatTransport` and makes them available in context. `useChatTransport()` reads both from context — `chatTransport` is passed to `useChat()`, and `session` is used for `useMessageSync`, `useActiveRuns`, and `useView`. `useMessageSync()` pushes the session's authoritative message list into `useChat()`'s state — this is how messages from other clients appear.
+`ChatTransportProvider` creates both a `ClientSession` and a `ChatTransport` and makes them available in context. `useChatTransport()` reads both from context — `chatTransport` is passed to `useChat()`, and `session` is used for `useMessageSync` and `useView`. `useMessageSync()` pushes the session's authoritative message list into `useChat()`'s state — this is how messages from other clients appear.
 
 ### Generic hooks path (more control)
 
 Use the generic React hooks directly. You manage message state through the session's conversation tree instead of `useChat()`.
 
 ```tsx
-import { ClientSessionProvider, useClientSession, useView, useActiveRuns } from '@ably/ai-transport/react';
+import { ClientSessionProvider, useClientSession, useView } from '@ably/ai-transport/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import type * as AI from 'ai';
 
@@ -79,7 +79,6 @@ const {
   getSiblings,
   hasSiblings,
 } = useView({ session, limit: 30 });
-const activeRuns = useActiveRuns({ session });
 ```
 
 This path gives you conversation branching UI (sibling navigation), write operations, and direct access to the view state.
@@ -99,7 +98,7 @@ This path gives you conversation branching UI (sibling navigation), write operat
 | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `@ably/ai-transport/vercel`       | `UIMessageCodec`, `createAgentSession()`, `createClientSession()`, `createChatTransport()` - all pre-bound to Vercel types |
 | `@ably/ai-transport/vercel/react` | `ChatTransportProvider`, `useChatTransport()`, `useMessageSync()`, plus all generic hooks pre-bound to Vercel types        |
-| `@ably/ai-transport/react`        | Generic hooks (`useView`, `useActiveRuns`, `useClientSession`, etc.) - work with any codec including `UIMessageCodec`      |
+| `@ably/ai-transport/react`        | Generic hooks (`useView`, `useTree`, `useClientSession`, etc.) - work with any codec including `UIMessageCodec`            |
 
 The Vercel entry points are convenience wrappers. `createAgentSession()` from `/vercel` is the same as the core `createAgentSession()` with `UIMessageCodec` pre-bound - you don't pass a `codec` option.
 

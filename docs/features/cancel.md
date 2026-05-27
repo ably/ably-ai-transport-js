@@ -17,28 +17,31 @@ await run.cancel();
 await session.cancel(run.runId);
 ```
 
-Each `session.cancel(runId)` call targets exactly one run. To cancel multiple runs, iterate over their ids and call `cancel(runId)` for each.
+Each `session.cancel(runId)` call targets exactly one run. To cancel multiple runs, iterate over runIds you hold yourself (handles returned by `send()`, or runIds read off rendered message nodes).
 
-In React, `useActiveRuns()` exposes the active-run map keyed by clientId, which is how a "stop all my runs" button targets its own ids:
+In React, the simplest "stop" button targets the run that produced the message the user is looking at — read `x-ably-run-id` off the latest visible node:
 
 ```typescript
-import { useActiveRuns } from '@ably/ai-transport/react';
+import { useView } from '@ably/ai-transport/react';
 
-const activeRuns = useActiveRuns({ session });
-const ownRunIds = clientId ? activeRuns.get(clientId) : undefined;
-const isStreaming = (ownRunIds?.size ?? 0) > 0;
+const { nodes } = useView({ session });
+const latest = nodes.at(-1);
+const latestRunId = latest?.headers['x-ably-run-id'];
+const latestStatus = latest?.headers['x-ably-status'];
+const isStreaming = latestRunId !== undefined && latestStatus !== 'complete' && latestStatus !== 'cancelled';
 
-// Stop button — cancels each own runId individually
 <button
   onClick={() => {
-    if (!ownRunIds) return;
-    for (const runId of ownRunIds) void session.cancel(runId);
+    if (!latestRunId) return;
+    void session.cancel(latestRunId);
   }}
   disabled={!isStreaming}
 >
   Stop
 </button>
 ```
+
+This is authoritative for the only thing the user can meaningfully stop — the streaming response in front of them — and stays correct even when the session has only hydrated part of the channel history.
 
 ## Server side
 
@@ -124,4 +127,4 @@ await session.close();
 
 If you don't need to stop the server's work, just call `session.close()` on its own.
 
-See [Interruption](interruption.md) for cancel-then-send patterns. See [Error codes](../reference/error-codes.md) for cancel-related error codes. See [React hooks reference](../reference/react-hooks.md) for the `useActiveRuns()` API. For the internal cancel routing, see [Cancel routing](../internals/transport-components.md#cancel-routing-agent-session).
+See [Interruption](interruption.md) for cancel-then-send patterns. See [Error codes](../reference/error-codes.md) for cancel-related error codes. For the internal cancel routing, see [Cancel routing](../internals/transport-components.md#cancel-routing-agent-session).

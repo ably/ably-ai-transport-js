@@ -131,6 +131,14 @@ export const EVENT_RUN_START = 'ai-run-start';
 /** Message name: server publishes this to signal a run has ended. */
 export const EVENT_RUN_END = 'ai-run-end';
 
+/**
+ * Message name: every agent-published codec event (text, reasoning, tool calls,
+ * tool outputs, lifecycle helpers, file / source parts, data-* chunks) rides
+ * this single wire name. The codec event's own `type` is carried in the
+ * `x-domain-type` domain header so the decoder can dispatch.
+ */
+export const EVENT_AI_OUTPUT = 'ai-output';
+
 // ---------------------------------------------------------------------------
 // Domain header prefix (used by codec implementations)
 // ---------------------------------------------------------------------------

@@ -89,7 +89,6 @@ const createMockSession = (): MockSession => {
     hasSiblingRuns: vi.fn(() => false),
     // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires explicit undefined return for the contract
     getRegenerateGroup: vi.fn(() => undefined),
-    getActiveRunIds: vi.fn(() => new Map()),
     getWinningInvocation: vi.fn(),
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
     on: vi.fn(() => () => {}),
@@ -115,7 +114,6 @@ const createMockSession = (): MockSession => {
     sendEvent: send,
     regenerate,
     edit: vi.fn(),
-    getActiveRunIds: vi.fn(() => new Map()),
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
     on: vi.fn(() => () => {}),
     close: vi.fn(),

@@ -1136,28 +1136,6 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   }
 
   // -------------------------------------------------------------------------
-  // Observation
-  // -------------------------------------------------------------------------
-
-  // Spec: AIT-CT17
-  getActiveRunIds(): Map<string, Set<string>> {
-    this._logger.trace('DefaultView.getActiveRunIds();');
-    const allRuns = this._tree.getActiveRunIds();
-    if (this._withheldRunIds.size === 0) return allRuns;
-
-    // Filter to runs that are on the visible branch
-    const result = new Map<string, Set<string>>();
-    for (const [clientId, runIds] of allRuns) {
-      const filtered = new Set<string>();
-      for (const runId of runIds) {
-        if (this._lastVisibleRunIdSet.has(runId)) filtered.add(runId);
-      }
-      if (filtered.size > 0) result.set(clientId, filtered);
-    }
-    return result;
-  }
-
-  // -------------------------------------------------------------------------
   // Event subscription
   // -------------------------------------------------------------------------
 

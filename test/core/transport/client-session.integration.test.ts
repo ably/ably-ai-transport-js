@@ -519,9 +519,6 @@ describe('ClientSession integration', () => {
     const clientRun = await sendPromise;
     await startPromise;
 
-    const activeBefore = clientSession.tree.getActiveRunIds();
-    expect(activeBefore.size).toBeGreaterThan(0);
-
     const stream = textResponseStream('msg-lc-1', 'text-lc-1', 'test');
     await run.pipe(stream);
     await run.end('complete');
@@ -1377,10 +1374,6 @@ describe('ClientSession integration', () => {
 
     const textPart = userMsg?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
     expect(textPart?.text).toBe('winning prompt');
-
-    // Active run state should not be left open by the losing run-end ahead
-    // of the winning sequence completing.
-    expect(clientSession.tree.getActiveRunIds().has(runId)).toBe(false);
   });
 
   /**

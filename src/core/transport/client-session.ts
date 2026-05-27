@@ -401,9 +401,9 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
             return;
           }
           // `suspended` keeps the run live so a continuation that reuses
-          // the runId picks up where it left off. Router stream and tree
-          // run-tracking survive. The `run` event still fires so listeners
-          // can react to the suspend.
+          // the runId picks up where it left off. Router stream survives.
+          // The `run` event still fires so listeners can react to the
+          // suspend.
           if (reason !== 'suspended') {
             this._router.closeStream(runId);
             const codecMessageIds = this._runCodecMessageIds.get(runId);
@@ -547,7 +547,6 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     }
     this._ownRunIds.delete(runId);
     this._runCodecMessageIds.delete(runId);
-    this._tree.untrackRun(runId);
   }
 
   // ---------------------------------------------------------------------------
@@ -672,10 +671,6 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     const runId = sendOptions?.runId ?? crypto.randomUUID();
     const invocationId = sendOptions?.invocationId ?? crypto.randomUUID();
     this._ownRunIds.set(runId, invocationId);
-
-    if (!isContinuation) {
-      this._tree.trackRun(runId, this._clientId ?? '');
-    }
 
     // The View pre-computed the visible branch's flat message list and the
     // codec-message-id of its tail message before calling this delegate, so neither

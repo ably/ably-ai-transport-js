@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DOMAIN_HEADER_PREFIX as D,
+  EVENT_AI_INPUT,
   EVENT_AI_OUTPUT,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_DISCRETE,
@@ -862,15 +863,16 @@ describe('Vercel decoder', () => {
   // -- discrete message decoding (writeMessages relays) ---------------------
 
   describe('discrete message decoding', () => {
-    it('decodes a text message with x-ably-role into a UIMessage', () => {
+    it('decodes a text user-message part into a UIMessage', () => {
       const decoder = createDecoder();
       const msg = withHeaders(
-        { name: 'text', data: 'Hello world' },
+        { name: EVENT_AI_INPUT, data: 'Hello world' },
         {
           [HEADER_STREAM]: 'false',
           [HEADER_DISCRETE]: 'true',
           [HEADER_ROLE]: 'user',
           [HEADER_CODEC_MESSAGE_ID]: 'msg-1',
+          [`${D}type`]: 'text',
           [`${D}messageId`]: 'ui-1',
         },
       );
@@ -888,15 +890,16 @@ describe('Vercel decoder', () => {
       );
     });
 
-    it('decodes a file message with x-ably-role into a UIMessage', () => {
+    it('decodes a file user-message part into a UIMessage', () => {
       const decoder = createDecoder();
       const msg = withHeaders(
-        { name: 'file', data: 'https://example.com/img.png' },
+        { name: EVENT_AI_INPUT, data: 'https://example.com/img.png' },
         {
           [HEADER_STREAM]: 'false',
           [HEADER_DISCRETE]: 'true',
           [HEADER_ROLE]: 'user',
           [HEADER_CODEC_MESSAGE_ID]: 'msg-2',
+          [`${D}type`]: 'file',
           [`${D}messageId`]: 'ui-2',
           [`${D}mediaType`]: 'image/png',
         },
@@ -915,35 +918,16 @@ describe('Vercel decoder', () => {
       );
     });
 
-    it('does not decode text as a discrete message when x-ably-discrete is absent', () => {
-      const decoder = createDecoder();
-      // Without x-ably-discrete, this is a lifecycle event context (e.g. streamed text)
-      // and should not produce a message output — even if x-ably-role is present
-      const msg = withHeaders(
-        { name: 'text', data: 'delta' },
-        {
-          [HEADER_STREAM]: 'false',
-          [HEADER_ROLE]: 'assistant',
-          [HEADER_RUN_ID]: 'run-1',
-          [HEADER_CODEC_MESSAGE_ID]: 'msg-3',
-        },
-      );
-
-      const outputs = decoder.decode(msg);
-      const messages = messagesOf(outputs);
-
-      expect(messages).toHaveLength(0);
-    });
-
-    it('decodes data-* with x-ably-discrete as a discrete message', () => {
+    it('decodes data-* user-message part as a discrete message', () => {
       const decoder = createDecoder();
       const msg = withHeaders(
-        { name: 'data-agent-progress', data: { agentLabel: 'Returns', tasks: [] } },
+        { name: EVENT_AI_INPUT, data: { agentLabel: 'Returns', tasks: [] } },
         {
           [HEADER_STREAM]: 'false',
           [HEADER_DISCRETE]: 'true',
           [HEADER_ROLE]: 'user',
           [HEADER_CODEC_MESSAGE_ID]: 'msg-d1',
+          [`${D}type`]: 'data-agent-progress',
           [`${D}messageId`]: 'ui-d1',
           [`${D}id`]: 'dp-1',
         },
@@ -993,12 +977,13 @@ describe('Vercel decoder', () => {
     it('preserves role from headers', () => {
       const decoder = createDecoder();
       const msg = withHeaders(
-        { name: 'text', data: 'System message' },
+        { name: EVENT_AI_INPUT, data: 'System message' },
         {
           [HEADER_STREAM]: 'false',
           [HEADER_DISCRETE]: 'true',
           [HEADER_ROLE]: 'system',
           [HEADER_CODEC_MESSAGE_ID]: 'msg-4',
+          [`${D}type`]: 'text',
           [`${D}messageId`]: 'ui-4',
         },
       );
@@ -1013,12 +998,13 @@ describe('Vercel decoder', () => {
     it('decodes a discrete user-message part as an ait-user-message event', () => {
       const decoder = createDecoder();
       const msg = withHeaders(
-        { name: 'text', data: 'hi' },
+        { name: EVENT_AI_INPUT, data: 'hi' },
         {
           [HEADER_STREAM]: 'false',
           [HEADER_DISCRETE]: 'true',
           [HEADER_ROLE]: 'user',
           [HEADER_CODEC_MESSAGE_ID]: 'msg-5',
+          [`${D}type`]: 'text',
           [`${D}messageId`]: 'ui-5',
         },
       );
@@ -1028,13 +1014,14 @@ describe('Vercel decoder', () => {
       expect(outputs[0]?.type).toBe('ait-user-message');
     });
 
-    it('decodes tool-approval-response into a ToolApprovalResponseEvent', () => {
+    it('decodes ai-input tool-approval-response into a ToolApprovalResponseEvent', () => {
       const decoder = createDecoder();
       const msg = withHeaders(
-        { name: 'tool-approval-response', data: '' },
+        { name: EVENT_AI_INPUT, data: '' },
         {
           [HEADER_STREAM]: 'false',
           [HEADER_CODEC_MESSAGE_ID]: 'continuation-codec-message-id',
+          [`${D}type`]: 'tool-approval-response',
           [`${D}toolCallId`]: 'tc-1',
           [`${D}approved`]: 'true',
           [`${D}reason`]: 'ok',
@@ -1051,22 +1038,20 @@ describe('Vercel decoder', () => {
       expect(event.reason).toBe('ok');
     });
 
-    it('decodes ait-regenerate wires into zero events (routing lives on transport headers)', () => {
+    it('decodes ai-input ait-regenerate wires into zero events (routing lives on transport headers)', () => {
       const decoder = createDecoder();
       // The regenerate wire carries `x-ably-parent` and `x-ably-fork-of`
       // on transport headers so the agent's prompt-lookup can resolve
       // run-routing metadata from `firstHeaders`. The decoder itself has
       // no domain events to emit — regenerate wires are wire-only.
       const msg = withHeaders(
-        { name: 'ait-regenerate', data: '' },
+        { name: EVENT_AI_INPUT, data: '' },
         {
           [HEADER_STREAM]: 'false',
           [HEADER_CODEC_MESSAGE_ID]: 'regen-codec-message-id',
           [HEADER_ROLE]: 'user',
+          [`${D}type`]: 'ait-regenerate',
           'x-ably-parent': 'user-U1',
-          // The regenerate wire carries the new `x-ably-msg-regenerate`
-          // header introduced for the run-keyed Tree (regenerate is a
-          // continuation, message-level replacement; not a Run-level fork).
           'x-ably-msg-regenerate': 'asst-A1',
           'x-ably-event-id': 'prompt-1',
         },

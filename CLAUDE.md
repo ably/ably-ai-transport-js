@@ -8,15 +8,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
+This repo uses pnpm; `npm install` is rejected by `devEngines.packageManager`.
+
 ```bash
-npm run lint              # ESLint
-npm run lint:fix          # ESLint + Prettier auto-fix
-npm run format:check      # Prettier check
-npm run typecheck         # tsc --noEmit
-npm test                  # Unit tests (vitest, mocks only)
-npm run test:integration  # Integration tests
-npm run check:error-codes # Validate ErrorCode enum against ably-common
-npm run precommit         # format:check + lint + typecheck
+pnpm run lint              # ESLint
+pnpm run lint:fix          # ESLint + Prettier auto-fix
+pnpm run format:check      # Prettier check
+pnpm run typecheck         # tsc --noEmit
+pnpm test                  # Unit tests (vitest, mocks only)
+pnpm run test:integration  # Integration tests
+pnpm run check:error-codes # Validate ErrorCode enum against ably-common
+pnpm run precommit         # format:check + lint + typecheck
 ```
 
 ## Architecture & conventions
@@ -44,7 +46,7 @@ Additional conventions not covered by rule files:
 
 - **Never commit changes.** All changes must be reviewed by a human before committing. Stage files and present a summary of changes, but wait for the user to approve via `/commit` or explicit instruction.
 - **Never push or pull the remote.** Do not run `git push`, `git pull`, `git fetch`, or any command that interacts with the remote repository.
-- **Run validation after every change.** After modifying source or test files, run `npm run typecheck`, `npm run lint`, and `npm run format:check`. Fix all errors **and warnings** before presenting changes. If tests exist for the changed code, run `npm test` too.
+- **Run validation after every change.** After modifying source or test files, run `pnpm run typecheck`, `pnpm run lint`, and `pnpm run format:check`. Fix all errors **and warnings** before presenting changes. If tests exist for the changed code, run `pnpm test` too.
 - **Include test coverage with every change.** Every code change must include appropriate tests. New functions and modules need unit tests. Bug fixes need a test that would have caught the bug. Behavioral changes need updated tests. Only purely cosmetic changes (formatting, comments, renames) are exempt.
 - **Keep the specification in sync.** When implementing a new feature or changing behavior covered by the spec, update `specification/specifications/ai-transport-features.md` with new or amended `AIT-` spec points. Never commit spec changes — present them to the user for review alongside the code changes.
 - **Review changes with an independent subagent.** After completing implementation work, use an independent subagent to review the changes against the plan (if one exists) and the project guidance in `.claude/rules/`. Address any issues found before presenting changes to the user.
@@ -52,5 +54,5 @@ Additional conventions not covered by rule files:
 
 ## Submodules
 
-- `ably-common/` — shared Ably protocol resources. Contains `protocol/errors.json` with canonical error code definitions. Run `npm run check:error-codes` to validate `ErrorCode` enum values.
+- `ably-common/` — shared Ably protocol resources. Contains `protocol/errors.json` with canonical error code definitions. Run `pnpm run check:error-codes` to validate `ErrorCode` enum values.
 - `specification/` — the Ably specification repo, on the `ai-transport-features` branch. Contains `specifications/ai-transport-features.md` with the AI Transport features spec using `AIT-` prefixed spec points. Reference spec points in code comments as `// Spec: AIT-CT2a`. Run `/spec` to cross-reference code against the specification. **Never commit changes to the specification submodule without explicit user approval** — always present proposed spec changes for review first.

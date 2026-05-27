@@ -31,7 +31,7 @@ WATCH=(
   "src/"
   "demo/vercel/react/use-chat/"
   "package.json"
-  "package-lock.json"
+  "pnpm-lock.yaml"
   "tsconfig.json"
   "scripts/vercel-should-build.sh"
 )

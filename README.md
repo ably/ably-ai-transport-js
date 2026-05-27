@@ -390,14 +390,16 @@ Working demo applications live in the [`demo/`](./demo/) directory:
 
 ## Development
 
+This repository uses [pnpm](https://pnpm.io/). Enable Corepack once (`corepack enable`) to pick up the pinned version automatically.
+
 ```bash
-npm install
-npm run build             # Build all entry points (ESM + UMD/CJS + .d.ts)
-npm run typecheck         # Type check
-npm run lint              # Lint
-npm test                  # Unit tests (mocks only)
-npm run test:integration  # Integration tests (needs ABLY_API_KEY)
-npm run precommit         # format:check + lint + typecheck
+pnpm install
+pnpm run build             # Build all entry points (ESM + UMD/CJS + .d.ts)
+pnpm run typecheck         # Type check
+pnpm run lint              # Lint
+pnpm test                  # Unit tests (mocks only)
+pnpm run test:integration  # Integration tests (needs ABLY_API_KEY)
+pnpm run precommit         # format:check + lint + typecheck
 ```
 
 ### Project structure

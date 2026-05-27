@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DOMAIN_HEADER_PREFIX as D,
+  EVENT_AI_OUTPUT,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_DISCRETE,
   HEADER_ROLE,
@@ -56,9 +57,10 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
       const outputs = decoder.decode(
         withHeaders(
-          { action: 'message.create', name: 'start', data: '' },
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: '' },
           {
             [HEADER_STREAM]: 'false',
+            [`${D}type`]: 'start',
             [`${D}messageId`]: 'msg-1',
             [`${D}messageMetadata`]: JSON.stringify({ key: 'val' }),
           },
@@ -74,8 +76,8 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
       const outputs = decoder.decode(
         withHeaders(
-          { action: 'message.create', name: 'finish', data: '' },
-          { [HEADER_STREAM]: 'false', [`${D}finishReason`]: 'stop' },
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: '' },
+          { [HEADER_STREAM]: 'false', [`${D}type`]: 'finish', [`${D}finishReason`]: 'stop' },
         ),
       );
 
@@ -85,7 +87,10 @@ describe('Vercel decoder', () => {
     it('decodes finish-step event', () => {
       const decoder = createDecoder();
       const outputs = decoder.decode(
-        withHeaders({ action: 'message.create', name: 'finish-step', data: '' }, { [HEADER_STREAM]: 'false' }),
+        withHeaders(
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: '' },
+          { [HEADER_STREAM]: 'false', [`${D}type`]: 'finish-step' },
+        ),
       );
 
       expect(eventTypesOf(outputs)).toContain('finish-step');
@@ -94,7 +99,10 @@ describe('Vercel decoder', () => {
     it('decodes error event', () => {
       const decoder = createDecoder();
       const outputs = decoder.decode(
-        withHeaders({ action: 'message.create', name: 'error', data: 'something broke' }, { [HEADER_STREAM]: 'false' }),
+        withHeaders(
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: 'something broke' },
+          { [HEADER_STREAM]: 'false', [`${D}type`]: 'error' },
+        ),
       );
 
       expect(eventsOf(outputs)).toEqual([expect.objectContaining({ type: 'error', errorText: 'something broke' })]);
@@ -103,7 +111,10 @@ describe('Vercel decoder', () => {
     it('decodes abort event', () => {
       const decoder = createDecoder();
       const outputs = decoder.decode(
-        withHeaders({ action: 'message.create', name: 'abort', data: 'cancelled' }, { [HEADER_STREAM]: 'false' }),
+        withHeaders(
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: 'cancelled' },
+          { [HEADER_STREAM]: 'false', [`${D}type`]: 'abort' },
+        ),
       );
 
       expect(eventsOf(outputs)).toEqual([expect.objectContaining({ type: 'abort', reason: 'cancelled' })]);
@@ -117,12 +128,13 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
       const outputs = decoder.decode(
         withHeaders(
-          { action: 'message.create', serial: 's1', name: 'text', data: '' },
+          { action: 'message.create', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
           {
             [HEADER_STREAM]: 'true',
             [HEADER_STATUS]: 'streaming',
             [HEADER_STREAM_ID]: 'txt-1',
             [HEADER_RUN_ID]: 'run-1',
+            [`${D}type`]: 'text',
             [`${D}messageId`]: 'msg-1',
             [`${D}id`]: 'txt-1',
           },
@@ -138,12 +150,13 @@ describe('Vercel decoder', () => {
       // Create
       decoder.decode(
         withHeaders(
-          { action: 'message.create', serial: 's1', name: 'text', data: '' },
+          { action: 'message.create', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
           {
             [HEADER_STREAM]: 'true',
             [HEADER_STATUS]: 'streaming',
             [HEADER_STREAM_ID]: 'txt-1',
             [HEADER_RUN_ID]: 'run-1',
+            [`${D}type`]: 'text',
             [`${D}id`]: 'txt-1',
           },
         ),
@@ -152,7 +165,7 @@ describe('Vercel decoder', () => {
       // Append
       const outputs = decoder.decode(
         withHeaders(
-          { action: 'message.append', serial: 's1', name: 'text', data: 'hello' },
+          { action: 'message.append', serial: 's1', name: EVENT_AI_OUTPUT, data: 'hello' },
           { [HEADER_RUN_ID]: 'run-1' },
         ),
       );
@@ -164,12 +177,13 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
       decoder.decode(
         withHeaders(
-          { action: 'message.create', serial: 's1', name: 'text', data: '' },
+          { action: 'message.create', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
           {
             [HEADER_STREAM]: 'true',
             [HEADER_STATUS]: 'streaming',
             [HEADER_STREAM_ID]: 'txt-1',
             [HEADER_RUN_ID]: 'run-1',
+            [`${D}type`]: 'text',
             [`${D}id`]: 'txt-1',
           },
         ),
@@ -177,7 +191,7 @@ describe('Vercel decoder', () => {
 
       const outputs = decoder.decode(
         withHeaders(
-          { action: 'message.append', serial: 's1', name: 'text', data: '' },
+          { action: 'message.append', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
           { [HEADER_STATUS]: 'complete', [HEADER_RUN_ID]: 'run-1' },
         ),
       );
@@ -195,12 +209,13 @@ describe('Vercel decoder', () => {
       // Create
       const startOutputs = decoder.decode(
         withHeaders(
-          { action: 'message.create', serial: 's1', name: 'reasoning', data: '' },
+          { action: 'message.create', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
           {
             [HEADER_STREAM]: 'true',
             [HEADER_STATUS]: 'streaming',
             [HEADER_STREAM_ID]: 'r-1',
             [HEADER_RUN_ID]: 'run-1',
+            [`${D}type`]: 'reasoning',
             [`${D}id`]: 'r-1',
           },
         ),
@@ -210,7 +225,7 @@ describe('Vercel decoder', () => {
       // Delta
       const deltaOutputs = decoder.decode(
         withHeaders(
-          { action: 'message.append', serial: 's1', name: 'reasoning', data: 'think' },
+          { action: 'message.append', serial: 's1', name: EVENT_AI_OUTPUT, data: 'think' },
           { [HEADER_RUN_ID]: 'run-1' },
         ),
       );
@@ -219,7 +234,7 @@ describe('Vercel decoder', () => {
       // End
       const endOutputs = decoder.decode(
         withHeaders(
-          { action: 'message.append', serial: 's1', name: 'reasoning', data: '' },
+          { action: 'message.append', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
           { [HEADER_STATUS]: 'complete', [HEADER_RUN_ID]: 'run-1' },
         ),
       );
@@ -236,12 +251,13 @@ describe('Vercel decoder', () => {
       // Create
       const startOutputs = decoder.decode(
         withHeaders(
-          { action: 'message.create', serial: 's1', name: 'tool-input', data: '' },
+          { action: 'message.create', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
           {
             [HEADER_STREAM]: 'true',
             [HEADER_STATUS]: 'streaming',
             [HEADER_STREAM_ID]: 'tc-1',
             [HEADER_RUN_ID]: 'run-1',
+            [`${D}type`]: 'tool-input',
             [`${D}toolCallId`]: 'tc-1',
             [`${D}toolName`]: 'search',
           },
@@ -254,7 +270,7 @@ describe('Vercel decoder', () => {
       // Delta
       const deltaOutputs = decoder.decode(
         withHeaders(
-          { action: 'message.append', serial: 's1', name: 'tool-input', data: '{"q":"test"}' },
+          { action: 'message.append', serial: 's1', name: EVENT_AI_OUTPUT, data: '{"q":"test"}' },
           { [HEADER_RUN_ID]: 'run-1' },
         ),
       );
@@ -265,7 +281,7 @@ describe('Vercel decoder', () => {
       // Available (complete)
       const endOutputs = decoder.decode(
         withHeaders(
-          { action: 'message.append', serial: 's1', name: 'tool-input', data: '' },
+          { action: 'message.append', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
           { [HEADER_STATUS]: 'complete', [HEADER_RUN_ID]: 'run-1', [`${D}toolName`]: 'search' },
         ),
       );
@@ -289,10 +305,11 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
       const outputs = decoder.decode(
         withHeaders(
-          { action: 'message.create', name: 'tool-input', data: '{"q":"test"}' },
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: '{"q":"test"}' },
           {
             [HEADER_STREAM]: 'false',
             [HEADER_RUN_ID]: 'run-1',
+            [`${D}type`]: 'tool-input',
             [`${D}toolCallId`]: 'tc-1',
             [`${D}toolName`]: 'search',
           },
@@ -316,11 +333,12 @@ describe('Vercel decoder', () => {
         withHeaders(
           {
             action: 'message.create',
-            name: 'tool-input-error',
+            name: EVENT_AI_OUTPUT,
             data: { errorText: 'bad', input: { x: 1 } },
           },
           {
             [HEADER_STREAM]: 'false',
+            [`${D}type`]: 'tool-input-error',
             [`${D}toolCallId`]: 'tc-1',
             [`${D}toolName`]: 'calc',
           },
@@ -344,11 +362,12 @@ describe('Vercel decoder', () => {
         withHeaders(
           {
             action: 'message.create',
-            name: 'tool-output-available',
+            name: EVENT_AI_OUTPUT,
             data: { output: { result: 42 } },
           },
           {
             [HEADER_STREAM]: 'false',
+            [`${D}type`]: 'tool-output-available',
             [`${D}toolCallId`]: 'tc-1',
           },
         ),
@@ -369,11 +388,12 @@ describe('Vercel decoder', () => {
         withHeaders(
           {
             action: 'message.create',
-            name: 'tool-output-error',
+            name: EVENT_AI_OUTPUT,
             data: { errorText: 'timeout' },
           },
           {
             [HEADER_STREAM]: 'false',
+            [`${D}type`]: 'tool-output-error',
             [`${D}toolCallId`]: 'tc-1',
           },
         ),
@@ -392,9 +412,10 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
       const outputs = decoder.decode(
         withHeaders(
-          { action: 'message.create', name: 'tool-approval-request', data: '' },
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: '' },
           {
             [HEADER_STREAM]: 'false',
+            [`${D}type`]: 'tool-approval-request',
             [`${D}toolCallId`]: 'tc-1',
             [`${D}approvalId`]: 'apr-1',
           },
@@ -414,8 +435,8 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
       const outputs = decoder.decode(
         withHeaders(
-          { action: 'message.create', name: 'tool-output-denied', data: '' },
-          { [HEADER_STREAM]: 'false', [`${D}toolCallId`]: 'tc-1' },
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: '' },
+          { [HEADER_STREAM]: 'false', [`${D}type`]: 'tool-output-denied', [`${D}toolCallId`]: 'tc-1' },
         ),
       );
 
@@ -430,8 +451,8 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
       const outputs = decoder.decode(
         withHeaders(
-          { action: 'message.create', name: 'file', data: 'https://example.com/img.png' },
-          { [HEADER_STREAM]: 'false', [`${D}mediaType`]: 'image/png' },
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: 'https://example.com/img.png' },
+          { [HEADER_STREAM]: 'false', [`${D}type`]: 'file', [`${D}mediaType`]: 'image/png' },
         ),
       );
 
@@ -444,9 +465,10 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
       const outputs = decoder.decode(
         withHeaders(
-          { action: 'message.create', name: 'source-url', data: 'https://example.com' },
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: 'https://example.com' },
           {
             [HEADER_STREAM]: 'false',
+            [`${D}type`]: 'source-url',
             [`${D}sourceId`]: 'src-1',
             [`${D}title`]: 'Example',
           },
@@ -467,9 +489,10 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
       const outputs = decoder.decode(
         withHeaders(
-          { action: 'message.create', name: 'source-document', data: '' },
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: '' },
           {
             [HEADER_STREAM]: 'false',
+            [`${D}type`]: 'source-document',
             [`${D}sourceId`]: 'src-1',
             [`${D}mediaType`]: 'application/pdf',
             [`${D}title`]: 'Doc',
@@ -493,8 +516,12 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
       const outputs = decoder.decode(
         withHeaders(
-          { action: 'message.create', name: 'message-metadata', data: '' },
-          { [HEADER_STREAM]: 'false', [`${D}messageMetadata`]: JSON.stringify({ key: 'val' }) },
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: '' },
+          {
+            [HEADER_STREAM]: 'false',
+            [`${D}type`]: 'message-metadata',
+            [`${D}messageMetadata`]: JSON.stringify({ key: 'val' }),
+          },
         ),
       );
 
@@ -511,8 +538,8 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
       const outputs = decoder.decode(
         withHeaders(
-          { action: 'message.create', name: 'data-custom', data: { foo: 'bar' } },
-          { [HEADER_STREAM]: 'false', [`${D}id`]: 'dc-1' },
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: { foo: 'bar' } },
+          { [HEADER_STREAM]: 'false', [`${D}type`]: 'data-custom', [`${D}id`]: 'dc-1' },
         ),
       );
 
@@ -525,8 +552,8 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
       const outputs = decoder.decode(
         withHeaders(
-          { action: 'message.create', name: 'data-status', data: '' },
-          { [HEADER_STREAM]: 'false', [`${D}transient`]: 'true' },
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: '' },
+          { [HEADER_STREAM]: 'false', [`${D}type`]: 'data-status', [`${D}transient`]: 'true' },
         ),
       );
 
@@ -544,12 +571,13 @@ describe('Vercel decoder', () => {
       // First streamed message in run
       const first = decoder.decode(
         withHeaders(
-          { action: 'message.create', serial: 's1', name: 'text', data: '' },
+          { action: 'message.create', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
           {
             [HEADER_STREAM]: 'true',
             [HEADER_STATUS]: 'streaming',
             [HEADER_STREAM_ID]: 'txt-1',
             [HEADER_RUN_ID]: 'run-1',
+            [`${D}type`]: 'text',
             [`${D}id`]: 'txt-1',
           },
         ),
@@ -560,12 +588,13 @@ describe('Vercel decoder', () => {
       // Second streamed message in same run
       const second = decoder.decode(
         withHeaders(
-          { action: 'message.create', serial: 's2', name: 'reasoning', data: '' },
+          { action: 'message.create', serial: 's2', name: EVENT_AI_OUTPUT, data: '' },
           {
             [HEADER_STREAM]: 'true',
             [HEADER_STATUS]: 'streaming',
             [HEADER_STREAM_ID]: 'r-1',
             [HEADER_RUN_ID]: 'run-1',
+            [`${D}type`]: 'reasoning',
             [`${D}id`]: 'r-1',
           },
         ),
@@ -581,16 +610,21 @@ describe('Vercel decoder', () => {
       // Explicit start from channel
       decoder.decode(
         withHeaders(
-          { action: 'message.create', name: 'start', data: '' },
-          { [HEADER_STREAM]: 'false', [HEADER_RUN_ID]: 'run-1', [`${D}messageId`]: 'msg-1' },
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: '' },
+          {
+            [HEADER_STREAM]: 'false',
+            [HEADER_RUN_ID]: 'run-1',
+            [`${D}type`]: 'start',
+            [`${D}messageId`]: 'msg-1',
+          },
         ),
       );
 
       // Explicit start-step from channel
       const stepOutputs = decoder.decode(
         withHeaders(
-          { action: 'message.create', name: 'start-step', data: '' },
-          { [HEADER_STREAM]: 'false', [HEADER_RUN_ID]: 'run-1' },
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: '' },
+          { [HEADER_STREAM]: 'false', [HEADER_RUN_ID]: 'run-1', [`${D}type`]: 'start-step' },
         ),
       );
       expect(eventTypesOf(stepOutputs)).toEqual(['start-step']);
@@ -598,12 +632,13 @@ describe('Vercel decoder', () => {
       // Next streamed message should NOT synthesize start or start-step
       const streamOutputs = decoder.decode(
         withHeaders(
-          { action: 'message.create', serial: 's1', name: 'text', data: '' },
+          { action: 'message.create', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
           {
             [HEADER_STREAM]: 'true',
             [HEADER_STATUS]: 'streaming',
             [HEADER_STREAM_ID]: 'txt-1',
             [HEADER_RUN_ID]: 'run-1',
+            [`${D}type`]: 'text',
             [`${D}id`]: 'txt-1',
           },
         ),
@@ -617,12 +652,13 @@ describe('Vercel decoder', () => {
       // First stream in step
       decoder.decode(
         withHeaders(
-          { action: 'message.create', serial: 's1', name: 'text', data: '' },
+          { action: 'message.create', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
           {
             [HEADER_STREAM]: 'true',
             [HEADER_STATUS]: 'streaming',
             [HEADER_STREAM_ID]: 'txt-1',
             [HEADER_RUN_ID]: 'run-1',
+            [`${D}type`]: 'text',
             [`${D}id`]: 'txt-1',
           },
         ),
@@ -631,20 +667,21 @@ describe('Vercel decoder', () => {
       // finish-step
       decoder.decode(
         withHeaders(
-          { action: 'message.create', name: 'finish-step', data: '' },
-          { [HEADER_STREAM]: 'false', [HEADER_RUN_ID]: 'run-1' },
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: '' },
+          { [HEADER_STREAM]: 'false', [HEADER_RUN_ID]: 'run-1', [`${D}type`]: 'finish-step' },
         ),
       );
 
       // New stream in next step — should get start-step again
       const outputs = decoder.decode(
         withHeaders(
-          { action: 'message.create', serial: 's2', name: 'text', data: '' },
+          { action: 'message.create', serial: 's2', name: EVENT_AI_OUTPUT, data: '' },
           {
             [HEADER_STREAM]: 'true',
             [HEADER_STATUS]: 'streaming',
             [HEADER_STREAM_ID]: 'txt-2',
             [HEADER_RUN_ID]: 'run-1',
+            [`${D}type`]: 'text',
             [`${D}id`]: 'txt-2',
           },
         ),
@@ -659,12 +696,13 @@ describe('Vercel decoder', () => {
       // Stream content — synthesizes start + start-step
       decoder.decode(
         withHeaders(
-          { action: 'message.create', serial: 's1', name: 'text', data: '' },
+          { action: 'message.create', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
           {
             [HEADER_STREAM]: 'true',
             [HEADER_STATUS]: 'streaming',
             [HEADER_STREAM_ID]: 'txt-1',
             [HEADER_RUN_ID]: 'run-1',
+            [`${D}type`]: 'text',
             [`${D}id`]: 'txt-1',
           },
         ),
@@ -673,20 +711,26 @@ describe('Vercel decoder', () => {
       // finish — clears scope
       decoder.decode(
         withHeaders(
-          { action: 'message.create', name: 'finish', data: '' },
-          { [HEADER_STREAM]: 'false', [HEADER_RUN_ID]: 'run-1', [`${D}finishReason`]: 'stop' },
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: '' },
+          {
+            [HEADER_STREAM]: 'false',
+            [HEADER_RUN_ID]: 'run-1',
+            [`${D}type`]: 'finish',
+            [`${D}finishReason`]: 'stop',
+          },
         ),
       );
 
       // New content on same run — should re-synthesize start + start-step
       const outputs = decoder.decode(
         withHeaders(
-          { action: 'message.create', serial: 's2', name: 'text', data: '' },
+          { action: 'message.create', serial: 's2', name: EVENT_AI_OUTPUT, data: '' },
           {
             [HEADER_STREAM]: 'true',
             [HEADER_STATUS]: 'streaming',
             [HEADER_STREAM_ID]: 'txt-2',
             [HEADER_RUN_ID]: 'run-1',
+            [`${D}type`]: 'text',
             [`${D}id`]: 'txt-2',
           },
         ),
@@ -701,12 +745,13 @@ describe('Vercel decoder', () => {
       // Stream content — synthesizes start + start-step
       decoder.decode(
         withHeaders(
-          { action: 'message.create', serial: 's1', name: 'text', data: '' },
+          { action: 'message.create', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
           {
             [HEADER_STREAM]: 'true',
             [HEADER_STATUS]: 'streaming',
             [HEADER_STREAM_ID]: 'txt-1',
             [HEADER_RUN_ID]: 'run-1',
+            [`${D}type`]: 'text',
             [`${D}id`]: 'txt-1',
           },
         ),
@@ -715,20 +760,21 @@ describe('Vercel decoder', () => {
       // abort — clears scope
       decoder.decode(
         withHeaders(
-          { action: 'message.create', name: 'abort', data: 'cancelled' },
-          { [HEADER_STREAM]: 'false', [HEADER_RUN_ID]: 'run-1' },
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: 'cancelled' },
+          { [HEADER_STREAM]: 'false', [HEADER_RUN_ID]: 'run-1', [`${D}type`]: 'abort' },
         ),
       );
 
       // New content on same run — should re-synthesize start + start-step
       const outputs = decoder.decode(
         withHeaders(
-          { action: 'message.create', serial: 's2', name: 'text', data: '' },
+          { action: 'message.create', serial: 's2', name: EVENT_AI_OUTPUT, data: '' },
           {
             [HEADER_STREAM]: 'true',
             [HEADER_STATUS]: 'streaming',
             [HEADER_STREAM_ID]: 'txt-2',
             [HEADER_RUN_ID]: 'run-1',
+            [`${D}type`]: 'text',
             [`${D}id`]: 'txt-2',
           },
         ),
@@ -743,12 +789,13 @@ describe('Vercel decoder', () => {
       // Stream content — synthesizes start + start-step
       decoder.decode(
         withHeaders(
-          { action: 'message.create', serial: 's1', name: 'text', data: '' },
+          { action: 'message.create', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
           {
             [HEADER_STREAM]: 'true',
             [HEADER_STATUS]: 'streaming',
             [HEADER_STREAM_ID]: 'txt-1',
             [HEADER_RUN_ID]: 'run-1',
+            [`${D}type`]: 'text',
             [`${D}id`]: 'txt-1',
           },
         ),
@@ -757,20 +804,21 @@ describe('Vercel decoder', () => {
       // error — clears scope
       decoder.decode(
         withHeaders(
-          { action: 'message.create', name: 'error', data: 'something broke' },
-          { [HEADER_STREAM]: 'false', [HEADER_RUN_ID]: 'run-1' },
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: 'something broke' },
+          { [HEADER_STREAM]: 'false', [HEADER_RUN_ID]: 'run-1', [`${D}type`]: 'error' },
         ),
       );
 
       // New content on same run — should re-synthesize start + start-step
       const outputs = decoder.decode(
         withHeaders(
-          { action: 'message.create', serial: 's2', name: 'text', data: '' },
+          { action: 'message.create', serial: 's2', name: EVENT_AI_OUTPUT, data: '' },
           {
             [HEADER_STREAM]: 'true',
             [HEADER_STATUS]: 'streaming',
             [HEADER_STREAM_ID]: 'txt-2',
             [HEADER_RUN_ID]: 'run-1',
+            [`${D}type`]: 'text',
             [`${D}id`]: 'txt-2',
           },
         ),
@@ -787,12 +835,13 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
       const outputs = decoder.decode(
         withHeaders(
-          { action: 'message.update', serial: 's1', name: 'text', data: 'hello world' },
+          { action: 'message.update', serial: 's1', name: EVENT_AI_OUTPUT, data: 'hello world' },
           {
             [HEADER_STREAM]: 'true',
             [HEADER_STATUS]: 'complete',
             [HEADER_STREAM_ID]: 'txt-1',
             [HEADER_RUN_ID]: 'run-1',
+            [`${D}type`]: 'text',
             [`${D}id`]: 'txt-1',
           },
         ),
@@ -913,18 +962,20 @@ describe('Vercel decoder', () => {
       );
     });
 
-    it('decodes data-* without x-ably-discrete as an event, not a discrete message', () => {
+    it('decodes agent-published data-* events under ai-output as projection events, not user-message parts', () => {
       const decoder = createDecoder();
-      // Streaming data-* events have x-ably-role (from encoder defaults) but
-      // NOT x-ably-discrete. They must be decoded as events so the
-      // accumulator can merge them into the streamed response message.
+      // Agent-published data-* events ride `ai-output` with `x-domain-type`
+      // carrying the codec event type. They carry no HEADER_DISCRETE and
+      // produce a projection event so the accumulator can merge them into
+      // the streamed assistant response message.
       const msg = withHeaders(
-        { name: 'data-agent-progress', data: { agentLabel: 'Returns', tasks: [] } },
+        { name: EVENT_AI_OUTPUT, data: { agentLabel: 'Returns', tasks: [] } },
         {
           [HEADER_STREAM]: 'false',
           [HEADER_ROLE]: 'assistant',
           [HEADER_RUN_ID]: 'run-1',
           [HEADER_CODEC_MESSAGE_ID]: 'msg-d2',
+          [`${D}type`]: 'data-agent-progress',
         },
       );
 

@@ -14,7 +14,7 @@
 import type * as Ably from 'ably';
 import type * as AI from 'ai';
 
-import { HEADER_DISCRETE, HEADER_ROLE, HEADER_RUN_ID } from '../../constants.js';
+import { EVENT_AI_OUTPUT, HEADER_DISCRETE, HEADER_ROLE, HEADER_RUN_ID } from '../../constants.js';
 import type { DecoderCore, DecoderCoreHooks, DecoderCoreOptions } from '../../core/codec/decoder.js';
 import { createDecoderCore } from '../../core/codec/decoder.js';
 import type { LifecycleTracker } from '../../core/codec/lifecycle-tracker.js';
@@ -100,9 +100,19 @@ const parseJsonOrString = (value: string): unknown => {
 // Streamed message event builders
 // ---------------------------------------------------------------------------
 
+/**
+ * Read the codec event type from a tracker's persistent headers. The
+ * encoder stamps `x-domain-type` on every `ai-output` publish; the value
+ * carries the AI-SDK chunk family (`text` / `reasoning` / `tool-input`)
+ * that the stream represents.
+ * @param tracker - The stream tracker carrying the persistent headers.
+ * @returns The codec event type, or the empty string when absent.
+ */
+const codecTypeOf = (tracker: StreamTrackerState): string => headerReader(tracker.headers).strOr('type', '');
+
 const buildStartChunk = (tracker: StreamTrackerState): AI.UIMessageChunk => {
   const r = headerReader(tracker.headers);
-  switch (tracker.name) {
+  switch (codecTypeOf(tracker)) {
     case 'text': {
       return stripUndefined({
         type: 'text-start' as const,
@@ -135,7 +145,7 @@ const buildStartChunk = (tracker: StreamTrackerState): AI.UIMessageChunk => {
 };
 
 const buildDeltaChunk = (tracker: StreamTrackerState, delta: string): AI.UIMessageChunk => {
-  switch (tracker.name) {
+  switch (codecTypeOf(tracker)) {
     case 'text': {
       return { type: 'text-delta', id: tracker.streamId, delta };
     }
@@ -153,7 +163,7 @@ const buildDeltaChunk = (tracker: StreamTrackerState, delta: string): AI.UIMessa
 
 const buildEndChunk = (tracker: StreamTrackerState, closingHeaders: Record<string, string>): AI.UIMessageChunk => {
   const r = headerReader(closingHeaders);
-  switch (tracker.name) {
+  switch (codecTypeOf(tracker)) {
     case 'text': {
       return stripUndefined({
         type: 'text-end' as const,
@@ -449,6 +459,68 @@ const isDiscreteMessagePart = (name: string, headers: Record<string, string>): b
 // Discrete payload dispatch
 // ---------------------------------------------------------------------------
 
+const decodeAiOutputPayload = (
+  codecType: string,
+  r: VercelHeaderReader,
+  data: unknown,
+  runId: string,
+  lifecycle: LifecycleTracker<AI.UIMessageChunk>,
+): VercelEvent[] => {
+  switch (codecType) {
+    case 'start': {
+      return decodeStart(r, runId, lifecycle);
+    }
+    case 'start-step': {
+      return decodeStartStep(runId, lifecycle);
+    }
+    case 'finish-step': {
+      return decodeFinishStep(runId, lifecycle);
+    }
+    case 'finish': {
+      return decodeFinish(r, runId, lifecycle);
+    }
+    case 'error': {
+      return decodeError(data, runId, lifecycle);
+    }
+    case 'abort': {
+      return decodeAbort(data, runId, lifecycle);
+    }
+    case 'message-metadata': {
+      return decodeMessageMetadata(r);
+    }
+    case 'file': {
+      return decodeFile(r, data);
+    }
+    case 'source-url': {
+      return decodeSourceUrl(r, data);
+    }
+    case 'source-document': {
+      return decodeSourceDocument(r);
+    }
+    case 'tool-input': {
+      return decodeNonStreamingToolInput(r, data, runId, lifecycle);
+    }
+    case 'tool-input-error': {
+      return decodeToolInputError(r, data);
+    }
+    case 'tool-output-available': {
+      return decodeToolOutputAvailable(r, data);
+    }
+    case 'tool-output-error': {
+      return decodeToolOutputError(r, data);
+    }
+    case 'tool-approval-request': {
+      return decodeToolApprovalRequest(r);
+    }
+    case 'tool-output-denied': {
+      return decodeToolOutputDenied(r);
+    }
+    default: {
+      return isDataEventName(codecType) ? decodeDataEvent(codecType, r, data) : [];
+    }
+  }
+};
+
 const decodeDiscretePayload = (
   input: MessagePayload,
   lifecycle: LifecycleTracker<AI.UIMessageChunk>,
@@ -463,56 +535,11 @@ const decodeDiscretePayload = (
     return decodeDiscreteMessagePart(input);
   }
 
-  if (input.name === 'tool-input') {
-    return decodeNonStreamingToolInput(r, input.data, runId, lifecycle);
+  if (input.name === EVENT_AI_OUTPUT) {
+    return decodeAiOutputPayload(r.strOr('type', ''), r, input.data, runId, lifecycle);
   }
 
   switch (input.name) {
-    case 'start': {
-      return decodeStart(r, runId, lifecycle);
-    }
-    case 'start-step': {
-      return decodeStartStep(runId, lifecycle);
-    }
-    case 'finish-step': {
-      return decodeFinishStep(runId, lifecycle);
-    }
-    case 'finish': {
-      return decodeFinish(r, runId, lifecycle);
-    }
-    case 'error': {
-      return decodeError(input.data, runId, lifecycle);
-    }
-    case 'abort': {
-      return decodeAbort(input.data, runId, lifecycle);
-    }
-    case 'message-metadata': {
-      return decodeMessageMetadata(r);
-    }
-    case 'file': {
-      return decodeFile(r, input.data);
-    }
-    case 'source-url': {
-      return decodeSourceUrl(r, input.data);
-    }
-    case 'source-document': {
-      return decodeSourceDocument(r);
-    }
-    case 'tool-input-error': {
-      return decodeToolInputError(r, input.data);
-    }
-    case 'tool-output-available': {
-      return decodeToolOutputAvailable(r, input.data);
-    }
-    case 'tool-output-error': {
-      return decodeToolOutputError(r, input.data);
-    }
-    case 'tool-approval-request': {
-      return decodeToolApprovalRequest(r);
-    }
-    case 'tool-output-denied': {
-      return decodeToolOutputDenied(r);
-    }
     case 'tool-approval-response': {
       return decodeToolApprovalResponse(r);
     }
@@ -524,7 +551,7 @@ const decodeDiscretePayload = (
       return [];
     }
     default: {
-      return isDataEventName(input.name) ? decodeDataEvent(input.name, r, input.data) : [];
+      return [];
     }
   }
 };

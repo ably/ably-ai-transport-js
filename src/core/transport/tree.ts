@@ -609,26 +609,36 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
         // boundary or out-of-order delivery). The lifecycle event is the
         // canonical source for parent/forkOf/regenerates; only fill in
         // fields the wire didn't already populate.
-        if (run.node.parentRunId === undefined && event.parent !== undefined) {
-          const parentRunId = this._codecMessageIdToRunId.get(event.parent);
-          if (parentRunId !== undefined) {
-            this._removeFromParentIndex(undefined, event.runId);
-            run.node.parentRunId = parentRunId;
-            this._addToParentIndex(parentRunId, event.runId);
+        //
+        // Continuation run-starts (`x-ably-run-continue: 'true'`) are
+        // NOT authoritative for structural metadata: the parent / forkOf
+        // / regenerates carried on the wire are read from the client's
+        // tool-resolution wire (whose parent points back at a message in
+        // the current run itself), so backfilling here would produce a
+        // self-parent cycle and the Run drops out of flattenNodes as
+        // unreachable. The original run-start already set these fields.
+        if (!event.isContinuation) {
+          if (run.node.parentRunId === undefined && event.parent !== undefined) {
+            const parentRunId = this._codecMessageIdToRunId.get(event.parent);
+            if (parentRunId !== undefined && parentRunId !== event.runId) {
+              this._removeFromParentIndex(undefined, event.runId);
+              run.node.parentRunId = parentRunId;
+              this._addToParentIndex(parentRunId, event.runId);
+              this._structuralVersion++;
+            }
+          }
+          if (run.node.forkOf === undefined && event.forkOf !== undefined) {
+            const forkOfRunId = this._codecMessageIdToRunId.get(event.forkOf);
+            if (forkOfRunId !== undefined && forkOfRunId !== event.runId) {
+              run.node.forkOf = forkOfRunId;
+              this._structuralVersion++;
+            }
+          }
+          if (run.node.regeneratesCodecMessageId === undefined && event.regenerates !== undefined) {
+            run.node.regeneratesCodecMessageId = event.regenerates;
+            this._indexRegenerate(event.runId, event.regenerates);
             this._structuralVersion++;
           }
-        }
-        if (run.node.forkOf === undefined && event.forkOf !== undefined) {
-          const forkOfRunId = this._codecMessageIdToRunId.get(event.forkOf);
-          if (forkOfRunId !== undefined) {
-            run.node.forkOf = forkOfRunId;
-            this._structuralVersion++;
-          }
-        }
-        if (run.node.regeneratesCodecMessageId === undefined && event.regenerates !== undefined) {
-          run.node.regeneratesCodecMessageId = event.regenerates;
-          this._indexRegenerate(event.runId, event.regenerates);
-          this._structuralVersion++;
         }
       } else {
         run = this._createRunFromLifecycle(event, serial);

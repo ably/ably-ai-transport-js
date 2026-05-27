@@ -1039,6 +1039,108 @@ describe('ClientSession integration', () => {
     expect(userIds).toEqual(['pu-1', 'pu-2', 'pu-3', 'pu-4', 'pu-5', 'pu-6']);
   });
 
+  it('surfaces streamed tool-input chunks via view update so client tool runners can react', async () => {
+    // Validates that the View emits `update` events for streaming chunks
+    // even when the codec mutates the projection in place. A regression
+    // in this path silently strands client-side tool runners (e.g.
+    // useClientTools in the use-chat demo), since they react to the
+    // `dynamic-tool` part transitioning to `input-available` on the
+    // assistant message.
+    const channelName = uniqueChannelName('ct-tool-stream');
+    const serverClient = ablyRealtimeClient();
+    const clientClient = ablyRealtimeClient();
+
+    agentSession = createAgentSession<VercelEvent, VercelProjection, AI.UIMessage>({
+      client: serverClient,
+      channelName,
+      codec: UIMessageCodec,
+    });
+    await agentSession.connect();
+
+    clientSession = createClientSession<VercelEvent, VercelProjection, AI.UIMessage>({
+      client: clientClient,
+      channelName,
+      codec: UIMessageCodec,
+      clientId: clientClient.auth.clientId,
+      fetch: noopFetch,
+      api: '/test',
+      runStartDeadlineMs: 5000,
+    });
+    await clientSession.connect();
+
+    const sendPromise = clientSession.view.sendMessage({
+      id: 'u-tool-1',
+      role: 'user',
+      parts: [{ type: 'text', text: "what's the weather like?" }],
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+    const optimisticNode = clientSession.view.flattenNodes()[0];
+    const runId = optimisticNode?.runId;
+    const invocationId = optimisticNode?.invocationId;
+    if (!runId || !invocationId) throw new Error('expected ids');
+
+    // Watch for the View to surface a dynamic-tool part with state
+    // `input-available`. If the View suppresses streaming updates (the
+    // bug this test guards against), this listener never fires.
+    // CAST: clientSession is non-null after the connect() above; narrowing
+    // to a local for the listener closure avoids the optional-chain calls
+    // the linter flags when the listener fires asynchronously.
+    const sessionRef = clientSession;
+    const toolPartAvailable = new Promise<AI.DynamicToolUIPart>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        unsub();
+        reject(new Error('timed out waiting for dynamic-tool input-available via view update'));
+      }, 5000);
+      const unsub = sessionRef.view.on('update', () => {
+        for (const m of sessionRef.view.getMessages()) {
+          if (m.role !== 'assistant') continue;
+          for (const part of m.parts) {
+            if (part.type !== 'dynamic-tool') continue;
+            if (part.state === 'input-available') {
+              clearTimeout(timer);
+              unsub();
+              resolve(part);
+              return;
+            }
+          }
+        }
+      });
+    });
+
+    const serverRun = createRunFromOpts(agentSession, { runId, invocationId });
+    await serverRun.start();
+
+    const toolCallId = 'tool-call-stream-1';
+    const stream = new ReadableStream<AI.UIMessageChunk>({
+      start: (controller) => {
+        controller.enqueue({ type: 'start', messageId: 'asst-tool-1' });
+        controller.enqueue({ type: 'start-step' });
+        controller.enqueue({ type: 'tool-input-start', toolCallId, toolName: 'getLocation' });
+        controller.enqueue({ type: 'tool-input-delta', toolCallId, inputTextDelta: '{"highAcc' });
+        controller.enqueue({ type: 'tool-input-delta', toolCallId, inputTextDelta: 'uracy":false}' });
+        controller.enqueue({
+          type: 'tool-input-available',
+          toolCallId,
+          toolName: 'getLocation',
+          input: { highAccuracy: false },
+        });
+        controller.enqueue({ type: 'finish', finishReason: 'tool-calls' });
+        controller.close();
+      },
+    });
+    await serverRun.pipe(stream);
+    await serverRun.end('complete');
+    await sendPromise;
+
+    const toolPart = await toolPartAvailable;
+    expect(toolPart.toolName).toBe('getLocation');
+    expect(toolPart.toolCallId).toBe(toolCallId);
+    if (toolPart.state === 'input-available' || toolPart.state === 'output-available') {
+      expect(toolPart.input).toEqual({ highAccuracy: false });
+    }
+  });
+
   it('fires ably-message events for raw Ably messages', async () => {
     const channelName = uniqueChannelName('ct-raw');
     const serverClient = ablyRealtimeClient();

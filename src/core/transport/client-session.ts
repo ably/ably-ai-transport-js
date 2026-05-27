@@ -373,23 +373,31 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
           // the currently-bound invocation's run-end should terminate the
           // local run state.
           //
-          // For own runs the router holds the most recent invocation —
-          // either the most-recent send's, or the rebound continuation's.
-          // For observer runs the router has no entry, so we fall through
-          // to the Tree's serial-derived winning-invocation map.
+          // Resolution order:
+          // 1. `_ownRunIds`: own runs always have the latest invocation
+          //    here — set on every send (including continuations) and
+          //    only cleared by a complete/error run-end. Survives
+          //    `route()` closing the router stream on a `finish` chunk
+          //    or consumer cancellation, which both wipe `routerActive`
+          //    while the continuation's run-end is still in flight.
+          // 2. `routerActive`: the bound stream's invocation. Useful for
+          //    own runs whose `_ownRunIds` entry has already been
+          //    cleared (e.g. an earlier complete run-end already ran).
+          // 3. `treeWinner`: serial-derived winner for observer-run gating.
+          //    Doesn't advance on continuation wires by design, so it
+          //    only catches losing-invocation echoes from competing
+          //    agents under the same runId.
           //
-          // A run-end whose invocation matches neither source is dropped as
-          // a losing-invocation echo.
+          // A run-end whose invocation matches none of these is dropped.
+          const ownActive = this._ownRunIds.get(runId);
           const routerActive = this._router.getActiveInvocation(runId);
           const treeWinner = this._tree.getWinningInvocation(runId)?.invocationId;
-          if (
-            invocationId !== undefined &&
-            ((routerActive !== undefined && routerActive !== invocationId) ||
-              (routerActive === undefined && treeWinner !== undefined && treeWinner !== invocationId))
-          ) {
+          const expectedInvocation = ownActive ?? routerActive ?? treeWinner;
+          if (invocationId !== undefined && expectedInvocation !== undefined && expectedInvocation !== invocationId) {
             this._logger.debug('ClientSession.runEnd; ignoring losing-invocation run-end', {
               runId,
               invocationId,
+              ownActive,
               routerActive,
               treeWinner,
             });

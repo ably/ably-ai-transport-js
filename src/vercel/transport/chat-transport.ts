@@ -225,11 +225,23 @@ const wrapStreamWithDone = <T>(source: ReadableStream<T>): { stream: ReadableStr
  * @returns True when a fork-on-send is warranted to avoid shipping a
  *   dangling tool call to the LLM.
  */
+/**
+ * Whether a UIMessage part is a tool part — either the codec-normalised
+ * `dynamic-tool` shape or the AI SDK's statically-declared `tool-${name}`
+ * shape. Both carry `toolCallId` and `state`; the shape check at the end
+ * is defensive against a future AI SDK release introducing a non-tool
+ * variant under the `tool-` prefix (none exists today).
+ * @param part - The UIMessage part to inspect.
+ * @returns True when the part is a tool part of either representation.
+ */
+const _isToolPart = (part: AI.UIMessage['parts'][number]): part is AI.DynamicToolUIPart | AI.ToolUIPart =>
+  (part.type === 'dynamic-tool' || part.type.startsWith('tool-')) && 'toolCallId' in part && 'state' in part;
+
 const hasUnresolvedToolCall = (msg: AI.UIMessage): boolean =>
   msg.role === 'assistant' &&
   msg.parts.some(
     (p) =>
-      p.type === 'dynamic-tool' &&
+      _isToolPart(p) &&
       (p.state === 'input-streaming' || p.state === 'input-available' || p.state === 'approval-requested'),
   );
 
@@ -287,9 +299,14 @@ const deriveContinuationEvents = (
     if (!treeMessage) continue;
 
     for (const overlayPart of overlay.parts) {
-      if (overlayPart.type !== 'dynamic-tool') continue;
+      if (!_isToolPart(overlayPart)) continue;
+      // The codec normalises every tool part to `dynamic-tool`, but the
+      // AI SDK's useChat overlay emits `tool-${name}` parts for statically
+      // declared tools. Match by toolCallId rather than the type prefix
+      // so the cross-representation comparison works regardless of which
+      // side the tool was declared on.
       const treePart = treeMessage.parts.find(
-        (p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool' && p.toolCallId === overlayPart.toolCallId,
+        (p): p is AI.DynamicToolUIPart | AI.ToolUIPart => _isToolPart(p) && p.toolCallId === overlayPart.toolCallId,
       );
 
       // Approval response: useChat's `addToolApprovalResponse` flipped the

@@ -360,4 +360,132 @@ describe('useMessageSync', () => {
     // msg2 should be the new reference
     expect(result[1]).toBe(msg2Updated);
   });
+
+  // ---------------------------------------------------------------------------
+  // Overlay-led tool resolutions survive sync
+  // ---------------------------------------------------------------------------
+
+  it('preserves an overlay tool resolution when the tree still shows input-available', () => {
+    const { slot, emitView, viewFlattenNodes } = createMockSlot();
+    const userMsg = makeMessage('u1');
+    const treeAsst: AI.UIMessage = {
+      id: 'a1',
+      role: 'assistant',
+      parts: [
+        // CAST: hand-rolled dynamic-tool part matches the AI SDK shape.
+        {
+          type: 'dynamic-tool',
+          toolCallId: 'tc-1',
+          toolName: 'getLocation',
+          state: 'input-available',
+          input: { highAccuracy: false },
+        } as unknown as AI.UIMessage['parts'][number],
+      ],
+    };
+    viewFlattenNodes.mockReturnValue([makeNode(userMsg), makeNode(treeAsst)]);
+
+    const setMessages = vi.fn();
+    renderHook(
+      () => {
+        useMessageSync({ setMessages });
+      },
+      { wrapper: withContext(slot) },
+    );
+
+    act(() => {
+      emitView('update');
+    });
+
+    // CAST: setMessages receives an updater function from useMessageSync.
+    const updater = setMessages.mock.calls[1]?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
+    // Overlay carries the AI SDK's static-tool representation
+    // (`tool-${name}`) — the codec normalises everything to
+    // `dynamic-tool`, but `addToolResult` stamps the static prefix when
+    // the tool was declared statically on the server. The merge must
+    // bridge the two when the overlay is more advanced.
+    const overlayAsst: AI.UIMessage = {
+      id: 'a1',
+      role: 'assistant',
+      parts: [
+        {
+          type: 'tool-getLocation',
+          toolCallId: 'tc-1',
+          state: 'output-available',
+          input: { highAccuracy: false },
+          output: { latitude: 51, longitude: 0 },
+        } as unknown as AI.UIMessage['parts'][number],
+      ],
+    };
+    const result = updater([userMsg, overlayAsst]);
+
+    expect(result).toHaveLength(2);
+    expect(result[0]).toBe(userMsg);
+    const mergedAsst = result[1];
+    expect(mergedAsst).toBeDefined();
+    expect(mergedAsst?.id).toBe('a1');
+    const mergedToolPart = mergedAsst?.parts[0];
+    expect(mergedToolPart).toBeDefined();
+    // The merged result keeps the tree's part type so downstream
+    // consumers matching on `dynamic-tool` continue to render…
+    expect((mergedToolPart as { type?: string }).type).toBe('dynamic-tool');
+    // …but adopts the overlay's resolved state and output, so the AI
+    // SDK's `sendAutomaticallyWhen` and the chat-transport's
+    // continuation derivation can see the result.
+    expect((mergedToolPart as { state?: string }).state).toBe('output-available');
+    expect((mergedToolPart as { output?: { latitude?: number } }).output?.latitude).toBe(51);
+  });
+
+  it('keeps the tree intact when the overlay tool part is not more advanced', () => {
+    const { slot, emitView, viewFlattenNodes } = createMockSlot();
+    const userMsg = makeMessage('u1');
+    const treeAsst: AI.UIMessage = {
+      id: 'a1',
+      role: 'assistant',
+      parts: [
+        {
+          type: 'dynamic-tool',
+          toolCallId: 'tc-1',
+          toolName: 'getLocation',
+          state: 'output-available',
+          input: { highAccuracy: false },
+          output: { latitude: 42, longitude: 1 },
+        } as unknown as AI.UIMessage['parts'][number],
+      ],
+    };
+    viewFlattenNodes.mockReturnValue([makeNode(userMsg), makeNode(treeAsst)]);
+
+    const setMessages = vi.fn();
+    renderHook(
+      () => {
+        useMessageSync({ setMessages });
+      },
+      { wrapper: withContext(slot) },
+    );
+
+    act(() => {
+      emitView('update');
+    });
+
+    // CAST: setMessages updater shape from useMessageSync.
+    const updater = setMessages.mock.calls[1]?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
+    // Overlay still shows the pre-resolution state — the tree is the
+    // source of truth here.
+    const overlayAsst: AI.UIMessage = {
+      id: 'a1',
+      role: 'assistant',
+      parts: [
+        {
+          type: 'tool-getLocation',
+          toolCallId: 'tc-1',
+          state: 'input-available',
+          input: { highAccuracy: false },
+        } as unknown as AI.UIMessage['parts'][number],
+      ],
+    };
+    const result = updater([userMsg, overlayAsst]);
+
+    // No overlay-led transition, so the merge returns the tree messages
+    // by reference equality.
+    expect(result[1]).toBe(treeAsst);
+  });
 });

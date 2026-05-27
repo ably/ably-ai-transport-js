@@ -70,6 +70,9 @@ import type {
  * @param opts.runId - Run identifier whose events should be folded.
  * @param opts.signal - AbortSignal that cancels the wait when the run is cancelled.
  * @param opts.logger - Optional logger for diagnostic output.
+ * @param opts.liveMessages - Raw Ably messages already observed live (e.g. by
+ *   the prompt-lookup). Folded alongside the history fetch so just-published
+ *   client wires don't depend on Ably's history-indexing window.
  * @returns The projection produced by folding all run events in serial order.
  */
 const loadRunProjection = async <TEvent, TProjection, TMessage>(opts: {
@@ -78,8 +81,16 @@ const loadRunProjection = async <TEvent, TProjection, TMessage>(opts: {
   runId: string;
   signal: AbortSignal;
   logger: Logger | undefined;
+  /**
+   * Wires the agent already observed live via the prompt-lookup channel
+   * subscription. Folded alongside the history fetch so that the
+   * just-published client wires (e.g. a tool-output-available
+   * continuation) are guaranteed to land in the projection even if Ably
+   * has not yet indexed them into channel.history.
+   */
+  liveMessages?: readonly Ably.InboundMessage[];
 }): Promise<TProjection> => {
-  const { channel, codec, runId, signal, logger } = opts;
+  const { channel, codec, runId, signal, logger, liveMessages } = opts;
 
   if (signal.aborted) {
     throw new Ably.ErrorInfo(
@@ -109,14 +120,43 @@ const loadRunProjection = async <TEvent, TProjection, TMessage>(opts: {
     page = nextPage;
   }
 
+  // Merge live observations with history. Channel.history can lag the
+  // live realtime channel by a brief indexing window, so a wire the
+  // prompt-lookup just saw may not yet appear in the history page.
+  // Dedupe by serial so the same message folded twice doesn't
+  // double-apply.
+  const seenSerials = new Set<string>();
+  const merged: Ably.InboundMessage[] = [];
+  for (const msg of collected) {
+    if (msg.serial !== undefined && !seenSerials.has(msg.serial)) {
+      seenSerials.add(msg.serial);
+      merged.push(msg);
+    }
+  }
+  if (liveMessages !== undefined) {
+    for (const msg of liveMessages) {
+      if (msg.serial !== undefined && !seenSerials.has(msg.serial)) {
+        seenSerials.add(msg.serial);
+        merged.push(msg);
+      }
+    }
+  }
+
   // Ably history returns newest-first; the codec's decoder + reducer
   // expect chronological order so streams accumulate in the right direction.
-  const chronological = collected.toReversed();
+  merged.sort((a, b) => {
+    if (a.serial === undefined && b.serial === undefined) return 0;
+    if (a.serial === undefined) return 1;
+    if (b.serial === undefined) return -1;
+    if (a.serial < b.serial) return -1;
+    if (a.serial > b.serial) return 1;
+    return 0;
+  });
   const decoder = codec.createDecoder();
   let projection = codec.init();
   let folded = 0;
 
-  for (const msg of chronological) {
+  for (const msg of merged) {
     const headers = getHeaders(msg);
     if (headers[HEADER_RUN_ID] !== runId) continue;
     const events = decoder.decode(msg);
@@ -183,6 +223,14 @@ interface PromptLookupResult<TMessage> {
   nodes: MessageNode<TMessage>[];
   firstHeaders?: Record<string, string>;
   firstClientId?: string;
+  /**
+   * Raw Ably messages observed live for the matched prompt-ids, in
+   * arrival order. The agent forwards these to `loadRunProjection` so a
+   * continuation invocation can fold the just-published client wires
+   * (e.g. a tool-output-available) without waiting on Ably's channel
+   * history indexing window.
+   */
+  rawMessages: Ably.InboundMessage[];
 }
 
 const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
@@ -231,6 +279,7 @@ const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
     // grow unbounded.
     const seenSerials = new Set<string>();
     const collected: MessageNode<TMessage>[] = [];
+    const rawMessages: Ably.InboundMessage[] = [];
     let firstHeaders: Record<string, string> | undefined;
     let firstClientId: string | undefined;
     // Forward-declared so that cleanup() and onCancelled() can reference them
@@ -301,6 +350,7 @@ const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
         return;
       }
       for (const node of decoded) collected.push(node);
+      rawMessages.push(m);
       if (matchedEventIds.size < expectedCount) return;
       settled = true;
       cleanup();
@@ -320,7 +370,7 @@ const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
         invocationId,
         count: collected.length,
       });
-      resolve({ nodes: collected, firstHeaders, firstClientId });
+      resolve({ nodes: collected, firstHeaders, firstClientId, rawMessages });
     });
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the register callback may have settled the promise synchronously during buffered-prompt drain.
     if (settled) {
@@ -859,6 +909,13 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
     let resolvedRegenerates: string | undefined;
     let resolvedContinuation = false;
     let firstLookupHeaders: Record<string, string> | undefined;
+    /**
+     * Raw Ably messages observed live by the prompt-lookup. Passed to
+     * `loadRunProjection` so the just-published client wires don't need
+     * to wait on Ably's channel history indexing window. Empty when no
+     * lookup ran or no messages matched.
+     */
+    let liveLookupMessages: readonly Ably.InboundMessage[] | undefined;
 
     // Most recently loaded projection. `Run.loadProjection()` caches it so
     // `Run.pipe()` can consult `codec.resolveToolTarget` for cross-message
@@ -921,6 +978,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
             for (const m of found.nodes) viewMessages.push(m);
             if (found.firstHeaders !== undefined) firstLookupHeaders = found.firstHeaders;
             if (found.firstClientId !== undefined) resolvedInputClientId = found.firstClientId;
+            liveLookupMessages = found.rawMessages;
           } catch (error) {
             const errInfo =
               error instanceof Ably.ErrorInfo
@@ -985,6 +1043,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
               runId,
               signal,
               logger,
+              liveMessages: liveLookupMessages,
             });
             cachedProjection = projection;
             const projectedById = new Map<string, TMessage>();

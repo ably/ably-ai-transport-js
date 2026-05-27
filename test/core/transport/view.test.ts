@@ -1,4 +1,5 @@
 import type * as Ably from 'ably';
+import type { Mock } from 'vitest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -16,7 +17,7 @@ import type { Codec } from '../../../src/core/codec/types.js';
 import { decodeHistory } from '../../../src/core/transport/decode-history.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
-import type { HistoryPage, RunLifecycleEvent } from '../../../src/core/transport/types.js';
+import type { ActiveRun, HistoryPage, RunLifecycleEvent } from '../../../src/core/transport/types.js';
 import type { SendDelegate } from '../../../src/core/transport/view.js';
 import { DefaultView } from '../../../src/core/transport/view.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
@@ -210,6 +211,141 @@ describe('DefaultView', () => {
     it('returns an empty list for an empty tree', () => {
       expect(view.flattenNodes()).toEqual([]);
       expect(view.getMessages()).toEqual([]);
+    });
+
+    it('keeps messages visible after a continuation run-start (no self-parent cycle)', () => {
+      // Repro for the user-reported regression where invoking a
+      // client-side tool (getLocation) or approving an approval-gated
+      // tool made both the user prompt and the assistant bubble vanish
+      // from the visible message list. The continuation run-start
+      // carries `parent` pointing at a message in the same Run; the
+      // pre-fix backfill turned that into a self-parent cycle and
+      // flattenNodes filtered the Run out as unreachable.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'u1',
+        role: 'user',
+        message: { id: 'u1', content: 'q' },
+        serial: 's1',
+      });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'a1',
+        role: 'assistant',
+        message: { id: 'a1', content: 'calling tool' },
+        serial: 's2',
+      });
+
+      tree.applyRunLifecycle(
+        {
+          type: 'ai-run-start',
+          runId: 'R1',
+          clientId: 'c1',
+          invocationId: 'inv-2',
+          parent: 'a1',
+          isContinuation: true,
+        },
+        's3',
+      );
+
+      expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1']);
+    });
+
+    it('inserts regenerator content in-place at its anchor when later prompts followed the regenerated message', () => {
+      // P1 was sent (R1 has [u1, a1]), then P2 was sent parented off
+      // a1 (R2 has [u2, a2]). Then a1 is regenerated, creating R3
+      // with [a1']. The visible chain must keep PROMPT ORDER:
+      // u1 → a1' (substituted for a1) → u2 → a2. Pre-fix the
+      // chronological sort by `startSerial` placed R3 after R2, so
+      // a1' rendered at the end of the chat as `[u1, u2, a2, a1']`.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'u1',
+        role: 'user',
+        message: { id: 'u1', content: 'q1' },
+        serial: 's1',
+      });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'a1',
+        role: 'assistant',
+        message: { id: 'a1', content: 'reply1' },
+        serial: 's2',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'u2',
+        parent: 'a1',
+        role: 'user',
+        message: { id: 'u2', content: 'q2' },
+        serial: 's3',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'a2',
+        role: 'assistant',
+        message: { id: 'a2', content: 'reply2' },
+        serial: 's4',
+      });
+      apply(tree, {
+        runId: 'R3',
+        codecMessageId: 'a1p',
+        parent: 'u1',
+        regenerates: 'a1',
+        role: 'assistant',
+        message: { id: 'a1p', content: 'reply1-regen' },
+        serial: 's5',
+      });
+
+      expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1p', 'u2', 'a2']);
+    });
+
+    it('substitutes nested regenerator content recursively at each anchor position', () => {
+      // P1 → [u1, a1]. Regen a1 → R2 = [a1', extra']. Then regen the
+      // trailing follow-up extra' inside R2 → R3 = [extra''] (anchored
+      // at extra', NOT rebased to a1 per the trailing-target rule).
+      // Walking R1 hits a1 → substitute R2 → emits a1', then hits
+      // extra' → substitute R3 → emits extra''. Final chain:
+      // [u1, a1', extra''].
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'u1',
+        role: 'user',
+        message: { id: 'u1', content: 'q' },
+        serial: 's1',
+      });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'a1',
+        role: 'assistant',
+        message: { id: 'a1', content: 'orig' },
+        serial: 's2',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'a1p',
+        regenerates: 'a1',
+        role: 'assistant',
+        message: { id: 'a1p', content: 'regen-1' },
+        serial: 's3',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'extra',
+        role: 'assistant',
+        message: { id: 'extra', content: 'extra-1' },
+        serial: 's4',
+      });
+      apply(tree, {
+        runId: 'R3',
+        codecMessageId: 'extrap',
+        regenerates: 'extra',
+        role: 'assistant',
+        message: { id: 'extrap', content: 'regen-extra' },
+        serial: 's5',
+      });
+
+      expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1p', 'extrap']);
     });
 
     // -----------------------------------------------------------------------
@@ -1747,6 +1883,263 @@ describe('DefaultView', () => {
         const before = view.getMessages().map((m) => m.id);
         view.selectMessageSibling('u1', 0);
         expect(view.getMessages().map((m) => m.id)).toEqual(before);
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // Regenerate with trailing follow-up messages in the same Run
+    // -----------------------------------------------------------------------
+    //
+    // The original assistant Run holds two messages: the tool-call
+    // bubble (a1, the regenerate target) followed by the LLM text
+    // bubble (a2) that the model wrote after the tool result was
+    // folded in. Regenerating a1 means the agent will re-do the tool
+    // call AND its follow-up; the entire trail from a1 onwards in R1
+    // is conceptually replaced by R2's projection, even though only
+    // a1 is named as the regenerate anchor.
+    describe('regenerate with trailing messages in the same Run', () => {
+      beforeEach(() => {
+        apply(tree, {
+          runId: 'R1',
+          codecMessageId: 'u1',
+          role: 'user',
+          message: { id: 'u1', content: 'q' },
+          serial: 's1',
+        });
+        // a1 — tool-call bubble (the regenerate target).
+        apply(tree, {
+          runId: 'R1',
+          codecMessageId: 'a1',
+          role: 'assistant',
+          message: { id: 'a1', content: 'tool-call' },
+          serial: 's2',
+        });
+        // a2 — follow-up text bubble inside the same Run.
+        apply(tree, {
+          runId: 'R1',
+          codecMessageId: 'a2',
+          role: 'assistant',
+          message: { id: 'a2', content: 'follow-up' },
+          serial: 's3',
+        });
+        // R2 regenerates a1. Its projection contains a1' (new tool call)
+        // and a2' (its follow-up text).
+        apply(tree, {
+          runId: 'R2',
+          codecMessageId: 'a1p',
+          parent: 'a1',
+          regenerates: 'a1',
+          role: 'assistant',
+          message: { id: 'a1p', content: 'new-tool-call' },
+          serial: 's4',
+        });
+        apply(tree, {
+          runId: 'R2',
+          codecMessageId: 'a2p',
+          role: 'assistant',
+          message: { id: 'a2p', content: 'new-follow-up' },
+          serial: 's5',
+        });
+      });
+
+      it('hides both the regenerated message AND its trailing follow-ups in the owner Run', () => {
+        // a2 in R1 must be hidden too: it was generated AFTER a1 and is
+        // semantically part of the same "turn" as the regenerated tool
+        // call. Pre-fix it stayed visible, producing a 3-bubble chat
+        // (a2 + a1' + a2') instead of the expected 2-bubble layout.
+        expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1p', 'a2p']);
+      });
+
+      it('only the position-equivalent message in each variant is a branch point', () => {
+        // Anchor (a1) and its position-equivalent (a1p, the first
+        // message of R2) are branch points — clicking arrows on those
+        // bubbles flips the variant. Trailing messages (a2 in the
+        // original; a2p in the regenerator) are not branch anchors and
+        // should not surface navigation arrows.
+        expect(view.hasMessageSiblings('a1')).toBe(true);
+        expect(view.hasMessageSiblings('a1p')).toBe(true);
+        expect(view.hasMessageSiblings('a2')).toBe(false);
+        expect(view.hasMessageSiblings('a2p')).toBe(false);
+      });
+
+      it('getMessageSiblings on the anchor returns the head message of each variant', () => {
+        expect(view.getMessageSiblings('a1').map((m) => m.id)).toEqual(['a1', 'a1p']);
+        expect(view.getMessageSiblings('a1p').map((m) => m.id)).toEqual(['a1', 'a1p']);
+      });
+
+      it('selectMessageSibling on the anchor swaps the entire regenerated trail', () => {
+        // Selecting back to the original (index 0) restores BOTH a1 and a2 in R1.
+        view.selectMessageSibling('a1', 0);
+        expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1', 'a2']);
+        // Selecting back to the regenerator (index 1) hides them again.
+        view.selectMessageSibling('a1', 1);
+        expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1p', 'a2p']);
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // Nested regenerate: trailing message inside a regenerator Run
+    // -----------------------------------------------------------------------
+    //
+    // After regenerating a1 (R2 holds [a1p, a2p]) the user clicks
+    // Regenerate on a2p. Pre-fix this rebased the anchor to a1 (the
+    // group root) and produced a new full-conversation Run that joined
+    // the a1 group as a third member — the chat showed one "combined"
+    // bubble with "3 / 3" navigation. The user expects a local regen
+    // of the trailing text: a new Run anchored at a2p, contributing a
+    // single new text bubble while a1p stays put with its 2/2 counter.
+    describe('regenerate target inside a regenerator Run', () => {
+      let regen2: ActiveRun<TestEvent>;
+      beforeEach(async () => {
+        apply(tree, {
+          runId: 'R1',
+          codecMessageId: 'u1',
+          role: 'user',
+          message: { id: 'u1', content: 'q' },
+          serial: 's1',
+        });
+        apply(tree, {
+          runId: 'R1',
+          codecMessageId: 'a1',
+          role: 'assistant',
+          message: { id: 'a1', content: 'tc-original' },
+          serial: 's2',
+        });
+        apply(tree, {
+          runId: 'R1',
+          codecMessageId: 'a2',
+          role: 'assistant',
+          message: { id: 'a2', content: 'tt-original' },
+          serial: 's3',
+        });
+        apply(tree, {
+          runId: 'R2',
+          codecMessageId: 'a1p',
+          parent: 'a1',
+          regenerates: 'a1',
+          role: 'assistant',
+          message: { id: 'a1p', content: 'tc-regen' },
+          serial: 's4',
+        });
+        apply(tree, {
+          runId: 'R2',
+          codecMessageId: 'a2p',
+          role: 'assistant',
+          message: { id: 'a2p', content: 'tt-regen' },
+          serial: 's5',
+        });
+        regen2 = await view.regenerate('a2p');
+      });
+
+      it('mints a regenerate event anchored at the trailing msg-id (not at the group root)', () => {
+        // CAST: vi.fn returns a MockInstance that the codebase types via `SendDelegate`.
+        const mocked = sendDelegate as unknown as Mock<SendDelegate<TestEvent, TestMessage>>;
+        const lastCall = mocked.mock.calls.at(-1);
+        const events = lastCall?.[0];
+        const event = events?.[0]?.event;
+        // Test codec's createRegenerateEvent puts the regen target in `forkOf`.
+        expect(event).toEqual({ type: 'regenerate', forkOf: 'a2p', parent: 'a1p' });
+        // The new Run joins a fresh group anchored at a2p, not the a1 group.
+        expect(regen2).toBeDefined();
+      });
+
+      it('a fully-folded trailing regen contributes only the new trailing message; the tool-call bubble stays put', () => {
+        apply(tree, {
+          runId: 'R3',
+          codecMessageId: 'a2pp',
+          parent: 'a1p',
+          regenerates: 'a2p',
+          role: 'assistant',
+          message: { id: 'a2pp', content: 'tt-regen-2' },
+          serial: 's6',
+        });
+        expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1p', 'a2pp']);
+        // Tool-call bubble: still navigates the a1 group (2/2).
+        expect(view.hasMessageSiblings('a1p')).toBe(true);
+        expect(view.getMessageSiblings('a1p').map((m) => m.id)).toEqual(['a1', 'a1p']);
+        // Trailing bubble: navigates the a2p group (2/2), distinct from the a1 group.
+        expect(view.hasMessageSiblings('a2pp')).toBe(true);
+        expect(view.getMessageSiblings('a2pp').map((m) => m.id)).toEqual(['a2p', 'a2pp']);
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // Multiple regen groups inside the same owner Run
+    // -----------------------------------------------------------------------
+    //
+    // After regenerating the trailing text (R2 regenerates a2 in R1)
+    // and then regenerating the tool-call (R3 regenerates a1 in R1),
+    // R3's truncation of R1 at a1 also invalidates a2 — and with it
+    // the a2 regen group's regenerator R2. Pre-fix R2 stayed visible
+    // and leaked its content between u1 and R3's payload, producing a
+    // 3-bubble chat (R2's regen + R3's pair). The view must shadow R2.
+    describe('multiple regen anchors in the same owner Run', () => {
+      beforeEach(() => {
+        apply(tree, {
+          runId: 'R1',
+          codecMessageId: 'u1',
+          role: 'user',
+          message: { id: 'u1', content: 'q' },
+          serial: 's1',
+        });
+        apply(tree, {
+          runId: 'R1',
+          codecMessageId: 'a1',
+          role: 'assistant',
+          message: { id: 'a1', content: 'tc-original' },
+          serial: 's2',
+        });
+        apply(tree, {
+          runId: 'R1',
+          codecMessageId: 'a2',
+          role: 'assistant',
+          message: { id: 'a2', content: 'tt-original' },
+          serial: 's3',
+        });
+        // Trailing-text regen lands first (R2 anchored at a2).
+        apply(tree, {
+          runId: 'R2',
+          codecMessageId: 'a2p',
+          parent: 'a1',
+          regenerates: 'a2',
+          role: 'assistant',
+          message: { id: 'a2p', content: 'tt-regen' },
+          serial: 's4',
+        });
+        // Tool-call regen lands next (R3 anchored at a1) — it covers an
+        // earlier position in R1's projection than R2.
+        apply(tree, {
+          runId: 'R3',
+          codecMessageId: 'a1p',
+          parent: 'u1',
+          regenerates: 'a1',
+          role: 'assistant',
+          message: { id: 'a1p', content: 'tc-regen' },
+          serial: 's5',
+        });
+        apply(tree, {
+          runId: 'R3',
+          codecMessageId: 'a2pp',
+          role: 'assistant',
+          message: { id: 'a2pp', content: 'tt-fresh' },
+          serial: 's6',
+        });
+      });
+
+      it('hides the trailing-text regenerator when an earlier regen covers its anchor in the same owner Run', () => {
+        // Visible chain: u1 from R1 (truncated at a1), then R3's pair.
+        // R2 (the trailing-text regenerator) is shadowed.
+        expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1p', 'a2pp']);
+      });
+
+      it('selecting back to the original at the tool-call anchor reactivates the trailing-text regenerator', () => {
+        // Navigate from R3 back to R1 at the a1 anchor. R3 no longer
+        // truncates R1, so R2's anchor (a2) is back in the visible
+        // chain and R2's content surfaces.
+        view.selectMessageSibling('a1', 0);
+        expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1', 'a2p']);
+        expect(view.hasMessageSiblings('a2p')).toBe(true);
+        expect(view.getMessageSiblings('a2p').map((m) => m.id)).toEqual(['a2', 'a2p']);
       });
     });
 

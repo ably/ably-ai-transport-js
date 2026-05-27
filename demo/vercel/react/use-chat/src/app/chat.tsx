@@ -2,13 +2,7 @@
 
 import { useChat } from '@ai-sdk/react';
 import { lastAssistantMessageIsCompleteWithApprovalResponses, lastAssistantMessageIsCompleteWithToolCalls } from 'ai';
-import {
-  useAblyMessages,
-  useActiveRuns,
-  useChatTransport,
-  useMessageSync,
-  useView,
-} from '@ably/ai-transport/vercel/react';
+import { useAblyMessages, useChatTransport, useMessageSync, useView } from '@ably/ai-transport/vercel/react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { MessageList } from './components/message-list';
 import type { CallbackLogEntry } from './components/debug-pane';
@@ -72,8 +66,9 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
     setStatusLog((prev) => [...prev, { time: Date.now(), status }]);
   }, [status]);
 
-  const activeRuns = useActiveRuns();
-  const hasAnyRuns = activeRuns.size > 0;
+  // Show Stop while useChat is mid-request (submitted before stream starts,
+  // streaming while chunks arrive). useChat.stop() targets the run it owns.
+  const hasAnyRuns = status === 'submitted' || status === 'streaming';
 
   // Auto-loads first page on mount
   const {
@@ -144,7 +139,6 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
       <DebugPane
         messages={messages}
         ablyMessages={ablyMessages}
-        activeRuns={activeRuns}
         status={status}
         callbackLog={callbackLog}
         statusLog={statusLog}

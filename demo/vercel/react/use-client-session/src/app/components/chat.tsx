@@ -12,7 +12,7 @@ import { DebugPane } from './debug-pane';
 import { SessionHooks } from '../providers';
 import { clientColor } from '../lib/client-color';
 
-const { useClientSession, useActiveRuns, useView, useAblyMessages } = SessionHooks;
+const { useClientSession, useView, useAblyMessages } = SessionHooks;
 
 interface ChatProps {
   chatId: string;
@@ -33,6 +33,7 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
   const view = useView({ limit: historyLimit ?? 30 });
   const {
     messages,
+    nodes,
     hasOlder,
     loading,
     loadOlder,
@@ -45,9 +46,16 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
 
   useClientTools(view, clientId);
 
-  const activeRuns = useActiveRuns();
-  const hasAnyRuns = activeRuns.size > 0;
-  const status = hasAnyRuns ? 'running' : 'idle';
+  // Derive "is a run in progress?" from the latest visible Run's status:
+  // 'complete' and 'cancelled' are terminal and hide the Stop button; any
+  // other status ('active', 'error', 'suspended') leaves Stop available so
+  // the user can still abort a stuck or paused run. The Run also carries
+  // the runId Stop needs to cancel.
+  const latestNode = nodes.at(-1);
+  const latestRunId = latestNode?.runId;
+  const latestStatus = latestNode?.status;
+  const isRunInProgress = latestRunId !== undefined && latestStatus !== 'complete' && latestStatus !== 'cancelled';
+  const status = isRunInProgress ? 'running' : 'idle';
 
   useEffect(() => {
     setStatusLog((prev) => [...prev, { time: Date.now(), status }]);
@@ -140,18 +148,16 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
             inputRef={inputRef}
             onSend={(text) => void view.sendMessage(userMessage(text))}
             onStop={() => {
-              const ownRunIds = clientId ? activeRuns.get(clientId) : undefined;
-              if (!ownRunIds) return;
-              for (const runId of ownRunIds) void session.cancel(runId);
+              if (!latestRunId) return;
+              void session.cancel(latestRunId);
             }}
-            hasAnyRuns={hasAnyRuns}
+            hasAnyRuns={isRunInProgress}
           />
         </div>
       </div>
       <DebugPane
         messages={messages}
         ablyMessages={ablyMessages}
-        activeRuns={activeRuns}
         status={status}
         callbackLog={callbackLog}
         statusLog={statusLog}

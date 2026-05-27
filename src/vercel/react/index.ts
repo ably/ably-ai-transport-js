@@ -5,7 +5,6 @@ export {
   ChatTransportProvider,
   ClientSessionProvider,
   useAblyMessages,
-  useActiveRuns,
   useClientSession,
   useCreateView,
   useTree,

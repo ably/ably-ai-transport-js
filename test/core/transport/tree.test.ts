@@ -941,10 +941,8 @@ describe('Tree', () => {
       const run = tree.getRunNode('R1');
       expect(run?.status).toBe('active');
       expect(run?.startSerial).toBe('s1');
-      // clientId is set on the RunNode itself (sourced from event.clientId)
-      // and also reflected in the active-runs map for cancel filtering.
+      // clientId is set on the RunNode itself, sourced from event.clientId.
       expect(run?.clientId).toBe('client-a');
-      expect(tree.getActiveRunIds().get('client-a')).toEqual(new Set(['R1']));
     });
 
     it('run-start activates an existing Run created from message headers', () => {
@@ -963,7 +961,6 @@ describe('Tree', () => {
       tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'client-a', invocationId: '' }, 's2');
       expect(tree.getRunNode('R1')?.status).toBe('active');
       expect(tree.getRunNode('R1')?.clientId).toBe('client-a');
-      expect(tree.getActiveRunIds().get('client-a')).toEqual(new Set(['R1']));
     });
 
     it('run-end sets RunNode status and endSerial', () => {
@@ -974,14 +971,6 @@ describe('Tree', () => {
       expect(run?.endSerial).toBe('s10');
     });
 
-    it('run-end deregisters the run from active tracking', () => {
-      tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'client-a', invocationId: '' }, 's1');
-      expect(tree.getActiveRunIds().get('client-a')).toEqual(new Set(['R1']));
-
-      tree.applyRunLifecycle({ type: 'ai-run-end', runId: 'R1', clientId: 'client-a', reason: 'cancelled' }, 's2');
-      expect(tree.getActiveRunIds().get('client-a')).toBeUndefined();
-    });
-
     it('emits a run event on both start and end', () => {
       const handler = vi.fn();
       tree.on('run', handler);
@@ -990,38 +979,6 @@ describe('Tree', () => {
       expect(handler).toHaveBeenCalledTimes(2);
       expect(handler).toHaveBeenNthCalledWith(1, expect.objectContaining({ type: 'ai-run-start', runId: 'R1' }));
       expect(handler).toHaveBeenNthCalledWith(2, expect.objectContaining({ type: 'ai-run-end', runId: 'R1' }));
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // trackRun / untrackRun (session-only API; no lifecycle emit)
-  // -------------------------------------------------------------------------
-
-  describe('trackRun / untrackRun', () => {
-    it('trackRun adds to active runs without emitting a run event', () => {
-      const handler = vi.fn();
-      tree.on('run', handler);
-      tree.trackRun('R1', 'client-a');
-      expect(handler).not.toHaveBeenCalled();
-      expect(tree.getActiveRunIds().get('client-a')).toEqual(new Set(['R1']));
-    });
-
-    it('untrackRun removes from active runs without emitting a run event', () => {
-      tree.trackRun('R1', 'client-a');
-      const handler = vi.fn();
-      tree.on('run', handler);
-      tree.untrackRun('R1');
-      expect(handler).not.toHaveBeenCalled();
-      expect(tree.getActiveRunIds().get('client-a')).toBeUndefined();
-    });
-
-    it('groups multiple runs by clientId', () => {
-      tree.trackRun('R1', 'client-a');
-      tree.trackRun('R2', 'client-a');
-      tree.trackRun('R3', 'client-b');
-      const active = tree.getActiveRunIds();
-      expect(active.get('client-a')).toEqual(new Set(['R1', 'R2']));
-      expect(active.get('client-b')).toEqual(new Set(['R3']));
     });
   });
 

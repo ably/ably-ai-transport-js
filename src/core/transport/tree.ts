@@ -121,25 +121,6 @@ export interface TreeInternal<TEvent, TProjection> extends Tree<TProjection> {
    */
   delete(runId: string): void;
 
-  /**
-   * Register a run as active (for {@link Tree.getActiveRunIds}) without
-   * emitting a 'run' lifecycle event. Used by the session to mark its own
-   * runs active immediately on `_internalSend()` so they appear in
-   * `cancel({ own: true })` filters before the agent's run-start arrives.
-   * @param runId - The run-id.
-   * @param clientId - The owning clientId.
-   */
-  trackRun(runId: string, clientId: string): void;
-
-  /**
-   * Deregister a run from active tracking (for {@link Tree.getActiveRunIds})
-   * without emitting a 'run' lifecycle event. Used by the session for
-   * local-cleanup cases (e.g. send failure) where the public lifecycle
-   * shouldn't fire a phantom run-end.
-   * @param runId - The run-id.
-   */
-  untrackRun(runId: string): void;
-
   /** Forward a raw Ably message event to tree subscribers. */
   emitAblyMessage(msg: Ably.InboundMessage): void;
 }
@@ -186,9 +167,6 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
    * Root Runs (no parent) are indexed under the key `undefined`.
    */
   private readonly _parentIndex = new Map<string | undefined, Set<string>>();
-
-  /** Active runs: runId -> clientId. */
-  private readonly _runClientIds = new Map<string, string>();
 
   /**
    * Regenerated codec-message-id -> set of runIds that regenerate it. A Run with
@@ -647,7 +625,6 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
         this._insertSortedRun(run);
         this._structuralVersion++;
       }
-      this._runClientIds.set(event.runId, event.clientId);
       this._emitter.emit('run', event);
       this._emitter.emit('update');
       return;
@@ -659,7 +636,6 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
       run.node.status = event.reason;
       run.node.endSerial = serial;
     }
-    this._runClientIds.delete(event.runId);
     this._emitter.emit('run', event);
     this._emitter.emit('update');
   }
@@ -673,7 +649,6 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
     this._removeFromParentIndex(entry.node.parentRunId, runId);
     this._removeSortedRun(entry);
     this._runIndex.delete(runId);
-    this._runClientIds.delete(runId);
     if (entry.node.regeneratesCodecMessageId !== undefined) {
       const set = this._regenerateByMsgId.get(entry.node.regeneratesCodecMessageId);
       if (set) {
@@ -924,21 +899,6 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
   // Events
   // -------------------------------------------------------------------------
 
-  // Spec: AIT-CT17
-  getActiveRunIds(): Map<string, Set<string>> {
-    this._logger.trace('DefaultTree.getActiveRunIds();');
-    const result = new Map<string, Set<string>>();
-    for (const [runId, clientId] of this._runClientIds) {
-      let set = result.get(clientId);
-      if (!set) {
-        set = new Set<string>();
-        result.set(clientId, set);
-      }
-      set.add(runId);
-    }
-    return result;
-  }
-
   getWinningInvocation(runId: string): { invocationId: string; serial: string } | undefined {
     const entry = this._winningInvocations.get(runId);
     return entry ? { ...entry } : undefined;
@@ -977,16 +937,6 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
   emitAblyMessage(msg: Ably.InboundMessage): void {
     this._logger.trace('DefaultTree.emitAblyMessage();');
     this._emitter.emit('ably-message', msg);
-  }
-
-  trackRun(runId: string, clientId: string): void {
-    this._logger.trace('DefaultTree.trackRun();', { runId, clientId });
-    this._runClientIds.set(runId, clientId);
-  }
-
-  untrackRun(runId: string): void {
-    this._logger.trace('DefaultTree.untrackRun();', { runId });
-    this._runClientIds.delete(runId);
   }
 }
 

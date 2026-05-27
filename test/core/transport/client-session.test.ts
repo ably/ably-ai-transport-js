@@ -1490,7 +1490,6 @@ describe('ClientSession', () => {
       // has the continuation's invocation-id), the gate passes, and
       // applyRunLifecycle marks the Run complete.
       expect(fix.session.tree.getRunNode(initial.runId)?.status).toBe('complete');
-      expect(fix.session.tree.getActiveRunIds().size).toBe(0);
     });
 
     it('continuation run reaches status=complete live after suspended → continuation → complete sequence', async () => {
@@ -1544,11 +1543,10 @@ describe('ClientSession', () => {
         }),
       );
 
-      // The continuation's run-end must apply — otherwise the UI's
-      // useActiveRuns map keeps R1 marked active and the InputBar
-      // shows "Stop" forever.
+      // The continuation's run-end must apply — otherwise the Run stays
+      // at status=active and any UI gating on Run status sticks on
+      // "streaming" / shows "Stop" forever.
       expect(fix.session.tree.getRunNode(initial.runId)?.status).toBe('complete');
-      expect(fix.session.tree.getActiveRunIds().size).toBe(0);
     });
 
     it('processes continuation run-end (router-active invocation is fresh)', async () => {

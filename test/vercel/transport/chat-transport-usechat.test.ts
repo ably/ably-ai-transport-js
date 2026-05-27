@@ -114,7 +114,6 @@ const createMockSession = () => {
     sendEvent: send,
     regenerate: vi.fn(),
     edit: vi.fn(),
-    getActiveRunIds: vi.fn(() => new Map()),
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
     on: vi.fn(() => () => {}),
   };
@@ -130,7 +129,6 @@ const createMockSession = () => {
     regenerate: vi.fn(),
     edit: vi.fn(),
     on: vi.fn(() => noop),
-    getActiveRunIds: vi.fn(() => new Map()),
     getMessages: vi.fn(() => []),
     getAblyMessages: vi.fn(() => []),
     history: vi.fn(),
@@ -152,7 +150,6 @@ const createMultiRunMockSession = () => {
     sendEvent: send,
     regenerate: vi.fn(),
     edit: vi.fn(),
-    getActiveRunIds: vi.fn(() => new Map()),
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
     on: vi.fn(() => () => {}),
   };
@@ -168,7 +165,6 @@ const createMultiRunMockSession = () => {
     regenerate: vi.fn(),
     edit: vi.fn(),
     on: vi.fn(() => noop),
-    getActiveRunIds: vi.fn(() => new Map()),
     getMessages: vi.fn(() => []),
     getAblyMessages: vi.fn(() => []),
     history: vi.fn(),

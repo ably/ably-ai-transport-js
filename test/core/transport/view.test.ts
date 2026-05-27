@@ -499,11 +499,6 @@ describe('DefaultView', () => {
       expect(view.getMessageMetadata('m2')?.runId).toBe('R2');
       expect(view.getMessageMetadata('m-unknown')).toBeUndefined();
     });
-
-    it('getActiveRunIds returns active runs', () => {
-      tree.trackRun('R1', 'client-a');
-      expect(view.getActiveRunIds().get('client-a')).toEqual(new Set(['R1']));
-    });
   });
 
   // -------------------------------------------------------------------------

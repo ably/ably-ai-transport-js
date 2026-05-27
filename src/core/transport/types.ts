@@ -734,9 +734,6 @@ export interface Tree<TProjection> {
 
   // --- Events ---
 
-  /** Active run IDs grouped by clientId (all runs, not just visible). */
-  getActiveRunIds(): Map<string, Set<string>>;
-
   /**
    * Get the winning invocation-id for a run-id, if known.
    *
@@ -983,9 +980,6 @@ export interface View<TEvent, TProjection, TMessage> {
   edit(messageId: string, newEvents: TEvent | TEvent[], options?: SendOptions): Promise<ActiveRun<TEvent>>;
 
   // --- Observation ---
-
-  /** Active run IDs for runs with visible messages, grouped by clientId. */
-  getActiveRunIds(): Map<string, Set<string>>;
 
   /** The visible message list changed (new visible node, branch switch, window shift). */
   on(event: 'update', handler: () => void): () => void;

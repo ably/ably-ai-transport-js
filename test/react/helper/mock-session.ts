@@ -100,7 +100,6 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
     hasSiblingRuns: vi.fn(() => false),
     // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires explicit undefined return for the contract
     getRegenerateGroup: vi.fn(() => undefined),
-    getActiveRunIds: vi.fn(() => new Map<string, Set<string>>()),
     getWinningInvocation: vi.fn(),
     on: makeTreeOn(treeHandlers),
   };
@@ -143,7 +142,6 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
     sendEvent,
     regenerate,
     edit,
-    getActiveRunIds: vi.fn(() => new Map<string, Set<string>>()),
     on: makeTreeOn(viewHandlers),
     close: vi.fn(),
   };

@@ -18,7 +18,6 @@
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 
-import { Bash, MountableFs, ReadWriteFs } from 'just-bash';
 import type { BashToolkit } from 'bash-tool';
 
 // `bash-tool` ships ESM-only (its package.json exports field exposes only an
@@ -28,6 +27,12 @@ import type { BashToolkit } from 'bash-tool';
 // the dynamic import in `new Function` hides it from the TS transform so the
 // runtime executes a real ESM `import()`.
 const importBashTool = new Function('return import("bash-tool")') as () => Promise<typeof import('bash-tool')>;
+
+// `just-bash` exposes both CJS and ESM, but its CJS bundle stubs `import.meta.url`
+// as `undefined`, so the python3 command's `new URL("./worker.js", import.meta.url)`
+// throws "Invalid URL" at exec time. Force the ESM build via dynamic import, using
+// the same `new Function` trick to bypass ts-node's CJS downlevelling.
+const importJustBash = new Function('return import("just-bash")') as () => Promise<typeof import('just-bash')>;
 
 const MOUNT_POINT = '/workspace';
 
@@ -42,9 +47,10 @@ const toolkits = new Map<string, Promise<BashToolkit>>();
 
 const createToolkit = async (): Promise<BashToolkit> => {
   await fsp.mkdir(WORKSPACE_ROOT, { recursive: true });
+  const { Bash, MountableFs, ReadWriteFs } = await importJustBash();
   const fs = new MountableFs();
   fs.mount(MOUNT_POINT, new ReadWriteFs({ root: WORKSPACE_ROOT }));
-  const bash = new Bash({ fs, cwd: MOUNT_POINT });
+  const bash = new Bash({ fs, cwd: MOUNT_POINT, python: true });
   const { createBashTool } = await importBashTool();
   return createBashTool({
     sandbox: bash,

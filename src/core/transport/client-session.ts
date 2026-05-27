@@ -19,11 +19,6 @@ import {
   EVENT_CANCEL,
   EVENT_RUN_END,
   EVENT_RUN_START,
-  HEADER_CANCEL_ALL,
-  HEADER_CANCEL_CLIENT_ID,
-  HEADER_CANCEL_INVOCATION_ID,
-  HEADER_CANCEL_OWN,
-  HEADER_CANCEL_RUN_ID,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
@@ -50,10 +45,8 @@ import type { DefaultTree } from './tree.js';
 import { createTree } from './tree.js';
 import type {
   ActiveRun,
-  CancelFilter,
   ClientSession,
   ClientSessionOptions,
-  CloseOptions,
   MessageNode,
   RunEndReason,
   RunLifecycleEvent,
@@ -535,9 +528,9 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
       stateChange.reason,
     );
 
-    // As with cancellation (_closeMatchingRunStreams), do not clear
-    // _ownRunIds or _runObservers here — late events must still accumulate
-    // into the tree. The run-end handler cleans up observers.
+    // As with cancellation (_closeRunStream), do not clear _ownRunIds
+    // or _runObservers here — late events must still accumulate into the
+    // tree. The run-end handler cleans up observers.
     for (const runId of this._ownRunIds.keys()) {
       this._router.errorStream(runId, err);
     }
@@ -681,28 +674,6 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
   // Cancel helpers
   // ---------------------------------------------------------------------------
 
-  private async _publishCancel(filter: CancelFilter): Promise<void> {
-    this._logger.trace('ClientSession._publishCancel();', { filter });
-
-    const headers: Record<string, string> = {};
-    if (filter.invocationId) {
-      headers[HEADER_CANCEL_INVOCATION_ID] = filter.invocationId;
-    } else if (filter.runId) {
-      headers[HEADER_CANCEL_RUN_ID] = filter.runId;
-    } else if (filter.own) {
-      headers[HEADER_CANCEL_OWN] = 'true';
-    } else if (filter.clientId) {
-      headers[HEADER_CANCEL_CLIENT_ID] = filter.clientId;
-    } else if (filter.all) {
-      headers[HEADER_CANCEL_ALL] = 'true';
-    }
-
-    await this._channel.publish({
-      name: EVENT_CANCEL,
-      extras: { headers },
-    });
-  }
-
   /**
    * Tear down local state for a run that failed before run-start could
    * complete. Idempotent.
@@ -733,53 +704,6 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     this._runCodecMessageIds.delete(runId);
     this._runObservers.delete(runId);
     this._tree.untrackRun(runId);
-  }
-
-  private _closeMatchingRunStreams(filter: CancelFilter): void {
-    // Only close the router streams here — do NOT clear _runObservers.
-    // The observer must remain alive so that late agent events (e.g. cancel,
-    // x-ably-status: cancelled) arriving before run-end are still accumulated
-    // into the message store. The run-end handler cleans up observers.
-    for (const runId of this._getMatchingRunIds(filter)) {
-      this._router.closeStream(runId);
-    }
-  }
-
-  private _getMatchingRunIds(filter: CancelFilter): Set<string> {
-    const matched = new Set<string>();
-    const activeRuns = this._tree.getActiveRunIds();
-
-    if (filter.all) {
-      for (const runIds of activeRuns.values()) {
-        for (const runId of runIds) matched.add(runId);
-      }
-    } else if (filter.own) {
-      const ownRuns = activeRuns.get(this._clientId ?? '');
-      if (ownRuns) {
-        for (const runId of ownRuns) matched.add(runId);
-      }
-    } else if (filter.clientId) {
-      const clientRuns = activeRuns.get(filter.clientId);
-      if (clientRuns) {
-        for (const runId of clientRuns) matched.add(runId);
-      }
-    } else if (filter.runId) {
-      // Check if the runId exists in any client's runs
-      for (const runIds of activeRuns.values()) {
-        if (runIds.has(filter.runId)) {
-          matched.add(filter.runId);
-          break;
-        }
-      }
-    } else if (filter.invocationId) {
-      // Match on the local _ownRunIds map (runId → most-recent invocationId).
-      // Only own runs can be matched by invocation-id from this session — the
-      // map is the only place we track invocationId for active runs locally.
-      for (const [runId, invocationId] of this._ownRunIds) {
-        if (invocationId === filter.invocationId) matched.add(runId);
-      }
-    }
-    return matched;
   }
 
   // ---------------------------------------------------------------------------
@@ -1169,35 +1093,51 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
       stream,
       runId,
       invocationId,
-      cancel: async () => this.cancel({ runId }),
+      cancel: async () => this.cancel(runId),
       optimisticCodecMessageIds: [...codecMessageIds],
       eventIds: [...eventIds],
     };
   }
 
   // Spec: AIT-CT7, AIT-CT7a
-  async cancel(filter?: CancelFilter): Promise<void> {
+  async cancel(runId: string): Promise<void> {
     if (this._state === ClientSessionState.CLOSED) return;
     await this._requireConnected('cancel');
     // CAST: re-check after await — close() may have been called while waiting for connect.
     if ((this._state as ClientSessionState) === ClientSessionState.CLOSED) return;
-    const resolved = filter ?? { own: true };
-    this._logger.debug('ClientSession.cancel();', { filter: resolved });
-    await this._publishCancel(resolved);
-    this._closeMatchingRunStreams(resolved);
+    this._logger.debug('ClientSession.cancel();', { runId });
+
+    await this._channel.publish({
+      name: EVENT_CANCEL,
+      extras: { headers: { [HEADER_RUN_ID]: runId } },
+    });
+
+    // Close the local router stream. Do NOT clear `_runObservers` — the
+    // observer must remain alive so that late agent events (e.g. cancel
+    // append, `x-ably-status: cancelled`) arriving before run-end are still
+    // accumulated into the message store. The run-end handler cleans up
+    // observers.
+    this._router.closeStream(runId);
   }
 
   // Spec: AIT-CT18
-  async waitForRun(filter?: CancelFilter): Promise<void> {
+  async waitForRun(runId: string): Promise<void> {
     if (this._state === ClientSessionState.CLOSED) return;
     await this._requireConnected('waitForRun');
     // CAST: re-check after await — close() may have been called while waiting for connect.
     if ((this._state as ClientSessionState) === ClientSessionState.CLOSED) return;
-    const resolved = filter ?? { own: true };
-    const remaining = this._getMatchingRunIds(resolved);
-    if (remaining.size === 0) return;
 
-    this._logger.debug('ClientSession.waitForRun();', { runIds: [...remaining] });
+    // Short-circuit if the run is not active in any client's run set.
+    let active = false;
+    for (const runIds of this._tree.getActiveRunIds().values()) {
+      if (runIds.has(runId)) {
+        active = true;
+        break;
+      }
+    }
+    if (!active) return;
+
+    this._logger.debug('ClientSession.waitForRun();', { runId });
 
     return new Promise<void>((resolve) => {
       let resolvedFlag = false;
@@ -1212,8 +1152,7 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
 
       const unsub = this._tree.on('run', (event: RunLifecycleEvent) => {
         if (event.type !== EVENT_RUN_END) return;
-        remaining.delete(event.runId);
-        if (remaining.size === 0) done();
+        if (event.runId === runId) done();
       });
 
       // Resolve on session close to prevent leaked subscriptions
@@ -1231,23 +1170,11 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     };
   }
 
-  // Spec: AIT-CT12, AIT-CT12a, AIT-CT12b, AIT-CT10c
-  async close(options?: CloseOptions): Promise<void> {
+  // Spec: AIT-CT12, AIT-CT12b, AIT-CT10c
+  async close(): Promise<void> {
     if (this._state === ClientSessionState.CLOSED) return;
     this._state = ClientSessionState.CLOSED;
     this._logger.info('ClientSession.close();');
-
-    // Best-effort cancel publish before tearing down local state — only
-    // possible if connect() was called (otherwise we have no subscription
-    // and the channel may not be attached).
-    if (options?.cancel && this._connectPromise) {
-      try {
-        await this._publishCancel(options.cancel);
-      } catch {
-        // Swallow: cancel is best-effort during teardown
-      }
-      this._closeMatchingRunStreams(options.cancel);
-    }
 
     if (this._connectPromise) {
       this._channel.unsubscribe(this._onMessage);

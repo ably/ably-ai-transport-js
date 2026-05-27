@@ -30,34 +30,16 @@ import type { Invocation } from './invocation.js';
  */
 export type RunEndReason = 'complete' | 'cancelled' | 'error' | 'suspended';
 
-/** Filter for cancel operations. At most one field should be set. */
-export interface CancelFilter {
-  /** Cancel a specific run by ID. */
-  runId?: string;
-  /** Cancel a specific invocation by ID. Targets exactly the run+invocation tuple, leaving other invocations under the same run-id untouched. */
-  invocationId?: string;
-  /** Cancel all runs belonging to the sender's clientId. */
-  own?: boolean;
-  /** Cancel all runs belonging to a specific clientId. */
-  clientId?: string;
-  /** Cancel all runs on the channel. */
-  all?: boolean;
-}
-
 /**
  * Passed to a run's `onCancel` hook for authorization decisions.
  * The hook inspects the incoming cancel message and decides whether to
- * allow each matched run to be cancelled.
+ * allow the targeted run to be cancelled.
  */
 export interface CancelRequest {
   /** The raw Ably message that carried the cancel signal. */
   message: Ably.InboundMessage;
-  /** The parsed cancel scope from the message headers. */
-  filter: CancelFilter;
-  /** Which active runIds would be cancelled if allowed. */
-  matchedRunIds: string[];
-  /** Map of runId to the ownerClientId for the matched runs. */
-  runOwners: Map<string, string>;
+  /** The runId being cancelled. */
+  runId: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -534,16 +516,6 @@ export interface ActiveRun<TEvent> {
 }
 
 // ---------------------------------------------------------------------------
-// Close options
-// ---------------------------------------------------------------------------
-
-/** Options for closing a client session. */
-export interface CloseOptions {
-  /** Cancel in-progress runs before closing. Publishes a cancel message to the channel. */
-  cancel?: CancelFilter;
-}
-
-// ---------------------------------------------------------------------------
 // History / pagination
 // ---------------------------------------------------------------------------
 
@@ -853,15 +825,14 @@ export interface ClientSession<TEvent, TProjection, TMessage> {
    */
   createView(): View<TEvent, TProjection, TMessage>;
 
-  /** Cancel runs matching the filter. Defaults to `{ own: true }` (all own runs). */
-  cancel(filter?: CancelFilter): Promise<void>;
+  /** Cancel the specified run. Publishes a cancel message and closes the local stream. */
+  cancel(runId: string): Promise<void>;
 
   /**
-   * Returns a promise that resolves when all active runs matching the filter
-   * have completed. Resolves immediately if no matching runs are active.
-   * Defaults to `{ own: true }`.
+   * Returns a promise that resolves when the specified run has completed.
+   * Resolves immediately if the run is not active.
    */
-  waitForRun(filter?: CancelFilter): Promise<void>;
+  waitForRun(runId: string): Promise<void>;
 
   /**
    * Subscribe to non-fatal session errors. These indicate something went
@@ -873,8 +844,9 @@ export interface ClientSession<TEvent, TProjection, TMessage> {
    * Tear down the session: unsubscribe from the channel, close active
    * streams, clear all handlers, and prevent further operations.
    *
-   * Pass `cancel` to publish a cancel message before closing. Without it,
-   * only local state is torn down (the server keeps streaming).
+   * Local-state-only — the server keeps streaming until its runs end on
+   * their own. To stop in-progress runs, call {@link cancel} for each
+   * before `close()`.
    */
-  close(options?: CloseOptions): Promise<void>;
+  close(): Promise<void>;
 }

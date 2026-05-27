@@ -119,7 +119,7 @@ describe('useClientSession', () => {
     it('stub cancel throws ErrorInfo with InvalidArgument', () => {
       const { result } = renderHook(() => useClientSession({ skip: true }));
       expect(() => {
-        void result.current.session.cancel();
+        void result.current.session.cancel('run-x');
       }).toThrow(expect.objectContaining({ code: ErrorCode.InvalidArgument, statusCode: 400 }));
     });
 

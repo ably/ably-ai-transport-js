@@ -21,7 +21,6 @@ import {
   EVENT_CANCEL,
   EVENT_RUN_END,
   EVENT_RUN_START,
-  HEADER_CANCEL_INVOCATION_ID,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_ROLE,
@@ -436,7 +435,7 @@ describe('ClientSession integration', () => {
     await serverRun.start();
     const clientRun = await sendPromise;
 
-    await clientSession.cancel({ runId });
+    await clientSession.cancel(runId);
     await new Promise((r) => setTimeout(r, 100));
     expect(serverRun.abortSignal.aborted).toBe(true);
     await clientRun.cancel();
@@ -833,18 +832,17 @@ describe('ClientSession integration', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Invocation-id-scoped cancel
+  // Per-run cancel isolation
   // -------------------------------------------------------------------------
 
   /**
-   * Scenario: with two concurrent agent runs in flight under different
-   * (runId, invocationId) pairs, `cancel({ invocationId })` must cancel only
-   * the targeted run and leave the sibling untouched. The cancel publish on
-   * the channel must carry `x-ably-cancel-invocation-id` and no other cancel
-   * filter header.
+   * Scenario: with two concurrent agent runs in flight under different runIds,
+   * `cancel(runId)` must cancel only the targeted run and leave the sibling
+   * untouched. The cancel publish on the channel must carry `x-ably-run-id`
+   * and no other cancel headers.
    */
-  it('cancel({ invocationId }) cancels only the targeted invocation', async () => {
-    const channelName = uniqueChannelName('ct-cancel-by-invocation');
+  it('cancel(runId) cancels only the targeted run', async () => {
+    const channelName = uniqueChannelName('ct-cancel-by-runid');
     const serverClient = ablyRealtimeClient();
     const clientClient = ablyRealtimeClient();
     const observerClient = ablyRealtimeClient();
@@ -875,7 +873,7 @@ describe('ClientSession integration', () => {
       cancelMessages.push(msg);
     });
 
-    // Two long-running agent runs with distinct (runId, invocationId).
+    // Two long-running agent runs with distinct runIds.
     const survivingRunId = crypto.randomUUID();
     const survivingInvocationId = crypto.randomUUID();
     const targetRunId = crypto.randomUUID();
@@ -920,8 +918,8 @@ describe('ClientSession integration', () => {
     // Give both streams a moment to publish their initial chunks.
     await new Promise((r) => setTimeout(r, 300));
 
-    // Cancel only the target invocation.
-    await clientSession.cancel({ invocationId: targetInvocationId });
+    // Cancel only the target run.
+    await clientSession.cancel(targetRunId);
 
     // The target run cancels; the surviving run does not.
     const targetResult = await targetPipe;
@@ -938,18 +936,13 @@ describe('ClientSession integration', () => {
     await survivingRun.end('complete');
     await targetRun.end('cancelled');
 
-    // Verify the cancel wire message carried exactly the invocation-id header
-    // and no other cancel filter headers.
+    // Verify the cancel wire message carried x-ably-run-id pointing at the target.
     expect(cancelMessages.length).toBeGreaterThanOrEqual(1);
     const firstCancel = cancelMessages[0];
     expect(firstCancel).toBeDefined();
     if (!firstCancel) return;
     const cancelHeaders = getHeaders(firstCancel);
-    expect(cancelHeaders[HEADER_CANCEL_INVOCATION_ID]).toBe(targetInvocationId);
-    expect(cancelHeaders['x-ably-cancel-run-id']).toBeUndefined();
-    expect(cancelHeaders['x-ably-cancel-own']).toBeUndefined();
-    expect(cancelHeaders['x-ably-cancel-all']).toBeUndefined();
-    expect(cancelHeaders['x-ably-cancel-client-id']).toBeUndefined();
+    expect(cancelHeaders[HEADER_RUN_ID]).toBe(targetRunId);
   });
 
   /**

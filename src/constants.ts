@@ -70,25 +70,6 @@ export const HEADER_INPUT_CLIENT_ID = 'x-ably-input-client-id';
 export const HEADER_ROLE = 'x-ably-role';
 
 // ---------------------------------------------------------------------------
-// Cancel headers
-// ---------------------------------------------------------------------------
-
-/** Header: cancel a specific run by ID. */
-export const HEADER_CANCEL_RUN_ID = 'x-ably-cancel-run-id';
-
-/** Header: cancel all runs belonging to the sender's clientId. */
-export const HEADER_CANCEL_OWN = 'x-ably-cancel-own';
-
-/** Header: cancel all runs on the channel. */
-export const HEADER_CANCEL_ALL = 'x-ably-cancel-all';
-
-/** Header: cancel all runs belonging to a specific clientId. */
-export const HEADER_CANCEL_CLIENT_ID = 'x-ably-cancel-client-id';
-
-/** Header: cancel a specific invocation by ID. */
-export const HEADER_CANCEL_INVOCATION_ID = 'x-ably-cancel-invocation-id';
-
-// ---------------------------------------------------------------------------
 // Fork / branching headers
 // ---------------------------------------------------------------------------
 
@@ -129,7 +110,7 @@ export const HEADER_ERROR_MESSAGE = 'x-ably-error-message';
 // Message / event names
 // ---------------------------------------------------------------------------
 
-/** Message name: client->agent cancel intent. Targets a run, invocation, or scope via `x-ably-cancel-*` headers. */
+/** Message name: client->agent cancel intent. Targets a specific run via the `x-ably-run-id` header. */
 export const EVENT_CANCEL = 'ai-cancel';
 
 /** Message name: server publishes this to signal a run has started. */

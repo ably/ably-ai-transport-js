@@ -15,20 +15,20 @@ Two patterns:
 
 ## Cancel first, then send
 
-The most common pattern: cancel active runs before sending the new message.
+The most common pattern: cancel the run that's currently streaming before sending the new message. The latest visible message node carries the runId you need.
 
 ```typescript
-import { useActiveRuns, useView } from '@ably/ai-transport/react';
+import { useView } from '@ably/ai-transport/react';
 
-const activeRuns = useActiveRuns({ session });
-const { send } = useView({ session });
-const ownRunIds = clientId ? activeRuns.get(clientId) : undefined;
-const isStreaming = (ownRunIds?.size ?? 0) > 0;
+const { nodes, send } = useView({ session });
 
 async function handleSend(text: string) {
-  // Cancel any active own runs before sending a new message
-  if (ownRunIds) {
-    for (const runId of ownRunIds) await session.cancel(runId);
+  // If the latest node is mid-run, cancel it before sending a new message
+  const latest = nodes.at(-1);
+  const latestRunId = latest?.headers['x-ably-run-id'];
+  const latestStatus = latest?.headers['x-ably-status'];
+  if (latestRunId && latestStatus !== 'complete' && latestStatus !== 'cancelled') {
+    await session.cancel(latestRunId);
   }
   const msg = { id: crypto.randomUUID(), role: 'user', parts: [{ type: 'text', text }], createdAt: new Date() };
   await send([msg]);
@@ -48,31 +48,23 @@ const run = await send([newMessage]);
 
 Both runs produce independent event streams. The message list grows with responses from both. See [Concurrent runs](concurrent-runs.md) for details.
 
-## Detecting active runs
+## Detecting whether a run is streaming
 
-Use `useActiveRuns()` to know whether any run is streaming:
+Read the streaming state from the message you're rendering. The latest visible node carries `x-ably-status`, which is `'streaming'` while the run is producing chunks and `'complete'` / `'cancelled'` once it terminates. Users' own freshly-sent messages don't yet have a status header — treat "non-terminal" as "in progress":
 
 ```typescript
-import { useActiveRuns } from '@ably/ai-transport/react';
-
-const activeRuns = useActiveRuns({ session });
-
-// Any run active on the channel (any client)
-const isAnyoneStreaming = activeRuns.size > 0;
-
-// Only this client's runs
-const myRuns = clientId ? activeRuns.get(clientId) : undefined;
-const amIStreaming = myRuns !== undefined && myRuns.size > 0;
+const latest = nodes.at(-1);
+const status = latest?.headers['x-ably-status'];
+const isStreaming = latest?.headers['x-ably-run-id'] !== undefined && status !== 'complete' && status !== 'cancelled';
 ```
 
 Use this to toggle between "Send" and "Stop" buttons, or to queue messages for later delivery.
 
 ## UI pattern: queue while streaming
 
-The use-client-session demo shows a queue pattern - messages typed during streaming are queued and sent after the current run ends:
+A simple queue pattern — messages typed during streaming are queued and sent after the current run ends:
 
 ```typescript
-// Simplified queue pattern
 if (isStreaming) {
   queue.add(text); // queued locally
 } else {

@@ -41,23 +41,9 @@ When another client's run streams a response:
 
 This happens for every event - observer messages stream in real time, not just at run completion.
 
-## Seeing who's active
+## Observing other clients' runs
 
-`useActiveRuns()` tracks all active runs from all clients:
-
-```typescript
-import { useActiveRuns } from '@ably/ai-transport/react';
-
-const activeRuns = useActiveRuns({ session });
-
-// activeRuns is Map<clientId, Set<runId>>
-// Show which users have active runs:
-for (const [clientId, runIds] of activeRuns) {
-  console.log(`${clientId} has ${runIds.size} active run(s)`);
-}
-```
-
-Run lifecycle events include the `clientId`:
+Run lifecycle events fire for every client on the channel and include the originating `clientId`:
 
 ```typescript
 session.tree.on('run', (event) => {
@@ -65,6 +51,8 @@ session.tree.on('run', (event) => {
   // event.type is 'ai-run-start' or 'ai-run-end'
 });
 ```
+
+The SDK does not summarise these into a global "who is currently generating?" set: a late joiner has not seen every prior run-start / run-end and cannot honestly compute that picture. If you need a co-presence indicator, accumulate from `tree.on('run', ...)` since your subscription was attached, and surface it as a "since I joined" view.
 
 ## Late joiners
 

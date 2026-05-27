@@ -135,25 +135,19 @@ export async function POST(req: Request) {
 'use client';
 
 import { useChat } from '@ai-sdk/react';
-import {
-  ChatTransportProvider,
-  useChatTransport,
-  useMessageSync,
-  useActiveRuns,
-  useView,
-} from '@ably/ai-transport/vercel/react';
+import { ChatTransportProvider, useChatTransport, useMessageSync, useView } from '@ably/ai-transport/vercel/react';
 
 function ChatInner({ chatId }: { chatId: string }) {
   const { chatTransport } = useChatTransport();
 
-  const { messages, setMessages, sendMessage, stop } = useChat({
+  const { messages, setMessages, sendMessage, stop, status } = useChat({
     id: chatId,
     transport: chatTransport,
   });
 
   useMessageSync({ setMessages });
 
-  const activeRuns = useActiveRuns();
+  const isStreaming = status === 'submitted' || status === 'streaming';
   useView({ limit: 30 });
 
   return (
@@ -167,7 +161,7 @@ function ChatInner({ chatId }: { chatId: string }) {
           sendMessage({ text: 'Hello' });
         }}
       >
-        {activeRuns.size > 0 ? (
+        {isStreaming ? (
           <button
             type="button"
             onClick={stop}
@@ -290,7 +284,6 @@ session.close();
 | ------------------ | --------------- | ------------------------------------------------- |
 | `useClientSession` | `/react`        | Read a client session from the nearest provider   |
 | `useView`          | `/react`        | Subscribe to messages with history loading        |
-| `useActiveRuns`    | `/react`        | Track active runs by client ID                    |
 | `useTree`          | `/react`        | Navigate branches in a forked conversation        |
 | `useAblyMessages`  | `/react`        | Access raw Ably messages                          |
 | `useChatTransport` | `/vercel/react` | Wrap session for Vercel's `useChat`               |

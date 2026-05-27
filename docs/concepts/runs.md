@@ -69,25 +69,7 @@ session.tree.on('run', (event) => {
 });
 ```
 
-Use these events to show loading indicators, track which clients are active, or coordinate multi-client interactions.
-
-## Active runs
-
-The client session tracks all active runs across all clients:
-
-```typescript
-// Returns Map<clientId, Set<runId>>
-const activeRuns = session.tree.getActiveRunIds();
-```
-
-In React, `useActiveRuns()` provides this as reactive state:
-
-```typescript
-import { useActiveRuns } from '@ably/ai-transport/react';
-
-const activeRuns = useActiveRuns({ session });
-const isStreaming = activeRuns.size > 0;
-```
+Use these events to drive your own UI state. The SDK does not summarise channel events into a "set of active runs" — a session that hydrates partial history, paginates lazily, or comes online mid-conversation has not seen every run-start / run-end and cannot honestly answer "what is alive right now?" globally. Track only what you need from `tree.on('run', ...)` since the subscription was attached, or read the streaming state of a specific message off its `x-ably-status` header.
 
 ## Concurrent runs
 

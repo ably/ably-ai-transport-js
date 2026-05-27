@@ -152,7 +152,7 @@ Wire up `useChat()` with the AI Transport hooks. `ChatTransportProvider` creates
 'use client';
 
 import { useChat } from '@ai-sdk/react';
-import { useActiveRuns, useView } from '@ably/ai-transport/react';
+import { useView } from '@ably/ai-transport/react';
 import { ChatTransportProvider, useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
 import { useState } from 'react';
 
@@ -163,7 +163,7 @@ function ChatInner({ chatId }: { chatId: string }) {
   const { chatTransport, session } = useChatTransport();
 
   // 2. Use Vercel's useChat with the chat transport adapter
-  const { messages, setMessages, sendMessage, stop } = useChat({
+  const { messages, setMessages, sendMessage, stop, status } = useChat({
     id: chatId,
     transport: chatTransport,
   });
@@ -171,9 +171,9 @@ function ChatInner({ chatId }: { chatId: string }) {
   // 3. Sync session messages into useChat's state (for observer messages)
   useMessageSync({ setMessages });
 
-  // 4. Track active runs for loading state
-  const activeRuns = useActiveRuns();
-  const isStreaming = activeRuns.size > 0;
+  // 4. useChat's status drives the Stop / Send toggle. useChat.stop() targets
+  //    the run it owns, so a global active-runs view isn't needed here.
+  const isStreaming = status === 'submitted' || status === 'streaming';
 
   // 5. Load history on mount
   useView({ limit: 30 });
@@ -241,7 +241,7 @@ Open `http://localhost:3000`. Type a message - you'll see tokens stream in real 
 
 1. `ChatTransportProvider` creates a `ClientSession` (subscribed to the Ably channel before attach — no messages lost) and wraps it in a `ChatTransport`. Both are stored in `ChatTransportContext` for descendants.
 2. `useChatTransport()` reads both from `ChatTransportContext` — no arguments needed for the nearest provider.
-3. `chatTransport` satisfies Vercel's `ChatTransport` interface; `session` is the underlying `ClientSession` used for `useMessageSync`, `useActiveRuns`, and `useView`.
+3. `chatTransport` satisfies Vercel's `ChatTransport` interface; `session` is the underlying `ClientSession` used for `useMessageSync` and `useView`.
 4. When you send a message, `useChat()` calls the chat transport's `sendMessages`, which fires an HTTP POST to `/api/chat` and opens a stream on the Ably channel.
 5. The server creates a run, publishes user messages, streams the LLM response through the encoder to the channel, and publishes a run-end event.
 6. The client session decodes incoming Ably messages through `UIMessageCodec` and routes them to the stream.

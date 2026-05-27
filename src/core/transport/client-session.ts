@@ -44,15 +44,7 @@ import type { StreamRouter } from './stream-router.js';
 import { createStreamRouter } from './stream-router.js';
 import type { DefaultTree } from './tree.js';
 import { createTree } from './tree.js';
-import type {
-  ActiveRun,
-  ClientSession,
-  ClientSessionOptions,
-  RunEndReason,
-  SendOptions,
-  Tree,
-  View,
-} from './types.js';
+import type { ActiveRun, ClientSession, ClientSessionOptions, RunEndReason, SendOptions, Tree, View } from './types.js';
 import { createView, type DefaultView } from './view.js';
 
 /**

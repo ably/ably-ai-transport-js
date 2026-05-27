@@ -178,24 +178,6 @@ See [Multiple views](../features/branching.md#multiple-views) for the full split
 
 ---
 
-### useActiveRuns
-
-Return a reactive map of all active runs on the channel, keyed by clientId.
-
-```typescript
-const activeRuns = useActiveRuns<TEvent, TMessage>({ session? } = {});
-```
-
-| Prop      | Type                     | Description                                                                                            |
-| --------- | ------------------------ | ------------------------------------------------------------------------------------------------------ |
-| `session` | `ClientSession \| null?` | The session to observe; defaults to the nearest provider. Pass `null`/`undefined` if not yet available |
-
-**Returns:** `Map<string, Set<string>>` - keys are clientIds, values are sets of active runIds. Empty map if no session is resolved.
-
-Updates on every run start/end event. Includes runs from all clients on the channel.
-
----
-
 ### useTree
 
 Provide stable structural query callbacks for the conversation tree.
@@ -271,7 +253,7 @@ Create a `ClientSession` and `ChatTransport` and make both available to descenda
 | `chatOptions` | `ChatTransportOptions?`                                       | Optional hooks for customizing chat request construction                     |
 | `children`    | `ReactNode?`                                                  | Child components that will have access to the chat transport and the session |
 
-Inside the subtree, `useChatTransport()` reads the chat transport and the session, and `useClientSession()` reads the underlying `ClientSession`. All generic hooks (`useView`, `useActiveRuns`, `useAblyMessages`) work without explicit session arguments.
+Inside the subtree, `useChatTransport()` reads the chat transport and the session, and `useClientSession()` reads the underlying `ClientSession`. All generic hooks (`useView`, `useTree`, `useAblyMessages`) work without explicit session arguments.
 
 For multiple providers, nest them with distinct `channelName` values:
 
@@ -303,7 +285,7 @@ const { chatTransport, session, sessionError, chatTransportError } = useChatTran
 | Field                | Type                                       | Description                                                                                                                                                                                      |
 | -------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `chatTransport`      | `ChatTransport`                            | The adapter for `useChat()`'s `transport` option. A throwing stub when `skip` is `true`, when no matching `ChatTransportProvider` was found, or when session construction failed                 |
-| `session`            | `ClientSession<UIMessageChunk, UIMessage>` | The underlying client session, also exposed by `useClientSession()`. Used directly with `useMessageSync`, `useView`, `useActiveRuns`, etc.                                                       |
+| `session`            | `ClientSession<UIMessageChunk, UIMessage>` | The underlying client session, also exposed by `useClientSession()`. Used directly with `useMessageSync`, `useView`, `useTree`, etc.                                                             |
 | `sessionError`       | `Ably.ErrorInfo?`                          | Set when no matching `ClientSessionProvider` was found, or when session construction failed (and `skip` is `false`). `undefined` when the session resolved successfully or when `skip` is `true` |
 | `chatTransportError` | `Ably.ErrorInfo?`                          | Set when no matching `ChatTransportProvider` was found, or when session construction failed (and `skip` is `false`). `undefined` when the chat transport resolved successfully                   |
 

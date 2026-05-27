@@ -42,8 +42,6 @@ Each `RunNode<TProjection>` stores:
 }
 ```
 
-Active-run tracking (which client owns which active run) lives separately in the Tree's `_runClientIds` map and is exposed via `getActiveRunIds()`.
-
 ## Apply: the two mutation entry points
 
 The tree exposes two mutation methods on its internal interface (used by the session, not the UI):
@@ -119,7 +117,6 @@ The public `Tree` interface exposes:
 | `getRunByMsgId(msgId)`        | The Run that owns a given msg-id                 |
 | `getSiblingRuns(runId)`       | All Runs in the sibling group containing `runId` |
 | `hasSiblingRuns(runId)`       | Whether the Run has alternative versions         |
-| `getActiveRunIds()`           | Active runs grouped by clientId                  |
 | `getWinningInvocation(runId)` | Winning invocation for a runId (transitional)    |
 
 The following are on the `View`, not the public `Tree` interface:

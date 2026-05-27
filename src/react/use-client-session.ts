@@ -42,9 +42,6 @@ const SKIPPED_SESSION: ClientSession<unknown, unknown, unknown> = {
   cancel: () => {
     throw new Ably.ErrorInfo('unable to cancel; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
-  waitForRun: () => {
-    throw new Ably.ErrorInfo('unable to wait for run; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
   on: () => {
     throw new Ably.ErrorInfo('unable to subscribe; hook is skipped', ErrorCode.InvalidArgument, 400);
   },

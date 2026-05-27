@@ -31,7 +31,7 @@ The HTTP POST is fire-and-forget from the client's perspective - the response st
 
 Both `createAgentSession()` and `createClientSession()` return synchronously and do not touch the channel. Call `await session.connect()` to subscribe to the channel before any session method is used. `connect()` is idempotent - calling it twice returns the same in-flight promise and triggers a single subscribe.
 
-Run lifecycle methods (`run.start`, `run.addMessages`, `run.addEvents`, `run.pipe`, `run.end`) and client write methods (`session.cancel`, `session.waitForRun`, `view.send`, etc.) throw `InvalidArgument` until `connect()` resolves. In React, `ClientSessionProvider` and `ChatTransportProvider` call `connect()` on mount, so consumers of `useClientSession`/`useChatTransport` don't need to call it explicitly.
+Run lifecycle methods (`run.start`, `run.addMessages`, `run.addEvents`, `run.pipe`, `run.end`) and client write methods (`session.cancel`, `view.send`, etc.) throw `InvalidArgument` until `connect()` resolves. In React, `ClientSessionProvider` and `ChatTransportProvider` call `connect()` on mount, so consumers of `useClientSession`/`useChatTransport` don't need to call it explicitly.
 
 ## Agent session
 

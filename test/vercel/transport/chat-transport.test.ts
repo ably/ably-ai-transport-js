@@ -132,7 +132,6 @@ const createMockSession = (): MockSession => {
     createView: vi.fn(() => view),
     cancel,
     close,
-    waitForRun: vi.fn(),
     on: vi.fn(() => noop),
   } as unknown as ClientSession<VercelEvent, VercelProjection, AI.UIMessage>;
 

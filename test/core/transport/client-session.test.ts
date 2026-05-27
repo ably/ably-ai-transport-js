@@ -4,9 +4,9 @@
  * Mock encoder uses single-method `publish`; mock decoder returns `TEvent[]`;
  * projection state is folded via `init` / `fold` / `getMessages`.
  *
- * Coverage: connect, send, regenerate, edit, cancel, waitForRun, run
- * lifecycle, observer routing, optimistic relay, channel state,
- * continuation (suspend / resume) sends, and close.
+ * Coverage: connect, send, regenerate, edit, cancel, run lifecycle,
+ * observer routing, optimistic relay, channel state, continuation
+ * (suspend / resume) sends, and close.
  */
 
 import * as Ably from 'ably';
@@ -486,20 +486,6 @@ describe('ClientSession', () => {
         runStartDeadlineMs: 0,
       });
       await expect(s.cancel('run-x')).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
-      await s.close();
-    });
-
-    it('waitForRun() throws InvalidArgument before connect()', async () => {
-      const ch = createMockChannel();
-      const s = createClientSession<TestEvent, TestProjection, TestMessage>({
-        client: createMockClient(ch),
-        channelName: 'test-channel',
-        codec: createMockCodec(),
-        api: '/api/chat',
-        fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
-        runStartDeadlineMs: 0,
-      });
-      await expect(s.waitForRun('run-x')).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
       await s.close();
     });
 
@@ -1726,51 +1712,6 @@ describe('ClientSession', () => {
     it('cancel is a no-op after close', async () => {
       await fix.session.close();
       await expect(fix.session.cancel('run-x')).resolves.toBeUndefined();
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // waitForRun
-  // -------------------------------------------------------------------------
-
-  describe('waitForRun', () => {
-    it('resolves immediately when the run is not active', async () => {
-      await expect(fix.session.waitForRun('run-nothing')).resolves.toBeUndefined();
-    });
-
-    it('resolves when the run ends', async () => {
-      simulateMessage(
-        fix.channel,
-        ablyMsg(EVENT_RUN_START, {
-          [HEADER_RUN_ID]: 'run-W',
-          [HEADER_RUN_CLIENT_ID]: 'other',
-        }),
-      );
-
-      const p = fix.session.waitForRun('run-W');
-      // Now end the run
-      simulateMessage(
-        fix.channel,
-        ablyMsg(EVENT_RUN_END, {
-          [HEADER_RUN_ID]: 'run-W',
-          [HEADER_RUN_CLIENT_ID]: 'other',
-          [HEADER_RUN_REASON]: 'complete',
-        }),
-      );
-      await expect(p).resolves.toBeUndefined();
-    });
-
-    it('resolves on session close even with active runs', async () => {
-      simulateMessage(
-        fix.channel,
-        ablyMsg(EVENT_RUN_START, {
-          [HEADER_RUN_ID]: 'run-Q',
-          [HEADER_RUN_CLIENT_ID]: 'other',
-        }),
-      );
-      const p = fix.session.waitForRun('run-Q');
-      await fix.session.close();
-      await expect(p).resolves.toBeUndefined();
     });
   });
 

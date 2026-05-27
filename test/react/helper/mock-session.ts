@@ -17,7 +17,6 @@ export interface MockSession {
   regenerate: ReturnType<typeof vi.fn>;
   edit: ReturnType<typeof vi.fn>;
   cancel: ReturnType<typeof vi.fn>;
-  waitForRun: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
   connect: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
@@ -152,8 +151,6 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const cancel = vi.fn(() => Promise.resolve());
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-  const waitForRun = vi.fn(() => Promise.resolve());
-  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const close = vi.fn(() => Promise.resolve());
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const connect = vi.fn(() => Promise.resolve());
@@ -166,7 +163,6 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
     connect,
     createView,
     cancel,
-    waitForRun,
     on,
     close,
     // CAST: mock object satisfies the subset of ClientSession methods used by hooks
@@ -179,7 +175,6 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
     regenerate,
     edit,
     cancel,
-    waitForRun,
     close,
     connect,
     on,

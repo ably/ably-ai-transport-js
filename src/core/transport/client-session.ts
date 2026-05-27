@@ -955,11 +955,12 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
       extras: { headers: { [HEADER_RUN_ID]: runId } },
     });
 
-    // Close the local router stream. Do NOT clear `_runObservers` — the
-    // observer must remain alive so that late agent events (e.g. cancel
-    // append, `x-ably-status: cancelled`) arriving before run-end are still
-    // accumulated into the message store. The run-end handler cleans up
-    // observers.
+    // Close the local router stream so the caller's reader sees end-of-input.
+    // Don't tear down the Tree's RunNode or this session's `_ownRunIds` /
+    // `_runCodecMessageIds` entries here — late agent events (e.g. a cancel
+    // append, a trailing `x-ably-status: cancelled`) arriving before run-end
+    // must still fold into the Run's projection. The run-end handler is the
+    // canonical cleanup point.
     this._router.closeStream(runId);
   }
 

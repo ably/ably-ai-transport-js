@@ -66,8 +66,6 @@ vi.mock('@ably/ai-transport/vercel/react', () => ({
       hasOlder: false,
       loading: false,
       loadOlder: async () => {},
-      hasSiblingRuns: () => false,
-      getSiblingRuns: () => [],
       getSelectedIndex: () => 0,
       select: () => {},
       hasMessageSiblings: () => false,

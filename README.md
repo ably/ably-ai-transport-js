@@ -68,7 +68,7 @@ npm install @ably/ai-transport ably ai
 
 | Platform      | Support                                            |
 | ------------- | -------------------------------------------------- |
-| Node.js       | 20+                                                |
+| Node.js       | 22+                                                |
 | Browsers      | All major browsers (Chrome, Firefox, Edge, Safari) |
 | TypeScript    | Written in TypeScript, ships with types            |
 | React         | 18+ and 19+ via dedicated hooks                    |

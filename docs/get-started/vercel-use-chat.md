@@ -4,7 +4,7 @@ Build a streaming chat app using Vercel AI SDK's `useChat()` hook and AI Transpo
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js 22+
 - An [Ably account](https://ably.com) with an API key
 - An LLM API key (this guide uses Anthropic, but any Vercel AI SDK provider works)
 

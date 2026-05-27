@@ -1,47 +1,41 @@
 # Cancel
 
-Cancellation in AI Transport is a channel-level operation - the client publishes a cancel signal on the Ably channel, the server receives it and cancels the matching runs.
+Cancellation in AI Transport is a channel-level operation - the client publishes a cancel signal on the Ably channel, the server receives it and cancels the targeted run.
 
 Without a cancel protocol, stopping a generation requires either dropping the HTTP connection (which the server may not notice) or building custom signaling. AI Transport handles the full cancel chain: client signal, server-side cancellation, stream cleanup, and lifecycle notification to all clients.
 
 ## Client side
 
-Cancel a specific run or all matching runs:
+Cancel a specific run by ID:
 
 ```typescript
 // Cancel a specific run (returned by send/regenerate/edit)
 const run = await view.send(userMessage);
 await run.cancel();
 
-// Cancel all your own active runs
-await session.cancel({ own: true });
-
-// Cancel a specific run by ID
-await session.cancel({ runId: 'abc-123' });
-
-// Cancel all runs on the channel (any client's runs)
-await session.cancel({ all: true });
+// Or cancel by runId from anywhere that holds the id
+await session.cancel(run.runId);
 ```
 
-The default when no filter is given is `{ own: true }` - cancel all runs started by this client.
+Each `session.cancel(runId)` call targets exactly one run. To cancel multiple runs, iterate over their ids and call `cancel(runId)` for each.
 
-| Filter                    | Effect                                       | Use case                      |
-| ------------------------- | -------------------------------------------- | ----------------------------- |
-| `{ own: true }` (default) | Cancel all runs started by this client       | Stop button                   |
-| `{ runId: "abc" }`        | Cancel one specific run                      | Cancel a specific generation  |
-| `{ clientId: "user-2" }`  | Cancel all runs started by a specific client | Admin cancelling another user |
-| `{ all: true }`           | Cancel every active run on the channel       | Emergency stop                |
-
-In React, `useActiveRuns()` tells you whether runs are active:
+In React, `useActiveRuns()` exposes the active-run map keyed by clientId, which is how a "stop all my runs" button targets its own ids:
 
 ```typescript
 import { useActiveRuns } from '@ably/ai-transport/react';
 
 const activeRuns = useActiveRuns({ session });
-const isStreaming = activeRuns.size > 0;
+const ownRunIds = clientId ? activeRuns.get(clientId) : undefined;
+const isStreaming = (ownRunIds?.size ?? 0) > 0;
 
-// Stop button
-<button onClick={() => session.cancel({ own: true })} disabled={!isStreaming}>
+// Stop button — cancels each own runId individually
+<button
+  onClick={() => {
+    if (!ownRunIds) return;
+    for (const runId of ownRunIds) void session.cancel(runId);
+  }}
+  disabled={!isStreaming}
+>
   Stop
 </button>
 ```
@@ -55,9 +49,8 @@ import { Invocation } from '@ably/ai-transport';
 
 const run = session.createRun(Invocation.fromJSON({ runId, clientId }), {
   onCancel: async (request) => {
-    // request.filter - the parsed cancel scope
-    // request.matchedRunIds - which runs would be cancelled
-    // request.runOwners - Map<runId, clientId>
+    // request.runId - the targeted runId
+    // request.message - the raw Ably cancel message (request.message.clientId is the sender)
     // Return false to reject the cancel (run continues)
     return true;
   },
@@ -88,10 +81,10 @@ sequenceDiagram
     participant Ch as Ably Channel
     participant S as Server
 
-    C->>Ch: publish(ai-cancel)<br/>headers: cancel-own=true
-    Note left of C: close local stream(s)
+    C->>Ch: publish(ai-cancel)<br/>headers: x-ably-run-id=<runId>
+    Note left of C: close local stream
     Ch->>S: deliver to cancel listener
-    Note right of S: match filter to runs
+    Note right of S: look up registered run by id
     Note right of S: onCancel() → true
     Note right of S: fire AbortSignal
     Note right of S: onCancelled(write)
@@ -119,16 +112,16 @@ When the external signal fires, it cancels the run through the same path as an A
 
 Internally, `AbortSignal.any()` composes the external signal with the run's own `AbortController`, so either source triggers the same downstream cancellation.
 
-## Cancel on close
+## Cancel and close
 
-Cancel active runs as part of session teardown:
+`session.close()` tears down only local state — the server keeps streaming until its runs end on their own. To stop in-progress runs before closing, call `session.cancel(runId)` for each first:
 
 ```typescript
-// Cancel own runs, then close
-await session.close({ cancel: { own: true } });
-
-// Close without cancelling (server keeps streaming)
+// Cancel known runs, then close
+await session.cancel(run.runId);
 await session.close();
 ```
 
-See [Interruption](interruption.md) for cancel-then-send patterns. See [Error codes](../reference/error-codes.md) for cancel-related error codes. See [React hooks reference](../reference/react-hooks.md) for the `useActiveRuns()` API. For the internal cancel routing and filter resolution, see [Cancel routing](../internals/transport-components.md#cancel-routing-agent-session).
+If you don't need to stop the server's work, just call `session.close()` on its own.
+
+See [Interruption](interruption.md) for cancel-then-send patterns. See [Error codes](../reference/error-codes.md) for cancel-related error codes. See [React hooks reference](../reference/react-hooks.md) for the `useActiveRuns()` API. For the internal cancel routing, see [Cancel routing](../internals/transport-components.md#cancel-routing-agent-session).

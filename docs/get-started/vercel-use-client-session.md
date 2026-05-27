@@ -26,7 +26,7 @@ import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import type * as AI from 'ai';
 import { useState } from 'react';
 
-function ChatInner({ chatId }: { chatId: string }) {
+function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) {
   const [input, setInput] = useState('');
 
   // Read the session created by ClientSessionProvider
@@ -35,8 +35,9 @@ function ChatInner({ chatId }: { chatId: string }) {
   // useView provides message state, navigation, and write operations
   const { nodes, hasOlder, loading, loadOlder, send, regenerate, hasSiblings, getSiblings, getSelectedIndex, select } = useView({ session, limit: 30 });
   const activeRuns = useActiveRuns({ session });
+  const ownRunIds = clientId ? activeRuns.get(clientId) : undefined;
 
-  const isStreaming = activeRuns.size > 0;
+  const isStreaming = (ownRunIds?.size ?? 0) > 0;
 
   const handleSend = () => {
     const text = input.trim();
@@ -93,7 +94,15 @@ function ChatInner({ chatId }: { chatId: string }) {
           placeholder="Type a message..."
         />
         {isStreaming ? (
-          <button type="button" onClick={() => session.cancel({ own: true })}>Stop</button>
+          <button
+            type="button"
+            onClick={() => {
+              if (!ownRunIds) return;
+              for (const runId of ownRunIds) void session.cancel(runId);
+            }}
+          >
+            Stop
+          </button>
         ) : (
           <button type="submit">Send</button>
         )}
@@ -114,7 +123,7 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
       api="/api/chat"
       body={() => ({ id: chatId })}
     >
-      <ChatInner chatId={chatId} />
+      <ChatInner chatId={chatId} clientId={clientId} />
     </ClientSessionProvider>
   );
 }
@@ -122,22 +131,22 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
 
 ## Key differences from the useChat path
 
-|                       | useChat path                              | Generic hooks path                                    |
-| --------------------- | ----------------------------------------- | ----------------------------------------------------- |
-| **Message state**     | Managed by `useChat()`                    | Managed by `useView()`                                |
-| **Send**              | `sendMessage({ text })`                   | `send([uiMessage])` - you construct the `UIMessage`   |
-| **Regenerate**        | `regenerate({ messageId })`               | `regenerate(messageId)`                               |
-| **Edit**              | Not built into `useChat()`                | `edit(messageId, [newMessage])`                       |
-| **Branch navigation** | Not available                             | `view.getSiblings()`, `view.select()` via `useView()` |
-| **Stop**              | `stop()` from `useChat()`                 | `session.cancel({ own: true })`                       |
-| **Observer sync**     | Requires `useMessageSync()`               | Built-in - `useView()` includes all clients           |
-| **Hooks needed**      | `useChatTransport()` + `useMessageSync()` | Individual hooks per operation                        |
+|                       | useChat path                              | Generic hooks path                                                          |
+| --------------------- | ----------------------------------------- | --------------------------------------------------------------------------- |
+| **Message state**     | Managed by `useChat()`                    | Managed by `useView()`                                                      |
+| **Send**              | `sendMessage({ text })`                   | `send([uiMessage])` - you construct the `UIMessage`                         |
+| **Regenerate**        | `regenerate({ messageId })`               | `regenerate(messageId)`                                                     |
+| **Edit**              | Not built into `useChat()`                | `edit(messageId, [newMessage])`                                             |
+| **Branch navigation** | Not available                             | `view.getSiblings()`, `view.select()` via `useView()`                       |
+| **Stop**              | `stop()` from `useChat()`                 | `session.cancel(runId)` per active run (iterate `activeRuns.get(clientId)`) |
+| **Observer sync**     | Requires `useMessageSync()`               | Built-in - `useView()` includes all clients                                 |
+| **Hooks needed**      | `useChatTransport()` + `useMessageSync()` | Individual hooks per operation                                              |
 
 Use the **useChat path** when you want the simplest integration and Vercel's `useChat()` handles your needs. Use the **generic hooks path** when you need conversation branching UI, custom message construction, or tighter control over session operations.
 
 ## Next steps
 
 - [Conversation branching](../features/branching.md) - the generic hooks path gives you full fork navigation
-- [Cancel](../features/cancel.md) - granular cancel with filter scopes
+- [Cancel](../features/cancel.md) - per-run cancel via `session.cancel(runId)`
 - [Interruption](../features/interruption.md) - send messages while the AI is streaming
 - [React hooks reference](../reference/react-hooks.md) - complete API for all hooks

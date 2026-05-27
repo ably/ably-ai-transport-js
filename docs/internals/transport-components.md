@@ -95,23 +95,12 @@ Cancel routing lives in the agent session (`src/core/transport/agent-session.ts`
 
 The agent session subscribes to [`ai-cancel`](wire-protocol.md#lifecycle-events) events on channel construction. When a cancel message arrives, it:
 
-1. Parses the cancel filter from [cancel headers](wire-protocol.md#transport-headers-x-ably) (`x-ably-cancel-run-id`, `x-ably-cancel-invocation-id`, `x-ably-cancel-own`, `x-ably-cancel-client-id`, `x-ably-cancel-all`)
-2. Resolves which active runs match the filter
-3. For each matched run:
-   - Calls the run's `onCancel` hook (if provided) - the hook can return `false` to reject the cancel
-   - If allowed, fires `controller.abort()` on the run's AbortController
+1. Reads `x-ably-run-id` from the message headers — the protocol's single cancel target. Messages missing this header are dropped with a warn-level log.
+2. Looks up the registered run by id. If nothing matches, the cancel is a no-op.
+3. Calls the run's `onCancel` hook (if provided) — the hook can return `false` to reject the cancel.
+4. If allowed, fires `controller.abort()` on the run's AbortController.
 
-Throwing handlers don't prevent other runs from being cancelled - each run's cancel is isolated in its own try/catch.
-
-### Cancel filter resolution
-
-| Header                        | Matches                                      |
-| ----------------------------- | -------------------------------------------- |
-| `x-ably-cancel-run-id`        | The specific run                             |
-| `x-ably-cancel-invocation-id` | The run bound to the specified invocation    |
-| `x-ably-cancel-own`           | All runs whose clientId matches the sender   |
-| `x-ably-cancel-client-id`     | All runs belonging to the specified clientId |
-| `x-ably-cancel-all`           | All active runs                              |
+Each `ai-cancel` event targets exactly one run, so cancel routing is one lookup deep. Clients that want to stop multiple runs publish one `ai-cancel` per runId.
 
 ## buildTransportHeaders
 

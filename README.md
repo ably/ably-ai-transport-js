@@ -310,11 +310,12 @@ Two mechanisms cover different failure modes:
 ### Cancellation
 
 ```typescript
-// Client: cancel your own active runs
-await session.cancel();
+// Client: cancel a specific run by id
+await session.cancel('run-abc');
 
-// Cancel a specific run
-await session.cancel({ runId: 'run-abc' });
+// Or via the ActiveRun returned by send / regenerate / edit
+const run = await view.sendMessage(userMsg);
+await run.cancel();
 
 // Agent: the run's abortSignal fires automatically
 const result = streamText({

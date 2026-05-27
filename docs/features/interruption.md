@@ -22,12 +22,13 @@ import { useActiveRuns, useView } from '@ably/ai-transport/react';
 
 const activeRuns = useActiveRuns({ session });
 const { send } = useView({ session });
-const isStreaming = activeRuns.size > 0;
+const ownRunIds = clientId ? activeRuns.get(clientId) : undefined;
+const isStreaming = (ownRunIds?.size ?? 0) > 0;
 
 async function handleSend(text: string) {
-  // Cancel the active response before sending a new message
-  if (isStreaming) {
-    await session.cancel({ own: true });
+  // Cancel any active own runs before sending a new message
+  if (ownRunIds) {
+    for (const runId of ownRunIds) await session.cancel(runId);
   }
   const msg = { id: crypto.randomUUID(), role: 'user', parts: [{ type: 'text', text }], createdAt: new Date() };
   await send([msg]);

@@ -87,14 +87,14 @@ Publishes `ai-run-end` to the channel and unregisters the run from cancel routin
 
 ## Cancel routing
 
-The agent session handles cancel messages directly - no separate cancel manager. See [Transport components: cancel routing](transport-components.md#cancel-routing-agent-session) for the full filter resolution and handler isolation.
+The agent session handles cancel messages directly - no separate cancel manager. See [Transport components: cancel routing](transport-components.md#cancel-routing-agent-session) for the lookup and handler-isolation rules.
 
 Key behaviors:
 
+- Each `ai-cancel` targets exactly one run via the `x-ably-run-id` header. Cancels missing that header are dropped with a warn-level log.
 - Runs are registered for cancel routing on `createRun()`, before `start()`. Early cancels fire the run's `AbortSignal`.
 - The `onCancel` hook (per-run) can return `false` to reject a cancel request.
-- A throwing `onCancel` handler doesn't prevent other matched runs from being cancelled - each is isolated.
-- Cancel resolution uses the sender's `clientId` from the Ably message for `own` filter matching.
+- A throwing `onCancel` handler is wrapped into an `Ably.ErrorInfo` and surfaced via the run's `onError` (falling back to the session-level `onError`). The throw does not propagate out of the listener.
 
 ## Channel continuity
 

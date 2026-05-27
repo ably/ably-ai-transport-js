@@ -40,7 +40,7 @@ const { reason } = await run.pipe(result.toUIMessageStream());
 await run.end(reason);
 ```
 
-Multiple runs can stream on the same channel at the same time. The session routes cancel signals to the correct run based on the filter headers.
+Multiple runs can stream on the same channel at the same time. Each `ai-cancel` carries `x-ably-run-id` and the session routes it to that one run.
 
 ## Tracking active runs
 
@@ -79,16 +79,15 @@ session.tree.on('run', (event) => {
 });
 ```
 
-## Cancel scoping
+## Cancelling individual runs
 
-Cancel filters let you target specific runs without affecting others:
+`session.cancel(runId)` cancels exactly one run, leaving its siblings alone. To stop several at once, iterate over their ids:
 
-| Filter                   | What gets cancelled             |
-| ------------------------ | ------------------------------- |
-| `{ runId: "abc" }`       | Only that one run               |
-| `{ own: true }`          | All runs started by this client |
-| `{ clientId: "user-2" }` | All runs started by that client |
-| `{ all: true }`          | Every run on the channel        |
+```typescript
+for (const runId of activeRuns.get(clientId) ?? []) {
+  void session.cancel(runId);
+}
+```
 
 See [Cancel](cancel.md) for the full cancel protocol.
 

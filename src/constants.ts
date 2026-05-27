@@ -139,6 +139,14 @@ export const EVENT_RUN_END = 'ai-run-end';
  */
 export const EVENT_AI_OUTPUT = 'ai-output';
 
+/**
+ * Message name: every client-published codec event (user-message parts,
+ * tool-approval responses, regenerate signals) rides this single wire
+ * name. The codec event's own `type` is carried in the `x-domain-type`
+ * domain header so the decoder can dispatch.
+ */
+export const EVENT_AI_INPUT = 'ai-input';
+
 // ---------------------------------------------------------------------------
 // Domain header prefix (used by codec implementations)
 // ---------------------------------------------------------------------------

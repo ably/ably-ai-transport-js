@@ -8,7 +8,6 @@
  *   ClientSessionProvider,
  *   useClientSession,
  *   useView,
- *   useActiveRuns,
  * } = createSessionHooks<UIMessageChunk, UIMessage>();
  *
  * // In page:
@@ -18,7 +17,6 @@
  *
  * // In Chat — no type params needed, session is implicit from nearest provider:
  * const { nodes } = useView({ limit: 30 });
- * const runs = useActiveRuns();
  */
 
 import type * as Ably from 'ably';
@@ -28,7 +26,6 @@ import type { ClientSession, View } from '../core/transport/types.js';
 import type { ClientSessionProviderProps } from './contexts/client-session-provider.js';
 import { ClientSessionProvider as _ClientSessionProvider } from './contexts/client-session-provider.js';
 import { useAblyMessages as _useAblyMessages } from './use-ably-messages.js';
-import { useActiveRuns as _useActiveRuns } from './use-active-runs.js';
 import type { ClientSessionHandle } from './use-client-session.js';
 import { useClientSession as _useClientSession } from './use-client-session.js';
 import { useCreateView as _useCreateView } from './use-create-view.js';
@@ -83,14 +80,6 @@ export interface SessionHooks<TEvent, TProjection, TMessage> {
     skip?: boolean;
   }) => ViewHandle<TEvent, TProjection, TMessage>;
   /**
-   * Track active runs across all clients on the channel.
-   * Pass `session` to override; defaults to the nearest {@link ClientSessionProvider}.
-   */
-  useActiveRuns: (props?: {
-    /** Override session; defaults to the nearest {@link ClientSessionProvider}. */
-    session?: ClientSession<TEvent, TProjection, TMessage> | null;
-  }) => Map<string, Set<string>>;
-  /**
    * Navigate conversation branches in the session tree.
    * Pass `session` to override; defaults to the nearest {@link ClientSessionProvider}.
    */
@@ -139,7 +128,6 @@ export const createSessionHooks = <TEvent, TProjection, TMessage>(): SessionHook
   >,
   useClientSession: (props) => _useClientSession<TEvent, TProjection, TMessage>(props ?? {}),
   useView: (props) => _useView<TEvent, TProjection, TMessage>(props ?? {}),
-  useActiveRuns: (props) => _useActiveRuns<TEvent, TProjection, TMessage>(props ?? {}),
   useTree: (props) => _useTree<TEvent, TProjection, TMessage>(props ?? {}),
   useAblyMessages: (props) => _useAblyMessages<TEvent, TProjection, TMessage>(props ?? {}),
   useCreateView: (props) => _useCreateView<TEvent, TProjection, TMessage>(props ?? {}),

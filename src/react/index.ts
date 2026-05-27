@@ -8,8 +8,6 @@ export { createSessionHooks } from './create-session-hooks.js';
 export type { EventNode, TreeNode } from '../core/transport/types.js';
 export type { UseAblyMessagesOptions } from './use-ably-messages.js';
 export { useAblyMessages } from './use-ably-messages.js';
-export type { UseActiveRunsOptions } from './use-active-runs.js';
-export { useActiveRuns } from './use-active-runs.js';
 export type { ClientSessionHandle } from './use-client-session.js';
 export { useClientSession } from './use-client-session.js';
 export type { UseCreateViewOptions } from './use-create-view.js';

@@ -1549,6 +1549,94 @@ describe('ClientSession', () => {
       expect(fix.session.tree.getRunNode(initial.runId)?.status).toBe('complete');
     });
 
+    it('processes continuation run-end on an observer session (latestContinuation gate)', () => {
+      // Observer-side reproduction of the multi-tab "stuck streaming" bug.
+      // Observer clients have no `_ownRunIds` entry (they didn't send) and
+      // no router stream bound to the run (only originators bind one).
+      // The Tree's `getWinningInvocation` pins to the ORIGINAL prompt's
+      // invocation because continuation wires deliberately don't advance
+      // it. Without a dedicated continuation tracker, the continuation's
+      // terminal `run-end` mismatches `treeWinner` and is dropped, leaving
+      // the Run permanently `active` on the observer.
+      //
+      // The fix tracks the latest continuation invocation on the Tree and
+      // consults it in the run-end gate ahead of `treeWinner`.
+      const inv1 = 'inv-original';
+      const inv2 = 'inv-continuation';
+      const userMsgSerial = 'serial-user-msg';
+
+      // Original prompt arrives — pins treeWinner to inv1.
+      // Queue a decoder event so applyMessage doesn't bail out at the
+      // "events.length === 0 && Run missing" guard before reaching
+      // `_maybeUpdateWinningInvocation`.
+      fix.decoder.queue.push({ type: 'user-message', text: 'hi' });
+      simulateMessage(
+        fix.channel,
+        ablyMsg(
+          'user-message',
+          {
+            [HEADER_RUN_ID]: 'run-obs',
+            [HEADER_RUN_CLIENT_ID]: 'other-client',
+            [HEADER_INVOCATION_ID]: inv1,
+            'x-ably-role': 'user',
+          },
+          undefined,
+          undefined,
+          userMsgSerial,
+        ),
+      );
+
+      // Original run-start (inv1).
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_START, {
+          [HEADER_RUN_ID]: 'run-obs',
+          [HEADER_RUN_CLIENT_ID]: 'other-client',
+          [HEADER_INVOCATION_ID]: inv1,
+        }),
+      );
+
+      // Original suspends.
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: 'run-obs',
+          [HEADER_RUN_CLIENT_ID]: 'other-client',
+          [HEADER_INVOCATION_ID]: inv1,
+          [HEADER_RUN_REASON]: 'suspended',
+        }),
+      );
+      expect(fix.session.tree.getRunNode('run-obs')?.status).toBe('suspended');
+
+      // Continuation run-start (inv2) — agent resumes after tool-output.
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_START, {
+          [HEADER_RUN_ID]: 'run-obs',
+          [HEADER_RUN_CLIENT_ID]: 'other-client',
+          [HEADER_INVOCATION_ID]: inv2,
+          'x-ably-run-continue': 'true',
+        }),
+      );
+      expect(fix.session.tree.getRunNode('run-obs')?.status).toBe('active');
+
+      // Continuation completes.
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: 'run-obs',
+          [HEADER_RUN_CLIENT_ID]: 'other-client',
+          [HEADER_INVOCATION_ID]: inv2,
+          [HEADER_RUN_REASON]: 'complete',
+        }),
+      );
+
+      // Without the fix the continuation's run-end is dropped and status
+      // stays at 'active'. With the fix the gate accepts it via
+      // latestContinuation and the Run reaches a terminal state.
+      expect(fix.session.tree.getRunNode('run-obs')?.status).toBe('complete');
+    });
+
     it('processes continuation run-end (router-active invocation is fresh)', async () => {
       // Continuation rebinds the router stream to a new invocation while the
       // Tree's winner stays on the original user-message's invocation. The

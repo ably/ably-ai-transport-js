@@ -371,22 +371,32 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
           // 2. `routerActive`: the bound stream's invocation. Useful for
           //    own runs whose `_ownRunIds` entry has already been
           //    cleared (e.g. an earlier complete run-end already ran).
-          // 3. `treeWinner`: serial-derived winner for observer-run gating.
-          //    Doesn't advance on continuation wires by design, so it
-          //    only catches losing-invocation echoes from competing
-          //    agents under the same runId.
+          // 3. `latestContinuation`: the most recent continuation
+          //    run-start's invocation. Observer clients have no
+          //    `_ownRunIds` / `routerActive` entry, and `treeWinner`
+          //    stays pinned to the original invocation (continuations
+          //    don't advance it). Without this fallback, every
+          //    continuation's `run-end` would be dropped on observer
+          //    sessions, leaving status badges stuck on "streaming".
+          // 4. `treeWinner`: serial-derived winner for observer-run gating
+          //    of the ORIGINAL prompt's invocation. Only consulted when
+          //    no continuation has been observed; catches losing-
+          //    invocation echoes from competing agents publishing under
+          //    the same runId.
           //
           // A run-end whose invocation matches none of these is dropped.
           const ownActive = this._ownRunIds.get(runId);
           const routerActive = this._router.getActiveInvocation(runId);
+          const latestContinuation = this._tree.getLatestContinuationInvocation(runId);
           const treeWinner = this._tree.getWinningInvocation(runId)?.invocationId;
-          const expectedInvocation = ownActive ?? routerActive ?? treeWinner;
+          const expectedInvocation = ownActive ?? routerActive ?? latestContinuation ?? treeWinner;
           if (invocationId !== undefined && expectedInvocation !== undefined && expectedInvocation !== invocationId) {
             this._logger.debug('ClientSession.runEnd; ignoring losing-invocation run-end', {
               runId,
               invocationId,
               ownActive,
               routerActive,
+              latestContinuation,
               treeWinner,
             });
             this._tree.emitAblyMessage(ablyMessage);

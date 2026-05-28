@@ -432,6 +432,52 @@ describe('createChatTransport', () => {
       const reader = stream.getReader();
       await reader.read();
     });
+
+    it('cancels the run when the signal aborts during the await before the listener attaches', async () => {
+      // Repro: useChat sets `status: 'submitted'` synchronously before
+      // awaiting `transport.sendMessages`. That exposes the Stop button to
+      // the UI immediately. If the user clicks Stop while `sendMessages` is
+      // still awaiting `session.view.sendEvent(...)` (e.g. waiting for the
+      // run-start ack — seconds for a real LLM), useChat fires the abort
+      // *before* the adapter has the runId to attach a listener for. The
+      // adapter must call `session.cancel(runId)` even when the signal is
+      // already aborted by the time it gets a chance to look at it.
+      const { session, cancel, mockRun, view } = createMockSession();
+      const chat = createChatTransport(session);
+      const abortController = new AbortController();
+
+      // Defer the sendEvent resolution so we can abort the signal while it
+      // is still pending — this mirrors the run-start ack wait window.
+      let resolveSend: ((run: typeof mockRun) => void) | undefined;
+      const sendPromise = new Promise<typeof mockRun>((resolve) => {
+        resolveSend = resolve;
+      });
+      (view.sendEvent as ReturnType<typeof vi.fn>).mockReturnValue(sendPromise);
+
+      const streamPromise = chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: [makeMessage('1')],
+        abortSignal: abortController.signal,
+      });
+
+      // Simulate the user clicking Stop while sendEvent is still awaiting.
+      abortController.abort();
+      expect(cancel).not.toHaveBeenCalled();
+
+      // sendEvent settles after the abort — by the time the adapter sees
+      // run.runId, the signal is already aborted.
+      resolveSend?.(mockRun);
+      const stream = await streamPromise;
+
+      expect(cancel).toHaveBeenCalledWith(mockRun.runId);
+
+      // Clean up
+      mockRun.close();
+      const reader = stream.getReader();
+      await reader.read();
+    });
   });
 
   describe('prepareSendMessagesRequest hook', () => {

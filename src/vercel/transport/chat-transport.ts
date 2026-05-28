@@ -577,9 +577,22 @@ export const createChatTransport = (
 
     if (abortSignal) {
       const runId = run.runId;
-      abortSignal.addEventListener('abort', () => void session.cancel(runId), {
-        once: true,
-      });
+      const onAbort = (): void => {
+        void session.cancel(runId);
+      };
+      // useChat sets `status: 'submitted'` synchronously inside `makeRequest`
+      // BEFORE awaiting `transport.sendMessages`. That immediately enables
+      // the Stop button in the UI. If the user clicks Stop while
+      // `session.view.sendEvent` is still awaiting the run-start ack (which
+      // can take seconds for a real LLM), useChat aborts the signal before
+      // we ever get here. `addEventListener('abort', ...)` does not fire
+      // for an already-aborted signal, so we'd silently lose the cancel
+      // and the agent would keep streaming.
+      if (abortSignal.aborted) {
+        onAbort();
+      } else {
+        abortSignal.addEventListener('abort', onAbort, { once: true });
+      }
     }
 
     // Wrap the stream to detect completion. The streaming flag gates

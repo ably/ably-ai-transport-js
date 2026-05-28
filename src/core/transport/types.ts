@@ -749,6 +749,19 @@ export interface Tree<TProjection> {
    */
   getWinningInvocation(runId: string): { invocationId: string; serial: string } | undefined;
 
+  /**
+   * Return the most recent continuation invocation observed for `runId`,
+   * or `undefined` if no continuation `ai-run-start` has been seen.
+   * Updated on every continuation run-start (wire
+   * `x-ably-run-continue: 'true'`), independently of
+   * `getWinningInvocation` which stays scoped to original-invocation
+   * conflict resolution. Used by the client-session run-end gate so
+   * observer clients can accept a continuation's terminal `run-end`.
+   * @param runId - The run-id to query.
+   * @returns The continuation invocation-id, or undefined.
+   */
+  getLatestContinuationInvocation(runId: string): string | undefined;
+
   /** Subscribe to tree structural changes (Run insert, delete, sort-reorder). */
   on(event: 'update', handler: () => void): () => void;
 

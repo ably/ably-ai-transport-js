@@ -101,6 +101,7 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
     // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires explicit undefined return for the contract
     getRegenerateGroup: vi.fn(() => undefined),
     getWinningInvocation: vi.fn(),
+    getLatestContinuationInvocation: vi.fn(),
     on: makeTreeOn(treeHandlers),
   };
 

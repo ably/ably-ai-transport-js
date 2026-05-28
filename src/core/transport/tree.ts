@@ -184,6 +184,17 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
    */
   private readonly _winningInvocations = new Map<string, { invocationId: string; serial: string }>();
 
+  /**
+   * Most recent continuation invocation observed per run-id: runId ->
+   * invocationId. Updated on every `ai-run-start` carrying
+   * `isContinuation: true`. Distinct from `_winningInvocations`, which
+   * resolves between competing original invocations and intentionally
+   * does NOT advance on continuations. Consulted by the ClientSession
+   * run-end gate so observer clients (no `_ownRunIds` entry, no router
+   * stream) can still accept the terminal `run-end` of a continuation.
+   */
+  private readonly _latestContinuationInvocations = new Map<string, string>();
+
   /** Monotonically increasing counter for insertion sequence. */
   private _seqCounter = 0;
 
@@ -571,6 +582,9 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
   applyRunLifecycle(event: RunLifecycleEvent, serial?: string): void {
     this._logger.trace('DefaultTree.applyRunLifecycle();', { type: event.type, runId: event.runId });
     if (event.type === 'ai-run-start') {
+      if (event.isContinuation && event.invocationId) {
+        this._latestContinuationInvocations.set(event.runId, event.invocationId);
+      }
       let run = this._runIndex.get(event.runId);
       if (run) {
         if (run.node.status !== 'active') {
@@ -649,6 +663,8 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
     this._removeFromParentIndex(entry.node.parentRunId, runId);
     this._removeSortedRun(entry);
     this._runIndex.delete(runId);
+    this._latestContinuationInvocations.delete(runId);
+    this._winningInvocations.delete(runId);
     if (entry.node.regeneratesCodecMessageId !== undefined) {
       const set = this._regenerateByMsgId.get(entry.node.regeneratesCodecMessageId);
       if (set) {
@@ -902,6 +918,10 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
   getWinningInvocation(runId: string): { invocationId: string; serial: string } | undefined {
     const entry = this._winningInvocations.get(runId);
     return entry ? { ...entry } : undefined;
+  }
+
+  getLatestContinuationInvocation(runId: string): string | undefined {
+    return this._latestContinuationInvocations.get(runId);
   }
 
   // Spec: AIT-CT8b, AIT-CT8e

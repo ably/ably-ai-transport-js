@@ -90,6 +90,7 @@ const createMockSession = (): MockSession => {
     // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires explicit undefined return for the contract
     getRegenerateGroup: vi.fn(() => undefined),
     getWinningInvocation: vi.fn(),
+    getLatestContinuationInvocation: vi.fn(),
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
     on: vi.fn(() => () => {}),
   };

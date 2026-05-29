@@ -228,6 +228,110 @@ export interface Decoder<TEvent> {
 }
 
 // ---------------------------------------------------------------------------
+// Codec input events — well-known input variant shapes
+// ---------------------------------------------------------------------------
+
+/**
+ * Structural base every codec input variant must satisfy. Codec authors
+ * compose their `TInput` union from variants extending this type; the
+ * transport reads the routing fields directly off the variant to stamp
+ * wire headers, so no runtime classification step is needed.
+ *
+ * The `kind` discriminator is required on every variant so the codec's
+ * reducer can switch on it. Codec authors pick the literal value per
+ * variant; the SDK ships well-known literals (`'user-message'`,
+ * `'regenerate'`, `'edit'`) — see {@link UserMessageInput},
+ * {@link RegenerateInput}, {@link EditInput}.
+ */
+export interface CodecInputEvent {
+  /**
+   * Discriminator. Codec authors pick the literal value per variant. The
+   * SDK reserves the literals used by well-known variants
+   * ({@link UserMessageInput}, {@link RegenerateInput}, {@link EditInput});
+   * codec-specific variants pick any other literal.
+   */
+  kind: string;
+  /**
+   * Sets the wire `x-ably-parent` header — the codec-message-id of the
+   * preceding codec-message on this branch. When omitted, the SDK
+   * auto-computes the parent from the visible branch tail at send time.
+   */
+  parent?: string;
+  /**
+   * Pointer to another codec-message this input references. The semantic
+   * depends on `kind` — for `regenerate`, the assistant codec-message to
+   * regenerate; for `edit`, the codec-message to replace; codec-specific
+   * `kind`s may give it other meanings. The input event itself does not
+   * create a fork — it requests one. The fork relationship is established
+   * on the agent's response (and on `ai-run-start`), which the codec
+   * encoder maps `target` to via the wire's `x-ably-fork-of` header.
+   */
+  target?: string;
+  /**
+   * Targets an existing codec-message-id instead of minting a fresh one.
+   * Used by continuation inputs (tool results, approval responses) that
+   * amend an existing assistant message rather than creating a new one;
+   * the wire's `x-ably-codec-message-id` is stamped with this value so
+   * the reducer's direct-fold path matches by codec-message-id.
+   */
+  codecMessageId?: string;
+}
+
+/**
+ * Well-known input variant: a new user message in the codec's domain
+ * representation. Pinned `kind: 'user-message'`. Produced by the SDK's
+ * `Codec.userMessageInput` factory and surfaced via `View.sendMessage`.
+ * @template TMessage - The codec's per-message domain type.
+ */
+export interface UserMessageInput<TMessage> extends CodecInputEvent {
+  /** Discriminator. */
+  kind: 'user-message';
+  /** The user's message in the codec's domain representation. */
+  message: TMessage;
+}
+
+/**
+ * Well-known input variant: request that an existing assistant
+ * codec-message be regenerated. Pinned `kind: 'regenerate'`. This event
+ * is a signal, not itself a fork — `target` names the assistant message
+ * to regenerate, and `parent` names the user message the new assistant
+ * threads under. Both are required; the codec cannot regenerate without
+ * both. Produced by the SDK's `Codec.regenerateInput` factory and
+ * surfaced via `View.regenerate`.
+ */
+export interface RegenerateInput extends CodecInputEvent {
+  /** Discriminator. */
+  kind: 'regenerate';
+  /** The codec-message-id of the assistant to regenerate. Required. */
+  target: string;
+  /** The codec-message-id of the parent user message the new assistant threads under. Required. */
+  parent: string;
+}
+
+/**
+ * Well-known input variant: request that an existing codec-message be
+ * replaced with new content. Pinned `kind: 'edit'`. This event is a
+ * signal, not itself a fork — `target` names the codec-message to
+ * replace, and `parent` names the preceding codec-message on the new
+ * branch. Carries the replacement content in the codec's domain
+ * representation.
+ *
+ * Codecs opt in to edit support by including this variant in their
+ * `TInput` union; the SDK does not require it.
+ * @template TMessage - The codec's per-message domain type.
+ */
+export interface EditInput<TMessage> extends CodecInputEvent {
+  /** Discriminator. */
+  kind: 'edit';
+  /** The codec-message-id of the codec-message to replace. Required. */
+  target: string;
+  /** The codec-message-id of the preceding codec-message on the new branch. Required. */
+  parent: string;
+  /** The replacement content in the codec's domain representation. */
+  message: TMessage;
+}
+
+// ---------------------------------------------------------------------------
 // Codec — full contract for the transport
 // ---------------------------------------------------------------------------
 

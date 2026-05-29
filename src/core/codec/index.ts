@@ -1,15 +1,19 @@
 export type {
   ChannelWriter,
   Codec,
+  CodecInputEvent,
   Decoder,
+  EditInput,
   Encoder,
   EncoderOptions,
   Extras,
   MessagePayload,
   Reducer,
   ReducerMeta,
+  RegenerateInput,
   StreamPayload,
   StreamTrackerState,
+  UserMessageInput,
   WriteOptions,
 } from './types.js';
 

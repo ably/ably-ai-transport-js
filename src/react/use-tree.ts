@@ -12,6 +12,7 @@
 
 import { useCallback } from 'react';
 
+import type { CodecInputEvent, CodecOutputEvent } from '../core/codec/types.js';
 import type { RunNode } from '../core/transport/types.js';
 import type { BaseSessionOption } from './internal/use-resolved-session.js';
 import { useResolvedSession } from './internal/use-resolved-session.js';
@@ -29,7 +30,12 @@ export interface TreeHandle<TProjection> {
 }
 
 /** Options for {@link useTree}. */
-export type UseTreeOptions<TEvent, TProjection, TMessage> = BaseSessionOption<TEvent, TProjection, TMessage>;
+export type UseTreeOptions<
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+> = BaseSessionOption<TInput, TOutput, TProjection, TMessage>;
 
 /**
  * Provide stable structural query callbacks backed by the session's tree.
@@ -38,9 +44,9 @@ export type UseTreeOptions<TEvent, TProjection, TMessage> = BaseSessionOption<TE
  * @param props.session - Session to read tree structure from; defaults to the nearest provider.
  * @returns A {@link TreeHandle} with structural query methods.
  */
-export const useTree = <TEvent, TProjection, TMessage>({
+export const useTree = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>({
   session,
-}: UseTreeOptions<TEvent, TProjection, TMessage> = {}): TreeHandle<TProjection> => {
+}: UseTreeOptions<TInput, TOutput, TProjection, TMessage> = {}): TreeHandle<TProjection> => {
   const resolved = useResolvedSession({ session });
 
   const getRunNode = useCallback(

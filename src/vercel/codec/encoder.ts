@@ -1,19 +1,20 @@
 /**
  * Vercel AI SDK encoder.
  *
- * Single public `publish(event, options?)` method that maps each VercelEvent
- * to one or more channel operations. The codec inspects the event's
- * discriminator and routes to `EncoderCore.startStream` / `appendStream` /
- * `closeStream` / `publishDiscrete` / `publishDiscreteBatch`. Stream-tracker
- * state lives inside the encoder core; callers don't see it.
+ * Two publish methods enforce direction at the call site:
  *
- * Every codec event published by the agent rides the single `ai-output`
- * wire name; every codec event published by the client rides the single
- * `ai-input` wire name. The codec event's own `type` field is carried in
- * the `x-domain-type` domain header so the decoder can dispatch.
+ * - {@link DefaultUIMessageEncoder.publishInput} encodes a `VercelInput`
+ *   variant and publishes it on the `ai-input` wire.
+ * - {@link DefaultUIMessageEncoder.publishOutput} encodes a `VercelOutput`
+ *   (`AI.UIMessageChunk`) and publishes it on the `ai-output` wire,
+ *   driving the underlying stream-tracker for streamed chunks
+ *   (text / reasoning / tool-input) and falling back to discrete
+ *   publishes for everything else.
  *
- * Domain-specific headers use the `x-domain-` prefix to distinguish them
- * from transport-level `x-ably-` headers.
+ * The codec event's own discriminator (`kind` for inputs, `type` for
+ * outputs) is carried in the `x-domain-type` domain header so the
+ * decoder can dispatch. Stream-tracker state lives inside the encoder
+ * core and is shared across both directions.
  */
 
 import * as Ably from 'ably';
@@ -23,16 +24,25 @@ import { isDataUIPart } from 'ai';
 import { EVENT_AI_INPUT, EVENT_AI_OUTPUT, HEADER_ROLE, HEADER_STATUS } from '../../constants.js';
 import type { EncoderCore, EncoderCoreOptions } from '../../core/codec/encoder.js';
 import { createEncoderCore } from '../../core/codec/encoder.js';
-import type { ChannelWriter, Encoder, MessagePayload, WriteOptions } from '../../core/codec/types.js';
+import type {
+  ChannelWriter,
+  Encoder,
+  MessagePayload,
+  ToolApprovalResponse,
+  ToolResult,
+  ToolResultError,
+  UserMessage,
+  WriteOptions,
+} from '../../core/codec/types.js';
 import { ErrorCode, errorInfoIs } from '../../errors.js';
 import { headerWriter } from '../../utils.js';
-import type { RegenerateEvent, ToolApprovalResponseEvent, UserMessageEvent, VercelEvent } from './events.js';
+import type { VercelInput, VercelOutput } from './events.js';
 
 // ---------------------------------------------------------------------------
 // Default implementation
 // ---------------------------------------------------------------------------
 
-class DefaultUIMessageEncoder implements Encoder<VercelEvent> {
+class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
   private readonly _core: EncoderCore;
   private readonly _messageId: string | undefined;
   private _cancelled = false;
@@ -42,20 +52,33 @@ class DefaultUIMessageEncoder implements Encoder<VercelEvent> {
     this._messageId = options.messageId;
   }
 
-  async publish(event: VercelEvent, options?: WriteOptions): Promise<void> {
-    if (event.type === 'ait-user-message') {
-      await this._publishUserMessage(event, options);
-      return;
+  async publishInput(input: VercelInput, options?: WriteOptions): Promise<void> {
+    switch (input.kind) {
+      case 'user-message': {
+        await this._publishUserMessage(input, options);
+        return;
+      }
+      case 'regenerate': {
+        await this._publishRegenerate(options);
+        return;
+      }
+      case 'tool-result': {
+        await this._publishToolResult(input, options);
+        return;
+      }
+      case 'tool-result-error': {
+        await this._publishToolResultError(input, options);
+        return;
+      }
+      case 'tool-approval-response': {
+        await this._publishToolApprovalResponse(input, options);
+        return;
+      }
     }
-    if (event.type === 'tool-approval-response') {
-      await this._publishToolApprovalResponse(event, options);
-      return;
-    }
-    if (event.type === 'ait-regenerate') {
-      await this._publishRegenerate(event, options);
-      return;
-    }
-    await this._publishChunk(event, options);
+  }
+
+  async publishOutput(output: VercelOutput, options?: WriteOptions): Promise<void> {
+    await this._publishChunk(output, options);
   }
 
   async cancel(reason?: string): Promise<void> {
@@ -74,7 +97,7 @@ class DefaultUIMessageEncoder implements Encoder<VercelEvent> {
   }
 
   // -------------------------------------------------------------------------
-  // VercelEvent routing — UIMessageChunk
+  // VercelOutput routing — UIMessageChunk
   // -------------------------------------------------------------------------
 
   private async _publishChunk(chunk: AI.UIMessageChunk, perWrite?: WriteOptions): Promise<void> {
@@ -303,7 +326,7 @@ class DefaultUIMessageEncoder implements Encoder<VercelEvent> {
           return;
         }
         throw new Ably.ErrorInfo(
-          `unable to publish event; unsupported chunk type '${chunk.type}'`,
+          `unable to publish output; unsupported chunk type '${chunk.type}'`,
           ErrorCode.InvalidArgument,
           400,
         );
@@ -312,18 +335,19 @@ class DefaultUIMessageEncoder implements Encoder<VercelEvent> {
   }
 
   // -------------------------------------------------------------------------
-  // VercelEvent routing — codec-local
+  // VercelInput routing
   // -------------------------------------------------------------------------
 
   /**
-   * Publish a user message as a batch of per-part discrete Ably messages.
-   * Wire format matches today's `writeMessages` output for compatibility
-   * with existing channel history.
-   * @param event - The user-message TEvent carrying the UIMessage to encode.
-   * @param perWrite - Optional per-write overrides (clientId, extras, messageId).
+   * Publish a user-message input as a batch of per-part discrete Ably
+   * messages on the `ai-input` wire. Wire format matches the multi-part
+   * user-message convention; the receive-side decoder fans the parts back
+   * out into a single `UserMessage`.
+   * @param input - The user-message input carrying the UIMessage to encode.
+   * @param perWrite - Optional per-write overrides.
    */
-  private async _publishUserMessage(event: UserMessageEvent, perWrite?: WriteOptions): Promise<void> {
-    const payloads = encodeMessagePayloads(event.message);
+  private async _publishUserMessage(input: UserMessage<AI.UIMessage>, perWrite?: WriteOptions): Promise<void> {
+    const payloads = encodeMessagePayloads(input.message);
     // Stamp role on every payload so the decoder can reconstruct a `role: 'user'` UIMessage.
     for (const payload of payloads) {
       payload.headers = { ...payload.headers, [HEADER_ROLE]: 'user' };
@@ -332,43 +356,61 @@ class DefaultUIMessageEncoder implements Encoder<VercelEvent> {
   }
 
   /**
-   * Publish a client-side tool-approval response as a discrete `ai-input`
-   * Ably message carrying `x-domain-type: 'tool-approval-response'`. The
-   * publish carries its own `x-ably-codec-message-id` (from `perWrite.messageId`)
-   * — the reducer matches the response to the original assistant by
-   * `toolCallId`, not by codec-message-id.
-   * @param event - The approval-response TEvent (toolCallId, approved, optional reason).
-   * @param perWrite - Optional per-write overrides (clientId, extras, messageId).
+   * Publish a regenerate input as a discrete `ai-input` Ably message
+   * carrying `x-domain-type: 'regenerate'`. The wire carries no domain
+   * payload — `parent` / `target` are stamped on the transport headers by
+   * the client-session (it reads them off the input directly and builds
+   * `buildTransportHeaders`).
+   * @param perWrite - Per-write overrides carrying the transport headers built by client-session.
    */
-  private async _publishToolApprovalResponse(event: ToolApprovalResponseEvent, perWrite?: WriteOptions): Promise<void> {
-    const h = headerWriter()
-      .str('type', 'tool-approval-response')
-      .str('toolCallId', event.toolCallId)
-      .bool('approved', event.approved)
-      .str('reason', event.reason)
-      .build();
+  private async _publishRegenerate(perWrite?: WriteOptions): Promise<void> {
+    const h = headerWriter().str('type', 'regenerate').build();
     await this._core.publishDiscrete({ name: EVENT_AI_INPUT, data: '', headers: h }, perWrite);
   }
 
   /**
-   * Publish a regenerate event as a discrete `ai-input` Ably message
-   * carrying `x-domain-type: 'ait-regenerate'`. The wire carries no
-   * domain payload — `parent`/`forkOf` are stamped on the transport
-   * headers by the client-session (it builds them via
-   * `buildTransportHeaders` from the event's
-   * `parentCodecMessageId`/`forkOfCodecMessageId` which `classifyEvent`
-   * surfaces on the `regenerate` classification).
-   * @param _event - The regenerate TEvent (unused — metadata is on transport headers).
-   * @param perWrite - Per-write overrides carrying the transport headers built by client-session.
+   * Publish a client-side tool output on the `ai-input` wire. Targets the
+   * assistant addressed by `input.codecMessageId`; the wire's
+   * `x-ably-codec-message-id` is stamped via `perWrite.messageId` by the
+   * client-session.
+   * @param input - The tool-output input.
+   * @param perWrite - Per-write overrides carrying the wire codecMessageId.
    */
-  private async _publishRegenerate(_event: RegenerateEvent, perWrite?: WriteOptions): Promise<void> {
-    const h = headerWriter().str('type', 'ait-regenerate').build();
+  private async _publishToolResult(input: ToolResult, perWrite?: WriteOptions): Promise<void> {
+    const h = headerWriter().str('type', 'tool-result').str('toolCallId', input.toolCallId).build();
+    await this._core.publishDiscrete({ name: EVENT_AI_INPUT, data: { output: input.output }, headers: h }, perWrite);
+  }
+
+  /**
+   * Publish a client-side tool error on the `ai-input` wire. Targets the
+   * assistant addressed by `input.codecMessageId`.
+   * @param input - The tool-result-error input.
+   * @param perWrite - Per-write overrides.
+   */
+  private async _publishToolResultError(input: ToolResultError, perWrite?: WriteOptions): Promise<void> {
+    const h = headerWriter().str('type', 'tool-result-error').str('toolCallId', input.toolCallId).build();
+    await this._core.publishDiscrete({ name: EVENT_AI_INPUT, data: { message: input.message }, headers: h }, perWrite);
+  }
+
+  /**
+   * Publish a client-side tool approval response on the `ai-input` wire.
+   * Targets the assistant addressed by `input.codecMessageId`.
+   * @param input - The approval-response input.
+   * @param perWrite - Per-write overrides.
+   */
+  private async _publishToolApprovalResponse(input: ToolApprovalResponse, perWrite?: WriteOptions): Promise<void> {
+    const h = headerWriter()
+      .str('type', 'tool-approval-response')
+      .str('toolCallId', input.toolCallId)
+      .bool('approved', input.approved)
+      .str('reason', input.reason)
+      .build();
     await this._core.publishDiscrete({ name: EVENT_AI_INPUT, data: '', headers: h }, perWrite);
   }
 }
 
 // ---------------------------------------------------------------------------
-// Tool output discrete payload builder
+// Tool output discrete payload builder (agent-side `ai-output` wire)
 // ---------------------------------------------------------------------------
 
 const buildToolOutputPayload = (
@@ -471,11 +513,13 @@ const encodeMessagePayloads = (message: AI.UIMessage): MessagePayload[] => {
 // ---------------------------------------------------------------------------
 
 /**
- * Create a Vercel AI SDK encoder that maps VercelEvents to Ably channel
- * operations via the encoder core.
+ * Create a Vercel AI SDK encoder that maps VercelInput / VercelOutput to
+ * Ably channel operations via the encoder core.
  * @param writer - The channel writer to publish messages through.
  * @param options - Encoder configuration (clientId, extras, hooks, logger).
- * @returns An {@link Encoder} for the Vercel TEvent union.
+ * @returns An {@link Encoder} typed in both directions for the Vercel codec.
  */
-export const createEncoder = (writer: ChannelWriter, options: EncoderCoreOptions = {}): Encoder<VercelEvent> =>
-  new DefaultUIMessageEncoder(writer, options);
+export const createEncoder = (
+  writer: ChannelWriter,
+  options: EncoderCoreOptions = {},
+): Encoder<VercelInput, VercelOutput> => new DefaultUIMessageEncoder(writer, options);

@@ -15,6 +15,7 @@
 
 import { useEffect, useState } from 'react';
 
+import type { CodecInputEvent, CodecOutputEvent } from '../core/codec/types.js';
 import type { View } from '../core/transport/types.js';
 import type { BaseSessionOption } from './internal/use-resolved-session.js';
 import { useResolvedSession } from './internal/use-resolved-session.js';
@@ -22,11 +23,12 @@ import type { ViewHandle } from './use-view.js';
 import { useView } from './use-view.js';
 
 /** Options for {@link useCreateView}. */
-export interface UseCreateViewOptions<TEvent, TProjection, TMessage> extends BaseSessionOption<
-  TEvent,
+export interface UseCreateViewOptions<
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
   TProjection,
-  TMessage
-> {
+  TMessage,
+> extends BaseSessionOption<TInput, TOutput, TProjection, TMessage> {
   /** When provided, auto-loads the first page on mount. Omit for manual load. */
   limit?: number;
   /** When `true`, skip view creation and return an empty handle immediately. */
@@ -45,14 +47,19 @@ export interface UseCreateViewOptions<TEvent, TProjection, TMessage> extends Bas
  * @param props.skip - When `true`, skip view creation and return an empty handle.
  * @returns A {@link ViewHandle} with nodes, pagination, navigation, and write operations.
  */
-export const useCreateView = <TEvent, TProjection, TMessage>({
+export const useCreateView = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>({
   session,
   limit,
   skip,
-}: UseCreateViewOptions<TEvent, TProjection, TMessage> = {}): ViewHandle<TEvent, TProjection, TMessage> => {
+}: UseCreateViewOptions<TInput, TOutput, TProjection, TMessage> = {}): ViewHandle<
+  TInput,
+  TOutput,
+  TProjection,
+  TMessage
+> => {
   const resolved = useResolvedSession({ session, skip });
 
-  const [view, setView] = useState<View<TEvent, TProjection, TMessage> | undefined>();
+  const [view, setView] = useState<View<TInput, TOutput, TProjection, TMessage> | undefined>();
 
   useEffect(() => {
     if (!resolved) {

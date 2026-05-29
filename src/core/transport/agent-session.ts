@@ -30,7 +30,7 @@ import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import { getHeaders, mergeHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
-import type { Codec, WriteOptions } from '../codec/types.js';
+import type { Codec, CodecInputEvent, CodecOutputEvent, WriteOptions } from '../codec/types.js';
 import { buildTransportHeaders } from './headers.js';
 import { Invocation } from './invocation.js';
 import { pipeStream } from './pipe-stream.js';
@@ -122,8 +122,8 @@ const withLiveMessages = (
  * @param truncateAt - Stop before this codec-message-id; omit to fold all messages.
  * @returns The projection and the count of messages that were folded.
  */
-const foldRunMessages = <TEvent, TProjection, TMessage>(
-  codec: Codec<TEvent, TProjection, TMessage>,
+const foldRunMessages = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>(
+  codec: Codec<TInput, TOutput, TProjection, TMessage>,
   sortedMessages: readonly Ably.InboundMessage[],
   runId: string,
   truncateAt?: string,
@@ -138,7 +138,8 @@ const foldRunMessages = <TEvent, TProjection, TMessage>(
     if (msg.name === EVENT_RUN_START || msg.name === EVENT_RUN_END) continue;
     const codecMsgId = h[HEADER_CODEC_MESSAGE_ID];
     if (truncateAt !== undefined && codecMsgId === truncateAt) break;
-    const events = decoder.decode(msg);
+    const { inputs, outputs } = decoder.decode(msg);
+    const events: (TInput | TOutput)[] = [...inputs, ...outputs];
     const routingCodecMessageId = codecMsgId ?? '';
     for (const event of events) {
       projection = codec.fold(projection, event, { serial: msg.serial ?? '', messageId: routingCodecMessageId });
@@ -173,9 +174,14 @@ const foldRunMessages = <TEvent, TProjection, TMessage>(
  *   client wires don't depend on Ably's history-indexing window.
  * @returns The projection produced by folding all run events in serial order.
  */
-const loadRunProjection = async <TEvent, TProjection, TMessage>(opts: {
+const loadRunProjection = async <
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+>(opts: {
   channel: Ably.RealtimeChannel;
-  codec: Codec<TEvent, TProjection, TMessage>;
+  codec: Codec<TInput, TOutput, TProjection, TMessage>;
   runId: string;
   signal: AbortSignal;
   logger: Logger | undefined;
@@ -220,6 +226,7 @@ const loadRunProjection = async <TEvent, TProjection, TMessage>(opts: {
 
   const sorted = withLiveMessages(collected, liveMessages);
   const { projection, folded } = foldRunMessages(codec, sorted, runId);
+
   logger?.debug('loadRunProjection(); folded run events', { runId, folded });
   return projection;
 };
@@ -285,9 +292,14 @@ interface PromptLookupResult<TMessage> {
   rawMessages: Ably.InboundMessage[];
 }
 
-const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
+const lookupUserPrompt = async <
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+>(opts: {
   register: (callback: (msg: Ably.InboundMessage) => void) => () => void;
-  codec: import('../codec/types.js').Codec<TEvent, TProjection, TMessage>;
+  codec: import('../codec/types.js').Codec<TInput, TOutput, TProjection, TMessage>;
   invocationId: string;
   runId: string;
   expectedEventIds: readonly string[];
@@ -314,7 +326,8 @@ const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
     const decoder = codec.createDecoder();
     const headers = getHeaders(m);
     const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID] ?? '';
-    const events = decoder.decode(m);
+    const { inputs, outputs } = decoder.decode(m);
+    const events: (TInput | TOutput)[] = [...inputs, ...outputs];
     let projection = codec.init();
     for (const event of events) {
       projection = codec.fold(projection, event, { serial: m.serial ?? '', messageId: codecMessageId });
@@ -484,9 +497,14 @@ enum RunState {
 // ---------------------------------------------------------------------------
 
 // Spec: AIT-ST1
-class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession<TEvent, TProjection, TMessage> {
+class DefaultAgentSession<
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+> implements AgentSession<TInput, TOutput, TProjection, TMessage> {
   private readonly _channel: Ably.RealtimeChannel;
-  private readonly _codec: AgentSessionOptions<TEvent, TProjection, TMessage>['codec'];
+  private readonly _codec: AgentSessionOptions<TInput, TOutput, TProjection, TMessage>['codec'];
   private readonly _logger: Logger | undefined;
   private readonly _onError: ((error: Ably.ErrorInfo) => void) | undefined;
   private readonly _runManager: RunManager;
@@ -530,7 +548,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
   private _hasAttachedOnce: boolean;
   private readonly _onChannelStateChange: Ably.channelEventCallback;
 
-  constructor(options: AgentSessionOptions<TEvent, TProjection, TMessage>) {
+  constructor(options: AgentSessionOptions<TInput, TOutput, TProjection, TMessage>) {
     // Spec: AIT-ST1a, AIT-ST1a2 — register this SDK on both the connection
     // (options.agents) and channel-attach (params.agent) paths. Idempotent
     // across sessions sharing one client.
@@ -661,7 +679,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
   }
 
   // Spec: AIT-ST3
-  createRun(invocation: Invocation, runtime?: RunRuntime<TEvent>): Run<TEvent, TProjection, TMessage> {
+  createRun(invocation: Invocation, runtime?: RunRuntime<TOutput>): Run<TInput, TOutput, TProjection, TMessage> {
     this._logger?.trace('DefaultAgentSession.createRun();', { runId: invocation.runId });
     return this._createRun(invocation, runtime ?? {});
   }
@@ -894,7 +912,10 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
   // Run creation
   // -------------------------------------------------------------------------
 
-  private _createRun(invocation: Invocation, runtime: RunRuntime<TEvent>): Run<TEvent, TProjection, TMessage> {
+  private _createRun(
+    invocation: Invocation,
+    runtime: RunRuntime<TOutput>,
+  ): Run<TInput, TOutput, TProjection, TMessage> {
     const runId = invocation.runId;
     const invocationId = invocation.invocationId;
     const promptLookupTimeoutMs = this._promptLookupTimeoutMs;
@@ -976,7 +997,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
     // messages instead of the current run alone.
     let cachedConversation: TMessage[] | undefined;
 
-    const run: Run<TEvent, TProjection, TMessage> = {
+    const run: Run<TInput, TOutput, TProjection, TMessage> = {
       get runId() {
         return runId;
       },
@@ -1020,7 +1041,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
         // when no eventId is set (invocation requires no channel lookup).
         if (eventId && promptLookupTimeoutMs > 0) {
           try {
-            const found = await lookupUserPrompt<TEvent, TProjection, TMessage>({
+            const found = await lookupUserPrompt<TInput, TOutput, TProjection, TMessage>({
               register: (callback) => registerPromptListener(invocationId, callback),
               codec,
               invocationId,
@@ -1134,8 +1155,13 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
               onMessage,
             });
 
-            const userEvent = codec.userMessageEvent(node.message);
-            await encoder.publish(userEvent, opts?.clientId ? { clientId: opts.clientId } : undefined);
+            // CAST: UserMessage<TMessage> is the well-known input variant
+            // produced by `codec.createUserMessage`; TInput is the codec's
+            // full input union, of which UserMessage<TMessage> is one
+            // member. TypeScript can't see the membership through the
+            // generic boundary.
+            const userInput = codec.createUserMessage(node.message) as unknown as TInput;
+            await encoder.publishInput(userInput, opts?.clientId ? { clientId: opts.clientId } : undefined);
 
             codecMessageIds.push(node.codecMessageId);
           }
@@ -1155,7 +1181,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
       },
 
       // Spec: AIT-ST5c
-      addEvents: async (nodes: EventsNode<TEvent>[]): Promise<void> => {
+      addEvents: async (nodes: EventsNode<TOutput>[]): Promise<void> => {
         logger?.trace('Run.addEvents();', { runId, count: nodes.length });
 
         await requireConnected('addEvents');
@@ -1186,7 +1212,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
             });
 
             for (const event of node.events) {
-              await encoder.publish(event);
+              await encoder.publishOutput(event);
             }
 
             await encoder.close();
@@ -1208,7 +1234,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
       loadProjection: async (): Promise<TProjection> => {
         logger?.trace('Run.loadProjection();', { runId });
         await requireConnected('loadProjection');
-        const projection = await loadRunProjection<TEvent, TProjection, TMessage>({
+        const projection = await loadRunProjection<TInput, TOutput, TProjection, TMessage>({
           channel,
           codec,
           runId,
@@ -1345,7 +1371,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
       },
 
       // Spec: AIT-ST6, AIT-ST6a, AIT-ST6b, AIT-ST6b1, AIT-ST6b2, AIT-ST6b3, AIT-ST6c
-      pipe: async (stream: ReadableStream<TEvent>, streamOpts?: PipeOptions<TEvent>): Promise<StreamResult> => {
+      pipe: async (stream: ReadableStream<TOutput>, streamOpts?: PipeOptions<TOutput>): Promise<StreamResult> => {
         logger?.trace('Run.pipe();', { runId });
 
         await requireConnected('pipe');
@@ -1408,7 +1434,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
         // call in the projection — letting the reducer fold them onto the
         // original message via the standard messageId routing path. The
         // caller's `messageId` (if any) wins over the codec's suggestion.
-        const composed = (event: TEvent): WriteOptions | undefined => {
+        const composed = (event: TOutput): WriteOptions | undefined => {
           const callerResolved = streamOpts?.resolveWriteOptions?.(event);
           if (cachedProjection === undefined) return callerResolved;
           const target = codec.resolveToolTarget(event, cachedProjection);
@@ -1486,6 +1512,11 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
  * @param options - Session configuration.
  * @returns A new {@link AgentSession} instance.
  */
-export const createAgentSession = <TEvent, TProjection, TMessage>(
-  options: AgentSessionOptions<TEvent, TProjection, TMessage>,
-): AgentSession<TEvent, TProjection, TMessage> => new DefaultAgentSession(options);
+export const createAgentSession = <
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+>(
+  options: AgentSessionOptions<TInput, TOutput, TProjection, TMessage>,
+): AgentSession<TInput, TOutput, TProjection, TMessage> => new DefaultAgentSession(options);

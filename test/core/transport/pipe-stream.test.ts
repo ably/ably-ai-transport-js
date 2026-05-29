@@ -1,18 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Encoder, WriteOptions } from '../../../src/core/codec/types.js';
+import type { CodecInputEvent, Encoder, WriteOptions } from '../../../src/core/codec/types.js';
 import { pipeStream } from '../../../src/core/transport/pipe-stream.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
+interface TestInput extends CodecInputEvent {
+  kind: 'test-input';
+}
+
 interface TestEvent {
   type: string;
   text?: string;
 }
 
-interface MockEncoder extends Encoder<TestEvent> {
+interface MockEncoder extends Encoder<TestInput, TestEvent> {
   appendedEvents: TestEvent[];
   appendedOpts: (WriteOptions | undefined)[];
   closed: boolean;
@@ -25,9 +29,13 @@ const createMockEncoder = (): MockEncoder => {
     appendedOpts: [],
     closed: false,
     cancelledReason: undefined,
+
+    publishInput: vi.fn(async () => {
+      /* unused — pipeStream only invokes publishOutput */
+    }),
     // eslint-disable-next-line @typescript-eslint/require-await -- mock
-    publish: vi.fn(async (event: TestEvent, opts?: WriteOptions) => {
-      mock.appendedEvents.push(event);
+    publishOutput: vi.fn(async (output: TestEvent, opts?: WriteOptions) => {
+      mock.appendedEvents.push(output);
       mock.appendedOpts.push(opts);
     }),
     // eslint-disable-next-line @typescript-eslint/require-await -- mock

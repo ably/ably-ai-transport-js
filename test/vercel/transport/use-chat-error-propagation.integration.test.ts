@@ -19,7 +19,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
 import { createClientSession } from '../../../src/core/transport/client-session.js';
 import type { AgentSession, ClientSession } from '../../../src/core/transport/types.js';
-import { UIMessageCodec, type VercelEvent, type VercelProjection } from '../../../src/vercel/codec/index.js';
+import {
+  UIMessageCodec,
+  type VercelInput,
+  type VercelOutput,
+  type VercelProjection,
+} from '../../../src/vercel/codec/index.js';
 import type { ChatTransport } from '../../../src/vercel/transport/chat-transport.js';
 import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
@@ -31,8 +36,8 @@ import { createRunFromOpts } from '../../helper/run-from-opts.js';
 // ---------------------------------------------------------------------------
 
 describe('useChat error propagation', () => {
-  let agentSession: AgentSession<VercelEvent, VercelProjection, AI.UIMessage> | undefined;
-  let clientSession: ClientSession<VercelEvent, VercelProjection, AI.UIMessage> | undefined;
+  let agentSession: AgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> | undefined;
+  let clientSession: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> | undefined;
   let chatTransport: ChatTransport | undefined;
 
   afterEach(async () => {

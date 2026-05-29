@@ -4,6 +4,7 @@
 
 import { vi } from 'vitest';
 
+import type { CodecInputEvent, CodecOutputEvent } from '../../../src/core/codec/types.js';
 import type { ClientSession, RunLifecycleEvent, RunNode, Tree, View } from '../../../src/core/transport/types.js';
 
 type TreeEventType = 'update' | 'ably-message' | 'run' | 'run-projection-updated';
@@ -11,7 +12,7 @@ type SessionEventType = 'error';
 type Handler = ((...args: never[]) => void) | (() => void);
 
 export interface MockSession {
-  session: ClientSession<unknown, unknown, string>;
+  session: ClientSession<CodecInputEvent, CodecOutputEvent, unknown, string>;
   sendMessage: ReturnType<typeof vi.fn>;
   sendEvent: ReturnType<typeof vi.fn>;
   regenerate: ReturnType<typeof vi.fn>;
@@ -25,7 +26,7 @@ export interface MockSession {
   /** Fire an event on tree/view (update, ably-message, run, run-projection-updated). */
   emitTree: (event: TreeEventType, ...args: unknown[]) => void;
   tree: Tree<unknown>;
-  view: View<unknown, unknown, string>;
+  view: View<CodecInputEvent, CodecOutputEvent, unknown, string>;
 }
 
 export const createMockSession = (initialMessages: string[] = []): MockSession => {
@@ -124,7 +125,7 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const edit = vi.fn(() => Promise.resolve(mockRun));
 
-  const view: View<unknown, unknown, string> = {
+  const view: View<CodecInputEvent, CodecOutputEvent, unknown, string> = {
     getMessages: vi.fn(() => initialMessages),
     flattenNodes: vi.fn(() => initialNodes),
     hasOlder: vi.fn(() => false),
@@ -165,7 +166,7 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
     on,
     close,
     // CAST: mock object satisfies the subset of ClientSession methods used by hooks
-  } as unknown as ClientSession<unknown, unknown, string>;
+  } as unknown as ClientSession<CodecInputEvent, CodecOutputEvent, unknown, string>;
 
   return {
     session,

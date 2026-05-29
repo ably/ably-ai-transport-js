@@ -22,20 +22,20 @@ import type * as AI from 'ai';
 import { type PropsWithChildren, type ReactNode, useContext, useMemo } from 'react';
 
 import { type ClientSessionProviderProps, createSessionHooks } from '../../../react/index.js';
-import { UIMessageCodec, type VercelEvent, type VercelProjection } from '../../codec/index.js';
+import { UIMessageCodec, type VercelInput, type VercelOutput, type VercelProjection } from '../../codec/index.js';
 import { type ChatTransportOptions, DEFAULT_VERCEL_API } from '../../transport/index.js';
 import { createChatTransport } from '../../transport/index.js';
 import type { ChatTransportSlot } from './chat-transport-context.js';
 import { ChatTransportContext } from './chat-transport-context.js';
 
 export const { ClientSessionProvider, useAblyMessages, useClientSession, useCreateView, useTree, useView } =
-  createSessionHooks<VercelEvent, VercelProjection, AI.UIMessage>();
+  createSessionHooks<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>();
 
 type CoreClientSessionProviderProps = Omit<
-  ClientSessionProviderProps<VercelEvent, VercelProjection, AI.UIMessage>,
+  ClientSessionProviderProps<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
   'codec' | 'api'
 > &
-  Partial<Pick<ClientSessionProviderProps<VercelEvent, VercelProjection, AI.UIMessage>, 'api'>>;
+  Partial<Pick<ClientSessionProviderProps<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>, 'api'>>;
 
 /**
  * Props for {@link ChatTransportProvider}.

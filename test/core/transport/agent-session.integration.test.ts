@@ -38,21 +38,22 @@ import { buildTransportHeaders } from '../../../src/core/transport/headers.js';
 import type { AgentSession } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { getHeaders } from '../../../src/utils.js';
-import type { VercelEvent, VercelProjection } from '../../../src/vercel/codec/index.js';
+import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
 import { UIMessageCodec } from '../../../src/vercel/codec/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 import { createRunFromOpts } from '../../helper/run-from-opts.js';
-import { eventsOf, eventTypesOf, textResponseStream } from '../../integration/helpers.js';
+import { textResponseStream } from '../../integration/helpers.js';
 
-type AgentSessionT = AgentSession<VercelEvent, VercelProjection, AI.UIMessage>;
+type AgentSessionT = AgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 interface FoldingCollector {
-  allEvents: VercelEvent[];
+  allOutputs: VercelOutput[];
+  allInputs: VercelInput[];
   rawMessages: Ably.InboundMessage[];
   /** Fully folded projection across all messages observed so far. */
   projection: VercelProjection;
@@ -70,11 +71,12 @@ interface FoldingCollector {
  */
 const collectUntil = (
   channel: Ably.RealtimeChannel,
-  predicate: (events: AI.UIMessageChunk[]) => boolean,
+  predicate: (outputs: VercelOutput[]) => boolean,
 ): FoldingCollector => {
   const decoder = UIMessageCodec.createDecoder();
   let projection = UIMessageCodec.init();
-  const allEvents: VercelEvent[] = [];
+  const allInputs: VercelInput[] = [];
+  const allOutputs: VercelOutput[] = [];
   const rawMessages: Ably.InboundMessage[] = [];
 
   let resolve: () => void;
@@ -84,18 +86,23 @@ const collectUntil = (
 
   void channel.subscribe((msg) => {
     rawMessages.push(msg);
-    const events = decoder.decode(msg);
-    allEvents.push(...events);
+    const { inputs, outputs } = decoder.decode(msg);
+    allInputs.push(...inputs);
+    allOutputs.push(...outputs);
     const headers = getHeaders(msg);
     const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
-    for (const event of events) {
-      projection = UIMessageCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: codecMessageId });
+    for (const input of inputs) {
+      projection = UIMessageCodec.fold(projection, input, { serial: msg.serial ?? '', messageId: codecMessageId });
     }
-    if (predicate(eventsOf(events))) resolve();
+    for (const output of outputs) {
+      projection = UIMessageCodec.fold(projection, output, { serial: msg.serial ?? '', messageId: codecMessageId });
+    }
+    if (predicate(outputs)) resolve();
   });
 
   return {
-    allEvents,
+    allInputs,
+    allOutputs,
     rawMessages,
     get projection() {
       return projection;
@@ -104,7 +111,7 @@ const collectUntil = (
   };
 };
 
-const hasFinish = (events: AI.UIMessageChunk[]): boolean => events.some((e) => e.type === 'finish');
+const hasFinish = (outputs: VercelOutput[]): boolean => outputs.some((e) => e.type === 'finish');
 const isRunEnd = (msg: Ably.InboundMessage): boolean => msg.name === EVENT_RUN_END;
 
 // eslint-disable-next-line @typescript-eslint/promise-function-async -- noop fetch
@@ -129,7 +136,7 @@ describe('AgentSession integration', () => {
     const subClient = ablyRealtimeClient();
     const subChannel = subClient.channels.get(channelName);
 
-    session = createAgentSession<VercelEvent, VercelProjection, AI.UIMessage>({
+    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
@@ -149,7 +156,7 @@ describe('AgentSession integration', () => {
 
     expect(result.reason).toBe('complete');
 
-    const types = eventTypesOf(collector.allEvents);
+    const types = collector.allOutputs.map((o) => o.type);
     expect(types).toContain('start');
     expect(types).toContain('text-start');
     expect(types).toContain('text-delta');
@@ -188,7 +195,7 @@ describe('AgentSession integration', () => {
     const subClient = ablyRealtimeClient();
     const subChannel = subClient.channels.get(channelName);
 
-    session = createAgentSession<VercelEvent, VercelProjection, AI.UIMessage>({
+    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
@@ -249,12 +256,12 @@ describe('AgentSession integration', () => {
         eventId,
       });
       const encoder = UIMessageCodec.createEncoder(publisherChannel, { extras: { headers } });
-      const userEvent = UIMessageCodec.userMessageEvent({
+      const userInput = UIMessageCodec.createUserMessage({
         id: opts.codecMessageId,
         role: 'user',
         parts: [{ type: 'text', text: 'hi' }],
       });
-      await encoder.publish(userEvent);
+      await encoder.publishInput(userInput);
 
       const run = createRunFromOpts(agentSession, {
         runId: opts.runId,
@@ -334,7 +341,7 @@ describe('AgentSession integration', () => {
     const subClient = ablyRealtimeClient();
     const subChannel = subClient.channels.get(channelName);
 
-    session = createAgentSession<VercelEvent, VercelProjection, AI.UIMessage>({
+    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
@@ -383,7 +390,7 @@ describe('AgentSession integration', () => {
     const cancelClient = ablyRealtimeClient();
     const cancelChannel = cancelClient.channels.get(channelName);
 
-    session = createAgentSession<VercelEvent, VercelProjection, AI.UIMessage>({
+    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
@@ -393,7 +400,7 @@ describe('AgentSession integration', () => {
     const run = createRunFromOpts(session, { runId: 'run-cancel-1' });
     await run.start();
 
-    const stream = new ReadableStream<VercelEvent>({
+    const stream = new ReadableStream<VercelOutput>({
       start: (ctrl) => {
         ctrl.enqueue({ type: 'start', messageId: 'msg-cancel-1' });
         ctrl.enqueue({ type: 'start-step' });
@@ -422,7 +429,7 @@ describe('AgentSession integration', () => {
     const subClient = ablyRealtimeClient();
     const subChannel = subClient.channels.get(channelName);
 
-    session = createAgentSession<VercelEvent, VercelProjection, AI.UIMessage>({
+    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
@@ -438,13 +445,16 @@ describe('AgentSession integration', () => {
     });
 
     await subChannel.subscribe((msg) => {
-      const events = decoder.decode(msg);
+      const { inputs, outputs } = decoder.decode(msg);
       const headers = getHeaders(msg);
       const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
-      for (const event of events) {
+      for (const event of inputs) {
         projection = UIMessageCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: codecMessageId });
       }
-      if (eventsOf(events).some((e) => e.type === 'finish')) {
+      for (const event of outputs) {
+        projection = UIMessageCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: codecMessageId });
+      }
+      if (outputs.some((e) => e.type === 'finish')) {
         finishCount++;
         if (finishCount === 2) resolveTwoFinishes();
       }
@@ -474,7 +484,7 @@ describe('AgentSession integration', () => {
     const subClient = ablyRealtimeClient();
     const subChannel = subClient.channels.get(channelName);
 
-    session = createAgentSession<VercelEvent, VercelProjection, AI.UIMessage>({
+    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
@@ -491,8 +501,8 @@ describe('AgentSession integration', () => {
     const decoder = UIMessageCodec.createDecoder();
     await subChannel.subscribe((msg) => {
       rawMessages.push(msg);
-      const events = decoder.decode(msg);
-      if (eventsOf(events).some((e) => e.type === 'finish')) {
+      const { outputs } = decoder.decode(msg);
+      if (outputs.some((e) => e.type === 'finish')) {
         finishCount++;
         if (finishCount === 2) resolveTwoFinishes();
       }
@@ -526,7 +536,7 @@ describe('AgentSession integration', () => {
     const subClient = ablyRealtimeClient();
     const subChannel = subClient.channels.get(channelName);
 
-    session = createAgentSession<VercelEvent, VercelProjection, AI.UIMessage>({
+    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
@@ -547,7 +557,7 @@ describe('AgentSession integration', () => {
     const run = createRunFromOpts(session, { runId: 'run-err-1' });
     await run.start();
 
-    const stream = new ReadableStream<VercelEvent>({
+    const stream = new ReadableStream<VercelOutput>({
       start: (controller) => {
         controller.enqueue({ type: 'start', messageId: 'msg-err-1' });
         controller.enqueue({ type: 'start-step' });
@@ -578,7 +588,7 @@ describe('AgentSession integration', () => {
     const sub1Channel = sub1Client.channels.get(channelName);
     const sub2Channel = sub2Client.channels.get(channelName);
 
-    session = createAgentSession<VercelEvent, VercelProjection, AI.UIMessage>({
+    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
@@ -612,7 +622,7 @@ describe('AgentSession integration', () => {
     const subClient = ablyRealtimeClient();
     const subChannel = subClient.channels.get(channelName);
 
-    session = createAgentSession<VercelEvent, VercelProjection, AI.UIMessage>({
+    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
@@ -628,8 +638,8 @@ describe('AgentSession integration', () => {
     const decoder = UIMessageCodec.createDecoder();
     await subChannel.subscribe((msg) => {
       rawMessages.push(msg);
-      const events = decoder.decode(msg);
-      if (eventsOf(events).some((e) => e.type === 'finish')) resolveFinish();
+      const { outputs } = decoder.decode(msg);
+      if (outputs.some((e) => e.type === 'finish')) resolveFinish();
     });
 
     const run = createRunFromOpts(session, { runId: 'run-add-1' });
@@ -680,7 +690,7 @@ describe('AgentSession integration', () => {
 
     const errors: Ably.ErrorInfo[] = [];
 
-    session = createAgentSession<VercelEvent, VercelProjection, AI.UIMessage>({
+    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
@@ -709,7 +719,7 @@ describe('AgentSession integration', () => {
     const subClient = ablyRealtimeClient();
     const subChannel = subClient.channels.get(channelName);
 
-    session = createAgentSession<VercelEvent, VercelProjection, AI.UIMessage>({
+    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
@@ -733,7 +743,7 @@ describe('AgentSession integration', () => {
     const run = createRunFromOpts(session, { runId: 'run-rwo' });
     await run.start();
 
-    const stream = new ReadableStream<VercelEvent>({
+    const stream = new ReadableStream<VercelOutput>({
       start: (controller) => {
         controller.enqueue({ type: 'text-start', id: 'txt-1' });
         controller.enqueue({
@@ -749,7 +759,7 @@ describe('AgentSession integration', () => {
     });
 
     await run.pipe(stream, {
-      resolveWriteOptions: (event: VercelEvent) =>
+      resolveWriteOptions: (event: VercelOutput) =>
         event.type === 'tool-output-available' ? { messageId: 'target-codec-message-id' } : undefined,
     });
 
@@ -826,12 +836,12 @@ describe('AgentSession integration', () => {
     const publisherChannel = publisherClient.channels.get(channelName);
     const headers = buildTransportHeaders({ role: 'user', runId, codecMessageId, invocationId, eventId });
     const encoder = UIMessageCodec.createEncoder(publisherChannel, { extras: { headers } });
-    const userEvent = UIMessageCodec.userMessageEvent({
+    const userInput = UIMessageCodec.createUserMessage({
       id: codecMessageId,
       role: 'user',
       parts: [{ type: 'text', text }],
     });
-    await encoder.publish(userEvent);
+    await encoder.publishInput(userInput);
 
     await startPromise;
 
@@ -871,7 +881,7 @@ describe('AgentSession integration', () => {
     });
     await session.connect();
 
-    const clientSession = createClientSession<VercelEvent, VercelProjection, AI.UIMessage>({
+    const clientSession = createClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
@@ -927,7 +937,7 @@ describe('AgentSession integration', () => {
 
       // Drain the client's stream to verify the response reached it.
       const reader = activeRun.stream.getReader();
-      const events: VercelEvent[] = [];
+      const events: VercelOutput[] = [];
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;

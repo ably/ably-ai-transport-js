@@ -1,11 +1,11 @@
 /**
  * AgentSession unit tests.
  *
- * Rewritten against the event-sourced `Codec<TEvent, TProjection, TMessage>`
- * contract — mock encoder uses single-method `publish`, `addMessages` flows
- * through `codec.userMessageEvent` + `encoder.publish`, `addEvents` publishes
- * each event individually, and the channel subscription is unfiltered
- * (cancel + user-prompt + everything else dispatched via the same listener).
+ * Mock encoder uses split-direction `publishInput` / `publishOutput`;
+ * `addMessages` flows through `codec.createUserMessage` + `encoder.publishInput`,
+ * `addEvents` and `pipe` flow through `encoder.publishOutput`, and the channel
+ * subscription is unfiltered (cancel + user-prompt + everything else dispatched
+ * via the same listener).
  */
 
 import '../../helper/expectations.js';
@@ -28,6 +28,7 @@ import {
 import type {
   ChannelWriter,
   Codec,
+  CodecInputEvent,
   Decoder,
   Encoder,
   EncoderOptions,
@@ -45,10 +46,18 @@ import { createRunFromOpts } from '../../helper/run-from-opts.js';
 // Shapes
 // ---------------------------------------------------------------------------
 
-interface TestEvent {
+/** Client-published input variants. */
+interface TestInput extends CodecInputEvent {
+  kind: 'user-message';
+  message: TestMessage;
+}
+
+/** Agent-published output variants. */
+interface TestOutput {
   type: string;
   text?: string;
 }
+
 interface TestMessage {
   id: string;
   content: string;
@@ -149,15 +158,25 @@ const simulateCancel = (channel: MockChannel, headers: Record<string, string>): 
 };
 
 // ---------------------------------------------------------------------------
-// Mock codec (Encoder.publish only)
+// Mock codec — direction-split encoder (publishInput / publishOutput)
 // ---------------------------------------------------------------------------
 
-interface MockEncoder extends Encoder<TestEvent> {
-  publishCalls: { event: TestEvent; opts: WriteOptions | undefined }[];
+/** Single shape for both input and output publishes — `publishCalls` mixes both. */
+interface MockPublishCall {
+  /** Tagged direction so assertions can filter input vs output publishes. */
+  direction: 'input' | 'output';
+  /** The TInput or TOutput that was published. */
+  event: TestInput | TestOutput;
+  /** Per-write overrides supplied at publish time. */
+  opts: WriteOptions | undefined;
+}
+
+interface MockEncoder extends Encoder<TestInput, TestOutput> {
+  publishCalls: MockPublishCall[];
   failPublishWith: Error | undefined;
 }
 
-interface MockCodec extends Codec<TestEvent, TestProjection, TestMessage> {
+interface MockCodec extends Codec<TestInput, TestOutput, TestProjection, TestMessage> {
   encoderCalls: { writer: ChannelWriter; opts: EncoderOptions | undefined }[];
   encoders: MockEncoder[];
   lastEncoder(): MockEncoder | undefined;
@@ -165,14 +184,20 @@ interface MockCodec extends Codec<TestEvent, TestProjection, TestMessage> {
 }
 
 const createMockEncoder = (failWith?: Error): MockEncoder => {
-  const calls: { event: TestEvent; opts: WriteOptions | undefined }[] = [];
+  const calls: MockPublishCall[] = [];
   const enc: MockEncoder = {
     publishCalls: calls,
     failPublishWith: failWith,
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-    publish: vi.fn((event: TestEvent, opts?: WriteOptions) => {
+    publishInput: vi.fn((event: TestInput, opts?: WriteOptions) => {
       if (enc.failPublishWith) return Promise.reject(enc.failPublishWith);
-      calls.push({ event, opts });
+      calls.push({ direction: 'input', event, opts });
+      return Promise.resolve();
+    }),
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+    publishOutput: vi.fn((event: TestOutput, opts?: WriteOptions) => {
+      if (enc.failPublishWith) return Promise.reject(enc.failPublishWith);
+      calls.push({ direction: 'output', event, opts });
       return Promise.resolve();
     }),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
@@ -183,8 +208,8 @@ const createMockEncoder = (failWith?: Error): MockEncoder => {
   return enc;
 };
 
-const createMockDecoder = (): Decoder<TestEvent> => ({
-  decode: vi.fn(() => []),
+const createMockDecoder = (): Decoder<TestInput, TestOutput> => ({
+  decode: vi.fn(() => ({ inputs: [], outputs: [] })),
 });
 
 const createMockCodec = (overrides?: { encoderFactory?: () => MockEncoder }): MockCodec => {
@@ -197,14 +222,11 @@ const createMockCodec = (overrides?: { encoderFactory?: () => MockEncoder }): Mo
     lastEncoderOpts: () => encoderCalls.at(-1)?.opts,
     init: vi.fn((): TestProjection => ({ messages: [] })),
     // eslint-disable-next-line @typescript-eslint/no-unused-vars -- reducer signature; event/meta unused by this stub
-    fold: vi.fn((state: TestProjection, _event: TestEvent, _meta: ReducerMeta) => state),
+    fold: vi.fn((state: TestProjection, _event: TestInput | TestOutput, _meta: ReducerMeta) => state),
     getMessages: vi.fn((p: TestProjection) => p.messages),
-    userMessageEvent: vi.fn((m: TestMessage): TestEvent => ({ type: 'user-message', text: m.content })),
-    createRegenerateEvent: vi.fn((): TestEvent => ({ type: 'user-message' })),
-    classifyEvent: vi.fn((event: TestEvent) =>
-      event.type === 'user-message'
-        ? ({ kind: 'user-message' as const } as const)
-        : ({ kind: 'other' as const } as const),
+    createUserMessage: vi.fn((m: TestMessage) => ({ kind: 'user-message' as const, message: m })),
+    createRegenerate: vi.fn(
+      (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }) as const,
     ),
     // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires an explicit return matching the codec contract
     resolveToolTarget: vi.fn(() => undefined),
@@ -224,7 +246,7 @@ const createMockCodec = (overrides?: { encoderFactory?: () => MockEncoder }): Mo
 // Helpers
 // ---------------------------------------------------------------------------
 
-const streamOf = (...events: TestEvent[]): ReadableStream<TestEvent> =>
+const streamOf = (...events: TestOutput[]): ReadableStream<TestOutput> =>
   new ReadableStream({
     start: (controller) => {
       for (const event of events) {
@@ -269,29 +291,32 @@ const captureWarnLogger = (): {
  * inbound Ably message.
  * @returns A codec that decodes each inbound message into a single message whose id reflects the inbound codecMessageId header.
  */
-const codecWithFunctionalDecoder = (): Codec<TestEvent, TestProjection, TestMessage> => ({
+const codecWithFunctionalDecoder = (): Codec<TestInput, TestOutput, TestProjection, TestMessage> => ({
   init: (): TestProjection => ({ messages: [] }),
-  fold: (state: TestProjection, event: TestEvent): TestProjection => {
-    if (event.type === 'user-message' && event.text !== undefined) {
-      return { messages: [...state.messages, { id: event.text, content: event.text }] };
+  fold: (state: TestProjection, event: TestInput | TestOutput): TestProjection => {
+    // TestInput has only the user-message variant; outputs (TestOutput) pass
+    // through unchanged.
+    if ('kind' in event) {
+      return { messages: [...state.messages, { id: event.message.id, content: event.message.content }] };
     }
     return state;
   },
   getMessages: (p: TestProjection) => p.messages,
-  userMessageEvent: (m: TestMessage): TestEvent => ({ type: 'user-message', text: m.id }),
-  createRegenerateEvent: (): TestEvent => ({ type: 'user-message' }),
-  classifyEvent: (event: TestEvent) =>
-    event.type === 'user-message'
-      ? ({ kind: 'user-message' as const } as const)
-      : ({ kind: 'other' as const } as const),
+  createUserMessage: (m: TestMessage) => ({ kind: 'user-message' as const, message: m }),
+  createRegenerate: (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }),
   // eslint-disable-next-line unicorn/no-useless-undefined -- codec contract returns string | undefined
   resolveToolTarget: () => undefined,
   createEncoder: vi.fn(() => createMockEncoder()),
   createDecoder: vi.fn(() => ({
-    decode: (m: Ably.InboundMessage): TestEvent[] => {
+    decode: (m: Ably.InboundMessage) => {
       const hdrs = (m.extras as { headers?: Record<string, string> } | undefined)?.headers ?? {};
       const id = hdrs[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
-      return [{ type: 'user-message', text: id }];
+      // The functional decoder synthesises one user-message TInput per inbound
+      // message — the agent's prompt-lookup folds these into MessageNodes.
+      return {
+        inputs: [{ kind: 'user-message' as const, message: { id, content: id } }],
+        outputs: [],
+      };
     },
   })),
   isTerminal: vi.fn(() => false),
@@ -372,12 +397,12 @@ const deliverUserPrompt = (ch: MockChannel, opts: DeliverUserPromptOpts): void =
 describe('AgentSession', () => {
   let channel: MockChannel & Ably.RealtimeChannel;
   let codec: MockCodec;
-  let session: AgentSession<TestEvent, TestProjection, TestMessage>;
+  let session: AgentSession<TestInput, TestOutput, TestProjection, TestMessage>;
 
   beforeEach(async () => {
     channel = createMockChannel();
     codec = createMockCodec();
-    session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+    session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(channel),
       channelName: 'test-channel',
       codec,
@@ -402,7 +427,7 @@ describe('AgentSession', () => {
     it('registers the agent and resolves the channel via client.channels.get', () => {
       const ch = createMockChannel();
       const client = createMockClient(ch);
-      const s = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
         client,
         channelName: 'agent-channel',
         codec,
@@ -416,7 +441,7 @@ describe('AgentSession', () => {
       const ch = createMockChannel();
       const client = createMockClient(ch);
       const c = createMockCodec();
-      const s = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
         client,
         channelName: 'rewind-channel',
         codec: c,
@@ -437,12 +462,20 @@ describe('AgentSession', () => {
       // Seed an unrelated entry so we can assert it survives.
       optionsRef.agents = { 'some-other-sdk': '9.9.9' };
       const c = createMockCodec();
-      const s1 = createAgentSession<TestEvent, TestProjection, TestMessage>({ client, channelName: 'ch-a', codec: c });
+      const s1 = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client,
+        channelName: 'ch-a',
+        codec: c,
+      });
       // Swap the channel returned by channels.get for the second session so
       // each session has its own channel mock to publish to.
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked takes a method reference
       vi.mocked(client.channels.get).mockReturnValue(ch2);
-      const s2 = createAgentSession<TestEvent, TestProjection, TestMessage>({ client, channelName: 'ch-b', codec: c });
+      const s2 = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client,
+        channelName: 'ch-b',
+        codec: c,
+      });
       expect(optionsRef.agents).toEqual({
         'some-other-sdk': '9.9.9',
         'ai-transport-js': VERSION,
@@ -459,7 +492,7 @@ describe('AgentSession', () => {
   describe('connect()', () => {
     it('is idempotent — repeated calls return the same promise', async () => {
       const ch = createMockChannel();
-      const s = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
@@ -483,7 +516,7 @@ describe('AgentSession', () => {
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.reject directly
       ch.subscribe = vi.fn(() => Promise.reject(new Error('subscribe down')));
       const onError = vi.fn();
-      const s = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
@@ -496,7 +529,7 @@ describe('AgentSession', () => {
 
     it('Run methods throw InvalidArgument before connect()', async () => {
       const ch = createMockChannel();
-      const s = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
@@ -701,10 +734,12 @@ describe('AgentSession', () => {
       await run.addMessages([node]);
 
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock check
-      expect(codec.userMessageEvent).toHaveBeenCalledWith({ id: 'm1', content: 'hello' });
+      expect(codec.createUserMessage).toHaveBeenCalledWith({ id: 'm1', content: 'hello' });
       const enc = codec.lastEncoder();
       expect(enc?.publishCalls).toHaveLength(1);
-      expect(enc?.publishCalls[0]?.event.type).toBe('user-message');
+      const call = enc?.publishCalls[0];
+      expect(call?.direction).toBe('input');
+      expect(call?.event && 'kind' in call.event ? call.event.kind : undefined).toBe('user-message');
     });
 
     it('creates encoder with user-role transport headers', async () => {
@@ -790,7 +825,7 @@ describe('AgentSession', () => {
       const failCodec = createMockCodec({
         encoderFactory: () => createMockEncoder(new Ably.ErrorInfo('publish boom', 40000, 500)),
       });
-      const failSession = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      const failSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
         client: createMockClient(channel),
         channelName: 'test-channel',
         codec: failCodec,
@@ -844,7 +879,7 @@ describe('AgentSession', () => {
       expect(headers['x-ably-input-client-id']).toBe('user-b');
     });
 
-    it('calls encoder.publish per event', async () => {
+    it('calls encoder.publishOutput per event', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
       await run.addEvents([
@@ -856,7 +891,8 @@ describe('AgentSession', () => {
       ]);
       const enc = codec.lastEncoder();
       expect(enc?.publishCalls).toHaveLength(3);
-      expect(enc?.publishCalls.map((c) => c.event.type)).toEqual(['ev-a', 'ev-b', 'ev-c']);
+      const outputs = enc?.publishCalls.filter((c) => c.direction === 'output').map((c) => c.event as TestOutput);
+      expect(outputs?.map((e) => e.type)).toEqual(['ev-a', 'ev-b', 'ev-c']);
     });
 
     it('throws if run not started', async () => {
@@ -893,11 +929,11 @@ describe('AgentSession', () => {
       expect(enc?.close).toHaveBeenCalled();
     });
 
-    it('throws RunLifecycleError when an encoder.publish fails', async () => {
+    it('throws RunLifecycleError when an encoder.publishOutput fails', async () => {
       const failCodec = createMockCodec({
         encoderFactory: () => createMockEncoder(new Ably.ErrorInfo('boom', 40000, 500)),
       });
-      const failSession = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      const failSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
         client: createMockClient(channel),
         channelName: 'test-channel',
         codec: failCodec,
@@ -948,14 +984,15 @@ describe('AgentSession', () => {
       expect(headers['x-ably-input-client-id']).toBe('user-b');
     });
 
-    it('publishes each stream event through encoder.publish', async () => {
+    it('publishes each stream event through encoder.publishOutput', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
       await run.pipe(streamOf({ type: 'text', text: 'a' }, { type: 'text', text: 'b' }));
 
       const enc = codec.lastEncoder();
       expect(enc?.publishCalls).toHaveLength(2);
-      expect(enc?.publishCalls.map((c) => c.event.text)).toEqual(['a', 'b']);
+      const outputs = enc?.publishCalls.filter((c) => c.direction === 'output').map((c) => c.event as TestOutput);
+      expect(outputs?.map((e) => e.text)).toEqual(['a', 'b']);
     });
 
     it('returns reason: complete for a normal stream', async () => {
@@ -984,7 +1021,7 @@ describe('AgentSession', () => {
       const ch = createMockChannel();
       const base = codecWithFunctionalDecoder();
       let capturedHeaders: Record<string, string> | undefined;
-      const c: Codec<TestEvent, TestProjection, TestMessage> = {
+      const c: Codec<TestInput, TestOutput, TestProjection, TestMessage> = {
         ...base,
         createEncoder: (writer: ChannelWriter, opts?: EncoderOptions) => {
           capturedHeaders = opts?.extras?.headers;
@@ -1034,7 +1071,7 @@ describe('AgentSession', () => {
       const base = codecWithFunctionalDecoder();
       // Wrap createEncoder to capture the headers Run.pipe stamps as defaults.
       let capturedHeaders: Record<string, string> | undefined;
-      const c: Codec<TestEvent, TestProjection, TestMessage> = {
+      const c: Codec<TestInput, TestOutput, TestProjection, TestMessage> = {
         ...base,
         createEncoder: (writer: ChannelWriter, opts?: EncoderOptions) => {
           capturedHeaders = opts?.extras?.headers;
@@ -1074,15 +1111,15 @@ describe('AgentSession', () => {
       expect(headers[HEADER_PARENT]).toBeUndefined();
     });
 
-    it('forwards resolveWriteOptions per-event overrides into encoder.publish', async () => {
+    it('forwards resolveWriteOptions per-event overrides into encoder.publishOutput', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
-      const events: TestEvent[] = [
+      const events: TestOutput[] = [
         { type: 'text', text: 'a' },
         { type: 'text', text: 'b' },
       ];
       await run.pipe(streamOf(...events), {
-        resolveWriteOptions: (event: TestEvent) => (event.text === 'b' ? { messageId: 'override-b' } : undefined),
+        resolveWriteOptions: (event: TestOutput) => (event.text === 'b' ? { messageId: 'override-b' } : undefined),
       });
 
       const enc = codec.lastEncoder();
@@ -1096,10 +1133,10 @@ describe('AgentSession', () => {
       // Mock codec.resolveToolTarget: for events tagged with text === 'tool-output',
       // return msg-X. Other events return undefined.
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked accessor
-      vi.mocked(targetCodec.resolveToolTarget).mockImplementation((event: TestEvent) =>
+      vi.mocked(targetCodec.resolveToolTarget).mockImplementation((event: TestOutput) =>
         event.text === 'tool-output' ? 'msg-X' : undefined,
       );
-      const targetSession = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      const targetSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
         client: createMockClient(channel),
         channelName: 'test',
         codec: targetCodec,
@@ -1124,7 +1161,7 @@ describe('AgentSession', () => {
       const targetCodec = createMockCodec();
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked accessor
       vi.mocked(targetCodec.resolveToolTarget).mockImplementation(() => 'codec-target');
-      const targetSession = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      const targetSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
         client: createMockClient(channel),
         channelName: 'test',
         codec: targetCodec,
@@ -1147,7 +1184,7 @@ describe('AgentSession', () => {
       const targetCodec = createMockCodec();
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked accessor
       vi.mocked(targetCodec.resolveToolTarget).mockImplementation(() => 'codec-target');
-      const targetSession = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      const targetSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
         client: createMockClient(channel),
         channelName: 'test',
         codec: targetCodec,
@@ -1275,7 +1312,7 @@ describe('AgentSession', () => {
       const run = createRunFromOpts(session, { runId: 'run-1', signal: ctl.signal });
       await run.start();
 
-      const stream = new ReadableStream<TestEvent>({
+      const stream = new ReadableStream<TestOutput>({
         start: (controller) => {
           controller.enqueue({ type: 'text', text: 'partial' });
         },
@@ -1297,7 +1334,7 @@ describe('AgentSession', () => {
       const failChannel = createMockChannel();
       vi.mocked(failChannel.publish).mockRejectedValue(new Error('publish failed'));
       const onError = vi.fn();
-      const failSession = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      const failSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
         client: createMockClient(failChannel),
         channelName: 'test-channel',
         codec,
@@ -1321,7 +1358,7 @@ describe('AgentSession', () => {
       const onError = vi.fn();
       const run = createRunFromOpts(session, { runId: 'run-1', onError });
       await run.start();
-      const stream = new ReadableStream<TestEvent>({
+      const stream = new ReadableStream<TestOutput>({
         start: (controller) => {
           controller.enqueue({ type: 'text', text: 'partial' });
           controller.error(new Error('rate limit'));
@@ -1397,7 +1434,7 @@ describe('AgentSession', () => {
         const onError = vi.fn();
         const ch = createMockChannel();
         ch.state = 'initialized';
-        const s = createAgentSession<TestEvent, TestProjection, TestMessage>({
+        const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
           client: createMockClient(ch),
           channelName: 'test-channel',
           codec: createMockCodec(),
@@ -1420,7 +1457,7 @@ describe('AgentSession', () => {
       const onError = vi.fn();
       const ch = createMockChannel();
       ch.state = 'initialized';
-      const s = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
@@ -1613,13 +1650,12 @@ describe('AgentSession', () => {
     it('rejects the entire lookup if any message fails to decode', async () => {
       const ch = createMockChannel();
       // Decoder throws on any input.
-      const codec: Codec<TestEvent, TestProjection, TestMessage> = {
+      const codec: Codec<TestInput, TestOutput, TestProjection, TestMessage> = {
         init: (): TestProjection => ({ messages: [] }),
         fold: (state: TestProjection): TestProjection => state,
         getMessages: (p: TestProjection) => p.messages,
-        userMessageEvent: (m: TestMessage): TestEvent => ({ type: 'user-message', text: m.id }),
-        createRegenerateEvent: (): TestEvent => ({ type: 'user-message' }),
-        classifyEvent: () => ({ kind: 'other' as const }) as const,
+        createUserMessage: (m: TestMessage) => ({ kind: 'user-message' as const, message: m }),
+        createRegenerate: (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }),
         // eslint-disable-next-line unicorn/no-useless-undefined -- codec contract returns string | undefined
         resolveToolTarget: () => undefined,
         createEncoder: vi.fn(() => createMockEncoder()),
@@ -1758,7 +1794,7 @@ describe('AgentSession prompt lookup', () => {
   it('start() succeeds when invocation has no eventIds (continuation send)', async () => {
     const channel = createMockChannel();
     const codec = createMockCodec();
-    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(channel),
       channelName: 'test-channel',
       codec,
@@ -1776,7 +1812,7 @@ describe('AgentSession prompt lookup', () => {
   it('start() succeeds when invocation already carries messages (legacy path)', async () => {
     const channel = createMockChannel();
     const codec = createMockCodec();
-    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(channel),
       channelName: 'test-channel',
       codec,
@@ -1793,7 +1829,7 @@ describe('AgentSession prompt lookup', () => {
   it('start() rejects with PromptNotFound when timeout lapses', async () => {
     const channel = createMockChannel();
     const codec = createMockCodec();
-    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(channel),
       channelName: 'test-channel',
       codec,
@@ -1826,7 +1862,7 @@ describe('Run.messages', () => {
   it('is empty before start() resolves (no loadProjection yet)', () => {
     const channel = createMockChannel();
     const codec = codecWithFunctionalDecoder();
-    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(channel),
       channelName: 'test-channel',
       codec,
@@ -1842,7 +1878,7 @@ describe('Run.messages', () => {
   it('returns view-message contributions after start() resolves (fresh send)', async () => {
     const ch = createMockChannel();
     const codec = codecWithFunctionalDecoder();
-    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(ch),
       channelName: 'fresh',
       codec,
@@ -1873,7 +1909,7 @@ describe('Run.messages', () => {
     const ch = createMockChannel();
     const codec = codecWithFunctionalDecoder();
 
-    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(ch),
       channelName: 'cont-overlay',
       codec,
@@ -1905,7 +1941,7 @@ describe('Run.messages', () => {
     const ch = createMockChannel();
     const codec = codecWithFunctionalDecoder();
 
-    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(ch),
       channelName: 'cont-no-overlap',
       codec,
@@ -1942,20 +1978,19 @@ describe('Run.messages', () => {
     // A codec whose decoder produces NO events for non-text messages — mimics
     // the chunk-with-no-assistant case. The agent should still treat the
     // delivery as a event-id match.
-    const codec: Codec<TestEvent, TestProjection, TestMessage> = {
+    const codec: Codec<TestInput, TestOutput, TestProjection, TestMessage> = {
       init: () => ({ messages: [] }),
       fold: (state) => state,
       getMessages: (p) => p.messages,
-      userMessageEvent: (m: TestMessage): TestEvent => ({ type: 'user-message', text: m.id }),
-      createRegenerateEvent: (): TestEvent => ({ type: 'user-message' }),
-      classifyEvent: () => ({ kind: 'other' as const }) as const,
+      createUserMessage: (m: TestMessage) => ({ kind: 'user-message' as const, message: m }),
+      createRegenerate: (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }),
       // eslint-disable-next-line unicorn/no-useless-undefined -- codec contract
       resolveToolTarget: () => undefined,
       createEncoder: vi.fn(() => createMockEncoder()),
-      createDecoder: vi.fn(() => ({ decode: () => [] })),
+      createDecoder: vi.fn(() => ({ decode: () => ({ inputs: [], outputs: [] }) })),
       isTerminal: vi.fn(() => false),
     };
-    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(ch),
       channelName: 'cont-tool-only',
       codec,
@@ -2006,7 +2041,7 @@ describe('Run.messages', () => {
       return Promise.resolve(page);
     });
 
-    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(ch),
       channelName: 'msg-after-conversation',
       codec,
@@ -2101,7 +2136,7 @@ describe('Run.loadConversation', () => {
       return Promise.resolve(page);
     });
 
-    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
@@ -2137,7 +2172,7 @@ describe('Run.loadConversation', () => {
       return Promise.resolve(page);
     });
 
-    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
@@ -2175,7 +2210,7 @@ describe('Run.loadConversation', () => {
       return Promise.resolve(page);
     });
 
-    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
@@ -2216,7 +2251,7 @@ describe('Run.loadConversation', () => {
       return Promise.resolve(page);
     });
 
-    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
@@ -2256,7 +2291,7 @@ describe('Run.loadConversation', () => {
       return Promise.resolve(page);
     });
 
-    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
@@ -2294,7 +2329,7 @@ describe('Run.loadConversation', () => {
     const runId = 'run-2';
     const invocationId = 'inv-2';
     const eventId = 'e-2';
-    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
@@ -2338,7 +2373,7 @@ describe('Run.loadConversation', () => {
       return Promise.resolve(page);
     });
 
-    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
@@ -2373,7 +2408,7 @@ describe('Run.loadConversation', () => {
       return Promise.resolve(page);
     });
 
-    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
@@ -2399,7 +2434,7 @@ describe('Run.loadConversation', () => {
     const controller = new AbortController();
     const ch = createMockChannel();
     const codec = codecWithFunctionalDecoder();
-    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,

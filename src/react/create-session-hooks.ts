@@ -22,6 +22,7 @@
 import type * as Ably from 'ably';
 import type { ComponentType } from 'react';
 
+import type { CodecInputEvent, CodecOutputEvent } from '../core/codec/types.js';
 import type { ClientSession, View } from '../core/transport/types.js';
 import type { ClientSessionProviderProps } from './contexts/client-session-provider.js';
 import { ClientSessionProvider as _ClientSessionProvider } from './contexts/client-session-provider.js';
@@ -40,11 +41,11 @@ import { useView as _useView } from './use-view.js';
  * `TEvent` and `TMessage` are baked in at factory creation time so no type params
  * are needed at hook call sites.
  */
-export interface SessionHooks<TEvent, TProjection, TMessage> {
+export interface SessionHooks<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage> {
   /**
-   * `ClientSessionProvider` narrowed to `TEvent`/`TMessage`. No JSX type params needed.
+   * `ClientSessionProvider` narrowed to the codec's `TInput`/`TOutput`/`TMessage`. No JSX type params needed.
    */
-  ClientSessionProvider: ComponentType<ClientSessionProviderProps<TEvent, TProjection, TMessage>>;
+  ClientSessionProvider: ComponentType<ClientSessionProviderProps<TInput, TOutput, TProjection, TMessage>>;
   /**
    * Read the session from context. No type params needed.
    *
@@ -63,7 +64,7 @@ export interface SessionHooks<TEvent, TProjection, TMessage> {
     skip?: boolean;
     /** Called whenever the resolved session emits an error event. */
     onError?: (error: Ably.ErrorInfo) => void;
-  }) => ClientSessionHandle<TEvent, TProjection, TMessage>;
+  }) => ClientSessionHandle<TInput, TOutput, TProjection, TMessage>;
   /**
    * Subscribe to the nearest session's view and return the visible node list with pagination.
    * Pass `session` to use a session's default view, `view` to subscribe to a specific view
@@ -71,21 +72,21 @@ export interface SessionHooks<TEvent, TProjection, TMessage> {
    */
   useView: (props?: {
     /** Client session whose default view to subscribe to; defaults to the nearest {@link ClientSessionProvider}. */
-    session?: ClientSession<TEvent, TProjection, TMessage> | null;
+    session?: ClientSession<TInput, TOutput, TProjection, TMessage> | null;
     /** A specific {@link View} to subscribe to directly. Takes priority over `session`. */
-    view?: View<TEvent, TProjection, TMessage> | null;
+    view?: View<TInput, TOutput, TProjection, TMessage> | null;
     /** When provided, auto-loads the first page on mount. */
     limit?: number;
     /** When `true`, skip all subscriptions and return an empty handle. */
     skip?: boolean;
-  }) => ViewHandle<TEvent, TProjection, TMessage>;
+  }) => ViewHandle<TInput, TOutput, TProjection, TMessage>;
   /**
    * Navigate conversation branches in the session tree.
    * Pass `session` to override; defaults to the nearest {@link ClientSessionProvider}.
    */
   useTree: (props?: {
     /** Override session; defaults to the nearest {@link ClientSessionProvider}. */
-    session?: ClientSession<TEvent, TProjection, TMessage>;
+    session?: ClientSession<TInput, TOutput, TProjection, TMessage>;
   }) => TreeHandle<TProjection>;
   /**
    * Subscribe to raw Ably messages on the session channel.
@@ -94,7 +95,7 @@ export interface SessionHooks<TEvent, TProjection, TMessage> {
    */
   useAblyMessages: (props?: {
     /** Override session; defaults to the nearest {@link ClientSessionProvider}. */
-    session?: ClientSession<TEvent, TProjection, TMessage>;
+    session?: ClientSession<TInput, TOutput, TProjection, TMessage>;
     /** When `true`, skip all subscriptions and return an empty array. */
     skip?: boolean;
   }) => Ably.InboundMessage[];
@@ -105,12 +106,12 @@ export interface SessionHooks<TEvent, TProjection, TMessage> {
    */
   useCreateView: (props?: {
     /** Override session; defaults to the nearest {@link ClientSessionProvider}. */
-    session?: ClientSession<TEvent, TProjection, TMessage> | null;
+    session?: ClientSession<TInput, TOutput, TProjection, TMessage> | null;
     /** When provided, auto-loads the first page on mount. */
     limit?: number;
     /** When `true`, skip view creation and return an empty handle. */
     skip?: boolean;
-  }) => ViewHandle<TEvent, TProjection, TMessage>;
+  }) => ViewHandle<TInput, TOutput, TProjection, TMessage>;
 }
 
 /**
@@ -121,14 +122,19 @@ export interface SessionHooks<TEvent, TProjection, TMessage> {
  * with the types resolved.
  * @returns A {@link SessionHooks} bundle.
  */
-export const createSessionHooks = <TEvent, TProjection, TMessage>(): SessionHooks<TEvent, TProjection, TMessage> => ({
-  // CAST: ClientSessionProvider is generic; factory narrows it to TEvent/TMessage.
+export const createSessionHooks = <
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+>(): SessionHooks<TInput, TOutput, TProjection, TMessage> => ({
+  // CAST: ClientSessionProvider is generic; factory narrows it to the codec's TInput/TOutput/TMessage.
   ClientSessionProvider: _ClientSessionProvider as ComponentType<
-    ClientSessionProviderProps<TEvent, TProjection, TMessage>
+    ClientSessionProviderProps<TInput, TOutput, TProjection, TMessage>
   >,
-  useClientSession: (props) => _useClientSession<TEvent, TProjection, TMessage>(props ?? {}),
-  useView: (props) => _useView<TEvent, TProjection, TMessage>(props ?? {}),
-  useTree: (props) => _useTree<TEvent, TProjection, TMessage>(props ?? {}),
-  useAblyMessages: (props) => _useAblyMessages<TEvent, TProjection, TMessage>(props ?? {}),
-  useCreateView: (props) => _useCreateView<TEvent, TProjection, TMessage>(props ?? {}),
+  useClientSession: (props) => _useClientSession<TInput, TOutput, TProjection, TMessage>(props ?? {}),
+  useView: (props) => _useView<TInput, TOutput, TProjection, TMessage>(props ?? {}),
+  useTree: (props) => _useTree<TInput, TOutput, TProjection, TMessage>(props ?? {}),
+  useAblyMessages: (props) => _useAblyMessages<TInput, TOutput, TProjection, TMessage>(props ?? {}),
+  useCreateView: (props) => _useCreateView<TInput, TOutput, TProjection, TMessage>(props ?? {}),
 });

@@ -10,6 +10,7 @@ import * as Ably from 'ably';
 
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
+import type { CodecOutputEvent } from '../codec/types.js';
 import type { RunEntry } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -17,9 +18,9 @@ import type { RunEntry } from './types.js';
 // ---------------------------------------------------------------------------
 
 /** Routes decoded events to the correct run's ReadableStream. */
-export interface StreamRouter<TEvent> {
+export interface StreamRouter<TOutput extends CodecOutputEvent> {
   /** Register a new stream for a (runId, invocationId). Returns the ReadableStream the consumer reads from. */
-  createStream(runId: string, invocationId: string): ReadableStream<TEvent>;
+  createStream(runId: string, invocationId: string): ReadableStream<TOutput>;
   /**
    * Rebind an existing run's stream to a new invocation-id. Used when a
    * suspended run resumes under the same runId with a fresh invocation —
@@ -28,7 +29,7 @@ export interface StreamRouter<TEvent> {
    * success, or `undefined` (and does nothing) if no stream is registered
    * for the runId.
    */
-  rebindStream(runId: string, newInvocationId: string): ReadableStream<TEvent> | undefined;
+  rebindStream(runId: string, newInvocationId: string): ReadableStream<TOutput> | undefined;
   /** Close the stream for a runId. Returns true if a stream existed. */
   closeStream(runId: string): boolean;
   /** Error the stream for a runId. The consumer's reader will reject with the given error. Returns true if a stream existed. */
@@ -38,7 +39,7 @@ export interface StreamRouter<TEvent> {
    * Drops the event if no stream is registered for the runId, or if the
    * registered stream is bound to a different invocationId.
    */
-  route(runId: string, invocationId: string | undefined, event: TEvent): boolean;
+  route(runId: string, invocationId: string | undefined, event: TOutput): boolean;
   /** Whether a specific runId has an active stream. */
   has(runId: string): boolean;
   /** The invocation-id currently bound to the run's stream, if any. */
@@ -50,23 +51,23 @@ export interface StreamRouter<TEvent> {
 // ---------------------------------------------------------------------------
 
 // Spec: AIT-CT14
-class DefaultStreamRouter<TEvent> implements StreamRouter<TEvent> {
-  private readonly _runs = new Map<string, RunEntry<TEvent>>();
-  private readonly _isTerminal: (event: TEvent) => boolean;
+class DefaultStreamRouter<TOutput extends CodecOutputEvent> implements StreamRouter<TOutput> {
+  private readonly _runs = new Map<string, RunEntry<TOutput>>();
+  private readonly _isTerminal: (event: TOutput) => boolean;
   private readonly _logger: Logger;
 
-  constructor(isTerminal: (event: TEvent) => boolean, logger: Logger) {
+  constructor(isTerminal: (event: TOutput) => boolean, logger: Logger) {
     this._isTerminal = isTerminal;
     this._logger = logger;
   }
 
-  createStream(runId: string, invocationId: string): ReadableStream<TEvent> {
+  createStream(runId: string, invocationId: string): ReadableStream<TOutput> {
     this._logger.trace('StreamRouter.createStream();', { runId, invocationId });
 
     // Build stream+controller together. ReadableStream's start() runs synchronously
     // per spec, so the controller is captured before the constructor returns.
-    const entry: { controller?: ReadableStreamDefaultController<TEvent> } = {};
-    const stream = new ReadableStream<TEvent>({
+    const entry: { controller?: ReadableStreamDefaultController<TOutput> } = {};
+    const stream = new ReadableStream<TOutput>({
       start(controller) {
         entry.controller = controller;
       },
@@ -82,7 +83,7 @@ class DefaultStreamRouter<TEvent> implements StreamRouter<TEvent> {
     return stream;
   }
 
-  rebindStream(runId: string, newInvocationId: string): ReadableStream<TEvent> | undefined {
+  rebindStream(runId: string, newInvocationId: string): ReadableStream<TOutput> | undefined {
     const run = this._runs.get(runId);
     if (!run) return undefined;
     this._logger.debug('StreamRouter.rebindStream();', {
@@ -125,7 +126,7 @@ class DefaultStreamRouter<TEvent> implements StreamRouter<TEvent> {
   }
 
   // Spec: AIT-CT14a
-  route(runId: string, invocationId: string | undefined, event: TEvent): boolean {
+  route(runId: string, invocationId: string | undefined, event: TOutput): boolean {
     const run = this._runs.get(runId);
     if (!run) return false;
 
@@ -174,7 +175,7 @@ class DefaultStreamRouter<TEvent> implements StreamRouter<TEvent> {
  * @param logger - Logger for diagnostic output.
  * @returns A new {@link StreamRouter} instance.
  */
-export const createStreamRouter = <TEvent>(
-  isTerminal: (event: TEvent) => boolean,
+export const createStreamRouter = <TOutput extends CodecOutputEvent>(
+  isTerminal: (event: TOutput) => boolean,
   logger: Logger,
-): StreamRouter<TEvent> => new DefaultStreamRouter(isTerminal, logger);
+): StreamRouter<TOutput> => new DefaultStreamRouter(isTerminal, logger);

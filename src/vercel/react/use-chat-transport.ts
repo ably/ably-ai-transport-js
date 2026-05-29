@@ -18,21 +18,21 @@ import { useContext } from 'react';
 
 import type { ClientSession, Tree, View } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
-import type { VercelEvent, VercelProjection } from '../codec/index.js';
+import type { VercelInput, VercelOutput, VercelProjection } from '../codec/index.js';
 import type { ChatTransport } from '../transport/index.js';
 import { ChatTransportContext } from './contexts/chat-transport-context.js';
 
-const SKIPPED_CLIENT_SESSION: ClientSession<VercelEvent, VercelProjection, AI.UIMessage> = {
+const SKIPPED_CLIENT_SESSION: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> = {
   get tree(): Tree<VercelProjection> {
     throw new Ably.ErrorInfo('unable to access tree; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
-  get view(): View<VercelEvent, VercelProjection, AI.UIMessage> {
+  get view(): View<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> {
     throw new Ably.ErrorInfo('unable to access view; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   connect: () => {
     throw new Ably.ErrorInfo('unable to connect; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
-  createView: (): View<VercelEvent, VercelProjection, AI.UIMessage> => {
+  createView: (): View<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> => {
     throw new Ably.ErrorInfo('unable to create view; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   cancel: () => {
@@ -87,7 +87,7 @@ export interface ChatTransportHandle {
    * A throwing stub when `skip` is `true`, when no matching {@link ClientSessionProvider}
    * was found in the tree, or when session construction failed. Check `sessionError` before use.
    */
-  session: ClientSession<VercelEvent, VercelProjection, AI.UIMessage>;
+  session: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
   /**
    * The chat transport adapter for use with Vercel's `useChat` hook.

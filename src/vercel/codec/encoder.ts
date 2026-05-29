@@ -7,9 +7,10 @@
  * `closeStream` / `publishDiscrete` / `publishDiscreteBatch`. Stream-tracker
  * state lives inside the encoder core; callers don't see it.
  *
- * Every codec event published from a UIMessageChunk rides the single
- * `ai-output` wire name; the chunk's own `type` field is carried in the
- * `x-domain-type` domain header so the decoder can dispatch.
+ * Every codec event published by the agent rides the single `ai-output`
+ * wire name; every codec event published by the client rides the single
+ * `ai-input` wire name. The codec event's own `type` field is carried in
+ * the `x-domain-type` domain header so the decoder can dispatch.
  *
  * Domain-specific headers use the `x-domain-` prefix to distinguish them
  * from transport-level `x-ably-` headers.
@@ -19,7 +20,7 @@ import * as Ably from 'ably';
 import type * as AI from 'ai';
 import { isDataUIPart } from 'ai';
 
-import { EVENT_AI_OUTPUT, HEADER_ROLE, HEADER_STATUS } from '../../constants.js';
+import { EVENT_AI_INPUT, EVENT_AI_OUTPUT, HEADER_ROLE, HEADER_STATUS } from '../../constants.js';
 import type { EncoderCore, EncoderCoreOptions } from '../../core/codec/encoder.js';
 import { createEncoderCore } from '../../core/codec/encoder.js';
 import type { ChannelWriter, Encoder, MessagePayload, WriteOptions } from '../../core/codec/types.js';
@@ -331,33 +332,38 @@ class DefaultUIMessageEncoder implements Encoder<VercelEvent> {
   }
 
   /**
-   * Publish a client-side tool-approval response as a discrete
-   * `tool-approval-response` Ably message. The publish carries its own
-   * `x-ably-codec-message-id` (from `perWrite.messageId`) — the reducer matches the
-   * response to the original assistant by `toolCallId`, not by codec-message-id.
+   * Publish a client-side tool-approval response as a discrete `ai-input`
+   * Ably message carrying `x-domain-type: 'tool-approval-response'`. The
+   * publish carries its own `x-ably-codec-message-id` (from `perWrite.messageId`)
+   * — the reducer matches the response to the original assistant by
+   * `toolCallId`, not by codec-message-id.
    * @param event - The approval-response TEvent (toolCallId, approved, optional reason).
    * @param perWrite - Optional per-write overrides (clientId, extras, messageId).
    */
   private async _publishToolApprovalResponse(event: ToolApprovalResponseEvent, perWrite?: WriteOptions): Promise<void> {
     const h = headerWriter()
+      .str('type', 'tool-approval-response')
       .str('toolCallId', event.toolCallId)
       .bool('approved', event.approved)
       .str('reason', event.reason)
       .build();
-    await this._core.publishDiscrete({ name: 'tool-approval-response', data: '', headers: h }, perWrite);
+    await this._core.publishDiscrete({ name: EVENT_AI_INPUT, data: '', headers: h }, perWrite);
   }
 
   /**
-   * Publish a regenerate event as a discrete `ait-regenerate` Ably message.
-   * The wire carries no domain payload — `parent`/`forkOf` are stamped on the
-   * transport headers by the client-session (it builds them via
-   * `buildTransportHeaders` from the event's `parentCodecMessageId`/`forkOfCodecMessageId`
-   * which `classifyEvent` surfaces on the `regenerate` classification).
+   * Publish a regenerate event as a discrete `ai-input` Ably message
+   * carrying `x-domain-type: 'ait-regenerate'`. The wire carries no
+   * domain payload — `parent`/`forkOf` are stamped on the transport
+   * headers by the client-session (it builds them via
+   * `buildTransportHeaders` from the event's
+   * `parentCodecMessageId`/`forkOfCodecMessageId` which `classifyEvent`
+   * surfaces on the `regenerate` classification).
    * @param _event - The regenerate TEvent (unused — metadata is on transport headers).
    * @param perWrite - Per-write overrides carrying the transport headers built by client-session.
    */
   private async _publishRegenerate(_event: RegenerateEvent, perWrite?: WriteOptions): Promise<void> {
-    await this._core.publishDiscrete({ name: 'ait-regenerate', data: '', headers: {} }, perWrite);
+    const h = headerWriter().str('type', 'ait-regenerate').build();
+    await this._core.publishDiscrete({ name: EVENT_AI_INPUT, data: '', headers: h }, perWrite);
   }
 }
 
@@ -417,23 +423,31 @@ const encodeMessagePayloads = (message: AI.UIMessage): MessagePayload[] => {
   for (const part of message.parts) {
     switch (part.type) {
       case 'text': {
-        payloads.push({ name: 'text', data: part.text, headers: headerWriter().str('messageId', messageId).build() });
+        payloads.push({
+          name: EVENT_AI_INPUT,
+          data: part.text,
+          headers: headerWriter().str('type', 'text').str('messageId', messageId).build(),
+        });
         break;
       }
       case 'file': {
         payloads.push({
-          name: 'file',
+          name: EVENT_AI_INPUT,
           data: part.url,
-          headers: headerWriter().str('messageId', messageId).str('mediaType', part.mediaType).build(),
+          headers: headerWriter()
+            .str('type', 'file')
+            .str('messageId', messageId)
+            .str('mediaType', part.mediaType)
+            .build(),
         });
         break;
       }
       default: {
         if (isDataUIPart(part)) {
           payloads.push({
-            name: part.type,
+            name: EVENT_AI_INPUT,
             data: part.data,
-            headers: headerWriter().str('messageId', messageId).str('id', part.id).build(),
+            headers: headerWriter().str('type', part.type).str('messageId', messageId).str('id', part.id).build(),
           });
         }
         break;
@@ -442,7 +456,11 @@ const encodeMessagePayloads = (message: AI.UIMessage): MessagePayload[] => {
   }
 
   if (payloads.length === 0) {
-    payloads.push({ name: 'text', data: '', headers: headerWriter().str('messageId', messageId).build() });
+    payloads.push({
+      name: EVENT_AI_INPUT,
+      data: '',
+      headers: headerWriter().str('type', 'text').str('messageId', messageId).build(),
+    });
   }
 
   return payloads;

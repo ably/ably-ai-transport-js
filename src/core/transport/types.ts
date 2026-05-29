@@ -9,7 +9,7 @@
 import type * as Ably from 'ably';
 
 import type { Logger } from '../../logger.js';
-import type { Codec, WriteOptions } from '../codec/types.js';
+import type { Codec, CodecInputEvent, CodecOutputEvent, WriteOptions } from '../codec/types.js';
 import type { Invocation } from './invocation.js';
 
 // ---------------------------------------------------------------------------
@@ -47,7 +47,12 @@ export interface CancelRequest {
 // ---------------------------------------------------------------------------
 
 /** Options for creating an agent session. */
-export interface AgentSessionOptions<TEvent, TProjection, TMessage> {
+export interface AgentSessionOptions<
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+> {
   /**
    * The Ably Realtime client. The caller owns its lifecycle —
    * `session.close()` does not close the client.
@@ -59,7 +64,7 @@ export interface AgentSessionOptions<TEvent, TProjection, TMessage> {
    */
   channelName: string;
   /** The codec to use for encoding events and messages. */
-  codec: Codec<TEvent, TProjection, TMessage>;
+  codec: Codec<TInput, TOutput, TProjection, TMessage>;
   /** Logger instance for diagnostic output. */
   logger?: Logger;
   /**
@@ -137,44 +142,44 @@ export interface AddMessagesResult {
  * Each node specifies the target message and the events to apply to it.
  * Used for cross-run updates such as tool result delivery.
  */
-export interface EventsNode<TEvent> {
+export interface EventsNode<TOutput extends CodecOutputEvent> {
   /** Discriminator — identifies this as an events node. */
   kind: 'event';
   /** The `x-ably-codec-message-id` of the existing message to update. */
   codecMessageId: string;
-  /** Events to apply to the target message. */
-  events: TEvent[];
+  /** Outputs to apply to the target message. */
+  events: TOutput[];
 }
 
 /** @deprecated Use {@link EventsNode} instead. */
-export type EventNode<TEvent> = EventsNode<TEvent>;
+export type EventNode<TOutput extends CodecOutputEvent> = EventsNode<TOutput>;
 
 /**
  * Options for `Run.pipe` — per-operation overrides for the assistant message.
- * @template TEvent - The codec event type carried by the stream; used by the `resolveWriteOptions` hook.
+ * @template TOutput - The codec output type carried by the stream; used by the `resolveWriteOptions` hook.
  */
-export interface PipeOptions<TEvent> {
+export interface PipeOptions<TOutput extends CodecOutputEvent> {
   /** The codec-message-id of the immediately preceding message in this branch. */
   parent?: string;
   /** The codec-message-id of the message this response replaces (for regeneration). */
   forkOf?: string;
   /**
-   * Optional per-event hook invoked before each event is encoded. The
+   * Optional per-output hook invoked before each output is encoded. The
    * returned {@link WriteOptions} (if any) override the stream's default
    * headers and `codecMessageId` for that one encode call only; return `undefined`
    * to use the stream defaults.
    *
-   * Used to carry a subset of events within the stream to a different
+   * Used to carry a subset of outputs within the stream to a different
    * message (e.g. `tool-output-available` chunks that belong on a prior
    * assistant message, stamped with `x-ably-amend`). Must not be used
-   * for events that participate in the encoder's stream-append pipeline
+   * for outputs that participate in the encoder's stream-append pipeline
    * — streaming state (stream tracker, append ordering) is anchored to
-   * the stream's default identity and is not affected by per-event
+   * the stream's default identity and is not affected by per-output
    * overrides.
-   * @param event - The event about to be encoded.
-   * @returns Per-write overrides for this event, or undefined.
+   * @param output - The output about to be encoded.
+   * @returns Per-write overrides for this output, or undefined.
    */
-  resolveWriteOptions?: (event: TEvent) => WriteOptions | undefined;
+  resolveWriteOptions?: (output: TOutput) => WriteOptions | undefined;
 }
 
 /** The result of streaming a response through the encoder. */
@@ -192,7 +197,7 @@ export interface StreamResult {
 }
 
 /** Per-run runtime hooks, signal, and overrides supplied at `createRun()` time. */
-export interface RunRuntime<TEvent> {
+export interface RunRuntime<TOutput extends CodecOutputEvent> {
   /**
    * An external AbortSignal (typically the HTTP request's `req.signal`) that,
    * when fired, cancels this run. This allows platform-level cancellation —
@@ -209,9 +214,9 @@ export interface RunRuntime<TEvent> {
 
   /**
    * Called when the run's stream is cancelled (by client cancel or server).
-   * Receives a write function to publish final events before the cancellation finalises.
+   * Receives a write function to publish final outputs before the cancellation finalises.
    */
-  onCancelled?: (write: (event: TEvent) => Promise<void>) => void | Promise<void>;
+  onCancelled?: (write: (output: TOutput) => Promise<void>) => void | Promise<void>;
 
   /**
    * Called when a cancel message arrives matching this run.
@@ -260,8 +265,16 @@ export interface RunView<TMessage> {
   readonly messages: MessageNode<TMessage>[];
 }
 
-/** A server-side run with explicit lifecycle methods. */
-export interface Run<TEvent, TProjection, TMessage> {
+/**
+ * A server-side run with explicit lifecycle methods. Generic over the
+ * full codec signature so callers can write `Run<TInput, TOutput,
+ * TProjection, TMessage>` symmetrically with {@link AgentSession} and
+ * {@link ClientSession}; `TInput` is unused by Run's surface today but
+ * reserved so future input-driven methods can land without a breaking
+ * generic-arity change.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- TInput reserved for forward compatibility; see JSDoc.
+export interface Run<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage> {
   /** The run's unique identifier. */
   readonly runId: string;
 
@@ -303,7 +316,7 @@ export interface Run<TEvent, TProjection, TMessage> {
    * Returns when the stream completes, is cancelled, or errors.
    * Does NOT call end() — the caller must call end() after pipe returns.
    */
-  pipe(stream: ReadableStream<TEvent>, options?: PipeOptions<TEvent>): Promise<StreamResult>;
+  pipe(stream: ReadableStream<TOutput>, options?: PipeOptions<TOutput>): Promise<StreamResult>;
 
   /**
    * Publish events targeting existing messages in the tree. Each node
@@ -315,7 +328,7 @@ export interface Run<TEvent, TProjection, TMessage> {
    * Used for cross-run updates such as tool result delivery after
    * approval or client-side tool execution.
    */
-  addEvents(nodes: EventsNode<TEvent>[]): Promise<void>;
+  addEvents(nodes: EventsNode<TOutput>[]): Promise<void>;
 
   /**
    * Fetch every channel message bound to this run and fold them through
@@ -342,7 +355,7 @@ export interface Run<TEvent, TProjection, TMessage> {
 // ---------------------------------------------------------------------------
 
 /** Server-side session that manages run lifecycles over an Ably channel. */
-export interface AgentSession<TEvent, TProjection, TMessage> {
+export interface AgentSession<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage> {
   /**
    * Subscribe to the cancel channel and (implicitly) attach. Idempotent —
    * subsequent calls return the same promise. All run methods (`start`,
@@ -360,7 +373,10 @@ export interface AgentSession<TEvent, TProjection, TMessage> {
    * @param runtime - Optional runtime hooks and external AbortSignal
    *   (e.g. the HTTP request's `req.signal`).
    */
-  createRun(invocation: Invocation<TMessage>, runtime?: RunRuntime<TEvent>): Run<TEvent, TProjection, TMessage>;
+  createRun(
+    invocation: Invocation<TMessage>,
+    runtime?: RunRuntime<TOutput>,
+  ): Run<TInput, TOutput, TProjection, TMessage>;
 
   /** Unsubscribe from cancel messages, cancel all active runs, and clean up. */
   close(): void;
@@ -371,7 +387,12 @@ export interface AgentSession<TEvent, TProjection, TMessage> {
 // ---------------------------------------------------------------------------
 
 /** Options for creating a client session. */
-export interface ClientSessionOptions<TEvent, TProjection, TMessage> {
+export interface ClientSessionOptions<
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+> {
   /**
    * The Ably Realtime client. The caller owns its lifecycle —
    * `session.close()` does not close the client.
@@ -386,7 +407,7 @@ export interface ClientSessionOptions<TEvent, TProjection, TMessage> {
   channelName: string;
 
   /** The codec to use for encoding/decoding. */
-  codec: Codec<TEvent, TProjection, TMessage>;
+  codec: Codec<TInput, TOutput, TProjection, TMessage>;
 
   /** The client's identity. Sent to the server in the POST body. */
   clientId?: string;
@@ -506,9 +527,9 @@ export type RunLifecycleEvent =
 // ---------------------------------------------------------------------------
 
 /** A handle to an active client-side run, returned by `sendMessage()`, `sendEvent()`, `regenerate()`, and `edit()`. */
-export interface ActiveRun<TEvent> {
-  /** The decoded event stream for this run. May error if the delivery guarantee is broken (e.g. POST failure, channel continuity loss). */
-  stream: ReadableStream<TEvent>;
+export interface ActiveRun<TOutput extends CodecOutputEvent> {
+  /** The decoded output stream for this run. May error if the delivery guarantee is broken (e.g. POST failure, channel continuity loss). */
+  stream: ReadableStream<TOutput>;
   /** The run's unique identifier. */
   runId: string;
   /**
@@ -819,7 +840,7 @@ export interface MessageMetadata {
  * `loadOlder()`. Events are scoped to the visible window — subscribers
  * are only notified when the visible output changes.
  */
-export interface View<TEvent, TProjection, TMessage> {
+export interface View<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage> {
   /**
    * The visible domain messages along the selected branch. Computed by
    * walking the visible {@link RunNode} chain (newest to root) and
@@ -927,56 +948,44 @@ export interface View<TEvent, TProjection, TMessage> {
 
   /**
    * Send one or more user messages and start a new run. Each TMessage is
-   * wrapped into a `UserMessageEvent` TEvent via `Codec.userMessageEvent`
+   * wrapped into a `UserMessage` TInput via `Codec.createUserMessage`
    * before being published, so callers can pass TMessage values directly
-   * without manually constructing the event shape.
+   * without manually constructing the input shape.
    *
    * The parent is auto-computed from this view's selected branch unless
    * overridden. The HTTP POST is fire-and-forget — the returned stream is
    * available immediately. If the POST fails, the error is surfaced via
    * the session's `on("error")` and the stream is errored.
    */
-  sendMessage(messages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveRun<TEvent>>;
+  sendMessage(messages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveRun<TOutput>>;
 
   /**
-   * Send one or more TEvents on the channel and fire a POST.
+   * Send one or more TInputs on the channel and fire a POST. Each TInput
+   * carries its own routing metadata (`parent` / `target` / `codecMessageId`)
+   * via the {@link CodecInputEvent} base; the SDK reads those fields
+   * directly without runtime classification.
    *
-   * Two input shapes are accepted:
-   *
-   * - `TEvent` / `TEvent[]` — the SDK mints a fresh `x-ably-codec-message-id` per
-   *   event for the wire publish.
-   * - `Array<{ event, codecMessageId? }>` — per-event publish hint.
-   *   `codecMessageId`, when set, is used as the wire `HEADER_CODEC_MESSAGE_ID`
-   *   for that event instead of a freshly-minted UUID. Used by the
-   *   chat-transport adapter to publish continuation tool resolutions
-   *   onto an existing assistant's tree key: the wire stamps the
-   *   assistant's `x-ably-codec-message-id`, the reducer's direct fold path
-   *   runs, and the chunk lands on the assistant's projection entry
-   *   without a cross-message redirect.
-   *
-   * Convention: a send containing at least one `UserMessageEvent` is a
+   * Convention: a send containing at least one `UserMessage` is a
    * fresh send (mints a new `runId`). A send containing only
-   * tool-resolution events is a continuation — pair with
+   * tool-resolution inputs is a continuation — pair with
    * `options.runId` to extend a suspended run.
    */
-  sendEvent(
-    events: TEvent | TEvent[] | { event: TEvent; codecMessageId?: string }[],
-    options?: SendOptions,
-  ): Promise<ActiveRun<TEvent>>;
+  sendEvent(events: TInput | TInput[], options?: SendOptions): Promise<ActiveRun<TOutput>>;
 
   /**
    * Regenerate an assistant message. Creates a new run that forks the
-   * target message with no new user events. Automatically computes
-   * `forkOf`, `parent`, and truncated `history` from this view's branch.
+   * target message with no new user inputs. Automatically computes
+   * `target` (the assistant being regenerated), `parent`, and truncated
+   * `history` from this view's branch.
    */
-  regenerate(messageId: string, options?: SendOptions): Promise<ActiveRun<TEvent>>;
+  regenerate(messageId: string, options?: SendOptions): Promise<ActiveRun<TOutput>>;
 
   /**
    * Edit a user message. Creates a new run that forks the target message
    * with replacement content. Automatically computes `forkOf`, `parent`,
    * and `history` from this view's branch.
    */
-  edit(messageId: string, newEvents: TEvent | TEvent[], options?: SendOptions): Promise<ActiveRun<TEvent>>;
+  edit(messageId: string, newEvents: TInput | TInput[], options?: SendOptions): Promise<ActiveRun<TOutput>>;
 
   // --- Observation ---
 
@@ -998,11 +1007,11 @@ export interface View<TEvent, TProjection, TMessage> {
 // ---------------------------------------------------------------------------
 
 /** Entry in the StreamRouter's run map. Not part of the public API. */
-export interface RunEntry<TEvent> {
+export interface RunEntry<TOutput extends CodecOutputEvent> {
   /** The ReadableStream consumed by the caller — retained so `rebindStream` can re-expose it across a suspend/resume cycle. */
-  stream: ReadableStream<TEvent>;
+  stream: ReadableStream<TOutput>;
   /** The ReadableStream controller for this run. */
-  controller: ReadableStreamDefaultController<TEvent>;
+  controller: ReadableStreamDefaultController<TOutput>;
   /** The run's unique identifier. */
   runId: string;
   /** The invocation-id this stream is bound to. Events from a different invocation under the same runId are dropped. */
@@ -1014,12 +1023,17 @@ export interface RunEntry<TEvent> {
 // ---------------------------------------------------------------------------
 
 /** Client-side session that manages conversation state over an Ably channel. */
-export interface ClientSession<TEvent, TProjection, TMessage> {
+export interface ClientSession<
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+> {
   /** The complete conversation tree — all known Run nodes, events for any change. */
   readonly tree: Tree<TProjection>;
 
   /** The default paginated, branch-aware view for rendering — events scoped to visible messages. */
-  readonly view: View<TEvent, TProjection, TMessage>;
+  readonly view: View<TInput, TOutput, TProjection, TMessage>;
 
   /**
    * Subscribe to the channel and (implicitly) attach. Idempotent —
@@ -1035,7 +1049,7 @@ export interface ClientSession<TEvent, TProjection, TMessage> {
    * The caller is responsible for calling `close()` on the returned view
    * when it is no longer needed, or it will be closed when the session closes.
    */
-  createView(): View<TEvent, TProjection, TMessage>;
+  createView(): View<TInput, TOutput, TProjection, TMessage>;
 
   /** Cancel the specified run. Publishes a cancel message and closes the local stream. */
   cancel(runId: string): Promise<void>;

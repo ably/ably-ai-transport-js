@@ -30,7 +30,7 @@ import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import { getHeaders } from '../../utils.js';
-import type { Codec } from '../codec/types.js';
+import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
 import { decodeHistory } from './decode-history.js';
 import type { TreeInternal } from './tree.js';
 import type {
@@ -61,40 +61,39 @@ interface ViewEventsMap {
 /**
  * Internal delegate function provided by the session for executing sends.
  * The View pre-computes the visible branch's flat message list and the
- * codec-message-id of its tail (for auto-parent routing) before calling the delegate,
- * so the delegate has no back-reference to the View.
+ * codec-message-id of its tail (for auto-parent routing) before calling
+ * the delegate, so the delegate has no back-reference to the View.
  *
- * `input` is the normalised richer shape — each entry pairs a TEvent
- * with an optional `codecMessageId` override. The View boundary
- * (`View.sendEvent`) normalises raw `TEvent` / `TEvent[]` inputs into
- * this shape so the delegate always sees the same structure.
+ * Each TInput carries its own routing metadata (`parent` / `target` /
+ * `codecMessageId`) via the {@link CodecInputEvent} base; the delegate
+ * reads those fields directly without runtime classification.
  *
- * `parentCodecMessageId` is the codec-message-id of the last message in the visible branch
- * (extracted from the tail Run's projection per codec convention), or
- * `undefined` for an empty conversation. The session uses it as the
- * auto-parent for fresh user messages.
+ * `parentCodecMessageId` is the codec-message-id of the last message in
+ * the visible branch (extracted from the tail Run's projection per codec
+ * convention), or `undefined` for an empty conversation. The session
+ * uses it as the auto-parent for fresh user messages.
  */
-export type SendDelegate<TEvent, TMessage> = (
-  input: { event: TEvent; codecMessageId?: string }[],
+export type SendDelegate<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TMessage> = (
+  input: TInput[],
   options: SendOptions | undefined,
   history: TMessage[],
   parentCodecMessageId: string | undefined,
-) => Promise<ActiveRun<TEvent>>;
+) => Promise<ActiveRun<TOutput>>;
 
 // ---------------------------------------------------------------------------
 // Options
 // ---------------------------------------------------------------------------
 
 /** Options for creating a View. */
-export interface ViewOptions<TEvent, TProjection, TMessage> {
+export interface ViewOptions<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage> {
   /** The tree to project. */
-  tree: TreeInternal<TEvent, TProjection>;
+  tree: TreeInternal<TInput | TOutput, TProjection>;
   /** The Ably channel to load history from. */
   channel: Ably.RealtimeChannel;
   /** The codec for decoding history messages. */
-  codec: Codec<TEvent, TProjection, TMessage>;
+  codec: Codec<TInput, TOutput, TProjection, TMessage>;
   /** Delegate for executing sends through the session. */
-  sendDelegate: SendDelegate<TEvent, TMessage>;
+  sendDelegate: SendDelegate<TInput, TOutput, TMessage>;
   /** Logger for diagnostic output. */
   logger: Logger;
   /** Called when the view is closed, allowing the owner to clean up references. */
@@ -143,26 +142,13 @@ type RegenSelection =
 // ---------------------------------------------------------------------------
 
 /**
- * Normalise the three input shapes `View.sendEvent` accepts into the
- * single richer shape the SendDelegate consumes.
+ * Normalise the two input shapes `View.sendEvent` accepts (a single TInput
+ * or an array) into the array shape the SendDelegate consumes.
  * @param input - The raw input from `View.sendEvent`.
- * @returns The richer per-entry shape.
+ * @returns The normalised input array.
  */
-const _normaliseSendInput = <TEvent>(
-  input: TEvent | TEvent[] | { event: TEvent; codecMessageId?: string }[],
-): { event: TEvent; codecMessageId?: string }[] => {
-  if (!Array.isArray(input)) {
-    return [{ event: input }];
-  }
-  if (input.length === 0) return [];
-  const first = input[0];
-  if (typeof first === 'object' && first !== null && 'event' in first) {
-    // CAST: discriminator above proves the array is the richer shape.
-    return input as { event: TEvent; codecMessageId?: string }[];
-  }
-  // CAST: discriminator above proves the array is TEvent[].
-  return (input as TEvent[]).map((event) => ({ event }));
-};
+const _normaliseSendInput = <TInput extends CodecInputEvent>(input: TInput | TInput[]): TInput[] =>
+  Array.isArray(input) ? input : [input];
 
 // ---------------------------------------------------------------------------
 // Fetch tuning
@@ -201,11 +187,16 @@ const _readMessageId = (message: unknown): string | undefined =>
 // Implementation
 // ---------------------------------------------------------------------------
 
-export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, TProjection, TMessage> {
-  private readonly _tree: TreeInternal<TEvent, TProjection>;
+export class DefaultView<
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+> implements View<TInput, TOutput, TProjection, TMessage> {
+  private readonly _tree: TreeInternal<TInput | TOutput, TProjection>;
   private readonly _channel: Ably.RealtimeChannel;
-  private readonly _codec: Codec<TEvent, TProjection, TMessage>;
-  private readonly _sendDelegate: SendDelegate<TEvent, TMessage>;
+  private readonly _codec: Codec<TInput, TOutput, TProjection, TMessage>;
+  private readonly _sendDelegate: SendDelegate<TInput, TOutput, TMessage>;
   private readonly _logger: Logger;
   private readonly _emitter: EventEmitter<ViewEventsMap>;
   private readonly _onClose?: () => void;
@@ -271,7 +262,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   private _processingHistory = false;
   private _closed = false;
 
-  constructor(options: ViewOptions<TEvent, TProjection, TMessage>) {
+  constructor(options: ViewOptions<TInput, TOutput, TProjection, TMessage>) {
     this._tree = options.tree;
     this._channel = options.channel;
     this._codec = options.codec;
@@ -831,33 +822,36 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   // Write operations
   // -------------------------------------------------------------------------
 
-  async sendMessage(messages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveRun<TEvent>> {
+  async sendMessage(messages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveRun<TOutput>> {
     this._logger.trace('DefaultView.sendMessage();');
     const list = Array.isArray(messages) ? messages : [messages];
     // Caller-supplied TMessage.id flows through as the wire HEADER_CODEC_MESSAGE_ID so
     // the codec convention `TMessage.id == wire codec-message-id` holds end-to-end
     // (decoded UIMessage.id matches the original, agent-side projection
     // doesn't get rebound to a fresh UUID).
-    const items = list.map((m) => {
+    const items: TInput[] = list.map((m) => {
       const codecMessageId = _readMessageId(m);
+      const base = this._codec.createUserMessage(m);
+      // CAST: UserMessage<TMessage> is the well-known input variant
+      // produced by `codec.createUserMessage`; TInput is the codec's full
+      // input union, of which UserMessage<TMessage> is one member.
+      // The cast through `unknown` is needed because TS can't see the
+      // membership through the generic boundary.
       return codecMessageId !== undefined && codecMessageId !== ''
-        ? { event: this._codec.userMessageEvent(m), codecMessageId }
-        : { event: this._codec.userMessageEvent(m) };
+        ? ({ ...base, codecMessageId } as unknown as TInput)
+        : (base as unknown as TInput);
     });
     return this.sendEvent(items, options);
   }
 
   // Spec: AIT-CT3, AIT-CT4
-  async sendEvent(
-    input: TEvent | TEvent[] | { event: TEvent; codecMessageId?: string }[],
-    options?: SendOptions,
-  ): Promise<ActiveRun<TEvent>> {
+  async sendEvent(input: TInput | TInput[], options?: SendOptions): Promise<ActiveRun<TOutput>> {
     this._logger.trace('DefaultView.sendEvent();');
     if (this._closed) {
       throw new Ably.ErrorInfo('unable to send; view is closed', ErrorCode.InvalidArgument, 400);
     }
 
-    const normalised = _normaliseSendInput<TEvent>(input);
+    const normalised = _normaliseSendInput<TInput>(input);
 
     // Pre-compute the visible branch's flat message list and the codec-message-id of
     // its tail. The delegate uses both: history for the HTTP POST body,
@@ -875,7 +869,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
    * @param result - The ActiveRun returned by the delegate.
    * @param options - The SendOptions passed by the caller.
    */
-  private _applyForkAutoSelect(result: ActiveRun<TEvent>, options: SendOptions | undefined): void {
+  private _applyForkAutoSelect(result: ActiveRun<TOutput>, options: SendOptions | undefined): void {
     // Spec: AIT-CT13e
     if (!options?.forkOf) return;
 
@@ -932,7 +926,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
    * @param result - The ActiveRun returned by the delegate (run-id is the new regenerator's).
    * @param anchorCodecMessageId - The codec-message-id of the assistant being regenerated.
    */
-  private _applyRegenerateAutoSelect(result: ActiveRun<TEvent>, anchorCodecMessageId: string): void {
+  private _applyRegenerateAutoSelect(result: ActiveRun<TOutput>, anchorCodecMessageId: string): void {
     this._regenSelections.set(anchorCodecMessageId, { kind: 'pending', runId: result.runId });
     this._logger.debug('DefaultView._applyRegenerateAutoSelect(); deferring regenerate selection', {
       anchorCodecMessageId,
@@ -954,7 +948,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   }
 
   // Spec: AIT-CT5, AIT-CT13d
-  async regenerate(messageId: string, options?: SendOptions): Promise<ActiveRun<TEvent>> {
+  async regenerate(messageId: string, options?: SendOptions): Promise<ActiveRun<TOutput>> {
     this._logger.trace('DefaultView.regenerate();', { messageId });
 
     if (this._closed) {
@@ -1015,19 +1009,27 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
       parent: parentCodecMessageId,
     };
 
-    // Mint a regenerate event via the codec; classified as
-    // `kind: 'regenerate'` with `regenerates: regenAnchorMsgId`. The
-    // session publishes wire-only with `x-ably-msg-regenerate` /
-    // `x-ably-parent` transport headers. The agent's prompt-lookup
-    // catches it; no tree-upsert / projection fold runs locally.
-    const regenerateEvent = this._codec.createRegenerateEvent(regenAnchorMsgId, parentCodecMessageId);
-    const result = await this._sendDelegate([{ event: regenerateEvent }], sendOptions, history, parentCodecMessageId);
+    // Mint a regenerate input via the codec. The codec's well-known
+    // `Regenerate` carries `target: regenAnchorMsgId` and `parent:
+    // parentCodecMessageId`; the session reads those fields off the input
+    // directly when building transport headers (`x-ably-fork-of` and
+    // `x-ably-parent`). The agent's prompt-lookup catches the wire signal;
+    // no tree-upsert / projection fold runs locally.
+    const createRegenerate = this._codec.createRegenerate(regenAnchorMsgId, parentCodecMessageId);
+    // CAST: Regenerate is a well-known variant of TInput, but TS can't
+    // verify membership through the generic boundary without help.
+    const result = await this._sendDelegate(
+      [createRegenerate as unknown as TInput],
+      sendOptions,
+      history,
+      parentCodecMessageId,
+    );
     this._applyRegenerateAutoSelect(result, regenAnchorMsgId);
     return result;
   }
 
   // Spec: AIT-CT6
-  async edit(messageId: string, newEvents: TEvent | TEvent[], options?: SendOptions): Promise<ActiveRun<TEvent>> {
+  async edit(messageId: string, newEvents: TInput | TInput[], options?: SendOptions): Promise<ActiveRun<TOutput>> {
     this._logger.trace('DefaultView.edit();', { messageId });
 
     if (this._closed) {
@@ -1281,8 +1283,9 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
           continue;
         }
 
-        const events = decoder.decode(rawMsg);
+        const { inputs, outputs } = decoder.decode(rawMsg);
         if (headers[HEADER_RUN_ID]) {
+          const events: (TInput | TOutput)[] = [...inputs, ...outputs];
           this._tree.applyMessage(events, headers, serial);
         }
       }
@@ -1550,6 +1553,6 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
  * @param options - The tree, channel, codec, and logger to use.
  * @returns A new {@link DefaultView} instance.
  */
-export const createView = <TEvent, TProjection, TMessage>(
-  options: ViewOptions<TEvent, TProjection, TMessage>,
-): DefaultView<TEvent, TProjection, TMessage> => new DefaultView(options);
+export const createView = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>(
+  options: ViewOptions<TInput, TOutput, TProjection, TMessage>,
+): DefaultView<TInput, TOutput, TProjection, TMessage> => new DefaultView(options);

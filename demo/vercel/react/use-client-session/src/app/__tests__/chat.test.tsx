@@ -3,7 +3,7 @@ import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { useEffect, useState, type ReactNode } from 'react';
 import type * as AI from 'ai';
 import type { ActiveRun, ClientSession, MessageNode, SendOptions } from '@ably/ai-transport';
-import type { VercelEvent, VercelProjection } from '@ably/ai-transport/vercel';
+import type { VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
 
 // jsdom doesn't implement Element.prototype.scrollIntoView; MessageList's
 // auto-scroll effect calls it whenever the node list grows.
@@ -19,15 +19,15 @@ Element.prototype.scrollIntoView = () => {};
 
 let setMockViewNodes: ((nodes: MessageNode<AI.UIMessage>[]) => void) | null = null;
 
-const emptyEventStream = (): ReadableStream<VercelEvent> =>
-  new ReadableStream<VercelEvent>({
+const emptyEventStream = (): ReadableStream<VercelOutput> =>
+  new ReadableStream<VercelOutput>({
     start: (controller) => {
       controller.close();
     },
   });
 
 const mockSendMessage = vi.fn(
-  (_messages: AI.UIMessage | AI.UIMessage[], _opts?: SendOptions): Promise<ActiveRun<VercelEvent>> =>
+  (_messages: AI.UIMessage | AI.UIMessage[], _opts?: SendOptions): Promise<ActiveRun<VercelOutput>> =>
     Promise.resolve({
       stream: emptyEventStream(),
       runId: 'run-1',
@@ -43,7 +43,7 @@ const mockSession = {
   cancel: vi.fn(async () => {}),
   close: vi.fn(async () => {}),
   on: vi.fn(() => () => {}),
-} as unknown as ClientSession<VercelEvent, VercelProjection, AI.UIMessage>;
+} as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
 vi.mock('../providers', () => ({
   SessionHooks: {

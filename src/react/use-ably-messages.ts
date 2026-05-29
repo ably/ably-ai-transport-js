@@ -12,15 +12,17 @@
 import type * as Ably from 'ably';
 import { useEffect, useRef, useState } from 'react';
 
+import type { CodecInputEvent, CodecOutputEvent } from '../core/codec/types.js';
 import type { BaseSessionOption } from './internal/use-resolved-session.js';
 import { useResolvedSession } from './internal/use-resolved-session.js';
 
 /** Options for {@link useAblyMessages}. */
-export interface UseAblyMessagesOptions<TEvent, TProjection, TMessage> extends BaseSessionOption<
-  TEvent,
+export interface UseAblyMessagesOptions<
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
   TProjection,
-  TMessage
-> {
+  TMessage,
+> extends BaseSessionOption<TInput, TOutput, TProjection, TMessage> {
   /** When `true`, skip all subscriptions and return an empty array. */
   skip?: boolean;
 }
@@ -33,10 +35,12 @@ export interface UseAblyMessagesOptions<TEvent, TProjection, TMessage> extends B
  * @param props.skip - When `true`, skip all subscriptions and return an empty array.
  * @returns The accumulated raw Ably messages in chronological order.
  */
-export const useAblyMessages = <TEvent, TProjection, TMessage>({
-  session,
-  skip,
-}: UseAblyMessagesOptions<TEvent, TProjection, TMessage> = {}): Ably.InboundMessage[] => {
+export const useAblyMessages = <
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+>({ session, skip }: UseAblyMessagesOptions<TInput, TOutput, TProjection, TMessage> = {}): Ably.InboundMessage[] => {
   const resolved = useResolvedSession({ session, skip });
 
   const [messages, setMessages] = useState<Ably.InboundMessage[]>([]);

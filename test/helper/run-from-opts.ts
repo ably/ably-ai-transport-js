@@ -7,10 +7,10 @@
 
 import type * as Ably from 'ably';
 
-import type { AgentSession, CancelRequest, Run } from '../../src/index.js';
+import type { AgentSession, CancelRequest, CodecInputEvent, CodecOutputEvent, Run } from '../../src/index.js';
 import { Invocation } from '../../src/index.js';
 
-interface RunOpts<TEvent, TMessage = unknown> {
+interface RunOpts<TOutput extends CodecOutputEvent, TMessage = unknown> {
   runId: string;
   invocationId?: string;
   /**
@@ -23,7 +23,7 @@ interface RunOpts<TEvent, TMessage = unknown> {
   history?: TMessage[];
   signal?: AbortSignal;
   onMessage?: (message: Ably.Message) => void;
-  onCancelled?: (write: (event: TEvent) => Promise<void>) => void | Promise<void>;
+  onCancelled?: (write: (event: TOutput) => Promise<void>) => void | Promise<void>;
   onCancel?: (request: CancelRequest) => Promise<boolean>;
   onError?: (error: Ably.ErrorInfo) => void;
 }
@@ -43,10 +43,15 @@ interface RunOpts<TEvent, TMessage = unknown> {
  * @param opts - Run identity (runId, invocationId, eventIds) plus runtime hooks.
  * @returns The created Run.
  */
-export const createRunFromOpts = <TEvent, TProjection, TMessage>(
-  session: AgentSession<TEvent, TProjection, TMessage>,
-  opts: RunOpts<TEvent, TMessage>,
-): Run<TEvent, TProjection, TMessage> => {
+export const createRunFromOpts = <
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+>(
+  session: AgentSession<TInput, TOutput, TProjection, TMessage>,
+  opts: RunOpts<TOutput, TMessage>,
+): Run<TInput, TOutput, TProjection, TMessage> => {
   const invocation = Invocation.fromJSON<TMessage>({
     runId: opts.runId,
     invocationId: opts.invocationId ?? `${opts.runId}-inv`,

@@ -15,11 +15,21 @@ import type * as Ably from 'ably';
 import type * as AI from 'ai';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { HEADER_CODEC_MESSAGE_ID, HEADER_RUN_ID } from '../../../src/constants.js';
-import { UIMessageCodec, type VercelEvent, type VercelProjection } from '../../../src/vercel/codec/index.js';
+import {
+  DOMAIN_HEADER_PREFIX as D,
+  EVENT_AI_INPUT,
+  EVENT_AI_OUTPUT,
+  HEADER_CODEC_MESSAGE_ID,
+  HEADER_RUN_ID,
+} from '../../../src/constants.js';
+import {
+  UIMessageCodec,
+  type VercelInput,
+  type VercelOutput,
+  type VercelProjection,
+} from '../../../src/vercel/codec/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
-import { eventsOf, eventTypesOf } from '../../integration/helpers.js';
 
 /**
  * Create an onMessage hook that stamps run and message ID headers
@@ -50,20 +60,31 @@ const metaOf = (msg: Ably.InboundMessage): { serial: string; messageId?: string 
 };
 
 /**
- * Fold a batch of decoder events into the projection, stamping each with
- * the right ReducerMeta carried from the source Ably message.
+ * Fold the decoded inputs + outputs into the projection, stamping each
+ * with the right ReducerMeta from the source Ably message.
  * @param state - Current projection to fold into.
- * @param events - Decoder events to fold.
+ * @param decoded - DecodedMessage from `decoder.decode(msg)`.
+ * @param decoded.inputs - Decoded input events to fold first.
+ * @param decoded.outputs - Decoded output events to fold after the inputs.
  * @param msg - Source Ably inbound message (used to derive meta).
  * @returns The updated projection.
  */
-const foldBatch = (state: VercelProjection, events: VercelEvent[], msg: Ably.InboundMessage): VercelProjection => {
+const foldDecoded = (
+  state: VercelProjection,
+  decoded: { inputs: VercelInput[]; outputs: VercelOutput[] },
+  msg: Ably.InboundMessage,
+): VercelProjection => {
   const meta = metaOf(msg);
-  for (const event of events) {
+  for (const event of decoded.inputs) {
+    state = UIMessageCodec.fold(state, event, meta);
+  }
+  for (const event of decoded.outputs) {
     state = UIMessageCodec.fold(state, event, meta);
   }
   return state;
 };
+
+const outputTypesOf = (outputs: VercelOutput[]): string[] => outputs.map((e) => e.type);
 
 describe('Vercel UIMessageCodec integration', () => {
   afterEach(() => {
@@ -91,18 +112,18 @@ describe('Vercel UIMessageCodec integration', () => {
     const messageId = 'msg-1';
     const textId = 'text-1';
 
-    const allEvents: VercelEvent[] = [];
+    const allOutputs: VercelOutput[] = [];
     let resolveFinish: () => void;
     const finished = new Promise<void>((r) => {
       resolveFinish = r;
     });
 
     await subChannel.subscribe((msg) => {
-      const events = decoder.decode(msg);
-      allEvents.push(...events);
-      projection = foldBatch(projection, events, msg);
+      const decoded = decoder.decode(msg);
+      allOutputs.push(...decoded.outputs);
+      projection = foldDecoded(projection, decoded, msg);
 
-      if (eventsOf(events).some((e) => e.type === 'finish')) {
+      if (decoded.outputs.some((e) => e.type === 'finish')) {
         resolveFinish();
       }
     });
@@ -111,20 +132,20 @@ describe('Vercel UIMessageCodec integration', () => {
       onMessage: stampHeaders('run-1', messageId),
     });
 
-    await encoder.publish({ type: 'start', messageId });
-    await encoder.publish({ type: 'start-step' });
-    await encoder.publish({ type: 'text-start', id: textId });
+    await encoder.publishOutput({ type: 'start', messageId });
+    await encoder.publishOutput({ type: 'start-step' });
+    await encoder.publishOutput({ type: 'text-start', id: textId });
     // Fire-and-forget deltas: encoder accumulates internally and flushes on close
-    void encoder.publish({ type: 'text-delta', id: textId, delta: 'Hello' });
-    void encoder.publish({ type: 'text-delta', id: textId, delta: ', ' });
-    void encoder.publish({ type: 'text-delta', id: textId, delta: 'world!' });
-    await encoder.publish({ type: 'text-end', id: textId });
-    await encoder.publish({ type: 'finish', finishReason: 'stop' });
+    void encoder.publishOutput({ type: 'text-delta', id: textId, delta: 'Hello' });
+    void encoder.publishOutput({ type: 'text-delta', id: textId, delta: ', ' });
+    void encoder.publishOutput({ type: 'text-delta', id: textId, delta: 'world!' });
+    await encoder.publishOutput({ type: 'text-end', id: textId });
+    await encoder.publishOutput({ type: 'finish', finishReason: 'stop' });
     await encoder.close();
 
     await finished;
 
-    const types = eventTypesOf(allEvents);
+    const types = outputTypesOf(allOutputs);
     expect(types).toContain('start');
     expect(types).toContain('start-step');
     expect(types).toContain('text-start');
@@ -160,18 +181,18 @@ describe('Vercel UIMessageCodec integration', () => {
     const messageId = 'msg-tool-1';
     const toolCallId = 'tc-1';
 
-    const allEvents: VercelEvent[] = [];
+    const allOutputs: VercelOutput[] = [];
     let resolveFinish: () => void;
     const finished = new Promise<void>((r) => {
       resolveFinish = r;
     });
 
     await subChannel.subscribe((msg) => {
-      const events = decoder.decode(msg);
-      allEvents.push(...events);
-      projection = foldBatch(projection, events, msg);
+      const decoded = decoder.decode(msg);
+      allOutputs.push(...decoded.outputs);
+      projection = foldDecoded(projection, decoded, msg);
 
-      if (eventsOf(events).some((e) => e.type === 'finish')) {
+      if (decoded.outputs.some((e) => e.type === 'finish')) {
         resolveFinish();
       }
     });
@@ -180,32 +201,32 @@ describe('Vercel UIMessageCodec integration', () => {
       onMessage: stampHeaders('run-tool-1', messageId),
     });
 
-    await encoder.publish({ type: 'start', messageId });
-    await encoder.publish({ type: 'start-step' });
-    await encoder.publish({
+    await encoder.publishOutput({ type: 'start', messageId });
+    await encoder.publishOutput({ type: 'start-step' });
+    await encoder.publishOutput({
       type: 'tool-input-start',
       toolCallId,
       toolName: 'get_weather',
     });
-    void encoder.publish({ type: 'tool-input-delta', toolCallId, inputTextDelta: '{"loc' });
-    void encoder.publish({ type: 'tool-input-delta', toolCallId, inputTextDelta: 'ation":"SF"}' });
-    await encoder.publish({
+    void encoder.publishOutput({ type: 'tool-input-delta', toolCallId, inputTextDelta: '{"loc' });
+    void encoder.publishOutput({ type: 'tool-input-delta', toolCallId, inputTextDelta: 'ation":"SF"}' });
+    await encoder.publishOutput({
       type: 'tool-input-available',
       toolCallId,
       toolName: 'get_weather',
       input: { location: 'SF' },
     });
-    await encoder.publish({
+    await encoder.publishOutput({
       type: 'tool-output-available',
       toolCallId,
       output: { temp: 72 },
     });
-    await encoder.publish({ type: 'finish', finishReason: 'tool-calls' });
+    await encoder.publishOutput({ type: 'finish', finishReason: 'tool-calls' });
     await encoder.close();
 
     await finished;
 
-    const types = eventTypesOf(allEvents);
+    const types = outputTypesOf(allOutputs);
     expect(types).toContain('start');
     expect(types).toContain('tool-input-start');
     expect(types).toContain('tool-input-delta');
@@ -247,18 +268,18 @@ describe('Vercel UIMessageCodec integration', () => {
     const messageId = 'msg-dt-1';
     const toolCallId = 'tc-discrete-1';
 
-    const allEvents: VercelEvent[] = [];
+    const allOutputs: VercelOutput[] = [];
     let resolveFinish: () => void;
     const finished = new Promise<void>((r) => {
       resolveFinish = r;
     });
 
     await subChannel.subscribe((msg) => {
-      const events = decoder.decode(msg);
-      allEvents.push(...events);
-      projection = foldBatch(projection, events, msg);
+      const decoded = decoder.decode(msg);
+      allOutputs.push(...decoded.outputs);
+      projection = foldDecoded(projection, decoded, msg);
 
-      if (eventsOf(events).some((e) => e.type === 'finish')) {
+      if (decoded.outputs.some((e) => e.type === 'finish')) {
         resolveFinish();
       }
     });
@@ -267,25 +288,25 @@ describe('Vercel UIMessageCodec integration', () => {
       onMessage: stampHeaders('run-dt-1', messageId),
     });
 
-    await encoder.publish({ type: 'start', messageId });
-    await encoder.publish({ type: 'start-step' });
-    await encoder.publish({
+    await encoder.publishOutput({ type: 'start', messageId });
+    await encoder.publishOutput({ type: 'start-step' });
+    await encoder.publishOutput({
       type: 'tool-input-available',
       toolCallId,
       toolName: 'calculator',
       input: { expression: '2+2' },
     });
-    await encoder.publish({
+    await encoder.publishOutput({
       type: 'tool-output-available',
       toolCallId,
       output: { result: 4 },
     });
-    await encoder.publish({ type: 'finish', finishReason: 'tool-calls' });
+    await encoder.publishOutput({ type: 'finish', finishReason: 'tool-calls' });
     await encoder.close();
 
     await finished;
 
-    const types = eventTypesOf(allEvents);
+    const types = outputTypesOf(allOutputs);
     expect(types).toContain('tool-input-start');
     expect(types).toContain('tool-input-available');
     expect(types).toContain('tool-output-available');
@@ -320,18 +341,18 @@ describe('Vercel UIMessageCodec integration', () => {
     const messageId = 'msg-abort-1';
     const textId = 'text-abort-1';
 
-    const allEvents: VercelEvent[] = [];
+    const allOutputs: VercelOutput[] = [];
     let resolveCancel: () => void;
     const cancelled = new Promise<void>((r) => {
       resolveCancel = r;
     });
 
     await subChannel.subscribe((msg) => {
-      const events = decoder.decode(msg);
-      allEvents.push(...events);
-      projection = foldBatch(projection, events, msg);
+      const decoded = decoder.decode(msg);
+      allOutputs.push(...decoded.outputs);
+      projection = foldDecoded(projection, decoded, msg);
 
-      if (eventsOf(events).some((e) => e.type === 'abort')) {
+      if (decoded.outputs.some((e) => e.type === 'abort')) {
         resolveCancel();
       }
     });
@@ -340,17 +361,17 @@ describe('Vercel UIMessageCodec integration', () => {
       onMessage: stampHeaders('run-abort-1', messageId),
     });
 
-    await encoder.publish({ type: 'start', messageId });
-    await encoder.publish({ type: 'start-step' });
-    await encoder.publish({ type: 'text-start', id: textId });
-    void encoder.publish({ type: 'text-delta', id: textId, delta: 'Hello' });
-    void encoder.publish({ type: 'text-delta', id: textId, delta: ', wo' });
-    await encoder.publish({ type: 'abort', reason: 'user cancelled' });
+    await encoder.publishOutput({ type: 'start', messageId });
+    await encoder.publishOutput({ type: 'start-step' });
+    await encoder.publishOutput({ type: 'text-start', id: textId });
+    void encoder.publishOutput({ type: 'text-delta', id: textId, delta: 'Hello' });
+    void encoder.publishOutput({ type: 'text-delta', id: textId, delta: ', wo' });
+    await encoder.publishOutput({ type: 'abort', reason: 'user cancelled' });
     await encoder.close();
 
     await cancelled;
 
-    const types = eventTypesOf(allEvents);
+    const types = outputTypesOf(allOutputs);
     expect(types).toContain('text-start');
     expect(types).toContain('text-delta');
     expect(types).toContain('abort');
@@ -375,13 +396,13 @@ describe('Vercel UIMessageCodec integration', () => {
       onMessage: stampHeaders('run-hist-1', messageId),
     });
 
-    await encoder.publish({ type: 'start', messageId });
-    await encoder.publish({ type: 'start-step' });
-    await encoder.publish({ type: 'text-start', id: textId });
-    void encoder.publish({ type: 'text-delta', id: textId, delta: 'History ' });
-    void encoder.publish({ type: 'text-delta', id: textId, delta: 'test.' });
-    await encoder.publish({ type: 'text-end', id: textId });
-    await encoder.publish({ type: 'finish', finishReason: 'stop' });
+    await encoder.publishOutput({ type: 'start', messageId });
+    await encoder.publishOutput({ type: 'start-step' });
+    await encoder.publishOutput({ type: 'text-start', id: textId });
+    void encoder.publishOutput({ type: 'text-delta', id: textId, delta: 'History ' });
+    void encoder.publishOutput({ type: 'text-delta', id: textId, delta: 'test.' });
+    await encoder.publishOutput({ type: 'text-end', id: textId });
+    await encoder.publishOutput({ type: 'finish', finishReason: 'stop' });
     await encoder.close();
 
     // Wait for Ably's history API to become consistent — real network propagation
@@ -400,8 +421,8 @@ describe('Vercel UIMessageCodec integration', () => {
     let projection = UIMessageCodec.init();
 
     for (const msg of historyMessages) {
-      const events = decoder.decode(msg);
-      projection = foldBatch(projection, events, msg);
+      const decoded = decoder.decode(msg);
+      projection = foldDecoded(projection, decoded, msg);
     }
 
     const messages = UIMessageCodec.getMessages(projection);
@@ -442,28 +463,28 @@ describe('Vercel UIMessageCodec integration', () => {
     });
 
     await sub1Channel.subscribe((msg) => {
-      const events = decoder1.decode(msg);
-      projection1 = foldBatch(projection1, events, msg);
-      if (eventsOf(events).some((e) => e.type === 'finish')) resolve1();
+      const decoded = decoder1.decode(msg);
+      projection1 = foldDecoded(projection1, decoded, msg);
+      if (decoded.outputs.some((e) => e.type === 'finish')) resolve1();
     });
 
     await sub2Channel.subscribe((msg) => {
-      const events = decoder2.decode(msg);
-      projection2 = foldBatch(projection2, events, msg);
-      if (eventsOf(events).some((e) => e.type === 'finish')) resolve2();
+      const decoded = decoder2.decode(msg);
+      projection2 = foldDecoded(projection2, decoded, msg);
+      if (decoded.outputs.some((e) => e.type === 'finish')) resolve2();
     });
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
       onMessage: stampHeaders('run-multi-1', messageId),
     });
 
-    await encoder.publish({ type: 'start', messageId });
-    await encoder.publish({ type: 'start-step' });
-    await encoder.publish({ type: 'text-start', id: textId });
-    void encoder.publish({ type: 'text-delta', id: textId, delta: 'Sync ' });
-    void encoder.publish({ type: 'text-delta', id: textId, delta: 'test.' });
-    await encoder.publish({ type: 'text-end', id: textId });
-    await encoder.publish({ type: 'finish', finishReason: 'stop' });
+    await encoder.publishOutput({ type: 'start', messageId });
+    await encoder.publishOutput({ type: 'start-step' });
+    await encoder.publishOutput({ type: 'text-start', id: textId });
+    void encoder.publishOutput({ type: 'text-delta', id: textId, delta: 'Sync ' });
+    void encoder.publishOutput({ type: 'text-delta', id: textId, delta: 'test.' });
+    await encoder.publishOutput({ type: 'text-end', id: textId });
+    await encoder.publishOutput({ type: 'finish', finishReason: 'stop' });
     await encoder.close();
 
     await Promise.all([finished1, finished2]);
@@ -497,37 +518,37 @@ describe('Vercel UIMessageCodec integration', () => {
     const reasoningId = 'reason-1';
     const textId = 'text-after-reason-1';
 
-    const allEvents: VercelEvent[] = [];
+    const allOutputs: VercelOutput[] = [];
     let resolveFinish: () => void;
     const finished = new Promise<void>((r) => {
       resolveFinish = r;
     });
 
     await subChannel.subscribe((msg) => {
-      const events = decoder.decode(msg);
-      allEvents.push(...events);
-      projection = foldBatch(projection, events, msg);
-      if (eventsOf(events).some((e) => e.type === 'finish')) resolveFinish();
+      const decoded = decoder.decode(msg);
+      allOutputs.push(...decoded.outputs);
+      projection = foldDecoded(projection, decoded, msg);
+      if (decoded.outputs.some((e) => e.type === 'finish')) resolveFinish();
     });
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
       onMessage: stampHeaders('run-reason-1', messageId),
     });
 
-    await encoder.publish({ type: 'start', messageId });
-    await encoder.publish({ type: 'start-step' });
-    await encoder.publish({ type: 'reasoning-start', id: reasoningId });
-    void encoder.publish({ type: 'reasoning-delta', id: reasoningId, delta: 'Let me think...' });
-    await encoder.publish({ type: 'reasoning-end', id: reasoningId });
-    await encoder.publish({ type: 'text-start', id: textId });
-    void encoder.publish({ type: 'text-delta', id: textId, delta: 'The answer is 42.' });
-    await encoder.publish({ type: 'text-end', id: textId });
-    await encoder.publish({ type: 'finish', finishReason: 'stop' });
+    await encoder.publishOutput({ type: 'start', messageId });
+    await encoder.publishOutput({ type: 'start-step' });
+    await encoder.publishOutput({ type: 'reasoning-start', id: reasoningId });
+    void encoder.publishOutput({ type: 'reasoning-delta', id: reasoningId, delta: 'Let me think...' });
+    await encoder.publishOutput({ type: 'reasoning-end', id: reasoningId });
+    await encoder.publishOutput({ type: 'text-start', id: textId });
+    void encoder.publishOutput({ type: 'text-delta', id: textId, delta: 'The answer is 42.' });
+    await encoder.publishOutput({ type: 'text-end', id: textId });
+    await encoder.publishOutput({ type: 'finish', finishReason: 'stop' });
     await encoder.close();
 
     await finished;
 
-    const types = eventTypesOf(allEvents);
+    const types = outputTypesOf(allOutputs);
     expect(types).toContain('reasoning-start');
     expect(types).toContain('reasoning-delta');
     expect(types).toContain('reasoning-end');
@@ -564,41 +585,143 @@ describe('Vercel UIMessageCodec integration', () => {
     const messageId = 'msg-err-1';
     const textId = 'text-err-1';
 
-    const allEvents: VercelEvent[] = [];
+    const allOutputs: VercelOutput[] = [];
     let resolveError: () => void;
     const gotError = new Promise<void>((r) => {
       resolveError = r;
     });
 
     await subChannel.subscribe((msg) => {
-      const events = decoder.decode(msg);
-      allEvents.push(...events);
-      projection = foldBatch(projection, events, msg);
-      if (eventsOf(events).some((e) => e.type === 'error')) resolveError();
+      const decoded = decoder.decode(msg);
+      allOutputs.push(...decoded.outputs);
+      projection = foldDecoded(projection, decoded, msg);
+      if (decoded.outputs.some((e) => e.type === 'error')) resolveError();
     });
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
       onMessage: stampHeaders('run-err-1', messageId),
     });
 
-    await encoder.publish({ type: 'start', messageId });
-    await encoder.publish({ type: 'start-step' });
-    await encoder.publish({ type: 'text-start', id: textId });
-    void encoder.publish({ type: 'text-delta', id: textId, delta: 'Partial...' });
-    await encoder.publish({ type: 'error', errorText: 'model rate limit exceeded' });
+    await encoder.publishOutput({ type: 'start', messageId });
+    await encoder.publishOutput({ type: 'start-step' });
+    await encoder.publishOutput({ type: 'text-start', id: textId });
+    void encoder.publishOutput({ type: 'text-delta', id: textId, delta: 'Partial...' });
+    await encoder.publishOutput({ type: 'error', errorText: 'model rate limit exceeded' });
     await encoder.close();
 
     await gotError;
 
-    const types = eventTypesOf(allEvents);
+    const types = outputTypesOf(allOutputs);
     expect(types).toContain('text-start');
     expect(types).toContain('text-delta');
     expect(types).toContain('error');
 
-    const errorEvent = eventsOf(allEvents).find(
-      (e): e is Extract<AI.UIMessageChunk, { type: 'error' }> => e.type === 'error',
-    );
+    const errorEvent = allOutputs.find((e): e is Extract<AI.UIMessageChunk, { type: 'error' }> => e.type === 'error');
     expect(errorEvent).toBeDefined();
     expect(errorEvent?.errorText).toBe('model rate limit exceeded');
+  });
+
+  /**
+   * Scenario 9: Client tool output on ai-input wire (AIT-815 fix)
+   *
+   * Verifies that a client-published `tool-output` input rides the
+   * `ai-input` wire (NOT `ai-output`) and carries `x-domain-type:
+   * 'tool-output'`. Parallel-asserted by the encoder unit test; this
+   * version goes through a real Ably channel.
+   */
+  it('client tool result publishes to ai-input wire', async () => {
+    const channelName = uniqueChannelName('client-tool-output');
+    const pubClient = ablyRealtimeClient();
+    const subClient = ablyRealtimeClient();
+
+    const pubChannel = pubClient.channels.get(channelName);
+    const subChannel = subClient.channels.get(channelName);
+
+    const continuationId = 'continuation-1';
+
+    const received: Ably.InboundMessage[] = [];
+    let resolveOne: () => void;
+    const gotOne = new Promise<void>((r) => {
+      resolveOne = r;
+    });
+
+    await subChannel.subscribe((msg) => {
+      received.push(msg);
+      resolveOne();
+    });
+
+    const encoder = UIMessageCodec.createEncoder(pubChannel, {
+      onMessage: stampHeaders('run-client-tool-1', continuationId),
+    });
+
+    await encoder.publishInput(
+      {
+        kind: 'tool-result',
+        codecMessageId: 'msg-1',
+        toolCallId: 'tc-1',
+        output: { latitude: 51.5, longitude: -0.1 },
+      },
+      { messageId: continuationId },
+    );
+    await encoder.close();
+
+    await gotOne;
+
+    expect(received).toHaveLength(1);
+    const msg = received[0];
+    expect(msg?.name).toBe(EVENT_AI_INPUT);
+    // CAST: Ably SDK types `extras` as `any`; we read the headers we stamped.
+    const headers = (msg?.extras as { headers?: Record<string, string> } | undefined)?.headers ?? {};
+    expect(headers[`${D}type`]).toBe('tool-result');
+    expect(headers[`${D}toolCallId`]).toBe('tc-1');
+  });
+
+  /**
+   * Scenario 10: Agent tool output stays on ai-output wire
+   *
+   * The agent-published `tool-output-available` UIMessageChunk continues
+   * to ride the `ai-output` wire (unchanged by the input/output split).
+   */
+  it('agent tool output publishes to ai-output wire', async () => {
+    const channelName = uniqueChannelName('agent-tool-output');
+    const pubClient = ablyRealtimeClient();
+    const subClient = ablyRealtimeClient();
+
+    const pubChannel = pubClient.channels.get(channelName);
+    const subChannel = subClient.channels.get(channelName);
+
+    const messageId = 'msg-agent-tool-1';
+
+    const received: Ably.InboundMessage[] = [];
+    let resolveOne: () => void;
+    const gotOne = new Promise<void>((r) => {
+      resolveOne = r;
+    });
+
+    await subChannel.subscribe((msg) => {
+      received.push(msg);
+      resolveOne();
+    });
+
+    const encoder = UIMessageCodec.createEncoder(pubChannel, {
+      onMessage: stampHeaders('run-agent-tool-1', messageId),
+    });
+
+    await encoder.publishOutput({
+      type: 'tool-output-available',
+      toolCallId: 'tc-1',
+      output: { temp: 72 },
+    });
+    await encoder.close();
+
+    await gotOne;
+
+    expect(received).toHaveLength(1);
+    const msg = received[0];
+    expect(msg?.name).toBe(EVENT_AI_OUTPUT);
+    // CAST: Ably SDK types `extras` as `any`; we read the headers we stamped.
+    const headers = (msg?.extras as { headers?: Record<string, string> } | undefined)?.headers ?? {};
+    expect(headers[`${D}type`]).toBe('tool-output-available');
+    expect(headers[`${D}toolCallId`]).toBe('tc-1');
   });
 });

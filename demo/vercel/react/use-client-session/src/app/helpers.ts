@@ -1,5 +1,5 @@
 import type { UIMessage } from 'ai';
-import type { VercelEvent } from '@ably/ai-transport/vercel';
+import type { VercelInput } from '@ably/ai-transport/vercel';
 
 /** Construct a user UIMessage from a text string. */
 export function userMessage(text: string): UIMessage {
@@ -10,7 +10,7 @@ export function userMessage(text: string): UIMessage {
   };
 }
 
-/** Construct a UserMessageEvent TEvent ready for view.send. */
-export function userMessageEvent(text: string): VercelEvent {
-  return { type: 'ait-user-message', message: userMessage(text) };
+/** Construct a UserMessage TInput ready for view.sendEvent. */
+export function userMessageEvent(text: string): VercelInput {
+  return { kind: 'user-message', message: userMessage(text) };
 }

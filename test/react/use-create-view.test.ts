@@ -4,6 +4,7 @@ import { act, renderHook } from '@testing-library/react';
 import { createElement, type ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 
+import type { CodecInputEvent, CodecOutputEvent } from '../../src/core/codec/types.js';
 import type { ClientSession } from '../../src/core/transport/types.js';
 import { ClientSessionContext } from '../../src/react/contexts/client-session-context.js';
 import { useCreateView } from '../../src/react/use-create-view.js';
@@ -71,7 +72,7 @@ describe('useCreateView', () => {
   it('closes the view and returns empty handle when session changes to undefined', () => {
     const mock = createMockSession(['hello']);
 
-    const initialProps: { session: ClientSession<unknown, unknown, string> | undefined } = {
+    const initialProps: { session: ClientSession<CodecInputEvent, CodecOutputEvent, unknown, string> | undefined } = {
       session: mock.session,
     };
     const { result, rerender } = renderHook(({ session }) => useCreateView({ session }), {
@@ -94,11 +95,12 @@ describe('useCreateView', () => {
 
     const { result } = renderHook(() => useCreateView({ session: mock.session }));
 
+    const input = { kind: 'user-message' as const };
     await act(async () => {
-      await result.current.sendEvent(['new message']);
+      await result.current.sendEvent([input]);
     });
 
-    expect(mock.sendEvent).toHaveBeenCalledWith(['new message'], undefined);
+    expect(mock.sendEvent).toHaveBeenCalledWith([input], undefined);
   });
 
   it('returns empty handle when no session and no nearest context', () => {

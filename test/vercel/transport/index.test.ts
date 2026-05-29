@@ -98,7 +98,7 @@ describe('Vercel createClientSession', () => {
     });
     await session.connect();
 
-    await session.view.sendEvent({ type: 'ait-user-message', message: { id: '1', role: 'user', parts: [] } });
+    await session.view.sendEvent({ kind: 'user-message', message: { id: '1', role: 'user', parts: [] } });
 
     await vi.waitFor(() => {
       expect(mockFetch).toHaveBeenCalledTimes(1);
@@ -127,7 +127,7 @@ describe('Vercel createClientSession', () => {
 
     // send() triggers a POST to the configured api endpoint with the configured fetch
     const sendPromise = session.view.sendEvent({
-      type: 'ait-user-message',
+      kind: 'user-message',
       message: { id: '1', role: 'user', parts: [] },
     });
     const run = await sendPromise;

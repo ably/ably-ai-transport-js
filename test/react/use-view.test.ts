@@ -331,11 +331,12 @@ describe('useView', () => {
       const mock = createMockSession();
       const { result } = renderHook(() => useView({ session: mock.session }));
 
+      const input = { kind: 'user-message' as const };
       await act(async () => {
-        await result.current.sendEvent(['hello'], { body: { extra: true } });
+        await result.current.sendEvent([input], { body: { extra: true } });
       });
 
-      expect(mock.sendEvent).toHaveBeenCalledWith(['hello'], { body: { extra: true } });
+      expect(mock.sendEvent).toHaveBeenCalledWith([input], { body: { extra: true } });
     });
 
     it('returns a stable reference across rerenders', () => {
@@ -350,7 +351,7 @@ describe('useView', () => {
       const { result } = renderHook(() => useView());
 
       await act(async () => {
-        await expect(result.current.sendEvent(['hello'])).rejects.toMatchObject({
+        await expect(result.current.sendEvent([{ kind: 'user-message' }])).rejects.toMatchObject({
           code: ErrorCode.InvalidArgument,
           statusCode: 400,
         });
@@ -408,22 +409,24 @@ describe('useView', () => {
       const mock = createMockSession();
       const { result } = renderHook(() => useView({ session: mock.session }));
 
+      const replacement = { kind: 'edit' as const };
       await act(async () => {
-        await result.current.edit('msg-1', ['replacement'], { body: { extra: true } });
+        await result.current.edit('msg-1', [replacement], { body: { extra: true } });
       });
 
-      expect(mock.edit).toHaveBeenCalledWith('msg-1', ['replacement'], { body: { extra: true } });
+      expect(mock.edit).toHaveBeenCalledWith('msg-1', [replacement], { body: { extra: true } });
     });
 
     it('delegates to view.edit with a single message', async () => {
       const mock = createMockSession();
       const { result } = renderHook(() => useView({ session: mock.session }));
 
+      const single = { kind: 'edit' as const };
       await act(async () => {
-        await result.current.edit('msg-1', 'single-replacement');
+        await result.current.edit('msg-1', single);
       });
 
-      expect(mock.edit).toHaveBeenCalledWith('msg-1', 'single-replacement', undefined);
+      expect(mock.edit).toHaveBeenCalledWith('msg-1', single, undefined);
     });
 
     it('returns a stable reference across rerenders', () => {
@@ -438,7 +441,7 @@ describe('useView', () => {
       const { result } = renderHook(() => useView());
 
       await act(async () => {
-        await expect(result.current.edit('msg-1', 'replacement')).rejects.toMatchObject({
+        await expect(result.current.edit('msg-1', { kind: 'edit' })).rejects.toMatchObject({
           code: ErrorCode.InvalidArgument,
           statusCode: 400,
         });

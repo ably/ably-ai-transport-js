@@ -171,7 +171,7 @@ export interface Reducer<TEvent, TProjection> {
 }
 
 // ---------------------------------------------------------------------------
-// Encoder — single-method publication API
+// Encoder — direction-typed publication API
 // ---------------------------------------------------------------------------
 
 /** Options passed to a codec's `createEncoder` factory. */
@@ -190,17 +190,25 @@ export interface EncoderOptions {
 }
 
 /**
- * Stateful encoder for a single channel. The codec decides per event type
- * whether `publish` maps to a streamed wire op (start / append / close) or
- * a discrete publish. Stream-tracker state lives inside the encoder.
+ * Stateful encoder for a single channel. Two publish methods enforce
+ * direction at the call site — `publishInput` for client-published events
+ * (`ai-input` wire) and `publishOutput` for agent-published events
+ * (`ai-output` wire). Stream-tracker state lives inside the encoder and
+ * is shared across both directions.
  */
-export interface Encoder<TEvent> {
+export interface Encoder<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent> {
   /**
-   * Encode and publish a single TEvent. Throws synchronously if the codec
-   * cannot encode the given event type (e.g. a chunk variant the encoder
-   * has no routing for).
+   * Encode and publish a single client input on the `ai-input` wire.
+   * Throws synchronously if the codec cannot encode the given input
+   * variant.
    */
-  publish(event: TEvent, options?: WriteOptions): Promise<void>;
+  publishInput(input: TInput, options?: WriteOptions): Promise<void>;
+  /**
+   * Encode and publish a single agent output on the `ai-output` wire.
+   * Throws synchronously if the codec cannot encode the given output
+   * variant.
+   */
+  publishOutput(output: TOutput, options?: WriteOptions): Promise<void>;
   /**
    * Cancel any in-progress streams and emit a codec-specific cancel signal.
    * Idempotent — safe to call after `cancel` or `close`.
@@ -212,8 +220,20 @@ export interface Encoder<TEvent> {
 }
 
 // ---------------------------------------------------------------------------
-// Decoder — flat TEvent[] output
+// Decoder — direction-tagged output
 // ---------------------------------------------------------------------------
+
+/**
+ * Tagged result of decoding one inbound Ably message — the codec routes
+ * by the wire `name` and returns inputs and outputs separately so the
+ * SDK never has to introspect direction.
+ */
+export interface DecodedMessage<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent> {
+  /** Inputs decoded from the inbound message (only populated when the wire `name` is `ai-input`). */
+  inputs: TInput[];
+  /** Outputs decoded from the inbound message (only populated when the wire `name` is `ai-output`). */
+  outputs: TOutput[];
+}
 
 /**
  * Stateful decoder for a single channel subscription. Maintains internal
@@ -222,9 +242,9 @@ export interface Encoder<TEvent> {
  * missing start events before deltas reach the SDK — the reducer always
  * sees a clean `(start, delta*, end)` sequence.
  */
-export interface Decoder<TEvent> {
-  /** Decode one Ably inbound message into zero or more TEvents. */
-  decode(message: Ably.InboundMessage): TEvent[];
+export interface Decoder<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent> {
+  /** Decode one Ably inbound message into the input/output halves. */
+  decode(message: Ably.InboundMessage): DecodedMessage<TInput, TOutput>;
 }
 
 // ---------------------------------------------------------------------------
@@ -240,14 +260,14 @@ export interface Decoder<TEvent> {
  * The `kind` discriminator is required on every variant so the codec's
  * reducer can switch on it. Codec authors pick the literal value per
  * variant; the SDK ships well-known literals (`'user-message'`,
- * `'regenerate'`, `'edit'`) — see {@link UserMessageInput},
- * {@link RegenerateInput}, {@link EditInput}.
+ * `'regenerate'`, `'edit'`) — see {@link UserMessage},
+ * {@link Regenerate}, {@link Edit}.
  */
 export interface CodecInputEvent {
   /**
    * Discriminator. Codec authors pick the literal value per variant. The
    * SDK reserves the literals used by well-known variants
-   * ({@link UserMessageInput}, {@link RegenerateInput}, {@link EditInput});
+   * ({@link UserMessage}, {@link Regenerate}, {@link Edit});
    * codec-specific variants pick any other literal.
    */
   kind: string;
@@ -280,10 +300,10 @@ export interface CodecInputEvent {
 /**
  * Well-known input variant: a new user message in the codec's domain
  * representation. Pinned `kind: 'user-message'`. Produced by the SDK's
- * `Codec.userMessageInput` factory and surfaced via `View.sendMessage`.
+ * `Codec.createUserMessage` factory and surfaced via `View.sendMessage`.
  * @template TMessage - The codec's per-message domain type.
  */
-export interface UserMessageInput<TMessage> extends CodecInputEvent {
+export interface UserMessage<TMessage> extends CodecInputEvent {
   /** Discriminator. */
   kind: 'user-message';
   /** The user's message in the codec's domain representation. */
@@ -296,10 +316,10 @@ export interface UserMessageInput<TMessage> extends CodecInputEvent {
  * is a signal, not itself a fork — `target` names the assistant message
  * to regenerate, and `parent` names the user message the new assistant
  * threads under. Both are required; the codec cannot regenerate without
- * both. Produced by the SDK's `Codec.regenerateInput` factory and
+ * both. Produced by the SDK's `Codec.createRegenerate` factory and
  * surfaced via `View.regenerate`.
  */
-export interface RegenerateInput extends CodecInputEvent {
+export interface Regenerate extends CodecInputEvent {
   /** Discriminator. */
   kind: 'regenerate';
   /** The codec-message-id of the assistant to regenerate. Required. */
@@ -320,7 +340,7 @@ export interface RegenerateInput extends CodecInputEvent {
  * `TInput` union; the SDK does not require it.
  * @template TMessage - The codec's per-message domain type.
  */
-export interface EditInput<TMessage> extends CodecInputEvent {
+export interface Edit<TMessage> extends CodecInputEvent {
   /** Discriminator. */
   kind: 'edit';
   /** The codec-message-id of the codec-message to replace. Required. */
@@ -331,115 +351,159 @@ export interface EditInput<TMessage> extends CodecInputEvent {
   message: TMessage;
 }
 
+/**
+ * Well-known input variant: client-published tool result (success). The
+ * tool ran and produced this output. Mutates the assistant codec-message
+ * addressed by `codecMessageId` — the codec's reducer applies the output
+ * onto the existing tool-call state of the referenced assistant.
+ *
+ * Codecs opt in to client-side tool resolution by including this variant
+ * in their `TInput` union. Codecs whose domain model doesn't natively
+ * distinguish client-side tool results as a top-level event type (e.g.
+ * Anthropic Messages, where tool results are normally embedded in a
+ * user-role message) can still use this variant — the codec's reducer
+ * translates the wire-level update into the codec's domain representation.
+ */
+export interface ToolResult extends CodecInputEvent {
+  /** Discriminator. */
+  kind: 'tool-result';
+  /** The assistant codec-message containing the tool call. Required. */
+  codecMessageId: string;
+  /** The tool call this result corresponds to. */
+  toolCallId: string;
+  /** The tool's output value. Codec- and tool-defined shape. */
+  output: unknown;
+}
+
+/**
+ * Well-known input variant: client-published tool result (failure). The
+ * tool ran and failed; `message` carries a human-readable description of
+ * what went wrong. Mutates the assistant codec-message addressed by
+ * `codecMessageId`.
+ *
+ * Codecs that want richer error shapes (structured codes, causes,
+ * provider metadata) extend this interface with additional fields.
+ */
+export interface ToolResultError extends CodecInputEvent {
+  /** Discriminator. */
+  kind: 'tool-result-error';
+  /** The assistant codec-message containing the tool call. Required. */
+  codecMessageId: string;
+  /** The tool call this error corresponds to. */
+  toolCallId: string;
+  /** Human-readable description of the failure. */
+  message: string;
+}
+
+/**
+ * Well-known input variant: client-published response to an
+ * agent-emitted tool-approval request. Mutates the assistant
+ * codec-message addressed by `codecMessageId` — flipping the targeted
+ * tool call from pending-approval to approved or denied.
+ *
+ * Codecs may layer approval semantics on top of domain models that don't
+ * natively support gating tool execution behind an approval — the codec
+ * is responsible for mapping the decision into its own representation.
+ */
+export interface ToolApprovalResponse extends CodecInputEvent {
+  /** Discriminator. */
+  kind: 'tool-approval-response';
+  /** The assistant codec-message containing the tool call. Required. */
+  codecMessageId: string;
+  /** The tool call this approval responds to. */
+  toolCallId: string;
+  /** Whether the user approved the tool execution. */
+  approved: boolean;
+  /** Optional human-readable reason (typically used on denial). */
+  reason?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Codec output events — base shape for the output side
+// ---------------------------------------------------------------------------
+
+/**
+ * Structural base every codec output variant must satisfy. The output
+ * counterpart of {@link CodecInputEvent}: pins a `type` discriminator so
+ * the SDK can reliably narrow `TInput | TOutput` (inputs carry `kind`,
+ * outputs carry `type`) and reserves a contract for future routing
+ * fields on outputs without a breaking generic-arity change.
+ *
+ * The `type` discriminator is required on every variant so the codec's
+ * reducer can switch on it. `AI.UIMessageChunk` already satisfies this
+ * constraint structurally — its `type` literal is assignable to
+ * `string` — so the Vercel codec needs no implementation changes.
+ *
+ * No routing fields today: per-output `codecMessageId` / `parent` /
+ * `forkOf` overrides are still handled via {@link Codec.resolveToolTarget};
+ * those move onto this base when a concrete output needs to carry them.
+ */
+export interface CodecOutputEvent {
+  /** Discriminator. Codec authors pick the literal value per variant. */
+  type: string;
+}
+
 // ---------------------------------------------------------------------------
 // Codec — full contract for the transport
 // ---------------------------------------------------------------------------
 
 /**
- * The runtime category of a TEvent, used by the SDK to dispatch a
- * `View.sendEvent` call to the correct publish path. The codec is the only
- * thing that knows how to inspect its TEvents; the core session asks via
- * {@link Codec.classifyEvent}.
- *
- * - `user-message` — a free-standing channel message published as
- *   `x-ably-role: user`. Covers fresh user prompts AND continuation
- *   tool-resolution messages (tool outputs / approval responses). Both
- *   ride the same wire path and the same optimistic-fold path; the
- *   reducer (not the classifier) inline-detects tool resolutions and
- *   folds them onto the prior assistant via `consumedCodecMessageIds`.
- * - `regenerate` — a wire-only channel message that carries run-routing
- *   metadata (`parent`, `forkOf`) in its headers but materialises no
- *   TMessage. The session publishes the wire, mints a `eventId` so the
- *   agent's prompt-lookup catches it, and skips tree-upsert / projection
- *   fold entirely. Produced by `View.regenerate` to start a new run forked
- *   off an assistant message without re-publishing the parent user.
- * - `other` — anything the codec doesn't recognize as a user-message.
- *   The session rejects `view.sendEvent` calls that include `other`-classified
- *   events.
- */
-export type EventClassification =
-  | {
-      /** Discriminator — user-message event variant. */
-      kind: 'user-message';
-    }
-  | {
-      /** Discriminator — wire-only regenerate event variant. */
-      kind: 'regenerate';
-      /** Wire `x-ably-parent` for this regenerate event — the user prompt the regenerated assistant threads under. */
-      parent: string;
-      /** Wire `x-ably-msg-regenerate` for this regenerate event — the assistant msg-id being regenerated. */
-      regenerates: string;
-    }
-  | {
-      /** Discriminator — unrecognized / not-sendable event variant. */
-      kind: 'other';
-    };
-
-/**
  * The codec describes the wire and folds events into a per-Run projection.
  *
  * Type parameters:
- * - `TEvent` — the union of every type of record that flows on the channel
- *   for this codec. Codec-defined; not constrained to any framework's
- *   chunk type.
+ * - `TInput` — the union of input variants the client publishes on the
+ *   `ai-input` wire. Every variant extends {@link CodecInputEvent}.
+ * - `TOutput` — the union of output variants the agent publishes on the
+ *   `ai-output` wire. Every variant extends {@link CodecOutputEvent}.
  * - `TProjection` — the opaque per-Run state the reducer folds events into.
  *   The SDK never inspects it directly; use {@link Codec.getMessages} to
  *   extract messages for the conversation Tree.
  * - `TMessage` — the per-message shape consumed by the Tree. Returned from
  *   {@link Codec.getMessages}.
  */
-export interface Codec<TEvent, TProjection, TMessage> extends Reducer<TEvent, TProjection> {
+export interface Codec<
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+> extends Reducer<TInput | TOutput, TProjection> {
   /** Create a stateful encoder bound to the given channel. */
-  createEncoder(channel: ChannelWriter, options?: EncoderOptions): Encoder<TEvent>;
-  /** Create a stateful decoder for converting Ably inbound messages into TEvents. */
-  createDecoder(): Decoder<TEvent>;
+  createEncoder(channel: ChannelWriter, options?: EncoderOptions): Encoder<TInput, TOutput>;
+  /** Create a stateful decoder for converting Ably inbound messages into typed inputs and outputs. */
+  createDecoder(): Decoder<TInput, TOutput>;
   /**
    * Extract the per-message list from a projection. The SDK uses the result
    * to upsert per-codecMessageId nodes into the conversation Tree.
    */
   getMessages(projection: TProjection): TMessage[];
   /**
-   * Wrap a TMessage as a TEvent suitable for publishing on the channel as a
-   * user-message. Used by the agent session's `addMessages` to translate
-   * caller-provided TMessages into wire events.
+   * Wrap a TMessage as the codec's well-known {@link UserMessage} variant
+   * suitable for publishing on the `ai-input` wire. Used by the agent session's
+   * `addMessages` and `ClientSessionProvider`'s seed-message path to translate
+   * caller-provided TMessages into well-typed inputs.
+   * @param message - The user's message in the codec's domain representation.
+   * @returns A {@link UserMessage} that fits the codec's `TInput` union.
    */
-  userMessageEvent(message: TMessage): TEvent;
+  createUserMessage(message: TMessage): UserMessage<TMessage>;
   /**
-   * Build a regenerate TEvent. The View calls this from
-   * `regenerate(messageId)`; the resulting event is classified as
-   * `kind: 'regenerate'` and published as a wire-only channel message
-   * carrying `parent` / `x-ably-msg-regenerate` headers. No TMessage
-   * materialises on either client or agent — the agent's prompt-lookup
-   * picks the event up via its `eventId` and reads run-routing metadata
-   * from headers.
+   * Build a {@link Regenerate} for the codec. The View calls this from
+   * `regenerate(messageId)`; the input event is a signal (not itself a
+   * fork) that targets the assistant codec-message to be regenerated.
    *
-   * The new Run is a CONTINUATION of the regenerated message's Run,
-   * not a fork: it has no `forkOf` at the Run level. The message-level
-   * replacement (the new assistant supersedes the original) happens at
-   * the View's projection-extraction step (Spec: AIT-CT13d).
-   * @param regeneratesCodecMessageId - The assistant being regenerated (wire `x-ably-msg-regenerate`).
-   * @param parentCodecMessageId - Parent user codec-message-id for the new assistant chain (wire `x-ably-parent`).
-   * @returns A TEvent that `classifyEvent` will classify as `regenerate`.
+   * The new Run is a CONTINUATION of the regenerated message's Run, not a
+   * fork at the Run level. The message-level replacement (the new
+   * assistant supersedes the original) happens at the View's
+   * projection-extraction step (Spec: AIT-CT13d).
+   * @param target - The codec-message-id of the assistant being regenerated.
+   * @param parent - The codec-message-id of the parent user message the new assistant threads under.
+   * @returns A {@link Regenerate} that fits the codec's `TInput` union.
    */
-  createRegenerateEvent(regeneratesCodecMessageId: string, parentCodecMessageId: string): TEvent;
+  createRegenerate(target: string, parent: string): Regenerate;
   /**
-   * Classify a TEvent for `View.sendEvent` dispatch. The session inspects the
-   * returned discriminant to decide whether the event opens a new run
-   * (`user-message`), starts a forked regeneration (`regenerate`), or is
-   * unsupported on the send path (`other`).
-   *
-   * Codecs should return `other` rather than throw for unrecognized event
-   * types — `_internalSend` is the one place that errors on `other`, which
-   * keeps the codec permissive for future wire variants.
-   * @param event - The event being sent.
-   * @returns The classification driving the publish path.
-   */
-  classifyEvent(event: TEvent): EventClassification;
-  /**
-   * Return the existing message id a stream event should be attributed
-   * to, based on the projection's current state. Used by `Run.pipe` to
-   * override the wire `HEADER_CODEC_MESSAGE_ID` when a tool-output event (or
-   * similar message-modifying event) emitted by `streamText`'s second
+   * Return the existing message id an output should be attributed to,
+   * based on the projection's current state. Used by `Run.pipe` to
+   * override the wire `HEADER_CODEC_MESSAGE_ID` when a tool-output event
+   * (or similar message-modifying event) emitted by `streamText`'s second
    * pass should land on the original message that holds the matching
    * tool call.
    *
@@ -448,18 +512,18 @@ export interface Codec<TEvent, TProjection, TMessage> extends Reducer<TEvent, TP
    * `approval-responded` / `approval-requested` state for a matching
    * `toolCallId`.
    *
-   * Returns `undefined` when the event has no projection-derived
+   * Returns `undefined` when the output has no projection-derived
    * target (the caller's default `messageId` is used).
-   * @param event - The event about to be encoded.
+   * @param output - The output about to be encoded.
    * @param projection - The current per-run projection.
    * @returns The target message id, or `undefined` to use the default.
    */
-  resolveToolTarget(event: TEvent, projection: TProjection): string | undefined;
+  resolveToolTarget(output: TOutput, projection: TProjection): string | undefined;
   /**
-   * Whether an event signals stream/run completion.
+   * Whether an output signals stream/run completion.
    * @deprecated Temporary bridge. Removed when wire-level `run-end`
    * LifecycleEvents land (Tier 1 #3). Until then the SDK reads this to
    * detect Run completion and clean up observer state.
    */
-  isTerminal(event: TEvent): boolean;
+  isTerminal(output: TOutput): boolean;
 }

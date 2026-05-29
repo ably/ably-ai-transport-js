@@ -22,21 +22,22 @@
 import * as Ably from 'ably';
 import { useContext, useEffect, useRef } from 'react';
 
+import type { CodecInputEvent, CodecOutputEvent } from '../core/codec/types.js';
 import type { ClientSession, Tree, View } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
 import { ClientSessionContext } from './contexts/client-session-context.js';
 
-const SKIPPED_SESSION: ClientSession<unknown, unknown, unknown> = {
+const SKIPPED_SESSION: ClientSession<CodecInputEvent, CodecOutputEvent, unknown, unknown> = {
   get tree(): Tree<unknown> {
     throw new Ably.ErrorInfo('unable to access tree; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
-  get view(): View<unknown, unknown, unknown> {
+  get view(): View<CodecInputEvent, CodecOutputEvent, unknown, unknown> {
     throw new Ably.ErrorInfo('unable to access view; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   connect: () => {
     throw new Ably.ErrorInfo('unable to connect; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
-  createView: (): View<unknown, unknown, unknown> => {
+  createView: (): View<CodecInputEvent, CodecOutputEvent, unknown, unknown> => {
     throw new Ably.ErrorInfo('unable to create view; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   cancel: () => {
@@ -58,14 +59,19 @@ const SKIPPED_SESSION: ClientSession<unknown, unknown, unknown> = {
  * that throws {@link Ably.ErrorInfo} on every access.
  * Check `sessionError` before using `session` to avoid those throws.
  */
-export interface ClientSessionHandle<TEvent, TProjection, TMessage> {
+export interface ClientSessionHandle<
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+> {
   /**
    * The resolved session.
    *
    * A throwing stub when `skip` is `true`, when no matching {@link ClientSessionProvider}
    * was found in the tree, or when session construction failed.
    */
-  session: ClientSession<TEvent, TProjection, TMessage>;
+  session: ClientSession<TInput, TOutput, TProjection, TMessage>;
   /**
    * Set when no matching {@link ClientSessionProvider} was found, when session
    * construction failed, and `skip` is `false`.
@@ -91,7 +97,12 @@ export interface ClientSessionHandle<TEvent, TProjection, TMessage> {
  * @param props.onError - Called whenever the resolved session emits an error event.
  * @returns `{ session, sessionError }`.
  */
-export const useClientSession = <TEvent, TProjection, TMessage>({
+export const useClientSession = <
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+>({
   channelName,
   skip,
   onError,
@@ -112,7 +123,7 @@ export const useClientSession = <TEvent, TProjection, TMessage>({
    * automatically removed on unmount or when the session changes.
    */
   onError?: (error: Ably.ErrorInfo) => void;
-} = {}): ClientSessionHandle<TEvent, TProjection, TMessage> => {
+} = {}): ClientSessionHandle<TInput, TOutput, TProjection, TMessage> => {
   const { nearest: nearestSlot, providers } = useContext(ClientSessionContext);
   const errorCallbackRef = useRef(onError);
   errorCallbackRef.current = onError;
@@ -120,7 +131,7 @@ export const useClientSession = <TEvent, TProjection, TMessage>({
   // Compute the session for the onError subscription *before* any conditional
   // returns to satisfy React's rules of hooks (no hooks in branches).
   // Erased generics — this ref is only used in the useEffect below.
-  const resolvedForEffect: ClientSession<unknown, unknown, unknown> | undefined = skip
+  const resolvedForEffect: ClientSession<CodecInputEvent, CodecOutputEvent, unknown, unknown> | undefined = skip
     ? undefined
     : channelName === undefined
       ? nearestSlot?.session
@@ -135,7 +146,7 @@ export const useClientSession = <TEvent, TProjection, TMessage>({
 
   if (skip) {
     return {
-      session: SKIPPED_SESSION as unknown as ClientSession<TEvent, TProjection, TMessage>,
+      session: SKIPPED_SESSION as unknown as ClientSession<TInput, TOutput, TProjection, TMessage>,
     };
   }
 
@@ -146,17 +157,17 @@ export const useClientSession = <TEvent, TProjection, TMessage>({
         // CAST: ClientSessionContext stores sessions with erased generics.
         // The caller is responsible for using type parameters matching those of the ClientSessionProvider.
         return {
-          session: slot.session as unknown as ClientSession<TEvent, TProjection, TMessage>,
+          session: slot.session as unknown as ClientSession<TInput, TOutput, TProjection, TMessage>,
         };
       }
       // Provider exists but construction failed.
       return {
-        session: SKIPPED_SESSION as unknown as ClientSession<TEvent, TProjection, TMessage>,
+        session: SKIPPED_SESSION as unknown as ClientSession<TInput, TOutput, TProjection, TMessage>,
         sessionError: slot.sessionError,
       };
     }
     return {
-      session: SKIPPED_SESSION as unknown as ClientSession<TEvent, TProjection, TMessage>,
+      session: SKIPPED_SESSION as unknown as ClientSession<TInput, TOutput, TProjection, TMessage>,
       sessionError: new Ably.ErrorInfo(
         `unable to use session; no ClientSessionProvider found for channelName "${channelName}"`,
         ErrorCode.BadRequest,
@@ -169,18 +180,18 @@ export const useClientSession = <TEvent, TProjection, TMessage>({
     if (nearestSlot.session) {
       // CAST: ClientSessionContext stores session with erased generics; types fixed at call site.
       return {
-        session: nearestSlot.session as unknown as ClientSession<TEvent, TProjection, TMessage>,
+        session: nearestSlot.session as unknown as ClientSession<TInput, TOutput, TProjection, TMessage>,
       };
     }
     // Nearest provider exists but construction failed.
     return {
-      session: SKIPPED_SESSION as unknown as ClientSession<TEvent, TProjection, TMessage>,
+      session: SKIPPED_SESSION as unknown as ClientSession<TInput, TOutput, TProjection, TMessage>,
       sessionError: nearestSlot.sessionError,
     };
   }
 
   return {
-    session: SKIPPED_SESSION as unknown as ClientSession<TEvent, TProjection, TMessage>,
+    session: SKIPPED_SESSION as unknown as ClientSession<TInput, TOutput, TProjection, TMessage>,
     sessionError: new Ably.ErrorInfo(
       'unable to use session; no ClientSessionProvider found in the tree',
       ErrorCode.BadRequest,

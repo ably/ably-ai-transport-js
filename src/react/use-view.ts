@@ -11,19 +11,21 @@
 import * as Ably from 'ably';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import type { CodecInputEvent, CodecOutputEvent } from '../core/codec/types.js';
 import type { ActiveRun, MessageMetadata, RunNode, SendOptions, View } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
 import type { BaseSessionOption } from './internal/use-resolved-session.js';
 import { useResolvedSession } from './internal/use-resolved-session.js';
 
 /** Options for {@link useView}. */
-export interface UseViewOptions<TEvent, TProjection, TMessage> extends BaseSessionOption<
-  TEvent,
+export interface UseViewOptions<
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
   TProjection,
-  TMessage
-> {
+  TMessage,
+> extends BaseSessionOption<TInput, TOutput, TProjection, TMessage> {
   /** A specific {@link View} to subscribe to directly. Takes priority over `session`. */
-  view?: View<TEvent, TProjection, TMessage> | null;
+  view?: View<TInput, TOutput, TProjection, TMessage> | null;
   /** Maximum number of older messages to load per page. When provided, auto-loads on mount. */
   limit?: number;
   /** When `true`, skip all subscriptions and return an empty handle immediately. */
@@ -31,7 +33,7 @@ export interface UseViewOptions<TEvent, TProjection, TMessage> extends BaseSessi
 }
 
 /** Handle for the paginated, branch-aware conversation view. */
-export interface ViewHandle<TEvent, TProjection, TMessage> {
+export interface ViewHandle<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage> {
   /**
    * The visible domain messages along the selected branch, concatenated
    * across all visible Runs.
@@ -84,16 +86,13 @@ export interface ViewHandle<TEvent, TProjection, TMessage> {
   /** Get a Run by runId, or undefined if not found. */
   getRunNode: (runId: string) => RunNode<TProjection> | undefined;
   /** Send one or more user messages on the channel and fire a POST. See {@link View.sendMessage}. */
-  sendMessage: (messages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>;
-  /** Send one or more TEvents on the channel and fire a POST. See {@link View.sendEvent}. */
-  sendEvent: (
-    events: TEvent | TEvent[] | { event: TEvent; codecMessageId?: string }[],
-    options?: SendOptions,
-  ) => Promise<ActiveRun<TEvent>>;
+  sendMessage: (messages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveRun<TOutput>>;
+  /** Send one or more TInputs on the channel and fire a POST. See {@link View.sendEvent}. */
+  sendEvent: (events: TInput | TInput[], options?: SendOptions) => Promise<ActiveRun<TOutput>>;
   /** Regenerate an assistant message, using this view's branch for history. */
-  regenerate: (messageId: string, options?: SendOptions) => Promise<ActiveRun<TEvent>>;
+  regenerate: (messageId: string, options?: SendOptions) => Promise<ActiveRun<TOutput>>;
   /** Edit a user message, forking from this view's branch. */
-  edit: (messageId: string, newEvents: TEvent | TEvent[], options?: SendOptions) => Promise<ActiveRun<TEvent>>;
+  edit: (messageId: string, newEvents: TInput | TInput[], options?: SendOptions) => Promise<ActiveRun<TOutput>>;
 }
 
 /**
@@ -109,12 +108,12 @@ export interface ViewHandle<TEvent, TProjection, TMessage> {
  * @param props.skip - When `true`, skip all subscriptions and return an empty handle.
  * @returns A {@link ViewHandle} with nodes, pagination state, navigation, write operations, and loadOlder.
  */
-export const useView = <TEvent, TProjection, TMessage>({
+export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>({
   session,
   view,
   limit,
   skip,
-}: UseViewOptions<TEvent, TProjection, TMessage> = {}): ViewHandle<TEvent, TProjection, TMessage> => {
+}: UseViewOptions<TInput, TOutput, TProjection, TMessage> = {}): ViewHandle<TInput, TOutput, TProjection, TMessage> => {
   const resolvedSession = useResolvedSession({ session, skip });
   const resolvedView = skip ? undefined : (view ?? resolvedSession?.view);
 
@@ -230,7 +229,7 @@ export const useView = <TEvent, TProjection, TMessage>({
   );
 
   const sendEvent = useCallback(
-    async (events: TEvent | TEvent[] | { event: TEvent; codecMessageId?: string }[], opts?: SendOptions) => {
+    async (events: TInput | TInput[], opts?: SendOptions) => {
       if (!resolvedView)
         throw new Ably.ErrorInfo('unable to send; view is not available', ErrorCode.InvalidArgument, 400);
       return resolvedView.sendEvent(events, opts);
@@ -248,7 +247,7 @@ export const useView = <TEvent, TProjection, TMessage>({
   );
 
   const edit = useCallback(
-    async (messageId: string, newEvents: TEvent | TEvent[], opts?: SendOptions) => {
+    async (messageId: string, newEvents: TInput | TInput[], opts?: SendOptions) => {
       if (!resolvedView)
         throw new Ably.ErrorInfo('unable to edit; view is not available', ErrorCode.InvalidArgument, 400);
       return resolvedView.edit(messageId, newEvents, opts);

@@ -26,7 +26,7 @@ import type * as AI from 'ai';
 
 import type { ActiveRun, ClientSession, SendOptions } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
-import type { VercelEvent, VercelProjection } from '../codec/index.js';
+import type { VercelInput, VercelOutput, VercelProjection } from '../codec/index.js';
 
 // ---------------------------------------------------------------------------
 // ChatTransport options
@@ -152,31 +152,15 @@ export interface ChatTransport {
 // ---------------------------------------------------------------------------
 
 /**
- * Filter a VercelEvent stream down to its UIMessageChunk variants. Non-chunk
- * codec-local variants (UserMessageEvent / ToolApprovalResponseEvent) only
- * appear on prompt-side publishes from the client; the assistant stream
- * consumed by useChat is naturally chunk-only. This filter narrows the
- * TypeScript type and protects against any unexpected non-chunk leakage
- * at runtime.
- * @param source - The raw VercelEvent stream from the active run.
- * @returns A stream of UIMessageChunks suitable for handing to useChat.
+ * Hand the run's output stream to useChat as-is. After the TInput/TOutput
+ * split, the agent's stream contains only `VercelOutput` (= `UIMessageChunk`)
+ * values — no codec-local input variants can leak onto this path. The
+ * passthrough exists so we can switch back to a TransformStream-based
+ * adapter later (e.g. for instrumentation) without changing call sites.
+ * @param source - The output stream from the active run.
+ * @returns The same stream, structurally typed as `UIMessageChunk` for useChat.
  */
-const filterToChunks = (source: ReadableStream<VercelEvent>): ReadableStream<AI.UIMessageChunk> =>
-  source.pipeThrough(
-    new TransformStream<VercelEvent, AI.UIMessageChunk>({
-      transform: (event, controller) => {
-        if (
-          event.type === 'ait-user-message' ||
-          event.type === 'tool-approval-response' ||
-          event.type === 'ait-regenerate'
-        ) {
-          return;
-        }
-        // CAST: discriminator above excludes the codec-local variants, leaving UIMessageChunk.
-        controller.enqueue(event);
-      },
-    }),
-  );
+const filterToChunks = (source: ReadableStream<VercelOutput>): ReadableStream<AI.UIMessageChunk> => source;
 
 /**
  * Wrap a ReadableStream in a passthrough TransformStream that resolves a
@@ -286,16 +270,15 @@ const UNRESOLVED_TOOL_STATES = new Set(['input-streaming', 'input-available', 'a
  *   fold onto. Arrays are parallel — `codecMessageIds[i]` belongs to
  *   `events[i]`.
  */
-const deriveContinuationEvents = (
-  session: ClientSession<VercelEvent, VercelProjection, AI.UIMessage>,
+const deriveContinuationInputs = (
+  session: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
   messages: AI.UIMessage[],
-): { events: VercelEvent[]; codecMessageIds: string[] } => {
+): VercelInput[] => {
   const allMessages = session.view.getMessages();
-  const events: VercelEvent[] = [];
-  const codecMessageIds: string[] = [];
+  const inputs: VercelInput[] = [];
   for (const overlay of messages) {
     if (overlay.role !== 'assistant') continue;
-    const treeMessage = allMessages.find((m) => m.id === overlay.id);
+    const treeMessage = allMessages.find((m: AI.UIMessage) => m.id === overlay.id);
     if (!treeMessage) continue;
 
     for (const overlayPart of overlay.parts) {
@@ -306,60 +289,62 @@ const deriveContinuationEvents = (
       // so the cross-representation comparison works regardless of which
       // side the tool was declared on.
       const treePart = treeMessage.parts.find(
-        (p): p is AI.DynamicToolUIPart | AI.ToolUIPart => _isToolPart(p) && p.toolCallId === overlayPart.toolCallId,
+        (p: AI.UIMessage['parts'][number]): p is AI.DynamicToolUIPart | AI.ToolUIPart =>
+          _isToolPart(p) && p.toolCallId === overlayPart.toolCallId,
       );
 
       // Approval response: useChat's `addToolApprovalResponse` flipped the
       // overlay part to `approval-responded` (approve) or `output-denied`
       // (deny) while the tree still sits on `approval-requested`. Publish
-      // a `tool-approval-response` TEvent so the agent's projection sees
+      // a `tool-approval-response` TInput so the agent's projection sees
       // the decision.
       if (overlayPart.state === 'approval-responded' && (!treePart || treePart.state === 'approval-requested')) {
-        const approvalEvent: VercelEvent = {
-          type: 'tool-approval-response',
+        inputs.push({
+          kind: 'tool-approval-response',
+          codecMessageId: treeMessage.id,
           toolCallId: overlayPart.toolCallId,
           approved: true,
-        };
-        if (overlayPart.approval.reason !== undefined) {
-          (approvalEvent as { reason?: string }).reason = overlayPart.approval.reason;
-        }
-        events.push(approvalEvent);
-        codecMessageIds.push(treeMessage.id);
+          ...(overlayPart.approval.reason === undefined ? {} : { reason: overlayPart.approval.reason }),
+        });
         continue;
       }
       if (overlayPart.state === 'output-denied' && (!treePart || treePart.state === 'approval-requested')) {
-        events.push({
-          type: 'tool-approval-response',
+        inputs.push({
+          kind: 'tool-approval-response',
+          codecMessageId: treeMessage.id,
           toolCallId: overlayPart.toolCallId,
           approved: false,
         });
-        codecMessageIds.push(treeMessage.id);
         continue;
       }
 
       // Client-tool resolution: overlay has `output-available` / `output-error`
-      // while the tree's part is still unresolved.
+      // while the tree's part is still unresolved. Construct a TInput
+      // variant (not a UIMessageChunk) so the encoder publishes on the
+      // `ai-input` wire — this is the fix for AIT-815 where client tool
+      // results previously landed on `ai-output`.
       if (overlayPart.state !== 'output-available' && overlayPart.state !== 'output-error') continue;
       // Tree already resolved (echo arrived back) — nothing to do.
       if (treePart && !UNRESOLVED_TOOL_STATES.has(treePart.state)) continue;
 
       if (overlayPart.state === 'output-available') {
-        events.push({
-          type: 'tool-output-available',
+        inputs.push({
+          kind: 'tool-result',
+          codecMessageId: treeMessage.id,
           toolCallId: overlayPart.toolCallId,
           output: overlayPart.output,
         });
       } else {
-        events.push({
-          type: 'tool-output-error',
+        inputs.push({
+          kind: 'tool-result-error',
+          codecMessageId: treeMessage.id,
           toolCallId: overlayPart.toolCallId,
-          errorText: overlayPart.errorText,
+          message: overlayPart.errorText,
         });
       }
-      codecMessageIds.push(treeMessage.id);
     }
   }
-  return { events, codecMessageIds };
+  return inputs;
 };
 
 /**
@@ -395,7 +380,7 @@ const findPredecessorMsgId = (messages: AI.UIMessage[], codecMessageId: string):
  * @returns A {@link ChatTransport} compatible with Vercel's useChat hook.
  */
 export const createChatTransport = (
-  session: ClientSession<VercelEvent, VercelProjection, AI.UIMessage>,
+  session: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
   chatOptions?: ChatTransportOptions,
 ): ChatTransport => {
   // -- Streaming state -------------------------------------------------------
@@ -420,7 +405,7 @@ export const createChatTransport = (
   const sendMessages: ChatTransport['sendMessages'] = async (opts) => {
     const { messages, abortSignal, trigger, messageId } = opts;
 
-    const allMessages = session.view.getMessages();
+    const allMessages: AI.UIMessage[] = session.view.getMessages();
 
     // useChat calls sendMessages in three distinct modes. We disambiguate
     // by (trigger, last-message role) so each mode dispatches correctly:
@@ -438,7 +423,7 @@ export const createChatTransport = (
     // treat messageId as a fork target — useChat v6's sendAutomaticallyWhen
     // path always sets messageId to the last message id regardless.
     const lastMessage = messages.at(-1);
-    const lastMessageInTree = lastMessage ? allMessages.find((m) => m.id === lastMessage.id) : undefined;
+    const lastMessageInTree = lastMessage ? allMessages.find((m: AI.UIMessage) => m.id === lastMessage.id) : undefined;
     const isContinuation = trigger === 'submit-message' && lastMessage?.role === 'assistant' && !!lastMessageInTree;
 
     // Fork-on-unresolved-tool: user sent a new message while the preceding
@@ -457,7 +442,7 @@ export const createChatTransport = (
       trigger === 'submit-message' && !messageId && lastMessage?.role === 'user' ? messages.at(-2) : undefined;
     const forkSourceMsgId =
       precedingMessage && hasUnresolvedToolCall(precedingMessage)
-        ? allMessages.find((m) => m.id === precedingMessage.id)?.id
+        ? allMessages.find((m: AI.UIMessage) => m.id === precedingMessage.id)?.id
         : undefined;
 
     // Determine the history/messages split based on mode.
@@ -553,13 +538,9 @@ export const createChatTransport = (
     //   through U1 inclusive via the body.
     // - Fresh send / edit: publish the new user-message TEvent(s) via
     //   `view.sendEvent`.
-    let run: ActiveRun<VercelEvent>;
+    let run: ActiveRun<VercelOutput>;
     if (isContinuation) {
-      const derived = deriveContinuationEvents(session, messages);
-      const sendInput = derived.events.map((event, i) => ({
-        event,
-        codecMessageId: derived.codecMessageIds[i],
-      }));
+      const sendInput = deriveContinuationInputs(session, messages);
       run = await session.view.sendEvent(sendInput, sendOpts);
     } else if (trigger === 'regenerate-message') {
       if (messageId === undefined) {
@@ -571,7 +552,7 @@ export const createChatTransport = (
       }
       run = await session.view.regenerate(messageId, sendOpts);
     } else {
-      const sendInput = newMessages.map((m): VercelEvent => ({ type: 'ait-user-message', message: m }));
+      const sendInput = newMessages.map((m): VercelInput => ({ kind: 'user-message', message: m }));
       run = await session.view.sendEvent(sendInput, sendOpts);
     }
 

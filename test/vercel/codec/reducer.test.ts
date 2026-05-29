@@ -1,16 +1,17 @@
 /**
  * Reducer unit tests.
  *
- * The Vercel reducer is a pure `(state, event, meta) -> state'` machine.
- * These tests validate purity, idempotency (serial dedup), and the codec-
- * local event folds (user-message merging, tool-approval transitions).
+ * The Vercel reducer is a pure `(state, event, meta) -> state'` machine
+ * folding the `VercelInput | VercelOutput` union. These tests validate
+ * purity, idempotency (serial dedup), and the input folds
+ * (user-message merging, tool-resolution transitions).
  */
 
 import type * as AI from 'ai';
 import { describe, expect, it } from 'vitest';
 
 import type { ReducerMeta } from '../../../src/core/codec/types.js';
-import type { VercelEvent } from '../../../src/vercel/codec/events.js';
+import type { VercelInput, VercelOutput } from '../../../src/vercel/codec/events.js';
 import { UIMessageCodec } from '../../../src/vercel/codec/index.js';
 import { fold, getMessages, init, type VercelProjection } from '../../../src/vercel/codec/reducer.js';
 
@@ -73,7 +74,7 @@ describe('Vercel reducer', () => {
   describe('conflict-key idempotency', () => {
     it('drops a duplicate conflicting event at the same serial', () => {
       let state = seedToolCall('tc-1', 'msg-1');
-      const event: VercelEvent = {
+      const event: VercelOutput = {
         type: 'tool-output-available',
         toolCallId: 'tc-1',
         output: { v: 1 },
@@ -90,13 +91,13 @@ describe('Vercel reducer', () => {
     });
 
     it('highest-serial wins between conflicting events, regardless of arrival order', () => {
-      const lower: VercelEvent = {
+      const lower: VercelOutput = {
         type: 'tool-output-available',
         toolCallId: 'tc-1',
         output: { v: 'lower' },
         dynamic: true,
       };
-      const higher: VercelEvent = {
+      const higher: VercelOutput = {
         type: 'tool-output-available',
         toolCallId: 'tc-1',
         output: { v: 'higher' },
@@ -133,11 +134,11 @@ describe('Vercel reducer', () => {
       let state = init();
 
       // High-serial user-message advances the user-msg key only.
-      state = fold(
-        state,
-        { type: 'ait-user-message', message: { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'hi' }] } },
-        meta('s11'),
-      );
+      const userInput: VercelInput = {
+        kind: 'user-message',
+        message: { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+      };
+      state = fold(state, userInput, meta('s11'));
 
       // Low-serial tool-input-start arrives later. Different conflict key —
       // should be folded.
@@ -167,28 +168,28 @@ describe('Vercel reducer', () => {
 
     it('records the highest serial per conflict key', () => {
       let state = init();
-      state = fold(
-        state,
-        { type: 'ait-user-message', message: { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'a' }] } },
-        meta('s1'),
-      );
-      state = fold(
-        state,
-        { type: 'ait-user-message', message: { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'b' }] } },
-        meta('s5'),
-      );
+      const userA: VercelInput = {
+        kind: 'user-message',
+        message: { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'a' }] },
+      };
+      const userB: VercelInput = {
+        kind: 'user-message',
+        message: { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'b' }] },
+      };
+      state = fold(state, userA, meta('s1'));
+      state = fold(state, userB, meta('s5'));
       // The key is `user-msg:u-1`; only s5 should be recorded.
       expect(state.conflictSerials.get('user-msg:u-1')).toBe('s5');
     });
   });
 
-  // -- ait-user-message merging --------------------------------------------
+  // -- user-message merging ------------------------------------------------
 
-  describe('ait-user-message merging', () => {
+  describe('user-message merging', () => {
     it('inserts a user message that does not yet exist', () => {
       let state = init();
       const message: AI.UIMessage = { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'hello' }] };
-      const event: VercelEvent = { type: 'ait-user-message', message };
+      const event: VercelInput = { kind: 'user-message', message };
 
       state = fold(state, event, meta('s1'));
 
@@ -201,8 +202,8 @@ describe('Vercel reducer', () => {
       const original: AI.UIMessage = { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'old' }] };
       const replacement: AI.UIMessage = { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'new' }] };
 
-      state = fold(state, { type: 'ait-user-message', message: original }, meta('s1'));
-      state = fold(state, { type: 'ait-user-message', message: replacement }, meta('s2'));
+      state = fold(state, { kind: 'user-message', message: original }, meta('s1'));
+      state = fold(state, { kind: 'user-message', message: replacement }, meta('s2'));
 
       expect(state.messages).toHaveLength(1);
       expect(state.messages[0]).toEqual(replacement);
@@ -223,13 +224,15 @@ describe('Vercel reducer', () => {
       );
 
       // The continuation publish carries its own wire codec-message-id; the reducer
-      // redirects the response onto the assistant by toolCallId and marks
-      // the continuation codec-message-id as consumed.
-      state = fold(
-        state,
-        { type: 'tool-approval-response', toolCallId: 'tc-1', approved: true },
-        meta('s3', 'continuation-codec-message-id'),
-      );
+      // redirects the response onto the assistant by codecMessageId+toolCallId
+      // and marks the continuation codec-message-id as consumed.
+      const approval: VercelInput = {
+        kind: 'tool-approval-response',
+        codecMessageId: 'msg-1',
+        toolCallId: 'tc-1',
+        approved: true,
+      };
+      state = fold(state, approval, meta('s3', 'continuation-codec-message-id'));
 
       const message = state.messages.find((m) => m.id === 'msg-1');
       const toolPart = message?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
@@ -237,11 +240,11 @@ describe('Vercel reducer', () => {
       // approved=true transitions to approval-responded so the AI SDK's
       // multi-step loop auto-runs the tool on the next step.
       expect(toolPart?.state).toBe('approval-responded');
-      // The continuation wire codec-message-id is marked consumed — getMessages filters it out.
-      expect(state.consumedCodecMessageIds.has('continuation-codec-message-id')).toBe(true);
+      // The owner assistant message stays visible — no projection-side filtering.
+      expect(state.messages.find((m) => m.id === 'msg-1')).toBeDefined();
     });
 
-    it('transitions to output-denied on deny with reason and consumes the wire codec-message-id', () => {
+    it('transitions to output-denied on deny with reason', () => {
       let state = init();
       state = fold(state, { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'search' }, meta('s1', 'msg-1'));
       state = fold(
@@ -250,30 +253,33 @@ describe('Vercel reducer', () => {
         meta('s2', 'msg-1'),
       );
 
-      state = fold(
-        state,
-        { type: 'tool-approval-response', toolCallId: 'tc-1', approved: false, reason: 'nope' },
-        meta('s3', 'continuation-codec-message-id'),
-      );
+      const denial: VercelInput = {
+        kind: 'tool-approval-response',
+        codecMessageId: 'msg-1',
+        toolCallId: 'tc-1',
+        approved: false,
+        reason: 'nope',
+      };
+      state = fold(state, denial, meta('s3', 'continuation-codec-message-id'));
 
       const message = state.messages.find((m) => m.id === 'msg-1');
       const toolPart = message?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
       expect(toolPart?.state).toBe('output-denied');
-      expect(state.consumedCodecMessageIds.has('continuation-codec-message-id')).toBe(true);
+      expect(state.messages.find((m) => m.id === 'msg-1')).toBeDefined();
     });
 
     it('buffers an orphan approval until the assistant arrives, then promotes it', () => {
       let state = init();
       // Approval arrives before any assistant exists for tc-1 → buffer.
-      state = fold(
-        state,
-        { type: 'tool-approval-response', toolCallId: 'tc-1', approved: true },
-        meta('s1', 'continuation-codec-message-id'),
-      );
+      const approval: VercelInput = {
+        kind: 'tool-approval-response',
+        codecMessageId: 'msg-1',
+        toolCallId: 'tc-1',
+        approved: true,
+      };
+      state = fold(state, approval, meta('s1', 'continuation-codec-message-id'));
       expect(state.pendingToolResolutions).toHaveLength(1);
       expect(state.pendingToolResolutions[0]?.toolCallId).toBe('tc-1');
-      // Wire codec-message-id not yet consumed — the resolution hasn't landed anywhere.
-      expect(state.consumedCodecMessageIds.has('continuation-codec-message-id')).toBe(false);
 
       // Late assistant arrival with the matching tool part — pending entry drains.
       state = fold(state, { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'search' }, meta('s2', 'msg-1'));
@@ -281,81 +287,14 @@ describe('Vercel reducer', () => {
       const message = state.messages.find((m) => m.id === 'msg-1');
       const toolPart = message?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
       expect(toolPart?.state).toBe('approval-responded');
-      expect(state.consumedCodecMessageIds.has('continuation-codec-message-id')).toBe(true);
       expect(state.pendingToolResolutions).toHaveLength(0);
-    });
-
-    it('getMessages filters out consumed continuation codec-message-ids', () => {
-      let state = init();
-      state = fold(state, { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'search' }, meta('s1', 'msg-1'));
-      // Seed a synthetic user-message at the continuation codec-message-id so we can
-      // verify filtering: tool-resolution folds normally push the synthetic
-      // role:user message into `messages`, but `getMessages` should hide it.
-      state.messages.push({
-        id: 'continuation-codec-message-id',
-        role: 'user',
-        parts: [{ type: 'text', text: 'irrelevant' }],
-      });
-      state = fold(
-        state,
-        { type: 'tool-approval-response', toolCallId: 'tc-1', approved: true },
-        meta('s3', 'continuation-codec-message-id'),
-      );
-
-      const visible = getMessages(state);
-      expect(visible.find((m) => m.id === 'continuation-codec-message-id')).toBeUndefined();
-      expect(visible.find((m) => m.id === 'msg-1')).toBeDefined();
-    });
-
-    // Option X: client stamps the prior assistant's `x-ably-codec-message-id` on the
-    // continuation tool-resolution wire so the reducer's direct-fold branch
-    // runs. The wire codec-message-id IS the owner's id, so it must NOT be consumed.
-    it('folds approve directly when wire codec-message-id matches the owner — does not consume the owner', () => {
-      let state = init();
-      state = fold(state, { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'search' }, meta('s1', 'msg-1'));
-      state = fold(
-        state,
-        { type: 'tool-input-available', toolCallId: 'tc-1', toolName: 'search', input: { q: 'hi' } },
-        meta('s2', 'msg-1'),
-      );
-
-      // Wire codec-message-id stamped as the owner's id under Option X.
-      state = fold(state, { type: 'tool-approval-response', toolCallId: 'tc-1', approved: true }, meta('s3', 'msg-1'));
-
-      const message = state.messages.find((m) => m.id === 'msg-1');
-      const toolPart = message?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
-      expect(toolPart?.state).toBe('approval-responded');
-      // Owner must remain visible — never consumed under Option X.
-      expect(state.consumedCodecMessageIds.has('msg-1')).toBe(false);
-      expect(getMessages(state).find((m) => m.id === 'msg-1')).toBeDefined();
-    });
-
-    it('folds deny directly when wire codec-message-id matches the owner — does not consume the owner', () => {
-      let state = init();
-      state = fold(state, { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'search' }, meta('s1', 'msg-1'));
-      state = fold(
-        state,
-        { type: 'tool-input-available', toolCallId: 'tc-1', toolName: 'search', input: {} },
-        meta('s2', 'msg-1'),
-      );
-
-      state = fold(
-        state,
-        { type: 'tool-approval-response', toolCallId: 'tc-1', approved: false, reason: 'nope' },
-        meta('s3', 'msg-1'),
-      );
-
-      const message = state.messages.find((m) => m.id === 'msg-1');
-      const toolPart = message?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
-      expect(toolPart?.state).toBe('output-denied');
-      expect(state.consumedCodecMessageIds.has('msg-1')).toBe(false);
     });
   });
 
-  // -- tool-output-available / tool-output-error (continuation redirect) ---
+  // -- tool-output / tool-output-error (client inputs that redirect) --------
 
-  describe('tool-output-* UIMessageChunks via continuation redirect', () => {
-    it('redirects tool-output-available onto the prior assistant by toolCallId and consumes the wire codec-message-id', () => {
+  describe('tool-result / tool-result-error inputs', () => {
+    it('redirects tool-result onto the prior assistant by codecMessageId+toolCallId', () => {
       let state = init();
       state = fold(
         state,
@@ -368,23 +307,24 @@ describe('Vercel reducer', () => {
         meta('s2', 'msg-1'),
       );
 
-      // Wire codec-message-id 'continuation-codec-message-id-0' doesn't own the toolCallId —
-      // the reducer redirects to msg-1 and consumes the continuation id.
-      state = fold(
-        state,
-        { type: 'tool-output-available', toolCallId: 'tc-1', output: { latitude: 51.5, longitude: -0.1 } },
-        meta('s3', 'continuation-codec-message-id-0'),
-      );
+      const toolOutput: VercelInput = {
+        kind: 'tool-result',
+        codecMessageId: 'msg-1',
+        toolCallId: 'tc-1',
+        output: { latitude: 51.5, longitude: -0.1 },
+      };
+      state = fold(state, toolOutput, meta('s3', 'continuation-codec-message-id-0'));
 
       const message = state.messages.find((m) => m.id === 'msg-1');
       const toolPart = message?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
       expect(toolPart?.state).toBe('output-available');
       if (toolPart?.state !== 'output-available') return;
       expect(toolPart.output).toEqual({ latitude: 51.5, longitude: -0.1 });
-      expect(state.consumedCodecMessageIds.has('continuation-codec-message-id-0')).toBe(true);
+      // The owner assistant message stays visible — no projection-side filtering.
+      expect(state.messages.find((m) => m.id === 'msg-1')).toBeDefined();
     });
 
-    it('shares the tool-output conflict key — drops later duplicates', () => {
+    it('shares the tool-result conflict key — drops later duplicates', () => {
       let state = init();
       state = fold(
         state,
@@ -397,19 +337,18 @@ describe('Vercel reducer', () => {
         meta('s2', 'msg-1'),
       );
 
-      // First fold wins
-      state = fold(
-        state,
-        { type: 'tool-output-available', toolCallId: 'tc-1', output: { v: 1 } },
-        meta('s3', 'continuation-codec-message-id-0'),
-      );
+      const first: VercelInput = { kind: 'tool-result', codecMessageId: 'msg-1', toolCallId: 'tc-1', output: { v: 1 } };
+      const second: VercelInput = {
+        kind: 'tool-result',
+        codecMessageId: 'msg-1',
+        toolCallId: 'tc-1',
+        output: { v: 2 },
+      };
+
+      state = fold(state, first, meta('s3', 'continuation-codec-message-id-0'));
       // Second fold at the same conflict key (toolCallId) drops because the
       // serial is not greater than the already-seen high-water-mark.
-      state = fold(
-        state,
-        { type: 'tool-output-available', toolCallId: 'tc-1', output: { v: 2 } },
-        meta('s3', 'continuation-codec-message-id-1'),
-      );
+      state = fold(state, second, meta('s3', 'continuation-codec-message-id-1'));
 
       const message = state.messages.find((m) => m.id === 'msg-1');
       const toolPart = message?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
@@ -417,7 +356,7 @@ describe('Vercel reducer', () => {
       expect(toolPart.output).toEqual({ v: 1 });
     });
 
-    it('redirects tool-output-error onto the prior assistant by toolCallId and consumes the wire codec-message-id', () => {
+    it('redirects tool-result-error onto the prior assistant by codecMessageId+toolCallId', () => {
       let state = init();
       state = fold(
         state,
@@ -430,29 +369,32 @@ describe('Vercel reducer', () => {
         meta('s2', 'msg-1'),
       );
 
-      state = fold(
-        state,
-        { type: 'tool-output-error', toolCallId: 'tc-1', errorText: 'permission denied' },
-        meta('s3', 'continuation-codec-message-id-0'),
-      );
+      const errorInput: VercelInput = {
+        kind: 'tool-result-error',
+        codecMessageId: 'msg-1',
+        toolCallId: 'tc-1',
+        message: 'permission denied',
+      };
+      state = fold(state, errorInput, meta('s3', 'continuation-codec-message-id-0'));
 
       const message = state.messages.find((m) => m.id === 'msg-1');
       const toolPart = message?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
       expect(toolPart?.state).toBe('output-error');
       if (toolPart?.state !== 'output-error') return;
       expect(toolPart.errorText).toBe('permission denied');
-      expect(state.consumedCodecMessageIds.has('continuation-codec-message-id-0')).toBe(true);
+      expect(state.messages.find((m) => m.id === 'msg-1')).toBeDefined();
     });
 
-    it('buffers an orphan tool-output until the assistant arrives, then promotes it', () => {
+    it('buffers an orphan tool-result until the assistant arrives, then promotes it', () => {
       let state = init();
-      state = fold(
-        state,
-        { type: 'tool-output-available', toolCallId: 'tc-1', output: { v: 'x' } },
-        meta('s1', 'continuation-codec-message-id-0'),
-      );
+      const orphan: VercelInput = {
+        kind: 'tool-result',
+        codecMessageId: 'msg-1',
+        toolCallId: 'tc-1',
+        output: { v: 'x' },
+      };
+      state = fold(state, orphan, meta('s1', 'continuation-codec-message-id-0'));
       expect(state.pendingToolResolutions).toHaveLength(1);
-      expect(state.consumedCodecMessageIds.has('continuation-codec-message-id-0')).toBe(false);
 
       // Late assistant arrival with the matching tool part — pending entry drains.
       state = fold(
@@ -464,7 +406,6 @@ describe('Vercel reducer', () => {
       const message = state.messages.find((m) => m.id === 'msg-1');
       const toolPart = message?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
       expect(toolPart?.state).toBe('output-available');
-      expect(state.consumedCodecMessageIds.has('continuation-codec-message-id-0')).toBe(true);
       expect(state.pendingToolResolutions).toHaveLength(0);
     });
   });
@@ -500,7 +441,7 @@ describe('Vercel reducer', () => {
     it('exposes init / fold / getMessages from UIMessageCodec', () => {
       let state = UIMessageCodec.init();
       const message: AI.UIMessage = { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'hi' }] };
-      const event = UIMessageCodec.userMessageEvent(message);
+      const event = UIMessageCodec.createUserMessage(message);
 
       state = UIMessageCodec.fold(state, event, meta('s1'));
       expect(UIMessageCodec.getMessages(state)).toEqual([message]);

@@ -10,7 +10,7 @@ import {
   HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
 } from '../../../src/constants.js';
-import type { Codec } from '../../../src/core/codec/types.js';
+import type { Codec, CodecInputEvent } from '../../../src/core/codec/types.js';
 import type { TreeInternal } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
@@ -24,31 +24,40 @@ interface TestMessage {
   content: string;
 }
 
-type TestEvent = { type: 'append-message'; message: TestMessage } | { type: 'noop' } | { type: 'throw' };
+interface TestInput extends CodecInputEvent {
+  kind: 'append-input';
+  message: TestMessage;
+}
+
+type TestOutput = { type: 'append-message'; message: TestMessage } | { type: 'noop' } | { type: 'throw' };
 
 interface TestProjection {
   messages: TestMessage[];
 }
 
-const testCodec: Codec<TestEvent, TestProjection, TestMessage> = {
+const testCodec: Codec<TestInput, TestOutput, TestProjection, TestMessage> = {
   init: () => ({ messages: [] }),
-  fold: (state, event) => {
-    if (event.type === 'append-message') {
-      return { messages: [...state.messages, event.message] };
+  fold: (state: TestProjection, event: TestInput | TestOutput) => {
+    if ('type' in event) {
+      if (event.type === 'append-message') {
+        return { messages: [...state.messages, event.message] };
+      }
+      if (event.type === 'throw') {
+        throw new Error('test fold failure');
+      }
+      return state;
     }
-    if (event.type === 'throw') {
-      throw new Error('test fold failure');
-    }
-    return state;
+    // TestInput has a single variant — `append-input` — so the narrow check
+    // is sufficient; the fold appends the carried message to the projection.
+    return { messages: [...state.messages, event.message] };
   },
-  getMessages: (projection) => projection.messages,
+  getMessages: (projection: TestProjection) => projection.messages,
   createEncoder: () => {
     throw new Error('not used in tree tests');
   },
-  createDecoder: () => ({ decode: () => [] }),
-  userMessageEvent: (message) => ({ type: 'append-message', message }),
-  createRegenerateEvent: () => ({ type: 'noop' }),
-  classifyEvent: () => ({ kind: 'other' }),
+  createDecoder: () => ({ decode: () => ({ inputs: [], outputs: [] }) }),
+  createUserMessage: (message: TestMessage) => ({ kind: 'user-message', message }),
+  createRegenerate: (target: string, parent: string) => ({ kind: 'regenerate', target, parent }),
   // eslint-disable-next-line unicorn/no-useless-undefined -- the Codec contract requires returning undefined when no target is resolved
   resolveToolTarget: () => undefined,
   isTerminal: () => false,
@@ -76,10 +85,12 @@ interface ApplyOpts {
   serial?: string;
   message?: TestMessage;
   /** Override events entirely. When set, `message` is ignored. */
-  events?: TestEvent[];
+  events?: (TestInput | TestOutput)[];
 }
 
-const apply = (tree: TreeInternal<TestEvent, TestProjection>, opts: ApplyOpts): void => {
+type TreeEvent = TestInput | TestOutput;
+
+const apply = (tree: TreeInternal<TreeEvent, TestProjection>, opts: ApplyOpts): void => {
   const h: Record<string, string> = { [HEADER_RUN_ID]: opts.runId };
   if (opts.codecMessageId) h[HEADER_CODEC_MESSAGE_ID] = opts.codecMessageId;
   if (opts.parent) h[HEADER_PARENT] = opts.parent;
@@ -90,22 +101,22 @@ const apply = (tree: TreeInternal<TestEvent, TestProjection>, opts: ApplyOpts): 
   if (opts.clientId) h[HEADER_RUN_CLIENT_ID] = opts.clientId;
   if (opts.runContinue) h[HEADER_RUN_CONTINUE] = 'true';
 
-  const events: TestEvent[] = opts.events ?? (opts.message ? [{ type: 'append-message', message: opts.message }] : []);
+  const events: TreeEvent[] = opts.events ?? (opts.message ? [{ type: 'append-message', message: opts.message }] : []);
   tree.applyMessage(events, h, opts.serial);
 };
 
-const messagesOf = (tree: TreeInternal<TestEvent, TestProjection>, runId: string): TestMessage[] => {
+const messagesOf = (tree: TreeInternal<TreeEvent, TestProjection>, runId: string): TestMessage[] => {
   const run = tree.getRunNode(runId);
   return run ? testCodec.getMessages(run.projection) : [];
 };
 
 const flatMessages = (
-  tree: TreeInternal<TestEvent, TestProjection>,
+  tree: TreeInternal<TreeEvent, TestProjection>,
   selections: Map<string, string> = NO_SELECTIONS,
 ): TestMessage[] => tree.flattenNodes(selections).flatMap((r) => testCodec.getMessages(r.projection));
 
 const flatRunIds = (
-  tree: TreeInternal<TestEvent, TestProjection>,
+  tree: TreeInternal<TreeEvent, TestProjection>,
   selections: Map<string, string> = NO_SELECTIONS,
 ): string[] => tree.flattenNodes(selections).map((r) => r.runId);
 
@@ -114,7 +125,7 @@ const flatRunIds = (
 // ---------------------------------------------------------------------------
 
 describe('Tree', () => {
-  let tree: TreeInternal<TestEvent, TestProjection>;
+  let tree: TreeInternal<TreeEvent, TestProjection>;
 
   beforeEach(() => {
     tree = createTree(testCodec, silentLogger);

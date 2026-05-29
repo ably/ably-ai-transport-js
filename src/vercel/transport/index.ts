@@ -26,16 +26,19 @@ import type {
   ClientSession,
   ClientSessionOptions,
 } from '../../core/transport/types.js';
-import { UIMessageCodec, type VercelEvent, type VercelProjection } from '../codec/index.js';
+import { UIMessageCodec, type VercelInput, type VercelOutput, type VercelProjection } from '../codec/index.js';
 
 /** Core client session options with Vercel AI SDK types pre-applied. */
-type CoreClientOpts = ClientSessionOptions<VercelEvent, VercelProjection, AI.UIMessage>;
+type CoreClientOpts = ClientSessionOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
 /** Options for creating a Vercel client session. Same as core options but without the codec field, and with `api` optional (defaults to `"/api/chat"`). */
 export type VercelClientSessionOptions = Omit<CoreClientOpts, 'codec' | 'api'> & Partial<Pick<CoreClientOpts, 'api'>>;
 
 /** Options for creating a Vercel agent session. Same as core options but without the codec field. */
-export type VercelAgentSessionOptions = Omit<AgentSessionOptions<VercelEvent, VercelProjection, AI.UIMessage>, 'codec'>;
+export type VercelAgentSessionOptions = Omit<
+  AgentSessionOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
+  'codec'
+>;
 
 export const DEFAULT_VERCEL_API = '/api/chat';
 
@@ -48,7 +51,7 @@ export const DEFAULT_VERCEL_API = '/api/chat';
  */
 export const createClientSession = (
   options: VercelClientSessionOptions,
-): ClientSession<VercelEvent, VercelProjection, AI.UIMessage> =>
+): ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> =>
   createCoreClientSession({
     ...options,
     codec: UIMessageCodec,
@@ -65,5 +68,5 @@ export const createClientSession = (
  */
 export const createAgentSession = (
   options: VercelAgentSessionOptions,
-): AgentSession<VercelEvent, VercelProjection, AI.UIMessage> =>
+): AgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> =>
   createCoreAgentSession({ ...options, codec: UIMessageCodec });

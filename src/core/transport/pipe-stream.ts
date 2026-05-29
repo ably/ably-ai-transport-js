@@ -1,33 +1,34 @@
 /**
  * Pure stream piping function.
  *
- * Reads events from a ReadableStream, writes them to an encoder, and handles
- * cancel/error. No dependencies on run state or session internals.
+ * Reads outputs from a ReadableStream, writes them to an encoder via
+ * `publishOutput`, and handles cancel/error. No dependencies on run
+ * state or session internals.
  */
 
 import type { Logger } from '../../logger.js';
-import type { Encoder, WriteOptions } from '../codec/types.js';
+import type { CodecInputEvent, CodecOutputEvent, Encoder, WriteOptions } from '../codec/types.js';
 import type { StreamResult } from './types.js';
 
 /**
- * Pipe an event stream through an encoder to the channel.
+ * Pipe an output stream through an encoder to the channel.
  *
  * Returns when the stream completes, is cancelled (via signal), or errors.
  * The `reason` field of the result indicates which case occurred.
- * @param stream - The event stream to read from.
- * @param encoder - The encoder to publish events through.
+ * @param stream - The output stream to read from.
+ * @param encoder - The encoder to publish outputs through.
  * @param signal - AbortSignal to monitor for cancellation.
  * @param onCancelled - Optional callback invoked when the stream is cancelled, before the stream ends.
- * @param resolveWriteOptions - Optional per-event hook returning {@link WriteOptions} overrides to pass to `encoder.publish`.
+ * @param resolveWriteOptions - Optional per-output hook returning {@link WriteOptions} overrides to pass to `encoder.publishOutput`.
  * @param logger - Optional logger for diagnostic output.
  * @returns The reason the pipe ended.
  */
-export const pipeStream = async <TEvent>(
-  stream: ReadableStream<TEvent>,
-  encoder: Encoder<TEvent>,
+export const pipeStream = async <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent>(
+  stream: ReadableStream<TOutput>,
+  encoder: Encoder<TInput, TOutput>,
   signal: AbortSignal | undefined,
-  onCancelled?: (write: (event: TEvent) => Promise<void>) => void | Promise<void>,
-  resolveWriteOptions?: (event: TEvent) => WriteOptions | undefined,
+  onCancelled?: (write: (output: TOutput) => Promise<void>) => void | Promise<void>,
+  resolveWriteOptions?: (output: TOutput) => WriteOptions | undefined,
   logger?: Logger,
 ): Promise<StreamResult> => {
   logger?.trace('pipeStream();');
@@ -63,7 +64,7 @@ export const pipeStream = async <TEvent>(
         reason = 'cancelled';
         logger?.debug('pipeStream(); stream cancelled by AbortSignal');
         if (onCancelled) {
-          await onCancelled(async (event: TEvent) => encoder.publish(event));
+          await onCancelled(async (output: TOutput) => encoder.publishOutput(output));
         }
         await encoder.cancel('cancelled');
         break;
@@ -76,7 +77,7 @@ export const pipeStream = async <TEvent>(
         break;
       }
 
-      await encoder.publish(value, resolveWriteOptions?.(value));
+      await encoder.publishOutput(value, resolveWriteOptions?.(value));
     }
   } catch (error) {
     reason = 'error';

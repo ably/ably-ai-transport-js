@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ClientSession, SendOptions, Tree, View } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
-import type { VercelEvent, VercelProjection } from '../../../src/vercel/codec/index.js';
+import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
 import type { ChatTransportOptions } from '../../../src/vercel/transport/chat-transport.js';
 import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
 import { toBeErrorInfo } from '../../helper/expectations.js';
@@ -70,14 +70,14 @@ const createMockRun = (): MockRun => {
 };
 
 interface MockSession {
-  session: ClientSession<VercelEvent, VercelProjection, AI.UIMessage>;
+  session: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
   send: ReturnType<typeof vi.fn>;
   regenerate: ReturnType<typeof vi.fn>;
   cancel: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
   mockRun: MockRun;
   tree: Tree<VercelProjection>;
-  view: View<VercelEvent, VercelProjection, AI.UIMessage>;
+  view: View<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 }
 
 const createMockSession = (): MockSession => {
@@ -118,7 +118,7 @@ const createMockSession = (): MockSession => {
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
     on: vi.fn(() => () => {}),
     close: vi.fn(),
-  } as unknown as View<VercelEvent, VercelProjection, AI.UIMessage>;
+  } as unknown as View<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const cancel = vi.fn(() => Promise.resolve());
@@ -132,7 +132,7 @@ const createMockSession = (): MockSession => {
     cancel,
     close,
     on: vi.fn(() => noop),
-  } as unknown as ClientSession<VercelEvent, VercelProjection, AI.UIMessage>;
+  } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
   return { session, send, regenerate, cancel, close, mockRun, tree, view };
 };
@@ -170,8 +170,8 @@ describe('createChatTransport', () => {
       await streamPromise;
 
       expect(send).toHaveBeenCalledOnce();
-      const [events, opts] = send.mock.calls[0] as [VercelEvent[], SendOptions];
-      expect(events).toEqual([{ type: 'ait-user-message', message: m3 }]);
+      const [events, opts] = send.mock.calls[0] as [VercelInput[], SendOptions];
+      expect(events).toEqual([{ kind: 'user-message', message: m3 }]);
       expect(opts.body).toMatchObject({
         sessionName: 'chat-1',
         trigger: 'submit-message',
@@ -341,8 +341,8 @@ describe('createChatTransport', () => {
       mockRun.close();
       await streamPromise;
 
-      const [events, opts] = send.mock.calls[0] as [VercelEvent[], SendOptions];
-      expect(events).toEqual([{ type: 'ait-user-message', message: edited }]);
+      const [events, opts] = send.mock.calls[0] as [VercelInput[], SendOptions];
+      expect(events).toEqual([{ kind: 'user-message', message: edited }]);
       // The forkOf metadata is carried in sendOpts (not in the body); history
       // is built by the client session, not by the chat-transport adapter.
       expect(opts.forkOf).toBeDefined();
@@ -800,8 +800,8 @@ describe('createChatTransport', () => {
       mockRun.close();
       await streamPromise;
 
-      const [events, opts] = send.mock.calls[0] as [VercelEvent[], SendOptions];
-      expect(events).toEqual([{ type: 'ait-user-message', message: user2 }]);
+      const [events, opts] = send.mock.calls[0] as [VercelInput[], SendOptions];
+      expect(events).toEqual([{ kind: 'user-message', message: user2 }]);
       expect(opts.forkOf).toBe('a1');
       expect(opts.parent).toBe('u1');
       // History is built by the client session (not the chat-transport
@@ -915,8 +915,8 @@ describe('createChatTransport', () => {
       mockRun.close();
       await streamPromise;
 
-      const [events, opts] = send.mock.calls[0] as [VercelEvent[], SendOptions];
-      expect(events).toEqual([{ type: 'ait-user-message', message: user2 }]);
+      const [events, opts] = send.mock.calls[0] as [VercelInput[], SendOptions];
+      expect(events).toEqual([{ kind: 'user-message', message: user2 }]);
       expect(opts.forkOf).toBeUndefined();
       expect(opts.parent).toBeUndefined();
     });
@@ -1060,15 +1060,15 @@ describe('createChatTransport', () => {
       mockRun.close();
       await streamPromise;
 
-      const [input] = send.mock.calls[0] as [{ event: VercelEvent; codecMessageId?: string }[]];
+      const [input] = send.mock.calls[0] as [VercelInput[]];
 
-      // chat-transport passes the richer per-entry shape to view.sendEvent.
-      // Each entry pairs a tool-resolution event with the prior assistant's
-      // codec-message-id so the SDK stamps the wire HEADER_CODEC_MESSAGE_ID to 'a1' — the
-      // reducer's direct-fold path then matches by codec-message-id and folds the
-      // chunk onto the existing assistant without a cross-message redirect.
+      // chat-transport passes tool-resolution inputs to view.sendEvent.
+      // Each input carries `codecMessageId` so the SDK stamps the wire
+      // HEADER_CODEC_MESSAGE_ID to 'a1' — the reducer's direct-fold path
+      // then matches by codec-message-id and folds onto the existing
+      // assistant without a cross-message redirect.
       expect(input).toHaveLength(1);
-      expect(input[0]?.event.type).toBe('tool-output-available');
+      expect(input[0]?.kind).toBe('tool-result');
       expect(input[0]?.codecMessageId).toBe('a1');
     });
 
@@ -1119,9 +1119,9 @@ describe('createChatTransport', () => {
       mockRun.close();
       await streamPromise;
 
-      const [input] = send.mock.calls[0] as [{ event: VercelEvent; codecMessageId?: string }[]];
+      const [input] = send.mock.calls[0] as [VercelInput[]];
       expect(input).toHaveLength(1);
-      expect(input[0]?.event.type).toBe('tool-approval-response');
+      expect(input[0]?.kind).toBe('tool-approval-response');
       expect(input[0]?.codecMessageId).toBe('a1');
     });
   });

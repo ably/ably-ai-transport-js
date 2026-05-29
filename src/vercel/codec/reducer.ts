@@ -1,34 +1,35 @@
 /**
  * Vercel AI SDK reducer.
  *
- * Pure `(init, fold)` over the Vercel TEvent union. Folds chunks and
- * codec-local events (user-message, tool-approval-response) into a
- * VercelProjection holding `UIMessage[]` plus internal stream-tracker state.
+ * Pure `(init, fold)` over the `VercelInput | VercelOutput` union. Folds
+ * input variants (user-message, tool-result, tool-result-error,
+ * tool-approval-response) and `UIMessageChunk` outputs into a
+ * VercelProjection holding `UIMessage[]` plus internal stream-tracker
+ * state.
  *
  * The reducer is stateless: every fold is `(state, event, meta) → state'`,
- * with no instance state. Mutation in place is allowed — the projection is
- * single-owner.
+ * with no instance state. Mutation in place is allowed — the projection
+ * is single-owner.
  *
  * Idempotency is **per conflict key**, not stream-wide: when two events
- * compete for the same logical state (e.g. two `tool-output-available` for
- * the same `toolCallId`), the higher-serial one wins and the other is
- * dropped. Unrelated events arrive freely in any order. See
+ * compete for the same logical state (e.g. two `tool-output-available`
+ * for the same `toolCallId`), the higher-serial one wins and the other
+ * is dropped. Unrelated events arrive freely in any order. See
  * `_conflictKeyOf` for the per-variant key derivation.
  *
- * Client-published continuation tool-resolution events (tool outputs /
- * approval responses published as `role: 'user'` channel messages) are
- * redirected by `toolCallId` onto the prior assistant in the same
- * projection — the wire `messageId` (the continuation's own new codec-message-id)
- * is added to a `consumedCodecMessageIds` set so the user-message never appears
- * in `getMessages()` output. Continuation flow runs the standard fold
- * paths but with a per-event toolCallId lookup; no separate code path.
+ * Client-published tool resolutions (`ToolResult`, `ToolResultError`,
+ * `ToolApprovalResponse`) carry `codecMessageId` targeting the assistant
+ * they amend; the reducer applies the resolution onto that assistant's
+ * `dynamic-tool` part directly. If the assistant has not yet arrived in
+ * the projection (out-of-order delivery), the resolution is buffered in
+ * `pendingToolResolutions` and re-evaluated on each subsequent fold.
  */
 
 import type * as AI from 'ai';
 
-import type { ReducerMeta } from '../../core/codec/types.js';
+import type { ReducerMeta, ToolApprovalResponse, ToolResult, ToolResultError } from '../../core/codec/types.js';
 import { stripUndefined } from '../../utils.js';
-import type { ToolApprovalResponseEvent, UserMessageEvent, VercelEvent } from './events.js';
+import type { VercelInput, VercelOutput } from './events.js';
 import { toolBase, transitionToolPart } from './tool-transitions.js';
 
 // ---------------------------------------------------------------------------
@@ -85,14 +86,6 @@ export interface VercelProjection {
   /** Per-codecMessageId tracker state for streamed parts. Internal — do not access. */
   trackers: Map<string, MessageTrackers>;
   /**
-   * Wire `x-ably-codec-message-id`s that have been consumed by tool-resolution
-   * redirection — the message carried only tool outputs / approvals which
-   * were folded onto a prior assistant by `toolCallId`. `getMessages()`
-   * filters these out so the consumed wire message never materialises as
-   * its own UIMessage / Tree node.
-   */
-  consumedCodecMessageIds: Set<string>;
-  /**
    * Tool-resolution events that arrived before any assistant in this
    * projection had a matching `toolCallId`. Re-evaluated on every
    * subsequent fold so that an out-of-order tool output is folded as
@@ -108,16 +101,16 @@ export interface VercelProjection {
  * is added to the projection.
  */
 interface PendingToolResolution {
-  /** Wire `x-ably-codec-message-id` to mark consumed once the resolution promotes. */
-  consumedCodecMessageId: string;
+  /** The codec-message-id of the assistant the resolution targets. */
+  targetCodecMessageId: string;
   /** Tool call this resolution targets. */
   toolCallId: string;
   /** Serial of the wire message — used by the conflict-key check on promotion. */
   serial: string;
-  /** Variant of the tool-resolution chunk used to transition the assistant's tool part. */
+  /** Variant of the tool-resolution used to transition the assistant's tool part. */
   resolution:
-    | { kind: 'tool-output-available'; output: unknown }
-    | { kind: 'tool-output-error'; errorText: string }
+    | { kind: 'tool-result'; output: unknown }
+    | { kind: 'tool-result-error'; message: string }
     | { kind: 'tool-approval-response'; approved: boolean; reason?: string };
 }
 
@@ -133,7 +126,6 @@ export const init = (): VercelProjection => ({
   messages: [],
   conflictSerials: new Map(),
   trackers: new Map(),
-  consumedCodecMessageIds: new Set(),
   pendingToolResolutions: [],
 });
 
@@ -142,7 +134,8 @@ export const init = (): VercelProjection => ({
 // ---------------------------------------------------------------------------
 
 /**
- * Fold one VercelEvent into the projection. Mutates and returns `state`.
+ * Fold one input or output event into the projection. Mutates and returns
+ * `state`.
  *
  * Idempotency is per conflict key (see `_conflictKeyOf`): if the event has
  * a conflict key and the projection has already folded an event for that
@@ -151,11 +144,15 @@ export const init = (): VercelProjection => ({
  * unconditionally. Orphan events (e.g. tool-output for an unknown
  * toolCallId) are dropped silently inside the per-variant fold helpers.
  * @param state - Projection to fold into (may be mutated in place).
- * @param event - VercelEvent to fold.
+ * @param event - Input or output event to fold.
  * @param meta - Transport-derived metadata (serial, optional messageId).
  * @returns The same projection reference, possibly mutated.
  */
-export const fold = (state: VercelProjection, event: VercelEvent, meta: ReducerMeta): VercelProjection => {
+export const fold = (
+  state: VercelProjection,
+  event: VercelInput | VercelOutput,
+  meta: ReducerMeta,
+): VercelProjection => {
   if (meta.serial) {
     const key = _conflictKeyOf(event, meta);
     if (key !== undefined) {
@@ -167,30 +164,33 @@ export const fold = (state: VercelProjection, event: VercelEvent, meta: ReducerM
     }
   }
 
-  switch (event.type) {
-    case 'ait-user-message': {
-      _foldUserMessage(state, event, meta);
-      break;
+  if (_isInput(event)) {
+    switch (event.kind) {
+      case 'user-message': {
+        _foldUserMessage(state, event.message, meta);
+        break;
+      }
+      case 'regenerate': {
+        // Regenerate input — wire-only signal. Carries no projection state;
+        // the agent reads `target` / `parent` from the wire headers via
+        // the prompt-lookup path. No fold work to do here.
+        break;
+      }
+      case 'tool-result': {
+        _foldClientToolResult(state, event, meta);
+        break;
+      }
+      case 'tool-result-error': {
+        _foldClientToolResultError(state, event, meta);
+        break;
+      }
+      case 'tool-approval-response': {
+        _foldToolApprovalResponse(state, event, meta);
+        break;
+      }
     }
-    case 'tool-approval-response': {
-      _foldToolApprovalResponse(state, event, meta);
-      break;
-    }
-    case 'tool-output-available':
-    case 'tool-output-error': {
-      _foldToolOutputChunk(state, event, meta);
-      break;
-    }
-    case 'ait-regenerate': {
-      // Regenerate event — wire-only. Carries no projection state; the
-      // agent reads `parent`/`forkOf` directly from transport headers
-      // via the prompt-lookup path. No fold work to do here.
-      break;
-    }
-    default: {
-      _foldChunk(state, event, meta);
-      break;
-    }
+  } else {
+    _foldChunk(state, event, meta);
   }
 
   // Re-evaluate pending tool resolutions in case the just-folded event
@@ -202,6 +202,14 @@ export const fold = (state: VercelProjection, event: VercelEvent, meta: ReducerM
 
   return state;
 };
+
+/**
+ * Narrow the union to TInput vs TOutput by the discriminator field name.
+ * VercelInput variants carry `kind`; VercelOutput variants carry `type`.
+ * @param event - The event to narrow.
+ * @returns True when the event is a VercelInput, false for VercelOutput.
+ */
+const _isInput = (event: VercelInput | VercelOutput): event is VercelInput => 'kind' in event;
 
 // ---------------------------------------------------------------------------
 // Conflict-key derivation
@@ -217,15 +225,31 @@ export const fold = (state: VercelProjection, event: VercelEvent, meta: ReducerM
  * @param meta - Transport-derived metadata (used for events keyed by codec-message-id).
  * @returns The conflict key, or `undefined` if the event is additive / independent.
  */
-const _conflictKeyOf = (event: VercelEvent, meta: ReducerMeta): string | undefined => {
-  switch (event.type) {
-    case 'ait-user-message': {
-      return `user-msg:${event.message.id}`;
+const _conflictKeyOf = (event: VercelInput | VercelOutput, meta: ReducerMeta): string | undefined => {
+  if (_isInput(event)) {
+    switch (event.kind) {
+      case 'user-message': {
+        return `user-msg:${event.message.id}`;
+      }
+      case 'tool-approval-response': {
+        return `tool-approval:${event.toolCallId}`;
+      }
+      // Client tool results compete for the same final state of the tool
+      // call (against agent-side `tool-output-available`/`tool-output-error`
+      // chunks and against `tool-output-denied`/`tool-approval-request`).
+      // Highest serial wins. Shares the `tool-output:` namespace with the
+      // agent-side chunks below.
+      case 'tool-result':
+      case 'tool-result-error': {
+        return `tool-output:${event.toolCallId}`;
+      }
+      case 'regenerate': {
+        return undefined;
+      }
     }
-    case 'tool-approval-response': {
-      return `tool-approval:${event.toolCallId}`;
-    }
+  }
 
+  switch (event.type) {
     // Tool-input state machine, keyed by toolCallId.
     case 'tool-input-start':
     case 'tool-input-available':
@@ -233,8 +257,9 @@ const _conflictKeyOf = (event: VercelEvent, meta: ReducerMeta): string | undefin
       return `${event.type}:${event.toolCallId}`;
     }
 
-    // All "tool-output-ish" variants compete for the same final state of
-    // the tool call. Highest-serial wins among them.
+    // All "tool-output-ish" output variants compete for the same final
+    // state of the tool call. Shares the `tool-output:` namespace with
+    // the client-published input variants above.
     case 'tool-output-available':
     case 'tool-output-error':
     case 'tool-output-denied':
@@ -269,18 +294,18 @@ const _conflictKeyOf = (event: VercelEvent, meta: ReducerMeta): string | undefin
 };
 
 // ---------------------------------------------------------------------------
-// Codec-local event folds
+// Input folds
 // ---------------------------------------------------------------------------
 
-const _foldUserMessage = (state: VercelProjection, event: UserMessageEvent, meta: ReducerMeta): VercelProjection => {
-  // Align the projection's UIMessage.id with the wire `x-ably-msg-id`
+const _foldUserMessage = (state: VercelProjection, message: AI.UIMessage, meta: ReducerMeta): VercelProjection => {
+  // Align the projection's UIMessage.id with the wire `x-ably-codec-message-id`
   // (= meta.messageId) so the Tree's _codecMessageIdToRunId index is reachable from
   // any consumer holding the UIMessage. Without this, useChat-supplied
   // domain ids leak through, and downstream lookups (view.regenerate /
   // view.edit / view.getRunByCodecMessageId) silently miss because the tree only
-  // indexes wire msg-ids.
-  const targetId = meta.messageId ?? event.message.id;
-  const aligned = event.message.id === targetId ? event.message : { ...event.message, id: targetId };
+  // indexes wire codec-message-ids.
+  const targetId = meta.messageId ?? message.id;
+  const aligned = message.id === targetId ? message : { ...message, id: targetId };
   const existingIdx = state.messages.findIndex((m) => m.id === targetId);
   if (existingIdx === -1) {
     state.messages.push(aligned);
@@ -291,158 +316,114 @@ const _foldUserMessage = (state: VercelProjection, event: UserMessageEvent, meta
 };
 
 /**
- * Fold a client-published `tool-approval-response` event by redirecting
- * the resolution onto the prior assistant in this projection whose
- * `dynamic-tool` part matches the response's `toolCallId`. The wire
- * message-id is recorded in `consumedCodecMessageIds` so the response never
- * surfaces as its own UIMessage. Orphans (no matching assistant) are
- * buffered and re-evaluated on each subsequent fold.
+ * Fold a client-published `ToolResult`. The input carries
+ * `codecMessageId` pointing at the assistant whose `dynamic-tool` part
+ * holds the matching `toolCallId`. If the assistant is present, fold
+ * directly; otherwise pend until the assistant arrives.
  * @param state - Projection to fold into.
- * @param event - The approval-response event (toolCallId, approved, optional reason).
- * @param meta - Transport-derived metadata; `messageId` is the wire `x-ably-codec-message-id` consumed on success.
+ * @param event - The tool-result input (codecMessageId, toolCallId, output).
+ * @param meta - Transport-derived metadata.
+ * @returns The same projection reference.
+ */
+const _foldClientToolResult = (state: VercelProjection, event: ToolResult, meta: ReducerMeta): VercelProjection => {
+  const owner = _findOwner(state, event.codecMessageId, event.toolCallId);
+  if (owner) {
+    owner.message.parts[owner.tracker.partIndex] = transitionToolPart(owner.part, {
+      type: 'tool-output-available',
+      toolCallId: event.toolCallId,
+      output: event.output,
+    });
+    return state;
+  }
+
+  state.pendingToolResolutions.push({
+    targetCodecMessageId: event.codecMessageId,
+    toolCallId: event.toolCallId,
+    serial: meta.serial,
+    resolution: { kind: 'tool-result', output: event.output },
+  });
+  return state;
+};
+
+/**
+ * Fold a client-published `ToolResultError`. Mirrors
+ * {@link _foldClientToolResult} but with the error transition.
+ * @param state - Projection to fold into.
+ * @param event - The tool-result-error input (codecMessageId, toolCallId, message).
+ * @param meta - Transport-derived metadata.
+ * @returns The same projection reference.
+ */
+const _foldClientToolResultError = (
+  state: VercelProjection,
+  event: ToolResultError,
+  meta: ReducerMeta,
+): VercelProjection => {
+  const owner = _findOwner(state, event.codecMessageId, event.toolCallId);
+  if (owner) {
+    owner.message.parts[owner.tracker.partIndex] = transitionToolPart(owner.part, {
+      type: 'tool-output-error',
+      toolCallId: event.toolCallId,
+      errorText: event.message,
+    });
+    return state;
+  }
+
+  state.pendingToolResolutions.push({
+    targetCodecMessageId: event.codecMessageId,
+    toolCallId: event.toolCallId,
+    serial: meta.serial,
+    resolution: { kind: 'tool-result-error', message: event.message },
+  });
+  return state;
+};
+
+/**
+ * Fold a client-published `ToolApprovalResponse`. The input carries
+ * `codecMessageId` pointing at the assistant whose `dynamic-tool` part
+ * holds the matching `toolCallId`. Approval → `approval-responded`;
+ * denial → `output-denied` via {@link transitionToolPart}.
+ * @param state - Projection to fold into.
+ * @param event - The approval-response input.
+ * @param meta - Transport-derived metadata.
  * @returns The same projection reference.
  */
 const _foldToolApprovalResponse = (
   state: VercelProjection,
-  event: ToolApprovalResponseEvent,
+  event: ToolApprovalResponse,
   meta: ReducerMeta,
 ): VercelProjection => {
-  const messageId = meta.messageId;
-  if (messageId !== undefined) {
-    const owner = state.messages.find((m) => m.id === messageId);
-    if (owner) {
-      const trackers = _ensureTrackers(state, messageId);
-      const found = _getToolPart(owner, trackers, event.toolCallId);
-      if (found) {
-        owner.parts[found.tracker.partIndex] = _approvalTransition(found.part, event.approved, event.reason);
-        return state;
-      }
-    }
-  }
-
-  const promoted = _promoteApprovalOntoAssistant(state, event.toolCallId, event.approved, event.reason);
-  if (promoted) {
-    if (messageId) state.consumedCodecMessageIds.add(messageId);
-  } else if (messageId) {
-    state.pendingToolResolutions.push({
-      consumedCodecMessageId: messageId,
-      toolCallId: event.toolCallId,
-      serial: meta.serial,
-      resolution: {
-        kind: 'tool-approval-response',
-        approved: event.approved,
-        ...(event.reason === undefined ? {} : { reason: event.reason }),
-      },
-    });
-  }
-  return state;
-};
-
-/**
- * Fold a `tool-output-available` or `tool-output-error` UIMessageChunk.
- * If `meta.messageId` matches an existing message with the toolCallId
- * present as a `dynamic-tool` part, fold onto that message (standard
- * agent-side path). Otherwise — typically a client-published continuation
- * carrying its own wire `codecMessageId` — scan the projection for the prior
- * assistant whose tool part matches and redirect the fold there,
- * consuming the wire `codecMessageId`. Orphans pend until the assistant arrives.
- * @param state - Projection to fold into.
- * @param chunk - The tool-output UIMessageChunk.
- * @param meta - Transport-derived metadata; `messageId` is the wire `x-ably-codec-message-id`.
- * @returns The same projection reference.
- */
-const _foldToolOutputChunk = (
-  state: VercelProjection,
-  chunk: Extract<AI.UIMessageChunk, { type: 'tool-output-available' | 'tool-output-error' }>,
-  meta: ReducerMeta,
-): VercelProjection => {
-  const messageId = meta.messageId;
-  if (messageId !== undefined) {
-    const owner = state.messages.find((m) => m.id === messageId);
-    if (owner) {
-      const trackers = _ensureTrackers(state, messageId);
-      if (_getToolPart(owner, trackers, chunk.toolCallId)) {
-        return _foldToolOutput(state, chunk, messageId);
-      }
-    }
-  }
-
-  // No direct owner — redirect by toolCallId. Client-published
-  // continuation outputs land here: the wire codecMessageId is the continuation's
-  // own new id, not the suspended assistant's.
-  const promoted = _promoteToolChunkOntoAssistant(state, chunk);
-  if (promoted) {
-    if (messageId) state.consumedCodecMessageIds.add(messageId);
+  const owner = _findOwner(state, event.codecMessageId, event.toolCallId);
+  if (owner) {
+    owner.message.parts[owner.tracker.partIndex] = _approvalTransition(owner.part, event.approved, event.reason);
     return state;
   }
 
-  if (messageId) {
-    state.pendingToolResolutions.push({
-      consumedCodecMessageId: messageId,
-      toolCallId: chunk.toolCallId,
-      serial: meta.serial,
-      resolution:
-        chunk.type === 'tool-output-available'
-          ? { kind: 'tool-output-available', output: chunk.output }
-          : { kind: 'tool-output-error', errorText: chunk.errorText },
-    });
-  }
+  state.pendingToolResolutions.push({
+    targetCodecMessageId: event.codecMessageId,
+    toolCallId: event.toolCallId,
+    serial: meta.serial,
+    resolution: {
+      kind: 'tool-approval-response',
+      approved: event.approved,
+      ...(event.reason === undefined ? {} : { reason: event.reason }),
+    },
+  });
   return state;
 };
 
-// ---------------------------------------------------------------------------
-// Tool-resolution promotion helpers
-// ---------------------------------------------------------------------------
+interface OwnerLookup {
+  message: AI.UIMessage;
+  tracker: ToolPartTracker;
+  part: AI.DynamicToolUIPart;
+}
 
-/**
- * Find the assistant in the projection whose `dynamic-tool` part matches
- * `toolCallId` and apply a `tool-output-available` / `tool-output-error`
- * transition. Returns `true` when a match was found and updated, `false`
- * otherwise (caller pends or drops).
- * @param state - Projection to search and mutate.
- * @param chunk - Tool-output chunk carrying the new state.
- * @returns True when an assistant was located and promoted.
- */
-const _promoteToolChunkOntoAssistant = (
-  state: VercelProjection,
-  chunk: Extract<AI.UIMessageChunk, { type: 'tool-output-available' | 'tool-output-error' }>,
-): boolean => {
-  for (const message of state.messages) {
-    for (let i = 0; i < message.parts.length; i++) {
-      const part = message.parts[i];
-      if (part?.type !== 'dynamic-tool' || part.toolCallId !== chunk.toolCallId) continue;
-      message.parts[i] = transitionToolPart(part, chunk);
-      return true;
-    }
-  }
-  return false;
-};
-
-/**
- * Find the assistant whose `dynamic-tool` part matches `toolCallId` and
- * apply the approval-responded / output-denied transition. Returns
- * `true` when a match was found.
- * @param state - Projection to search and mutate.
- * @param toolCallId - Tool call id to locate.
- * @param approved - Whether the user approved the tool execution.
- * @param reason - Optional human-readable reason.
- * @returns True when an assistant was located and promoted.
- */
-const _promoteApprovalOntoAssistant = (
-  state: VercelProjection,
-  toolCallId: string,
-  approved: boolean,
-  reason: string | undefined,
-): boolean => {
-  for (const message of state.messages) {
-    for (let i = 0; i < message.parts.length; i++) {
-      const part = message.parts[i];
-      if (part?.type !== 'dynamic-tool' || part.toolCallId !== toolCallId) continue;
-      message.parts[i] = _approvalTransition(part, approved, reason);
-      return true;
-    }
-  }
-  return false;
+const _findOwner = (state: VercelProjection, codecMessageId: string, toolCallId: string): OwnerLookup | undefined => {
+  const message = state.messages.find((m) => m.id === codecMessageId);
+  if (!message) return undefined;
+  const trackers = _ensureTrackers(state, codecMessageId);
+  const found = _getToolPart(message, trackers, toolCallId);
+  if (!found) return undefined;
+  return { message, tracker: found.tracker, part: found.part };
 };
 
 /**
@@ -486,45 +467,43 @@ const _approvalTransition = (
 
 /**
  * Re-attempt every pending tool resolution against the current projection.
- * Successfully promoted entries are removed and their wire codecMessageIds added to
- * `consumedCodecMessageIds`. Cheap: bounded by the number of pending entries.
+ * Successfully promoted entries are removed from the pending list. Cheap:
+ * bounded by the number of pending entries.
  * @param state - Projection to walk and mutate.
  */
 const _retryPendingResolutions = (state: VercelProjection): void => {
   const next: PendingToolResolution[] = [];
   for (const pending of state.pendingToolResolutions) {
-    let promoted = false;
+    const owner = _findOwner(state, pending.targetCodecMessageId, pending.toolCallId);
+    if (!owner) {
+      next.push(pending);
+      continue;
+    }
     switch (pending.resolution.kind) {
-      case 'tool-output-available': {
-        promoted = _promoteToolChunkOntoAssistant(state, {
+      case 'tool-result': {
+        owner.message.parts[owner.tracker.partIndex] = transitionToolPart(owner.part, {
           type: 'tool-output-available',
           toolCallId: pending.toolCallId,
           output: pending.resolution.output,
         });
         break;
       }
-      case 'tool-output-error': {
-        promoted = _promoteToolChunkOntoAssistant(state, {
+      case 'tool-result-error': {
+        owner.message.parts[owner.tracker.partIndex] = transitionToolPart(owner.part, {
           type: 'tool-output-error',
           toolCallId: pending.toolCallId,
-          errorText: pending.resolution.errorText,
+          errorText: pending.resolution.message,
         });
         break;
       }
       case 'tool-approval-response': {
-        promoted = _promoteApprovalOntoAssistant(
-          state,
-          pending.toolCallId,
+        owner.message.parts[owner.tracker.partIndex] = _approvalTransition(
+          owner.part,
           pending.resolution.approved,
           pending.resolution.reason,
         );
         break;
       }
-    }
-    if (promoted) {
-      state.consumedCodecMessageIds.add(pending.consumedCodecMessageId);
-    } else {
-      next.push(pending);
     }
   }
   state.pendingToolResolutions = next;
@@ -534,7 +513,7 @@ const _retryPendingResolutions = (state: VercelProjection): void => {
 // UIMessageChunk fold
 // ---------------------------------------------------------------------------
 
-const _foldChunk = (state: VercelProjection, chunk: AI.UIMessageChunk, meta: ReducerMeta): VercelProjection => {
+const _foldChunk = (state: VercelProjection, chunk: VercelOutput, meta: ReducerMeta): VercelProjection => {
   const messageId = meta.messageId;
   if (messageId === undefined) {
     // Without a target codec-message-id, a chunk has nowhere to land. Drop.
@@ -568,17 +547,10 @@ const _foldChunk = (state: VercelProjection, chunk: AI.UIMessageChunk, meta: Red
       return _foldToolInput(state, chunk, messageId);
     }
 
+    case 'tool-output-available':
+    case 'tool-output-error':
     case 'tool-output-denied':
     case 'tool-approval-request': {
-      return _foldToolOutput(state, chunk, messageId);
-    }
-
-    // `tool-output-available` / `tool-output-error` are dispatched to
-    // `_foldToolOutputChunk` by the outer fold() switch; they reach
-    // `_foldChunk` only via an unreachable path. Declared explicitly so
-    // TypeScript can narrow the default branch to `data-${string}`.
-    case 'tool-output-available':
-    case 'tool-output-error': {
       return _foldToolOutput(state, chunk, messageId);
     }
 
@@ -818,7 +790,7 @@ const _foldToolInput = (
 };
 
 // ---------------------------------------------------------------------------
-// Tool output transitions
+// Tool output transitions (agent-published chunks)
 // ---------------------------------------------------------------------------
 
 const _foldToolOutput = (
@@ -921,13 +893,10 @@ const _foldDataPart = (
 
 /**
  * Extract the UIMessage list from a projection for Tree population.
- * Consumed message-ids (tool-resolution wire messages whose payload was
- * folded onto a prior assistant) are filtered out so no Tree node is
- * created for them.
+ * Client-published tool resolutions amend existing assistants in place
+ * via `kind: 'tool-result'` etc. — they never materialise as their own
+ * UIMessage in the projection, so no filtering is needed here.
  * @param projection - Projection produced by `init` + repeated `fold` calls.
  * @returns The visible UIMessages, in publication order.
  */
-export const getMessages = (projection: VercelProjection): AI.UIMessage[] => {
-  if (projection.consumedCodecMessageIds.size === 0) return projection.messages;
-  return projection.messages.filter((m) => !projection.consumedCodecMessageIds.has(m.id));
-};
+export const getMessages = (projection: VercelProjection): AI.UIMessage[] => projection.messages;

@@ -1,30 +1,51 @@
 /**
  * Vercel AI SDK Decoder.
  *
- * Maps Ably inbound messages to a flat `VercelEvent[]`. Delegates action
- * dispatch and serial tracking to the decoder core. The `LifecycleTracker`
- * is an internal helper used to pre-roll missing `start` / `start-step`
- * events on mid-stream join (history compaction, rewind miss, partial
- * page); the reducer always sees a clean event stream.
+ * Maps Ably inbound messages to {@link DecodedMessage} — a `{ inputs,
+ * outputs }` tagged result. The decoder routes by the wire `name`
+ * (`ai-input` vs `ai-output`) so the SDK never has to inspect direction:
+ * input-side messages produce `VercelInput` variants; output-side
+ * messages produce `VercelOutput` (`UIMessageChunk`) variants.
  *
- * Receive-side dispatch reads the wire `name` to pick the publish side
- * (`ai-output` for agent publishes, `ai-input` for client publishes)
- * and then routes by the `x-domain-type` domain header carrying the
- * codec event type. Domain-specific headers use the `x-domain-` prefix.
- * Transport-level headers use the `x-ably-` prefix.
+ * The `LifecycleTracker` is an internal helper used to pre-roll missing
+ * `start` / `start-step` chunks on mid-stream join (history compaction,
+ * rewind miss, partial page) so the reducer always sees a clean event
+ * sequence for streamed output.
+ *
+ * Receive-side dispatch reads the wire `name` first and then routes by
+ * the `x-domain-type` domain header carrying the codec event type.
+ * Domain-specific headers use the `x-domain-` prefix. Transport-level
+ * headers use the `x-ably-` prefix.
  */
 
 import type * as Ably from 'ably';
 import type * as AI from 'ai';
 
-import { EVENT_AI_INPUT, EVENT_AI_OUTPUT, HEADER_DISCRETE, HEADER_ROLE, HEADER_RUN_ID } from '../../constants.js';
+import {
+  EVENT_AI_INPUT,
+  EVENT_AI_OUTPUT,
+  HEADER_CODEC_MESSAGE_ID,
+  HEADER_DISCRETE,
+  HEADER_ROLE,
+  HEADER_RUN_ID,
+} from '../../constants.js';
 import type { DecoderCore, DecoderCoreHooks, DecoderCoreOptions } from '../../core/codec/decoder.js';
 import { createDecoderCore } from '../../core/codec/decoder.js';
 import type { LifecycleTracker } from '../../core/codec/lifecycle-tracker.js';
 import { createLifecycleTracker } from '../../core/codec/lifecycle-tracker.js';
-import type { Decoder, MessagePayload, StreamTrackerState } from '../../core/codec/types.js';
+import type {
+  DecodedMessage,
+  Decoder,
+  MessagePayload,
+  StreamTrackerState,
+  UserMessage,
+} from '../../core/codec/types.js';
 import { type DomainHeaderReader, headerReader as rawHeaderReader, stripUndefined } from '../../utils.js';
-import type { UserMessageEvent, VercelEvent } from './events.js';
+import type { VercelInput, VercelOutput } from './events.js';
+
+// Decoder-internal union — the codec emits inputs and outputs through the
+// same flat list from the underlying core and partitions on the way out.
+type AnyEvent = VercelInput | VercelOutput;
 
 // ---------------------------------------------------------------------------
 // Vercel-specific header reader (casts providerMetadata to AI.ProviderMetadata)
@@ -53,20 +74,25 @@ const headerReader = (headers: Record<string, string>): VercelHeaderReader => {
 // Wire format types (trust boundaries for JSON-parsed data)
 // ---------------------------------------------------------------------------
 
-/** Wire format for tool-input-error data payload. */
+/** Wire format for the agent-side `tool-input-error` chunk data payload. */
 interface ToolInputErrorWireData {
   errorText?: string;
   input?: unknown;
 }
 
-/** Wire format for tool-output-available data payload. */
+/** Wire format for the `tool-output-available` (agent) / `tool-result` (client) data payload. */
 interface ToolOutputAvailableWireData {
   output?: unknown;
 }
 
-/** Wire format for tool-output-error data payload. */
-interface ToolOutputErrorWireData {
+/** Wire format for the agent-side `tool-output-error` chunk data payload. */
+interface AgentToolOutputErrorWireData {
   errorText?: string;
+}
+
+/** Wire format for the client-side `tool-result-error` input data payload. */
+interface ClientToolResultErrorWireData {
+  message?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -100,7 +126,7 @@ const parseJsonOrString = (value: string): unknown => {
 };
 
 // ---------------------------------------------------------------------------
-// Streamed message event builders
+// Streamed message event builders (output-side)
 // ---------------------------------------------------------------------------
 
 /**
@@ -213,14 +239,14 @@ const createVercelLifecycleTracker = (): LifecycleTracker<AI.UIMessageChunk> =>
   ]);
 
 // ---------------------------------------------------------------------------
-// Discrete event decoders
+// Discrete output decoders (ai-output → UIMessageChunk)
 // ---------------------------------------------------------------------------
 
 const decodeStart = (
   r: VercelHeaderReader,
   runId: string,
   lifecycle: LifecycleTracker<AI.UIMessageChunk>,
-): VercelEvent[] => {
+): AI.UIMessageChunk[] => {
   lifecycle.markEmitted(runId, 'start');
   return [
     stripUndefined({
@@ -231,12 +257,12 @@ const decodeStart = (
   ];
 };
 
-const decodeStartStep = (runId: string, lifecycle: LifecycleTracker<AI.UIMessageChunk>): VercelEvent[] => {
+const decodeStartStep = (runId: string, lifecycle: LifecycleTracker<AI.UIMessageChunk>): AI.UIMessageChunk[] => {
   lifecycle.markEmitted(runId, 'start-step');
   return [{ type: 'start-step' }];
 };
 
-const decodeFinishStep = (runId: string, lifecycle: LifecycleTracker<AI.UIMessageChunk>): VercelEvent[] => {
+const decodeFinishStep = (runId: string, lifecycle: LifecycleTracker<AI.UIMessageChunk>): AI.UIMessageChunk[] => {
   lifecycle.resetPhase(runId, 'start-step');
   return [{ type: 'finish-step' }];
 };
@@ -245,7 +271,7 @@ const decodeFinish = (
   r: VercelHeaderReader,
   runId: string,
   lifecycle: LifecycleTracker<AI.UIMessageChunk>,
-): VercelEvent[] => {
+): AI.UIMessageChunk[] => {
   lifecycle.clearScope(runId);
   return [
     stripUndefined({
@@ -256,23 +282,31 @@ const decodeFinish = (
   ];
 };
 
-const decodeError = (data: unknown, runId: string, lifecycle: LifecycleTracker<AI.UIMessageChunk>): VercelEvent[] => {
+const decodeError = (
+  data: unknown,
+  runId: string,
+  lifecycle: LifecycleTracker<AI.UIMessageChunk>,
+): AI.UIMessageChunk[] => {
   lifecycle.clearScope(runId);
   const errorText = typeof data === 'string' ? data : '';
   return [{ type: 'error', errorText }];
 };
 
-const decodeAbort = (data: unknown, runId: string, lifecycle: LifecycleTracker<AI.UIMessageChunk>): VercelEvent[] => {
+const decodeAbort = (
+  data: unknown,
+  runId: string,
+  lifecycle: LifecycleTracker<AI.UIMessageChunk>,
+): AI.UIMessageChunk[] => {
   lifecycle.clearScope(runId);
   const reason = typeof data === 'string' && data ? data : undefined;
   return [stripUndefined({ type: 'abort' as const, reason })];
 };
 
-const decodeMessageMetadata = (r: VercelHeaderReader): VercelEvent[] => [
+const decodeMessageMetadata = (r: VercelHeaderReader): AI.UIMessageChunk[] => [
   { type: 'message-metadata', messageMetadata: r.json('messageMetadata') },
 ];
 
-const decodeFile = (r: VercelHeaderReader, data: unknown): VercelEvent[] => [
+const decodeFile = (r: VercelHeaderReader, data: unknown): AI.UIMessageChunk[] => [
   stripUndefined({
     type: 'file' as const,
     url: typeof data === 'string' ? data : '',
@@ -281,7 +315,7 @@ const decodeFile = (r: VercelHeaderReader, data: unknown): VercelEvent[] => [
   }),
 ];
 
-const decodeSourceUrl = (r: VercelHeaderReader, data: unknown): VercelEvent[] => [
+const decodeSourceUrl = (r: VercelHeaderReader, data: unknown): AI.UIMessageChunk[] => [
   stripUndefined({
     type: 'source-url' as const,
     sourceId: r.strOr('sourceId', ''),
@@ -291,7 +325,7 @@ const decodeSourceUrl = (r: VercelHeaderReader, data: unknown): VercelEvent[] =>
   }),
 ];
 
-const decodeSourceDocument = (r: VercelHeaderReader): VercelEvent[] => [
+const decodeSourceDocument = (r: VercelHeaderReader): AI.UIMessageChunk[] => [
   stripUndefined({
     type: 'source-document' as const,
     sourceId: r.strOr('sourceId', ''),
@@ -302,7 +336,7 @@ const decodeSourceDocument = (r: VercelHeaderReader): VercelEvent[] => [
   }),
 ];
 
-const decodeToolInputError = (r: VercelHeaderReader, data: unknown): VercelEvent[] => {
+const decodeToolInputError = (r: VercelHeaderReader, data: unknown): AI.UIMessageChunk[] => {
   // CAST: Trust boundary — encoder produced the expected object shape.
   const parsed = data as ToolInputErrorWireData | undefined;
   return [
@@ -320,7 +354,7 @@ const decodeToolInputError = (r: VercelHeaderReader, data: unknown): VercelEvent
   ];
 };
 
-const decodeToolOutputAvailable = (r: VercelHeaderReader, data: unknown): VercelEvent[] => {
+const decodeAgentToolOutputAvailable = (r: VercelHeaderReader, data: unknown): AI.UIMessageChunk[] => {
   // CAST: Trust boundary — encoder produced the expected object shape.
   const parsed = data as ToolOutputAvailableWireData | undefined;
   return [
@@ -335,9 +369,9 @@ const decodeToolOutputAvailable = (r: VercelHeaderReader, data: unknown): Vercel
   ];
 };
 
-const decodeToolOutputError = (r: VercelHeaderReader, data: unknown): VercelEvent[] => {
+const decodeAgentToolOutputError = (r: VercelHeaderReader, data: unknown): AI.UIMessageChunk[] => {
   // CAST: Trust boundary — encoder produced the expected object shape.
-  const parsed = data as ToolOutputErrorWireData | undefined;
+  const parsed = data as AgentToolOutputErrorWireData | undefined;
   return [
     stripUndefined({
       type: 'tool-output-error' as const,
@@ -349,7 +383,7 @@ const decodeToolOutputError = (r: VercelHeaderReader, data: unknown): VercelEven
   ];
 };
 
-const decodeToolApprovalRequest = (r: VercelHeaderReader): VercelEvent[] => [
+const decodeToolApprovalRequest = (r: VercelHeaderReader): AI.UIMessageChunk[] => [
   {
     type: 'tool-approval-request',
     toolCallId: r.strOr('toolCallId', ''),
@@ -357,20 +391,11 @@ const decodeToolApprovalRequest = (r: VercelHeaderReader): VercelEvent[] => [
   },
 ];
 
-const decodeToolOutputDenied = (r: VercelHeaderReader): VercelEvent[] => [
+const decodeToolOutputDenied = (r: VercelHeaderReader): AI.UIMessageChunk[] => [
   { type: 'tool-output-denied', toolCallId: r.strOr('toolCallId', '') },
 ];
 
-const decodeToolApprovalResponse = (r: VercelHeaderReader): VercelEvent[] => [
-  stripUndefined({
-    type: 'tool-approval-response' as const,
-    toolCallId: r.strOr('toolCallId', ''),
-    approved: r.bool('approved') ?? false,
-    reason: r.str('reason'),
-  }),
-];
-
-const decodeDataEvent = (name: `data-${string}`, r: VercelHeaderReader, data: unknown): VercelEvent[] => [
+const decodeDataEvent = (name: `data-${string}`, r: VercelHeaderReader, data: unknown): AI.UIMessageChunk[] => [
   stripUndefined({
     type: name,
     data,
@@ -380,7 +405,7 @@ const decodeDataEvent = (name: `data-${string}`, r: VercelHeaderReader, data: un
 ];
 
 // ---------------------------------------------------------------------------
-// Non-streaming tool-input helper
+// Non-streaming tool-input helper (agent-side)
 // ---------------------------------------------------------------------------
 
 const decodeNonStreamingToolInput = (
@@ -388,7 +413,7 @@ const decodeNonStreamingToolInput = (
   data: unknown,
   runId: string,
   lifecycle: LifecycleTracker<AI.UIMessageChunk>,
-): VercelEvent[] => [
+): AI.UIMessageChunk[] => [
   ...lifecycle.ensurePhases(runId, { messageId: r.str('messageId') }),
   stripUndefined({
     type: 'tool-input-start' as const,
@@ -409,18 +434,18 @@ const decodeNonStreamingToolInput = (
 ];
 
 // ---------------------------------------------------------------------------
-// Discrete user-message part decoding → UserMessageEvent
+// Input-side decoders (ai-input → VercelInput)
 // ---------------------------------------------------------------------------
 
 /**
  * Decode a single discrete message part (from the user-message multi-part
- * wire format) into a UserMessageEvent carrying a one-part UIMessage. The
- * reducer's `_foldUserMessage` merges parts that share the same codec-message-id.
- * The part's codec event type is read from `x-domain-type`.
+ * wire format) into a {@link UserMessage} carrying a one-part
+ * UIMessage. The reducer's `_foldUserMessage` merges parts that share
+ * the same codec-message-id.
  * @param input - The discrete message payload (name, data, headers).
- * @returns A single `ait-user-message` event, or an empty array when the part type is unrecognised.
+ * @returns A single `user-message` input, or an empty array when the part type is unrecognised.
  */
-const decodeDiscreteMessagePart = (input: MessagePayload): VercelEvent[] => {
+const decodeDiscreteMessagePart = (input: MessagePayload): VercelInput[] => {
   const h = input.headers ?? {};
   const r = headerReader(h);
   const role = (h[HEADER_ROLE] ?? 'user') as AI.UIMessage['role'];
@@ -453,12 +478,48 @@ const decodeDiscreteMessagePart = (input: MessagePayload): VercelEvent[] => {
   if (!part) return [];
 
   const message: AI.UIMessage = { id: messageId, role, parts: [part] };
-  const userMessage: UserMessageEvent = { type: 'ait-user-message', message };
+  const userMessage: UserMessage<AI.UIMessage> = { kind: 'user-message', message };
   return [userMessage];
 };
 
 const isDiscreteMessagePart = (codecType: string, headers: Record<string, string>): boolean =>
   (codecType === 'text' || codecType === 'file' || isDataEventName(codecType)) && HEADER_DISCRETE in headers;
+
+const decodeClientToolResult = (codecMessageId: string, r: VercelHeaderReader, data: unknown): VercelInput[] => {
+  // CAST: Trust boundary — encoder produced the expected object shape.
+  const parsed = data as ToolOutputAvailableWireData | undefined;
+  return [
+    {
+      kind: 'tool-result',
+      codecMessageId,
+      toolCallId: r.strOr('toolCallId', ''),
+      output: parsed?.output,
+    },
+  ];
+};
+
+const decodeClientToolResultError = (codecMessageId: string, r: VercelHeaderReader, data: unknown): VercelInput[] => {
+  // CAST: Trust boundary — encoder produced the expected object shape.
+  const parsed = data as ClientToolResultErrorWireData | undefined;
+  return [
+    {
+      kind: 'tool-result-error',
+      codecMessageId,
+      toolCallId: r.strOr('toolCallId', ''),
+      message: parsed?.message ?? '',
+    },
+  ];
+};
+
+const decodeClientToolApprovalResponse = (codecMessageId: string, r: VercelHeaderReader): VercelInput[] => [
+  stripUndefined({
+    kind: 'tool-approval-response' as const,
+    codecMessageId,
+    toolCallId: r.strOr('toolCallId', ''),
+    approved: r.bool('approved') ?? false,
+    reason: r.str('reason'),
+  }),
+];
 
 // ---------------------------------------------------------------------------
 // Discrete payload dispatch
@@ -470,7 +531,7 @@ const decodeAiOutputPayload = (
   data: unknown,
   runId: string,
   lifecycle: LifecycleTracker<AI.UIMessageChunk>,
-): VercelEvent[] => {
+): AnyEvent[] => {
   switch (codecType) {
     case 'start': {
       return decodeStart(r, runId, lifecycle);
@@ -509,10 +570,10 @@ const decodeAiOutputPayload = (
       return decodeToolInputError(r, data);
     }
     case 'tool-output-available': {
-      return decodeToolOutputAvailable(r, data);
+      return decodeAgentToolOutputAvailable(r, data);
     }
     case 'tool-output-error': {
-      return decodeToolOutputError(r, data);
+      return decodeAgentToolOutputError(r, data);
     }
     case 'tool-approval-request': {
       return decodeToolApprovalRequest(r);
@@ -526,23 +587,31 @@ const decodeAiOutputPayload = (
   }
 };
 
-const decodeAiInputPayload = (codecType: string, input: MessagePayload, r: VercelHeaderReader): VercelEvent[] => {
+const decodeAiInputPayload = (codecType: string, input: MessagePayload, r: VercelHeaderReader): AnyEvent[] => {
   // Multi-part user-message parts (text / file / data-*) carry x-ably-discrete
   // because they ride publishDiscreteBatch; the receive-side fans them back
-  // out into a UserMessageEvent.
+  // out into a UserMessage.
   if (isDiscreteMessagePart(codecType, input.headers ?? {})) {
     return decodeDiscreteMessagePart(input);
   }
 
+  const codecMessageId = input.headers?.[HEADER_CODEC_MESSAGE_ID] ?? '';
+
   switch (codecType) {
-    case 'tool-approval-response': {
-      return decodeToolApprovalResponse(r);
+    case 'tool-result': {
+      return decodeClientToolResult(codecMessageId, r, input.data);
     }
-    case 'ait-regenerate': {
-      // Regenerate wire — carries `parent` / `forkOf` on transport headers,
-      // no domain payload. The agent's prompt-lookup reads transport headers
-      // directly from the inbound Ably message; no projection fold is
-      // needed here.
+    case 'tool-result-error': {
+      return decodeClientToolResultError(codecMessageId, r, input.data);
+    }
+    case 'tool-approval-response': {
+      return decodeClientToolApprovalResponse(codecMessageId, r);
+    }
+    case 'regenerate': {
+      // Wire-only signal — carries `parent` / `target` on transport headers,
+      // no domain payload. The agent's prompt-lookup reads transport
+      // headers directly from the inbound Ably message; no projection
+      // fold is needed here.
       return [];
     }
     default: {
@@ -551,10 +620,7 @@ const decodeAiInputPayload = (codecType: string, input: MessagePayload, r: Verce
   }
 };
 
-const decodeDiscretePayload = (
-  input: MessagePayload,
-  lifecycle: LifecycleTracker<AI.UIMessageChunk>,
-): VercelEvent[] => {
+const decodeDiscretePayload = (input: MessagePayload, lifecycle: LifecycleTracker<AI.UIMessageChunk>): AnyEvent[] => {
   const h = input.headers ?? {};
   const r = headerReader(h);
   const runId = h[HEADER_RUN_ID] ?? '';
@@ -575,35 +641,47 @@ const decodeDiscretePayload = (
 // Decoder core hooks
 // ---------------------------------------------------------------------------
 
-const createHooks = (lifecycle: LifecycleTracker<AI.UIMessageChunk>): DecoderCoreHooks<VercelEvent> => ({
-  buildStartEvents: (tracker: StreamTrackerState): VercelEvent[] => {
+const createHooks = (lifecycle: LifecycleTracker<AI.UIMessageChunk>): DecoderCoreHooks<AnyEvent> => ({
+  buildStartEvents: (tracker: StreamTrackerState): AnyEvent[] => {
     const runId = tracker.headers[HEADER_RUN_ID] ?? '';
     const messageId = headerReader(tracker.headers).str('messageId');
     return [...lifecycle.ensurePhases(runId, { messageId }), buildStartChunk(tracker)];
   },
 
-  buildDeltaEvents: (tracker: StreamTrackerState, delta: string): VercelEvent[] => [buildDeltaChunk(tracker, delta)],
+  buildDeltaEvents: (tracker: StreamTrackerState, delta: string): AnyEvent[] => [buildDeltaChunk(tracker, delta)],
 
-  buildEndEvents: (tracker: StreamTrackerState, closingHeaders: Record<string, string>): VercelEvent[] => [
+  buildEndEvents: (tracker: StreamTrackerState, closingHeaders: Record<string, string>): AnyEvent[] => [
     buildEndChunk(tracker, closingHeaders),
   ],
 
-  decodeDiscrete: (payload: MessagePayload): VercelEvent[] => decodeDiscretePayload(payload, lifecycle),
+  decodeDiscrete: (payload: MessagePayload): AnyEvent[] => decodeDiscretePayload(payload, lifecycle),
 });
 
 // ---------------------------------------------------------------------------
 // Default implementation
 // ---------------------------------------------------------------------------
 
-class DefaultUIMessageDecoder implements Decoder<VercelEvent> {
-  private readonly _core: DecoderCore<VercelEvent>;
+const isInput = (event: AnyEvent): event is VercelInput => 'kind' in event;
+
+class DefaultUIMessageDecoder implements Decoder<VercelInput, VercelOutput> {
+  private readonly _core: DecoderCore<AnyEvent>;
 
   constructor(options: DecoderCoreOptions = {}) {
-    this._core = createDecoderCore<VercelEvent>(createHooks(createVercelLifecycleTracker()), options);
+    this._core = createDecoderCore<AnyEvent>(createHooks(createVercelLifecycleTracker()), options);
   }
 
-  decode(message: Ably.InboundMessage): VercelEvent[] {
-    return this._core.decode(message);
+  decode(message: Ably.InboundMessage): DecodedMessage<VercelInput, VercelOutput> {
+    const events = this._core.decode(message);
+    const inputs: VercelInput[] = [];
+    const outputs: VercelOutput[] = [];
+    for (const event of events) {
+      if (isInput(event)) {
+        inputs.push(event);
+      } else {
+        outputs.push(event);
+      }
+    }
+    return { inputs, outputs };
   }
 }
 
@@ -612,10 +690,9 @@ class DefaultUIMessageDecoder implements Decoder<VercelEvent> {
 // ---------------------------------------------------------------------------
 
 /**
- * Create a Vercel AI SDK decoder that maps Ably messages to VercelEvent[]
- * via the decoder core.
+ * Create a Vercel AI SDK decoder that maps Ably messages to {@link DecodedMessage}.
  * @param options - Decoder configuration (callbacks, logger).
- * @returns A {@link Decoder} for the Vercel TEvent union.
+ * @returns A {@link Decoder} typed in both directions for the Vercel codec.
  */
-export const createDecoder = (options: DecoderCoreOptions = {}): Decoder<VercelEvent> =>
+export const createDecoder = (options: DecoderCoreOptions = {}): Decoder<VercelInput, VercelOutput> =>
   new DefaultUIMessageDecoder(options);

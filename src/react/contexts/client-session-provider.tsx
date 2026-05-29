@@ -26,6 +26,7 @@ import * as Ably from 'ably';
 import { useAbly } from 'ably/react';
 import { type PropsWithChildren, type ReactNode, useContext, useEffect, useMemo, useRef } from 'react';
 
+import type { CodecInputEvent, CodecOutputEvent } from '../../core/codec/types.js';
 import { createClientSession } from '../../core/transport/client-session.js';
 import type { ClientSession, ClientSessionOptions } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
@@ -38,8 +39,13 @@ import { ClientSessionContext } from './client-session-context.js';
  * All {@link ClientSessionOptions} except `client` (read from the surrounding
  * `<AblyProvider>`).
  */
-export interface ClientSessionProviderProps<TEvent, TProjection, TMessage>
-  extends Omit<ClientSessionOptions<TEvent, TProjection, TMessage>, 'client'>, PropsWithChildren {}
+export interface ClientSessionProviderProps<
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+>
+  extends Omit<ClientSessionOptions<TInput, TOutput, TProjection, TMessage>, 'client'>, PropsWithChildren {}
 
 /**
  * Provide a {@link ClientSession} to descendant components.
@@ -82,15 +88,20 @@ export interface ClientSessionProviderProps<TEvent, TProjection, TMessage>
  * @param props.children - Descendant components that consume the session via {@link useClientSession}.
  * @returns A React element wrapping children with ClientSessionContext.
  */
-export const ClientSessionProvider = <TEvent, TProjection, TMessage>({
+export const ClientSessionProvider = <
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+>({
   children,
   ...sessionOptions
-}: ClientSessionProviderProps<TEvent, TProjection, TMessage>): ReactNode => {
+}: ClientSessionProviderProps<TInput, TOutput, TProjection, TMessage>): ReactNode => {
   const client = useAbly();
   const { channelName } = sessionOptions;
-  const sessionRef = useRef<ClientSession<TEvent, TProjection, TMessage> | undefined>(undefined);
+  const sessionRef = useRef<ClientSession<TInput, TOutput, TProjection, TMessage> | undefined>(undefined);
   const sessionChannelRef = useRef<string>(channelName);
-  const sessionsToDisposeRef = useRef<ClientSession<unknown, unknown, unknown>[]>([]);
+  const sessionsToDisposeRef = useRef<ClientSession<CodecInputEvent, CodecOutputEvent, unknown, unknown>[]>([]);
   const pendingCloseRef = useRef(false);
   const constructionErrorRef = useRef<Ably.ErrorInfo | undefined>(undefined);
 
@@ -115,8 +126,10 @@ export const ClientSessionProvider = <TEvent, TProjection, TMessage>({
 
   // Capture ref values as locals so useMemo deps track changes correctly.
   // CAST: ClientSessionContext stores sessions with erased generics.
-  // The generic types are fixed at the ClientSessionProvider<TEvent, TProjection, TMessage> boundary.
-  const currentSession = sessionRef.current as ClientSession<unknown, unknown, unknown> | undefined;
+  // The generic types are fixed at the ClientSessionProvider<TInput, TOutput, TProjection, TMessage> boundary.
+  const currentSession = sessionRef.current as
+    | ClientSession<CodecInputEvent, CodecOutputEvent, unknown, unknown>
+    | undefined;
   const currentError = constructionErrorRef.current;
 
   const slot = useMemo<ClientSessionSlot>(

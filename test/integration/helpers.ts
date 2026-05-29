@@ -4,32 +4,25 @@
 
 import type * as AI from 'ai';
 
-import type { VercelEvent } from '../../src/vercel/codec/index.js';
+import type { DecodedMessage } from '../../src/core/codec/index.js';
+import type { VercelInput, VercelOutput } from '../../src/vercel/codec/index.js';
 
 /**
- * Filter codec-decoded events to UIMessageChunk variants (the legacy assistant
- * stream). Excludes Vercel codec-local variants (`UserMessageEvent`,
- * `ToolApprovalResponseEvent`).
- * @param events - Codec-decoded events.
- * @returns UIMessageChunk-only subset.
+ * Extract output (chunk) event types from a decoded Ably message.
+ * @param decoded - The decoder result for one inbound Ably message.
+ * @returns Array of output event type strings.
  */
-const chunksOf = (events: VercelEvent[]): AI.UIMessageChunk[] =>
-  // CAST: discriminator excludes the codec-local variants.
-  events.filter((e): e is AI.UIMessageChunk => e.type !== 'ait-user-message' && e.type !== 'tool-approval-response');
+export const eventTypesOf = (decoded: DecodedMessage<VercelInput, VercelOutput>): string[] =>
+  decoded.outputs.map((e) => e.type);
 
 /**
- * Extract event types from decoder outputs.
- * @param events - Decoder events to extract from.
- * @returns Array of event type strings.
+ * Extract the agent-side `UIMessageChunk` outputs from a decoded Ably
+ * message. The client-side `VercelInput` half is dropped — the legacy
+ * helper only surfaced the assistant stream.
+ * @param decoded - The decoder result for one inbound Ably message.
+ * @returns The output half (UIMessageChunks).
  */
-export const eventTypesOf = (events: VercelEvent[]): string[] => chunksOf(events).map((e) => e.type);
-
-/**
- * Extract events from decoder outputs.
- * @param events - Decoder events to extract from.
- * @returns Array of UIMessageChunk events.
- */
-export const eventsOf = (events: VercelEvent[]): AI.UIMessageChunk[] => chunksOf(events);
+export const eventsOf = (decoded: DecodedMessage<VercelInput, VercelOutput>): AI.UIMessageChunk[] => decoded.outputs;
 
 /**
  * Create a ReadableStream of UIMessageChunks that produces a complete text response.

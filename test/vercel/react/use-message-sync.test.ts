@@ -6,7 +6,7 @@ import { createElement, type ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ClientSession } from '../../../src/core/transport/types.js';
-import type { VercelEvent, VercelProjection } from '../../../src/vercel/codec/index.js';
+import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
 import type { ChatTransportSlot } from '../../../src/vercel/react/contexts/chat-transport-context.js';
 import { ChatTransportContext } from '../../../src/vercel/react/contexts/chat-transport-context.js';
 import { useMessageSync } from '../../../src/vercel/react/use-message-sync.js';
@@ -66,7 +66,7 @@ const createMockSlot = (): MockSlot => {
     hasOlder: vi.fn(() => false),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     loadOlder: vi.fn(() => Promise.resolve()),
-  } as unknown as ClientSession<VercelEvent, VercelProjection, AI.UIMessage>['view'];
+  } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>['view'];
 
   const session = {
     view,
@@ -79,7 +79,7 @@ const createMockSlot = (): MockSlot => {
     cancel: vi.fn(),
     close: vi.fn(),
     // CAST: mock object satisfies the subset of ClientSession methods used by useMessageSync
-  } as unknown as ClientSession<VercelEvent, VercelProjection, AI.UIMessage>;
+  } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
   // --- ChatTransport ---
   const streamingCallbacks = new Set<(s: boolean) => void>();

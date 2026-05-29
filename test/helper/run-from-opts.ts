@@ -7,17 +7,17 @@
 
 import type * as Ably from 'ably';
 
-import type { AgentSession, CancelRequest, Run } from '../../src/index.js';
+import type { AgentSession, CancelRequest, CodecInputEvent, CodecOutputEvent, Run } from '../../src/index.js';
 import { Invocation } from '../../src/index.js';
 
-interface RunOpts<TEvent> {
+interface RunOpts<TOutput extends CodecOutputEvent> {
   runId: string;
   invocationId?: string;
   /** Prompt-id the agent uses to locate the primary trigger event on the channel. */
   eventId?: string;
   signal?: AbortSignal;
   onMessage?: (message: Ably.Message) => void;
-  onCancelled?: (write: (event: TEvent) => Promise<void>) => void | Promise<void>;
+  onCancelled?: (write: (event: TOutput) => Promise<void>) => void | Promise<void>;
   onCancel?: (request: CancelRequest) => Promise<boolean>;
   onError?: (error: Ably.ErrorInfo) => void;
 }
@@ -37,10 +37,15 @@ interface RunOpts<TEvent> {
  * @param opts - Run identity (runId, invocationId, eventIds) plus runtime hooks.
  * @returns The created Run.
  */
-export const createRunFromOpts = <TEvent, TProjection, TMessage>(
-  session: AgentSession<TEvent, TProjection, TMessage>,
-  opts: RunOpts<TEvent>,
-): Run<TEvent, TProjection, TMessage> => {
+export const createRunFromOpts = <
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+>(
+  session: AgentSession<TInput, TOutput, TProjection, TMessage>,
+  opts: RunOpts<TOutput>,
+): Run<TInput, TOutput, TProjection, TMessage> => {
   const invocation = Invocation.fromJSON({
     runId: opts.runId,
     invocationId: opts.invocationId ?? `${opts.runId}-inv`,

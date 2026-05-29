@@ -12,7 +12,7 @@ import {
   HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
 } from '../../../src/constants.js';
-import type { Codec } from '../../../src/core/codec/types.js';
+import type { Codec, CodecInputEvent, ReducerMeta } from '../../../src/core/codec/types.js';
 // Vitest hoists vi.mock above imports, so this static import gets the mock.
 import { decodeHistory } from '../../../src/core/transport/decode-history.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
@@ -35,38 +35,50 @@ interface TestMessage {
   content: string;
 }
 
-type TestEvent =
-  | { type: 'user-message'; message: TestMessage }
-  | { type: 'append-message'; message: TestMessage }
-  | { type: 'regenerate'; forkOf: string; parent: string };
+/**
+ * Test inputs published by the client. All variants extend
+ * {@link CodecInputEvent} so routing fields (`parent`, `target`,
+ * `codecMessageId`) propagate through the transport.
+ */
+type TestInput =
+  | ({ kind: 'user-message'; message: TestMessage } & CodecInputEvent)
+  | ({ kind: 'regenerate'; target: string; parent: string } & CodecInputEvent);
+
+/** Test outputs published by the agent. */
+interface TestOutput {
+  type: 'append-message';
+  message: TestMessage;
+}
+
+type TestEvent = TestInput | TestOutput;
 
 interface TestProjection {
   messages: TestMessage[];
 }
 
-const makeTestCodec = (): Codec<TestEvent, TestProjection, TestMessage> => ({
+const makeTestCodec = (): Codec<TestInput, TestOutput, TestProjection, TestMessage> => ({
   init: () => ({ messages: [] }),
-  fold: (state, event, meta) => {
-    if (event.type === 'append-message' || event.type === 'user-message') {
+  fold: (state: TestProjection, event: TestInput | TestOutput, meta: ReducerMeta) => {
+    if ('type' in event) {
+      // TestOutput has a single variant — append-message — so the type check
+      // is sufficient; just stamp the wire codec-message-id onto TMessage.id.
+      const msg = meta.messageId ? { ...event.message, id: meta.messageId } : event.message;
+      return { messages: [...state.messages, msg] };
+    }
+    if (event.kind === 'user-message') {
       // Codec convention: TMessage.id == wire codec-message-id from meta.messageId.
-      // The View's getRunByCodecMessageId / regenerate / edit rely on this.
       const msg = meta.messageId ? { ...event.message, id: meta.messageId } : event.message;
       return { messages: [...state.messages, msg] };
     }
     return state;
   },
-  getMessages: (projection) => projection.messages,
+  getMessages: (projection: TestProjection) => projection.messages,
   createEncoder: () => {
     throw new Error('not used in view tests');
   },
-  createDecoder: () => ({ decode: () => [] }),
-  userMessageEvent: (message) => ({ type: 'user-message', message }),
-  createRegenerateEvent: (regenerates, parent) => ({ type: 'regenerate', forkOf: regenerates, parent }),
-  classifyEvent: (event) => {
-    if (event.type === 'user-message') return { kind: 'user-message' };
-    if (event.type === 'regenerate') return { kind: 'regenerate', parent: event.parent, regenerates: event.forkOf };
-    return { kind: 'other' };
-  },
+  createDecoder: () => ({ decode: () => ({ inputs: [], outputs: [] }) }),
+  createUserMessage: (message: TestMessage) => ({ kind: 'user-message' as const, message }),
+  createRegenerate: (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }),
   // eslint-disable-next-line unicorn/no-useless-undefined -- the Codec contract requires returning undefined when no target is resolved
   resolveToolTarget: () => undefined,
   isTerminal: () => false,
@@ -87,11 +99,11 @@ const createMockChannel = (): Ably.RealtimeChannel =>
     attach: vi.fn(() => Promise.resolve()),
   }) as unknown as Ably.RealtimeChannel;
 
-const createMockSendDelegate = (): SendDelegate<TestEvent> =>
+const createMockSendDelegate = (): SendDelegate<TestInput, TestOutput> =>
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   vi.fn(() =>
     Promise.resolve({
-      stream: new ReadableStream(),
+      stream: new ReadableStream<TestOutput>(),
       runId: 'mock-run',
       eventId: '',
       invocationId: 'mock-inv',
@@ -146,9 +158,9 @@ const makePage = (
 
 describe('DefaultView', () => {
   let tree: DefaultTree<TestEvent, TestProjection>;
-  let view: DefaultView<TestEvent, TestProjection, TestMessage>;
-  let sendDelegate: SendDelegate<TestEvent>;
-  let codec: Codec<TestEvent, TestProjection, TestMessage>;
+  let view: DefaultView<TestInput, TestOutput, TestProjection, TestMessage>;
+  let sendDelegate: SendDelegate<TestInput, TestOutput>;
+  let codec: Codec<TestInput, TestOutput, TestProjection, TestMessage>;
 
   beforeEach(() => {
     vi.mocked(decodeHistory).mockReset();
@@ -551,7 +563,7 @@ describe('DefaultView', () => {
      * tree (no pin-on-external-fork behavior).
      * @returns A new DefaultView observing the already-seeded tree.
      */
-    const freshViewAfterSeed = (): DefaultView<TestEvent, TestProjection, TestMessage> => {
+    const freshViewAfterSeed = (): DefaultView<TestInput, TestOutput, TestProjection, TestMessage> => {
       seedFork();
       return new DefaultView({
         tree,
@@ -649,14 +661,21 @@ describe('DefaultView', () => {
   // -------------------------------------------------------------------------
 
   describe('write operations', () => {
-    it('sendMessage wraps each TMessage via codec.userMessageEvent and forwards to delegate', async () => {
+    it('sendMessage wraps each TMessage via codec.createUserMessage and forwards to delegate', async () => {
       await view.sendMessage({ id: 'a', content: 'hello' });
       expect(sendDelegate).toHaveBeenCalledTimes(1);
       const call = vi.mocked(sendDelegate).mock.calls[0];
       if (!call) throw new Error('expected delegate call');
       const events = call[0];
       expect(events).toHaveLength(1);
-      expect(events[0]?.event).toEqual({ type: 'user-message', message: { id: 'a', content: 'hello' } });
+      // The View pulls the caller TMessage.id through onto the input's
+      // `codecMessageId` so the wire `x-ably-codec-message-id` matches the
+      // local id; the wrapped UserMessage carries the original message.
+      expect(events[0]).toMatchObject({
+        kind: 'user-message',
+        message: { id: 'a', content: 'hello' },
+        codecMessageId: 'a',
+      });
     });
 
     it('sendMessage forwards parentCodecMessageId', async () => {
@@ -722,27 +741,30 @@ describe('DefaultView', () => {
       expect(call[2]).toBe('a2');
     });
 
-    it('sendEvent normalises a single TEvent input', async () => {
-      await view.sendEvent({ type: 'user-message', message: { id: 'a', content: 'hi' } });
+    it('sendEvent normalises a single TInput', async () => {
+      await view.sendEvent({ kind: 'user-message', message: { id: 'a', content: 'hi' } });
       const events = vi.mocked(sendDelegate).mock.calls[0]?.[0];
-      expect(events).toEqual([{ event: { type: 'user-message', message: { id: 'a', content: 'hi' } } }]);
+      expect(events).toEqual([{ kind: 'user-message', message: { id: 'a', content: 'hi' } }]);
     });
 
-    it('sendEvent normalises a TEvent[] input', async () => {
+    it('sendEvent normalises a TInput[] input', async () => {
       await view.sendEvent([
-        { type: 'user-message', message: { id: 'a', content: 'hi' } },
-        { type: 'user-message', message: { id: 'b', content: 'bye' } },
+        { kind: 'user-message', message: { id: 'a', content: 'hi' } },
+        { kind: 'user-message', message: { id: 'b', content: 'bye' } },
       ]);
       const events = vi.mocked(sendDelegate).mock.calls[0]?.[0];
       expect(events).toEqual([
-        { event: { type: 'user-message', message: { id: 'a', content: 'hi' } } },
-        { event: { type: 'user-message', message: { id: 'b', content: 'bye' } } },
+        { kind: 'user-message', message: { id: 'a', content: 'hi' } },
+        { kind: 'user-message', message: { id: 'b', content: 'bye' } },
       ]);
     });
 
-    it('sendEvent passes the richer per-entry shape through', async () => {
-      const input = [
-        { event: { type: 'user-message' as const, message: { id: 'a', content: 'hi' } }, codecMessageId: 'override' },
+    it('sendEvent forwards an input with a pinned codecMessageId targeting an existing message', async () => {
+      // Inputs whose `codecMessageId` is set target an existing message
+      // (continuation tool resolutions, approval responses). The View passes
+      // them straight through — the routing field stays on the input itself.
+      const input: TestInput[] = [
+        { kind: 'user-message', message: { id: 'a', content: 'hi' }, codecMessageId: 'override' },
       ];
       await view.sendEvent(input);
       const events = vi.mocked(sendDelegate).mock.calls[0]?.[0];
@@ -771,11 +793,12 @@ describe('DefaultView', () => {
       expect(sendDelegate).toHaveBeenCalledTimes(1);
       const call = vi.mocked(sendDelegate).mock.calls[0];
       if (!call) throw new Error('expected delegate call');
-      const event = call[0][0]?.event;
-      // The test codec's createRegenerateEvent stores the regen target in
-      // its local `forkOf` field for symmetry with the legacy event shape;
-      // the codec contract surfaces it as `regenerates` on classification.
-      expect(event).toEqual({ type: 'regenerate', forkOf: 'a1', parent: 'u1' });
+      const event = call[0][0];
+      // The codec's createRegenerate produces the well-known Regenerate
+      // variant: `kind: 'regenerate'`, with `target` naming the assistant
+      // being regenerated and `parent` naming the user prompt the new
+      // assistant threads under.
+      expect(event).toEqual({ kind: 'regenerate', target: 'a1', parent: 'u1' });
       // Regenerate sets parent only — the Run-level fork relationship is
       // intentionally absent. The replacement happens at projection
       // extraction time, not via a sibling Run.
@@ -831,7 +854,7 @@ describe('DefaultView', () => {
       view.select('R1', 1);
       expect(view.getMessages().map((m) => m.id)).toEqual(['u2', 'a2']);
 
-      await view.edit('u2', { type: 'user-message', message: { id: 'u3', content: 'charlie' } });
+      await view.edit('u2', { kind: 'user-message', message: { id: 'u3', content: 'charlie' } });
 
       const call = vi.mocked(sendDelegate).mock.calls[0];
       if (!call) throw new Error('expected delegate call');
@@ -895,9 +918,14 @@ describe('DefaultView', () => {
       // every regen at the same canonical codec-message-id grows a single group
       // of alternatives — clicking Regenerate N times produces N+1
       // members at the same branch point.
-      const event = events[0]?.event as { type: string; forkOf?: string; parent?: string } | undefined;
-      expect(event?.type).toBe('regenerate');
-      expect(event?.forkOf).toBe('a1');
+      const event = events[0];
+      // The regenerate input's `target` carries the anchor msg-id; the
+      // session reads it directly off the input to stamp
+      // `x-ably-msg-regenerate` on the wire.
+      if (!event || !('kind' in event) || event.kind !== 'regenerate') {
+        throw new Error('expected regenerate input');
+      }
+      expect(event.target).toBe('a1');
     });
 
     it('regenerate throws when the target has no predecessor', async () => {
@@ -929,7 +957,7 @@ describe('DefaultView', () => {
         serial: 's3',
       });
 
-      await view.edit('u2', { type: 'user-message', message: { id: 'c', content: 'edited' } });
+      await view.edit('u2', { kind: 'user-message', message: { id: 'c', content: 'edited' } });
       const call = vi.mocked(sendDelegate).mock.calls[0];
       if (!call) throw new Error('expected delegate call');
       expect(call[1]?.forkOf).toBe('u2');
@@ -937,7 +965,7 @@ describe('DefaultView', () => {
     });
 
     it('edit throws when the target message is unknown', async () => {
-      await expect(view.edit('unknown', { type: 'user-message', message: { id: 'u', content: 'x' } })).rejects.toThrow(
+      await expect(view.edit('unknown', { kind: 'user-message', message: { id: 'u', content: 'x' } })).rejects.toThrow(
         /message not found/,
       );
     });
@@ -1183,7 +1211,7 @@ describe('DefaultView', () => {
   // -------------------------------------------------------------------------
 
   describe('multi-view', () => {
-    let viewB: DefaultView<TestEvent, TestProjection, TestMessage>;
+    let viewB: DefaultView<TestInput, TestOutput, TestProjection, TestMessage>;
 
     beforeEach(() => {
       viewB = new DefaultView({
@@ -1284,8 +1312,11 @@ describe('DefaultView', () => {
 
       // The View's _processHistoryPage uses page.rawMessages and decodes
       // them through a fresh codec.createDecoder(). Since our test codec's
-      // decoder returns [], we need to override decode to produce events.
-      const decodeSpy = vi.fn(() => [{ type: 'append-message' as const, message: { id: 'h1', content: 'old' } }]);
+      // decoder returns no events, we need to override decode to produce one.
+      const decodeSpy = vi.fn(() => ({
+        inputs: [],
+        outputs: [{ type: 'append-message' as const, message: { id: 'h1', content: 'old' } }],
+      }));
       codec.createDecoder = vi.fn(() => ({ decode: decodeSpy }));
 
       vi.mocked(decodeHistory).mockResolvedValueOnce(makePage(items, [rawMsg]));
@@ -1307,7 +1338,10 @@ describe('DefaultView', () => {
         serial: 's0',
         extras: { headers: { [HEADER_RUN_ID]: 'R0', [HEADER_CODEC_MESSAGE_ID]: 'mh1' } },
       } as unknown as Ably.InboundMessage;
-      const decodeSpy = vi.fn(() => [{ type: 'append-message' as const, message: { id: 'h1', content: 'old' } }]);
+      const decodeSpy = vi.fn(() => ({
+        inputs: [],
+        outputs: [{ type: 'append-message' as const, message: { id: 'h1', content: 'old' } }],
+      }));
       codec.createDecoder = vi.fn(() => ({ decode: decodeSpy }));
 
       vi.mocked(decodeHistory).mockResolvedValueOnce(makePage(items, [rawMsg], true));
@@ -1353,7 +1387,10 @@ describe('DefaultView', () => {
       codec.createDecoder = vi.fn(() => ({
         decode: (msg: Ably.InboundMessage) => {
           const id = (msg.extras as { headers: Record<string, string> }).headers[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
-          return [{ type: 'append-message' as const, message: { id, content: 'x' } }];
+          return {
+            inputs: [],
+            outputs: [{ type: 'append-message' as const, message: { id, content: 'x' } }],
+          };
         },
       }));
 
@@ -1398,7 +1435,10 @@ describe('DefaultView', () => {
       codec.createDecoder = vi.fn(() => ({
         decode: (msg: Ably.InboundMessage) => {
           const id = (msg.extras as { headers: Record<string, string> }).headers[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
-          return [{ type: 'append-message' as const, message: { id, content: 'x' } }];
+          return {
+            inputs: [],
+            outputs: [{ type: 'append-message' as const, message: { id, content: 'x' } }],
+          };
         },
       }));
 
@@ -1449,7 +1489,10 @@ describe('DefaultView', () => {
       codec.createDecoder = vi.fn(() => ({
         decode: (msg: Ably.InboundMessage) => {
           const id = (msg.extras as { headers: Record<string, string> }).headers[HEADER_CODEC_MESSAGE_ID] ?? '?';
-          return [{ type: 'append-message' as const, message: { id, content: id } }];
+          return {
+            inputs: [],
+            outputs: [{ type: 'append-message' as const, message: { id, content: id } }],
+          };
         },
       }));
 
@@ -1529,7 +1572,7 @@ describe('DefaultView', () => {
 
     it('makes sendEvent reject with InvalidArgument after close', async () => {
       view.close();
-      await expect(view.sendEvent({ type: 'user-message', message: { id: 'a', content: 'hi' } })).rejects.toThrow(
+      await expect(view.sendEvent({ kind: 'user-message', message: { id: 'a', content: 'hi' } })).rejects.toThrow(
         /view is closed/,
       );
     });
@@ -1541,7 +1584,7 @@ describe('DefaultView', () => {
 
     it('makes edit reject after close', async () => {
       view.close();
-      await expect(view.edit('any', { type: 'user-message', message: { id: 'a', content: 'x' } })).rejects.toThrow(
+      await expect(view.edit('any', { kind: 'user-message', message: { id: 'a', content: 'x' } })).rejects.toThrow(
         /view is closed/,
       );
     });
@@ -1745,7 +1788,7 @@ describe('DefaultView', () => {
         message: { id: 'c', content: 'edited' },
         serial: 's3',
       });
-      await view.edit('a1', { type: 'user-message', message: { id: 'c', content: 'edited' } });
+      await view.edit('a1', { kind: 'user-message', message: { id: 'c', content: 'edited' } });
 
       // Auto-select kicks in immediately after the delegate returns.
       expect(view.flattenNodes().map((r) => r.runId)).toEqual(['R1', 'R2edit']);
@@ -1986,7 +2029,7 @@ describe('DefaultView', () => {
     // of the trailing text: a new Run anchored at a2p, contributing a
     // single new text bubble while a1p stays put with its 2/2 counter.
     describe('regenerate target inside a regenerator Run', () => {
-      let regen2: ActiveRun<TestEvent>;
+      let regen2: ActiveRun<TestOutput>;
       beforeEach(async () => {
         apply(tree, {
           runId: 'R1',
@@ -2030,12 +2073,13 @@ describe('DefaultView', () => {
 
       it('mints a regenerate event anchored at the trailing msg-id (not at the group root)', () => {
         // CAST: vi.fn returns a MockInstance that the codebase types via `SendDelegate`.
-        const mocked = sendDelegate as unknown as Mock<SendDelegate<TestEvent>>;
+        const mocked = sendDelegate as unknown as Mock<SendDelegate<TestInput, TestOutput>>;
         const lastCall = mocked.mock.calls.at(-1);
         const events = lastCall?.[0];
-        const event = events?.[0]?.event;
-        // Test codec's createRegenerateEvent puts the regen target in `forkOf`.
-        expect(event).toEqual({ type: 'regenerate', forkOf: 'a2p', parent: 'a1p' });
+        const event = events?.[0];
+        // The codec's createRegenerate puts the regen target in `target` and
+        // the parent user prompt in `parent`.
+        expect(event).toEqual({ kind: 'regenerate', target: 'a2p', parent: 'a1p' });
         // The new Run joins a fresh group anchored at a2p, not the a1 group.
         expect(regen2).toBeDefined();
       });

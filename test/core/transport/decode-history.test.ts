@@ -23,7 +23,7 @@ import {
   HEADER_STATUS,
   HEADER_STREAM,
 } from '../../../src/constants.js';
-import type { Codec, Decoder, Encoder, ReducerMeta } from '../../../src/core/codec/types.js';
+import type { Codec, CodecInputEvent, Decoder, Encoder, ReducerMeta } from '../../../src/core/codec/types.js';
 import { decodeHistory } from '../../../src/core/transport/decode-history.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 
@@ -31,10 +31,17 @@ import { LogLevel, makeLogger } from '../../../src/logger.js';
 // Test types
 // ---------------------------------------------------------------------------
 
-interface TestEvent {
+interface TestInput extends CodecInputEvent {
+  kind: 'user-message';
+  message: TestMessage;
+}
+
+interface TestOutput {
   type: 'text' | 'finish';
   text?: string;
 }
+
+type TestEvent = TestInput | TestOutput;
 
 interface TestMessage {
   id: string;
@@ -52,10 +59,17 @@ const silentLogger = makeLogger({ logLevel: LogLevel.Silent });
 
 // ---------------------------------------------------------------------------
 // Decoder output registry — events to emit on a per-message basis. A fresh
-// decoder is created per decode pass, so this lives outside the decoder.
+// decoder is created per decode pass, so this lives outside the decoder. The
+// stored shape mirrors the codec's `decode()` return — split into input and
+// output halves so the mock decoder can return them tagged.
 // ---------------------------------------------------------------------------
 
-const eventsByMessage = new WeakMap<Ably.InboundMessage, TestEvent[]>();
+interface DecoderRegistryEntry {
+  inputs: TestInput[];
+  outputs: TestOutput[];
+}
+
+const eventsByMessage = new WeakMap<Ably.InboundMessage, DecoderRegistryEntry>();
 
 // ---------------------------------------------------------------------------
 // Ably message builders
@@ -85,8 +99,8 @@ const ablyMsg = (opts: MsgOpts = {}): Ably.InboundMessage =>
     serial: opts.serial ?? nextSerial(),
   }) as unknown as Ably.InboundMessage;
 
-const withEvents = (msg: Ably.InboundMessage, events: TestEvent[]): Ably.InboundMessage => {
-  eventsByMessage.set(msg, events);
+const withEvents = (msg: Ably.InboundMessage, outputs: TestOutput[], inputs: TestInput[] = []): Ably.InboundMessage => {
+  eventsByMessage.set(msg, { inputs, outputs });
   return msg;
 };
 
@@ -152,6 +166,11 @@ const userMsg = (
       },
       ...(serial !== undefined && { serial }),
     }),
+    // Outputs deliberately mirror the assistant-flavoured stream so the
+    // reducer can fold a `text` payload into a message and a `finish` to
+    // close it. The wire role still says `user` because the agent's
+    // prompt-lookup keys on role; the reducer doesn't care which half the
+    // events arrived through.
     [{ type: 'text', text: content }, { type: 'finish' }],
   );
 
@@ -190,23 +209,29 @@ const createMockChannel = (pages: Ably.InboundMessage[][] = []): Ably.RealtimeCh
 // reducer accumulates text per codec-message-id (drawn from meta.messageId).
 // ---------------------------------------------------------------------------
 
-const createMockDecoder = (): Decoder<TestEvent> => ({
-  decode: vi.fn((msg: Ably.InboundMessage): TestEvent[] => {
+const createMockDecoder = (): Decoder<TestInput, TestOutput> => ({
+  decode: vi.fn((msg: Ably.InboundMessage) => {
     const evs = eventsByMessage.get(msg);
-    return evs ? evs.map((e) => ({ ...e })) : [];
+    if (!evs) return { inputs: [], outputs: [] };
+    return {
+      inputs: evs.inputs.map((e) => ({ ...e })),
+      outputs: evs.outputs.map((e) => ({ ...e })),
+    };
   }),
 });
 
-const noopEncoderFactory = (): Encoder<TestEvent> => ({
+const noopEncoderFactory = (): Encoder<TestInput, TestOutput> => ({
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-  publish: () => Promise.resolve(),
+  publishInput: () => Promise.resolve(),
+  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+  publishOutput: () => Promise.resolve(),
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
   cancel: () => Promise.resolve(),
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
   close: () => Promise.resolve(),
 });
 
-const createMockCodec = (): Codec<TestEvent, TestProjection, TestMessage> & {
+const createMockCodec = (): Codec<TestInput, TestOutput, TestProjection, TestMessage> & {
   decoderInstances: number;
 } => {
   const counters = { decoderInstances: 0 };
@@ -229,15 +254,14 @@ const createMockCodec = (): Codec<TestEvent, TestProjection, TestMessage> & {
         state.byId.set(messageId, msg);
         state.order.push(messageId);
       }
-      if (event.type === 'text' && typeof event.text === 'string') {
+      if ('type' in event && event.type === 'text' && typeof event.text === 'string') {
         msg.content += event.text;
       }
       return state;
     }),
     getMessages: vi.fn((p: TestProjection) => p.order.map((id) => p.byId.get(id)).filter((m): m is TestMessage => !!m)),
-    userMessageEvent: vi.fn((m: TestMessage): TestEvent => ({ type: 'text', text: m.content })),
-    createRegenerateEvent: vi.fn((): TestEvent => ({ type: 'text', text: '' })),
-    classifyEvent: vi.fn(() => ({ kind: 'other' as const }) as const),
+    createUserMessage: vi.fn((m: TestMessage) => ({ kind: 'user-message' as const, message: m })),
+    createRegenerate: vi.fn((target: string, parent: string) => ({ kind: 'regenerate', target, parent }) as const),
     // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires an explicit return matching the codec contract
     resolveToolTarget: vi.fn(() => undefined),
     createEncoder: vi.fn(() => noopEncoderFactory()),
@@ -245,7 +269,7 @@ const createMockCodec = (): Codec<TestEvent, TestProjection, TestMessage> & {
       counters.decoderInstances += 1;
       return createMockDecoder();
     }),
-    isTerminal: vi.fn((e: TestEvent) => e.type === 'finish'),
+    isTerminal: vi.fn((e: TestOutput) => e.type === 'finish'),
   };
 };
 

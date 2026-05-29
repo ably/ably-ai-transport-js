@@ -75,15 +75,15 @@ const mergePreservingIdentity = (existing: Record<string, string>, incoming: Rec
 };
 import type { Logger } from '../../logger.js';
 import { getHeaders } from '../../utils.js';
-import type { Codec } from '../codec/types.js';
+import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
 import type { HistoryPage, LoadHistoryOptions } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Shared state across pages within one history traversal
 // ---------------------------------------------------------------------------
 
-interface HistoryState<TEvent, TProjection, TMessage> {
-  codec: Codec<TEvent, TProjection, TMessage>;
+interface HistoryState<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage> {
+  codec: Codec<TInput, TOutput, TProjection, TMessage>;
   /** All raw Ably messages collected so far, in newest-first order (as received from Ably). */
   rawMessages: Ably.InboundMessage[];
   /** How many completed messages have been returned to the consumer so far. */
@@ -142,8 +142,8 @@ interface DecodedItem<TMessage> {
  * @param state - The shared history traversal state.
  * @returns Completed messages in newest-first order.
  */
-const decodeAll = <TEvent, TProjection, TMessage>(
-  state: HistoryState<TEvent, TProjection, TMessage>,
+const decodeAll = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>(
+  state: HistoryState<TInput, TOutput, TProjection, TMessage>,
 ): DecodedItem<TMessage>[] => {
   // Reverse to chronological (oldest first)
   const chronological = [...state.rawMessages].toReversed();
@@ -173,7 +173,8 @@ const decodeAll = <TEvent, TProjection, TMessage>(
   const discreteSerials = new Map<string, string>();
 
   for (const msg of chronological) {
-    const events = decoder.decode(msg);
+    const { inputs, outputs } = decoder.decode(msg);
+    const events: (TInput | TOutput)[] = [...inputs, ...outputs];
     const headers = getHeaders(msg);
     const runId = headers[HEADER_RUN_ID];
     const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
@@ -302,8 +303,8 @@ const decodeAll = <TEvent, TProjection, TMessage>(
  * @param state - The shared history traversal state.
  * @returns Completed messages in newest-first order.
  */
-const decodeAllCached = <TEvent, TProjection, TMessage>(
-  state: HistoryState<TEvent, TProjection, TMessage>,
+const decodeAllCached = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>(
+  state: HistoryState<TInput, TOutput, TProjection, TMessage>,
 ): DecodedItem<TMessage>[] => {
   if (state.cachedDecode && state.cachedAtRawLength === state.rawMessages.length) {
     return state.cachedDecode;
@@ -365,8 +366,8 @@ const decodeAllCached = <TEvent, TProjection, TMessage>(
  * @param state - The shared history traversal state.
  * @param newMessages - The Ably messages just pushed onto `state.rawMessages`.
  */
-const countNewCompletions = <TEvent, TProjection, TMessage>(
-  state: HistoryState<TEvent, TProjection, TMessage>,
+const countNewCompletions = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>(
+  state: HistoryState<TInput, TOutput, TProjection, TMessage>,
   newMessages: readonly Ably.InboundMessage[],
 ): void => {
   for (const msg of newMessages) {
@@ -409,8 +410,8 @@ const countNewCompletions = <TEvent, TProjection, TMessage>(
  * @param ablyPage - The current Ably paginated result to start from.
  * @param limit - Target number of completed messages beyond what has already been returned.
  */
-const fetchUntilLimit = async <TEvent, TProjection, TMessage>(
-  state: HistoryState<TEvent, TProjection, TMessage>,
+const fetchUntilLimit = async <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>(
+  state: HistoryState<TInput, TOutput, TProjection, TMessage>,
   ablyPage: Ably.PaginatedResult<Ably.InboundMessage>,
   limit: number,
 ): Promise<void> => {
@@ -443,8 +444,8 @@ const fetchUntilLimit = async <TEvent, TProjection, TMessage>(
  * @param limit - Max messages per page.
  * @returns A page of decoded history with a `next()` cursor.
  */
-const buildResult = <TEvent, TProjection, TMessage>(
-  state: HistoryState<TEvent, TProjection, TMessage>,
+const buildResult = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>(
+  state: HistoryState<TInput, TOutput, TProjection, TMessage>,
   limit: number,
 ): HistoryPage<TMessage> => {
   // allCompleted is newest-first. Slice from returnedCount for this page,
@@ -500,14 +501,19 @@ const buildResult = <TEvent, TProjection, TMessage>(
  * @returns The first page of decoded history.
  */
 // Spec: AIT-CT11, AIT-CT11b
-export const decodeHistory = async <TEvent, TProjection, TMessage>(
+export const decodeHistory = async <
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+>(
   channel: Ably.RealtimeChannel,
-  codec: Codec<TEvent, TProjection, TMessage>,
+  codec: Codec<TInput, TOutput, TProjection, TMessage>,
   options: LoadHistoryOptions | undefined,
   logger: Logger,
 ): Promise<HistoryPage<TMessage>> => {
   const limit = options?.limit ?? 100;
-  const state: HistoryState<TEvent, TProjection, TMessage> = {
+  const state: HistoryState<TInput, TOutput, TProjection, TMessage> = {
     codec,
     rawMessages: [],
     returnedCount: 0,

@@ -15,7 +15,6 @@ import {
   HEADER_STREAM_ID,
 } from '../../../src/constants.js';
 import { createDecoder } from '../../../src/vercel/codec/decoder.js';
-import type { VercelEvent } from '../../../src/vercel/codec/events.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -32,18 +31,11 @@ const withHeaders = (msg: Partial<Ably.InboundMessage>, headers: Record<string, 
     // CAST: Tests construct a minimal Ably.InboundMessage stub; full shape isn't needed.
   }) as Ably.InboundMessage;
 
-// VercelEvent splits into chunks (everything except codec-local variants) and
-// codec-local 'ait-user-message' / 'tool-approval-response' events. The
-// decoder emits ait-user-message for the multi-part user-message wire format.
+const eventTypesOf = (outputs: AI.UIMessageChunk[]): string[] => outputs.map((e) => e.type);
 
-const eventsOf = (outputs: VercelEvent[]): AI.UIMessageChunk[] =>
-  outputs.filter((e): e is AI.UIMessageChunk => e.type !== 'ait-user-message' && e.type !== 'tool-approval-response');
-
-const eventTypesOf = (outputs: VercelEvent[]): string[] => outputs.map((e) => e.type);
-
-const messagesOf = (outputs: VercelEvent[]): AI.UIMessage[] =>
-  outputs
-    .filter((e): e is Extract<VercelEvent, { type: 'ait-user-message' }> => e.type === 'ait-user-message')
+const messagesOf = (inputs: ReturnType<ReturnType<typeof createDecoder>['decode']>['inputs']): AI.UIMessage[] =>
+  inputs
+    .filter((e): e is Extract<typeof e, { kind: 'user-message' }> => e.kind === 'user-message')
     .map((e) => e.message);
 
 // ---------------------------------------------------------------------------
@@ -56,7 +48,7 @@ describe('Vercel decoder', () => {
   describe('discrete lifecycle events', () => {
     it('decodes start event', () => {
       const decoder = createDecoder();
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           { action: 'message.create', name: EVENT_AI_OUTPUT, data: '' },
           {
@@ -68,26 +60,26 @@ describe('Vercel decoder', () => {
         ),
       );
 
-      expect(eventsOf(outputs)).toEqual([
+      expect(outputs).toEqual([
         expect.objectContaining({ type: 'start', messageId: 'msg-1', messageMetadata: { key: 'val' } }),
       ]);
     });
 
     it('decodes finish event with finishReason', () => {
       const decoder = createDecoder();
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           { action: 'message.create', name: EVENT_AI_OUTPUT, data: '' },
           { [HEADER_STREAM]: 'false', [`${D}type`]: 'finish', [`${D}finishReason`]: 'stop' },
         ),
       );
 
-      expect(eventsOf(outputs)).toEqual([expect.objectContaining({ type: 'finish', finishReason: 'stop' })]);
+      expect(outputs).toEqual([expect.objectContaining({ type: 'finish', finishReason: 'stop' })]);
     });
 
     it('decodes finish-step event', () => {
       const decoder = createDecoder();
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           { action: 'message.create', name: EVENT_AI_OUTPUT, data: '' },
           { [HEADER_STREAM]: 'false', [`${D}type`]: 'finish-step' },
@@ -99,26 +91,26 @@ describe('Vercel decoder', () => {
 
     it('decodes error event', () => {
       const decoder = createDecoder();
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           { action: 'message.create', name: EVENT_AI_OUTPUT, data: 'something broke' },
           { [HEADER_STREAM]: 'false', [`${D}type`]: 'error' },
         ),
       );
 
-      expect(eventsOf(outputs)).toEqual([expect.objectContaining({ type: 'error', errorText: 'something broke' })]);
+      expect(outputs).toEqual([expect.objectContaining({ type: 'error', errorText: 'something broke' })]);
     });
 
     it('decodes abort event', () => {
       const decoder = createDecoder();
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           { action: 'message.create', name: EVENT_AI_OUTPUT, data: 'cancelled' },
           { [HEADER_STREAM]: 'false', [`${D}type`]: 'abort' },
         ),
       );
 
-      expect(eventsOf(outputs)).toEqual([expect.objectContaining({ type: 'abort', reason: 'cancelled' })]);
+      expect(outputs).toEqual([expect.objectContaining({ type: 'abort', reason: 'cancelled' })]);
     });
   });
 
@@ -127,7 +119,7 @@ describe('Vercel decoder', () => {
   describe('streamed text', () => {
     it('emits synthetic start + start-step + text-start on stream create', () => {
       const decoder = createDecoder();
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           { action: 'message.create', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
           {
@@ -164,14 +156,14 @@ describe('Vercel decoder', () => {
       );
 
       // Append
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           { action: 'message.append', serial: 's1', name: EVENT_AI_OUTPUT, data: 'hello' },
           { [HEADER_RUN_ID]: 'run-1' },
         ),
       );
 
-      expect(eventsOf(outputs)).toEqual([expect.objectContaining({ type: 'text-delta', id: 'txt-1', delta: 'hello' })]);
+      expect(outputs).toEqual([expect.objectContaining({ type: 'text-delta', id: 'txt-1', delta: 'hello' })]);
     });
 
     it('emits text-end on complete append', () => {
@@ -190,7 +182,7 @@ describe('Vercel decoder', () => {
         ),
       );
 
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           { action: 'message.append', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
           { [HEADER_STATUS]: 'complete', [HEADER_RUN_ID]: 'run-1' },
@@ -208,7 +200,7 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
 
       // Create
-      const startOutputs = decoder.decode(
+      const { outputs: startOutputs } = decoder.decode(
         withHeaders(
           { action: 'message.create', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
           {
@@ -224,16 +216,16 @@ describe('Vercel decoder', () => {
       expect(eventTypesOf(startOutputs)).toContain('reasoning-start');
 
       // Delta
-      const deltaOutputs = decoder.decode(
+      const { outputs: deltaOutputs } = decoder.decode(
         withHeaders(
           { action: 'message.append', serial: 's1', name: EVENT_AI_OUTPUT, data: 'think' },
           { [HEADER_RUN_ID]: 'run-1' },
         ),
       );
-      expect(eventsOf(deltaOutputs)).toEqual([expect.objectContaining({ type: 'reasoning-delta', delta: 'think' })]);
+      expect(deltaOutputs).toEqual([expect.objectContaining({ type: 'reasoning-delta', delta: 'think' })]);
 
       // End
-      const endOutputs = decoder.decode(
+      const { outputs: endOutputs } = decoder.decode(
         withHeaders(
           { action: 'message.append', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
           { [HEADER_STATUS]: 'complete', [HEADER_RUN_ID]: 'run-1' },
@@ -250,7 +242,7 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
 
       // Create
-      const startOutputs = decoder.decode(
+      const { outputs: startOutputs } = decoder.decode(
         withHeaders(
           { action: 'message.create', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
           {
@@ -265,28 +257,28 @@ describe('Vercel decoder', () => {
         ),
       );
       expect(eventTypesOf(startOutputs)).toContain('tool-input-start');
-      const startChunk = eventsOf(startOutputs).find((e) => e.type === 'tool-input-start');
+      const startChunk = startOutputs.find((e) => e.type === 'tool-input-start');
       expect(startChunk).toEqual(expect.objectContaining({ toolCallId: 'tc-1', toolName: 'search' }));
 
       // Delta
-      const deltaOutputs = decoder.decode(
+      const { outputs: deltaOutputs } = decoder.decode(
         withHeaders(
           { action: 'message.append', serial: 's1', name: EVENT_AI_OUTPUT, data: '{"q":"test"}' },
           { [HEADER_RUN_ID]: 'run-1' },
         ),
       );
-      expect(eventsOf(deltaOutputs)).toEqual([
+      expect(deltaOutputs).toEqual([
         expect.objectContaining({ type: 'tool-input-delta', inputTextDelta: '{"q":"test"}' }),
       ]);
 
       // Available (complete)
-      const endOutputs = decoder.decode(
+      const { outputs: endOutputs } = decoder.decode(
         withHeaders(
           { action: 'message.append', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
           { [HEADER_STATUS]: 'complete', [HEADER_RUN_ID]: 'run-1', [`${D}toolName`]: 'search' },
         ),
       );
-      const availChunk = eventsOf(endOutputs).find((e) => e.type === 'tool-input-available');
+      const availChunk = endOutputs.find((e) => e.type === 'tool-input-available');
       expect(availChunk).toBeDefined();
       expect(availChunk).toEqual(
         expect.objectContaining({
@@ -304,7 +296,7 @@ describe('Vercel decoder', () => {
   describe('discrete (non-streaming) tool-input', () => {
     it('emits tool-input-start + tool-input-available', () => {
       const decoder = createDecoder();
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           { action: 'message.create', name: EVENT_AI_OUTPUT, data: '{"q":"test"}' },
           {
@@ -330,7 +322,7 @@ describe('Vercel decoder', () => {
   describe('tool lifecycle events', () => {
     it('decodes tool-input-error', () => {
       const decoder = createDecoder();
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           {
             action: 'message.create',
@@ -346,7 +338,7 @@ describe('Vercel decoder', () => {
         ),
       );
 
-      expect(eventsOf(outputs)).toEqual([
+      expect(outputs).toEqual([
         expect.objectContaining({
           type: 'tool-input-error',
           toolCallId: 'tc-1',
@@ -359,7 +351,7 @@ describe('Vercel decoder', () => {
 
     it('decodes tool-output-available', () => {
       const decoder = createDecoder();
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           {
             action: 'message.create',
@@ -374,7 +366,7 @@ describe('Vercel decoder', () => {
         ),
       );
 
-      expect(eventsOf(outputs)).toEqual([
+      expect(outputs).toEqual([
         expect.objectContaining({
           type: 'tool-output-available',
           toolCallId: 'tc-1',
@@ -385,7 +377,7 @@ describe('Vercel decoder', () => {
 
     it('decodes tool-output-error', () => {
       const decoder = createDecoder();
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           {
             action: 'message.create',
@@ -400,7 +392,7 @@ describe('Vercel decoder', () => {
         ),
       );
 
-      expect(eventsOf(outputs)).toEqual([
+      expect(outputs).toEqual([
         expect.objectContaining({
           type: 'tool-output-error',
           toolCallId: 'tc-1',
@@ -411,7 +403,7 @@ describe('Vercel decoder', () => {
 
     it('decodes tool-approval-request', () => {
       const decoder = createDecoder();
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           { action: 'message.create', name: EVENT_AI_OUTPUT, data: '' },
           {
@@ -423,7 +415,7 @@ describe('Vercel decoder', () => {
         ),
       );
 
-      expect(eventsOf(outputs)).toEqual([
+      expect(outputs).toEqual([
         expect.objectContaining({
           type: 'tool-approval-request',
           toolCallId: 'tc-1',
@@ -434,14 +426,14 @@ describe('Vercel decoder', () => {
 
     it('decodes tool-output-denied', () => {
       const decoder = createDecoder();
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           { action: 'message.create', name: EVENT_AI_OUTPUT, data: '' },
           { [HEADER_STREAM]: 'false', [`${D}type`]: 'tool-output-denied', [`${D}toolCallId`]: 'tc-1' },
         ),
       );
 
-      expect(eventsOf(outputs)).toEqual([expect.objectContaining({ type: 'tool-output-denied', toolCallId: 'tc-1' })]);
+      expect(outputs).toEqual([expect.objectContaining({ type: 'tool-output-denied', toolCallId: 'tc-1' })]);
     });
   });
 
@@ -450,21 +442,21 @@ describe('Vercel decoder', () => {
   describe('content parts', () => {
     it('decodes file event', () => {
       const decoder = createDecoder();
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           { action: 'message.create', name: EVENT_AI_OUTPUT, data: 'https://example.com/img.png' },
           { [HEADER_STREAM]: 'false', [`${D}type`]: 'file', [`${D}mediaType`]: 'image/png' },
         ),
       );
 
-      expect(eventsOf(outputs)).toEqual([
+      expect(outputs).toEqual([
         expect.objectContaining({ type: 'file', url: 'https://example.com/img.png', mediaType: 'image/png' }),
       ]);
     });
 
     it('decodes source-url event', () => {
       const decoder = createDecoder();
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           { action: 'message.create', name: EVENT_AI_OUTPUT, data: 'https://example.com' },
           {
@@ -476,7 +468,7 @@ describe('Vercel decoder', () => {
         ),
       );
 
-      expect(eventsOf(outputs)).toEqual([
+      expect(outputs).toEqual([
         expect.objectContaining({
           type: 'source-url',
           sourceId: 'src-1',
@@ -488,7 +480,7 @@ describe('Vercel decoder', () => {
 
     it('decodes source-document event', () => {
       const decoder = createDecoder();
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           { action: 'message.create', name: EVENT_AI_OUTPUT, data: '' },
           {
@@ -502,7 +494,7 @@ describe('Vercel decoder', () => {
         ),
       );
 
-      expect(eventsOf(outputs)).toEqual([
+      expect(outputs).toEqual([
         expect.objectContaining({
           type: 'source-document',
           sourceId: 'src-1',
@@ -515,7 +507,7 @@ describe('Vercel decoder', () => {
 
     it('decodes message-metadata event', () => {
       const decoder = createDecoder();
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           { action: 'message.create', name: EVENT_AI_OUTPUT, data: '' },
           {
@@ -526,9 +518,7 @@ describe('Vercel decoder', () => {
         ),
       );
 
-      expect(eventsOf(outputs)).toEqual([
-        expect.objectContaining({ type: 'message-metadata', messageMetadata: { key: 'val' } }),
-      ]);
+      expect(outputs).toEqual([expect.objectContaining({ type: 'message-metadata', messageMetadata: { key: 'val' } })]);
     });
   });
 
@@ -537,29 +527,27 @@ describe('Vercel decoder', () => {
   describe('data-* events', () => {
     it('decodes data-* custom event', () => {
       const decoder = createDecoder();
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           { action: 'message.create', name: EVENT_AI_OUTPUT, data: { foo: 'bar' } },
           { [HEADER_STREAM]: 'false', [`${D}type`]: 'data-custom', [`${D}id`]: 'dc-1' },
         ),
       );
 
-      const events = eventsOf(outputs);
-      expect(events).toHaveLength(1);
-      expect(events[0]).toEqual(expect.objectContaining({ type: 'data-custom', data: { foo: 'bar' }, id: 'dc-1' }));
+      expect(outputs).toHaveLength(1);
+      expect(outputs[0]).toEqual(expect.objectContaining({ type: 'data-custom', data: { foo: 'bar' }, id: 'dc-1' }));
     });
 
     it('decodes data-* with transient flag', () => {
       const decoder = createDecoder();
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           { action: 'message.create', name: EVENT_AI_OUTPUT, data: '' },
           { [HEADER_STREAM]: 'false', [`${D}type`]: 'data-status', [`${D}transient`]: 'true' },
         ),
       );
 
-      const events = eventsOf(outputs);
-      expect(events[0]).toEqual(expect.objectContaining({ type: 'data-status', transient: true }));
+      expect(outputs[0]).toEqual(expect.objectContaining({ type: 'data-status', transient: true }));
     });
   });
 
@@ -570,7 +558,7 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
 
       // First streamed message in run
-      const first = decoder.decode(
+      const { outputs: first } = decoder.decode(
         withHeaders(
           { action: 'message.create', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
           {
@@ -587,7 +575,7 @@ describe('Vercel decoder', () => {
       expect(eventTypesOf(first)).toContain('start-step');
 
       // Second streamed message in same run
-      const second = decoder.decode(
+      const { outputs: second } = decoder.decode(
         withHeaders(
           { action: 'message.create', serial: 's2', name: EVENT_AI_OUTPUT, data: '' },
           {
@@ -622,7 +610,7 @@ describe('Vercel decoder', () => {
       );
 
       // Explicit start-step from channel
-      const stepOutputs = decoder.decode(
+      const { outputs: stepOutputs } = decoder.decode(
         withHeaders(
           { action: 'message.create', name: EVENT_AI_OUTPUT, data: '' },
           { [HEADER_STREAM]: 'false', [HEADER_RUN_ID]: 'run-1', [`${D}type`]: 'start-step' },
@@ -631,7 +619,7 @@ describe('Vercel decoder', () => {
       expect(eventTypesOf(stepOutputs)).toEqual(['start-step']);
 
       // Next streamed message should NOT synthesize start or start-step
-      const streamOutputs = decoder.decode(
+      const { outputs: streamOutputs } = decoder.decode(
         withHeaders(
           { action: 'message.create', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
           {
@@ -674,7 +662,7 @@ describe('Vercel decoder', () => {
       );
 
       // New stream in next step — should get start-step again
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           { action: 'message.create', serial: 's2', name: EVENT_AI_OUTPUT, data: '' },
           {
@@ -723,7 +711,7 @@ describe('Vercel decoder', () => {
       );
 
       // New content on same run — should re-synthesize start + start-step
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           { action: 'message.create', serial: 's2', name: EVENT_AI_OUTPUT, data: '' },
           {
@@ -767,7 +755,7 @@ describe('Vercel decoder', () => {
       );
 
       // New content on same run — should re-synthesize start + start-step
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           { action: 'message.create', serial: 's2', name: EVENT_AI_OUTPUT, data: '' },
           {
@@ -811,7 +799,7 @@ describe('Vercel decoder', () => {
       );
 
       // New content on same run — should re-synthesize start + start-step
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           { action: 'message.create', serial: 's2', name: EVENT_AI_OUTPUT, data: '' },
           {
@@ -834,7 +822,7 @@ describe('Vercel decoder', () => {
   describe('first-contact update (history hydration)', () => {
     it('emits full lifecycle for complete streamed message', () => {
       const decoder = createDecoder();
-      const outputs = decoder.decode(
+      const { outputs } = decoder.decode(
         withHeaders(
           { action: 'message.update', serial: 's1', name: EVENT_AI_OUTPUT, data: 'hello world' },
           {
@@ -855,7 +843,7 @@ describe('Vercel decoder', () => {
       expect(types).toContain('text-delta');
       expect(types).toContain('text-end');
 
-      const deltaEvent = eventsOf(outputs).find((e) => e.type === 'text-delta');
+      const deltaEvent = outputs.find((e) => e.type === 'text-delta');
       expect(deltaEvent).toEqual(expect.objectContaining({ type: 'text-delta', delta: 'hello world' }));
     });
   });
@@ -877,8 +865,8 @@ describe('Vercel decoder', () => {
         },
       );
 
-      const outputs = decoder.decode(msg);
-      const messages = messagesOf(outputs);
+      const { inputs } = decoder.decode(msg);
+      const messages = messagesOf(inputs);
 
       expect(messages).toHaveLength(1);
       expect(messages[0]).toEqual(
@@ -905,8 +893,8 @@ describe('Vercel decoder', () => {
         },
       );
 
-      const outputs = decoder.decode(msg);
-      const messages = messagesOf(outputs);
+      const { inputs } = decoder.decode(msg);
+      const messages = messagesOf(inputs);
 
       expect(messages).toHaveLength(1);
       expect(messages[0]).toEqual(
@@ -933,8 +921,8 @@ describe('Vercel decoder', () => {
         },
       );
 
-      const outputs = decoder.decode(msg);
-      const messages = messagesOf(outputs);
+      const { inputs } = decoder.decode(msg);
+      const messages = messagesOf(inputs);
 
       expect(messages).toHaveLength(1);
       expect(messages[0]).toEqual(
@@ -950,7 +938,7 @@ describe('Vercel decoder', () => {
       const decoder = createDecoder();
       // Agent-published data-* events ride `ai-output` with `x-domain-type`
       // carrying the codec event type. They carry no HEADER_DISCRETE and
-      // produce a projection event so the accumulator can merge them into
+      // produce an output event so the accumulator can merge them into
       // the streamed assistant response message.
       const msg = withHeaders(
         { name: EVENT_AI_OUTPUT, data: { agentLabel: 'Returns', tasks: [] } },
@@ -963,13 +951,12 @@ describe('Vercel decoder', () => {
         },
       );
 
-      const outputs = decoder.decode(msg);
-      const messages = messagesOf(outputs);
-      const events = eventsOf(outputs);
+      const { inputs, outputs } = decoder.decode(msg);
+      const messages = messagesOf(inputs);
 
       expect(messages).toHaveLength(0);
-      expect(events).toHaveLength(1);
-      expect(events[0]).toEqual(
+      expect(outputs).toHaveLength(1);
+      expect(outputs[0]).toEqual(
         expect.objectContaining({ type: 'data-agent-progress', data: { agentLabel: 'Returns', tasks: [] } }),
       );
     });
@@ -988,14 +975,14 @@ describe('Vercel decoder', () => {
         },
       );
 
-      const outputs = decoder.decode(msg);
-      const messages = messagesOf(outputs);
+      const { inputs } = decoder.decode(msg);
+      const messages = messagesOf(inputs);
 
       expect(messages).toHaveLength(1);
       expect(messages[0]?.role).toBe('system');
     });
 
-    it('decodes a discrete user-message part as an ait-user-message event', () => {
+    it('decodes a discrete user-message part as a UserMessage', () => {
       const decoder = createDecoder();
       const msg = withHeaders(
         { name: EVENT_AI_INPUT, data: 'hi' },
@@ -1009,12 +996,13 @@ describe('Vercel decoder', () => {
         },
       );
 
-      const outputs = decoder.decode(msg);
-      expect(outputs).toHaveLength(1);
-      expect(outputs[0]?.type).toBe('ait-user-message');
+      const { inputs, outputs } = decoder.decode(msg);
+      expect(outputs).toHaveLength(0);
+      expect(inputs).toHaveLength(1);
+      expect(inputs[0]?.kind).toBe('user-message');
     });
 
-    it('decodes ai-input tool-approval-response into a ToolApprovalResponseEvent', () => {
+    it('decodes ai-input tool-approval-response into a ToolApprovalResponse input', () => {
       const decoder = createDecoder();
       const msg = withHeaders(
         { name: EVENT_AI_INPUT, data: '' },
@@ -1028,19 +1016,69 @@ describe('Vercel decoder', () => {
         },
       );
 
-      const outputs = decoder.decode(msg);
-      expect(outputs).toHaveLength(1);
-      const event = outputs[0];
-      expect(event?.type).toBe('tool-approval-response');
-      if (event?.type !== 'tool-approval-response') return;
-      expect(event.toolCallId).toBe('tc-1');
-      expect(event.approved).toBe(true);
-      expect(event.reason).toBe('ok');
+      const { inputs, outputs } = decoder.decode(msg);
+      expect(outputs).toHaveLength(0);
+      expect(inputs).toHaveLength(1);
+      const input = inputs[0];
+      expect(input?.kind).toBe('tool-approval-response');
+      if (input?.kind !== 'tool-approval-response') return;
+      expect(input.toolCallId).toBe('tc-1');
+      expect(input.approved).toBe(true);
+      expect(input.reason).toBe('ok');
+      expect(input.codecMessageId).toBe('continuation-codec-message-id');
     });
 
-    it('decodes ai-input ait-regenerate wires into zero events (routing lives on transport headers)', () => {
+    it('decodes ai-input tool-result wire into a ToolResult input', () => {
       const decoder = createDecoder();
-      // The regenerate wire carries `x-ably-parent` and `x-ably-fork-of`
+      // Client-side tool-result rides the `ai-input` wire with
+      // x-domain-type: 'tool-result'.
+      const msg = withHeaders(
+        { name: EVENT_AI_INPUT, data: { output: { latitude: 51.5, longitude: -0.1 } } },
+        {
+          [HEADER_STREAM]: 'false',
+          [HEADER_CODEC_MESSAGE_ID]: 'continuation-codec-message-id',
+          [`${D}type`]: 'tool-result',
+          [`${D}toolCallId`]: 'tc-1',
+        },
+      );
+
+      const { inputs, outputs } = decoder.decode(msg);
+      expect(outputs).toHaveLength(0);
+      expect(inputs).toHaveLength(1);
+      const input = inputs[0];
+      expect(input?.kind).toBe('tool-result');
+      if (input?.kind !== 'tool-result') return;
+      expect(input.toolCallId).toBe('tc-1');
+      expect(input.output).toEqual({ latitude: 51.5, longitude: -0.1 });
+      expect(input.codecMessageId).toBe('continuation-codec-message-id');
+    });
+
+    it('decodes ai-input tool-result-error wire into a ToolResultError input', () => {
+      const decoder = createDecoder();
+      const msg = withHeaders(
+        { name: EVENT_AI_INPUT, data: { message: 'geolocation denied' } },
+        {
+          [HEADER_STREAM]: 'false',
+          [HEADER_CODEC_MESSAGE_ID]: 'continuation-codec-message-id',
+          [`${D}type`]: 'tool-result-error',
+          [`${D}toolCallId`]: 'tc-1',
+        },
+      );
+
+      const { inputs, outputs } = decoder.decode(msg);
+      expect(outputs).toHaveLength(0);
+      expect(inputs).toHaveLength(1);
+      const input = inputs[0];
+      expect(input?.kind).toBe('tool-result-error');
+      if (input?.kind !== 'tool-result-error') return;
+      expect(input.toolCallId).toBe('tc-1');
+      expect(input.message).toBe('geolocation denied');
+      expect(input.codecMessageId).toBe('continuation-codec-message-id');
+    });
+
+    it('decodes ai-input regenerate wires into zero events (routing lives on transport headers)', () => {
+      const decoder = createDecoder();
+      // The regenerate wire carries `x-ably-parent` and `x-ably-msg-regenerate`
       // on transport headers so the agent's prompt-lookup can resolve
       // run-routing metadata from `firstHeaders`. The decoder itself has
       // no domain events to emit — regenerate wires are wire-only.
@@ -1050,14 +1088,15 @@ describe('Vercel decoder', () => {
           [HEADER_STREAM]: 'false',
           [HEADER_CODEC_MESSAGE_ID]: 'regen-codec-message-id',
           [HEADER_ROLE]: 'user',
-          [`${D}type`]: 'ait-regenerate',
+          [`${D}type`]: 'regenerate',
           'x-ably-parent': 'user-U1',
           'x-ably-msg-regenerate': 'asst-A1',
           'x-ably-event-id': 'prompt-1',
         },
       );
 
-      const outputs = decoder.decode(msg);
+      const { inputs, outputs } = decoder.decode(msg);
+      expect(inputs).toEqual([]);
       expect(outputs).toEqual([]);
     });
   });

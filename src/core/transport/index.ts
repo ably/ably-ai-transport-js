@@ -27,8 +27,6 @@ export type {
 
 // Deprecated aliases — intentional re-export of deprecated types for backwards compatibility.
 // eslint-disable-next-line @typescript-eslint/no-deprecated
-export type { EventNode } from './types.js';
-// eslint-disable-next-line @typescript-eslint/no-deprecated
 export type { TreeNode } from './types.js';
 
 // Internal tree interface (consumed by View implementations)

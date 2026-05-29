@@ -668,7 +668,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
       codecMessageId,
       runId: run.runId,
       clientId: run.clientId,
-      status: run.status === 'active' ? 'streaming' : 'finished',
+      status: run.status === 'active' ? 'streaming' : run.status,
     };
   }
 

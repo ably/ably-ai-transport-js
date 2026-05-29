@@ -817,12 +817,11 @@ export interface MessageMetadata {
    */
   clientId: string;
   /**
-   * `'streaming'` while the owning Run is active, `'finished'` once the
-   * Run has ended (for any reason — complete, cancelled, aborted,
-   * error, or suspended). For finer-grained distinctions, read
-   * {@link RunNode.status} directly via the {@link Tree}.
+   * `'streaming'` while the owning Run is active, otherwise the
+   * {@link RunEndReason} the Run terminated with — `'complete'`,
+   * `'cancelled'`, `'error'`, or `'suspended'`.
    */
-  status: 'streaming' | 'finished';
+  status: 'streaming' | RunEndReason;
 }
 
 /**

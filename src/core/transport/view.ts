@@ -65,7 +65,7 @@ interface ViewEventsMap {
  * so the delegate has no back-reference to the View.
  *
  * `input` is the normalised richer shape — each entry pairs a TEvent
- * with an optional `domainMessageId` override. The View boundary
+ * with an optional `codecMessageId` override. The View boundary
  * (`View.sendEvent`) normalises raw `TEvent` / `TEvent[]` inputs into
  * this shape so the delegate always sees the same structure.
  *
@@ -75,7 +75,7 @@ interface ViewEventsMap {
  * auto-parent for fresh user messages.
  */
 export type SendDelegate<TEvent, TMessage> = (
-  input: { event: TEvent; domainMessageId?: string }[],
+  input: { event: TEvent; codecMessageId?: string }[],
   options: SendOptions | undefined,
   history: TMessage[],
   parentCodecMessageId: string | undefined,
@@ -149,8 +149,8 @@ type RegenSelection =
  * @returns The richer per-entry shape.
  */
 const _normaliseSendInput = <TEvent>(
-  input: TEvent | TEvent[] | { event: TEvent; domainMessageId?: string }[],
-): { event: TEvent; domainMessageId?: string }[] => {
+  input: TEvent | TEvent[] | { event: TEvent; codecMessageId?: string }[],
+): { event: TEvent; codecMessageId?: string }[] => {
   if (!Array.isArray(input)) {
     return [{ event: input }];
   }
@@ -158,7 +158,7 @@ const _normaliseSendInput = <TEvent>(
   const first = input[0];
   if (typeof first === 'object' && first !== null && 'event' in first) {
     // CAST: discriminator above proves the array is the richer shape.
-    return input as { event: TEvent; domainMessageId?: string }[];
+    return input as { event: TEvent; codecMessageId?: string }[];
   }
   // CAST: discriminator above proves the array is TEvent[].
   return (input as TEvent[]).map((event) => ({ event }));
@@ -839,9 +839,9 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     // (decoded UIMessage.id matches the original, agent-side projection
     // doesn't get rebound to a fresh UUID).
     const items = list.map((m) => {
-      const domainMessageId = _readMessageId(m);
-      return domainMessageId !== undefined && domainMessageId !== ''
-        ? { event: this._codec.userMessageEvent(m), domainMessageId }
+      const codecMessageId = _readMessageId(m);
+      return codecMessageId !== undefined && codecMessageId !== ''
+        ? { event: this._codec.userMessageEvent(m), codecMessageId }
         : { event: this._codec.userMessageEvent(m) };
     });
     return this.sendEvent(items, options);
@@ -849,7 +849,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
 
   // Spec: AIT-CT3, AIT-CT4
   async sendEvent(
-    input: TEvent | TEvent[] | { event: TEvent; domainMessageId?: string }[],
+    input: TEvent | TEvent[] | { event: TEvent; codecMessageId?: string }[],
     options?: SendOptions,
   ): Promise<ActiveRun<TEvent>> {
     this._logger.trace('DefaultView.sendEvent();');

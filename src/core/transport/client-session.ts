@@ -565,7 +565,7 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
 
   // Spec: AIT-CT3, AIT-CT4
   private async _internalSend(
-    input: { event: TEvent; domainMessageId?: string }[],
+    input: { event: TEvent; codecMessageId?: string }[],
     sendOptions: SendOptions | undefined,
     history: TMessage[],
     parentCodecMessageId: string | undefined,
@@ -612,7 +612,7 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
            * set, the SDK uses this as the wire codec-message-id and the optimistic
            * fold's `meta.messageId` instead of minting a fresh UUID.
            */
-          domainMessageId?: string;
+          codecMessageId?: string;
           /** Allocated below in the optimistic-insert phase. */
           state?: { codecMessageId: string; headers: Record<string, string> };
         }
@@ -640,7 +640,7 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
         classified.push({
           kind: 'user-message',
           event: entry.event,
-          ...(entry.domainMessageId !== undefined && { domainMessageId: entry.domainMessageId }),
+          ...(entry.codecMessageId !== undefined && { codecMessageId: entry.codecMessageId }),
         });
       }
     }
@@ -715,13 +715,13 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
         continue;
       }
 
-      // Caller-supplied `domainMessageId` (e.g. chat-transport's
+      // Caller-supplied `codecMessageId` (e.g. chat-transport's
       // continuation tool resolution targeting the prior assistant's
       // tree key) takes precedence over the SDK-minted fresh id. When
       // set, the wire's `x-ably-codec-message-id` matches the existing
       // assistant's tree key so the reducer's direct-fold path runs
       // instead of the cross-message redirect-by-toolCallId fallback.
-      const codecMessageId = item.domainMessageId ?? crypto.randomUUID();
+      const codecMessageId = item.codecMessageId ?? crypto.randomUUID();
       const eventId = crypto.randomUUID();
       this._ownCodecMessageIds.add(codecMessageId);
       codecMessageIds.add(codecMessageId);

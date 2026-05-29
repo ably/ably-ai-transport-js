@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DOMAIN_HEADER_PREFIX as D,
+  EVENT_AI_OUTPUT,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_DISCRETE,
   HEADER_STATUS,
@@ -102,7 +103,8 @@ describe('Vercel encoder', () => {
       await encoder.publish({ type: 'text-start', id: 'txt-1' });
 
       const msg = firstPublish(writer);
-      expect(msg.name).toBe('text');
+      expect(msg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(msg)[`${D}type`]).toBe('text');
       expect(headersOf(msg)[HEADER_STREAM]).toBe('true');
       expect(headersOf(msg)[HEADER_STATUS]).toBe('streaming');
       expect(headersOf(msg)[HEADER_STREAM_ID]).toBe('txt-1');
@@ -148,7 +150,8 @@ describe('Vercel encoder', () => {
       await encoder.publish({ type: 'reasoning-end', id: 'r-1' });
 
       const startMsg = firstPublish(writer);
-      expect(startMsg.name).toBe('reasoning');
+      expect(startMsg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(startMsg)[`${D}type`]).toBe('reasoning');
       expect(headersOf(startMsg)[HEADER_STREAM_ID]).toBe('r-1');
       expect(writer.appendCalls).toHaveLength(2); // delta + close
     });
@@ -169,7 +172,8 @@ describe('Vercel encoder', () => {
       });
 
       const msg = firstPublish(writer);
-      expect(msg.name).toBe('tool-input');
+      expect(msg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(msg)[`${D}type`]).toBe('tool-input');
       expect(headersOf(msg)[HEADER_STREAM_ID]).toBe('tc-1');
       expect(headersOf(msg)[`${D}toolCallId`]).toBe('tc-1');
       expect(headersOf(msg)[`${D}toolName`]).toBe('search');
@@ -213,7 +217,8 @@ describe('Vercel encoder', () => {
       // Should be a discrete publish, not a stream close
       expect(writer.publishCalls).toHaveLength(1);
       const msg = firstPublish(writer);
-      expect(msg.name).toBe('tool-input');
+      expect(msg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(msg)[`${D}type`]).toBe('tool-input');
       expect(headersOf(msg)[HEADER_STREAM]).toBe('false');
       expect(msg.data).toEqual({ x: 42 });
     });
@@ -227,7 +232,8 @@ describe('Vercel encoder', () => {
       await encoder.publish({ type: 'start', messageId: 'msg-1', messageMetadata: { key: 'val' } });
 
       const msg = firstPublish(writer);
-      expect(msg.name).toBe('start');
+      expect(msg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(msg)[`${D}type`]).toBe('start');
       expect(headersOf(msg)[`${D}messageId`]).toBe('msg-1');
       expect(headersOf(msg)[`${D}messageMetadata`]).toBe(JSON.stringify({ key: 'val' }));
     });
@@ -283,7 +289,8 @@ describe('Vercel encoder', () => {
       await encoder.publish({ type: 'finish-step' });
 
       const msg = firstPublish(writer);
-      expect(msg.name).toBe('finish-step');
+      expect(msg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(msg)[`${D}type`]).toBe('finish-step');
     });
 
     it('encodes finish with finishReason', async () => {
@@ -291,7 +298,8 @@ describe('Vercel encoder', () => {
       await encoder.publish({ type: 'finish', finishReason: 'stop' });
 
       const msg = firstPublish(writer);
-      expect(msg.name).toBe('finish');
+      expect(msg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(msg)[`${D}type`]).toBe('finish');
       expect(headersOf(msg)[`${D}finishReason`]).toBe('stop');
     });
 
@@ -300,7 +308,8 @@ describe('Vercel encoder', () => {
       await encoder.publish({ type: 'error', errorText: 'something failed' });
 
       const msg = firstPublish(writer);
-      expect(msg.name).toBe('error');
+      expect(msg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(msg)[`${D}type`]).toBe('error');
       expect(msg.data).toBe('something failed');
     });
 
@@ -311,7 +320,8 @@ describe('Vercel encoder', () => {
 
       // Should have: publish (text-start), append (cancel stream), publish (abort event)
       const cancelMsg = lastPublish(writer);
-      expect(cancelMsg.name).toBe('abort');
+      expect(cancelMsg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(cancelMsg)[`${D}type`]).toBe('abort');
       expect(cancelMsg.data).toBe('cancelled');
       expect(headersOf(cancelMsg)[HEADER_STATUS]).toBe('cancelled');
 
@@ -326,7 +336,8 @@ describe('Vercel encoder', () => {
       await encoder.cancel('cancelled');
 
       const cancelMsg = lastPublish(writer);
-      expect(cancelMsg.name).toBe('abort');
+      expect(cancelMsg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(cancelMsg)[`${D}type`]).toBe('abort');
       expect(cancelMsg.data).toBe('cancelled');
       expect(headersOf(cancelMsg)[HEADER_STATUS]).toBe('cancelled');
 
@@ -353,7 +364,8 @@ describe('Vercel encoder', () => {
 
       expect(writer.publishCalls).toHaveLength(1);
       const msg = firstPublish(writer);
-      expect(msg.name).toBe('abort');
+      expect(msg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(msg)[`${D}type`]).toBe('abort');
       expect(msg.data).toBe('user-stop');
       expect(headersOf(msg)[HEADER_STATUS]).toBe('cancelled');
       expect(writer.appendCalls).toHaveLength(0);
@@ -364,7 +376,9 @@ describe('Vercel encoder', () => {
       await encoder.publish({ type: 'start-step' });
 
       expect(writer.publishCalls).toHaveLength(1);
-      expect(firstPublish(writer)).toEqual(expect.objectContaining({ name: 'start-step' }));
+      const msg = firstPublish(writer);
+      expect(msg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(msg)[`${D}type`]).toBe('start-step');
     });
   });
 
@@ -382,7 +396,8 @@ describe('Vercel encoder', () => {
       });
 
       const msg = firstPublish(writer);
-      expect(msg.name).toBe('tool-input-error');
+      expect(msg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(msg)[`${D}type`]).toBe('tool-input-error');
       expect(msg.data).toEqual({ errorText: 'parse error', input: { bad: true } });
       expect(headersOf(msg)[`${D}toolCallId`]).toBe('tc-1');
     });
@@ -396,7 +411,8 @@ describe('Vercel encoder', () => {
       });
 
       const msg = firstPublish(writer);
-      expect(msg.name).toBe('tool-output-available');
+      expect(msg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(msg)[`${D}type`]).toBe('tool-output-available');
       expect(msg.data).toEqual({ output: { result: 42 } });
     });
 
@@ -409,7 +425,8 @@ describe('Vercel encoder', () => {
       });
 
       const msg = firstPublish(writer);
-      expect(msg.name).toBe('tool-output-error');
+      expect(msg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(msg)[`${D}type`]).toBe('tool-output-error');
       expect(msg.data).toEqual({ errorText: 'timeout' });
     });
 
@@ -422,7 +439,8 @@ describe('Vercel encoder', () => {
       });
 
       const msg = firstPublish(writer);
-      expect(msg.name).toBe('tool-approval-request');
+      expect(msg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(msg)[`${D}type`]).toBe('tool-approval-request');
       expect(headersOf(msg)[`${D}toolCallId`]).toBe('tc-1');
       expect(headersOf(msg)[`${D}approvalId`]).toBe('apr-1');
     });
@@ -435,7 +453,8 @@ describe('Vercel encoder', () => {
       });
 
       const msg = firstPublish(writer);
-      expect(msg.name).toBe('tool-output-denied');
+      expect(msg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(msg)[`${D}type`]).toBe('tool-output-denied');
     });
   });
 
@@ -447,7 +466,8 @@ describe('Vercel encoder', () => {
       await encoder.publish({ type: 'file', url: 'https://example.com/img.png', mediaType: 'image/png' });
 
       const msg = firstPublish(writer);
-      expect(msg.name).toBe('file');
+      expect(msg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(msg)[`${D}type`]).toBe('file');
       expect(msg.data).toBe('https://example.com/img.png');
       expect(headersOf(msg)[`${D}mediaType`]).toBe('image/png');
     });
@@ -462,7 +482,8 @@ describe('Vercel encoder', () => {
       });
 
       const msg = firstPublish(writer);
-      expect(msg.name).toBe('source-url');
+      expect(msg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(msg)[`${D}type`]).toBe('source-url');
       expect(headersOf(msg)[`${D}sourceId`]).toBe('src-1');
       expect(headersOf(msg)[`${D}title`]).toBe('Example');
     });
@@ -478,7 +499,8 @@ describe('Vercel encoder', () => {
       });
 
       const msg = firstPublish(writer);
-      expect(msg.name).toBe('source-document');
+      expect(msg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(msg)[`${D}type`]).toBe('source-document');
       expect(headersOf(msg)[`${D}filename`]).toBe('doc.pdf');
     });
 
@@ -487,7 +509,8 @@ describe('Vercel encoder', () => {
       await encoder.publish({ type: 'message-metadata', messageMetadata: { key: 'val' } });
 
       const msg = firstPublish(writer);
-      expect(msg.name).toBe('message-metadata');
+      expect(msg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(msg)[`${D}type`]).toBe('message-metadata');
       expect(headersOf(msg)[`${D}messageMetadata`]).toBe(JSON.stringify({ key: 'val' }));
     });
   });
@@ -501,7 +524,8 @@ describe('Vercel encoder', () => {
       await encoder.publish(chunk);
 
       const msg = firstPublish(writer);
-      expect(msg.name).toBe('data-custom');
+      expect(msg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(msg)[`${D}type`]).toBe('data-custom');
       expect(msg.data).toEqual({ foo: 'bar' });
       expect(headersOf(msg)[`${D}id`]).toBe('dc-1');
     });
@@ -660,7 +684,8 @@ describe('Vercel encoder', () => {
 
       expect(writer.publishCalls).toHaveLength(1);
       const msg = firstPublish(writer);
-      expect(msg.name).toBe('tool-output-available');
+      expect(msg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(msg)[`${D}type`]).toBe('tool-output-available');
       expect(headersOf(msg)[`${D}toolCallId`]).toBe('tc-1');
       expect(headersOf(msg)[HEADER_CODEC_MESSAGE_ID]).toBe('continuation-codec-message-id');
       expect(headersOf(msg)['x-ably-amend']).toBeUndefined();
@@ -682,13 +707,71 @@ describe('Vercel encoder', () => {
 
       expect(writer.publishCalls).toHaveLength(1);
       const msg = firstPublish(writer);
-      expect(msg.name).toBe('tool-output-error');
+      expect(msg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(msg)[`${D}type`]).toBe('tool-output-error');
       expect(headersOf(msg)[`${D}toolCallId`]).toBe('tc-1');
       expect(headersOf(msg)[HEADER_CODEC_MESSAGE_ID]).toBe('continuation-codec-message-id');
       expect(headersOf(msg)['x-ably-amend']).toBeUndefined();
       // CAST: data is unknown — we know the encoder shape from above.
       const data = msg.data as { errorText: string };
       expect(data.errorText).toBe('geolocation denied');
+    });
+  });
+
+  // -- wire-name uniformity ------------------------------------------------
+
+  describe('ai-output wire name', () => {
+    it('publishes every agent-side codec event under the single ai-output wire name', async () => {
+      const encoder = createEncoder(writer);
+      await encoder.publish({ type: 'start', messageId: 'msg-1' });
+      await encoder.publish({ type: 'start-step' });
+      await encoder.publish({ type: 'text-start', id: 'txt-1' });
+      await encoder.publish({ type: 'text-end', id: 'txt-1' });
+      await encoder.publish({ type: 'reasoning-start', id: 'r-1' });
+      await encoder.publish({ type: 'reasoning-end', id: 'r-1' });
+      await encoder.publish({ type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'search' });
+      await encoder.publish({
+        type: 'tool-input-available',
+        toolCallId: 'tc-1',
+        toolName: 'search',
+        input: { q: 'x' },
+      });
+      await encoder.publish({
+        type: 'tool-input-error',
+        toolCallId: 'tc-2',
+        toolName: 'calc',
+        errorText: 'bad',
+        input: {},
+      });
+      await encoder.publish({ type: 'tool-output-available', toolCallId: 'tc-1', output: {} });
+      await encoder.publish({ type: 'tool-output-error', toolCallId: 'tc-1', errorText: 'fail' });
+      await encoder.publish({ type: 'tool-approval-request', toolCallId: 'tc-1', approvalId: 'apr-1' });
+      await encoder.publish({ type: 'tool-output-denied', toolCallId: 'tc-1' });
+      await encoder.publish({ type: 'file', url: 'u', mediaType: 'image/png' });
+      await encoder.publish({ type: 'source-url', sourceId: 's', url: 'u' });
+      await encoder.publish({
+        type: 'source-document',
+        sourceId: 's',
+        mediaType: 'application/pdf',
+        title: 't',
+      });
+      await encoder.publish({ type: 'message-metadata', messageMetadata: {} });
+      await encoder.publish({ type: 'finish-step' });
+      await encoder.publish({ type: 'finish', finishReason: 'stop' });
+      await encoder.publish({ type: 'error', errorText: 'x' });
+      await encoder.publish({ type: 'data-custom', data: { foo: 1 }, id: 'd-1' });
+
+      // Every publish call (single or batch) must use the ai-output wire name.
+      const allMessages: Ably.Message[] = [];
+      for (const call of writer.publishCalls) {
+        if (Array.isArray(call)) allMessages.push(...call);
+        else allMessages.push(call);
+      }
+      expect(allMessages.length).toBeGreaterThan(0);
+      for (const msg of allMessages) {
+        expect(msg.name).toBe(EVENT_AI_OUTPUT);
+        expect(headersOf(msg)[`${D}type`]).toBeDefined();
+      }
     });
   });
 

@@ -100,7 +100,7 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
     (codecMessageId: string, toolCallId: string) => {
       const runId = view.getMessageMetadata(codecMessageId)?.runId;
       if (!runId) return;
-      void view.sendEvent([{ type: 'tool-approval-response', toolCallId, approved: true }], { runId });
+      void view.sendEvent([{ kind: 'tool-approval-response', codecMessageId, toolCallId, approved: true }], { runId });
     },
     [view],
   );
@@ -109,9 +109,10 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
     (codecMessageId: string, toolCallId: string) => {
       const runId = view.getMessageMetadata(codecMessageId)?.runId;
       if (!runId) return;
-      void view.sendEvent([{ type: 'tool-approval-response', toolCallId, approved: false, reason: 'User denied' }], {
-        runId,
-      });
+      void view.sendEvent(
+        [{ kind: 'tool-approval-response', codecMessageId, toolCallId, approved: false, reason: 'User denied' }],
+        { runId },
+      );
     },
     [view],
   );

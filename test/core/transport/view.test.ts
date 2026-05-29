@@ -744,7 +744,7 @@ describe('DefaultView', () => {
 
     it('sendEvent passes the richer per-entry shape through', async () => {
       const input = [
-        { event: { type: 'user-message' as const, message: { id: 'a', content: 'hi' } }, domainMessageId: 'override' },
+        { event: { type: 'user-message' as const, message: { id: 'a', content: 'hi' } }, codecMessageId: 'override' },
       ];
       await view.sendEvent(input);
       const events = vi.mocked(sendDelegate).mock.calls[0]?.[0];

@@ -12,7 +12,7 @@ interface MessageBubbleProps {
   // pure renderer with no SDK type dependencies.
   clientId: string | undefined;
   runId: string | undefined;
-  status: 'streaming' | 'finished' | undefined;
+  status: 'streaming' | 'complete' | 'cancelled' | 'error' | 'suspended' | undefined;
   hasSiblings: boolean;
   siblingCount: number;
   selectedIndex: number;
@@ -68,11 +68,11 @@ function Badge({ label, value, color }: { label: string; value: string; color: s
 
 function StatusBadge({ status }: { status: string }) {
   const color =
-    status === 'finished'
+    status === 'complete'
       ? 'bg-emerald-950 text-emerald-400'
       : status === 'streaming'
         ? 'bg-amber-950 text-amber-400'
-        : status === 'cancelled'
+        : status === 'cancelled' || status === 'error'
           ? 'bg-red-950 text-red-400'
           : 'bg-zinc-900 text-zinc-500';
   return (
@@ -94,10 +94,10 @@ function bubbleClasses(isUser: boolean, status: string | undefined, userBgClass?
   if (status === 'streaming') {
     return `${base} bg-zinc-900 text-zinc-300 border border-amber-900/40`;
   }
-  if (status === 'finished') {
+  if (status === 'complete') {
     return `${base} bg-zinc-900 text-zinc-300 border border-emerald-900/40`;
   }
-  if (status === 'cancelled') {
+  if (status === 'cancelled' || status === 'error') {
     return `${base} bg-zinc-900 text-zinc-300 border border-red-900/40`;
   }
   return `${base} bg-zinc-900 text-zinc-300 border border-zinc-800`;
@@ -283,7 +283,7 @@ export function MessageBubble({
                     value={runId.slice(0, 8)}
                     color="bg-zinc-900 text-zinc-500"
                   />
-                  {status && <StatusBadge status={status} />}
+                  {status && !isUser && <StatusBadge status={status} />}
                 </>
               )}
             </div>

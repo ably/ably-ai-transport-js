@@ -286,6 +286,11 @@ const createMockCodec = (decoder?: MockDecoder): MockCodec => {
       return state;
     }),
     getMessages: vi.fn((p: TestProjection) => p.messages),
+    dropMessages: vi.fn((p: TestProjection, codecMessageIds: string[]) => {
+      const drop = new Set(codecMessageIds);
+      p.messages = p.messages.filter((m) => !drop.has(m.id));
+      return p;
+    }),
     userMessageEvent: vi.fn((m: TestMessage): TestEvent => ({ type: 'user-message', text: m.content })),
     createRegenerateEvent: vi.fn((): TestEvent => ({ type: 'user-message' })),
     classifyEvent: vi.fn((event: TestEvent) => {
@@ -1254,11 +1259,11 @@ describe('ClientSession', () => {
       expect(s.view.flattenNodes()).toHaveLength(1);
       const owningRun = s.tree.getRunByCodecMessageId(optimisticMsgId);
       expect(owningRun).toBeDefined();
-      // customCodec.fold uses `domain-${text}` as the id (not the wire codecMessageId);
-      // the projection has one entry under `domain-hi` for both the optimistic
-      // fold and the echo fold (same id → upserted in place by the mock).
-      if (!owningRun) throw new Error('expected owning run');
-      const messages = customCodec.getMessages(owningRun.projection);
+      // customCodec.fold uses `domain-${text}` as the id (not the wire codecMessageId).
+      // With a single Run the session-wide projection holds exactly that Run's
+      // messages — one entry under `domain-hi` for both the optimistic fold and
+      // the echo fold (same id → upserted in place by the mock).
+      const messages = customCodec.getMessages(s.tree.getProjection());
       expect(messages).toHaveLength(1);
       expect(messages[0]?.id).toBe('domain-hi');
       expect(messages[0]?.content).toBe('hi');
@@ -1294,8 +1299,9 @@ describe('ClientSession', () => {
       expect(fix.codec.fold).toHaveBeenCalled();
       const owningRun = fix.session.tree.getRunByCodecMessageId('m-1');
       expect(owningRun).toBeDefined();
-      if (!owningRun) throw new Error('expected owning run');
-      const messages = fix.codec.getMessages(owningRun.projection);
+      // The session-wide projection holds run-A's messages; the observer
+      // fold landed the text under codec-message-id m-1.
+      const messages = fix.codec.getMessages(fix.session.tree.getProjection());
       const node = messages.find((m) => m.id === 'm-1');
       expect(node?.content).toBe('hi');
     });
@@ -1714,12 +1720,12 @@ describe('ClientSession', () => {
       // Both events routed under HEADER_CODEC_MESSAGE_ID = 'm-1'
       expect(firstCall[2].messageId).toBe('m-1');
       expect(secondCall[2].messageId).toBe('m-1');
-      // Both folded into the SAME projection (observer for run-A)
+      // Both folded into the SAME (session-wide) projection.
       expect(firstCall[0]).toBe(secondCall[0]);
     });
 
-    it('folds events into the projection of the run named on the wire (per-run isolation)', () => {
-      // Run-start for run-A (observer projection bound to run-A)
+    it('routes events to the run named on the wire (cross-run isolation)', () => {
+      // Run-start for run-A.
       simulateMessage(
         fix.channel,
         ablyMsg(EVENT_RUN_START, {
@@ -1728,13 +1734,13 @@ describe('ClientSession', () => {
         }),
       );
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked accessor
-      const projectionsBefore = vi.mocked(fix.codec.init).mock.calls.length;
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked accessor
       const foldsBefore = vi.mocked(fix.codec.fold).mock.calls.length;
 
-      // A wire message carrying HEADER_RUN_ID: 'run-B' arrives. The session
-      // routes by HEADER_RUN_ID — it folds into run-B's (new) projection,
-      // never into run-A's.
+      // A wire message carrying HEADER_RUN_ID: 'run-B' arrives. With one
+      // session-wide projection, the codec is init()'d once for the
+      // whole session — isolation no longer comes from separate projections
+      // but from the codec-message-id -> runId index: m-1 binds to run-B,
+      // never run-A.
       fix.decoder.queue.push({ type: 'text', text: 'cross-run' });
       simulateMessage(
         fix.channel,
@@ -1745,16 +1751,16 @@ describe('ClientSession', () => {
         }),
       );
 
-      // A fresh projection was created for run-B (one extra init call).
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked accessor
-      expect(vi.mocked(fix.codec.init).mock.calls.length).toBeGreaterThan(projectionsBefore);
+      // The event folded into the session projection, routed under m-1.
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked accessor
       const foldCalls = vi.mocked(fix.codec.fold).mock.calls;
       expect(foldCalls.length).toBeGreaterThan(foldsBefore);
-      // The new fold targeted run-B's projection (not run-A's).
       // CAST: tuple shape comes from vi.mocked.
       const lastFold = foldCalls.at(-1) as unknown as [TestProjection, TestEvent, ReducerMeta];
       expect(lastFold[2].messageId).toBe('m-1');
+      // m-1 is owned by run-B, not run-A — the cross-run isolation guarantee
+      // now provided by the Tree's index rather than separate projections.
+      expect(fix.session.tree.getRunByCodecMessageId('m-1')?.runId).toBe('run-B');
     });
   });
 

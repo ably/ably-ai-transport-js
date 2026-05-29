@@ -20,7 +20,7 @@ Element.prototype.scrollIntoView = () => {};
 
 interface MockViewState {
   messages: AI.UIMessage[];
-  runs: Map<string, RunNode<VercelProjection>>;
+  runs: Map<string, RunNode>;
 }
 
 let setMockViewState: ((state: MockViewState) => void) | null = null;

@@ -22,6 +22,12 @@
  * is added to a `consumedCodecMessageIds` set so the user-message never appears
  * in `getMessages()` output. Continuation flow runs the standard fold
  * paths but with a per-event toolCallId lookup; no separate code path.
+ *
+ * The projection is session-wide: the Tree folds every Run's
+ * events into one VercelProjection. The toolCallId scan therefore spans
+ * every Run, so a continuation tool-output naturally finds its suspended
+ * assistant wherever it lives — no per-Run routing needed. toolCallIds are
+ * unique per LLM call, so the cross-Run scan stays unambiguous.
  */
 
 import type * as AI from 'ai';
@@ -220,7 +226,13 @@ export const fold = (state: VercelProjection, event: VercelEvent, meta: ReducerM
 const _conflictKeyOf = (event: VercelEvent, meta: ReducerMeta): string | undefined => {
   switch (event.type) {
     case 'ait-user-message': {
-      return `user-msg:${event.message.id}`;
+      // Key on the wire codec-message-id (meta.messageId), matching how
+      // _foldUserMessage stores the message (its id is aligned to
+      // meta.messageId). This keeps the key in dropMessages' codec-message-id
+      // namespace, so a winner-flip or delete eviction prunes it and a later
+      // re-fold is not wrongly suppressed by a stale high-water-mark. Falls
+      // back to the message's own id when no wire id is supplied.
+      return `user-msg:${meta.messageId ?? event.message.id}`;
     }
     case 'tool-approval-response': {
       return `tool-approval:${event.toolCallId}`;
@@ -399,6 +411,10 @@ const _foldToolOutputChunk = (
  * `toolCallId` and apply a `tool-output-available` / `tool-output-error`
  * transition. Returns `true` when a match was found and updated, `false`
  * otherwise (caller pends or drops).
+ *
+ * The projection is session-wide, so this scans every Run's
+ * messages — a continuation tool-output published under one runId resolves
+ * onto a suspended assistant in another Run without per-Run routing.
  * @param state - Projection to search and mutate.
  * @param chunk - Tool-output chunk carrying the new state.
  * @returns True when an assistant was located and promoted.
@@ -930,4 +946,117 @@ const _foldDataPart = (
 export const getMessages = (projection: VercelProjection): AI.UIMessage[] => {
   if (projection.consumedCodecMessageIds.size === 0) return projection.messages;
   return projection.messages.filter((m) => !projection.consumedCodecMessageIds.has(m.id));
+};
+
+// ---------------------------------------------------------------------------
+// dropMessages
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether a conflict key (see `_conflictKeyOf`) pertains to a dropped message
+ * or one of its tool calls, and so must be pruned alongside the message.
+ *
+ * Conflict keys are `<prefix>:<rest>`. Which identity `rest` carries depends
+ * on the prefix: message-level keys carry the codec-message-id; tool-state
+ * keys carry the toolCallId; text/reasoning stream keys carry
+ * `<codec-message-id>:<stream-id>` (the codec-message-id is everything up to
+ * the last colon). Matching on whole segments avoids the stale high-water-mark
+ * trap: leaving a dropped message's conflict serials behind would suppress a
+ * later re-publish of the same key after the prune.
+ * @param key - The conflict key from `projection.conflictSerials`.
+ * @param droppedCodecMessageIds - Codec-message-ids being dropped.
+ * @param droppedToolCallIds - Tool-call ids owned by the dropped messages.
+ * @returns True when the key should be removed.
+ */
+const _conflictKeyReferencesDropped = (
+  key: string,
+  droppedCodecMessageIds: ReadonlySet<string>,
+  droppedToolCallIds: ReadonlySet<string>,
+): boolean => {
+  const firstColon = key.indexOf(':');
+  if (firstColon === -1) return false;
+  const prefix = key.slice(0, firstColon);
+  const rest = key.slice(firstColon + 1);
+  switch (prefix) {
+    case 'user-msg':
+    case 'finish':
+    case 'message-metadata': {
+      return droppedCodecMessageIds.has(rest);
+    }
+    case 'text-start':
+    case 'text-end':
+    case 'reasoning-start':
+    case 'reasoning-end': {
+      // `rest` is `<codec-message-id>:<stream-id>`. Both segments are
+      // colon-free in every path the SDK produces (codec-message-ids are
+      // UUIDs or the caller's UIMessage.id; stream-ids are the chunk's `id`),
+      // so the last colon delimits the stream-id and everything before it is
+      // the codec-message-id.
+      const lastColon = rest.lastIndexOf(':');
+      const codecMessageId = lastColon === -1 ? rest : rest.slice(0, lastColon);
+      return droppedCodecMessageIds.has(codecMessageId);
+    }
+    case 'tool-approval':
+    case 'tool-output':
+    case 'tool-input-start':
+    case 'tool-input-available':
+    case 'tool-input-error': {
+      return droppedToolCallIds.has(rest);
+    }
+    default: {
+      return false;
+    }
+  }
+};
+
+/**
+ * Remove the given codec messages — and all reducer bookkeeping keyed to
+ * them — from the projection. The Tree calls this to evict a deposed
+ * invocation's content on a winner flip, and to evict a Run's content on
+ * `delete`, now that one projection is shared across every Run.
+ *
+ * Prunes, for each dropped id: the `messages` entry; its `trackers`; its
+ * `consumedCodecMessageIds` membership; any `pendingToolResolutions` whose
+ * consumed wire id or toolCallId belongs to a dropped message; and every
+ * `conflictSerials` high-water-mark keyed to the message or one of its tool
+ * calls (so a later re-publish for the same key is not wrongly suppressed).
+ *
+ * Mutates and returns `projection`. Unknown ids are ignored.
+ * @param projection - Projection to mutate.
+ * @param codecMessageIds - Wire `x-ably-codec-message-id`s to evict.
+ * @returns The same projection reference, mutated.
+ */
+export const dropMessages = (projection: VercelProjection, codecMessageIds: string[]): VercelProjection => {
+  if (codecMessageIds.length === 0) return projection;
+  const dropSet = new Set(codecMessageIds);
+
+  // Tool-state conflict keys (tool-output / tool-approval / tool-input-*) are
+  // keyed by toolCallId, not codec-message-id. Collect the toolCallIds owned
+  // by the dropped messages so their conflict serials are pruned too.
+  const droppedToolCallIds = new Set<string>();
+  for (const message of projection.messages) {
+    if (!dropSet.has(message.id)) continue;
+    for (const part of message.parts) {
+      if (part.type === 'dynamic-tool') droppedToolCallIds.add(part.toolCallId);
+    }
+  }
+
+  projection.messages = projection.messages.filter((m) => !dropSet.has(m.id));
+
+  for (const id of dropSet) {
+    projection.trackers.delete(id);
+    projection.consumedCodecMessageIds.delete(id);
+  }
+
+  for (const key of projection.conflictSerials.keys()) {
+    if (_conflictKeyReferencesDropped(key, dropSet, droppedToolCallIds)) {
+      projection.conflictSerials.delete(key);
+    }
+  }
+
+  projection.pendingToolResolutions = projection.pendingToolResolutions.filter(
+    (p) => !dropSet.has(p.consumedCodecMessageId) && !droppedToolCallIds.has(p.toolCallId),
+  );
+
+  return projection;
 };

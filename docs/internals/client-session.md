@@ -16,7 +16,7 @@ DefaultClientSession
 └── per-run send state     - _ownRunIds, _ownMsgIds, _runMsgIds (relay detection + cancel routing)
 ```
 
-The Tree is keyed by `runId` and owns the per-Run codec projection. Inbound events flow directly into `tree.applyMessage()`, which folds them into the Run's projection. The session keeps only the bookkeeping it needs locally: `_ownRunIds`, `_ownMsgIds`, `_runMsgIds`, and pending run-start trackers.
+The Tree is keyed by `runId` and owns one session-wide codec projection. Inbound events flow directly into `tree.applyMessage()`, which folds them into that session projection. The session keeps only the bookkeeping it needs locally: `_ownRunIds`, `_ownMsgIds`, `_runMsgIds`, and pending run-start trackers.
 
 All sub-components are created in the constructor and share a single Ably channel. Construction is synchronous and does no channel I/O. Callers must `await session.connect()` before any send or cancel call; otherwise those methods throw `InvalidArgument`. `connect()` subscribes to the channel before attach ([RTL7g](https://sdk.ably.com/builds/ably/specification/main/features/#RTL7g)) to guarantee no messages are missed, and is idempotent - a second call returns the same in-flight promise.
 
@@ -59,11 +59,11 @@ The channel subscription handler (`_handleMessage`) processes every inbound Ably
 All other messages pass through the codec decoder. The session:
 
 1. Calls `decoder.decode(rawMessage)` to get `TEvent[]`.
-2. Calls `tree.applyMessage(events, headers, serial)` — the Tree folds events into the owning Run's projection, applying the winning-invocation filter and the `x-ably-run-continue` carve-out.
+2. Calls `tree.applyMessage(events, headers, serial)` — the Tree folds events into the session-wide projection, applying the winning-invocation filter and the `x-ably-run-continue` carve-out.
 3. Per-event, calls `router.route(runId, invocationId, event)` to enqueue to the active stream (if any). The router drops events from a losing invocation under the same runId.
 4. Calls `tree.emitAblyMessage(rawMsg)` so subscribers to `'ably-message'` can observe the raw wire.
 
-There is no separate observer-state map. The Tree's per-Run projection is the single source of truth for every Run (own or observer); the View extracts messages on demand via `codec.getMessages(run.projection)`.
+There is no separate observer-state map. The Tree's session-wide projection is the single source of truth for every Run (own or observer); the View extracts each Run's messages on demand by filtering `codec.getMessages(tree.getProjection())` by owning run-id.
 
 ## Regenerate and edit
 
@@ -83,7 +83,7 @@ Closing the stream router entry does **not** clear the observer state - late ser
 
 ## History
 
-`view.loadOlder()` loads older Runs from the Ably channel using [`untilAttach`](glossary.md#untilattach-ably) for gapless continuity with the live subscription. Pages are decoded through the codec, lifecycle events are dispatched to `tree.applyRunLifecycle`, and per-Run events fold into the owning Run's projection via `tree.applyMessage`.
+`view.loadOlder()` loads older Runs from the Ably channel using [`untilAttach`](glossary.md#untilattach-ably) for gapless continuity with the live subscription. Pages are decoded through the codec, lifecycle events are dispatched to `tree.applyRunLifecycle`, and per-Run events fold into the session-wide projection via `tree.applyMessage`.
 
 The view paginates at **Run** granularity. `loadOlder(limit)` reveals up to `limit` Runs per call. A single channel page may materialise more than `limit` Runs, so the view applies a **withholding** buffer: the newest `limit` Runs are released immediately, and the rest are held back for subsequent `loadOlder()` calls. This prevents the UI from jumping to show many Runs at once and gives the consumer a predictable Run-unit page size regardless of how channel pages happen to align with Run boundaries.
 

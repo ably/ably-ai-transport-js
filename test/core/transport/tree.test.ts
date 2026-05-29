@@ -32,9 +32,13 @@ interface TestProjection {
 
 const testCodec: Codec<TestEvent, TestProjection, TestMessage> = {
   init: () => ({ messages: [] }),
-  fold: (state, event) => {
+  fold: (state, event, meta) => {
     if (event.type === 'append-message') {
-      return { messages: [...state.messages, event.message] };
+      // Mirror the real codec convention (see _readMessageId in view.ts): a
+      // message's `id` is the wire codec-message-id (meta.messageId), so the
+      // session projection can be filtered back into per-Run buckets by id.
+      const message = meta.messageId === undefined ? event.message : { ...event.message, id: meta.messageId };
+      return { messages: [...state.messages, message] };
     }
     if (event.type === 'throw') {
       throw new Error('test fold failure');
@@ -42,6 +46,10 @@ const testCodec: Codec<TestEvent, TestProjection, TestMessage> = {
     return state;
   },
   getMessages: (projection) => projection.messages,
+  dropMessages: (projection, codecMessageIds) => {
+    const drop = new Set(codecMessageIds);
+    return { messages: projection.messages.filter((m) => !drop.has(m.id)) };
+  },
   createEncoder: () => {
     throw new Error('not used in tree tests');
   },
@@ -94,15 +102,39 @@ const apply = (tree: TreeInternal<TestEvent, TestProjection>, opts: ApplyOpts): 
   tree.applyMessage(events, h, opts.serial);
 };
 
-const messagesOf = (tree: TreeInternal<TestEvent, TestProjection>, runId: string): TestMessage[] => {
-  const run = tree.getRunNode(runId);
-  return run ? testCodec.getMessages(run.projection) : [];
+/**
+ * Bucket the Tree's session-wide projection back into per-Run message lists,
+ * mirroring how the View recovers a Run's messages: iterate
+ * `getMessages(getProjection())` and group by the owning runId resolved from
+ * each message's id (the codec-message-id) via the Tree's index.
+ * @param tree - The tree whose session projection to bucket.
+ * @returns A map of runId to that Run's messages, in publication order.
+ */
+const bucketByRun = (tree: TreeInternal<TestEvent, TestProjection>): Map<string, TestMessage[]> => {
+  const byRun = new Map<string, TestMessage[]>();
+  for (const m of testCodec.getMessages(tree.getProjection())) {
+    const runId = tree.getRunByCodecMessageId(m.id)?.runId;
+    if (runId === undefined) continue;
+    let bucket = byRun.get(runId);
+    if (!bucket) {
+      bucket = [];
+      byRun.set(runId, bucket);
+    }
+    bucket.push(m);
+  }
+  return byRun;
 };
+
+const messagesOf = (tree: TreeInternal<TestEvent, TestProjection>, runId: string): TestMessage[] =>
+  bucketByRun(tree).get(runId) ?? [];
 
 const flatMessages = (
   tree: TreeInternal<TestEvent, TestProjection>,
   selections: Map<string, string> = NO_SELECTIONS,
-): TestMessage[] => tree.flattenNodes(selections).flatMap((r) => testCodec.getMessages(r.projection));
+): TestMessage[] => {
+  const byRun = bucketByRun(tree);
+  return tree.flattenNodes(selections).flatMap((r) => byRun.get(r.runId) ?? []);
+};
 
 const flatRunIds = (
   tree: TreeInternal<TestEvent, TestProjection>,
@@ -128,7 +160,9 @@ describe('Tree', () => {
     it('creates a single Run from one message', () => {
       apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
       expect(flatRunIds(tree)).toEqual(['R1']);
-      expect(flatMessages(tree)).toEqual([{ id: 'a', content: 'hi' }]);
+      // The codec aligns each message's id to the wire codec-message-id, so the
+      // session projection buckets back to R1.
+      expect(flatMessages(tree)).toEqual([{ id: 'm1', content: 'hi' }]);
     });
 
     it('creates a chain of Runs in startSerial order', () => {
@@ -150,9 +184,9 @@ describe('Tree', () => {
 
       expect(flatRunIds(tree)).toEqual(['R1', 'R2', 'R3']);
       expect(flatMessages(tree)).toEqual([
-        { id: 'a', content: 'first' },
-        { id: 'b', content: 'second' },
-        { id: 'c', content: 'third' },
+        { id: 'm1', content: 'first' },
+        { id: 'm2', content: 'second' },
+        { id: 'm3', content: 'third' },
       ]);
     });
 
@@ -173,9 +207,9 @@ describe('Tree', () => {
       const run = tree.getRunNode('R1');
       expect(run).toBeDefined();
       expect(run?.runId).toBe('R1');
-      const projection = run?.projection;
-      if (!projection) throw new Error('expected projection');
-      expect(testCodec.getMessages(projection)).toEqual([{ id: 'a', content: 'hi' }]);
+      // RunNode is metadata-only now; the Run's messages live in the
+      // session-wide projection and are recovered by bucketing on codec-message-id.
+      expect(messagesOf(tree, 'R1')).toEqual([{ id: 'm1', content: 'hi' }]);
     });
 
     it('returns undefined for an unknown runId', () => {
@@ -210,8 +244,8 @@ describe('Tree', () => {
       });
 
       expect(messagesOf(tree, 'R1')).toEqual([
-        { id: 'a', content: 'first' },
-        { id: 'b', content: 'second' },
+        { id: 'm1', content: 'first' },
+        { id: 'm2', content: 'second' },
       ]);
     });
 
@@ -227,9 +261,10 @@ describe('Tree', () => {
         serial: 's2',
       });
 
+      // Both wires carry codec-message-id m1, so both fold under m1 and bucket to R1.
       expect(messagesOf(tree, 'R1')).toEqual([
-        { id: 'a', content: 'first' },
-        { id: 'a', content: 'amended' },
+        { id: 'm1', content: 'first' },
+        { id: 'm1', content: 'amended' },
       ]);
     });
 
@@ -240,7 +275,30 @@ describe('Tree', () => {
         apply(tree, { runId: 'R1', codecMessageId: 'm2', parent: 'm1', events: [{ type: 'throw' }], serial: 's2' });
       }).not.toThrow();
       // Earlier message survives.
-      expect(messagesOf(tree, 'R1')).toEqual([{ id: 'a', content: 'ok' }]);
+      expect(messagesOf(tree, 'R1')).toEqual([{ id: 'm1', content: 'ok' }]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Session-wide projection
+  // -------------------------------------------------------------------------
+
+  describe('session projection', () => {
+    it('getProjection folds every Run into one session-wide projection', () => {
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'm1', content: 'a' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'm2',
+        parent: 'm1',
+        message: { id: 'm2', content: 'b' },
+        serial: 's2',
+      });
+      // A single projection carries both Runs' messages, in publication order.
+      expect(testCodec.getMessages(tree.getProjection()).map((m) => m.content)).toEqual(['a', 'b']);
+    });
+
+    it('getProjection starts empty', () => {
+      expect(testCodec.getMessages(tree.getProjection())).toEqual([]);
     });
   });
 
@@ -860,13 +918,13 @@ describe('Tree', () => {
       expect(tree.getRunNode('R1')).toBeUndefined();
     });
 
-    it('lingering codecMessageIdToRunId after delete returns undefined via getRunByCodecMessageId', () => {
+    it('getRunByCodecMessageId returns undefined after the owning Run is deleted', () => {
       apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
       expect(tree.getRunByCodecMessageId('m1')?.runId).toBe('R1');
       tree.delete('R1');
-      // The codecMessageIdToRunId entry intentionally lingers (cheap to overwrite on
-      // re-creation, harmless otherwise) but the lookup must return
-      // undefined now that the owning Run is gone.
+      // delete() clears the deleted Run's codec-message-id index entries as
+      // part of evicting its messages from the session projection, so the
+      // lookup returns undefined now that the owning Run is gone.
       expect(tree.getRunByCodecMessageId('m1')).toBeUndefined();
     });
 
@@ -928,6 +986,28 @@ describe('Tree', () => {
       tree.delete('R2alt');
       expect(tree.getSiblingRuns('R2')).toHaveLength(1);
       expect(tree.hasSiblingRuns('R2')).toBe(false);
+    });
+
+    it('evicts the deleted Run from the session projection, leaving other Runs intact', () => {
+      // With one shared projection a deleted Run's messages would otherwise
+      // linger in getProjection() (previously the Run's own projection was
+      // discarded with the node). delete() must drop them via
+      // codec.dropMessages while leaving every other Run untouched.
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'm1', content: 'keep' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'm2',
+        parent: 'm1',
+        message: { id: 'm2', content: 'drop' },
+        serial: 's2',
+      });
+      expect(testCodec.getMessages(tree.getProjection()).map((m) => m.content)).toEqual(['keep', 'drop']);
+
+      tree.delete('R2');
+
+      expect(testCodec.getMessages(tree.getProjection()).map((m) => m.content)).toEqual(['keep']);
+      expect(messagesOf(tree, 'R2')).toEqual([]);
+      expect(messagesOf(tree, 'R1').map((m) => m.content)).toEqual(['keep']);
     });
   });
 
@@ -1035,9 +1115,9 @@ describe('Tree', () => {
       expect(handler).toHaveBeenCalled();
     });
 
-    it('emits run-projection-updated after a successful fold', () => {
+    it('emits projection-updated after a successful fold', () => {
       const handler = vi.fn();
-      tree.on('run-projection-updated', handler);
+      tree.on('projection-updated', handler);
       apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
       expect(handler).toHaveBeenCalledWith({ runId: 'R1' });
     });
@@ -1209,19 +1289,19 @@ describe('Tree', () => {
       });
 
       expect(messagesOf(tree, 'R1')).toEqual([
-        { id: 'a', content: 'q' },
-        { id: 'b', content: 'tool-result' },
+        { id: 'm1', content: 'q' },
+        { id: 'm1', content: 'tool-result' },
       ]);
     });
 
-    it('drops losing-invocation events under the run-keyed projection', () => {
+    it('drops losing-invocation events under the session projection', () => {
       // The two user-prompt wires share the same Run. The first wire (inv-1)
       // arrives, becomes the provisional winner, and folds. A higher-serial
-      // wire (inv-2) promotes a new winner; under the run-keyed Tree the
-      // losing invocation's prior fold lives in the same Run's projection,
-      // so the winner promotion resets the projection before folding inv-2.
-      // The late assistant wire belongs to the losing invocation (inv-1) and
-      // is filtered by the loser-skip at fold time.
+      // wire (inv-2) promotes a new winner; with one session-wide projection
+      // the winner promotion evicts inv-1's already-folded messages via
+      // codec.dropMessages before folding inv-2. The late assistant wire
+      // belongs to the losing invocation (inv-1) and is filtered by the
+      // loser-skip at fold time.
       apply(tree, {
         runId: 'R1',
         codecMessageId: 'm1',
@@ -1248,10 +1328,53 @@ describe('Tree', () => {
       });
 
       // Only the winning invocation's user-prompt survives in R1; the
-      // losing prompt was wiped by the projection reset on winner change,
-      // and the late losing assistant never folded.
+      // losing prompt was evicted from the session projection on winner
+      // change, and the late losing assistant never folded.
       const folded = messagesOf(tree, 'R1');
       expect(folded.map((m) => m.content)).toEqual(['second-prompt']);
+    });
+
+    it('winner flip evicts only the deposed invocation, never another Run', () => {
+      // R0 is an unrelated Run. Its message must survive a winner flip in R1
+      // — the session-wide property a per-Run projection = init() reset could
+      // not provide (it would wipe everything sharing the projection).
+      apply(tree, {
+        runId: 'R0',
+        codecMessageId: 'm0',
+        role: 'user',
+        invocationId: 'inv-0',
+        message: { id: 'm0', content: 'other-run' },
+        serial: 's1',
+      });
+      // R1's loser invocation folds first.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm1',
+        parent: 'm0',
+        role: 'user',
+        invocationId: 'inv-1',
+        message: { id: 'm1', content: 'loser' },
+        serial: 's2',
+      });
+      expect(messagesOf(tree, 'R1').map((m) => m.content)).toEqual(['loser']);
+
+      // A higher-serial winner arrives under the same runId, deposing inv-1.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm2',
+        parent: 'm0',
+        role: 'user',
+        invocationId: 'inv-2',
+        message: { id: 'm2', content: 'winner' },
+        serial: 's5',
+      });
+
+      // The loser's message is gone from R1; the winner's remains.
+      expect(messagesOf(tree, 'R1').map((m) => m.content)).toEqual(['winner']);
+      // The unrelated Run is untouched.
+      expect(messagesOf(tree, 'R0').map((m) => m.content)).toEqual(['other-run']);
+      // And the deposed message is gone from the session projection entirely.
+      expect(testCodec.getMessages(tree.getProjection()).map((m) => m.content)).toEqual(['other-run', 'winner']);
     });
 
     it('tracks distinct runIds independently', () => {

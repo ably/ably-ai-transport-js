@@ -600,16 +600,20 @@ export type TreeNode<TMessage> = MessageNode<TMessage>;
 /**
  * A node in the conversation tree, representing a single Run.
  *
- * The Tree is keyed by `runId`. Each RunNode owns a per-Run codec
- * {@link TProjection} folded from every event published under that run-id;
- * the SDK extracts the per-message list via {@link Codec.getMessages} when it
- * needs to render messages for that Run.
+ * The Tree is keyed by `runId`. A RunNode is metadata-only: it carries the
+ * Run's identity, lineage, lifecycle status, and serials. The codec
+ * projection is session-wide and owned by the Tree (see
+ * {@link Tree.getProjection}); a Run's messages are the subset of
+ * `codec.getMessages(tree.getProjection())` whose owning run-id resolves
+ * (via {@link Tree.getRunByCodecMessageId}) back to this Run. The node holds
+ * no projection state, so it is not parameterized by the codec's projection
+ * type.
  *
  * Sibling structure (edits / regenerates) is derived from `forkOf`:
  * a regenerate or edit publishes a new Run whose `forkOf` points at the
  * (runId, codecMessageId) being forked.
  */
-export interface RunNode<TProjection> {
+export interface RunNode {
   /** The x-ably-run-id of this Run — primary key in the tree. */
   runId: string;
   /**
@@ -654,8 +658,6 @@ export interface RunNode<TProjection> {
    * - {@link RunEndReason} — terminal state reflecting the run-end reason.
    */
   status: 'active' | RunEndReason;
-  /** Per-Run codec projection. Folded by the Tree from every event published under this run-id. */
-  projection: TProjection;
   /**
    * The first invocationId observed for this Run (wire `x-ably-invocation-id`).
    * Set at Run creation from the optimistic insert's or first wire's headers,
@@ -677,20 +679,30 @@ export interface RunNode<TProjection> {
  * messages, keyed by `x-ably-run-id`.
  *
  * The Tree owns the complete conversation state across every observed Run.
- * Each RunNode holds a per-Run codec {@link TProjection} which the Tree folds
- * from inbound events. The View walks the parent chain to extract a flat
- * message list for rendering.
+ * It folds every inbound event into one session-wide codec
+ * {@link TProjection} (exposed via {@link getProjection}); RunNodes are
+ * metadata-only. The View walks the parent chain and filters the session
+ * projection back into each Run's messages to extract a flat list for
+ * rendering.
  */
 export interface Tree<TProjection> {
+  /**
+   * The session-wide codec projection: every event observed across every
+   * Run, folded once. Extract the per-message list via
+   * {@link Codec.getMessages}; bucket by owning run-id via
+   * {@link getRunByCodecMessageId} to recover a single Run's messages.
+   */
+  getProjection(): TProjection;
+
   /** Get a Run by runId, or undefined if not found. */
-  getRunNode(runId: string): RunNode<TProjection> | undefined;
+  getRunNode(runId: string): RunNode | undefined;
 
   /**
    * Get the Run that owns a given codec-message-id (via the Tree's
    * codecMessageId -> runId index), or undefined if the codec-message-id
    * hasn't been observed.
    */
-  getRunByCodecMessageId(codecMessageId: string): RunNode<TProjection> | undefined;
+  getRunByCodecMessageId(codecMessageId: string): RunNode | undefined;
 
   /**
    * Get all Runs that are siblings (alternatives) at a given fork point.
@@ -706,7 +718,7 @@ export interface Tree<TProjection> {
    * A Run is in at most one group; if neither applies the returned array
    * is `[runId]`.
    */
-  getSiblingRuns(runId: string): RunNode<TProjection>[];
+  getSiblingRuns(runId: string): RunNode[];
 
   /** Whether a Run has sibling alternatives (i.e., show navigation arrows). */
   hasSiblingRuns(runId: string): boolean;
@@ -728,7 +740,7 @@ export interface Tree<TProjection> {
         /** The codec-message-id this group regenerates. */
         anchorCodecMessageId: string;
         /** Ordered group members (owner first, then regenerators by serial). */
-        runs: RunNode<TProjection>[];
+        runs: RunNode[];
       }
     | undefined;
 
@@ -772,12 +784,14 @@ export interface Tree<TProjection> {
   on(event: 'run', handler: (event: RunLifecycleEvent) => void): () => void;
 
   /**
-   * Subscribe to per-Run projection updates. Fires after every successful
-   * `codec.fold` on an existing Run's projection. Does NOT fire on
-   * structural changes (Run insert/delete); use 'update' for those.
-   * Used by the View to detect streaming deltas without a full tree walk.
+   * Subscribe to session-wide projection updates. Fires once per inbound
+   * message after its events fold into the session projection, carrying the
+   * affected `runId` so the View can repaint only when the changed Run is on
+   * its visible chain. Does NOT fire on structural changes (Run
+   * insert/delete); use 'update' for those. Used by the View to detect
+   * streaming deltas without a full tree walk.
    */
-  on(event: 'run-projection-updated', handler: (event: { runId: string }) => void): () => void;
+  on(event: 'projection-updated', handler: (event: { runId: string }) => void): () => void;
 
   /**
    * Subscribe to changes in the per-run winning invocation map. Fires when a
@@ -833,17 +847,19 @@ export interface MessageMetadata {
  * `loadOlder()`. Events are scoped to the visible window — subscribers
  * are only notified when the visible output changes.
  */
-export interface View<TEvent, TProjection, TMessage> {
+export interface View<TEvent, TMessage> {
   /**
    * The visible domain messages along the selected branch. Computed by
-   * walking the visible {@link RunNode} chain (newest to root) and
-   * concatenating each Run's `codec.getMessages(projection)` in chronological
-   * order.
+   * filtering the Tree's session-wide projection
+   * (`codec.getMessages(tree.getProjection())`) into per-Run buckets, then
+   * walking the visible {@link RunNode} chain (root to newest) and
+   * concatenating each Run's bucketed messages in chronological order, with
+   * regenerate substitution applied in place.
    */
   getMessages(): TMessage[];
 
   /** Visible Runs along the selected branch, filtered by the pagination window. */
-  flattenNodes(): RunNode<TProjection>[];
+  flattenNodes(): RunNode[];
 
   /** Whether there are older Runs that can be loaded or revealed. */
   hasOlder(): boolean;
@@ -935,7 +951,7 @@ export interface View<TEvent, TProjection, TMessage> {
   selectMessageSibling(codecMessageId: string, index: number): void;
 
   /** Get a Run by runId, or undefined if not found. */
-  getRunNode(runId: string): RunNode<TProjection> | undefined;
+  getRunNode(runId: string): RunNode | undefined;
 
   // --- Write operations ---
 
@@ -1033,7 +1049,7 @@ export interface ClientSession<TEvent, TProjection, TMessage> {
   readonly tree: Tree<TProjection>;
 
   /** The default paginated, branch-aware view for rendering — events scoped to visible messages. */
-  readonly view: View<TEvent, TProjection, TMessage>;
+  readonly view: View<TEvent, TMessage>;
 
   /**
    * Subscribe to the channel and (implicitly) attach. Idempotent —
@@ -1049,7 +1065,7 @@ export interface ClientSession<TEvent, TProjection, TMessage> {
    * The caller is responsible for calling `close()` on the returned view
    * when it is no longer needed, or it will be closed when the session closes.
    */
-  createView(): View<TEvent, TProjection, TMessage>;
+  createView(): View<TEvent, TMessage>;
 
   /** Cancel the specified run. Publishes a cancel message and closes the local stream. */
   cancel(runId: string): Promise<void>;

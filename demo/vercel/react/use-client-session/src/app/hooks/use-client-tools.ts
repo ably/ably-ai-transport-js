@@ -17,7 +17,7 @@
 import { useEffect, useRef } from 'react';
 import type { DynamicToolUIPart, UIMessage } from 'ai';
 import type { ViewHandle } from '@ably/ai-transport/react';
-import type { VercelEvent, VercelProjection } from '@ably/ai-transport/vercel';
+import type { VercelEvent } from '@ably/ai-transport/vercel';
 
 type ClientToolExecutor = (input: unknown) => Promise<unknown>;
 
@@ -45,10 +45,7 @@ const clientTools: Record<string, ClientToolExecutor> = {
   },
 };
 
-export function useClientTools(
-  view: ViewHandle<VercelEvent, VercelProjection, UIMessage>,
-  clientId: string | undefined,
-) {
+export function useClientTools(view: ViewHandle<VercelEvent, UIMessage>, clientId: string | undefined) {
   // Track which tool calls we've already handled to avoid re-executing
   const handledRef = useRef(new Set<string>());
 
@@ -94,7 +91,7 @@ export function useClientTools(
 // reuses that run's runId so the agent's lookupToolOutputs picks the output
 // up off the channel and resumes generation.
 async function executeClientTool(
-  view: ViewHandle<VercelEvent, VercelProjection, UIMessage>,
+  view: ViewHandle<VercelEvent, UIMessage>,
   runId: string,
   toolPart: DynamicToolUIPart,
 ): Promise<void> {

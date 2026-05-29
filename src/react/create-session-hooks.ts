@@ -73,12 +73,12 @@ export interface SessionHooks<TEvent, TProjection, TMessage> {
     /** Client session whose default view to subscribe to; defaults to the nearest {@link ClientSessionProvider}. */
     session?: ClientSession<TEvent, TProjection, TMessage> | null;
     /** A specific {@link View} to subscribe to directly. Takes priority over `session`. */
-    view?: View<TEvent, TProjection, TMessage> | null;
+    view?: View<TEvent, TMessage> | null;
     /** When provided, auto-loads the first page on mount. */
     limit?: number;
     /** When `true`, skip all subscriptions and return an empty handle. */
     skip?: boolean;
-  }) => ViewHandle<TEvent, TProjection, TMessage>;
+  }) => ViewHandle<TEvent, TMessage>;
   /**
    * Navigate conversation branches in the session tree.
    * Pass `session` to override; defaults to the nearest {@link ClientSessionProvider}.
@@ -86,7 +86,7 @@ export interface SessionHooks<TEvent, TProjection, TMessage> {
   useTree: (props?: {
     /** Override session; defaults to the nearest {@link ClientSessionProvider}. */
     session?: ClientSession<TEvent, TProjection, TMessage>;
-  }) => TreeHandle<TProjection>;
+  }) => TreeHandle;
   /**
    * Subscribe to raw Ably messages on the session channel.
    * Pass `session` to override; defaults to the nearest {@link ClientSessionProvider}.
@@ -110,7 +110,7 @@ export interface SessionHooks<TEvent, TProjection, TMessage> {
     limit?: number;
     /** When `true`, skip view creation and return an empty handle. */
     skip?: boolean;
-  }) => ViewHandle<TEvent, TProjection, TMessage>;
+  }) => ViewHandle<TEvent, TMessage>;
 }
 
 /**

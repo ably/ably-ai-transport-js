@@ -125,14 +125,14 @@ The View caches the result of `flattenNodes()` in a `_cachedNodes` field. The pu
 | Trigger                                                       | What refreshes the cache                              |
 | ------------------------------------------------------------- | ----------------------------------------------------- |
 | Tree structural change (new node, deletion, serial promotion) | `_onTreeUpdate()` calls `_computeFlatNodes()`         |
-| Content-only update (streaming token)                         | `_onTreeUpdate()` shallow-copies the cached array     |
+| Content-only update (streaming token)                         | `_onTreeProjectionUpdated()` re-buckets + re-extracts |
 | Branch selection change                                       | `select()` calls `_computeFlatNodes()`                |
 | Fork auto-selection after `send()`                            | `send()` auto-select path calls `_computeFlatNodes()` |
 | History page revealed                                         | `_releaseWithheld()` calls `_computeFlatNodes()`      |
 
 ### Content-only fast path
 
-The tree exposes a [`structuralVersion`](conversation-tree.md#structural-version) counter that increments on insert, delete, and serial promotion - but not on content-only message updates. When `_onTreeUpdate()` sees the version unchanged, it skips the full tree walk entirely. The cached node list is still structurally valid because only a message reference changed on an existing `MessageNode`. The View compares each cached node's `.message` against the last-seen snapshot to detect which message changed, creates a new array reference (`[...cache]`) so React sees a state change, and emits `'update'`. This reduces the streaming hot path from O(total_nodes) to O(visible_count).
+The tree exposes a [`structuralVersion`](conversation-tree.md#structural-version) counter that increments on insert, delete, and serial promotion - but not on content-only message updates. A streaming delta folds into the session projection and the tree emits `'projection-updated'` (carrying the affected runId) rather than bumping the version. When `_onTreeUpdate()` sees the version unchanged it skips the full tree walk entirely; the separate `_onTreeProjectionUpdated()` handler - fired only when the changed runId is on the visible chain - re-buckets the session projection and re-extracts the flat message list into a fresh array (so React sees a state change), then emits `'update'`. The cached Run chain (`_cachedNodes`) keeps its reference because no Run was inserted, deleted, or reordered. This keeps the streaming hot path off the full tree walk.
 
 All consumers go through the cached `view.flattenNodes()`:
 
@@ -143,6 +143,6 @@ All consumers go through the cached `view.flattenNodes()`:
 | `send()` / `regenerate()`   | To build the HTTP POST body's message history     |
 | `view.loadOlder()`          | To snapshot the current tree state for pagination |
 
-Because all consumers read the cache, a structural tree update triggers one tree walk (inside the View), not one per consumer. Content-only updates (streaming tokens) trigger zero tree walks - only a reference comparison over visible messages. React hooks calling `flattenNodes()` after an `'update'` event get the pre-computed result without a redundant traversal.
+Because all consumers read the cache, a structural tree update triggers one tree walk (inside the View), not one per consumer. Content-only updates (streaming tokens) trigger zero tree walks - the View re-buckets the session projection and re-extracts the visible messages. React hooks calling `flattenNodes()` after an `'update'` event get the pre-computed Run chain without a redundant traversal.
 
 See [Conversation tree](conversation-tree.md) for how `flattenNodes()` works. See [Codec interface](codec-interface.md#accumulator) for the accumulator's role. See [History hydration](history.md) for the history decode pipeline.

@@ -235,6 +235,12 @@ const createMockCodec = (): Codec<TestEvent, TestProjection, TestMessage> & {
       return state;
     }),
     getMessages: vi.fn((p: TestProjection) => p.order.map((id) => p.byId.get(id)).filter((m): m is TestMessage => !!m)),
+    dropMessages: vi.fn((p: TestProjection, codecMessageIds: string[]) => {
+      const drop = new Set(codecMessageIds);
+      p.order = p.order.filter((id) => !drop.has(id));
+      for (const id of drop) p.byId.delete(id);
+      return p;
+    }),
     userMessageEvent: vi.fn((m: TestMessage): TestEvent => ({ type: 'text', text: m.content })),
     createRegenerateEvent: vi.fn((): TestEvent => ({ type: 'text', text: '' })),
     classifyEvent: vi.fn(() => ({ kind: 'other' as const }) as const),

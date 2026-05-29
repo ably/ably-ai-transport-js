@@ -26,13 +26,13 @@ const SKIPPED_CLIENT_SESSION: ClientSession<VercelEvent, VercelProjection, AI.UI
   get tree(): Tree<VercelProjection> {
     throw new Ably.ErrorInfo('unable to access tree; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
-  get view(): View<VercelEvent, VercelProjection, AI.UIMessage> {
+  get view(): View<VercelEvent, AI.UIMessage> {
     throw new Ably.ErrorInfo('unable to access view; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   connect: () => {
     throw new Ably.ErrorInfo('unable to connect; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
-  createView: (): View<VercelEvent, VercelProjection, AI.UIMessage> => {
+  createView: (): View<VercelEvent, AI.UIMessage> => {
     throw new Ably.ErrorInfo('unable to create view; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   cancel: () => {

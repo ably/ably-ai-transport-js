@@ -19,7 +19,7 @@ import type { Codec, EventClassification } from '../../core/codec/types.js';
 import { createDecoder } from './decoder.js';
 import { createEncoder } from './encoder.js';
 import type { VercelEvent } from './events.js';
-import { fold, getMessages, init, type VercelProjection } from './reducer.js';
+import { dropMessages, fold, getMessages, init, type VercelProjection } from './reducer.js';
 
 /**
  * Vercel AI SDK codec implementing `Codec<VercelEvent, VercelProjection, UIMessage>`.
@@ -33,6 +33,7 @@ export const UIMessageCodec: Codec<VercelEvent, VercelProjection, AI.UIMessage> 
   createEncoder,
   createDecoder,
   getMessages,
+  dropMessages,
   userMessageEvent: (message: AI.UIMessage): VercelEvent => ({ type: 'ait-user-message', message }),
   createRegenerateEvent: (regeneratesCodecMessageId: string, parentCodecMessageId: string): VercelEvent => ({
     type: 'ait-regenerate',

@@ -121,7 +121,7 @@ const view = useView<TEvent, TMessage>({ session?, view?, limit?, skip? } = {});
 
 | Property/Method                          | Type                                                                                                              | Description                                                                                            |
 | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `nodes`                                  | `RunNode<TProjection>[]`                                                                                          | Flattened Run nodes for the current branch (one Run per turn). Updates on Run-level structural changes |
+| `nodes`                                  | `RunNode[]`                                                                                                       | Flattened Run nodes for the current branch (one Run per turn). Updates on Run-level structural changes |
 | `messages`                               | `TMessage[]`                                                                                                      | The visible domain messages, concatenated across all visible Runs via the codec                        |
 | `hasOlder`                               | `boolean`                                                                                                         | Are there older pages? False until history has been loaded                                             |
 | `loading`                                | `boolean`                                                                                                         | Is a page being fetched?                                                                               |
@@ -134,7 +134,7 @@ const view = useView<TEvent, TMessage>({ session?, view?, limit?, skip? } = {});
 | `selectMessageSibling(msgId, index)`     | `(msgId: string, index: number) => void`                                                                          | Switch to a sibling Run, addressed by message id. Triggers re-render                                   |
 | `select(runId, index)`                   | `(runId: string, index: number) => void`                                                                          | Switch to a sibling Run when you have the runId in hand                                                |
 | `getSelectedIndex(runId)`                | `(runId: string) => number`                                                                                       | Index of the currently selected sibling Run                                                            |
-| `getRunNode(runId)`                      | `(runId: string) => RunNode<TProjection> \| undefined`                                                            | Look up a Run by runId                                                                                 |
+| `getRunNode(runId)`                      | `(runId: string) => RunNode \| undefined`                                                                         | Look up a Run by runId                                                                                 |
 | `sendMessage(messages, options?)`        | `(messages: TMessage \| TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>`                         | Send user messages in this view's branch context                                                       |
 | `sendEvent(events, options?)`            | `(events: TEvent \| TEvent[] \| {event,domainMessageId?}[], options?: SendOptions) => Promise<ActiveRun<TEvent>>` | Send raw codec events (used for tool resolutions, regenerate events)                                   |
 | `regenerate(messageId, options?)`        | `(messageId: string, options?: SendOptions) => Promise<ActiveRun<TEvent>>`                                        | Fork an assistant message with no new user input                                                       |
@@ -190,14 +190,14 @@ const tree = useTree<TEvent, TMessage>({ session? } = {});
 | --------- | ---------------- | ----------------------------------------------------------------- |
 | `session` | `ClientSession?` | The session whose tree to query; defaults to the nearest provider |
 
-**Returns:** `TreeHandle<TProjection>`
+**Returns:** `TreeHandle`
 
-| Property/Method         | Type                                                   | Description                              |
-| ----------------------- | ------------------------------------------------------ | ---------------------------------------- |
-| `getRunNode(runId)`     | `(runId: string) => RunNode<TProjection> \| undefined` | Look up a Run by runId                   |
-| `getRunByMsgId(msgId)`  | `(msgId: string) => RunNode<TProjection> \| undefined` | Resolve the Run that owns a given msg-id |
-| `getSiblingRuns(runId)` | `(runId: string) => RunNode<TProjection>[]`            | All alternative Runs at a fork point     |
-| `hasSiblingRuns(runId)` | `(runId: string) => boolean`                           | Whether to show navigation arrows        |
+| Property/Method         | Type                                      | Description                              |
+| ----------------------- | ----------------------------------------- | ---------------------------------------- |
+| `getRunNode(runId)`     | `(runId: string) => RunNode \| undefined` | Look up a Run by runId                   |
+| `getRunByMsgId(msgId)`  | `(msgId: string) => RunNode \| undefined` | Resolve the Run that owns a given msg-id |
+| `getSiblingRuns(runId)` | `(runId: string) => RunNode[]`            | All alternative Runs at a fork point     |
+| `hasSiblingRuns(runId)` | `(runId: string) => boolean`              | Whether to show navigation arrows        |
 
 Branch navigation (`select()`, `getSelectedIndex()`) and write operations (`sendMessage()`, `regenerate()`, `edit()`) are on `ViewHandle` from `useView()`, not `TreeHandle`. The tree provides structural queries that are the same regardless of which branch is selected.
 

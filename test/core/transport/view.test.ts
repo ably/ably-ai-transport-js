@@ -56,6 +56,10 @@ const makeTestCodec = (): Codec<TestEvent, TestProjection, TestMessage> => ({
     return state;
   },
   getMessages: (projection) => projection.messages,
+  dropMessages: (projection, codecMessageIds) => {
+    const drop = new Set(codecMessageIds);
+    return { messages: projection.messages.filter((m) => !drop.has(m.id)) };
+  },
   createEncoder: () => {
     throw new Error('not used in view tests');
   },
@@ -953,11 +957,11 @@ describe('DefaultView', () => {
       expect(handler).toHaveBeenCalled();
     });
 
-    it('forwards run-projection-updated as update when the run is on the visible chain', () => {
+    it('forwards projection-updated as update when the run is on the visible chain', () => {
       apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
       const handler = vi.fn();
       view.on('update', handler);
-      // Folding another message into R1 fires run-projection-updated for a
+      // Folding another message into R1 fires projection-updated for a
       // visible run.
       apply(tree, {
         runId: 'R1',
@@ -1102,7 +1106,7 @@ describe('DefaultView', () => {
     });
 
     it('flattenNodes keeps its array reference when only a visible projection updated (no structural change)', () => {
-      // Streaming-token / continuation: tree fires 'run-projection-updated'
+      // Streaming-token / continuation: tree fires 'projection-updated'
       // but the Run identity list is unchanged. The View keeps _cachedNodes
       // reference-stable; getMessages() returns a fresh array.
       const beforeNodes = view.flattenNodes();
@@ -1167,11 +1171,15 @@ describe('DefaultView', () => {
         [HEADER_CODEC_MESSAGE_ID]: 'm-noop',
       });
 
-      // structural emit on the new codecMessageId index entry is allowed; the
-      // run-projection-updated path must not double-emit.
+      // Adding the new codec-message-id index entry is not a structural
+      // change (structuralVersion unchanged), so the 'update' from
+      // applyMessage early-returns in _onTreeUpdate; only the
+      // projection-updated handler re-extracts and emits.
       const afterCalls = handler.mock.calls.length;
-      // At most one emit (the structural one). The reference-equality
-      // short-circuit in _onTreeProjectionUpdated suppresses the second.
+      // At most one emit. The View no longer ref-equality-short-circuits in
+      // _onTreeProjectionUpdated (a streaming chunk legitimately mutates the
+      // projection in place), so a single redundant emit is acceptable —
+      // React state setters dedup by array identity.
       expect(afterCalls - beforeCalls).toBeLessThanOrEqual(1);
     });
   });

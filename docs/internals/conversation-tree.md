@@ -1,10 +1,10 @@
 # Conversation tree
 
-The conversation tree (`src/core/transport/tree.ts`) materializes a branching conversation as a forest of **Runs**, keyed by `x-ably-run-id`. It handles Run ordering and sibling grouping for edit/regenerate forks. The tree is a data structure with codec wiring - it owns the per-Run [TProjection](glossary.md#tprojection) and folds inbound events into it, but selection state and navigation (`select()`, `getSelectedIndex()`) live on the View.
+The conversation tree (`src/core/transport/tree.ts`) materializes a branching conversation as a forest of **Runs**, keyed by `x-ably-run-id`. It handles Run ordering and sibling grouping for edit/regenerate forks. The tree is a data structure with codec wiring - it owns one session-wide [TProjection](glossary.md#tprojection) (exposed via `getProjection()`) and folds every inbound event into it, but selection state and navigation (`select()`, `getSelectedIndex()`) live on the View.
 
 The tree is the single source of truth for conversation state. The view's `flattenNodes()` delegates to the tree's internal `flattenNodes()` with pagination filtering and branch selection.
 
-Each Run can contain multiple messages (user prompt, assistant text, tool calls, tool outputs, continuation text) which the codec folds into a single per-Run projection. The View walks the parent chain across Runs and concatenates each Run's `codec.getMessages(projection)` to produce the flat message list the UI renders.
+Each Run can contain multiple messages (user prompt, assistant text, tool calls, tool outputs, continuation text). Every Run's events fold into one session-wide projection; RunNodes are metadata-only. The View filters that projection back into per-Run message buckets (each message's owning run-id resolved via `getRunByCodecMessageId`), walks the parent chain across Runs, and concatenates each Run's bucketed messages to produce the flat message list the UI renders.
 
 ## Ordering: serial-first
 
@@ -27,7 +27,7 @@ _winningInvocations: Map<runId, {invocationId, serial}>  Loser-invocation filter
 _structuralVersion:  number                          Monotonic counter (see below)
 ```
 
-Each `RunNode<TProjection>` stores:
+Each `RunNode` stores:
 
 ```typescript
 {
@@ -36,7 +36,7 @@ Each `RunNode<TProjection>` stores:
   forkOf: string | undefined; // runId of the forked Run (resolved from x-ably-fork-of)
   clientId: string; // From x-ably-run-client-id - the client that started this Run
   status: 'active' | 'complete' | 'cancelled' | 'error' | 'suspended';
-  projection: TProjection; // Codec-folded per-Run state
+  // No projection here: events fold into the Tree's one session-wide projection.
   startSerial: string | undefined; // First observed message's serial
   endSerial: string | undefined; // run-end lifecycle event's serial
 }
@@ -48,11 +48,11 @@ The tree exposes two mutation methods on its internal interface (used by the ses
 
 ### `applyMessage(events, headers, serial?)`
 
-The entry point for every inbound channel message. Routes by `x-ably-run-id`, creates the Run if needed, folds events into the Run's projection, and maintains the `msgId -> runId` index.
+The entry point for every inbound channel message. Routes by `x-ably-run-id`, creates the Run if needed, folds events into the session-wide projection (via `foldEvent`), and maintains the `msgId -> runId` index.
 
 Three message kinds flow through here:
 
-1. **Fresh user prompt**: creates the Run if missing, updates the winning-invocation map, folds events into the projection.
+1. **Fresh user prompt**: creates the Run if missing, updates the winning-invocation map, folds events into the session projection.
 2. **Continuation tool-resolution** (`x-ably-run-continue: 'true'`): routes to the existing Run via `_msgIdToRunId`, folds events, **skips the winner update** (continuation wires share the runId with the original prompt but represent tool-resolution traffic, not a competing user-prompt).
 3. **Assistant/agent events**: routes to the existing Run by runId, folds events.
 
@@ -64,11 +64,13 @@ Handles `ai-run-start` and `ai-run-end` wire events. Run-start sets `status` to 
 
 ### Structural version
 
-The tree maintains a `structuralVersion` counter (exposed via `TreeInternal`) that increments on changes affecting `flattenNodes()`'s output structure - Run insertions, deletions, and startSerial promotions (which reorder `_sortedRuns`). **Projection-only updates do not bump the counter**: streaming deltas update an existing Run's projection in place, observable via the `'run-projection-updated'` event instead. The View uses this distinction to skip full tree walks during streaming.
+The tree maintains a `structuralVersion` counter (exposed via `TreeInternal`) that increments on changes affecting `flattenNodes()`'s output structure - Run insertions, deletions, and startSerial promotions (which reorder `_sortedRuns`). **Projection-only updates do not bump the counter**: streaming deltas fold into the session projection in place, observable via the `'projection-updated'` event (which carries the affected runId) instead. The View uses this distinction to skip full tree walks during streaming.
 
 ## Winning-invocation filter
 
 The tree maintains a per-runId winning-invocation map. When two invocations share a runId (e.g. a developer-initiated retry under the same runId), the invocation whose user-message has the highest Ably serial is canonical; events from earlier invocations are dropped at fold time. Continuation wires (`x-ably-run-continue: 'true'`) bypass the winner update so their tool-resolution traffic doesn't supersede the original prompt's serial.
+
+When a higher-serial invocation deposes one that has already folded into the shared projection, the tree evicts the deposed invocation's messages via `codec.dropMessages` (tracked per invocation as events fold). This is the session-wide analogue of the per-Run `projection = init()` reset the run-keyed tree used before the projection became session-wide - a whole-projection reset would wipe every other Run.
 
 ## Sibling groups and fork chains
 
@@ -101,7 +103,7 @@ for each Run in startSerial order:
   3. If both pass: add to the path
 ```
 
-Runs that fail either check are skipped - they're on unselected branches. The View then concatenates `codec.getMessages(run.projection)` per Run in chain order to produce the flat TMessage[] the UI renders.
+Runs that fail either check are skipped - they're on unselected branches. The View then concatenates each Run's messages (filtered from the session projection by owning run-id) in chain order to produce the flat TMessage[] the UI renders.
 
 ### Resolved group cache
 
@@ -113,6 +115,7 @@ The public `Tree` interface exposes:
 
 | Method                        | Returns                                          |
 | ----------------------------- | ------------------------------------------------ |
+| `getProjection()`             | The session-wide codec projection                |
 | `getRunNode(runId)`           | The `RunNode` by runId                           |
 | `getRunByMsgId(msgId)`        | The Run that owns a given msg-id                 |
 | `getSiblingRuns(runId)`       | All Runs in the sibling group containing `runId` |
@@ -130,11 +133,11 @@ The following are on the `View`, not the public `Tree` interface:
 
 ## Delete
 
-`delete(runId)` removes a Run from all indexes. Children are **not** cascade-deleted - they become unreachable in `flattenNodes()` because their parent is no longer on the active path. The `_msgIdToRunId` entries pointing at the deleted Run are left dangling (overwritten on re-creation; harmless otherwise).
+`delete(runId)` removes a Run from all indexes **and evicts its messages from the session projection** via `codec.dropMessages` - with one shared projection the deleted Run's messages would otherwise linger and re-render if the runId reappeared on a chain. Children are **not** cascade-deleted - they become unreachable in `flattenNodes()` because their parent is no longer on the active path. The deleted Run's `msgId -> runId` index entries are cleared as part of the eviction.
 
 ## What renders
 
-The visible conversation is whatever `flattenNodes()` returns, concatenated through `codec.getMessages(run.projection)` per Run. Three rules combine to produce the Run chain:
+The visible conversation is whatever `flattenNodes()` returns, with each Run's messages filtered from the session projection by owning run-id. Three rules combine to produce the Run chain:
 
 1. **Parent reachability** — a Run is included only if its `parentRunId` is already on the current path. Root Runs (`parentRunId: undefined`) are always reachable.
 2. **Sibling selection** — when multiple Runs share a `parentRunId` and are linked by a `forkOf` chain, exactly one is rendered. The View's selection (default: latest fork by `startSerial`) picks which.

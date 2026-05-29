@@ -23,7 +23,7 @@ export interface UseViewOptions<TEvent, TProjection, TMessage> extends BaseSessi
   TMessage
 > {
   /** A specific {@link View} to subscribe to directly. Takes priority over `session`. */
-  view?: View<TEvent, TProjection, TMessage> | null;
+  view?: View<TEvent, TMessage> | null;
   /** Maximum number of older messages to load per page. When provided, auto-loads on mount. */
   limit?: number;
   /** When `true`, skip all subscriptions and return an empty handle immediately. */
@@ -31,14 +31,14 @@ export interface UseViewOptions<TEvent, TProjection, TMessage> extends BaseSessi
 }
 
 /** Handle for the paginated, branch-aware conversation view. */
-export interface ViewHandle<TEvent, TProjection, TMessage> {
+export interface ViewHandle<TEvent, TMessage> {
   /**
    * The visible domain messages along the selected branch, concatenated
    * across all visible Runs.
    */
   messages: TMessage[];
   /** Visible Run nodes along the selected branch. */
-  nodes: RunNode<TProjection>[];
+  nodes: RunNode[];
   /** Whether there are older messages that can be revealed via `loadOlder`. */
   hasOlder: boolean;
   /** Whether a page load is currently in progress. */
@@ -82,7 +82,7 @@ export interface ViewHandle<TEvent, TProjection, TMessage> {
   /** Select a sibling at the branch point anchored at `codecMessageId`. */
   selectMessageSibling: (codecMessageId: string, index: number) => void;
   /** Get a Run by runId, or undefined if not found. */
-  getRunNode: (runId: string) => RunNode<TProjection> | undefined;
+  getRunNode: (runId: string) => RunNode | undefined;
   /** Send one or more user messages on the channel and fire a POST. See {@link View.sendMessage}. */
   sendMessage: (messages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>;
   /** Send one or more TEvents on the channel and fire a POST. See {@link View.sendEvent}. */
@@ -114,11 +114,11 @@ export const useView = <TEvent, TProjection, TMessage>({
   view,
   limit,
   skip,
-}: UseViewOptions<TEvent, TProjection, TMessage> = {}): ViewHandle<TEvent, TProjection, TMessage> => {
+}: UseViewOptions<TEvent, TProjection, TMessage> = {}): ViewHandle<TEvent, TMessage> => {
   const resolvedSession = useResolvedSession({ session, skip });
   const resolvedView = skip ? undefined : (view ?? resolvedSession?.view);
 
-  const [nodes, setNodes] = useState<RunNode<TProjection>[]>(() => resolvedView?.flattenNodes() ?? []);
+  const [nodes, setNodes] = useState<RunNode[]>(() => resolvedView?.flattenNodes() ?? []);
   const [messages, setMessages] = useState<TMessage[]>(() => resolvedView?.getMessages() ?? []);
   const [hasOlder, setHasOlder] = useState(() => resolvedView?.hasOlder() ?? false);
   const [loading, setLoading] = useState(false);

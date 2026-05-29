@@ -17,13 +17,13 @@ import type { BaseSessionOption } from './internal/use-resolved-session.js';
 import { useResolvedSession } from './internal/use-resolved-session.js';
 
 /** Handle for querying the conversation tree structure. */
-export interface TreeHandle<TProjection> {
+export interface TreeHandle {
   /** Get a Run by runId, or undefined if not found. */
-  getRunNode: (runId: string) => RunNode<TProjection> | undefined;
+  getRunNode: (runId: string) => RunNode | undefined;
   /** Get the Run that owns a given codec-message-id, or undefined if not observed. */
-  getRunByCodecMessageId: (codecMessageId: string) => RunNode<TProjection> | undefined;
+  getRunByCodecMessageId: (codecMessageId: string) => RunNode | undefined;
   /** Get all sibling Runs at a fork point, ordered chronologically by startSerial. */
-  getSiblingRuns: (runId: string) => RunNode<TProjection>[];
+  getSiblingRuns: (runId: string) => RunNode[];
   /** Whether a Run has sibling alternatives (i.e., show navigation arrows). */
   hasSiblingRuns: (runId: string) => boolean;
 }
@@ -40,21 +40,18 @@ export type UseTreeOptions<TEvent, TProjection, TMessage> = BaseSessionOption<TE
  */
 export const useTree = <TEvent, TProjection, TMessage>({
   session,
-}: UseTreeOptions<TEvent, TProjection, TMessage> = {}): TreeHandle<TProjection> => {
+}: UseTreeOptions<TEvent, TProjection, TMessage> = {}): TreeHandle => {
   const resolved = useResolvedSession({ session });
 
-  const getRunNode = useCallback(
-    (runId: string): RunNode<TProjection> | undefined => resolved?.tree.getRunNode(runId),
-    [resolved],
-  );
+  const getRunNode = useCallback((runId: string): RunNode | undefined => resolved?.tree.getRunNode(runId), [resolved]);
 
   const getRunByCodecMessageId = useCallback(
-    (codecMessageId: string): RunNode<TProjection> | undefined => resolved?.tree.getRunByCodecMessageId(codecMessageId),
+    (codecMessageId: string): RunNode | undefined => resolved?.tree.getRunByCodecMessageId(codecMessageId),
     [resolved],
   );
 
   const getSiblingRuns = useCallback(
-    (runId: string): RunNode<TProjection>[] => resolved?.tree.getSiblingRuns(runId) ?? [],
+    (runId: string): RunNode[] => resolved?.tree.getSiblingRuns(runId) ?? [],
     [resolved],
   );
 

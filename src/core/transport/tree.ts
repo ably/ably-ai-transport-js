@@ -2,15 +2,17 @@
  * Tree — materializes a branching conversation as a forest of Runs,
  * keyed by `x-ably-run-id`.
  *
- * Each Run holds a per-Run codec {@link TProjection} which the Tree folds
- * from inbound events. The Tree owns the complete conversation state across
- * every observed Run. The {@link View} walks the parent chain to extract a
- * flat message list for rendering.
+ * The Tree folds every inbound event into one session-wide codec
+ * {@link TProjection} (exposed via `getProjection()`); RunNodes are
+ * metadata-only. The Tree owns the complete conversation state across every
+ * observed Run. The {@link View} filters the session projection back into
+ * each Run's messages and walks the parent chain to extract a flat message
+ * list for rendering.
  *
  * `applyMessage()` is the entry point for inbound channel messages — it
- * routes by `x-ably-run-id`, folds events into the Run's projection, and
- * maintains a secondary `codecMessageId -> runId` index. `applyRunLifecycle()`
- * handles run-start / run-end events.
+ * routes by `x-ably-run-id`, folds events into the session projection via
+ * `foldEvent()`, and maintains a secondary `codecMessageId -> runId` index.
+ * `applyRunLifecycle()` handles run-start / run-end events.
  *
  * Sibling structure (edits / regenerates) is derived from RunNode.forkOf,
  * which the Tree resolves from the wire's `x-ably-fork-of` header via the
@@ -32,15 +34,15 @@ import {
 } from '../../constants.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
-import type { Reducer } from '../codec/types.js';
+import type { Reducer, ReducerMeta } from '../codec/types.js';
 import type { RunLifecycleEvent, RunNode, Tree } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Internal node type
 // ---------------------------------------------------------------------------
 
-interface InternalRunNode<TProjection> {
-  node: RunNode<TProjection>;
+interface InternalRunNode {
+  node: RunNode;
   /** Insertion sequence — tiebreaker for null-startSerial Runs (optimistic). */
   insertSeq: number;
 }
@@ -66,7 +68,7 @@ export interface TreeInternal<TEvent, TProjection> extends Tree<TProjection> {
    * map default to the latest sibling. If a selectedRunId is not found in
    * the sibling group (stale/deleted), falls back to latest.
    */
-  flattenNodes(selections: Map<string, string>): RunNode<TProjection>[];
+  flattenNodes(selections: Map<string, string>): RunNode[];
 
   /**
    * Get the "group root" runId for a sibling group — the original Run that
@@ -84,7 +86,17 @@ export interface TreeInternal<TEvent, TProjection> extends Tree<TProjection> {
    * @param codecMessageId - The codec-message-id that anchors the group.
    * @returns Member Runs (owner first, then regenerators).
    */
-  getRegenerateGroupByMsgId(codecMessageId: string): RunNode<TProjection>[];
+  getRegenerateGroupByMsgId(codecMessageId: string): RunNode[];
+
+  /**
+   * Fold a single event into the session-wide projection. The only mutator
+   * of the Tree's `TProjection`; `applyMessage` calls it once per decoded
+   * event. Does not emit — `applyMessage` emits `'projection-updated'` once
+   * per inbound message after folding all of its events.
+   * @param event - The decoded codec event to fold.
+   * @param meta - Reducer metadata (serial + optional codec-message-id).
+   */
+  foldEvent(event: TEvent, meta: ReducerMeta): void;
 
   /**
    * Apply an inbound channel message to the tree.
@@ -94,7 +106,11 @@ export interface TreeInternal<TEvent, TProjection> extends Tree<TProjection> {
    * 2. Continuation tool-resolution (`x-ably-run-continue: 'true'`): routes to
    *    existing Run via codecMessageIdToRunId, folds events, skips winner update.
    * 3. Assistant/agent events: routes to existing Run by runId, folds events.
-   * @param events - Decoded codec events to fold into the Run's projection.
+   *
+   * Events fold into the session-wide projection via {@link foldEvent}; run
+   * bookkeeping (create/locate Run, codecMessageId index, winner tracking)
+   * stays here.
+   * @param events - Decoded codec events to fold into the session projection.
    * @param headers - Transport headers from the inbound Ably message.
    * @param serial - Ably channel serial; undefined for optimistic inserts.
    */
@@ -115,8 +131,10 @@ export interface TreeInternal<TEvent, TProjection> extends Tree<TProjection> {
   applyRunLifecycle(event: RunLifecycleEvent, serial?: string): void;
 
   /**
-   * Remove a Run from the tree. Children become unreachable in `flattenNodes()`
-   * because their parent is no longer on the active path.
+   * Remove a Run from the tree and evict its messages from the session
+   * projection. Children become unreachable in `flattenNodes()` because
+   * their parent is no longer on the active path; the eviction stops the
+   * removed Run's messages lingering in the shared projection.
    * @param runId - The Run to remove.
    */
   delete(runId: string): void;
@@ -134,7 +152,7 @@ interface TreeEventsMap {
   update: undefined;
   'ably-message': Ably.InboundMessage;
   run: RunLifecycleEvent;
-  'run-projection-updated': { runId: string };
+  'projection-updated': { runId: string };
   'invocation-winner-changed': { runId: string; invocationId: string; serial: string };
 }
 
@@ -144,8 +162,15 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
   private readonly _logger: Logger;
   private readonly _emitter: EventEmitter<TreeEventsMap>;
 
+  /**
+   * The session-wide codec projection. Every event observed across every Run
+   * folds into this single projection (see {@link foldEvent}); RunNodes are
+   * metadata-only. Built once via `codec.init()` in the constructor.
+   */
+  private _projection: TProjection;
+
   /** All Run nodes indexed by runId. */
-  private readonly _runIndex = new Map<string, InternalRunNode<TProjection>>();
+  private readonly _runIndex = new Map<string, InternalRunNode>();
 
   /**
    * Maps observed `x-ably-codec-message-id` values to their owning runId. Used to
@@ -160,7 +185,7 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
    * (optimistic) sort after all serial-bearing Runs, ordered among themselves
    * by insertion sequence.
    */
-  private readonly _sortedRuns: InternalRunNode<TProjection>[] = [];
+  private readonly _sortedRuns: InternalRunNode[] = [];
 
   /**
    * Parent index: parentRunId to set of child runIds.
@@ -195,6 +220,17 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
    */
   private readonly _latestContinuationInvocations = new Map<string, string>();
 
+  /**
+   * Codec-message-ids folded into the session projection per invocation:
+   * invocationId -> set of `x-ably-codec-message-id`. Populated as events
+   * fold (non-losing wires only). On a winner flip the deposed invocation's
+   * set is handed to `codec.dropMessages` to evict its content from the
+   * shared projection — the session-wide analogue of the per-Run
+   * `projection = init()` reset the run-keyed Tree used before the projection
+   * became session-wide.
+   */
+  private readonly _invocationCodecMessageIds = new Map<string, Set<string>>();
+
   /** Monotonically increasing counter for insertion sequence. */
   private _seqCounter = 0;
 
@@ -210,7 +246,7 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
    * the View calls `getSiblingRuns` once per visible Run plus extra
    * per-message branch-anchor probes from React components.
    */
-  private _siblingCache = new Map<string, InternalRunNode<TProjection>[]>();
+  private _siblingCache = new Map<string, InternalRunNode[]>();
   private _siblingCacheVersion = -1;
 
   get structuralVersion(): number {
@@ -221,6 +257,7 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
     this._codec = codec;
     this._logger = logger;
     this._emitter = new EventEmitter<TreeEventsMap>(logger);
+    this._projection = this._codec.init();
   }
 
   // -------------------------------------------------------------------------
@@ -242,7 +279,7 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
    * @returns Negative if a sorts before b, positive if after, zero if equal.
    */
   // Spec: AIT-CT13a
-  private _compareRuns(a: InternalRunNode<TProjection>, b: InternalRunNode<TProjection>): number {
+  private _compareRuns(a: InternalRunNode, b: InternalRunNode): number {
     const sa = a.node.startSerial;
     const sb = b.node.startSerial;
     if (sa === undefined && sb === undefined) return a.insertSeq - b.insertSeq;
@@ -257,7 +294,7 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
    * Insert a Run into sortedRuns at the correct position via binary search.
    * @param internal - The Run to insert.
    */
-  private _insertSortedRun(internal: InternalRunNode<TProjection>): void {
+  private _insertSortedRun(internal: InternalRunNode): void {
     const startSerial = internal.node.startSerial;
 
     // Fast path: null-startSerial always appends to end.
@@ -285,7 +322,7 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
    * Remove a Run from sortedRuns.
    * @param internal - The Run to remove.
    */
-  private _removeSortedRun(internal: InternalRunNode<TProjection>): void {
+  private _removeSortedRun(internal: InternalRunNode): void {
     const idx = this._sortedRuns.indexOf(internal);
     if (idx !== -1) this._sortedRuns.splice(idx, 1);
   }
@@ -327,7 +364,7 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
    * @returns The ordered list of sibling Runs.
    */
   // Spec: AIT-CT13b
-  private _getSiblingGroup(runId: string): InternalRunNode<TProjection>[] {
+  private _getSiblingGroup(runId: string): InternalRunNode[] {
     if (this._siblingCacheVersion !== this._structuralVersion) {
       this._siblingCache.clear();
       this._siblingCacheVersion = this._structuralVersion;
@@ -354,7 +391,7 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
     // the original or have a forkOf chain leading to the original.
     const parentRunId = original.parentRunId;
     const originalRunId = original.runId;
-    const siblings: InternalRunNode<TProjection>[] = [];
+    const siblings: InternalRunNode[] = [];
 
     const candidateIds = this._parentIndex.get(parentRunId);
     if (candidateIds) {
@@ -386,7 +423,7 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
    * @param originalRunId - The group root to match against.
    * @returns True if the Run belongs to the sibling group.
    */
-  private _isSiblingOf(node: RunNode<TProjection>, originalRunId: string): boolean {
+  private _isSiblingOf(node: RunNode, originalRunId: string): boolean {
     if (node.runId === originalRunId) return true;
     let current = node;
     const visited = new Set<string>([current.runId]);
@@ -427,9 +464,9 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
   // Public query methods
   // -------------------------------------------------------------------------
 
-  flattenNodes(selections: Map<string, string>): RunNode<TProjection>[] {
+  flattenNodes(selections: Map<string, string>): RunNode[] {
     this._logger.trace('DefaultTree.flattenNodes();');
-    const result: RunNode<TProjection>[] = [];
+    const result: RunNode[] = [];
     const currentPath = new Set<string>();
     // Track which sibling groups we've already resolved to avoid
     // re-resolving for every member of the group.
@@ -472,18 +509,18 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
     return result;
   }
 
-  getRunNode(runId: string): RunNode<TProjection> | undefined {
+  getRunNode(runId: string): RunNode | undefined {
     this._logger.trace('DefaultTree.getRunNode();', { runId });
     return this._runIndex.get(runId)?.node;
   }
 
-  getRunByCodecMessageId(codecMessageId: string): RunNode<TProjection> | undefined {
+  getRunByCodecMessageId(codecMessageId: string): RunNode | undefined {
     this._logger.trace('DefaultTree.getRunByCodecMessageId();', { codecMessageId });
     const runId = this._codecMessageIdToRunId.get(codecMessageId);
     return runId ? this._runIndex.get(runId)?.node : undefined;
   }
 
-  getSiblingRuns(runId: string): RunNode<TProjection>[] {
+  getSiblingRuns(runId: string): RunNode[] {
     this._logger.trace('DefaultTree.getSiblingRuns();', { runId });
     return this._getSiblingGroup(runId).map((n) => n.node);
   }
@@ -496,6 +533,14 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
   // Mutation
   // -------------------------------------------------------------------------
 
+  getProjection(): TProjection {
+    return this._projection;
+  }
+
+  foldEvent(event: TEvent, meta: ReducerMeta): void {
+    this._projection = this._codec.fold(this._projection, event, meta);
+  }
+
   applyMessage(events: TEvent[], headers: Record<string, string>, serial?: string): void {
     const wireRunId = headers[HEADER_RUN_ID];
     if (!wireRunId) {
@@ -504,6 +549,7 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
     }
 
     const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
+    const invocationId = headers[HEADER_INVOCATION_ID];
     const isContinuation = headers[HEADER_RUN_CONTINUE] === 'true';
 
     // Wire-only metadata-carrier messages (e.g. `ait-regenerate`) decode to
@@ -548,17 +594,18 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
       const currentWinner = this._winningInvocations.get(runId)?.invocationId;
       if (previousWinner !== undefined && currentWinner !== undefined && previousWinner !== currentWinner) {
         // The defensive dual-invocation rule promoted a higher-serial
-        // invocation. Under the run-keyed Tree the loser's prior fold
-        // would otherwise remain inside this Run's projection alongside
-        // the winner. Reset the projection so only the new winner's
-        // events fold in. Later-arriving wires from the loser are
-        // already filtered by _isLosingInvocation below.
-        run.node.projection = this._codec.init();
+        // invocation. With one shared projection we cannot reset the whole
+        // thing without wiping every other Run, so evict only the deposed
+        // invocation's already-folded messages via codec.dropMessages — the
+        // session-wide analogue of the old per-Run `projection = init()`.
+        // Later-arriving wires from the loser are filtered by
+        // _isLosingInvocation below.
+        this._dropInvocationMessages(previousWinner);
       }
       if (this._isLosingInvocation(headers)) {
         this._logger.debug('Tree.applyMessage(); skipping fold for losing invocation', {
           runId,
-          invocationId: headers[HEADER_INVOCATION_ID],
+          invocationId,
         });
         return;
       }
@@ -566,16 +613,20 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
 
     for (const event of events) {
       try {
-        run.node.projection = this._codec.fold(run.node.projection, event, {
-          serial: serial ?? '',
-          messageId: codecMessageId,
-        });
+        this.foldEvent(event, { serial: serial ?? '', messageId: codecMessageId });
       } catch (error) {
         this._logger.error('Tree.applyMessage(); fold threw', { runId, err: error });
       }
     }
 
-    this._emitter.emit('run-projection-updated', { runId });
+    // Record this message's codec-message-id under its invocation so a later
+    // winner flip can evict it. Recorded only on the folded (non-losing)
+    // path — losing wires return above before reaching here.
+    if (codecMessageId && invocationId) {
+      this._recordInvocationMessage(invocationId, codecMessageId);
+    }
+
+    this._emitter.emit('projection-updated', { runId });
     this._emitter.emit('update');
   }
 
@@ -672,9 +723,21 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
         if (set.size === 0) this._regenerateByMsgId.delete(entry.node.regeneratesCodecMessageId);
       }
     }
-    // codecMessageIdToRunId entries pointing at this run linger but are harmless;
-    // they'll be overwritten if the Run is re-created and remain dangling
-    // otherwise. Cleanup not worth the index walk.
+
+    // Evict this Run's messages from the session projection. With one shared
+    // projection the deleted Run's messages would otherwise linger in
+    // `getProjection()` and re-render if the runId ever reappeared on a
+    // chain (previously the Run's separate projection was discarded with
+    // the node). Collecting the ids also clears the dangling
+    // codecMessageId -> runId index entries.
+    const ownedCodecMessageIds: string[] = [];
+    for (const [cid, rid] of this._codecMessageIdToRunId) {
+      if (rid === runId) ownedCodecMessageIds.push(cid);
+    }
+    if (ownedCodecMessageIds.length > 0) {
+      this._projection = this._codec.dropMessages(this._projection, ownedCodecMessageIds);
+      for (const cid of ownedCodecMessageIds) this._codecMessageIdToRunId.delete(cid);
+    }
 
     this._structuralVersion++;
     this._emitter.emit('update');
@@ -696,14 +759,14 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
     runId: string,
     headers: Record<string, string>,
     serial: string | undefined,
-  ): InternalRunNode<TProjection> {
+  ): InternalRunNode {
     const parentCodecMessageId = headers[HEADER_PARENT];
     const parentRunId = parentCodecMessageId ? this._codecMessageIdToRunId.get(parentCodecMessageId) : undefined;
     const forkOfMsgId = headers[HEADER_FORK_OF];
     const forkOf = forkOfMsgId ? this._codecMessageIdToRunId.get(forkOfMsgId) : undefined;
     const regeneratesCodecMessageId = headers[HEADER_MSG_REGENERATE];
 
-    const node: RunNode<TProjection> = {
+    const node: RunNode = {
       runId,
       parentRunId,
       forkOf,
@@ -711,7 +774,6 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
       clientId: headers[HEADER_RUN_CLIENT_ID] ?? '',
       invocationId: headers[HEADER_INVOCATION_ID] ?? '',
       status: 'active',
-      projection: this._codec.init(),
       startSerial: serial,
       endSerial: undefined,
     };
@@ -733,14 +795,14 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
   private _createRunFromLifecycle(
     event: RunLifecycleEvent & { type: 'ai-run-start' },
     serial: string | undefined,
-  ): InternalRunNode<TProjection> {
+  ): InternalRunNode {
     const parentCodecMessageId = event.parent;
     const parentRunId = parentCodecMessageId ? this._codecMessageIdToRunId.get(parentCodecMessageId) : undefined;
     const forkOfMsgId = event.forkOf;
     const forkOf = forkOfMsgId ? this._codecMessageIdToRunId.get(forkOfMsgId) : undefined;
     const regeneratesCodecMessageId = event.regenerates;
 
-    const node: RunNode<TProjection> = {
+    const node: RunNode = {
       runId: event.runId,
       parentRunId,
       forkOf,
@@ -748,7 +810,6 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
       clientId: event.clientId,
       invocationId: event.invocationId,
       status: 'active',
-      projection: this._codec.init(),
       startSerial: serial,
       endSerial: undefined,
     };
@@ -784,8 +845,8 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
    * @returns Members ordered chronologically by startSerial — owner first
    *   (it has the lowest serial), regenerators after.
    */
-  getRegenerateGroupByMsgId(codecMessageId: string): RunNode<TProjection>[] {
-    const result: RunNode<TProjection>[] = [];
+  getRegenerateGroupByMsgId(codecMessageId: string): RunNode[] {
+    const result: RunNode[] = [];
 
     const ownerRunId = this._codecMessageIdToRunId.get(codecMessageId);
     if (ownerRunId) {
@@ -835,7 +896,7 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
         /** The codec-message-id this group regenerates — anchor of the group. */
         anchorCodecMessageId: string;
         /** Ordered group members (owner first, then regenerators by serial). */
-        runs: RunNode<TProjection>[];
+        runs: RunNode[];
       }
     | undefined {
     const entry = this._runIndex.get(runId);
@@ -911,6 +972,42 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
     return invocationId !== winner.invocationId;
   }
 
+  /**
+   * Record that `invocationId` folded `codecMessageId` into the session
+   * projection, so a later winner flip can evict the deposed invocation's
+   * content via {@link _dropInvocationMessages}.
+   * @param invocationId - The wire `x-ably-invocation-id` of the folded message.
+   * @param codecMessageId - The wire `x-ably-codec-message-id` of the folded message.
+   */
+  private _recordInvocationMessage(invocationId: string, codecMessageId: string): void {
+    let set = this._invocationCodecMessageIds.get(invocationId);
+    if (!set) {
+      set = new Set();
+      this._invocationCodecMessageIds.set(invocationId, set);
+    }
+    set.add(codecMessageId);
+  }
+
+  /**
+   * Evict every message folded by `invocationId` from the session projection
+   * via `codec.dropMessages`, and clear the dropped ids from the
+   * codecMessageId -> runId index and the per-invocation tracking map. Used
+   * on a winner flip to remove a deposed invocation's content.
+   * @param invocationId - The deposed invocation whose content to evict.
+   */
+  private _dropInvocationMessages(invocationId: string): void {
+    const ids = this._invocationCodecMessageIds.get(invocationId);
+    this._invocationCodecMessageIds.delete(invocationId);
+    if (!ids || ids.size === 0) return;
+    const idList = [...ids];
+    this._logger.debug('Tree._dropInvocationMessages(); evicting deposed invocation', {
+      invocationId,
+      count: idList.length,
+    });
+    this._projection = this._codec.dropMessages(this._projection, idList);
+    for (const id of idList) this._codecMessageIdToRunId.delete(id);
+  }
+
   // -------------------------------------------------------------------------
   // Events
   // -------------------------------------------------------------------------
@@ -928,13 +1025,13 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
   on(event: 'update', handler: () => void): () => void;
   on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
   on(event: 'run', handler: (event: RunLifecycleEvent) => void): () => void;
-  on(event: 'run-projection-updated', handler: (event: { runId: string }) => void): () => void;
+  on(event: 'projection-updated', handler: (event: { runId: string }) => void): () => void;
   on(
     event: 'invocation-winner-changed',
     handler: (event: { runId: string; invocationId: string; serial: string }) => void,
   ): () => void;
   on(
-    event: 'update' | 'ably-message' | 'run' | 'run-projection-updated' | 'invocation-winner-changed',
+    event: 'update' | 'ably-message' | 'run' | 'projection-updated' | 'invocation-winner-changed',
     handler:
       | (() => void)
       | ((msg: Ably.InboundMessage) => void)

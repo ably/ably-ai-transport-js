@@ -9,7 +9,7 @@ import { ClientSessionContext } from '../../src/react/contexts/client-session-co
 import { useTree } from '../../src/react/use-tree.js';
 import { createMockSession } from './helper/mock-session.js';
 
-const makeFakeRun = (runId: string): RunNode<unknown> => ({
+const makeFakeRun = (runId: string): RunNode => ({
   runId,
   parentRunId: undefined,
   forkOf: undefined,
@@ -17,7 +17,6 @@ const makeFakeRun = (runId: string): RunNode<unknown> => ({
   clientId: '',
   invocationId: '',
   status: 'complete',
-  projection: undefined,
   startSerial: undefined,
   endSerial: undefined,
 });

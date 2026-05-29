@@ -11,7 +11,7 @@ import { ClientSessionContext } from '../../src/react/contexts/client-session-co
 import { useView } from '../../src/react/use-view.js';
 import { createMockSession } from './helper/mock-session.js';
 
-const makeRun = (runId: string, projection?: unknown): RunNode<unknown> => ({
+const makeRun = (runId: string): RunNode => ({
   runId,
   parentRunId: undefined,
   forkOf: undefined,
@@ -19,7 +19,6 @@ const makeRun = (runId: string, projection?: unknown): RunNode<unknown> => ({
   clientId: '',
   invocationId: '',
   status: 'complete',
-  projection,
   startSerial: undefined,
   endSerial: undefined,
 });

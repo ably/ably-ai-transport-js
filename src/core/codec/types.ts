@@ -159,8 +159,9 @@ export interface ReducerMeta {
  */
 export interface Reducer<TEvent, TProjection> {
   /**
-   * Build an empty initial projection. Called once per Run before any events
-   * are folded.
+   * Build an empty initial projection. Called to create a fresh projection
+   * before any events are folded into it (the client Tree builds one
+   * session-wide projection; the agent builds one per `loadProjection`).
    */
   init(): TProjection;
   /**
@@ -168,6 +169,19 @@ export interface Reducer<TEvent, TProjection> {
    * The reducer may mutate `state` in place.
    */
   fold(state: TProjection, event: TEvent, meta: ReducerMeta): TProjection;
+  /**
+   * Remove the given codec messages — and any reducer bookkeeping keyed to
+   * them (stream trackers, conflict-serial high-water-marks, consumed and
+   * pending tool-resolution entries) — from the projection. Used by the
+   * Tree to evict a deposed invocation's content when a higher-serial
+   * invocation wins the same run-id, and to evict a Run's content on
+   * `delete`, now that one projection is shared across every Run.
+   * `codecMessageIds` are the wire `x-ably-codec-message-id` values
+   * (equivalently, the ids of the messages returned by
+   * {@link Codec.getMessages}). Unknown ids are ignored. The reducer may
+   * mutate `state` in place; the returned reference is the one to keep.
+   */
+  dropMessages(state: TProjection, codecMessageIds: string[]): TProjection;
 }
 
 // ---------------------------------------------------------------------------

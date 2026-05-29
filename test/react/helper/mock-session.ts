@@ -6,7 +6,7 @@ import { vi } from 'vitest';
 
 import type { ClientSession, RunLifecycleEvent, RunNode, Tree, View } from '../../../src/core/transport/types.js';
 
-type TreeEventType = 'update' | 'ably-message' | 'run' | 'run-projection-updated';
+type TreeEventType = 'update' | 'ably-message' | 'run' | 'projection-updated';
 type SessionEventType = 'error';
 type Handler = ((...args: never[]) => void) | (() => void);
 
@@ -22,10 +22,10 @@ export interface MockSession {
   on: ReturnType<typeof vi.fn>;
   /** Fire an event on the session (only 'error'). */
   emit: (event: SessionEventType, ...args: unknown[]) => void;
-  /** Fire an event on tree/view (update, ably-message, run, run-projection-updated). */
+  /** Fire an event on tree/view (update, ably-message, run, projection-updated). */
   emitTree: (event: TreeEventType, ...args: unknown[]) => void;
   tree: Tree<unknown>;
-  view: View<unknown, unknown, string>;
+  view: View<unknown, string>;
 }
 
 export const createMockSession = (initialMessages: string[] = []): MockSession => {
@@ -78,8 +78,8 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
       };
     });
 
-  const initialNodes: RunNode<unknown>[] = initialMessages.map(
-    (_, i): RunNode<unknown> => ({
+  const initialNodes: RunNode[] = initialMessages.map(
+    (_, i): RunNode => ({
       runId: `run-${String(i)}`,
       parentRunId: i > 0 ? `run-${String(i - 1)}` : undefined,
       forkOf: undefined,
@@ -87,13 +87,13 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
       clientId: '',
       invocationId: '',
       status: 'complete',
-      projection: undefined,
       startSerial: undefined,
       endSerial: undefined,
     }),
   );
 
   const tree: Tree<unknown> = {
+    getProjection: vi.fn(),
     getRunNode: vi.fn(),
     getRunByCodecMessageId: vi.fn(),
     getSiblingRuns: vi.fn(() => []),
@@ -124,7 +124,7 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const edit = vi.fn(() => Promise.resolve(mockRun));
 
-  const view: View<unknown, unknown, string> = {
+  const view: View<unknown, string> = {
     getMessages: vi.fn(() => initialMessages),
     flattenNodes: vi.fn(() => initialNodes),
     hasOlder: vi.fn(() => false),

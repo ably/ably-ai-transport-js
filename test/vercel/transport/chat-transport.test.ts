@@ -77,12 +77,13 @@ interface MockSession {
   close: ReturnType<typeof vi.fn>;
   mockRun: MockRun;
   tree: Tree<VercelProjection>;
-  view: View<VercelEvent, VercelProjection, AI.UIMessage>;
+  view: View<VercelEvent, AI.UIMessage>;
 }
 
 const createMockSession = (): MockSession => {
   const mockRun = createMockRun();
   const tree: Tree<VercelProjection> = {
+    getProjection: vi.fn(),
     getRunNode: vi.fn(),
     getRunByCodecMessageId: vi.fn(),
     getSiblingRuns: vi.fn(() => []),
@@ -118,7 +119,7 @@ const createMockSession = (): MockSession => {
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
     on: vi.fn(() => () => {}),
     close: vi.fn(),
-  } as unknown as View<VercelEvent, VercelProjection, AI.UIMessage>;
+  } as unknown as View<VercelEvent, AI.UIMessage>;
 
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const cancel = vi.fn(() => Promise.resolve());

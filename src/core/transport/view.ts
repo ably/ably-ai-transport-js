@@ -5,9 +5,12 @@
  * which Runs are visible to the UI. New live Runs appear immediately; older
  * Runs are revealed progressively via `loadOlder()`.
  *
- * `getMessages()` walks the visible Run chain (newest to root via parentRunId)
- * and concatenates each Run's `codec.getMessages(run.projection)` to produce
- * the flat TMessage[] the UI renders.
+ * `getMessages()` filters the Tree's session-wide projection
+ * (`codec.getMessages(tree.getProjection())`) into per-Run buckets, then
+ * walks the visible Run chain (root to newest via parentRunId) and
+ * concatenates each Run's bucketed messages to produce the flat TMessage[]
+ * the UI renders. Branch isolation comes from the chain walk, not from
+ * physically separate projections.
  *
  * Each View owns its own branch selection state and pagination window,
  * allowing multiple independent Views over the same Tree.
@@ -201,7 +204,7 @@ const _readMessageId = (message: unknown): string | undefined =>
 // Implementation
 // ---------------------------------------------------------------------------
 
-export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, TProjection, TMessage> {
+export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, TMessage> {
   private readonly _tree: TreeInternal<TEvent, TProjection>;
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: Codec<TEvent, TProjection, TMessage>;
@@ -234,10 +237,16 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   private _lastVisibleRunIds: string[] = [];
 
   /**
-   * Snapshot of visible projection references — used to detect in-place
-   * projection updates (streaming). One entry per visible Run.
+   * Every message in the Tree's session projection bucketed by owning runId,
+   * in per-Run publication order. Reproduces the per-Run message lists that
+   * `codec.getMessages(run.projection)` returned per Run before the projection
+   * became session-wide, so the chain walk and regenerate substitution stay
+   * unchanged. Rebuilt from
+   * `tree.getProjection()` at the top of {@link _computeFlatNodes} (structural
+   * paths) and {@link _onTreeProjectionUpdated} (streaming), so every reader
+   * sees the projection as of the latest tree event.
    */
-  private _lastVisibleProjections: TProjection[] = [];
+  private _messagesByRunId = new Map<string, TMessage[]>();
 
   /** Snapshot of visible flat messages — exposed via getMessages(). */
   private _lastVisibleMessages: TMessage[] = [];
@@ -252,7 +261,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   private _lastHistoryPage: HistoryPage<TMessage> | undefined;
 
   /** Buffer of withheld Runs, drained newest-first by successive loadOlder() calls. */
-  private readonly _withheldBuffer: RunNode<TProjection>[] = [];
+  private readonly _withheldBuffer: RunNode[] = [];
 
   /** Unsubscribe functions for tree event subscriptions. */
   private readonly _unsubs: (() => void)[] = [];
@@ -262,7 +271,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
    * returns this in O(1); internal callers use `_computeFlatNodes()` when a
    * fresh tree walk is needed (structural changes, selection changes, history reveal).
    */
-  private _cachedNodes: RunNode<TProjection>[] = [];
+  private _cachedNodes: RunNode[] = [];
 
   /** Last seen tree structural version - distinguishes content-only from structural updates. */
   private _lastStructuralVersion = -1;
@@ -297,7 +306,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
       this._tree.on('run', (event) => {
         this._onTreeRun(event);
       }),
-      this._tree.on('run-projection-updated', (event) => {
+      this._tree.on('projection-updated', (event) => {
         this._onTreeProjectionUpdated(event);
       }),
       this._tree.on('invocation-winner-changed', () => {
@@ -323,25 +332,25 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   }
 
   /**
-   * Handle a per-Run projection update (streaming delta). If the run is on
-   * the visible chain, recompute the flat message list and emit `update`.
+   * Handle a session-wide projection update (streaming delta). If the
+   * affected run is on the visible chain, re-bucket the session projection,
+   * recompute the flat message list, and emit `update`.
    * @param event - The projection-updated event from the Tree.
-   * @param event.runId - The runId whose projection was updated.
+   * @param event.runId - The runId whose events were just folded.
    */
   private _onTreeProjectionUpdated(event: { runId: string }): void {
     if (this._processingHistory) return;
     if (!this._lastVisibleRunIdSet.has(event.runId)) return;
 
-    // The Tree only emits `run-projection-updated` when fold() actually
-    // ran on this Run's projection, so we always re-emit. The Reducer
-    // contract permits in-place mutation, which means we cannot use
-    // projection-ref or TMessage-ref equality to detect change: a
-    // streaming chunk legitimately mutates the same UIMessage object,
-    // and a ref-equality short-circuit would suppress every update.
-    // React state setters at the subscriber boundary already dedup by
-    // array reference, so a redundant emit is a no-op for unchanged
-    // hook consumers.
-    this._lastVisibleProjections = this._cachedNodes.map((n) => n.projection);
+    // The Tree emits `projection-updated` once per inbound message after its
+    // events fold into the session projection, so we always re-extract. The
+    // Reducer contract permits in-place mutation, which means we cannot use
+    // ref equality to detect change: a streaming chunk legitimately mutates
+    // the same UIMessage object, and a ref-equality short-circuit would
+    // suppress every update. React state setters at the subscriber boundary
+    // already dedup by array reference, so a redundant emit is a no-op for
+    // unchanged hook consumers.
+    this._rebuildMessagesByRun();
     this._lastVisibleMessages = this._extractMessages(this._cachedNodes);
     this._emitter.emit('update');
   }
@@ -355,7 +364,15 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   }
 
   // Spec: AIT-CT9, AIT-CT11c
-  flattenNodes(): RunNode<TProjection>[] {
+  // flattenNodes stays RunNode[] (now projection-less) rather than returning
+  // projected MessageNode<TMessage>[]. The View leads with getMessages():
+  // TMessage[] (filtered from the session projection) and exposes per-message
+  // metadata via getMessageMetadata; surfacing message-level nodes here would
+  // pull in a separate React-hooks redesign. useView.nodes continues to
+  // consume this RunNode[].
+  // TODO(AIT-777): revisit whether the hook surface should expose projected
+  // MessageNode<TMessage>[] in place of RunNode[].
+  flattenNodes(): RunNode[] {
     return this._cachedNodes;
   }
 
@@ -364,9 +381,13 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
    * selections, the withheld filter, and the regenerate-group filter.
    * @returns A fresh array of visible Runs.
    */
-  private _computeFlatNodes(): RunNode<TProjection>[] {
+  private _computeFlatNodes(): RunNode[] {
+    // Refresh the per-Run message buckets from the session projection before
+    // the regen shadow-filter (which reads owner-Run message indices) and the
+    // downstream _extractMessages call snapshot off them.
+    this._rebuildMessagesByRun();
     const treeNodes = this._tree.flattenNodes(this._resolveSelections());
-    const candidates: RunNode<TProjection>[] = [];
+    const candidates: RunNode[] = [];
     for (const node of treeNodes) {
       if (this._withheldRunIds.has(node.runId)) continue;
       if (this._isRegenHiddenByGroupSelection(node)) continue;
@@ -394,7 +415,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
       }
     }
 
-    const visible: RunNode<TProjection>[] = [];
+    const visible: RunNode[] = [];
     for (const node of candidates) {
       if (node.regeneratesCodecMessageId !== undefined) {
         const anchorIdx = this._anchorIndexInOwner(node.regeneratesCodecMessageId);
@@ -419,7 +440,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   private _anchorIndexInOwner(anchorMsgId: string): { ownerRunId: string; index: number } | undefined {
     const ownerRun = this._tree.getRunByCodecMessageId(anchorMsgId);
     if (!ownerRun) return undefined;
-    const messages = this._codec.getMessages(ownerRun.projection);
+    const messages = this._runMessages(ownerRun.runId);
     const index = messages.findIndex((m) => _readMessageId(m) === anchorMsgId);
     if (index === -1) return undefined;
     return { ownerRunId: ownerRun.runId, index };
@@ -434,7 +455,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
    * @param node - A Run from `tree.flattenNodes`.
    * @returns True if the View's regen selection excludes this Run.
    */
-  private _isRegenHiddenByGroupSelection(node: RunNode<TProjection>): boolean {
+  private _isRegenHiddenByGroupSelection(node: RunNode): boolean {
     const regenTarget = node.regeneratesCodecMessageId;
     if (regenTarget === undefined) return false;
     const selectedRunId = this._resolveRegenSelection(regenTarget);
@@ -499,8 +520,8 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
    * @param nodes - The visible Runs in chronological order.
    * @returns The flat message list with regenerator substitutions applied.
    */
-  private _extractMessages(nodes: RunNode<TProjection>[]): TMessage[] {
-    const regeneratorByAnchor = new Map<string, RunNode<TProjection>>();
+  private _extractMessages(nodes: RunNode[]): TMessage[] {
+    const regeneratorByAnchor = new Map<string, RunNode>();
     const regeneratorRunIds = new Set<string>();
     for (const node of nodes) {
       if (node.regeneratesCodecMessageId !== undefined) {
@@ -511,10 +532,10 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
 
     const messages: TMessage[] = [];
     const emitted = new Set<string>();
-    const emitFromRun = (run: RunNode<TProjection>): void => {
+    const emitFromRun = (run: RunNode): void => {
       if (emitted.has(run.runId)) return;
       emitted.add(run.runId);
-      for (const m of this._codec.getMessages(run.projection)) {
+      for (const m of this._runMessages(run.runId)) {
         const id = _readMessageId(m);
         if (id !== undefined) {
           const substitute = regeneratorByAnchor.get(id);
@@ -532,6 +553,47 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
       emitFromRun(node);
     }
     return messages;
+  }
+
+  /**
+   * Rebuild {@link _messagesByRunId} from the Tree's session projection.
+   *
+   * Iterates `codec.getMessages(tree.getProjection())` (publication order
+   * across every Run) and buckets each message under its owning runId via
+   * `tree.getRunByCodecMessageId`. Per-Run order is preserved because the
+   * source list is already in publication order and we append per bucket.
+   * Messages whose id has no owning Run (none observed yet) are skipped.
+   *
+   * This reproduces exactly what `codec.getMessages(run.projection)` returned
+   * per Run before the projection became session-wide, so the chain walk and
+   * regenerate substitution in {@link _extractMessages} are byte-for-byte
+   * unchanged.
+   */
+  private _rebuildMessagesByRun(): void {
+    const buckets = new Map<string, TMessage[]>();
+    for (const message of this._codec.getMessages(this._tree.getProjection())) {
+      const id = _readMessageId(message);
+      if (id === undefined) continue;
+      const runId = this._tree.getRunByCodecMessageId(id)?.runId;
+      if (runId === undefined) continue;
+      let bucket = buckets.get(runId);
+      if (!bucket) {
+        bucket = [];
+        buckets.set(runId, bucket);
+      }
+      bucket.push(message);
+    }
+    this._messagesByRunId = buckets;
+  }
+
+  /**
+   * The messages owned by `runId` in the session projection, in publication
+   * order. Reads the bucket map last refreshed by {@link _rebuildMessagesByRun}.
+   * @param runId - The Run to read messages for.
+   * @returns The Run's messages, or an empty array if it has none.
+   */
+  private _runMessages(runId: string): TMessage[] {
+    return this._messagesByRunId.get(runId) ?? [];
   }
 
   hasOlder(): boolean {
@@ -689,7 +751,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     if (branch.kind === 'fork-of') {
       // Anchor is the first message of each sibling Run (the user prompt).
       return branch.siblings.flatMap((s) => {
-        const first = this._codec.getMessages(s.projection).at(0);
+        const first = this._runMessages(s.runId).at(0);
         return first ? [first] : [];
       });
     }
@@ -698,7 +760,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     // codec-message-id; for each regenerator Run pick its first content
     // message (regenerators contribute the replacement starting at index 0).
     return branch.siblings.flatMap((s) => {
-      const msgs = this._codec.getMessages(s.projection);
+      const msgs = this._runMessages(s.runId);
       const anchored = msgs.find((m) => _readMessageId(m) === branch.anchorCodecMessageId);
       if (anchored) return [anchored];
       const first = msgs.at(0);
@@ -772,8 +834,8 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   private _resolveMessageBranchPoint(
     codecMessageId: string,
   ):
-    | { kind: 'fork-of'; groupRoot: string; siblings: RunNode<TProjection>[] }
-    | { kind: 'regen'; anchorCodecMessageId: string; siblings: RunNode<TProjection>[] }
+    | { kind: 'fork-of'; groupRoot: string; siblings: RunNode[] }
+    | { kind: 'regen'; anchorCodecMessageId: string; siblings: RunNode[] }
     | undefined {
     const run = this._tree.getRunByCodecMessageId(codecMessageId);
     if (!run) return undefined;
@@ -783,7 +845,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     // source of truth for message order within a Run's projection.
     const forkSiblings = this._tree.getSiblingRuns(run.runId);
     if (forkSiblings.length > 1) {
-      const firstMsg = this._codec.getMessages(run.projection).at(0);
+      const firstMsg = this._runMessages(run.runId).at(0);
       if (firstMsg && _readMessageId(firstMsg) === codecMessageId) {
         return { kind: 'fork-of', groupRoot: this._tree.getGroupRoot(run.runId), siblings: forkSiblings };
       }
@@ -811,7 +873,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     // Otherwise, if `codecMessageId` is the head message of a regenerator
     // Run, its anchor is the position-equivalent in the owner Run.
     if (run.regeneratesCodecMessageId !== undefined) {
-      const firstMsg = this._codec.getMessages(run.projection).at(0);
+      const firstMsg = this._runMessages(run.runId).at(0);
       if (firstMsg && _readMessageId(firstMsg) === codecMessageId) {
         const siblings = this._tree.getRegenerateGroupByMsgId(run.regeneratesCodecMessageId);
         if (siblings.length > 1) {
@@ -823,7 +885,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     return undefined;
   }
 
-  getRunNode(runId: string): RunNode<TProjection> | undefined {
+  getRunNode(runId: string): RunNode | undefined {
     return this._tree.getRunNode(runId);
   }
 
@@ -998,7 +1060,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     // turn from scratch instead of just regenerating the text.
     let regenAnchorMsgId = messageId;
     if (targetRun.regeneratesCodecMessageId !== undefined) {
-      const firstMsg = this._codec.getMessages(targetRun.projection).at(0);
+      const firstMsg = this._runMessages(targetRun.runId).at(0);
       if (firstMsg && _readMessageId(firstMsg) === messageId) {
         regenAnchorMsgId = targetRun.regeneratesCodecMessageId;
       }
@@ -1072,7 +1134,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
    * @param targetMsgId - The codec-message-id to find the parent of.
    * @returns The parent codec-message-id, or undefined if no predecessor exists.
    */
-  private _findParentMsgId(targetRun: RunNode<TProjection>, targetMsgId: string): string | undefined {
+  private _findParentMsgId(targetRun: RunNode, targetMsgId: string): string | undefined {
     const visible = this.getMessages();
     const visIdx = visible.findIndex((m) => _readMessageId(m) === targetMsgId);
     if (visIdx > 0) {
@@ -1082,7 +1144,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     }
     if (visIdx === 0) return undefined;
 
-    const messages = this._codec.getMessages(targetRun.projection);
+    const messages = this._runMessages(targetRun.runId);
     const idx = messages.findIndex((m) => _readMessageId(m) === targetMsgId);
     if (idx > 0) {
       const prev = messages[idx - 1];
@@ -1091,7 +1153,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     if (idx === 0 && targetRun.parentRunId) {
       const parentRun = this._tree.getRunNode(targetRun.parentRunId);
       if (parentRun) {
-        const parentMessages = this._codec.getMessages(parentRun.projection);
+        const parentMessages = this._runMessages(parentRun.runId);
         const tail = parentMessages.at(-1);
         return tail ? _readMessageId(tail) : undefined;
       }
@@ -1214,7 +1276,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
    * @param newVisible - Newly observed Runs from the history fetch.
    * @param limit - Max Runs to reveal in this batch.
    */
-  private _splitReveal(newVisible: RunNode<TProjection>[], limit: number): void {
+  private _splitReveal(newVisible: RunNode[], limit: number): void {
     const batch = newVisible.slice(-limit);
     const withheld = newVisible.slice(0, -limit);
     for (const n of withheld) {
@@ -1299,7 +1361,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     firstPage: HistoryPage<TMessage>,
     target: number,
     beforeRunIds: Set<string>,
-  ): Promise<{ newVisible: RunNode<TProjection>[]; lastPage: HistoryPage<TMessage> }> {
+  ): Promise<{ newVisible: RunNode[]; lastPage: HistoryPage<TMessage> }> {
     this._processHistoryPage(firstPage);
     let page = firstPage;
 
@@ -1323,7 +1385,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   }
 
   // Spec: AIT-CT11a
-  private _releaseWithheld(nodes: RunNode<TProjection>[]): void {
+  private _releaseWithheld(nodes: RunNode[]): void {
     for (const n of nodes) {
       this._withheldRunIds.delete(n.runId);
     }
@@ -1338,11 +1400,10 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   // Private: scoped event forwarding
   // -------------------------------------------------------------------------
 
-  private _updateVisibleSnapshot(nodes?: RunNode<TProjection>[]): void {
+  private _updateVisibleSnapshot(nodes?: RunNode[]): void {
     const resolved = nodes ?? this._cachedNodes;
     this._lastVisibleRunIds = resolved.map((n) => n.runId);
     this._lastVisibleRunIdSet = new Set(this._lastVisibleRunIds);
-    this._lastVisibleProjections = resolved.map((n) => n.projection);
     this._lastVisibleMessages = this._extractMessages(resolved);
   }
 
@@ -1360,7 +1421,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
 
     // Content-only fast path: the tree structure hasn't changed (no new
     // Runs, deletions, or sort-reorders). Streaming projection updates
-    // come through 'run-projection-updated' separately, so 'update' with
+    // come through 'projection-updated' separately, so 'update' with
     // no structural change is rare — but possible (e.g. status fill on
     // run-end). Skip.
     if (currentVersion === this._lastStructuralVersion) {
@@ -1531,11 +1592,19 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     return this._lastVisibleRunIdSet.has(parentRun.runId);
   }
 
-  private _visibleChanged(newNodes: RunNode<TProjection>[]): boolean {
+  /**
+   * Whether the visible Run list changed structurally (different runs or
+   * order). Message-content changes (streaming deltas, winner-flip eviction)
+   * are delivered separately via {@link _onTreeProjectionUpdated}, which the
+   * Tree's `projection-updated` event drives — there is no per-node
+   * projection reference to compare any more.
+   * @param newNodes - The freshly computed visible Run list.
+   * @returns True if the run id sequence differs from the last snapshot.
+   */
+  private _visibleChanged(newNodes: RunNode[]): boolean {
     if (newNodes.length !== this._lastVisibleRunIds.length) return true;
     for (const [i, node] of newNodes.entries()) {
       if (node.runId !== this._lastVisibleRunIds[i]) return true;
-      if (node.projection !== this._lastVisibleProjections[i]) return true;
     }
     return false;
   }

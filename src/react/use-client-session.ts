@@ -30,13 +30,13 @@ const SKIPPED_SESSION: ClientSession<unknown, unknown, unknown> = {
   get tree(): Tree<unknown> {
     throw new Ably.ErrorInfo('unable to access tree; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
-  get view(): View<unknown, unknown, unknown> {
+  get view(): View<unknown, unknown> {
     throw new Ably.ErrorInfo('unable to access view; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   connect: () => {
     throw new Ably.ErrorInfo('unable to connect; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
-  createView: (): View<unknown, unknown, unknown> => {
+  createView: (): View<unknown, unknown> => {
     throw new Ably.ErrorInfo('unable to create view; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   cancel: () => {

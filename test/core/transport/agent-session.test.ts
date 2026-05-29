@@ -196,6 +196,10 @@ const createMockCodec = (overrides?: { encoderFactory?: () => MockEncoder }): Mo
     // eslint-disable-next-line @typescript-eslint/no-unused-vars -- reducer signature; event/meta unused by this stub
     fold: vi.fn((state: TestProjection, _event: TestEvent, _meta: ReducerMeta) => state),
     getMessages: vi.fn((p: TestProjection) => p.messages),
+    dropMessages: vi.fn((p: TestProjection, codecMessageIds: string[]): TestProjection => {
+      const drop = new Set(codecMessageIds);
+      return { messages: p.messages.filter((m) => !drop.has(m.id)) };
+    }),
     userMessageEvent: vi.fn((m: TestMessage): TestEvent => ({ type: 'user-message', text: m.content })),
     createRegenerateEvent: vi.fn((): TestEvent => ({ type: 'user-message' })),
     classifyEvent: vi.fn((event: TestEvent) =>
@@ -275,6 +279,10 @@ const codecWithFunctionalDecoder = (): Codec<TestEvent, TestProjection, TestMess
     return state;
   },
   getMessages: (p: TestProjection) => p.messages,
+  dropMessages: (p: TestProjection, codecMessageIds: string[]): TestProjection => {
+    const drop = new Set(codecMessageIds);
+    return { messages: p.messages.filter((m) => !drop.has(m.id)) };
+  },
   userMessageEvent: (m: TestMessage): TestEvent => ({ type: 'user-message', text: m.id }),
   createRegenerateEvent: (): TestEvent => ({ type: 'user-message' }),
   classifyEvent: (event: TestEvent) =>
@@ -1620,6 +1628,10 @@ describe('AgentSession', () => {
         init: (): TestProjection => ({ messages: [] }),
         fold: (state: TestProjection): TestProjection => state,
         getMessages: (p: TestProjection) => p.messages,
+        dropMessages: (p: TestProjection, codecMessageIds: string[]): TestProjection => {
+          const drop = new Set(codecMessageIds);
+          return { messages: p.messages.filter((m) => !drop.has(m.id)) };
+        },
         userMessageEvent: (m: TestMessage): TestEvent => ({ type: 'user-message', text: m.id }),
         createRegenerateEvent: (): TestEvent => ({ type: 'user-message' }),
         classifyEvent: () => ({ kind: 'other' as const }) as const,
@@ -1998,6 +2010,10 @@ describe('Run.messages', () => {
       init: () => ({ messages: [] }),
       fold: (state) => state,
       getMessages: (p) => p.messages,
+      dropMessages: (p, codecMessageIds) => {
+        const drop = new Set(codecMessageIds);
+        return { messages: p.messages.filter((m) => !drop.has(m.id)) };
+      },
       userMessageEvent: (m: TestMessage): TestEvent => ({ type: 'user-message', text: m.id }),
       createRegenerateEvent: (): TestEvent => ({ type: 'user-message' }),
       classifyEvent: () => ({ kind: 'other' as const }) as const,

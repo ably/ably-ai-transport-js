@@ -49,10 +49,10 @@ export const useCreateView = <TEvent, TProjection, TMessage>({
   session,
   limit,
   skip,
-}: UseCreateViewOptions<TEvent, TProjection, TMessage> = {}): ViewHandle<TEvent, TProjection, TMessage> => {
+}: UseCreateViewOptions<TEvent, TProjection, TMessage> = {}): ViewHandle<TEvent, TMessage> => {
   const resolved = useResolvedSession({ session, skip });
 
-  const [view, setView] = useState<View<TEvent, TProjection, TMessage> | undefined>();
+  const [view, setView] = useState<View<TEvent, TMessage> | undefined>();
 
   useEffect(() => {
     if (!resolved) {

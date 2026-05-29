@@ -12,29 +12,57 @@ import { describe, expect, it } from 'vitest';
 import type { ReducerMeta } from '../../../src/core/codec/types.js';
 import type { VercelEvent } from '../../../src/vercel/codec/events.js';
 import { UIMessageCodec } from '../../../src/vercel/codec/index.js';
-import { fold, getMessages, init, type VercelProjection } from '../../../src/vercel/codec/reducer.js';
+import { dropMessages, fold, getMessages, init, type VercelProjection } from '../../../src/vercel/codec/reducer.js';
 
 const meta = (serial: string, messageId?: string): ReducerMeta =>
   messageId === undefined ? { serial } : { serial, messageId };
 
 /**
- * Build a baseline projection in which `toolCallId` is in the
- * `input-available` state — the precondition for `transitionToolPart`
- * to apply a `tool-output-available` transition.
+ * Read the `dynamic-tool` part for `toolCallId` on the message `msgId` from a
+ * projection, narrowed so callers can read `.state`.
+ * @param state - The projection to read.
+ * @param msgId - The owning message id.
+ * @param toolCallId - The tool call id to locate.
+ * @returns The matching `dynamic-tool` part, or `undefined`.
+ */
+const toolPart = (state: VercelProjection, msgId: string, toolCallId: string): AI.DynamicToolUIPart | undefined =>
+  getMessages(state)
+    .find((m) => m.id === msgId)
+    ?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool' && p.toolCallId === toolCallId);
+
+/**
+ * Fold a tool call into an existing projection at `messageId`, leaving it in
+ * the `input-available` state. Lets a single (session-wide) projection carry
+ * several independent tool calls across different messages.
+ * @param state - Projection to fold into.
  * @param toolCallId - Tool call identifier to seed.
  * @param messageId - codec-message-id to route the seeded events to.
- * @returns A projection with the tool call ready to receive an output.
+ * @param s0 - Serial for the tool-input-start event.
+ * @param s1 - Serial for the tool-input-available event.
+ * @returns The projection with the tool call ready to receive an output.
  */
-const seedToolCall = (toolCallId: string, messageId: string): VercelProjection => {
-  let state = init();
-  state = fold(state, { type: 'tool-input-start', toolCallId, toolName: 'echo', dynamic: true }, meta('s0', messageId));
-  state = fold(
+const addToolCall = (
+  state: VercelProjection,
+  toolCallId: string,
+  messageId: string,
+  s0: string,
+  s1: string,
+): VercelProjection => {
+  let next = fold(
     state,
-    { type: 'tool-input-available', toolCallId, toolName: 'echo', input: {}, dynamic: true },
-    meta('s1', messageId),
+    { type: 'tool-input-start', toolCallId, toolName: 'echo', dynamic: true },
+    meta(s0, messageId),
   );
-  return state;
+  next = fold(
+    next,
+    { type: 'tool-input-available', toolCallId, toolName: 'echo', input: {}, dynamic: true },
+    meta(s1, messageId),
+  );
+  return next;
 };
+
+const seedToolCall = (toolCallId: string, messageId: string): VercelProjection =>
+  addToolCall(init(), toolCallId, messageId, 's0', 's1');
 
 describe('Vercel reducer', () => {
   // -- init ----------------------------------------------------------------
@@ -525,6 +553,149 @@ describe('Vercel reducer', () => {
       const state = init();
       const result: VercelProjection = fold(state, { type: 'start' }, meta('s1', 'msg-1'));
       expect(result).toBe(state);
+    });
+  });
+
+  // -- cross-run isolation (session-wide projection) -----------------------
+
+  describe('cross-run isolation', () => {
+    it('independent tool calls in different messages do not interfere', () => {
+      // Two assistants (as if from two different Runs) folded into ONE
+      // session-wide projection, each with its own tool call.
+      let state = addToolCall(init(), 'tc-A', 'asst-A', 's0', 's1');
+      state = addToolCall(state, 'tc-B', 'asst-B', 's2', 's3');
+
+      // Resolve tc-A only.
+      state = fold(
+        state,
+        { type: 'tool-output-available', toolCallId: 'tc-A', output: { who: 'A' }, dynamic: true },
+        meta('s10', 'asst-A'),
+      );
+
+      // tc-A resolved; tc-B untouched (still input-available).
+      expect(toolPart(state, 'asst-A', 'tc-A')?.state).toBe('output-available');
+      expect(toolPart(state, 'asst-B', 'tc-B')?.state).toBe('input-available');
+    });
+
+    it('a continuation tool-output resolves the matching assistant across messages', () => {
+      // asst-A holds tc-A; a continuation output published under its own wire
+      // id resolves onto asst-A by toolCallId — the cross-Run fold the shared
+      // session projection makes natural — and the wire id is consumed.
+      let state = addToolCall(init(), 'tc-A', 'asst-A', 's0', 's1');
+      state = addToolCall(state, 'tc-B', 'asst-B', 's2', 's3');
+      state = fold(
+        state,
+        { type: 'tool-output-available', toolCallId: 'tc-A', output: { who: 'A' }, dynamic: true },
+        meta('s10', 'cont-wire'),
+      );
+
+      expect(state.consumedCodecMessageIds.has('cont-wire')).toBe(true);
+      expect(toolPart(state, 'asst-A', 'tc-A')?.state).toBe('output-available');
+      // asst-B is untouched by the cross-message resolution.
+      expect(toolPart(state, 'asst-B', 'tc-B')?.state).toBe('input-available');
+    });
+  });
+
+  // -- dropMessages --------------------------------------------------------
+
+  describe('dropMessages', () => {
+    it('removes the named messages and leaves the rest, mutating in place', () => {
+      let state = init();
+      state = fold(state, { type: 'text-start', id: 't0' }, meta('s0', 'm-1'));
+      state = fold(state, { type: 'text-delta', id: 't0', delta: 'one' }, meta('s1', 'm-1'));
+      state = fold(state, { type: 'text-start', id: 't1' }, meta('s2', 'm-2'));
+      state = fold(state, { type: 'text-delta', id: 't1', delta: 'two' }, meta('s3', 'm-2'));
+      expect(getMessages(state).map((m) => m.id)).toEqual(['m-1', 'm-2']);
+
+      const result = dropMessages(state, ['m-1']);
+      expect(result).toBe(state);
+      expect(getMessages(state).map((m) => m.id)).toEqual(['m-2']);
+    });
+
+    it('prunes the user-msg conflict serial even when the message id differs from the wire id', () => {
+      // The reducer aligns the stored message id to the wire codec-message-id
+      // (meta.messageId), and the Tree evicts by that wire id. The user-msg
+      // conflict key must therefore be keyed on the wire id too, or its
+      // high-water-mark would survive the eviction and wrongly suppress a
+      // later re-fold.
+      let state = init();
+      state = fold(
+        state,
+        { type: 'ait-user-message', message: { id: 'domain-1', role: 'user', parts: [{ type: 'text', text: 'hi' }] } },
+        meta('s1', 'wire-1'),
+      );
+      // Stored under the wire id, with a user-msg conflict serial.
+      expect(getMessages(state).map((m) => m.id)).toEqual(['wire-1']);
+      expect([...state.conflictSerials.keys()].some((k) => k.startsWith('user-msg:'))).toBe(true);
+
+      dropMessages(state, ['wire-1']);
+
+      expect(getMessages(state)).toEqual([]);
+      expect([...state.conflictSerials.keys()].some((k) => k.startsWith('user-msg:'))).toBe(false);
+    });
+
+    it('prunes trackers and message-keyed conflict serials for the dropped message', () => {
+      let state = init();
+      state = fold(state, { type: 'text-start', id: 't0' }, meta('s0', 'm-1'));
+      state = fold(state, { type: 'finish' }, meta('s1', 'm-1'));
+      expect(state.trackers.has('m-1')).toBe(true);
+      expect([...state.conflictSerials.keys()].some((k) => k.includes('m-1'))).toBe(true);
+
+      dropMessages(state, ['m-1']);
+      expect(state.trackers.has('m-1')).toBe(false);
+      expect([...state.conflictSerials.keys()].some((k) => k.includes('m-1'))).toBe(false);
+    });
+
+    it("prunes tool-call-keyed conflict serials for the dropped message's tool calls", () => {
+      let state = seedToolCall('tc-1', 'm-1');
+      state = fold(
+        state,
+        { type: 'tool-output-available', toolCallId: 'tc-1', output: { v: 1 }, dynamic: true },
+        meta('s2', 'm-1'),
+      );
+      // tool-input-start:tc-1, tool-input-available:tc-1, tool-output:tc-1
+      expect([...state.conflictSerials.keys()].some((k) => k.endsWith(':tc-1'))).toBe(true);
+
+      dropMessages(state, ['m-1']);
+      expect([...state.conflictSerials.keys()].some((k) => k.endsWith(':tc-1'))).toBe(false);
+    });
+
+    it('drops a consumed wire id', () => {
+      // A continuation tool-output folds onto asst's tool call and consumes
+      // its own wire id w-1.
+      let state = seedToolCall('tc-1', 'asst');
+      state = fold(
+        state,
+        { type: 'tool-output-available', toolCallId: 'tc-1', output: { v: 1 }, dynamic: true },
+        meta('s5', 'w-1'),
+      );
+      expect(state.consumedCodecMessageIds.has('w-1')).toBe(true);
+
+      dropMessages(state, ['w-1']);
+      expect(state.consumedCodecMessageIds.has('w-1')).toBe(false);
+    });
+
+    it('drops a pending tool resolution referencing the dropped wire id', () => {
+      // No assistant has tc-orphan, so the output pends under wire id w-1.
+      let state = init();
+      state = fold(
+        state,
+        { type: 'tool-output-available', toolCallId: 'tc-orphan', output: {}, dynamic: true },
+        meta('s0', 'w-1'),
+      );
+      expect(state.pendingToolResolutions.some((p) => p.consumedCodecMessageId === 'w-1')).toBe(true);
+
+      dropMessages(state, ['w-1']);
+      expect(state.pendingToolResolutions.some((p) => p.consumedCodecMessageId === 'w-1')).toBe(false);
+    });
+
+    it('is a no-op for an empty id list or unknown ids', () => {
+      let state = init();
+      state = fold(state, { type: 'text-start', id: 't0' }, meta('s0', 'm-1'));
+      const before = getMessages(state).map((m) => m.id);
+      dropMessages(state, []);
+      dropMessages(state, ['nonexistent']);
+      expect(getMessages(state).map((m) => m.id)).toEqual(before);
     });
   });
 });

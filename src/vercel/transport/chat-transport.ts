@@ -283,16 +283,16 @@ const UNRESOLVED_TOOL_STATES = new Set(['input-streaming', 'input-available', 'a
  * @param messages - useChat's local overlay messages.
  * @returns Continuation events to publish, in tree order, paired with
  *   the target codec-message-id (the prior assistant's tree key) each event should
- *   fold onto. Arrays are parallel — `domainMessageIds[i]` belongs to
+ *   fold onto. Arrays are parallel — `codecMessageIds[i]` belongs to
  *   `events[i]`.
  */
 const deriveContinuationEvents = (
   session: ClientSession<VercelEvent, VercelProjection, AI.UIMessage>,
   messages: AI.UIMessage[],
-): { events: VercelEvent[]; domainMessageIds: string[] } => {
+): { events: VercelEvent[]; codecMessageIds: string[] } => {
   const allMessages = session.view.getMessages();
   const events: VercelEvent[] = [];
-  const domainMessageIds: string[] = [];
+  const codecMessageIds: string[] = [];
   for (const overlay of messages) {
     if (overlay.role !== 'assistant') continue;
     const treeMessage = allMessages.find((m) => m.id === overlay.id);
@@ -324,7 +324,7 @@ const deriveContinuationEvents = (
           (approvalEvent as { reason?: string }).reason = overlayPart.approval.reason;
         }
         events.push(approvalEvent);
-        domainMessageIds.push(treeMessage.id);
+        codecMessageIds.push(treeMessage.id);
         continue;
       }
       if (overlayPart.state === 'output-denied' && (!treePart || treePart.state === 'approval-requested')) {
@@ -333,7 +333,7 @@ const deriveContinuationEvents = (
           toolCallId: overlayPart.toolCallId,
           approved: false,
         });
-        domainMessageIds.push(treeMessage.id);
+        codecMessageIds.push(treeMessage.id);
         continue;
       }
 
@@ -356,10 +356,10 @@ const deriveContinuationEvents = (
           errorText: overlayPart.errorText,
         });
       }
-      domainMessageIds.push(treeMessage.id);
+      codecMessageIds.push(treeMessage.id);
     }
   }
-  return { events, domainMessageIds };
+  return { events, codecMessageIds };
 };
 
 /**
@@ -558,7 +558,7 @@ export const createChatTransport = (
       const derived = deriveContinuationEvents(session, messages);
       const sendInput = derived.events.map((event, i) => ({
         event,
-        domainMessageId: derived.domainMessageIds[i],
+        codecMessageId: derived.codecMessageIds[i],
       }));
       run = await session.view.sendEvent(sendInput, sendOpts);
     } else if (trigger === 'regenerate-message') {

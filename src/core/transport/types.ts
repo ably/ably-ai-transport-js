@@ -958,8 +958,8 @@ export interface View<TEvent, TProjection, TMessage> {
    *
    * - `TEvent` / `TEvent[]` — the SDK mints a fresh `x-ably-codec-message-id` per
    *   event for the wire publish.
-   * - `Array<{ event, domainMessageId? }>` — per-event publish hint.
-   *   `domainMessageId`, when set, is used as the wire `HEADER_CODEC_MESSAGE_ID`
+   * - `Array<{ event, codecMessageId? }>` — per-event publish hint.
+   *   `codecMessageId`, when set, is used as the wire `HEADER_CODEC_MESSAGE_ID`
    *   for that event instead of a freshly-minted UUID. Used by the
    *   chat-transport adapter to publish continuation tool resolutions
    *   onto an existing assistant's tree key: the wire stamps the
@@ -973,7 +973,7 @@ export interface View<TEvent, TProjection, TMessage> {
    * `options.runId` to extend a suspended run.
    */
   sendEvent(
-    events: TEvent | TEvent[] | { event: TEvent; domainMessageId?: string }[],
+    events: TEvent | TEvent[] | { event: TEvent; codecMessageId?: string }[],
     options?: SendOptions,
   ): Promise<ActiveRun<TEvent>>;
 

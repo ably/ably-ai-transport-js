@@ -87,7 +87,7 @@ export interface ViewHandle<TEvent, TProjection, TMessage> {
   sendMessage: (messages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>;
   /** Send one or more TEvents on the channel and fire a POST. See {@link View.sendEvent}. */
   sendEvent: (
-    events: TEvent | TEvent[] | { event: TEvent; domainMessageId?: string }[],
+    events: TEvent | TEvent[] | { event: TEvent; codecMessageId?: string }[],
     options?: SendOptions,
   ) => Promise<ActiveRun<TEvent>>;
   /** Regenerate an assistant message, using this view's branch for history. */
@@ -230,7 +230,7 @@ export const useView = <TEvent, TProjection, TMessage>({
   );
 
   const sendEvent = useCallback(
-    async (events: TEvent | TEvent[] | { event: TEvent; domainMessageId?: string }[], opts?: SendOptions) => {
+    async (events: TEvent | TEvent[] | { event: TEvent; codecMessageId?: string }[], opts?: SendOptions) => {
       if (!resolvedView)
         throw new Ably.ErrorInfo('unable to send; view is not available', ErrorCode.InvalidArgument, 400);
       return resolvedView.sendEvent(events, opts);

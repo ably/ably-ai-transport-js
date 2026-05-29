@@ -595,15 +595,15 @@ describe('ClientSession', () => {
       expect(opts?.extras?.headers?.['x-ably-input-client-id']).toBeUndefined();
     });
 
-    it('accepts the richer `{event, domainMessageId}` shape and uses domainMessageId as the wire HEADER_CODEC_MESSAGE_ID', async () => {
-      // When the caller passes `Array<{event, domainMessageId?}>`, each
-      // entry's `domainMessageId` overrides the codec-message-id the SDK would
+    it('accepts the richer `{event, codecMessageId}` shape and uses codecMessageId as the wire HEADER_CODEC_MESSAGE_ID', async () => {
+      // When the caller passes `Array<{event, codecMessageId?}>`, each
+      // entry's `codecMessageId` overrides the codec-message-id the SDK would
       // otherwise mint. Used by chat-transport to publish continuation
       // tool resolutions onto the prior assistant's tree key — the
       // reducer's direct-fold path then matches by codec-message-id and no
       // cross-message redirect runs.
       await fix.session.view.sendEvent([
-        { event: { type: 'user-message', text: 'first' }, domainMessageId: 'target-a' },
+        { event: { type: 'user-message', text: 'first' }, codecMessageId: 'target-a' },
         { event: { type: 'user-message', text: 'second' } },
       ]);
 
@@ -611,7 +611,7 @@ describe('ClientSession', () => {
       const userPublishes = enc?.publishCalls.filter((c) => c.event.type === 'user-message') ?? [];
       expect(userPublishes).toHaveLength(2);
 
-      // First entry used the supplied domainMessageId; second fell back to a fresh UUID.
+      // First entry used the supplied codecMessageId; second fell back to a fresh UUID.
       expect(userPublishes[0]?.opts?.extras?.headers?.[HEADER_CODEC_MESSAGE_ID]).toBe('target-a');
       const secondMsgId = userPublishes[1]?.opts?.extras?.headers?.[HEADER_CODEC_MESSAGE_ID];
       expect(secondMsgId).toBeDefined();

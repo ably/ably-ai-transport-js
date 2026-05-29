@@ -1005,11 +1005,11 @@ describe('createChatTransport', () => {
   });
 
   // -------------------------------------------------------------------------
-  // sendMessages — continuation: domainMessageId threading
+  // sendMessages — continuation: codecMessageId threading
   // -------------------------------------------------------------------------
 
-  describe('sendMessages — continuation domainMessageId', () => {
-    it('passes the prior assistant tree codec-message-id as domainMessageId for a client-tool resolution', async () => {
+  describe('sendMessages — continuation codecMessageId', () => {
+    it('passes the prior assistant tree codec-message-id as codecMessageId for a client-tool resolution', async () => {
       const { session, send, view, mockRun } = createMockSession();
 
       const user1 = makeMessage('u1');
@@ -1060,7 +1060,7 @@ describe('createChatTransport', () => {
       mockRun.close();
       await streamPromise;
 
-      const [input] = send.mock.calls[0] as [{ event: VercelEvent; domainMessageId?: string }[]];
+      const [input] = send.mock.calls[0] as [{ event: VercelEvent; codecMessageId?: string }[]];
 
       // chat-transport passes the richer per-entry shape to view.sendEvent.
       // Each entry pairs a tool-resolution event with the prior assistant's
@@ -1069,10 +1069,10 @@ describe('createChatTransport', () => {
       // chunk onto the existing assistant without a cross-message redirect.
       expect(input).toHaveLength(1);
       expect(input[0]?.event.type).toBe('tool-output-available');
-      expect(input[0]?.domainMessageId).toBe('a1');
+      expect(input[0]?.codecMessageId).toBe('a1');
     });
 
-    it('passes the prior assistant tree codec-message-id as domainMessageId for an approval response', async () => {
+    it('passes the prior assistant tree codec-message-id as codecMessageId for an approval response', async () => {
       const { session, send, view, mockRun } = createMockSession();
 
       const user1 = makeMessage('u1');
@@ -1119,10 +1119,10 @@ describe('createChatTransport', () => {
       mockRun.close();
       await streamPromise;
 
-      const [input] = send.mock.calls[0] as [{ event: VercelEvent; domainMessageId?: string }[]];
+      const [input] = send.mock.calls[0] as [{ event: VercelEvent; codecMessageId?: string }[]];
       expect(input).toHaveLength(1);
       expect(input[0]?.event.type).toBe('tool-approval-response');
-      expect(input[0]?.domainMessageId).toBe('a1');
+      expect(input[0]?.codecMessageId).toBe('a1');
     });
   });
 });

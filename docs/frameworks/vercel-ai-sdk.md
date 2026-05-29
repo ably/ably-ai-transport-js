@@ -148,4 +148,4 @@ The codec handles the full `UIMessageChunk` union. On the decode side, it recons
 
 ## Status
 
-The Vercel AI SDK is the only supported framework today. The generic session and codec interfaces (`Codec<TEvent, TMessage>`) support custom integrations for other frameworks. See [Client and agent sessions](../concepts/sessions.md) for the architecture.
+The Vercel AI SDK is the only supported framework today. The generic session and codec interfaces (`Codec<TInput, TOutput, TProjection, TMessage>`) support custom integrations for other frameworks. See [Client and agent sessions](../concepts/sessions.md) for the architecture.

@@ -81,7 +81,7 @@ view.on('update', () => {
   // the last assistant message grows as tokens stream in
 });
 
-// The run also exposes a ReadableStream<TEvent> for framework adapters
+// The run also exposes a ReadableStream<TOutput> for framework adapters
 // (e.g. Vercel's useChat), but most apps use the view instead
 ```
 
@@ -104,7 +104,7 @@ const { nodes, send } = useView(session);
 
 ## The codec
 
-The session is parameterized by a `Codec<TEvent, TMessage>` - an interface that translates between domain types and Ably messages. The codec provides:
+The session is parameterized by a `Codec<TInput, TOutput, TProjection, TMessage>` - an interface that translates between domain types and Ably messages. The codec provides:
 
 - **Encoder**: converts domain events into Ably publish/append/update operations
 - **Decoder**: converts Ably messages back into domain events
@@ -122,4 +122,4 @@ For the internal implementation of each session, see [Client session](../interna
 | Build with Vercel AI SDK's `useChat()`           | `@ably/ai-transport/vercel/react` - gives you `useChatTransport()` + `useMessageSync()`      |
 | Build with Vercel AI SDK using lower-level hooks | `@ably/ai-transport/react` + `@ably/ai-transport/vercel`                                     |
 | Build a server endpoint with Vercel AI SDK       | `@ably/ai-transport/vercel` - gives you `createAgentSession()` pre-bound to `UIMessageCodec` |
-| Implement a custom codec for another framework   | `@ably/ai-transport` - the generic core with `Codec<TEvent, TMessage>`                       |
+| Implement a custom codec for another framework   | `@ably/ai-transport` - the generic core with `Codec<TInput, TOutput, TProjection, TMessage>` |

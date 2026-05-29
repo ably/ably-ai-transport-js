@@ -26,7 +26,7 @@ Create a `ClientSession` and make it available to descendant components. The Rea
 | Prop          | Type                                                          | Description                                                                  |
 | ------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | `channelName` | `string`                                                      | The Ably channel name to subscribe to. Also used as the context registry key |
-| `codec`       | `Codec<TEvent, TMessage>`                                     | The codec for encoding/decoding                                              |
+| `codec`       | `Codec<TInput, TOutput, TProjection, TMessage>`               | The codec for encoding/decoding                                              |
 | `clientId`    | `string?`                                                     | Client identity, sent to the server in POST body                             |
 | `api`         | `string?`                                                     | Server endpoint URL. Default: `"/api/chat"`                                  |
 | `headers`     | `Record<string, string> \| (() => Record<string, string>)?`   | HTTP POST headers. Function form for dynamic values                          |
@@ -66,7 +66,7 @@ For multiple sessions, nest providers with distinct `channelName` values:
 Access the `ClientSession` from the nearest `ClientSessionProvider`.
 
 ```typescript
-const { session, sessionError } = useClientSession<TEvent, TMessage>({ channelName?, skip?, onError? } = {});
+const { session, sessionError } = useClientSession<TInput, TOutput, TProjection, TMessage>({ channelName?, skip?, onError? } = {});
 ```
 
 | Prop          | Type                               | Description                                                                                             |
@@ -75,27 +75,29 @@ const { session, sessionError } = useClientSession<TEvent, TMessage>({ channelNa
 | `skip`        | `boolean?`                         | When `true`, return a stub session that throws on any access — safe to hold before conditions are ready |
 | `onError`     | `(error: Ably.ErrorInfo) => void?` | Called whenever the resolved session emits an error event. Subscription is cleaned up on unmount        |
 
-**Returns:** `ClientSessionHandle<TEvent, TMessage>`
+**Returns:** `ClientSessionHandle<TInput, TOutput, TProjection, TMessage>`
 
-| Field          | Type                              | Description                                                                                                                                                                                      |
-| -------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `session`      | `ClientSession<TEvent, TMessage>` | The resolved session. A throwing stub when `skip` is `true`, when no matching `ClientSessionProvider` was found in the tree, or when session construction failed                                 |
-| `sessionError` | `Ably.ErrorInfo?`                 | Set when no matching `ClientSessionProvider` was found, or when session construction failed (and `skip` is `false`). `undefined` when the session resolved successfully or when `skip` is `true` |
+| Field          | Type                                                    | Description                                                                                                                                                                                      |
+| -------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `session`      | `ClientSession<TInput, TOutput, TProjection, TMessage>` | The resolved session. A throwing stub when `skip` is `true`, when no matching `ClientSessionProvider` was found in the tree, or when session construction failed                                 |
+| `sessionError` | `Ably.ErrorInfo?`                                       | Set when no matching `ClientSessionProvider` was found, or when session construction failed (and `skip` is `false`). `undefined` when the session resolved successfully or when `skip` is `true` |
 
 The hook never throws during render. Check `sessionError` before using `session` to avoid the stub's throws on access.
 
 ```typescript
 // Nearest provider (most common)
-const { session, sessionError } = useClientSession<UIMessageChunk, UIMessage>();
+const { session, sessionError } = useClientSession<VercelInput, VercelOutput, VercelProjection, UIMessage>();
 
 // Specific channel
-const { session } = useClientSession<UIMessageChunk, UIMessage>({ channelName: 'ai:main' });
+const { session } = useClientSession<VercelInput, VercelOutput, VercelProjection, UIMessage>({
+  channelName: 'ai:main',
+});
 
 // Deferred until auth resolves — stub throws on any access
-const { session } = useClientSession<UIMessageChunk, UIMessage>({ skip: !userId });
+const { session } = useClientSession<VercelInput, VercelOutput, VercelProjection, UIMessage>({ skip: !userId });
 
 // Observe post-construction session errors (e.g. send failures, channel continuity loss)
-const { session } = useClientSession<UIMessageChunk, UIMessage>({
+const { session } = useClientSession<VercelInput, VercelOutput, VercelProjection, UIMessage>({
   onError: (err) => console.error('session error', err),
 });
 ```
@@ -107,7 +109,7 @@ const { session } = useClientSession<UIMessageChunk, UIMessage>({
 Subscribe to a view and return nodes with pagination, branch navigation, and write operations. Pass `session` to use its default view, `view` to subscribe to a specific `View` directly, or omit both to use the nearest `ClientSessionProvider`.
 
 ```typescript
-const view = useView<TEvent, TMessage>({ session?, view?, limit?, skip? } = {});
+const view = useView<TInput, TOutput, TProjection, TMessage>({ session?, view?, limit?, skip? } = {});
 ```
 
 | Prop      | Type                     | Description                                                                  |
@@ -117,28 +119,28 @@ const view = useView<TEvent, TMessage>({ session?, view?, limit?, skip? } = {});
 | `limit`   | `number?`                | Max older Runs per page. When provided, auto-loads the first page on mount   |
 | `skip`    | `boolean?`               | When `true`, skip all subscriptions and return an empty handle               |
 
-**Returns:** `ViewHandle<TEvent, TMessage>`
+**Returns:** `ViewHandle<TInput, TOutput, TProjection, TMessage>`
 
-| Property/Method                          | Type                                                                                                              | Description                                                                                            |
-| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `nodes`                                  | `RunNode<TProjection>[]`                                                                                          | Flattened Run nodes for the current branch (one Run per turn). Updates on Run-level structural changes |
-| `messages`                               | `TMessage[]`                                                                                                      | The visible domain messages, concatenated across all visible Runs via the codec                        |
-| `hasOlder`                               | `boolean`                                                                                                         | Are there older pages? False until history has been loaded                                             |
-| `loading`                                | `boolean`                                                                                                         | Is a page being fetched?                                                                               |
-| `loadError`                              | `Ably.ErrorInfo \| undefined`                                                                                     | Set when the most recent `loadOlder` call failed. Cleared automatically on the next successful load    |
-| `loadOlder()`                            | `() => Promise<void>`                                                                                             | Load more older Runs. No-op if already loading                                                         |
-| `getMessageMetadata(msgId)`              | `(msgId: string) => MessageMetadata \| undefined`                                                                 | Per-message primitives `{ msgId, runId, clientId, status }` for rendering; replaces leaking RunNode    |
-| `hasMessageSiblings(msgId)`              | `(msgId: string) => boolean`                                                                                      | Whether the owning Run has siblings - drives display of navigation arrows on a message bubble          |
-| `getMessageSiblings(msgId)`              | `(msgId: string) => TMessage[]`                                                                                   | Resolved sibling messages at the branch point (one TMessage per sibling). Use `.length` for the count  |
-| `getSelectedMessageSiblingIndex(msgId)`  | `(msgId: string) => number`                                                                                       | Index of the currently selected sibling, addressed by message id                                       |
-| `selectMessageSibling(msgId, index)`     | `(msgId: string, index: number) => void`                                                                          | Switch to a sibling Run, addressed by message id. Triggers re-render                                   |
-| `select(runId, index)`                   | `(runId: string, index: number) => void`                                                                          | Switch to a sibling Run when you have the runId in hand                                                |
-| `getSelectedIndex(runId)`                | `(runId: string) => number`                                                                                       | Index of the currently selected sibling Run                                                            |
-| `getRunNode(runId)`                      | `(runId: string) => RunNode<TProjection> \| undefined`                                                            | Look up a Run by runId                                                                                 |
-| `sendMessage(messages, options?)`        | `(messages: TMessage \| TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>`                         | Send user messages in this view's branch context                                                       |
-| `sendEvent(events, options?)`            | `(events: TEvent \| TEvent[] \| {event,domainMessageId?}[], options?: SendOptions) => Promise<ActiveRun<TEvent>>` | Send raw codec events (used for tool resolutions, regenerate events)                                   |
-| `regenerate(messageId, options?)`        | `(messageId: string, options?: SendOptions) => Promise<ActiveRun<TEvent>>`                                        | Fork an assistant message with no new user input                                                       |
-| `edit(messageId, newMessages, options?)` | `(messageId: string, newMessages: TMessage \| TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>`   | Fork a user message with replacement content                                                           |
+| Property/Method                         | Type                                                                                                       | Description                                                                                                                                        |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `nodes`                                 | `RunNode<TProjection>[]`                                                                                   | Flattened Run nodes for the current branch (one Run per turn). Updates on Run-level structural changes                                             |
+| `messages`                              | `TMessage[]`                                                                                               | The visible domain messages, concatenated across all visible Runs via the codec                                                                    |
+| `hasOlder`                              | `boolean`                                                                                                  | Are there older pages? False until history has been loaded                                                                                         |
+| `loading`                               | `boolean`                                                                                                  | Is a page being fetched?                                                                                                                           |
+| `loadError`                             | `Ably.ErrorInfo \| undefined`                                                                              | Set when the most recent `loadOlder` call failed. Cleared automatically on the next successful load                                                |
+| `loadOlder()`                           | `() => Promise<void>`                                                                                      | Load more older Runs. No-op if already loading                                                                                                     |
+| `getMessageMetadata(msgId)`             | `(msgId: string) => MessageMetadata \| undefined`                                                          | Per-message primitives `{ msgId, runId, clientId, status }` for rendering; replaces leaking RunNode                                                |
+| `hasMessageSiblings(msgId)`             | `(msgId: string) => boolean`                                                                               | Whether the owning Run has siblings - drives display of navigation arrows on a message bubble                                                      |
+| `getMessageSiblings(msgId)`             | `(msgId: string) => TMessage[]`                                                                            | Resolved sibling messages at the branch point (one TMessage per sibling). Use `.length` for the count                                              |
+| `getSelectedMessageSiblingIndex(msgId)` | `(msgId: string) => number`                                                                                | Index of the currently selected sibling, addressed by message id                                                                                   |
+| `selectMessageSibling(msgId, index)`    | `(msgId: string, index: number) => void`                                                                   | Switch to a sibling Run, addressed by message id. Triggers re-render                                                                               |
+| `select(runId, index)`                  | `(runId: string, index: number) => void`                                                                   | Switch to a sibling Run when you have the runId in hand                                                                                            |
+| `getSelectedIndex(runId)`               | `(runId: string) => number`                                                                                | Index of the currently selected sibling Run                                                                                                        |
+| `getRunNode(runId)`                     | `(runId: string) => RunNode<TProjection> \| undefined`                                                     | Look up a Run by runId                                                                                                                             |
+| `sendMessage(messages, options?)`       | `(messages: TMessage \| TMessage[], options?: SendOptions) => Promise<ActiveRun<TOutput>>`                 | Send user messages in this view's branch context                                                                                                   |
+| `sendEvent(events, options?)`           | `(events: TInput \| TInput[], options?: SendOptions) => Promise<ActiveRun<TOutput>>`                       | Send input events (tool results, approval responses, regenerate signals); routing fields (`parent`, `target`, `codecMessageId`) live on each input |
+| `regenerate(messageId, options?)`       | `(messageId: string, options?: SendOptions) => Promise<ActiveRun<TOutput>>`                                | Fork an assistant message with no new user input                                                                                                   |
+| `edit(messageId, newEvents, options?)`  | `(messageId: string, newEvents: TInput \| TInput[], options?: SendOptions) => Promise<ActiveRun<TOutput>>` | Fork a user message with replacement content                                                                                                       |
 
 Each view has independent branch selections and pagination state. When you pass a session, the hook uses its default view. For [split-pane UIs](../features/branching.md#multiple-views) where each pane needs its own branch and message history, use [`useCreateView()`](#usecreateview) to create independent views with the same API.
 
@@ -153,7 +155,7 @@ Write operations (`send`, `regenerate`, `edit`) automatically derive the parent 
 Create an independent view with the same API as [`useView()`](#useview). The view is created via `session.createView()` and closed automatically on unmount or when the session changes.
 
 ```typescript
-const handle = useCreateView<TEvent, TMessage>({ session?, limit?, skip? } = {});
+const handle = useCreateView<TInput, TOutput, TProjection, TMessage>({ session?, limit?, skip? } = {});
 ```
 
 | Prop      | Type                     | Description                                                                                        |
@@ -162,12 +164,12 @@ const handle = useCreateView<TEvent, TMessage>({ session?, limit?, skip? } = {})
 | `limit`   | `number?`                | When provided, auto-loads the first page on mount. Omit for manual loading                         |
 | `skip`    | `boolean?`               | When `true`, skip view creation and return an empty handle                                         |
 
-**Returns:** `ViewHandle<TEvent, TMessage>` - the same handle type as `useView()`, with nodes, pagination, navigation, and write operations. Returns an empty handle (no nodes, no messages) when no session is provided or `skip` is `true`.
+**Returns:** `ViewHandle<TInput, TOutput, TProjection, TMessage>` - the same handle type as `useView()`, with nodes, pagination, navigation, and write operations. Returns an empty handle (no nodes, no messages) when no session is provided or `skip` is `true`.
 
 ```typescript
 import { useView, useCreateView, useClientSession } from '@ably/ai-transport/react';
 
-const { session } = useClientSession<UIMessageChunk, UIMessage>();
+const { session } = useClientSession<VercelInput, VercelOutput, VercelProjection, UIMessage>();
 const view = useView({ limit: 50 }); // default view, nearest provider
 const splitView = useCreateView({ session: split ? session : null, limit: 50 }); // independent view
 ```
@@ -183,7 +185,7 @@ See [Multiple views](../features/branching.md#multiple-views) for the full split
 Provide stable structural query callbacks for the conversation tree.
 
 ```typescript
-const tree = useTree<TEvent, TMessage>({ session? } = {});
+const tree = useTree<TInput, TOutput, TProjection, TMessage>({ session? } = {});
 ```
 
 | Prop      | Type             | Description                                                       |
@@ -208,7 +210,7 @@ Branch navigation (`select()`, `getSelectedIndex()`) and write operations (`send
 Subscribe to raw Ably message updates. Useful for debugging.
 
 ```typescript
-const messages = useAblyMessages<TEvent, TMessage>({ session?, skip? } = {});
+const messages = useAblyMessages<TInput, TOutput, TProjection, TMessage>({ session?, skip? } = {});
 ```
 
 | Prop      | Type             | Description                                                   |
@@ -282,12 +284,12 @@ const { chatTransport, session, sessionError, chatTransportError } = useChatTran
 
 **Returns:** `ChatTransportHandle`
 
-| Field                | Type                                       | Description                                                                                                                                                                                      |
-| -------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `chatTransport`      | `ChatTransport`                            | The adapter for `useChat()`'s `transport` option. A throwing stub when `skip` is `true`, when no matching `ChatTransportProvider` was found, or when session construction failed                 |
-| `session`            | `ClientSession<UIMessageChunk, UIMessage>` | The underlying client session, also exposed by `useClientSession()`. Used directly with `useMessageSync`, `useView`, `useTree`, etc.                                                             |
-| `sessionError`       | `Ably.ErrorInfo?`                          | Set when no matching `ClientSessionProvider` was found, or when session construction failed (and `skip` is `false`). `undefined` when the session resolved successfully or when `skip` is `true` |
-| `chatTransportError` | `Ably.ErrorInfo?`                          | Set when no matching `ChatTransportProvider` was found, or when session construction failed (and `skip` is `false`). `undefined` when the chat transport resolved successfully                   |
+| Field                | Type                                                                    | Description                                                                                                                                                                                      |
+| -------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `chatTransport`      | `ChatTransport`                                                         | The adapter for `useChat()`'s `transport` option. A throwing stub when `skip` is `true`, when no matching `ChatTransportProvider` was found, or when session construction failed                 |
+| `session`            | `ClientSession<VercelInput, VercelOutput, VercelProjection, UIMessage>` | The underlying client session, also exposed by `useClientSession()`. Used directly with `useMessageSync`, `useView`, `useTree`, etc.                                                             |
+| `sessionError`       | `Ably.ErrorInfo?`                                                       | Set when no matching `ClientSessionProvider` was found, or when session construction failed (and `skip` is `false`). `undefined` when the session resolved successfully or when `skip` is `true` |
+| `chatTransportError` | `Ably.ErrorInfo?`                                                       | Set when no matching `ChatTransportProvider` was found, or when session construction failed (and `skip` is `false`). `undefined` when the chat transport resolved successfully                   |
 
 ```typescript
 // Nearest provider (most common)

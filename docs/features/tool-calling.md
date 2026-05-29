@@ -111,28 +111,27 @@ const runId = metadata?.runId;
 // 3. Execute the browser API
 const position = await new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject));
 
-// 4. Send a continuation tool-resolution event under the existing runId.
-//    `domainMessageId` stamps the wire's `x-ably-msg-id` to the assistant's id
-//    so the reducer's direct fold path runs.
+// 4. Send a continuation `tool-result` input under the existing runId.
+//    `codecMessageId` addresses the assistant message holding the tool call,
+//    so the reducer folds the result onto it. Routing lives on the input
+//    itself - no wrapper object.
 await view.sendEvent(
   [
     {
-      event: {
-        type: 'tool-output-available',
-        toolCallId: toolPart.toolCallId,
-        output: {
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-        },
+      kind: 'tool-result',
+      codecMessageId: assistant.id,
+      toolCallId: toolPart.toolCallId,
+      output: {
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
       },
-      domainMessageId: assistant.id,
     },
   ],
   { runId },
 );
 ```
 
-`sendEvent` with the richer per-entry shape publishes the continuation as a `role: 'user'` wire stamped with `x-ably-run-continue: 'true'`. The Tree's `applyMessage` routes it to the existing Run via `_msgIdToRunId`, folds the tool resolution onto the assistant's projection (no winner update, since continuation wires skip that path), and emits `update`. The agent's `loadProjection()` picks up the new event from the channel and resumes `streamText()` with the tool result in the conversation history. All clients see the tool part transition from `input-available` to `output-available`.
+Client tool resolutions are `tool-result` (or `tool-result-error`) inputs - they ride the `ai-input` wire, the same direction as user messages, so the publisher matches the wire (client to input, agent to output). The continuation reuses the run's `runId` so the agent picks the result up off the channel and resumes `streamText()` with the tool result in history. The reducer folds the result onto the assistant addressed by `codecMessageId`, and all clients see the tool part transition from `input-available` to `output-available`. On failure, send a `tool-result-error` input with a `message` field instead of `output`.
 
 ## Multi-client tool execution
 

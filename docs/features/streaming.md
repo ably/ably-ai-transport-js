@@ -80,7 +80,7 @@ This is the primary consumption path. In React, the `useView()` hook handles the
 
 ### The event stream
 
-`send()` also returns a `ReadableStream<TEvent>` on the `ActiveRun`. This exists as an integration seam for framework adapters - Vercel's `useChat()` expects a `ReadableStream` as its transport contract. Most application code should use the view instead, since the accumulator provides the same per-token granularity.
+`send()` also returns a `ReadableStream<TOutput>` on the `ActiveRun`. This exists as an integration seam for framework adapters - Vercel's `useChat()` expects a `ReadableStream` as its transport contract. Most application code should use the view instead, since the accumulator provides the same per-token granularity.
 
 ```typescript
 // Framework adapter usage - most apps won't consume this directly

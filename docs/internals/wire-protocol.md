@@ -98,15 +98,18 @@ Used for: user messages, data parts, lifecycle events (start, finish).
 ```
 Ably message:
   action: message.create
-  name: "user-message"        (codec-defined message name)
+  name: "ai-input"            (client publishes use ai-input; agent publishes use ai-output)
   data: { ... }               (codec-defined payload)
   extras.headers:
     x-ably-stream: "false"
     x-ably-run-id: "run-1"
     x-ably-codec-message-id: "msg-1"
     x-ably-role: "user"
+    x-domain-type: "text"     (codec event type - dispatched on by the decoder)
     x-domain-id: "ui-msg-1"   (codec-specific)
 ```
+
+Every publish rides one of two wire names: `ai-input` for client-published events (user-message parts, tool results, approval responses, regenerate signals) and `ai-output` for agent-published events (text, reasoning, tool calls, lifecycle, etc.). The codec event's own type is carried in the `x-domain-type` header rather than on the Ably message `name`; the decoder dispatches first on `name` (direction) then on `x-domain-type`.
 
 ### Streamed messages
 

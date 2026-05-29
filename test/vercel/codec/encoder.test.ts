@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DOMAIN_HEADER_PREFIX as D,
+  EVENT_AI_INPUT,
   EVENT_AI_OUTPUT,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_DISCRETE,
@@ -545,7 +546,7 @@ describe('Vercel encoder', () => {
   // -- user message events (codec-local TEvent) -----------------------------
 
   describe('publishing user-message events', () => {
-    it('publishes UIMessage parts as discrete batch tagged x-ably-discrete', async () => {
+    it('publishes UIMessage parts as discrete ai-input batch with per-part x-domain-type', async () => {
       const encoder = createEncoder(writer);
       const msg: AI.UIMessage = {
         id: 'msg-1',
@@ -565,15 +566,19 @@ describe('Vercel encoder', () => {
       expect(call).toHaveLength(2);
 
       const first = call[0];
-      expect(first?.name).toBe('text');
+      expect(first?.name).toBe(EVENT_AI_INPUT);
       expect(first?.data).toBe('hello');
       if (first) {
+        expect(headersOf(first)[`${D}type`]).toBe('text');
         expect(headersOf(first)[`${D}messageId`]).toBe('msg-1');
         expect(headersOf(first)[HEADER_DISCRETE]).toBe('true');
       }
 
-      expect(call[1]?.name).toBe('file');
+      expect(call[1]?.name).toBe(EVENT_AI_INPUT);
       expect(call[1]?.data).toBe('https://example.com/img.png');
+      if (call[1]) {
+        expect(headersOf(call[1])[`${D}type`]).toBe('file');
+      }
     });
 
     it('publishes an empty text part for a message with no parts', async () => {
@@ -585,8 +590,11 @@ describe('Vercel encoder', () => {
       const call = writer.publishCalls[0];
       if (!Array.isArray(call)) throw new Error('expected batch publish');
       expect(call).toHaveLength(1);
-      expect(call[0]?.name).toBe('text');
+      expect(call[0]?.name).toBe(EVENT_AI_INPUT);
       expect(call[0]?.data).toBe('');
+      if (call[0]) {
+        expect(headersOf(call[0])[`${D}type`]).toBe('text');
+      }
     });
   });
 
@@ -609,7 +617,8 @@ describe('Vercel encoder', () => {
 
       expect(writer.publishCalls).toHaveLength(1);
       const msg = firstPublish(writer);
-      expect(msg.name).toBe('tool-approval-response');
+      expect(msg.name).toBe(EVENT_AI_INPUT);
+      expect(headersOf(msg)[`${D}type`]).toBe('tool-approval-response');
       expect(headersOf(msg)[`${D}toolCallId`]).toBe('tc-1');
       expect(headersOf(msg)[`${D}approved`]).toBe('true');
       expect(headersOf(msg)[`${D}reason`]).toBe('looks good');
@@ -653,7 +662,8 @@ describe('Vercel encoder', () => {
 
       expect(writer.publishCalls).toHaveLength(1);
       const msg = firstPublish(writer);
-      expect(msg.name).toBe('ait-regenerate');
+      expect(msg.name).toBe(EVENT_AI_INPUT);
+      expect(headersOf(msg)[`${D}type`]).toBe('ait-regenerate');
       expect(msg.data).toBe('');
       const headers = headersOf(msg);
       expect(headers[HEADER_CODEC_MESSAGE_ID]).toBe('regen-codec-message-id');
@@ -719,6 +729,40 @@ describe('Vercel encoder', () => {
   });
 
   // -- wire-name uniformity ------------------------------------------------
+
+  describe('ai-input wire name', () => {
+    it('publishes every client-side codec event under the single ai-input wire name', async () => {
+      const encoder = createEncoder(writer);
+
+      const userMsg: AI.UIMessage = {
+        id: 'msg-1',
+        role: 'user',
+        parts: [
+          { type: 'text', text: 'hello' },
+          { type: 'file', url: 'https://example.com/img.png', mediaType: 'image/png' },
+          { type: 'data-custom', id: 'd-1', data: { x: 1 } },
+        ],
+      };
+      await encoder.publish({ type: 'ait-user-message', message: userMsg });
+      await encoder.publish({ type: 'tool-approval-response', toolCallId: 'tc-1', approved: true });
+      await encoder.publish({
+        type: 'ait-regenerate',
+        regeneratesCodecMessageId: 'asst-A1',
+        parentCodecMessageId: 'user-U1',
+      });
+
+      const allMessages: Ably.Message[] = [];
+      for (const call of writer.publishCalls) {
+        if (Array.isArray(call)) allMessages.push(...call);
+        else allMessages.push(call);
+      }
+      expect(allMessages.length).toBeGreaterThan(0);
+      for (const msg of allMessages) {
+        expect(msg.name).toBe(EVENT_AI_INPUT);
+        expect(headersOf(msg)[`${D}type`]).toBeDefined();
+      }
+    });
+  });
 
   describe('ai-output wire name', () => {
     it('publishes every agent-side codec event under the single ai-output wire name', async () => {

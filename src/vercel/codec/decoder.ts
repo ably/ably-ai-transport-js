@@ -7,14 +7,17 @@
  * events on mid-stream join (history compaction, rewind miss, partial
  * page); the reducer always sees a clean event stream.
  *
- * Domain-specific headers use the `x-domain-` prefix. Transport-level
- * headers use the `x-ably-` prefix.
+ * Receive-side dispatch reads the wire `name` to pick the publish side
+ * (`ai-output` for agent publishes, `ai-input` for client publishes)
+ * and then routes by the `x-domain-type` domain header carrying the
+ * codec event type. Domain-specific headers use the `x-domain-` prefix.
+ * Transport-level headers use the `x-ably-` prefix.
  */
 
 import type * as Ably from 'ably';
 import type * as AI from 'ai';
 
-import { EVENT_AI_OUTPUT, HEADER_DISCRETE, HEADER_ROLE, HEADER_RUN_ID } from '../../constants.js';
+import { EVENT_AI_INPUT, EVENT_AI_OUTPUT, HEADER_DISCRETE, HEADER_ROLE, HEADER_RUN_ID } from '../../constants.js';
 import type { DecoderCore, DecoderCoreHooks, DecoderCoreOptions } from '../../core/codec/decoder.js';
 import { createDecoderCore } from '../../core/codec/decoder.js';
 import type { LifecycleTracker } from '../../core/codec/lifecycle-tracker.js';
@@ -413,6 +416,7 @@ const decodeNonStreamingToolInput = (
  * Decode a single discrete message part (from the user-message multi-part
  * wire format) into a UserMessageEvent carrying a one-part UIMessage. The
  * reducer's `_foldUserMessage` merges parts that share the same codec-message-id.
+ * The part's codec event type is read from `x-domain-type`.
  * @param input - The discrete message payload (name, data, headers).
  * @returns A single `ait-user-message` event, or an empty array when the part type is unrecognised.
  */
@@ -421,10 +425,11 @@ const decodeDiscreteMessagePart = (input: MessagePayload): VercelEvent[] => {
   const r = headerReader(h);
   const role = (h[HEADER_ROLE] ?? 'user') as AI.UIMessage['role'];
   const messageId = r.str('messageId') ?? '';
+  const codecType = r.strOr('type', '');
 
   let part: AI.UIMessage['parts'][number] | undefined;
 
-  switch (input.name) {
+  switch (codecType) {
     case 'text': {
       part = { type: 'text', text: typeof input.data === 'string' ? input.data : '' };
       break;
@@ -438,8 +443,8 @@ const decodeDiscreteMessagePart = (input: MessagePayload): VercelEvent[] => {
       break;
     }
     default: {
-      if (isDataEventName(input.name)) {
-        part = stripUndefined({ type: input.name, id: r.str('id'), data: input.data });
+      if (isDataEventName(codecType)) {
+        part = stripUndefined({ type: codecType, id: r.str('id'), data: input.data });
       }
       break;
     }
@@ -452,8 +457,8 @@ const decodeDiscreteMessagePart = (input: MessagePayload): VercelEvent[] => {
   return [userMessage];
 };
 
-const isDiscreteMessagePart = (name: string, headers: Record<string, string>): boolean =>
-  (name === 'text' || name === 'file' || isDataEventName(name)) && HEADER_DISCRETE in headers;
+const isDiscreteMessagePart = (codecType: string, headers: Record<string, string>): boolean =>
+  (codecType === 'text' || codecType === 'file' || isDataEventName(codecType)) && HEADER_DISCRETE in headers;
 
 // ---------------------------------------------------------------------------
 // Discrete payload dispatch
@@ -521,25 +526,15 @@ const decodeAiOutputPayload = (
   }
 };
 
-const decodeDiscretePayload = (
-  input: MessagePayload,
-  lifecycle: LifecycleTracker<AI.UIMessageChunk>,
-): VercelEvent[] => {
-  const h = input.headers ?? {};
-  const r = headerReader(h);
-  const runId = h[HEADER_RUN_ID] ?? '';
-
-  // Multi-part user-message parts (from the user-message wire format) are
-  // distinguished from lifecycle events by the presence of x-ably-discrete.
-  if (isDiscreteMessagePart(input.name, h)) {
+const decodeAiInputPayload = (codecType: string, input: MessagePayload, r: VercelHeaderReader): VercelEvent[] => {
+  // Multi-part user-message parts (text / file / data-*) carry x-ably-discrete
+  // because they ride publishDiscreteBatch; the receive-side fans them back
+  // out into a UserMessageEvent.
+  if (isDiscreteMessagePart(codecType, input.headers ?? {})) {
     return decodeDiscreteMessagePart(input);
   }
 
-  if (input.name === EVENT_AI_OUTPUT) {
-    return decodeAiOutputPayload(r.strOr('type', ''), r, input.data, runId, lifecycle);
-  }
-
-  switch (input.name) {
+  switch (codecType) {
     case 'tool-approval-response': {
       return decodeToolApprovalResponse(r);
     }
@@ -554,6 +549,26 @@ const decodeDiscretePayload = (
       return [];
     }
   }
+};
+
+const decodeDiscretePayload = (
+  input: MessagePayload,
+  lifecycle: LifecycleTracker<AI.UIMessageChunk>,
+): VercelEvent[] => {
+  const h = input.headers ?? {};
+  const r = headerReader(h);
+  const runId = h[HEADER_RUN_ID] ?? '';
+  const codecType = r.strOr('type', '');
+
+  if (input.name === EVENT_AI_INPUT) {
+    return decodeAiInputPayload(codecType, input, r);
+  }
+
+  if (input.name === EVENT_AI_OUTPUT) {
+    return decodeAiOutputPayload(codecType, r, input.data, runId, lifecycle);
+  }
+
+  return [];
 };
 
 // ---------------------------------------------------------------------------

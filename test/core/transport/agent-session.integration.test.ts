@@ -20,6 +20,8 @@ import type * as AI from 'ai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  DOMAIN_HEADER_PREFIX,
+  EVENT_AI_OUTPUT,
   EVENT_CANCEL,
   EVENT_RUN_END,
   EVENT_RUN_START,
@@ -719,9 +721,13 @@ describe('AgentSession integration', () => {
     const done = new Promise<void>((r) => {
       resolve = r;
     });
+    const isToolOutputAvailable = (msg: Ably.InboundMessage): boolean =>
+      msg.name === EVENT_AI_OUTPUT && getHeaders(msg)[`${DOMAIN_HEADER_PREFIX}type`] === 'tool-output-available';
+    const isText = (msg: Ably.InboundMessage): boolean =>
+      msg.name === EVENT_AI_OUTPUT && getHeaders(msg)[`${DOMAIN_HEADER_PREFIX}type`] === 'text';
     await subChannel.subscribe((msg) => {
       rawMessages.push(msg);
-      if (msg.name === 'tool-output-available') resolve();
+      if (isToolOutputAvailable(msg)) resolve();
     });
 
     const run = createRunFromOpts(session, { runId: 'run-rwo' });
@@ -749,14 +755,14 @@ describe('AgentSession integration', () => {
 
     await done;
 
-    const textStartMsg = rawMessages.find((m) => m.name === 'text');
+    const textStartMsg = rawMessages.find((m) => isText(m));
     expect(textStartMsg).toBeDefined();
     if (textStartMsg) {
       const textHeaders = getHeaders(textStartMsg);
       expect(textHeaders[HEADER_CODEC_MESSAGE_ID]).not.toBe('target-codec-message-id');
     }
 
-    const toolMsg = rawMessages.find((m) => m.name === 'tool-output-available');
+    const toolMsg = rawMessages.find((m) => isToolOutputAvailable(m));
     expect(toolMsg).toBeDefined();
     if (toolMsg) {
       const toolHeaders = getHeaders(toolMsg);

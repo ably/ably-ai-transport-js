@@ -4,10 +4,10 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import * as Ably from 'ably';
 import { AblyProvider } from 'ably/react';
 import { createSessionHooks } from '@ably/ai-transport/react';
-import type { VercelEvent, VercelProjection } from '@ably/ai-transport/vercel';
+import type { VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
 import type * as AI from 'ai';
 
-export const SessionHooks = createSessionHooks<VercelEvent, VercelProjection, AI.UIMessage>();
+export const SessionHooks = createSessionHooks<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>();
 
 const AblyReadyContext = createContext(false);
 

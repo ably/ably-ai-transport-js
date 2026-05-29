@@ -4,10 +4,10 @@
  *
  * Watches the view's message list for tool parts in `input-available` state
  * that match a registered client tool. Executes the tool, then publishes a
- * `tool-output-available` UIMessageChunk on the channel via `view.sendEvent`.
- * The codec's reducer folds the chunk onto the assistant message that
- * issued the tool call (matched by `toolCallId`) and marks the wire
- * continuation message as consumed.
+ * `tool-result` (or `tool-result-error`) TInput on the channel via
+ * `view.sendEvent`. The codec's reducer folds the result onto the
+ * assistant message addressed by `codecMessageId` (matched by `toolCallId`
+ * within that message).
  *
  * Skips tool calls that already have a follow-up assistant message - those
  * were resolved in a previous session and don't need re-execution.
@@ -17,7 +17,7 @@
 import { useEffect, useRef } from 'react';
 import type { DynamicToolUIPart, UIMessage } from 'ai';
 import type { ViewHandle } from '@ably/ai-transport/react';
-import type { VercelEvent, VercelProjection } from '@ably/ai-transport/vercel';
+import type { VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
 
 type ClientToolExecutor = (input: unknown) => Promise<unknown>;
 
@@ -46,7 +46,7 @@ const clientTools: Record<string, ClientToolExecutor> = {
 };
 
 export function useClientTools(
-  view: ViewHandle<VercelEvent, VercelProjection, UIMessage>,
+  view: ViewHandle<VercelInput, VercelOutput, VercelProjection, UIMessage>,
   clientId: string | undefined,
 ) {
   // Track which tool calls we've already handled to avoid re-executing
@@ -84,18 +84,19 @@ export function useClientTools(
 
         handledRef.current.add(toolPart.toolCallId);
 
-        executeClientTool(view, metadata.runId, toolPart);
+        executeClientTool(view, metadata.runId, msg.id, toolPart);
       }
     }
   }, [view, view.messages, clientId]);
 }
 
-// The tool output amends the suspended assistant message; the continuation
-// reuses that run's runId so the agent's lookupToolOutputs picks the output
-// up off the channel and resumes generation.
+// The tool result targets the suspended assistant message via
+// `codecMessageId`; the continuation reuses that run's runId so the
+// agent picks the result up off the channel and resumes generation.
 async function executeClientTool(
-  view: ViewHandle<VercelEvent, VercelProjection, UIMessage>,
+  view: ViewHandle<VercelInput, VercelOutput, VercelProjection, UIMessage>,
   runId: string,
+  codecMessageId: string,
   toolPart: DynamicToolUIPart,
 ): Promise<void> {
   const executor = clientTools[toolPart.toolName];
@@ -106,7 +107,8 @@ async function executeClientTool(
     await view.sendEvent(
       [
         {
-          type: 'tool-output-available',
+          kind: 'tool-result',
+          codecMessageId,
           toolCallId: toolPart.toolCallId,
           output,
         },
@@ -117,9 +119,10 @@ async function executeClientTool(
     await view.sendEvent(
       [
         {
-          type: 'tool-output-error',
+          kind: 'tool-result-error',
+          codecMessageId,
           toolCallId: toolPart.toolCallId,
-          errorText: error instanceof Error ? error.message : 'Client tool execution failed',
+          message: error instanceof Error ? error.message : 'Client tool execution failed',
         },
       ],
       { runId },

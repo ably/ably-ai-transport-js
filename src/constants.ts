@@ -146,10 +146,3 @@ export const EVENT_AI_OUTPUT = 'ai-output';
  * domain header so the decoder can dispatch.
  */
 export const EVENT_AI_INPUT = 'ai-input';
-
-// ---------------------------------------------------------------------------
-// Domain header prefix (used by codec implementations)
-// ---------------------------------------------------------------------------
-
-/** Prefix for domain-specific headers. Distinguishes codec-layer headers from unprefixed transport headers. */
-export const CODEC_HEADER_PREFIX = 'codec-';

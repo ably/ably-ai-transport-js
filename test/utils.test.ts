@@ -1,9 +1,9 @@
 import type * as Ably from 'ably';
 import { describe, expect, it } from 'vitest';
 
-import { CODEC_HEADER_PREFIX as D } from '../src/constants.js';
 import {
-  getHeaders,
+  getCodecHeaders,
+  getTransportHeaders,
   headerReader,
   headerWriter,
   mergeHeaders,
@@ -14,31 +14,63 @@ import {
   stripUndefined,
 } from '../src/utils.js';
 
-describe('getHeaders', () => {
-  it('extracts headers from a well-formed message', () => {
-    const msg = { extras: { ai: { 'x-key': 'value' } } } as Ably.InboundMessage;
-    expect(getHeaders(msg)).toEqual({ 'x-key': 'value' });
+describe('getTransportHeaders', () => {
+  it('extracts the transport tier from a well-formed message', () => {
+    const msg = { extras: { ai: { transport: { 'run-id': 'r1' }, codec: { type: 'text' } } } } as Ably.InboundMessage;
+    expect(getTransportHeaders(msg)).toEqual({ 'run-id': 'r1' });
+  });
+
+  it('returns empty object when the transport tier is absent', () => {
+    const msg = { extras: { ai: { codec: { type: 'text' } } } } as Ably.InboundMessage;
+    expect(getTransportHeaders(msg)).toEqual({});
   });
 
   it('returns empty object when extras is undefined', () => {
     const msg = { extras: undefined } as Ably.InboundMessage;
-    expect(getHeaders(msg)).toEqual({});
+    expect(getTransportHeaders(msg)).toEqual({});
   });
 
   it('returns empty object when extras is falsy', () => {
     // CAST: testing runtime guard against falsy extras values
     const msg = { extras: 0 } as unknown as Ably.InboundMessage;
-    expect(getHeaders(msg)).toEqual({});
+    expect(getTransportHeaders(msg)).toEqual({});
   });
 
-  it('returns empty object when headers is missing', () => {
+  it('returns empty object when ai is missing', () => {
     const msg = { extras: {} } as Ably.InboundMessage;
-    expect(getHeaders(msg)).toEqual({});
+    expect(getTransportHeaders(msg)).toEqual({});
   });
 
   it('returns empty object when extras is not an object', () => {
     const msg = { extras: 'string' } as Ably.InboundMessage;
-    expect(getHeaders(msg)).toEqual({});
+    expect(getTransportHeaders(msg)).toEqual({});
+  });
+});
+
+describe('getCodecHeaders', () => {
+  it('extracts the codec tier from a well-formed message', () => {
+    const msg = { extras: { ai: { transport: { 'run-id': 'r1' }, codec: { type: 'text' } } } } as Ably.InboundMessage;
+    expect(getCodecHeaders(msg)).toEqual({ type: 'text' });
+  });
+
+  it('returns empty object when the codec tier is absent', () => {
+    const msg = { extras: { ai: { transport: { 'run-id': 'r1' } } } } as Ably.InboundMessage;
+    expect(getCodecHeaders(msg)).toEqual({});
+  });
+
+  it('returns empty object when extras is undefined', () => {
+    const msg = { extras: undefined } as Ably.InboundMessage;
+    expect(getCodecHeaders(msg)).toEqual({});
+  });
+
+  it('returns empty object when ai is missing', () => {
+    const msg = { extras: {} } as Ably.InboundMessage;
+    expect(getCodecHeaders(msg)).toEqual({});
+  });
+
+  it('returns empty object when extras is not an object', () => {
+    const msg = { extras: 'string' } as Ably.InboundMessage;
+    expect(getCodecHeaders(msg)).toEqual({});
   });
 });
 
@@ -181,10 +213,10 @@ describe('stripUndefined', () => {
 
 describe('headerReader', () => {
   const headers = {
-    [`${D}toolCallId`]: 'tc-1',
-    [`${D}dynamic`]: 'true',
-    [`${D}providerExecuted`]: 'false',
-    [`${D}providerMetadata`]: '{"anthropic":{"cacheControl":"ephemeral"}}',
+    toolCallId: 'tc-1',
+    dynamic: 'true',
+    providerExecuted: 'false',
+    providerMetadata: '{"anthropic":{"cacheControl":"ephemeral"}}',
   };
 
   it('reads string values with str()', () => {
@@ -216,18 +248,18 @@ describe('headerReader', () => {
 describe('headerWriter', () => {
   it('writes string values with str()', () => {
     const h = headerWriter().str('toolCallId', 'tc-1').build();
-    expect(h).toEqual({ [`${D}toolCallId`]: 'tc-1' });
+    expect(h).toEqual({ toolCallId: 'tc-1' });
   });
 
   it('skips undefined string values', () => {
     const title: string | undefined = undefined;
     const h = headerWriter().str('toolCallId', 'tc-1').str('title', title).build();
-    expect(h).toEqual({ [`${D}toolCallId`]: 'tc-1' });
+    expect(h).toEqual({ toolCallId: 'tc-1' });
   });
 
   it('writes boolean values with bool()', () => {
     const h = headerWriter().bool('dynamic', true).bool('providerExecuted', false).build();
-    expect(h).toEqual({ [`${D}dynamic`]: 'true', [`${D}providerExecuted`]: 'false' });
+    expect(h).toEqual({ dynamic: 'true', providerExecuted: 'false' });
   });
 
   it('skips undefined boolean values', () => {
@@ -240,7 +272,7 @@ describe('headerWriter', () => {
     const h = headerWriter()
       .json('providerMetadata', { anthropic: { key: 'val' } })
       .build();
-    expect(h).toEqual({ [`${D}providerMetadata`]: '{"anthropic":{"key":"val"}}' });
+    expect(h).toEqual({ providerMetadata: '{"anthropic":{"key":"val"}}' });
   });
 
   it('skips undefined and null JSON values', () => {
@@ -258,10 +290,10 @@ describe('headerWriter', () => {
       .json('providerMetadata', { k: 'v' })
       .build();
     expect(h).toEqual({
-      [`${D}toolCallId`]: 'tc-1',
-      [`${D}toolName`]: 'search',
-      [`${D}dynamic`]: 'true',
-      [`${D}providerMetadata`]: '{"k":"v"}',
+      toolCallId: 'tc-1',
+      toolName: 'search',
+      dynamic: 'true',
+      providerMetadata: '{"k":"v"}',
     });
   });
 

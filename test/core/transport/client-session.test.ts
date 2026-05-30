@@ -206,7 +206,7 @@ const ablyMsg = (
     name,
     data,
     action,
-    extras: { ai: headers },
+    extras: { ai: { transport: headers } },
     serial: serial ?? nextSerial(),
   }) as unknown as Ably.InboundMessage;
 
@@ -1823,7 +1823,7 @@ describe('ClientSession', () => {
       await fix.session.cancel('run-1');
       const cancelMsg = fix.channel.publishCalls.find((m) => m.name === 'ai-cancel');
       expect(cancelMsg).toBeDefined();
-      const headers = (cancelMsg?.extras as { ai: Record<string, string> } | undefined)?.ai;
+      const headers = (cancelMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
       expect(headers?.[HEADER_RUN_ID]).toBe('run-1');
     });
 

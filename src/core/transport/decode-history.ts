@@ -74,7 +74,7 @@ const mergePreservingIdentity = (existing: Record<string, string>, incoming: Rec
   }
 };
 import type { Logger } from '../../logger.js';
-import { getHeaders } from '../../utils.js';
+import { getTransportHeaders } from '../../utils.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
 import type { HistoryPage, LoadHistoryOptions } from './types.js';
 
@@ -175,7 +175,7 @@ const decodeAll = <TInput extends CodecInputEvent, TOutput extends CodecOutputEv
   for (const msg of chronological) {
     const { inputs, outputs } = decoder.decode(msg);
     const events: (TInput | TOutput)[] = [...inputs, ...outputs];
-    const headers = getHeaders(msg);
+    const headers = getTransportHeaders(msg);
     const runId = headers[HEADER_RUN_ID];
     const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
     const serial = msg.serial ?? '';
@@ -371,7 +371,7 @@ const countNewCompletions = <TInput extends CodecInputEvent, TOutput extends Cod
   newMessages: readonly Ably.InboundMessage[],
 ): void => {
   for (const msg of newMessages) {
-    const headers = getHeaders(msg);
+    const headers = getTransportHeaders(msg);
     const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
     if (!codecMessageId) continue;
 

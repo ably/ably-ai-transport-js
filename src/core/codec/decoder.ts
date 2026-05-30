@@ -16,7 +16,7 @@ import type * as Ably from 'ably';
 
 import { HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID } from '../../constants.js';
 import type { Logger } from '../../logger.js';
-import { getHeaders } from '../../utils.js';
+import { getCodecHeaders, getTransportHeaders } from '../../utils.js';
 import type { MessagePayload, StreamTrackerState } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -50,10 +50,10 @@ export interface DecoderCoreHooks<TEvent> {
 
   /**
    * Build domain events emitted when a stream completes (status:complete).
-   * Not called for cancelled streams. The closing headers may differ from
-   * tracker.headers if the closing append carried updated headers.
+   * Not called for cancelled streams. The closing codec headers may differ
+   * from tracker.codecHeaders if the closing append carried updated headers.
    */
-  buildEndEvents(tracker: StreamTrackerState, closingHeaders: Record<string, string>): TEvent[];
+  buildEndEvents(tracker: StreamTrackerState, closingCodecHeaders: Record<string, string>): TEvent[];
 
   /**
    * Decode a discrete message (message.create where stream is "false",
@@ -101,7 +101,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
       // Spec: AIT-CD7a
       case 'message.create': {
         const payload = this._toPayload(message);
-        return payload.headers?.[HEADER_STREAM] === 'true'
+        return payload.transportHeaders?.[HEADER_STREAM] === 'true'
           ? this._decodeStreamedCreate(payload, message.serial)
           : this._hooks.decodeDiscrete(payload);
       }
@@ -133,7 +133,8 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
       name: message.name ?? '',
       // CAST: Ably SDK types `data` as `any`; cast to unknown is the safe boundary type.
       data: message.data as unknown,
-      headers: getHeaders(message),
+      transportHeaders: getTransportHeaders(message),
+      codecHeaders: getCodecHeaders(message),
     };
   }
 
@@ -175,14 +176,14 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
   private _decodeStreamedCreate(payload: MessagePayload, serial: string | undefined): TEvent[] {
     if (!serial) return [];
 
-    const streamId = payload.headers?.[HEADER_STREAM_ID] ?? '';
-    const h = payload.headers ?? {};
+    const streamId = payload.transportHeaders?.[HEADER_STREAM_ID] ?? '';
 
     const tracker: StreamTrackerState = {
       name: payload.name,
       streamId,
       accumulated: '',
-      headers: { ...h },
+      codecHeaders: { ...payload.codecHeaders },
+      transportHeaders: { ...payload.transportHeaders },
       closed: false,
     };
     this._serialState.set(serial, tracker);
@@ -211,9 +212,10 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
       return this._decodeUpdate(message);
     }
 
-    const h = getHeaders(message);
+    const transport = getTransportHeaders(message);
+    const closingCodec = getCodecHeaders(message);
     const delta = typeof message.data === 'string' ? message.data : '';
-    const status = h[HEADER_STATUS];
+    const status = transport[HEADER_STATUS];
     const outputs: TEvent[] = [];
 
     if (delta.length > 0) {
@@ -223,7 +225,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
 
     if (status === 'complete' && !tracker.closed) {
       tracker.closed = true;
-      outputs.push(...this._hooks.buildEndEvents(tracker, h));
+      outputs.push(...this._hooks.buildEndEvents(tracker, closingCodec));
       this._logger?.debug('DefaultDecoderCore._decodeAppend(); stream complete', { streamId: tracker.streamId });
     } else if (status === 'cancelled' && !tracker.closed) {
       tracker.closed = true;
@@ -243,9 +245,10 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
     if (!serial) return [];
 
     const payload = this._toPayload(message);
-    const h = payload.headers ?? {};
-    const isStreamed = h[HEADER_STREAM] === 'true';
-    const status = h[HEADER_STATUS];
+    const transport = payload.transportHeaders ?? {};
+    const codec = payload.codecHeaders ?? {};
+    const isStreamed = transport[HEADER_STREAM] === 'true';
+    const status = transport[HEADER_STATUS];
 
     const tracker = this._serialState.get(serial);
 
@@ -268,7 +271,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
 
       if (status === 'complete' && !tracker.closed) {
         tracker.closed = true;
-        outputs.push(...this._hooks.buildEndEvents(tracker, h));
+        outputs.push(...this._hooks.buildEndEvents(tracker, codec));
       } else if (status === 'cancelled' && !tracker.closed) {
         tracker.closed = true;
       }
@@ -278,7 +281,8 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
 
     // --- Replacement (NOT a prefix match) ---
     tracker.accumulated = data;
-    tracker.headers = { ...h };
+    tracker.codecHeaders = { ...codec };
+    tracker.transportHeaders = { ...transport };
 
     this._invokeOnStreamUpdate(tracker);
 
@@ -296,8 +300,8 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
       return this._hooks.decodeDiscrete(payload);
     }
 
-    const streamId = payload.headers?.[HEADER_STREAM_ID] ?? '';
-    const h = payload.headers ?? {};
+    const streamId = payload.transportHeaders?.[HEADER_STREAM_ID] ?? '';
+    const codec = payload.codecHeaders ?? {};
     const data = typeof payload.data === 'string' ? payload.data : '';
 
     this._logger?.debug('DefaultDecoderCore._decodeFirstContact(); first-contact stream', {
@@ -311,7 +315,8 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
       name: payload.name,
       streamId,
       accumulated: data,
-      headers: { ...h },
+      codecHeaders: { ...codec },
+      transportHeaders: { ...payload.transportHeaders },
       closed: status === 'complete' || status === 'cancelled',
     };
     this._serialState.set(serial, newTracker);
@@ -324,7 +329,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
     }
 
     if (status === 'complete') {
-      outputs.push(...this._hooks.buildEndEvents(newTracker, h));
+      outputs.push(...this._hooks.buildEndEvents(newTracker, codec));
     }
 
     return outputs;

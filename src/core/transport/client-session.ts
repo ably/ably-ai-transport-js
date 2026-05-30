@@ -37,7 +37,7 @@ import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import { LogLevel, makeLogger } from '../../logger.js';
-import { getHeaders } from '../../utils.js';
+import { getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import type { CodecInputEvent, CodecOutputEvent, Decoder, Encoder } from '../codec/types.js';
 import { buildTransportHeaders } from './headers.js';
@@ -298,7 +298,7 @@ class DefaultClientSession<
       // Spec: AIT-CT16a
       // --- Run lifecycle events from the agent ---
       if (ablyMessage.name === EVENT_RUN_START) {
-        const headers = getHeaders(ablyMessage);
+        const headers = getTransportHeaders(ablyMessage);
         const runId = headers[HEADER_RUN_ID];
         const runCid = headers[HEADER_RUN_CLIENT_ID] ?? '';
         const invocationId = headers[HEADER_INVOCATION_ID];
@@ -334,7 +334,7 @@ class DefaultClientSession<
       }
 
       if (ablyMessage.name === EVENT_RUN_END) {
-        const headers = getHeaders(ablyMessage);
+        const headers = getTransportHeaders(ablyMessage);
         const runId = headers[HEADER_RUN_ID];
         const runCid = headers[HEADER_RUN_CLIENT_ID] ?? '';
         const invocationId = headers[HEADER_INVOCATION_ID];
@@ -434,7 +434,7 @@ class DefaultClientSession<
       // --- Codec-decoded events ---
       const { inputs, outputs } = this._decoder.decode(ablyMessage);
       const events: (TInput | TOutput)[] = [...inputs, ...outputs];
-      const headers = getHeaders(ablyMessage);
+      const headers = getTransportHeaders(ablyMessage);
       const serial = ablyMessage.serial;
       const runId = headers[HEADER_RUN_ID];
       const invocationId = headers[HEADER_INVOCATION_ID];
@@ -884,7 +884,7 @@ class DefaultClientSession<
 
     await this._channel.publish({
       name: EVENT_CANCEL,
-      extras: { ai: { [HEADER_RUN_ID]: runId } },
+      extras: { ai: { transport: { [HEADER_RUN_ID]: runId } } },
     });
 
     // Close the local router stream so the caller's reader sees end-of-input.

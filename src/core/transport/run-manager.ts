@@ -129,7 +129,7 @@ class DefaultRunManager implements RunManager {
 
     await this._channel.publish({
       name: EVENT_RUN_START,
-      extras: { ai: headers },
+      extras: { ai: { transport: headers } },
     });
 
     this._logger?.debug('DefaultRunManager.startRun(); run started', { runId });
@@ -161,7 +161,7 @@ class DefaultRunManager implements RunManager {
     // the run remains in the active set and can be retried or cleaned up.
     await this._channel.publish({
       name: EVENT_RUN_END,
-      extras: { ai: headers },
+      extras: { ai: { transport: headers } },
     });
 
     this._activeRuns.delete(runId);

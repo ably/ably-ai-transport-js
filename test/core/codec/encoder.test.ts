@@ -57,11 +57,16 @@ const createMockWriter = (): MockWriter => {
 };
 
 /**
- * Extract headers from an Ably.Message extras.
+ * Extract a merged view of the transport and codec header tiers from an
+ * Ably.Message extras. The two tiers carry disjoint keys, so merging them is
+ * unambiguous and lets assertions read either tier by bare key.
  * @param msg - The Ably message.
- * @returns The headers record.
+ * @returns The merged headers record.
  */
-const headersOf = (msg: Ably.Message): Record<string, string> => (msg.extras as { ai: Record<string, string> }).ai;
+const headersOf = (msg: Ably.Message): Record<string, string> => {
+  const e = msg.extras as { ai?: { transport?: Record<string, string>; codec?: Record<string, string> } };
+  return { ...e.ai?.transport, ...e.ai?.codec };
+};
 
 /**
  * Get first element of an array, throwing if absent.
@@ -103,7 +108,7 @@ describe('createEncoderCore', () => {
     it('publishes with stream:false and codec headers', async () => {
       const core = createEncoderCore(writer);
       const result = await core.publishDiscrete(
-        payload({ name: 'event', data: 'payload', headers: { 'x-custom': 'val' } }),
+        payload({ name: 'event', data: 'payload', codecHeaders: { 'x-custom': 'val' } }),
       );
       expect(result).toEqual({ serials: ['serial-1'] });
 
@@ -144,7 +149,7 @@ describe('createEncoderCore', () => {
 
     it('merges default and codec headers', async () => {
       const core = createEncoderCore(writer, { extras: { headers: { default: 'val' } } });
-      await core.publishDiscrete(payload({ headers: { codec: 'val2' } }));
+      await core.publishDiscrete(payload({ codecHeaders: { codec: 'val2' } }));
       const headers = headersOf(first(writer.publishCalls) as Ably.Message);
       expect(headers.default).toBe('val');
       expect(headers.codec).toBe('val2');
@@ -209,7 +214,7 @@ describe('createEncoderCore', () => {
   describe('startStream', () => {
     it('publishes a message with streaming status', async () => {
       const core = createEncoderCore(writer);
-      await core.startStream('s1', streamPayload({ name: 'text', headers: { 'x-id': '123' } }));
+      await core.startStream('s1', streamPayload({ name: 'text', codecHeaders: { 'x-id': '123' } }));
 
       const msg = first(writer.publishCalls) as Ably.Message;
       expect(headersOf(msg)[HEADER_STREAM]).toBe('true');
@@ -276,7 +281,7 @@ describe('createEncoderCore', () => {
 
     it('repeats persistent headers on close', async () => {
       const core = createEncoderCore(writer);
-      await core.startStream('s1', streamPayload({ name: 'text', headers: { 'x-custom': 'keep' } }));
+      await core.startStream('s1', streamPayload({ name: 'text', codecHeaders: { 'x-custom': 'keep' } }));
       await core.closeStream('s1', streamPayload({ name: 'text' }));
 
       expect(headersOf(first(writer.appendCalls))['x-custom']).toBe('keep');
@@ -285,7 +290,7 @@ describe('createEncoderCore', () => {
     it('merges payload headers on close', async () => {
       const core = createEncoderCore(writer);
       await core.startStream('s1', streamPayload({ name: 'text' }));
-      await core.closeStream('s1', streamPayload({ name: 'text', headers: { 'x-finish': 'yes' } }));
+      await core.closeStream('s1', streamPayload({ name: 'text', codecHeaders: { 'x-finish': 'yes' } }));
 
       expect(headersOf(first(writer.appendCalls))['x-finish']).toBe('yes');
     });
@@ -428,7 +433,7 @@ describe('createEncoderCore', () => {
       writer.nextAppendResult = async () => await Promise.reject(new Error('fail'));
 
       const core = createEncoderCore(writer);
-      await core.startStream('s1', streamPayload({ name: 'text', headers: { 'x-codec': 'val' } }));
+      await core.startStream('s1', streamPayload({ name: 'text', codecHeaders: { 'x-codec': 'val' } }));
       core.appendStream('s1', 'data');
 
       await core.closeStream('s1', streamPayload({ name: 'text' }));

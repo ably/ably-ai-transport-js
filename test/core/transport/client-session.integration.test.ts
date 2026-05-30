@@ -18,7 +18,6 @@ import type * as AI from 'ai';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
-  CODEC_HEADER_PREFIX,
   EVENT_AI_INPUT,
   EVENT_AI_OUTPUT,
   EVENT_CANCEL,
@@ -35,7 +34,7 @@ import { createClientSession } from '../../../src/core/transport/client-session.
 import { buildTransportHeaders } from '../../../src/core/transport/headers.js';
 import type { AgentSession, ClientSession, RunLifecycleEvent } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
-import { getHeaders } from '../../../src/utils.js';
+import { getCodecHeaders, getTransportHeaders } from '../../../src/utils.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
 import { UIMessageCodec } from '../../../src/vercel/codec/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
@@ -49,6 +48,14 @@ import { textResponseStream } from '../../integration/helpers.js';
 
 type ClientSessionT = ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 type AgentSessionT = AgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+
+// Merged view of the transport and codec header tiers. The two tiers carry
+// disjoint keys, so merging is unambiguous and lets assertions read either
+// tier by bare key.
+const getHeaders = (msg: Ably.InboundMessage): Record<string, string> => ({
+  ...getTransportHeaders(msg),
+  ...getCodecHeaders(msg),
+});
 
 const drain = async <T>(stream: ReadableStream<T>): Promise<T[]> => {
   const reader = stream.getReader();
@@ -123,9 +130,11 @@ const publishRunStart = async (
     name: EVENT_RUN_START,
     extras: {
       ai: {
-        [HEADER_RUN_ID]: runId,
-        [HEADER_RUN_CLIENT_ID]: clientId,
-        [HEADER_INVOCATION_ID]: invocationId,
+        transport: {
+          [HEADER_RUN_ID]: runId,
+          [HEADER_RUN_CLIENT_ID]: clientId,
+          [HEADER_INVOCATION_ID]: invocationId,
+        },
       },
     },
   });
@@ -150,10 +159,12 @@ const publishRunEnd = async (
     name: EVENT_RUN_END,
     extras: {
       ai: {
-        [HEADER_RUN_ID]: runId,
-        [HEADER_RUN_CLIENT_ID]: clientId,
-        [HEADER_INVOCATION_ID]: invocationId,
-        [HEADER_RUN_REASON]: reason,
+        transport: {
+          [HEADER_RUN_ID]: runId,
+          [HEADER_RUN_CLIENT_ID]: clientId,
+          [HEADER_INVOCATION_ID]: invocationId,
+          [HEADER_RUN_REASON]: reason,
+        },
       },
     },
   });
@@ -294,11 +305,13 @@ const publishRegenerateRun = async (
     name: EVENT_RUN_START,
     extras: {
       ai: {
-        [HEADER_RUN_ID]: opts.runId,
-        [HEADER_RUN_CLIENT_ID]: opts.clientId,
-        [HEADER_INVOCATION_ID]: opts.invocationId,
-        parent: opts.parentMsgId,
-        'msg-regenerate': opts.regeneratesMsgId,
+        transport: {
+          [HEADER_RUN_ID]: opts.runId,
+          [HEADER_RUN_CLIENT_ID]: opts.clientId,
+          [HEADER_INVOCATION_ID]: opts.invocationId,
+          parent: opts.parentMsgId,
+          'msg-regenerate': opts.regeneratesMsgId,
+        },
       },
     },
   });
@@ -1305,13 +1318,13 @@ describe('ClientSession integration', () => {
       await new Promise((r) => setTimeout(r, 200));
       const page = await channel.history({ limit: 10, direction: 'backwards' });
       found = page.items.find((m) => {
-        const headers = (m.extras as { ai?: Record<string, string> } | undefined)?.ai ?? {};
+        const headers = getHeaders(m);
         return headers[HEADER_ROLE] === 'user' && headers[HEADER_RUN_ID] === clientRun.runId;
       });
     }
     expect(found).toBeDefined();
 
-    const foundHeaders = (found?.extras as { ai?: Record<string, string> } | undefined)?.ai ?? {};
+    const foundHeaders = found ? getHeaders(found) : {};
     expect(foundHeaders['invocation-id']).toBeDefined();
   });
 
@@ -1699,7 +1712,7 @@ describe('ClientSession integration', () => {
     await observerChannel.subscribe((msg) => {
       if (msg.name === EVENT_AI_INPUT) {
         inputMessages.push(msg);
-        if (getHeaders(msg)[`${CODEC_HEADER_PREFIX}type`] === 'tool-result') resolveInput();
+        if (getHeaders(msg).type === 'tool-result') resolveInput();
       } else if (msg.name === EVENT_AI_OUTPUT) {
         outputMessages.push(msg);
       }
@@ -1727,14 +1740,14 @@ describe('ClientSession integration', () => {
 
     await gotInput;
 
-    const toolResult = inputMessages.find((m) => getHeaders(m)[`${CODEC_HEADER_PREFIX}type`] === 'tool-result');
+    const toolResult = inputMessages.find((m) => getHeaders(m).type === 'tool-result');
     expect(toolResult).toBeDefined();
     if (toolResult) {
       const headers = getHeaders(toolResult);
-      expect(headers[`${CODEC_HEADER_PREFIX}toolCallId`]).toBe(toolCallId);
+      expect(headers.toolCallId).toBe(toolCallId);
     }
     // Crucially, no client tool result should ever appear on the ai-output wire.
-    expect(outputMessages.some((m) => getHeaders(m)[`${CODEC_HEADER_PREFIX}type`] === 'tool-result')).toBe(false);
+    expect(outputMessages.some((m) => getHeaders(m).type === 'tool-result')).toBe(false);
   });
 
   /**
@@ -1766,7 +1779,7 @@ describe('ClientSession integration', () => {
         inputMessages.push(msg);
       } else if (msg.name === EVENT_AI_OUTPUT) {
         outputMessages.push(msg);
-        if (getHeaders(msg)[`${CODEC_HEADER_PREFIX}type`] === 'tool-output-available') resolveOutput();
+        if (getHeaders(msg).type === 'tool-output-available') resolveOutput();
       }
     });
 
@@ -1791,12 +1804,8 @@ describe('ClientSession integration', () => {
 
     await gotOutput;
 
-    expect(outputMessages.some((m) => getHeaders(m)[`${CODEC_HEADER_PREFIX}type`] === 'tool-output-available')).toBe(
-      true,
-    );
+    expect(outputMessages.some((m) => getHeaders(m).type === 'tool-output-available')).toBe(true);
     // The agent must NOT publish tool outputs on the input wire.
-    expect(inputMessages.some((m) => getHeaders(m)[`${CODEC_HEADER_PREFIX}type`] === 'tool-output-available')).toBe(
-      false,
-    );
+    expect(inputMessages.some((m) => getHeaders(m).type === 'tool-output-available')).toBe(false);
   });
 });

@@ -1007,7 +1007,7 @@ describe('DefaultView', () => {
       const fakeMsg = {
         name: 'fake',
         data: 'x',
-        extras: { ai: { [HEADER_RUN_ID]: 'R1' } },
+        extras: { ai: { transport: { [HEADER_RUN_ID]: 'R1' } } },
       } as unknown as Ably.InboundMessage;
       tree.emitAblyMessage(fakeMsg);
       expect(handler).toHaveBeenCalledWith(fakeMsg);
@@ -1019,7 +1019,7 @@ describe('DefaultView', () => {
       view.on('ably-message', handler);
       const fakeMsg = {
         name: 'fake',
-        extras: { ai: { [HEADER_RUN_ID]: 'R-other' } },
+        extras: { ai: { transport: { [HEADER_RUN_ID]: 'R-other' } } },
       } as unknown as Ably.InboundMessage;
       tree.emitAblyMessage(fakeMsg);
       expect(handler).not.toHaveBeenCalled();
@@ -1028,7 +1028,7 @@ describe('DefaultView', () => {
     it('forwards lifecycle / control ably-messages without a runId or codecMessageId', () => {
       const handler = vi.fn();
       view.on('ably-message', handler);
-      const fakeMsg = { name: 'cancel', extras: { ai: {} } } as unknown as Ably.InboundMessage;
+      const fakeMsg = { name: 'cancel', extras: { ai: { transport: {} } } } as unknown as Ably.InboundMessage;
       tree.emitAblyMessage(fakeMsg);
       expect(handler).toHaveBeenCalledWith(fakeMsg);
     });
@@ -1307,7 +1307,7 @@ describe('DefaultView', () => {
       const rawMsg = {
         name: 'fake',
         serial: 's0',
-        extras: { ai: { [HEADER_RUN_ID]: 'R0', [HEADER_CODEC_MESSAGE_ID]: 'mh1' } },
+        extras: { ai: { transport: { [HEADER_RUN_ID]: 'R0', [HEADER_CODEC_MESSAGE_ID]: 'mh1' } } },
       } as unknown as Ably.InboundMessage;
 
       // The View's _processHistoryPage uses page.rawMessages and decodes
@@ -1336,7 +1336,7 @@ describe('DefaultView', () => {
       const rawMsg = {
         name: 'fake',
         serial: 's0',
-        extras: { ai: { [HEADER_RUN_ID]: 'R0', [HEADER_CODEC_MESSAGE_ID]: 'mh1' } },
+        extras: { ai: { transport: { [HEADER_RUN_ID]: 'R0', [HEADER_CODEC_MESSAGE_ID]: 'mh1' } } },
       } as unknown as Ably.InboundMessage;
       const decodeSpy = vi.fn(() => ({
         inputs: [],
@@ -1381,12 +1381,16 @@ describe('DefaultView', () => {
           ({
             name: 'fake',
             serial: `s${String(i)}`,
-            extras: { ai: { [HEADER_RUN_ID]: `R${String(i)}`, [HEADER_CODEC_MESSAGE_ID]: `mh${String(i)}` } },
+            extras: {
+              ai: { transport: { [HEADER_RUN_ID]: `R${String(i)}`, [HEADER_CODEC_MESSAGE_ID]: `mh${String(i)}` } },
+            },
           }) as unknown as Ably.InboundMessage,
       );
       codec.createDecoder = vi.fn(() => ({
         decode: (msg: Ably.InboundMessage) => {
-          const id = (msg.extras as { ai: Record<string, string> }).ai[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
+          const id =
+            (msg.extras as { ai: { transport: Record<string, string> } }).ai.transport[HEADER_CODEC_MESSAGE_ID] ??
+            'unknown';
           return {
             inputs: [],
             outputs: [{ type: 'append-message' as const, message: { id, content: 'x' } }],
@@ -1429,12 +1433,14 @@ describe('DefaultView', () => {
           ({
             name: 'fake',
             serial: it.serial,
-            extras: { ai: it.headers },
+            extras: { ai: { transport: it.headers } },
           }) as unknown as Ably.InboundMessage,
       );
       codec.createDecoder = vi.fn(() => ({
         decode: (msg: Ably.InboundMessage) => {
-          const id = (msg.extras as { ai: Record<string, string> }).ai[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
+          const id =
+            (msg.extras as { ai: { transport: Record<string, string> } }).ai.transport[HEADER_CODEC_MESSAGE_ID] ??
+            'unknown';
           return {
             inputs: [],
             outputs: [{ type: 'append-message' as const, message: { id, content: 'x' } }],
@@ -1452,14 +1458,14 @@ describe('DefaultView', () => {
 
       const withheldMsg = {
         name: 'fake',
-        extras: { ai: { [HEADER_RUN_ID]: 'R0' } },
+        extras: { ai: { transport: { [HEADER_RUN_ID]: 'R0' } } },
       } as unknown as Ably.InboundMessage;
       tree.emitAblyMessage(withheldMsg);
       expect(handler).not.toHaveBeenCalled();
 
       const visibleMsg = {
         name: 'fake',
-        extras: { ai: { [HEADER_RUN_ID]: 'R1' } },
+        extras: { ai: { transport: { [HEADER_RUN_ID]: 'R1' } } },
       } as unknown as Ably.InboundMessage;
       tree.emitAblyMessage(visibleMsg);
       expect(handler).toHaveBeenCalledWith(visibleMsg);
@@ -1478,17 +1484,18 @@ describe('DefaultView', () => {
       const rawA = {
         name: 'fake',
         serial: 's01',
-        extras: { ai: headersA },
+        extras: { ai: { transport: headersA } },
       } as unknown as Ably.InboundMessage;
       const rawB = {
         name: 'fake',
         serial: 's02',
-        extras: { ai: headersB },
+        extras: { ai: { transport: headersB } },
       } as unknown as Ably.InboundMessage;
 
       codec.createDecoder = vi.fn(() => ({
         decode: (msg: Ably.InboundMessage) => {
-          const id = (msg.extras as { ai: Record<string, string> }).ai[HEADER_CODEC_MESSAGE_ID] ?? '?';
+          const id =
+            (msg.extras as { ai: { transport: Record<string, string> } }).ai.transport[HEADER_CODEC_MESSAGE_ID] ?? '?';
           return {
             inputs: [],
             outputs: [{ type: 'append-message' as const, message: { id, content: id } }],
@@ -1527,8 +1534,10 @@ describe('DefaultView', () => {
         serial: 's01',
         extras: {
           ai: {
-            [HEADER_RUN_ID]: 'R-empty',
-            'run-client-id': '',
+            transport: {
+              [HEADER_RUN_ID]: 'R-empty',
+              'run-client-id': '',
+            },
           },
         },
       } as unknown as Ably.InboundMessage;

@@ -20,7 +20,6 @@ import type * as AI from 'ai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  CODEC_HEADER_PREFIX,
   EVENT_AI_OUTPUT,
   EVENT_CANCEL,
   EVENT_RUN_END,
@@ -37,13 +36,21 @@ import { createAgentSession } from '../../../src/core/transport/agent-session.js
 import { buildTransportHeaders } from '../../../src/core/transport/headers.js';
 import type { AgentSession } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
-import { getHeaders } from '../../../src/utils.js';
+import { getCodecHeaders, getTransportHeaders } from '../../../src/utils.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
 import { UIMessageCodec } from '../../../src/vercel/codec/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 import { createRunFromOpts } from '../../helper/run-from-opts.js';
 import { textResponseStream } from '../../integration/helpers.js';
+
+// Merged view of the transport and codec header tiers. The two tiers carry
+// disjoint keys, so merging is unambiguous and lets assertions read either
+// tier by bare key.
+const getHeaders = (msg: Ably.InboundMessage): Record<string, string> => ({
+  ...getTransportHeaders(msg),
+  ...getCodecHeaders(msg),
+});
 
 type AgentSessionT = AgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
@@ -414,7 +421,7 @@ describe('AgentSession integration', () => {
 
     await cancelChannel.publish({
       name: EVENT_CANCEL,
-      extras: { ai: { [HEADER_RUN_ID]: 'run-cancel-1' } },
+      extras: { ai: { transport: { [HEADER_RUN_ID]: 'run-cancel-1' } } },
     });
 
     const result = await streamPromise;
@@ -732,9 +739,9 @@ describe('AgentSession integration', () => {
       resolve = r;
     });
     const isToolOutputAvailable = (msg: Ably.InboundMessage): boolean =>
-      msg.name === EVENT_AI_OUTPUT && getHeaders(msg)[`${CODEC_HEADER_PREFIX}type`] === 'tool-output-available';
+      msg.name === EVENT_AI_OUTPUT && getHeaders(msg).type === 'tool-output-available';
     const isText = (msg: Ably.InboundMessage): boolean =>
-      msg.name === EVENT_AI_OUTPUT && getHeaders(msg)[`${CODEC_HEADER_PREFIX}type`] === 'text';
+      msg.name === EVENT_AI_OUTPUT && getHeaders(msg).type === 'text';
     await subChannel.subscribe((msg) => {
       rawMessages.push(msg);
       if (isToolOutputAvailable(msg)) resolve();

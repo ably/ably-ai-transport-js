@@ -28,7 +28,7 @@ import {
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
-import { getHeaders, mergeHeaders } from '../../utils.js';
+import { getTransportHeaders, mergeHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent, WriteOptions } from '../codec/types.js';
 import { buildTransportHeaders } from './headers.js';
@@ -132,7 +132,7 @@ const foldRunMessages = <TInput extends CodecInputEvent, TOutput extends CodecOu
   let projection = codec.init();
   let folded = 0;
   for (const msg of sortedMessages) {
-    const h = getHeaders(msg);
+    const h = getTransportHeaders(msg);
     if (h[HEADER_RUN_ID] !== runId) continue;
     // Lifecycle events carry no codec content — skip them.
     if (msg.name === EVENT_RUN_START || msg.name === EVENT_RUN_END) continue;
@@ -329,7 +329,7 @@ const lookupInputEvents = async <
 
   const decode = (m: Ably.InboundMessage): MessageNode<TMessage>[] => {
     const decoder = codec.createDecoder();
-    const headers = getHeaders(m);
+    const headers = getTransportHeaders(m);
     const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID] ?? '';
     const { inputs, outputs } = decoder.decode(m);
     const events: (TInput | TOutput)[] = [...inputs, ...outputs];
@@ -386,7 +386,7 @@ const lookupInputEvents = async <
       if (m.serial !== undefined && seenSerials.has(m.serial)) return;
       if (m.serial !== undefined) seenSerials.add(m.serial);
 
-      const wireHeaders = getHeaders(m);
+      const wireHeaders = getTransportHeaders(m);
 
       // Only count messages whose event-id is in the expected set.
       const msgEventId = wireHeaders[HEADER_EVENT_ID];
@@ -714,7 +714,7 @@ class DefaultAgentSession<
   // -------------------------------------------------------------------------
 
   private async _handleCancelMessage(msg: Ably.InboundMessage): Promise<void> {
-    const headers = getHeaders(msg);
+    const headers = getTransportHeaders(msg);
     const runId = headers[HEADER_RUN_ID];
 
     // Malformed cancel: drop with warn. The protocol requires a single
@@ -830,7 +830,7 @@ class DefaultAgentSession<
       // run start LLM work. Server-side lifecycle messages (run-start,
       // run-end, cancel, error) never stamp `event-id`, so
       // they're naturally excluded.
-      const headers = getHeaders(msg);
+      const headers = getTransportHeaders(msg);
       const invocationId = headers[HEADER_INVOCATION_ID];
       if (invocationId && headers[HEADER_EVENT_ID] !== undefined) {
         const listener = this._pendingInputEventLookups.get(invocationId);
@@ -1286,7 +1286,7 @@ class DefaultAgentSession<
         const codecMsgToRunId = new Map<string, string>();
         for (const msg of sortedMessages) {
           if (msg.name === EVENT_RUN_START || msg.name === EVENT_RUN_END) continue;
-          const h = getHeaders(msg);
+          const h = getTransportHeaders(msg);
           const msgRunId = h[HEADER_RUN_ID];
           const msgCodecId = h[HEADER_CODEC_MESSAGE_ID];
           if (msgRunId && msgCodecId) codecMsgToRunId.set(msgCodecId, msgRunId);
@@ -1306,7 +1306,7 @@ class DefaultAgentSession<
         >();
         for (const msg of sortedMessages) {
           if (msg.name !== EVENT_RUN_START) continue;
-          const h = getHeaders(msg);
+          const h = getTransportHeaders(msg);
           const msgRunId = h[HEADER_RUN_ID];
           if (!msgRunId) continue;
           const parentCodecMsgId = h[HEADER_PARENT];

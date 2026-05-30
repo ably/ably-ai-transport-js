@@ -13,9 +13,9 @@
  * sequence for streamed output.
  *
  * Receive-side dispatch reads the wire `name` first and then routes by
- * the `codec-type` domain header carrying the codec event type.
- * Domain-specific headers use the `codec-` prefix. Transport-level
- * headers are unprefixed.
+ * the codec `type` header carrying the codec event type. Codec headers live
+ * under `extras.ai.codec` and transport headers under `extras.ai.transport`;
+ * both are read unprefixed from their respective tier.
  */
 
 import type * as Ably from 'ably';
@@ -130,17 +130,17 @@ const parseJsonOrString = (value: string): unknown => {
 // ---------------------------------------------------------------------------
 
 /**
- * Read the codec event type from a tracker's persistent headers. The
- * encoder stamps `codec-type` on every `ai-output` publish; the value
+ * Read the codec event type from a tracker's codec headers. The encoder
+ * stamps the codec `type` header on every `ai-output` publish; the value
  * carries the AI-SDK chunk family (`text` / `reasoning` / `tool-input`)
  * that the stream represents.
  * @param tracker - The stream tracker carrying the persistent headers.
  * @returns The codec event type, or the empty string when absent.
  */
-const codecTypeOf = (tracker: StreamTrackerState): string => headerReader(tracker.headers).strOr('type', '');
+const codecTypeOf = (tracker: StreamTrackerState): string => headerReader(tracker.codecHeaders).strOr('type', '');
 
 const buildStartChunk = (tracker: StreamTrackerState): AI.UIMessageChunk => {
-  const r = headerReader(tracker.headers);
+  const r = headerReader(tracker.codecHeaders);
   switch (codecTypeOf(tracker)) {
     case 'text': {
       return stripUndefined({
@@ -211,7 +211,7 @@ const buildEndChunk = (tracker: StreamTrackerState, closingHeaders: Record<strin
       return stripUndefined({
         type: 'tool-input-available' as const,
         toolCallId: tracker.streamId,
-        toolName: r.strOr('toolName', headerReader(tracker.headers).strOr('toolName', '')),
+        toolName: r.strOr('toolName', headerReader(tracker.codecHeaders).strOr('toolName', '')),
         input: parseJsonOrString(tracker.accumulated),
         providerMetadata: r.providerMetadata(),
       });
@@ -446,9 +446,8 @@ const decodeNonStreamingToolInput = (
  * @returns A single `user-message` input, or an empty array when the part type is unrecognised.
  */
 const decodeDiscreteMessagePart = (input: MessagePayload): VercelInput[] => {
-  const h = input.headers ?? {};
-  const r = headerReader(h);
-  const role = (h[HEADER_ROLE] ?? 'user') as AI.UIMessage['role'];
+  const r = headerReader(input.codecHeaders ?? {});
+  const role = (input.transportHeaders?.[HEADER_ROLE] ?? 'user') as AI.UIMessage['role'];
   const messageId = r.str('messageId') ?? '';
   const codecType = r.strOr('type', '');
 
@@ -591,11 +590,11 @@ const decodeAiInputPayload = (codecType: string, input: MessagePayload, r: Verce
   // Multi-part user-message parts (text / file / data-*) carry discrete
   // because they ride publishDiscreteBatch; the receive-side fans them back
   // out into a UserMessage.
-  if (isDiscreteMessagePart(codecType, input.headers ?? {})) {
+  if (isDiscreteMessagePart(codecType, input.transportHeaders ?? {})) {
     return decodeDiscreteMessagePart(input);
   }
 
-  const codecMessageId = input.headers?.[HEADER_CODEC_MESSAGE_ID] ?? '';
+  const codecMessageId = input.transportHeaders?.[HEADER_CODEC_MESSAGE_ID] ?? '';
 
   switch (codecType) {
     case 'tool-result': {
@@ -621,9 +620,8 @@ const decodeAiInputPayload = (codecType: string, input: MessagePayload, r: Verce
 };
 
 const decodeDiscretePayload = (input: MessagePayload, lifecycle: LifecycleTracker<AI.UIMessageChunk>): AnyEvent[] => {
-  const h = input.headers ?? {};
-  const r = headerReader(h);
-  const runId = h[HEADER_RUN_ID] ?? '';
+  const r = headerReader(input.codecHeaders ?? {});
+  const runId = input.transportHeaders?.[HEADER_RUN_ID] ?? '';
   const codecType = r.strOr('type', '');
 
   if (input.name === EVENT_AI_INPUT) {
@@ -643,8 +641,8 @@ const decodeDiscretePayload = (input: MessagePayload, lifecycle: LifecycleTracke
 
 const createHooks = (lifecycle: LifecycleTracker<AI.UIMessageChunk>): DecoderCoreHooks<AnyEvent> => ({
   buildStartEvents: (tracker: StreamTrackerState): AnyEvent[] => {
-    const runId = tracker.headers[HEADER_RUN_ID] ?? '';
-    const messageId = headerReader(tracker.headers).str('messageId');
+    const runId = tracker.transportHeaders[HEADER_RUN_ID] ?? '';
+    const messageId = headerReader(tracker.codecHeaders).str('messageId');
     return [...lifecycle.ensurePhases(runId, { messageId }), buildStartChunk(tracker)];
   },
 

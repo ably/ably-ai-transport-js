@@ -66,7 +66,6 @@ export { createDecoderCore, createEncoderCore, createLifecycleTracker } from './
 
 // Constants
 export {
-  CODEC_HEADER_PREFIX,
   EVENT_CANCEL,
   EVENT_RUN_END,
   EVENT_RUN_START,
@@ -89,7 +88,14 @@ export {
 
 // Utilities
 export type { DomainHeaderReader, DomainHeaderWriter, Stripped } from './utils.js';
-export { getHeaders, headerReader, headerWriter, mergeHeaders, stripUndefined } from './utils.js';
+export {
+  getCodecHeaders,
+  getTransportHeaders,
+  headerReader,
+  headerWriter,
+  mergeHeaders,
+  stripUndefined,
+} from './utils.js';
 
 // Event emitter
 export { EventEmitter } from './event-emitter.js';

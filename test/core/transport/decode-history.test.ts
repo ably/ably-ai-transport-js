@@ -95,7 +95,7 @@ const ablyMsg = (opts: MsgOpts = {}): Ably.InboundMessage =>
     name: opts.name ?? 'msg',
     data: opts.data,
     action: opts.action ?? 'message.create',
-    extras: { ai: opts.headers ?? {} },
+    extras: { ai: { transport: opts.headers ?? {} } },
     serial: opts.serial ?? nextSerial(),
   }) as unknown as Ably.InboundMessage;
 

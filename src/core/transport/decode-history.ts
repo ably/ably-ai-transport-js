@@ -39,7 +39,7 @@ import {
 
 /**
  * Headers that define a message's identity in the tree (role, parent,
- * fork-of). They are set by the FIRST wire for an `x-ably-codec-message-id` and
+ * fork-of). They are set by the FIRST wire for an `codec-message-id` and
  * must NOT be overwritten by later wires targeting the same codec-message-id.
  *
  * Why: amendment wires legitimately publish under an existing codec-message-id
@@ -52,14 +52,14 @@ import {
  * parent and `flattenNodes` skips the node as unreachable.
  *
  * Live channel flow doesn't have this problem because `tree.upsert`
- * already preserves `parentId` (set once on insert) and `x-ably-role`
+ * already preserves `parentId` (set once on insert) and `role`
  * on re-upsert; decode-history aggregates headers per codec-message-id BEFORE
  * the first upsert, so the protection has to live here too.
  */
 const IDENTITY_HEADERS: ReadonlySet<string> = new Set([HEADER_ROLE, HEADER_PARENT, HEADER_FORK_OF]);
 
 /**
- * Merge `incoming` headers onto `existing` for the same `x-ably-codec-message-id`.
+ * Merge `incoming` headers onto `existing` for the same `codec-message-id`.
  * Identity headers (see {@link IDENTITY_HEADERS}) are sticky — only set
  * when absent on `existing`; never overwritten. Everything else
  * (`status`, domain headers, etc.) merges last-wins so a closing append
@@ -102,21 +102,21 @@ interface HistoryState<TInput extends CodecInputEvent, TOutput extends CodecOutp
   /** `rawMessages.length` at the time {@link cachedDecode} was produced. */
   cachedAtRawLength: number;
   /**
-   * `x-ably-codec-message-id`s for which the decoder has something to produce output
+   * `codec-message-id`s for which the decoder has something to produce output
    * from: any `message.create` / `message.update` / `message.append` with
-   * `x-ably-stream: "true"` (establishes a tracker via create or
-   * first-contact), or a `message.create` carrying `x-ably-discrete` (a
+   * `stream: "true"` (establishes a tracker via create or
+   * first-contact), or a `message.create` carrying `discrete` (a
    * discrete message, created and terminated in one wire message).
    */
   startedCodecMessageIds: Set<string>;
   /**
-   * `x-ably-codec-message-id`s with a terminal wire signal: either `x-ably-discrete`
-   * on a `message.create` (discrete message) or `x-ably-status: "complete"`
+   * `codec-message-id`s with a terminal wire signal: either `discrete`
+   * on a `message.create` (discrete message) or `status: "complete"`
    * / `"cancelled"` on any action (closed stream).
    */
   terminatedCodecMessageIds: Set<string>;
   /**
-   * `x-ably-codec-message-id`s that are both started AND terminated - ready to appear
+   * `codec-message-id`s that are both started AND terminated - ready to appear
    * in the decoded output. The fetch loop reads this set's size to decide
    * when to stop paging, avoiding a full decode per page. Maintained
    * incrementally by {@link countNewCompletions}. Grows monotonically.
@@ -155,9 +155,9 @@ const decodeAll = <TInput extends CodecInputEvent, TOutput extends CodecOutputEv
     {
       projection: TProjection;
       firstSeen: number;
-      /** Headers from the first Ably message per x-ably-codec-message-id within this run. */
+      /** Headers from the first Ably message per codec-message-id within this run. */
       msgHeaders: Map<string, Record<string, string>>;
-      /** Ably serial from the first Ably message per x-ably-codec-message-id within this run. */
+      /** Ably serial from the first Ably message per codec-message-id within this run. */
       msgSerials: Map<string, string>;
     }
   >();
@@ -165,7 +165,7 @@ const decodeAll = <TInput extends CodecInputEvent, TOutput extends CodecOutputEv
   let defaultProjection = state.codec.init();
   let orderCounter = 0;
 
-  // Headers and serials for non-run discrete messages, keyed by x-ably-codec-message-id.
+  // Headers and serials for non-run discrete messages, keyed by codec-message-id.
   // Recorded in publication order so messages and headers can be paired
   // positionally after fold.
   const discreteCodecMessageIds: string[] = [];
@@ -254,7 +254,7 @@ const decodeAll = <TInput extends CodecInputEvent, TOutput extends CodecOutputEv
     // with the highest Ably serial is canonical. Messages whose serial
     // precedes the winning user-message's serial belong to a losing
     // invocation and are dropped from the materialised history.
-    // Continuation user-messages (`x-ably-run-continue: 'true'`) are
+    // Continuation user-messages (`run-continue: 'true'`) are
     // skipped — they publish under the original run-id but represent
     // tool-resolution traffic and would incorrectly supersede the
     // original prompt's serial.
@@ -320,18 +320,18 @@ const decodeAllCached = <TInput extends CodecInputEvent, TOutput extends CodecOu
 // ---------------------------------------------------------------------------
 
 /**
- * Scan newly-added raw messages and track which `x-ably-codec-message-id`s have
+ * Scan newly-added raw messages and track which `codec-message-id`s have
  * become complete. Used by {@link fetchUntilLimit} to decide when enough
  * completed messages have been collected, without running the decoder.
  *
  * A codec-message-id is considered complete only when BOTH of these have been seen:
- * - a "start" signal: either `x-ably-discrete` on a `message.create`
+ * - a "start" signal: either `discrete` on a `message.create`
  *   (discrete messages are created and terminated by the same wire
  *   message), OR any `message.create` / `message.update` / `message.append`
- *   with `x-ably-stream: "true"` (the decoder establishes a tracker via
+ *   with `stream: "true"` (the decoder establishes a tracker via
  *   create or first-contact).
- * - a "terminal" signal: `x-ably-discrete` on the create, or
- *   `x-ably-status: "complete"` / `"cancelled"` on any later action.
+ * - a "terminal" signal: `discrete` on the create, or
+ *   `status: "complete"` / `"cancelled"` on any later action.
  *
  * Why update and append count as starts: Ably history can compact a live
  * `create + append + ... + append{status:complete}` sequence into a single
@@ -347,7 +347,7 @@ const decodeAllCached = <TInput extends CodecInputEvent, TOutput extends CodecOu
  * resolve, and the message wouldn't make it into the result.
  *
  * Messages skipped for counting:
- * - Missing `x-ably-codec-message-id`: lifecycle events not tied to a domain message.
+ * - Missing `codec-message-id`: lifecycle events not tied to a domain message.
  * - `message.delete`: clears the tracker, doesn't produce output.
  *
  * Amend-class wire messages (events targeting an existing message via

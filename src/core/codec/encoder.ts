@@ -63,7 +63,7 @@ export interface EncoderCore {
   /** Publish multiple discrete messages atomically in a single channel publish. */
   publishDiscreteBatch(payloads: MessagePayload[], opts?: WriteOptions): Promise<Ably.PublishResult>;
 
-  /** Start a streamed message with x-ably-status:streaming. */
+  /** Start a streamed message with status:streaming. */
   startStream(streamId: string, payload: StreamPayload, opts?: WriteOptions): Promise<void>;
 
   /**
@@ -73,19 +73,19 @@ export interface EncoderCore {
   appendStream(streamId: string, data: string): void;
 
   /**
-   * Close a streamed message with x-ably-status:complete. Flushes all pending
+   * Close a streamed message with status:complete. Flushes all pending
    * appends for recovery before returning. Repeats persistent and payload headers.
    */
   closeStream(streamId: string, payload: StreamPayload): Promise<void>;
 
   /**
-   * Cancel a single in-progress stream (x-ably-status:cancelled) and flush all
+   * Cancel a single in-progress stream (status:cancelled) and flush all
    * pending appends for recovery before returning.
    */
   cancelStream(streamId: string, opts?: WriteOptions): Promise<void>;
 
   /**
-   * Cancel all in-progress streams (x-ably-status:cancelled) and flush all
+   * Cancel all in-progress streams (status:cancelled) and flush all
    * pending appends for recovery before returning.
    */
   cancelAllStreams(opts?: WriteOptions): Promise<void>;
@@ -137,7 +137,7 @@ class DefaultEncoderCore implements EncoderCore {
     const msgs = payloads.map((p) => this._buildDiscreteMessage(p, opts));
     // Mark batch-published payloads as discrete message parts (from writeMessages).
     // The decoder relies on this header to distinguish message parts from lifecycle
-    // events that also happen to be discrete (x-ably-stream: false).
+    // events that also happen to be discrete (stream: false).
     for (const msg of msgs) {
       // CAST: extras is built by _buildDiscreteMessage with a known { headers } shape.
       (msg.extras as { headers: Record<string, string> }).headers[HEADER_DISCRETE] = 'true';

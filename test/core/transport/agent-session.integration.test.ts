@@ -20,7 +20,7 @@ import type * as AI from 'ai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  DOMAIN_HEADER_PREFIX,
+  CODEC_HEADER_PREFIX,
   EVENT_AI_OUTPUT,
   EVENT_CANCEL,
   EVENT_RUN_END,
@@ -181,11 +181,11 @@ describe('AgentSession integration', () => {
   it('stamps inputClientId from the triggering input event publisher; a continuation invocation from a different publisher stamps the new value', async () => {
     // Verifies that the agent reads the publisher's Ably-level `clientId`
     // off the triggering `ai-input` event on the channel and re-stamps it
-    // as `x-ably-input-client-id` on every event it publishes for that
+    // as `input-client-id` on every event it publishes for that
     // invocation. A second invocation triggered by an input from a
     // different publisher stamps the new value while `runClientId` (the
     // run owner) stays the same. Today the continuation is materialised
-    // as a second `ai-run-start` with `x-ably-run-continue: 'true'`; PR 8
+    // as a second `ai-run-start` with `run-continue: 'true'`; PR 8
     // reframes this as `ai-run-resume` — the assertions track today's
     // wire shape.
     const channelName = uniqueChannelName('st-input-client-id');
@@ -236,7 +236,7 @@ describe('AgentSession integration', () => {
      * @param opts.publisher - Ably Realtime client that publishes the input event.
      * @param opts.runId - Run identifier the agent uses.
      * @param opts.invocationId - Invocation identifier the agent uses.
-     * @param opts.codecMessageId - `x-ably-codec-message-id` for the published input.
+     * @param opts.codecMessageId - `codec-message-id` for the published input.
      * @param opts.streamArgs - Forwarded to `textResponseStream` for the agent's reply.
      */
     const runWithInput = async (opts: {
@@ -732,9 +732,9 @@ describe('AgentSession integration', () => {
       resolve = r;
     });
     const isToolOutputAvailable = (msg: Ably.InboundMessage): boolean =>
-      msg.name === EVENT_AI_OUTPUT && getHeaders(msg)[`${DOMAIN_HEADER_PREFIX}type`] === 'tool-output-available';
+      msg.name === EVENT_AI_OUTPUT && getHeaders(msg)[`${CODEC_HEADER_PREFIX}type`] === 'tool-output-available';
     const isText = (msg: Ably.InboundMessage): boolean =>
-      msg.name === EVENT_AI_OUTPUT && getHeaders(msg)[`${DOMAIN_HEADER_PREFIX}type`] === 'text';
+      msg.name === EVENT_AI_OUTPUT && getHeaders(msg)[`${CODEC_HEADER_PREFIX}type`] === 'text';
     await subChannel.subscribe((msg) => {
       rawMessages.push(msg);
       if (isToolOutputAvailable(msg)) resolve();

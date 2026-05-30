@@ -211,7 +211,7 @@ describe('createChatTransport', () => {
     it('delegates to view.regenerate so a wire-only regenerate event is published', async () => {
       // Regenerate must route through `view.regenerate` (not `view.sendInput`)
       // so the View mints an `ait-regenerate` event. The event publishes
-      // wire-only with `x-ably-fork-of: A1`, `x-ably-parent: U1` headers
+      // wire-only with `fork-of: A1`, `parent: U1` headers
       // — U1 is never re-published. The agent's input-event lookup catches the
       // regenerate event by its inputEventId and reads parent/forkOf from those
       // transport headers; the LLM receives history through U1 inclusive
@@ -582,7 +582,7 @@ describe('createChatTransport', () => {
           codecMessageId: 'h1',
           parentId: undefined,
           forkOf: undefined,
-          headers: { 'x-ably-codec-message-id': 'h1' },
+          headers: { 'codec-message-id': 'h1' },
           serial: undefined,
         },
         {
@@ -590,7 +590,7 @@ describe('createChatTransport', () => {
           codecMessageId: 'h2',
           parentId: 'h1',
           forkOf: undefined,
-          headers: { 'x-ably-codec-message-id': 'h2' },
+          headers: { 'codec-message-id': 'h2' },
           serial: undefined,
         },
         {
@@ -598,7 +598,7 @@ describe('createChatTransport', () => {
           codecMessageId: 'h3',
           parentId: 'h2',
           forkOf: undefined,
-          headers: { 'x-ably-codec-message-id': 'h3' },
+          headers: { 'codec-message-id': 'h3' },
           serial: undefined,
         },
       ]);

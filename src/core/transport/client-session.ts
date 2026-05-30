@@ -7,7 +7,7 @@
  *
  * The client publishes user messages directly to the channel via the shared
  * codec encoder, and POSTs an HTTP invocation in parallel. The agent
- * correlates the input event by the `x-ably-invocation-id` header and publishes
+ * correlates the input event by the `invocation-id` header and publishes
  * run lifecycle events (run-start, run-end) plus assistant chunks. The
  * channel is the durable session record; agents that weren't running at
  * publish time can resume by reading channel rewind.
@@ -342,7 +342,7 @@ class DefaultClientSession<
         const reason = (headers[HEADER_RUN_REASON] ?? 'complete') as RunEndReason;
 
         // When reason is 'error' the agent surfaces a mid-run failure
-        // via the x-ably-error-code / x-ably-error-message headers.
+        // via the error-code / error-message headers.
         // Reify the error, route it to the active stream, and emit the
         // session error event before falling through to the regular
         // run-end teardown. The agent only publishes `run-end` after it
@@ -440,7 +440,7 @@ class DefaultClientSession<
       const invocationId = headers[HEADER_INVOCATION_ID];
 
       // Fold into the Tree's per-Run projection. The Tree handles
-      // winning-invocation filtering and `x-ably-run-continue` carve-out.
+      // winning-invocation filtering and `run-continue` carve-out.
       // This must run BEFORE router routing so the active stream's listeners
       // see the projection updates when they consume the routed events.
       if (events.length > 0 || runId) {
@@ -678,8 +678,8 @@ class DefaultClientSession<
 
       // The input's own routing fields override the auto-parent /
       // sendOptions defaults. For regenerate inputs, `target` becomes the
-      // `x-ably-msg-regenerate` wire header; for edit inputs, it becomes
-      // `x-ably-fork-of`. The transport reads them directly off the input
+      // `msg-regenerate` wire header; for edit inputs, it becomes
+      // `fork-of`. The transport reads them directly off the input
       // without runtime classification.
       const parent = entry.parent ?? (sendOptions?.parent === undefined ? autoParent : sendOptions.parent);
       const forkOf = entry.kind === 'edit' ? entry.target : sendOptions?.forkOf;
@@ -715,7 +715,7 @@ class DefaultClientSession<
     this._runCodecMessageIds.set(runId, codecMessageIds);
 
     // The primary trigger event is the last input — the one the agent looks
-    // up on the channel via `x-ably-event-id` and forwards in the POST body.
+    // up on the channel via `event-id` and forwards in the POST body.
     const triggerInputEventId = items.at(-1)?.headers[HEADER_EVENT_ID] ?? '';
 
     // Stream setup. Fresh send opens a new stream; continuation rebinds the
@@ -890,7 +890,7 @@ class DefaultClientSession<
     // Close the local router stream so the caller's reader sees end-of-input.
     // Don't tear down the Tree's RunNode or this session's `_ownRunIds` /
     // `_runCodecMessageIds` entries here — late agent events (e.g. a cancel
-    // append, a trailing `x-ably-status: cancelled`) arriving before run-end
+    // append, a trailing `status: cancelled`) arriving before run-end
     // must still fold into the Run's projection. The run-end handler is the
     // canonical cleanup point.
     this._router.closeStream(runId);

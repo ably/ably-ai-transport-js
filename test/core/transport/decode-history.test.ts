@@ -401,7 +401,7 @@ describe('decodeHistory', () => {
       expect(page.items.map((i) => i.message.id)).toEqual(['u1', 'u2']);
     });
 
-    it('treats x-ably-status:cancelled as terminal for counting', async () => {
+    it('treats status:cancelled as terminal for counting', async () => {
       // A cancelled-stream message satisfies the wire-level counter the same
       // way as complete: append + stream=true + status=cancelled = complete.
       const serial = nextSerial();

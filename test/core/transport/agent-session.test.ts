@@ -333,9 +333,9 @@ interface DeliverInputEventOpts {
   serial: string;
   /** Optional Ably message name; defaults to 'text'. */
   name?: string;
-  /** Input-event id (`x-ably-event-id`) the agent matches against `invocation.inputEventIds`. */
+  /** Input-event id (`event-id`) the agent matches against `invocation.inputEventIds`. */
   inputEventId?: string;
-  /** Optional `x-ably-run-client-id` header — populates the run's `clientId` resolution. */
+  /** Optional `run-client-id` header — populates the run's `clientId` resolution. */
   runClientId?: string;
   /**
    * Optional Ably-level publisher `clientId` (set on the inbound message's
@@ -343,17 +343,17 @@ interface DeliverInputEventOpts {
    * `inputClientId` for re-stamping on its own published events.
    */
   publisherClientId?: string;
-  /** Optional `x-ably-parent` header — resolves the run's parent during input-event lookup. */
+  /** Optional `parent` header — resolves the run's parent during input-event lookup. */
   parent?: string;
-  /** Optional `x-ably-fork-of` header — resolves the run's forkOf during input-event lookup. */
+  /** Optional `fork-of` header — resolves the run's forkOf during input-event lookup. */
   forkOf?: string;
   /**
-   * Optional `x-ably-msg-regenerate` header — resolves the run's regenerate
+   * Optional `msg-regenerate` header — resolves the run's regenerate
    * anchor during input-event lookup. Mutually exclusive with `forkOf` per
    * AITRFC-014 (edits and regenerates anchor at different headers).
    */
   regenerates?: string;
-  /** Optional `x-ably-run-continue` flag — marks the publish as a continuation user-message. */
+  /** Optional `run-continue` flag — marks the publish as a continuation user-message. */
   runContinue?: boolean;
 }
 
@@ -369,18 +369,18 @@ const deliverInputEvent = (ch: MockChannel, opts: DeliverInputEventOpts): void =
     [HEADER_INVOCATION_ID]: opts.invocationId,
     [HEADER_CODEC_MESSAGE_ID]: opts.codecMessageId,
     // Always stamp a event-id — the agent dispatcher routes input-event
-    // messages by `x-ably-event-id`, not by role, so without one the
+    // messages by `event-id`, not by role, so without one the
     // synthetic message wouldn't reach the buffer/lookup path. Tests that
     // care about the specific id supply it via `opts.inputEventId`; otherwise
     // we derive a unique value from the codec-message-id.
     [HEADER_EVENT_ID]: opts.inputEventId ?? `p-${opts.codecMessageId}`,
   };
   if (opts.runId) headers[HEADER_RUN_ID] = opts.runId;
-  if (opts.runClientId) headers['x-ably-run-client-id'] = opts.runClientId;
+  if (opts.runClientId) headers['run-client-id'] = opts.runClientId;
   if (opts.parent) headers[HEADER_PARENT] = opts.parent;
-  if (opts.forkOf) headers['x-ably-fork-of'] = opts.forkOf;
-  if (opts.regenerates) headers['x-ably-msg-regenerate'] = opts.regenerates;
-  if (opts.runContinue) headers['x-ably-run-continue'] = 'true';
+  if (opts.forkOf) headers['fork-of'] = opts.forkOf;
+  if (opts.regenerates) headers['msg-regenerate'] = opts.regenerates;
+  if (opts.runContinue) headers['run-continue'] = 'true';
   const msg = {
     name: opts.name ?? 'text',
     serial: opts.serial,
@@ -555,10 +555,10 @@ describe('AgentSession', () => {
       expect(headers?.[HEADER_RUN_ID]).toBe('run-1');
     });
 
-    it('start() stamps x-ably-run-continue on run-start when the input-event lookup result carries the continuation flag', async () => {
+    it('start() stamps run-continue on run-start when the input-event lookup result carries the continuation flag', async () => {
       // Per-run metadata (continuation, clientId, parent, forkOf) is now
       // resolved from the first input-event lookup MessageNode's headers — the
-      // agent reads `x-ably-run-continue` off the channel, not the body.
+      // agent reads `run-continue` off the channel, not the body.
       const ch = createMockChannel();
       const c = codecWithFunctionalDecoder();
       const s = createAgentSession({
@@ -586,22 +586,22 @@ describe('AgentSession', () => {
 
       const startMsg = ch.publishCalls.find((m) => m.name === 'ai-run-start');
       const headers = (startMsg?.extras as { headers: Record<string, string> } | undefined)?.headers;
-      expect(headers?.['x-ably-run-continue']).toBe('true');
+      expect(headers?.['run-continue']).toBe('true');
       s.close();
     });
 
-    it('start() omits x-ably-run-continue on run-start when no continuation header is present', async () => {
+    it('start() omits run-continue on run-start when no continuation header is present', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
 
       const startMsg = channel.publishCalls.find((m) => m.name === 'ai-run-start');
       const headers = (startMsg?.extras as { headers: Record<string, string> } | undefined)?.headers;
-      expect(headers?.['x-ably-run-continue']).toBeUndefined();
+      expect(headers?.['run-continue']).toBeUndefined();
     });
 
-    it('start() stamps x-ably-msg-regenerate on run-start when the input-event lookup result carries the regenerate anchor', async () => {
+    it('start() stamps msg-regenerate on run-start when the input-event lookup result carries the regenerate anchor', async () => {
       // Regenerate is a Run-level continuation, not a fork: the agent
-      // re-stamps the `x-ably-msg-regenerate` it observed on the input-event
+      // re-stamps the `msg-regenerate` it observed on the input-event
       // wire onto run-start so the client Tree can record the
       // regeneratesCodecMessageId for message-level replacement.
       const ch = createMockChannel();
@@ -632,9 +632,9 @@ describe('AgentSession', () => {
 
       const startMsg = ch.publishCalls.find((m) => m.name === 'ai-run-start');
       const headers = (startMsg?.extras as { headers: Record<string, string> } | undefined)?.headers;
-      expect(headers?.['x-ably-msg-regenerate']).toBe('orig-asst');
-      expect(headers?.['x-ably-parent']).toBe('orig-user');
-      expect(headers?.['x-ably-fork-of']).toBeUndefined();
+      expect(headers?.['msg-regenerate']).toBe('orig-asst');
+      expect(headers?.parent).toBe('orig-user');
+      expect(headers?.['fork-of']).toBeUndefined();
       s.close();
     });
 
@@ -647,7 +647,7 @@ describe('AgentSession', () => {
       expect(endMsg).toBeDefined();
     });
 
-    it('start() stamps x-ably-input-client-id from the triggering input event publisher', async () => {
+    it('start() stamps input-client-id from the triggering input event publisher', async () => {
       // The agent reads the publisher's Ably-level clientId off the input
       // event matched by the input-event lookup and re-stamps it on its own
       // published events. Here the synthetic input event is published by
@@ -670,10 +670,10 @@ describe('AgentSession', () => {
 
       const startMsg = channel.publishCalls.find((m) => m.name === 'ai-run-start');
       const headers = (startMsg?.extras as { headers: Record<string, string> } | undefined)?.headers;
-      expect(headers?.['x-ably-input-client-id']).toBe('user-b');
+      expect(headers?.['input-client-id']).toBe('user-b');
     });
 
-    it('end() stamps x-ably-input-client-id from the triggering input event publisher', async () => {
+    it('end() stamps input-client-id from the triggering input event publisher', async () => {
       const runId = 'run-icid-end';
       const invocationId = 'inv-icid-end';
       const inputEventId = 'p-icid-end';
@@ -692,7 +692,7 @@ describe('AgentSession', () => {
 
       const endMsg = channel.publishCalls.find((m) => m.name === 'ai-run-end');
       const headers = (endMsg?.extras as { headers: Record<string, string> } | undefined)?.headers;
-      expect(headers?.['x-ably-input-client-id']).toBe('user-b');
+      expect(headers?.['input-client-id']).toBe('user-b');
     });
 
     it('start() is idempotent (subsequent calls are no-ops)', async () => {
@@ -754,7 +754,7 @@ describe('AgentSession', () => {
       expect(headers[HEADER_CODEC_MESSAGE_ID]).toBeDefined();
     });
 
-    it('stamps x-ably-input-client-id from the triggering input event publisher on addMessages publishes', async () => {
+    it('stamps input-client-id from the triggering input event publisher on addMessages publishes', async () => {
       const runId = 'run-icid-am';
       const invocationId = 'inv-icid-am';
       const inputEventId = 'p-icid-am';
@@ -772,7 +772,7 @@ describe('AgentSession', () => {
       await run.addMessages([makeNode({ id: 'm1', content: 'hi' })]);
 
       const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
-      expect(headers['x-ably-input-client-id']).toBe('user-b');
+      expect(headers['input-client-id']).toBe('user-b');
     });
 
     it('creates one encoder per message (distinct headers)', async () => {
@@ -810,14 +810,14 @@ describe('AgentSession', () => {
           { id: 'm1', content: 'hi' },
           {
             codecMessageId: 'client-assigned-id',
-            headers: { [HEADER_CODEC_MESSAGE_ID]: 'client-assigned-id', 'x-domain-foo': 'bar' },
+            headers: { [HEADER_CODEC_MESSAGE_ID]: 'client-assigned-id', 'codec-foo': 'bar' },
           },
         ),
       ]);
 
       const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
       expect(headers[HEADER_CODEC_MESSAGE_ID]).toBe('client-assigned-id');
-      expect(headers['x-domain-foo']).toBe('bar');
+      expect(headers['codec-foo']).toBe('bar');
       expect(headers[HEADER_ROLE]).toBe('user');
     });
 
@@ -858,7 +858,7 @@ describe('AgentSession', () => {
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
     });
 
-    it('stamps x-ably-input-client-id from the triggering input event publisher on addEvents publishes', async () => {
+    it('stamps input-client-id from the triggering input event publisher on addEvents publishes', async () => {
       const runId = 'run-icid-ae';
       const invocationId = 'inv-icid-ae';
       const inputEventId = 'p-icid-ae';
@@ -876,7 +876,7 @@ describe('AgentSession', () => {
       await run.addEvents([{ kind: 'event', codecMessageId: 'target-1', events: [{ type: 'ev' }] }]);
 
       const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
-      expect(headers['x-ably-input-client-id']).toBe('user-b');
+      expect(headers['input-client-id']).toBe('user-b');
     });
 
     it('calls encoder.publishOutput per event', async () => {
@@ -963,7 +963,7 @@ describe('AgentSession', () => {
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
     });
 
-    it('stamps x-ably-input-client-id from the triggering input event publisher on assistant publishes', async () => {
+    it('stamps input-client-id from the triggering input event publisher on assistant publishes', async () => {
       const runId = 'run-icid-pipe';
       const invocationId = 'inv-icid-pipe';
       const inputEventId = 'p-icid-pipe';
@@ -981,7 +981,7 @@ describe('AgentSession', () => {
       await run.pipe(streamOf({ type: 'text', text: 'hi' }));
 
       const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
-      expect(headers['x-ably-input-client-id']).toBe('user-b');
+      expect(headers['input-client-id']).toBe('user-b');
     });
 
     it('publishes each stream event through encoder.publishOutput', async () => {
@@ -1011,13 +1011,13 @@ describe('AgentSession', () => {
       expect(headers[HEADER_PARENT]).toBe('parent-msg');
     });
 
-    it('echoes x-ably-msg-regenerate from the input-event lookup onto the assistant pipe headers (race-condition safety)', async () => {
+    it('echoes msg-regenerate from the input-event lookup onto the assistant pipe headers (race-condition safety)', async () => {
       // The lifecycle event is the canonical source for `regenerates`,
       // but if the assistant wire arrives before run-start on the client
       // (history pagination boundary or out-of-order delivery), the Tree
-      // creates the Run from headers and needs `x-ably-msg-regenerate` on
+      // creates the Run from headers and needs `msg-regenerate` on
       // the assistant wire to populate `RunNode.regeneratesCodecMessageId`.
-      // Mirrors how the agent echoes `x-ably-fork-of` for edit runs.
+      // Mirrors how the agent echoes `fork-of` for edit runs.
       const ch = createMockChannel();
       const base = codecWithFunctionalDecoder();
       let capturedHeaders: Record<string, string> | undefined;
@@ -1058,8 +1058,8 @@ describe('AgentSession', () => {
       // race between assistant chunks and ai-run-start doesn't drop the
       // regenerate metadata. `parent` resolution is exercised elsewhere;
       // here we only assert the regenerate header survives the pipe.
-      expect(capturedHeaders?.['x-ably-msg-regenerate']).toBe('orig-asst');
-      expect(capturedHeaders?.['x-ably-fork-of']).toBeUndefined();
+      expect(capturedHeaders?.['msg-regenerate']).toBe('orig-asst');
+      expect(capturedHeaders?.['fork-of']).toBeUndefined();
       s.close();
     });
 
@@ -1244,7 +1244,7 @@ describe('AgentSession', () => {
       expect(run.abortSignal.aborted).toBe(false);
     });
 
-    it('drops a malformed cancel missing x-ably-run-id with a warn-level log', async () => {
+    it('drops a malformed cancel missing run-id with a warn-level log', async () => {
       const ch = createMockChannel();
       const { logger, warn } = captureWarnLogger();
       const s = createAgentSession({
@@ -1262,7 +1262,7 @@ describe('AgentSession', () => {
 
       expect(run.abortSignal.aborted).toBe(false);
       const warnCalls = warn.mock.calls.filter(
-        (call) => typeof call[0] === 'string' && call[0].includes('missing x-ably-run-id'),
+        (call) => typeof call[0] === 'string' && call[0].includes('missing run-id'),
       );
       expect(warnCalls.length).toBe(1);
       s.close();
@@ -1554,9 +1554,9 @@ describe('AgentSession', () => {
 
     it('waits for continuation tool-resolution publishes via HEADER_RUN_CONTINUE + HEADER_EVENT_ID', async () => {
       // Continuation tool resolutions publish as `role: 'user'` channel
-      // messages stamped with `x-ably-run-continue: 'true'` plus a
+      // messages stamped with `run-continue: 'true'` plus a
       // event-id. The agent dispatcher routes any inbound message
-      // carrying `x-ably-event-id`, so the lookup picks up the
+      // carrying `event-id`, so the lookup picks up the
       // continuation publish regardless of how it was minted on the wire.
       const ch = createMockChannel();
       const c = codecWithFunctionalDecoder();
@@ -2018,7 +2018,7 @@ describe('Run.messages', () => {
 
     const runStart = ch.publishCalls.find((m) => m.name === 'ai-run-start');
     const startHeaders = (runStart?.extras as { headers?: Record<string, string> } | undefined)?.headers;
-    expect(startHeaders?.['x-ably-run-continue']).toBe('true');
+    expect(startHeaders?.['run-continue']).toBe('true');
     session.close();
   });
 

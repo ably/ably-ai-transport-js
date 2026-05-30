@@ -16,7 +16,7 @@ import type * as AI from 'ai';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
-  DOMAIN_HEADER_PREFIX as D,
+  CODEC_HEADER_PREFIX as D,
   EVENT_AI_INPUT,
   EVENT_AI_OUTPUT,
   HEADER_CODEC_MESSAGE_ID,
@@ -48,7 +48,7 @@ const stampHeaders = (runId: string, messageId: string) => (msg: Ably.Message) =
 };
 
 /**
- * Read `x-ably-codec-message-id` and serial from an Ably inbound message for the reducer meta.
+ * Read `codec-message-id` and serial from an Ably inbound message for the reducer meta.
  * @param msg - The Ably inbound message to read meta from.
  * @returns A ReducerMeta-shaped object carrying serial and optional messageId.
  */
@@ -625,7 +625,7 @@ describe('Vercel UIMessageCodec integration', () => {
    * Scenario 9: Client tool output on ai-input wire (AIT-815 fix)
    *
    * Verifies that a client-published `tool-output` input rides the
-   * `ai-input` wire (NOT `ai-output`) and carries `x-domain-type:
+   * `ai-input` wire (NOT `ai-output`) and carries `codec-type:
    * 'tool-output'`. Parallel-asserted by the encoder unit test; this
    * version goes through a real Ably channel.
    */

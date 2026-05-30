@@ -3,7 +3,7 @@ import type * as AI from 'ai';
 import { describe, expect, it } from 'vitest';
 
 import {
-  DOMAIN_HEADER_PREFIX as D,
+  CODEC_HEADER_PREFIX as D,
   EVENT_AI_INPUT,
   EVENT_AI_OUTPUT,
   HEADER_CODEC_MESSAGE_ID,
@@ -936,7 +936,7 @@ describe('Vercel decoder', () => {
 
     it('decodes agent-published data-* events under ai-output as projection events, not user-message parts', () => {
       const decoder = createDecoder();
-      // Agent-published data-* events ride `ai-output` with `x-domain-type`
+      // Agent-published data-* events ride `ai-output` with `codec-type`
       // carrying the codec event type. They carry no HEADER_DISCRETE and
       // produce an output event so the accumulator can merge them into
       // the streamed assistant response message.
@@ -1031,7 +1031,7 @@ describe('Vercel decoder', () => {
     it('decodes ai-input tool-result wire into a ToolResult input', () => {
       const decoder = createDecoder();
       // Client-side tool-result rides the `ai-input` wire with
-      // x-domain-type: 'tool-result'.
+      // codec-type: 'tool-result'.
       const msg = withHeaders(
         { name: EVENT_AI_INPUT, data: { output: { latitude: 51.5, longitude: -0.1 } } },
         {
@@ -1078,7 +1078,7 @@ describe('Vercel decoder', () => {
 
     it('decodes ai-input regenerate wires into zero events (routing lives on transport headers)', () => {
       const decoder = createDecoder();
-      // The regenerate wire carries `x-ably-parent` and `x-ably-msg-regenerate`
+      // The regenerate wire carries `parent` and `msg-regenerate`
       // on transport headers so the agent's input-event lookup can resolve
       // run-routing metadata from `firstHeaders`. The decoder itself has
       // no domain events to emit — regenerate wires are wire-only.
@@ -1089,9 +1089,9 @@ describe('Vercel decoder', () => {
           [HEADER_CODEC_MESSAGE_ID]: 'regen-codec-message-id',
           [HEADER_ROLE]: 'user',
           [`${D}type`]: 'regenerate',
-          'x-ably-parent': 'user-U1',
-          'x-ably-msg-regenerate': 'asst-A1',
-          'x-ably-event-id': 'prompt-1',
+          parent: 'user-U1',
+          'msg-regenerate': 'asst-A1',
+          'event-id': 'prompt-1',
         },
       );
 

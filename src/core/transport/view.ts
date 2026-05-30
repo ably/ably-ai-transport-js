@@ -170,7 +170,7 @@ const _RUN_TO_MESSAGE_FETCH_FACTOR = 3;
 // ---------------------------------------------------------------------------
 
 /**
- * Codec convention: each TMessage's `id` field carries the wire `x-ably-codec-message-id`.
+ * Codec convention: each TMessage's `id` field carries the wire `codec-message-id`.
  * Used by the View to resolve a domain codec-message-id from a projection-extracted
  * message. This violates the rule that the core treats TMessage as opaque
  * — see AIT-801 alongside the existing peek sites in client-session
@@ -958,7 +958,7 @@ export class DefaultView<
     // continuation of the regenerated message's Run, not a fork: the
     // message-level replacement (new assistant supersedes the original)
     // happens at projection extraction time. We still resolve the parent
-    // user prompt so the new assistant's wire `x-ably-parent` is correct,
+    // user prompt so the new assistant's wire `parent` is correct,
     // and we send the truncated history (through the parent inclusive)
     // so the LLM re-answers the right message.
     const targetRun = this._tree.getRunByCodecMessageId(messageId);
@@ -1005,8 +1005,8 @@ export class DefaultView<
     // Mint a regenerate input via the codec. The codec's well-known
     // `Regenerate` carries `target: regenAnchorMsgId` and `parent:
     // parentCodecMessageId`; the session reads those fields off the input
-    // directly when building transport headers (`x-ably-fork-of` and
-    // `x-ably-parent`). The agent's input-event lookup catches the wire signal;
+    // directly when building transport headers (`fork-of` and
+    // `parent`). The agent's input-event lookup catches the wire signal;
     // no tree-upsert / projection fold runs locally.
     const regenerate = this._codec.createRegenerate(regenAnchorMsgId, parentCodecMessageId);
     // CAST: Regenerate is a well-known variant of TInput, but TS can't
@@ -1191,15 +1191,15 @@ export class DefaultView<
         if (rawMsg.name === EVENT_RUN_START) {
           const runId = headers[HEADER_RUN_ID];
           if (runId) {
-            const parentRaw = headers['x-ably-parent'];
-            const forkOf = headers['x-ably-fork-of'];
-            const regenerates = headers['x-ably-msg-regenerate'];
-            const isContinuation = headers['x-ably-run-continue'] === 'true';
+            const parentRaw = headers.parent;
+            const forkOf = headers['fork-of'];
+            const regenerates = headers['msg-regenerate'];
+            const isContinuation = headers['run-continue'] === 'true';
             this._tree.applyRunLifecycle(
               {
                 type: EVENT_RUN_START,
                 runId,
-                clientId: headers['x-ably-run-client-id'] ?? '',
+                clientId: headers['run-client-id'] ?? '',
                 invocationId: headers[HEADER_INVOCATION_ID] ?? '',
                 ...(parentRaw !== undefined && { parent: parentRaw }),
                 ...(forkOf !== undefined && { forkOf }),
@@ -1216,12 +1216,12 @@ export class DefaultView<
           const runId = headers[HEADER_RUN_ID];
           if (runId) {
             // CAST: agent always writes a valid RunEndReason; default to 'complete' for robustness
-            const reason = (headers['x-ably-run-reason'] ?? 'complete') as RunEndReason;
+            const reason = (headers['run-reason'] ?? 'complete') as RunEndReason;
             this._tree.applyRunLifecycle(
               {
                 type: EVENT_RUN_END,
                 runId,
-                clientId: headers['x-ably-run-client-id'] ?? '',
+                clientId: headers['run-client-id'] ?? '',
                 reason,
               },
               serial,

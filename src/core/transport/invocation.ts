@@ -39,7 +39,7 @@ export interface InvocationData {
   invocationId: string;
   /**
    * Identifier for the specific input event on the channel that triggered
-   * this invocation. The agent locates the event via the `x-ably-event-id`
+   * this invocation. The agent locates the event via the `event-id`
    * header.
    */
   inputEventId: string;

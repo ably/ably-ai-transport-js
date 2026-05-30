@@ -101,7 +101,7 @@ describe('createEncoderCore', () => {
   // -- publishDiscrete -----------------------------------------------------
 
   describe('publishDiscrete', () => {
-    it('publishes with x-ably-stream:false and codec headers', async () => {
+    it('publishes with stream:false and codec headers', async () => {
       const core = createEncoderCore(writer);
       const result = await core.publishDiscrete(
         payload({ name: 'event', data: 'payload', headers: { 'x-custom': 'val' } }),
@@ -157,7 +157,7 @@ describe('createEncoderCore', () => {
       expect(headersOf(first(writer.publishCalls) as Ably.Message)[HEADER_STREAM]).toBe('false');
     });
 
-    it('does not set x-ably-discrete on single-published messages', async () => {
+    it('does not set discrete on single-published messages', async () => {
       const core = createEncoderCore(writer);
       await core.publishDiscrete(payload({ name: 'data-progress', data: {} }));
       const msg = first(writer.publishCalls) as Ably.Message;
@@ -188,7 +188,7 @@ describe('createEncoderCore', () => {
       }
     });
 
-    it('sets x-ably-discrete on batch-published messages', async () => {
+    it('sets discrete on batch-published messages', async () => {
       const core = createEncoderCore(writer);
       await core.publishDiscreteBatch([payload({ name: 'text', data: 'hi' })]);
 
@@ -539,7 +539,7 @@ describe('createEncoderCore', () => {
   // -- WriteOptions.messageId -------------------------------------------------
 
   describe('WriteOptions.messageId', () => {
-    it('stamps x-ably-codec-message-id on discrete publishes', async () => {
+    it('stamps codec-message-id on discrete publishes', async () => {
       const core = createEncoderCore(writer);
       await core.publishDiscrete(payload(), { messageId: 'msg-1' });
 
@@ -547,7 +547,7 @@ describe('createEncoderCore', () => {
       expect(headersOf(msg)[HEADER_CODEC_MESSAGE_ID]).toBe('msg-1');
     });
 
-    it('stamps x-ably-codec-message-id on streamed messages via persistent headers', async () => {
+    it('stamps codec-message-id on streamed messages via persistent headers', async () => {
       const core = createEncoderCore(writer);
       await core.startStream('s-1', streamPayload(), { messageId: 'msg-2' });
 
@@ -560,7 +560,7 @@ describe('createEncoderCore', () => {
       expect(headersOf(appendMsg)[HEADER_CODEC_MESSAGE_ID]).toBe('msg-2');
     });
 
-    it('does not stamp x-ably-codec-message-id when messageId is not provided', async () => {
+    it('does not stamp codec-message-id when messageId is not provided', async () => {
       const core = createEncoderCore(writer);
       await core.publishDiscrete(payload());
 

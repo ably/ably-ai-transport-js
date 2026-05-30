@@ -25,7 +25,6 @@ import {
   HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
-  HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
@@ -90,9 +89,9 @@ export interface TreeInternal<TEvent, TProjection> extends Tree<TProjection> {
    * Apply an inbound channel message to the tree.
    *
    * Three message kinds flow through here:
-   * 1. Fresh user prompt: creates Run if missing, updates winner, folds events.
+   * 1. Fresh user prompt: creates Run if missing, folds events.
    * 2. Continuation tool-resolution (`run-continue: 'true'`): routes to
-   *    existing Run via codecMessageIdToRunId, folds events, skips winner update.
+   *    existing Run via codecMessageIdToRunId, folds events.
    * 3. Assistant/agent events: routes to existing Run by runId, folds events.
    * @param events - Decoded codec events to fold into the Run's projection.
    * @param headers - Transport headers from the inbound Ably message.
@@ -135,7 +134,6 @@ interface TreeEventsMap {
   'ably-message': Ably.InboundMessage;
   run: RunLifecycleEvent;
   'run-projection-updated': { runId: string };
-  'invocation-winner-changed': { runId: string; invocationId: string; serial: string };
 }
 
 // Spec: AIT-CT13
@@ -176,22 +174,11 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
   private readonly _regenerateByMsgId = new Map<string, Set<string>>();
 
   /**
-   * Winning invocation per run-id: runId -> { invocationId, serial }.
-   * Updated only when a non-continuation user-message with a non-null
-   * serial is folded; the entry replaces an existing one only if the new
-   * serial is higher. Messages from losing invocations are filtered at
-   * fold time (see {@link _isLosingInvocation}).
-   */
-  private readonly _winningInvocations = new Map<string, { invocationId: string; serial: string }>();
-
-  /**
    * Most recent continuation invocation observed per run-id: runId ->
    * invocationId. Updated on every `ai-run-start` carrying
-   * `isContinuation: true`. Distinct from `_winningInvocations`, which
-   * resolves between competing original invocations and intentionally
-   * does NOT advance on continuations. Consulted by the ClientSession
-   * run-end gate so observer clients (no `_ownRunIds` entry, no router
-   * stream) can still accept the terminal `run-end` of a continuation.
+   * `isContinuation: true`. Consulted by the ClientSession run-end gate so
+   * observer clients (no `_ownRunIds` entry, no router stream) can still
+   * accept the terminal `run-end` of a continuation.
    */
   private readonly _latestContinuationInvocations = new Map<string, string>();
 
@@ -537,33 +524,6 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
 
     if (codecMessageId) this._codecMessageIdToRunId.set(codecMessageId, runId);
 
-    // Continuation wires (tool-resolution traffic) publish under the
-    // original prompt's runId but with a higher serial. Skipping the
-    // winner update here prevents them from superseding the original
-    // user-prompt in the winning-invocation map; the corresponding
-    // loser-invocation filter only runs for non-continuation wires too.
-    if (!isContinuation) {
-      const previousWinner = this._winningInvocations.get(runId)?.invocationId;
-      this._maybeUpdateWinningInvocation(headers, serial);
-      const currentWinner = this._winningInvocations.get(runId)?.invocationId;
-      if (previousWinner !== undefined && currentWinner !== undefined && previousWinner !== currentWinner) {
-        // The defensive dual-invocation rule promoted a higher-serial
-        // invocation. Under the run-keyed Tree the loser's prior fold
-        // would otherwise remain inside this Run's projection alongside
-        // the winner. Reset the projection so only the new winner's
-        // events fold in. Later-arriving wires from the loser are
-        // already filtered by _isLosingInvocation below.
-        run.node.projection = this._codec.init();
-      }
-      if (this._isLosingInvocation(headers)) {
-        this._logger.debug('Tree.applyMessage(); skipping fold for losing invocation', {
-          runId,
-          invocationId: headers[HEADER_INVOCATION_ID],
-        });
-        return;
-      }
-    }
-
     for (const event of events) {
       try {
         run.node.projection = this._codec.fold(run.node.projection, event, {
@@ -664,7 +624,6 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
     this._removeSortedRun(entry);
     this._runIndex.delete(runId);
     this._latestContinuationInvocations.delete(runId);
-    this._winningInvocations.delete(runId);
     if (entry.node.regeneratesCodecMessageId !== undefined) {
       const set = this._regenerateByMsgId.get(entry.node.regeneratesCodecMessageId);
       if (set) {
@@ -863,62 +822,9 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
     return undefined;
   }
 
-  /**
-   * Update the per-run winning invocation map on user-message arrival.
-   *
-   * Defensive rule: within a run-id, the invocation whose user-message has
-   * the highest Ably channel serial is canonical. We only consider messages
-   * with `role: user` and a non-null serial — optimistic (null-serial)
-   * inserts never win, otherwise a fresh-but-unacked retry would prematurely
-   * supersede the in-flight invocation. {@link applyMessage} gates this
-   * method on the `run-continue` header, so continuation
-   * user-messages (tool-resolution traffic on the original prompt's runId)
-   * never enter here — otherwise their higher serial would supersede the
-   * original prompt.
-   * @param headers - Transport headers from the incoming user message.
-   * @param serial - Ably channel serial assigned to the published message.
-   */
-  private _maybeUpdateWinningInvocation(headers: Record<string, string>, serial: string | undefined): void {
-    if (!serial) return;
-    if (headers[HEADER_ROLE] !== 'user') return;
-    const runId = headers[HEADER_RUN_ID];
-    const invocationId = headers[HEADER_INVOCATION_ID];
-    if (!runId || !invocationId) return;
-    const current = this._winningInvocations.get(runId);
-    if (current && current.serial >= serial) return;
-    this._logger.debug('Tree._maybeUpdateWinningInvocation(); winner set', {
-      runId,
-      invocationId,
-      serial,
-      previous: current?.invocationId,
-    });
-    this._winningInvocations.set(runId, { invocationId, serial });
-    this._emitter.emit('invocation-winner-changed', { runId, invocationId, serial });
-  }
-
-  /**
-   * Check if a wire message comes from an invocation that has been
-   * superseded by a higher-serial user-message under the same runId.
-   * @param headers - Transport headers from the incoming message.
-   * @returns True if the message's invocationId is not the current winner.
-   */
-  private _isLosingInvocation(headers: Record<string, string>): boolean {
-    const runId = headers[HEADER_RUN_ID];
-    const invocationId = headers[HEADER_INVOCATION_ID];
-    if (!runId || !invocationId) return false;
-    const winner = this._winningInvocations.get(runId);
-    if (!winner) return false;
-    return invocationId !== winner.invocationId;
-  }
-
   // -------------------------------------------------------------------------
   // Events
   // -------------------------------------------------------------------------
-
-  getWinningInvocation(runId: string): { invocationId: string; serial: string } | undefined {
-    const entry = this._winningInvocations.get(runId);
-    return entry ? { ...entry } : undefined;
-  }
 
   getLatestContinuationInvocation(runId: string): string | undefined {
     return this._latestContinuationInvocations.get(runId);
@@ -930,17 +836,12 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
   on(event: 'run', handler: (event: RunLifecycleEvent) => void): () => void;
   on(event: 'run-projection-updated', handler: (event: { runId: string }) => void): () => void;
   on(
-    event: 'invocation-winner-changed',
-    handler: (event: { runId: string; invocationId: string; serial: string }) => void,
-  ): () => void;
-  on(
-    event: 'update' | 'ably-message' | 'run' | 'run-projection-updated' | 'invocation-winner-changed',
+    event: 'update' | 'ably-message' | 'run' | 'run-projection-updated',
     handler:
       | (() => void)
       | ((msg: Ably.InboundMessage) => void)
       | ((event: RunLifecycleEvent) => void)
-      | ((event: { runId: string }) => void)
-      | ((event: { runId: string; invocationId: string; serial: string }) => void),
+      | ((event: { runId: string }) => void),
   ): () => void {
     // CAST: overload signatures enforce correct handler types per event name.
     const cb = handler as (arg: TreeEventsMap[keyof TreeEventsMap]) => void;

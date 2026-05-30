@@ -1434,7 +1434,7 @@ describe('ClientSession', () => {
       expect(fix.codec.fold).not.toHaveBeenCalled();
     });
 
-    it('drops losing-invocation run-end (ignored when active invocation mismatches)', async () => {
+    it('drops stale-invocation run-end (ignored when active invocation mismatches)', async () => {
       const ch = createMockChannel();
       const codec = createMockCodec();
       const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
@@ -1452,7 +1452,7 @@ describe('ClientSession', () => {
       const { runId, invocationId } = await ackPendingSend(ch, codec);
       const run = await sendPromise;
 
-      // Simulate a losing-invocation run-end — different invocationId
+      // Simulate a stale-invocation run-end — different invocationId
       simulateMessage(
         ch,
         ablyMsg(EVENT_RUN_END, {
@@ -1485,14 +1485,13 @@ describe('ClientSession', () => {
       // After the continuation streams its content, the codec emits a
       // terminal event (the Vercel codec marks `finish`/`error`/`abort`
       // terminal) and `route()` calls `closeStream(runId)` — wiping the
-      // router entry. When the continuation's run-end then arrives the
-      // gate found `routerActive === undefined` and fell back to the
-      // tree's winning-invocation map, which stays pinned to the
-      // original invocation because continuation wires skip the winner
-      // update. The run-end was dropped as a losing-invocation echo and
-      // the Run stayed at status=active forever — every bubble in the
-      // chat showed "streaming". A page refresh recovered because
-      // history replay bypasses the gate entirely.
+      // router entry, so `routerActive` is undefined when the
+      // continuation's run-end arrives. The gate must still match it via
+      // the `_ownRunIds` entry (kept until a complete/error run-end);
+      // without that the run-end is dropped and the Run stays at
+      // status=active forever — every bubble in the chat showed
+      // "streaming". A page refresh recovered because history replay
+      // bypasses the gate entirely.
       const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
 
       simulateMessage(
@@ -1615,28 +1614,6 @@ describe('ClientSession', () => {
       // sticking at `active`.
       const inv1 = 'inv-original';
       const inv2 = 'inv-continuation';
-      const userMsgSerial = 'serial-user-msg';
-
-      // Original prompt arrives — pins treeWinner to inv1.
-      // Queue a decoder event so applyMessage doesn't bail out at the
-      // "events.length === 0 && Run missing" guard before reaching
-      // `_maybeUpdateWinningInvocation`.
-      fix.decoder.queue.push({ type: 'user-message', text: 'hi' });
-      simulateMessage(
-        fix.channel,
-        ablyMsg(
-          'user-message',
-          {
-            [HEADER_RUN_ID]: 'run-obs',
-            [HEADER_RUN_CLIENT_ID]: 'other-client',
-            [HEADER_INVOCATION_ID]: inv1,
-            role: 'user',
-          },
-          undefined,
-          undefined,
-          userMsgSerial,
-        ),
-      );
 
       // Original run-start (inv1).
       simulateMessage(
@@ -1690,8 +1667,7 @@ describe('ClientSession', () => {
     });
 
     it('processes continuation run-end (router-active invocation is fresh)', async () => {
-      // Continuation rebinds the router stream to a new invocation while the
-      // Tree's winner stays on the original user-message's invocation. The
+      // Continuation rebinds the router stream to a new invocation. The
       // gating must prefer the router for own runs so the continuation's
       // run-end is accepted and the run cleans up.
       const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });

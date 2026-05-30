@@ -114,7 +114,7 @@ const noopFetch = () => Promise.resolve(new Response(undefined, { status: 200 })
 
 /**
  * Publish a run-start lifecycle event with the invocation-id header attached
- * so the client's defensive run-end guard can identify the winning invocation.
+ * so the client's run-end gate can match the invocation bound to the run.
  * @param channel - The channel to publish on.
  * @param runId - The run identifier.
  * @param invocationId - The invocation identifier.
@@ -180,23 +180,6 @@ const publishRunEnd = async (
  * @param codecMessageId - The unique message identifier.
  * @param text - The user message text.
  */
-const publishUserMessage = async (
-  channel: Ably.RealtimeChannel,
-  runId: string,
-  invocationId: string,
-  codecMessageId: string,
-  text: string,
-): Promise<void> => {
-  const headers = buildTransportHeaders({ role: 'user', runId, codecMessageId, invocationId });
-  const encoder = UIMessageCodec.createEncoder(channel, { extras: { headers } });
-  const input = UIMessageCodec.createUserMessage({
-    id: codecMessageId,
-    role: 'user',
-    parts: [{ type: 'text', text }],
-  });
-  await encoder.publishInput(input);
-};
-
 /**
  * Publish a complete Run (user message + assistant text + lifecycle) on
  * the channel, ordering the user message before run-start so the Tree
@@ -1326,121 +1309,6 @@ describe('ClientSession integration', () => {
 
     const foundHeaders = found ? getHeaders(found) : {};
     expect(foundHeaders['invocation-id']).toBeDefined();
-  });
-
-  // -------------------------------------------------------------------------
-  // Defensive race — latest-serial wins per run-id
-  // -------------------------------------------------------------------------
-
-  /**
-   * Scenario: two invocations under the same run-id arrive on the channel
-   * (forced via raw publish from a second client). The View must surface only
-   * the winning invocation's user message, and the losing invocation's
-   * run-end must not terminate the active run.
-   */
-  it('forces dual-invocation race and only the winning invocation surfaces in the view', async () => {
-    const channelName = uniqueChannelName('ct-race');
-    const observerClient = ablyRealtimeClient();
-    const publisherClient = ablyRealtimeClient();
-
-    clientSession = createClientSession({
-      client: observerClient,
-      channelName,
-      codec: UIMessageCodec,
-      runStartDeadlineMs: 0,
-      clientId: observerClient.auth.clientId,
-      fetch: noopFetch,
-      api: '/test',
-    });
-    await clientSession.connect();
-
-    const publisherChannel = publisherClient.channels.get(channelName);
-
-    const runId = crypto.randomUUID();
-    const losingInvocationId = crypto.randomUUID();
-    const winningInvocationId = crypto.randomUUID();
-    const losingMsgId = crypto.randomUUID();
-    const winningMsgId = crypto.randomUUID();
-    const ownerClientId = 'race-owner';
-
-    // Publish the LOSING invocation first (lower serial).
-    await publishUserMessage(publisherChannel, runId, losingInvocationId, losingMsgId, 'losing prompt');
-    await publishRunStart(publisherChannel, runId, losingInvocationId, ownerClientId);
-    await publishRunEnd(publisherChannel, runId, losingInvocationId, ownerClientId, 'complete');
-
-    // Then publish the WINNING invocation (higher serial). The view should
-    // discard the losing user message and surface only the winning one.
-    await publishUserMessage(publisherChannel, runId, winningInvocationId, winningMsgId, 'winning prompt');
-    await publishRunStart(publisherChannel, runId, winningInvocationId, ownerClientId);
-    await publishRunEnd(publisherChannel, runId, winningInvocationId, ownerClientId, 'complete');
-
-    // Wait for the winning user message to land in the view.
-    await waitForMessages(clientSession, 1);
-    // Give propagation a brief moment to surface a second user node if the
-    // filter were broken — failure of the test would manifest as count > 1.
-    await new Promise((r) => setTimeout(r, 300));
-
-    const userMsgs = clientSession.view.getMessages().filter((m) => m.role === 'user');
-    expect(userMsgs).toHaveLength(1);
-    const userMsg = userMsgs[0];
-    expect(userMsg?.id).toBe(winningMsgId);
-    const metadata = userMsg ? clientSession.view.getMessageMetadata(userMsg.id) : undefined;
-    expect(metadata?.runId).toBe(runId);
-    expect(clientSession.tree.getWinningInvocation(runId)?.invocationId).toBe(winningInvocationId);
-
-    const textPart = userMsg?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
-    expect(textPart?.text).toBe('winning prompt');
-  });
-
-  /**
-   * Scenario: history hydration variant of the defensive race. Same forced
-   * dual-invocation publish, but a fresh ClientSession attaches afterwards
-   * and reconstructs the conversation purely from channel history.
-   */
-  it('reconstructs only the winning invocation when hydrating history with multiple invocations under one run-id', async () => {
-    const channelName = uniqueChannelName('ct-race-hydrate');
-    const publisherClient = ablyRealtimeClient();
-    const publisherChannel = publisherClient.channels.get(channelName);
-
-    const runId = crypto.randomUUID();
-    const losingInvocationId = crypto.randomUUID();
-    const winningInvocationId = crypto.randomUUID();
-    const losingMsgId = crypto.randomUUID();
-    const winningMsgId = crypto.randomUUID();
-    const ownerClientId = 'race-hydrate-owner';
-
-    // Publish both invocations to the channel, losing first so it has the
-    // lower serial.
-    await publishUserMessage(publisherChannel, runId, losingInvocationId, losingMsgId, 'losing prompt');
-    await publishRunStart(publisherChannel, runId, losingInvocationId, ownerClientId);
-    await publishRunEnd(publisherChannel, runId, losingInvocationId, ownerClientId, 'complete');
-    await publishUserMessage(publisherChannel, runId, winningInvocationId, winningMsgId, 'winning prompt');
-    await publishRunStart(publisherChannel, runId, winningInvocationId, ownerClientId);
-    await publishRunEnd(publisherChannel, runId, winningInvocationId, ownerClientId, 'complete');
-
-    // Wait briefly for Ably to persist the messages for history.
-    await new Promise((r) => setTimeout(r, 500));
-
-    // Fresh client hydrates from history.
-    const historyClient = ablyRealtimeClient();
-    clientSession = createClientSession({
-      client: historyClient,
-      channelName,
-      codec: UIMessageCodec,
-      runStartDeadlineMs: 0,
-      clientId: historyClient.auth.clientId,
-      fetch: noopFetch,
-      api: '/test',
-    });
-    await clientSession.connect();
-    await clientSession.view.loadOlder(50);
-
-    const userMsgs = clientSession.view.getMessages().filter((m) => m.role === 'user');
-    expect(userMsgs).toHaveLength(1);
-    expect(userMsgs[0]?.id).toBe(winningMsgId);
-    const metadata = userMsgs[0] ? clientSession.view.getMessageMetadata(userMsgs[0].id) : undefined;
-    expect(metadata?.runId).toBe(runId);
-    expect(clientSession.tree.getWinningInvocation(runId)?.invocationId).toBe(winningInvocationId);
   });
 
   // -------------------------------------------------------------------------

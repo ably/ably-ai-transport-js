@@ -88,6 +88,6 @@ Each client is identified by a `clientId` passed to the session. The session sta
 
 For a fresh run the two are equal. They diverge on a continuation: imagine Client A starts a run; Client B then publishes a tool-result `ai-input` against that run and POSTs the continuation. The agent's continuation `ai-run-start` carries `runClientId: A` (still A's run) and `inputClientId: B` (B published the input that drove this invocation). Every assistant output published during B's invocation carries the same pair.
 
-UIs that need to attribute work per-invocation can read `x-ably-input-client-id` from message headers; UIs that just need "whose run is this" read `x-ably-run-client-id`. See [Wire protocol: client identity](../internals/wire-protocol.md#client-identity) for the full definition.
+UIs that need to attribute work per-invocation can read `input-client-id` from message headers; UIs that just need "whose run is this" read `run-client-id`. See [Wire protocol: client identity](../internals/wire-protocol.md#client-identity) for the full definition.
 
 Client identity is established through Ably's token authentication - the `clientId` in the JWT token must match. See the [Get Started](../get-started/vercel-use-chat.md) guide for the auth setup.

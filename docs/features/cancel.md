@@ -19,15 +19,15 @@ await session.cancel(run.runId);
 
 Each `session.cancel(runId)` call targets exactly one run. To cancel multiple runs, iterate over runIds you hold yourself (handles returned by `send()`, or runIds read off rendered message nodes).
 
-In React, the simplest "stop" button targets the run that produced the message the user is looking at — read `x-ably-run-id` off the latest visible node:
+In React, the simplest "stop" button targets the run that produced the message the user is looking at — read `run-id` off the latest visible node:
 
 ```typescript
 import { useView } from '@ably/ai-transport/react';
 
 const { nodes } = useView({ session });
 const latest = nodes.at(-1);
-const latestRunId = latest?.headers['x-ably-run-id'];
-const latestStatus = latest?.headers['x-ably-status'];
+const latestRunId = latest?.headers['run-id'];
+const latestStatus = latest?.headers['status'];
 const isStreaming = latestRunId !== undefined && latestStatus !== 'complete' && latestStatus !== 'cancelled';
 
 <button
@@ -84,7 +84,7 @@ sequenceDiagram
     participant Ch as Ably Channel
     participant S as Server
 
-    C->>Ch: publish(ai-cancel)<br/>headers: x-ably-run-id=<runId>
+    C->>Ch: publish(ai-cancel)<br/>headers: run-id=<runId>
     Note left of C: close local stream
     Ch->>S: deliver to cancel listener
     Note right of S: look up registered run by id

@@ -25,8 +25,8 @@ const { nodes, send } = useView({ session });
 async function handleSend(text: string) {
   // If the latest node is mid-run, cancel it before sending a new message
   const latest = nodes.at(-1);
-  const latestRunId = latest?.headers['x-ably-run-id'];
-  const latestStatus = latest?.headers['x-ably-status'];
+  const latestRunId = latest?.headers['run-id'];
+  const latestStatus = latest?.headers['status'];
   if (latestRunId && latestStatus !== 'complete' && latestStatus !== 'cancelled') {
     await session.cancel(latestRunId);
   }
@@ -50,12 +50,12 @@ Both runs produce independent event streams. The message list grows with respons
 
 ## Detecting whether a run is streaming
 
-Read the streaming state from the message you're rendering. The latest visible node carries `x-ably-status`, which is `'streaming'` while the run is producing chunks and `'complete'` / `'cancelled'` once it terminates. Users' own freshly-sent messages don't yet have a status header — treat "non-terminal" as "in progress":
+Read the streaming state from the message you're rendering. The latest visible node carries `status`, which is `'streaming'` while the run is producing chunks and `'complete'` / `'cancelled'` once it terminates. Users' own freshly-sent messages don't yet have a status header — treat "non-terminal" as "in progress":
 
 ```typescript
 const latest = nodes.at(-1);
-const status = latest?.headers['x-ably-status'];
-const isStreaming = latest?.headers['x-ably-run-id'] !== undefined && status !== 'complete' && status !== 'cancelled';
+const status = latest?.headers['status'];
+const isStreaming = latest?.headers['run-id'] !== undefined && status !== 'complete' && status !== 'cancelled';
 ```
 
 Use this to toggle between "Send" and "Stop" buttons, or to queue messages for later delivery.

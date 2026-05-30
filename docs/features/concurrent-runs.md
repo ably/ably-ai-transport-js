@@ -40,7 +40,7 @@ const { reason } = await run.pipe(result.toUIMessageStream());
 await run.end(reason);
 ```
 
-Multiple runs can stream on the same channel at the same time. Each `ai-cancel` carries `x-ably-run-id` and the session routes it to that one run.
+Multiple runs can stream on the same channel at the same time. Each `ai-cancel` carries `run-id` and the session routes it to that one run.
 
 ## Observing run lifecycle
 
@@ -59,11 +59,11 @@ session.tree.on('run', (event) => {
 
 This event is the raw signal — each `run-start` and `run-end` is emitted once, as it arrives. The SDK does not summarise these into a "set of active runs", because a session that hydrates partial history or comes online mid-conversation cannot honestly compute that set. Accumulate state yourself from your subscription if your UI needs it, treating it as a "since I subscribed" view.
 
-For the "is this rendered message still streaming?" question, read `node.headers['x-ably-status']` on the node itself — it's intrinsic to the node and unaffected by what older history the session has hydrated.
+For the "is this rendered message still streaming?" question, read `node.headers['status']` on the node itself — it's intrinsic to the node and unaffected by what older history the session has hydrated.
 
 ## Cancelling individual runs
 
-`session.cancel(runId)` cancels exactly one run, leaving its siblings alone. Use a runId you obtained directly — from `run.runId` on the handle returned by `view.send()`, or from `node.headers['x-ably-run-id']` on the message node you want to stop.
+`session.cancel(runId)` cancels exactly one run, leaving its siblings alone. Use a runId you obtained directly — from `run.runId` on the handle returned by `view.send()`, or from `node.headers['run-id']` on the message node you want to stop.
 
 See [Cancel](cancel.md) for the full cancel protocol.
 

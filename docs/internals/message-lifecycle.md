@@ -112,7 +112,7 @@ Every `'update'` event triggers a full `flattenNodes()` call, which rebuilds the
 
 1. Raw Ably messages are fetched from channel history (newest-first)
 2. They are reversed to chronological order and decoded through a fresh decoder
-3. Decoded outputs are grouped by [`x-ably-run-id`](wire-protocol.md#transport-headers-x-ably) - each run gets its own accumulator
+3. Decoded outputs are grouped by [`run-id`](wire-protocol.md#transport-headers) - each run gets its own accumulator
 4. `completedMessages` (not `messages`) is read from each accumulator - only fully terminated messages appear in history results
 5. The resulting messages are returned to the view, which upserts each message into the tree
 

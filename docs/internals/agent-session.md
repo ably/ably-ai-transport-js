@@ -17,13 +17,13 @@ The method is idempotent - a second call returns the same in-flight promise and 
 
 ## Input-event lookup
 
-The client publishes the user prompt(s) directly on the channel; the agent locates them by `x-ably-invocation-id`. The session attaches with a channel rewind (default 2 minutes, tunable via `AgentSessionOptions.rewindWindow`) so messages published before the agent attached are replayed through the session's unfiltered listener. A longer window improves the chances of finding a user prompt for an agent with a slow cold start but increases the message volume replayed on attach (and therefore the pressure on `inputEventBufferLimit`).
+The client publishes the user prompt(s) directly on the channel; the agent locates them by `invocation-id`. The session attaches with a channel rewind (default 2 minutes, tunable via `AgentSessionOptions.rewindWindow`) so messages published before the agent attached are replayed through the session's unfiltered listener. A longer window improves the chances of finding a user prompt for an agent with a slow cold start but increases the message volume replayed on attach (and therefore the pressure on `inputEventBufferLimit`).
 
 Inside `Run.start()`:
 
 - If `invocation.inputEventIds` is empty, the lookup is skipped — a continuation send after a tool result (the events array carries the work; no new input event was published) or a degenerate run with no client input.
 - If `inputEventLookupTimeoutMs` is `0` (tests and in-process drivers that don't round-trip through the channel), the lookup is skipped.
-- Otherwise the lookup waits for every id in `invocation.inputEventIds` to arrive as a distinct input event tagged with the run's invocation-id, matched against `x-ably-event-id`. Multi-message `send([m1, m2, …])` publishes each as its own input event under one invocation-id, so all listed ids must be collected before the run starts. Duplicates are deduped by event-id (and by Ably `serial`, since rewind may redeliver a message also seen live); the collected nodes are sorted by `serial` ascending before being appended to `run.view.messages`. The whole collection is bounded by a single `AgentSessionOptions.inputEventLookupTimeoutMs` budget (default 30 000 ms).
+- Otherwise the lookup waits for every id in `invocation.inputEventIds` to arrive as a distinct input event tagged with the run's invocation-id, matched against `event-id`. Multi-message `send([m1, m2, …])` publishes each as its own input event under one invocation-id, so all listed ids must be collected before the run starts. Duplicates are deduped by event-id (and by Ably `serial`, since rewind may redeliver a message also seen live); the collected nodes are sorted by `serial` ascending before being appended to `run.view.messages`. The whole collection is bounded by a single `AgentSessionOptions.inputEventLookupTimeoutMs` budget (default 30 000 ms).
 - Input events may arrive before `Run.start()` runs (rewind replay on attach). The session buffers them by invocation-id (`Map<string, InboundMessage[]>`) so a later `_registerInputEventListener` call drains them on registration. The listener stays registered after the drain to also receive live arrivals until the lookup completes.
 - The buffer is bounded by `AgentSessionOptions.inputEventBufferLimit` (default 200) — counted by distinct invocation-id entries, not by individual messages. When the limit is exceeded the oldest invocation entry (and all its buffered events) is FIFO-evicted and a warn is logged with the evicted invocation-id and the limit. The client whose input event was evicted will fail its lookup with `InputEventNotFound`, so the warn is the only operator-visible signal that capacity was the cause.
 - On partial collection at timeout the lookup rejects with `InputEventNotFound` and an error message including the count (e.g. `"received 1 of 2"`); a decode failure mid-collection rejects the entire lookup, wrapping the decode error as `cause`. In both cases `Run.start()` rejects without publishing `ai-run-start` **and without publishing any lifecycle event on the channel** — a phantom `ai-run-end` would violate the `run-start → run-end` lifecycle invariant for other channel observers who never saw a start. The developer's HTTP handler surfaces the failure as a non-2xx response, which the client's `send()` translates into a rejection via the HTTP-error path.
@@ -61,15 +61,15 @@ Each run gets its own `AbortController`. If `opts.signal` is provided (typically
 
 Publishes `ai-run-start` to the channel via the [RunManager](transport-components.md#runmanager). Must be called before `addMessages()` or `pipe()`.
 
-The lifecycle event carries `x-ably-input-client-id` — the Ably-level publisher `clientId` of the input event that triggered this invocation, read from the wire by the input-event lookup. On a fresh run this typically matches `x-ably-run-client-id` (the run owner). On a continuation invocation triggered by an input from a non-owner (e.g. a tool-result publish from a different client), the new `x-ably-input-client-id` reflects whoever published that input while `x-ably-run-client-id` stays put. See [Client identity](wire-protocol.md#client-identity).
+The lifecycle event carries `input-client-id` — the Ably-level publisher `clientId` of the input event that triggered this invocation, read from the wire by the input-event lookup. On a fresh run this typically matches `run-client-id` (the run owner). On a continuation invocation triggered by an input from a non-owner (e.g. a tool-result publish from a different client), the new `input-client-id` reflects whoever published that input while `run-client-id` stays put. See [Client identity](wire-protocol.md#client-identity).
 
 ### addMessages
 
 Publishes user messages to the channel through the codec encoder. Each message gets:
 
-- A generated `x-ably-codec-message-id`
-- [Transport headers](wire-protocol.md#transport-headers-x-ably) via [buildTransportHeaders](transport-components.md#buildtransportheaders) (role, run IDs, parent, forkOf, plus `x-ably-input-client-id` propagated from the triggering input event)
-- Per-message headers from the client override transport-generated defaults - this lets `x-ably-codec-message-id` from the client's optimistic insert pass through for [reconciliation](glossary.md#optimistic-reconciliation)
+- A generated `codec-message-id`
+- [Transport headers](wire-protocol.md#transport-headers) via [buildTransportHeaders](transport-components.md#buildtransportheaders) (role, run IDs, parent, forkOf, plus `input-client-id` propagated from the triggering input event)
+- Per-message headers from the client override transport-generated defaults - this lets `codec-message-id` from the client's optimistic insert pass through for [reconciliation](glossary.md#optimistic-reconciliation)
 
 Returns the effective codec-message-ids of all published messages.
 
@@ -77,13 +77,13 @@ Returns the effective codec-message-ids of all published messages.
 
 Pipes a `ReadableStream<TOutput>` through the codec encoder to the channel via [pipeStream](transport-components.md#pipestream). The stream carries the assistant's response - text deltas, reasoning, lifecycle events.
 
-Headers are built with `role: 'assistant'`, the run's branching metadata (parent, forkOf), and `x-ably-input-client-id` propagated from the triggering input event (so every assistant output of this invocation carries the publisher's id). The `AbortSignal` from the RunManager is passed to pipeStream, so cancel signals propagate through to stream termination.
+Headers are built with `role: 'assistant'`, the run's branching metadata (parent, forkOf), and `input-client-id` propagated from the triggering input event (so every assistant output of this invocation carries the publisher's id). The `AbortSignal` from the RunManager is passed to pipeStream, so cancel signals propagate through to stream termination.
 
 Returns `{ reason }` - `'complete'`, `'cancelled'`, or `'error'`. Does **not** call `end()` - the caller must do that after `pipe()` returns.
 
 ### end
 
-Publishes `ai-run-end` to the channel and unregisters the run from cancel routing. The lifecycle event carries `x-ably-input-client-id` matching the value stamped on `ai-run-start` for the same invocation. Idempotent - calling `end()` twice is safe.
+Publishes `ai-run-end` to the channel and unregisters the run from cancel routing. The lifecycle event carries `input-client-id` matching the value stamped on `ai-run-start` for the same invocation. Idempotent - calling `end()` twice is safe.
 
 ## Cancel routing
 
@@ -91,7 +91,7 @@ The agent session handles cancel messages directly - no separate cancel manager.
 
 Key behaviors:
 
-- Each `ai-cancel` targets exactly one run via the `x-ably-run-id` header. Cancels missing that header are dropped with a warn-level log.
+- Each `ai-cancel` targets exactly one run via the `run-id` header. Cancels missing that header are dropped with a warn-level log.
 - Runs are registered for cancel routing on `createRun()`, before `start()`. Early cancels fire the run's `AbortSignal`.
 - The `onCancel` hook (per-run) can return `false` to reject a cancel request.
 - A throwing `onCancel` handler is wrapped into an `Ably.ErrorInfo` and surfaced via the run's `onError` (falling back to the session-level `onError`). The throw does not propagate out of the listener.
@@ -124,6 +124,6 @@ There is no dedicated transport-level error event. Failures reach observers (and
 | Failure point                                         | Wire surface                                                                                                                                                                                                                                                              |
 | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Before `ai-run-start`** (e.g. `InputEventNotFound`) | No channel publish. `Run.start()` rejects; the developer's HTTP handler surfaces the failure as a non-2xx response, which the client's `send()` translates into a rejection. Publishing a phantom `ai-run-end` would break the `run-start → run-end` lifecycle invariant. |
-| **Mid-run** (after `ai-run-start`)                    | `ai-run-end` published with `x-ably-run-reason: error` and the `x-ably-error-code` / `x-ably-error-message` headers. The client reifies an `Ably.ErrorInfo` from the headers, errors the active stream, and emits `session.on('error')`.                                  |
+| **Mid-run** (after `ai-run-start`)                    | `ai-run-end` published with `run-reason: error` and the `error-code` / `error-message` headers. The client reifies an `Ably.ErrorInfo` from the headers, errors the active stream, and emits `session.on('error')`.                                                       |
 
 See [Transport components](transport-components.md) for the RunManager, pipeStream, and cancel routing internals. See [Client session](client-session.md) for the client-side counterpart. See [Wire protocol](wire-protocol.md) for the header and event specification.

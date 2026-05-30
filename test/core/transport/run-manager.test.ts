@@ -87,7 +87,7 @@ describe('RunManager', () => {
       expect(headers[HEADER_RUN_CLIENT_ID]).toBe('');
     });
 
-    it('stamps x-ably-run-continue:true when continuation metadata is set', async () => {
+    it('stamps run-continue:true when continuation metadata is set', async () => {
       await manager.startRun('run-1', 'user-a', undefined, { continuation: true });
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
@@ -95,7 +95,7 @@ describe('RunManager', () => {
       expect(headers[HEADER_RUN_CONTINUE]).toBe('true');
     });
 
-    it('omits x-ably-run-continue when continuation is false or unset', async () => {
+    it('omits run-continue when continuation is false or unset', async () => {
       await manager.startRun('run-1', 'user-a', undefined, { continuation: false });
       await manager.startRun('run-2', 'user-a');
 
@@ -105,7 +105,7 @@ describe('RunManager', () => {
       expect(headersOf(channel.publishCalls.at(1)!)[HEADER_RUN_CONTINUE]).toBeUndefined();
     });
 
-    it('stamps x-ably-input-client-id when inputClientId is set', async () => {
+    it('stamps input-client-id when inputClientId is set', async () => {
       await manager.startRun('run-1', 'user-a', undefined, { inputClientId: 'user-b' });
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
@@ -113,7 +113,7 @@ describe('RunManager', () => {
       expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
     });
 
-    it('omits x-ably-input-client-id when inputClientId is unset', async () => {
+    it('omits input-client-id when inputClientId is unset', async () => {
       await manager.startRun('run-1', 'user-a');
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
@@ -121,7 +121,7 @@ describe('RunManager', () => {
       expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
     });
 
-    it('stamps x-ably-fork-of when metadata.forkOf is set (edit run-start)', async () => {
+    it('stamps fork-of when metadata.forkOf is set (edit run-start)', async () => {
       await manager.startRun('run-1', 'user-a', undefined, { forkOf: 'orig-user-msg' });
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
@@ -130,7 +130,7 @@ describe('RunManager', () => {
       expect(headers[HEADER_MSG_REGENERATE]).toBeUndefined();
     });
 
-    it('stamps x-ably-msg-regenerate when metadata.regenerates is set (regenerate run-start)', async () => {
+    it('stamps msg-regenerate when metadata.regenerates is set (regenerate run-start)', async () => {
       await manager.startRun('run-1', 'user-a', undefined, { regenerates: 'orig-asst-msg' });
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
@@ -172,7 +172,7 @@ describe('RunManager', () => {
       expect(headers[HEADER_RUN_CLIENT_ID]).toBe('');
     });
 
-    it('stamps x-ably-input-client-id when inputClientId is provided', async () => {
+    it('stamps input-client-id when inputClientId is provided', async () => {
       await manager.startRun('run-1', 'user-a');
       await manager.endRun('run-1', 'complete', 'inv-1', 'user-b');
 
@@ -181,7 +181,7 @@ describe('RunManager', () => {
       expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
     });
 
-    it('omits x-ably-input-client-id when inputClientId is unset', async () => {
+    it('omits input-client-id when inputClientId is unset', async () => {
       await manager.startRun('run-1', 'user-a');
       await manager.endRun('run-1', 'complete');
 

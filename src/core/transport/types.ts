@@ -134,7 +134,7 @@ export interface AddMessageOptions {
 
 /** Result of publishing user messages via addMessages. */
 export interface AddMessagesResult {
-  /** The `x-ably-codec-message-id` of each published message, in order. */
+  /** The `codec-message-id` of each published message, in order. */
   codecMessageIds: string[];
 }
 
@@ -146,7 +146,7 @@ export interface AddMessagesResult {
 export interface EventsNode<TOutput extends CodecOutputEvent> {
   /** Discriminator — identifies this as an events node. */
   kind: 'event';
-  /** The `x-ably-codec-message-id` of the existing message to update. */
+  /** The `codec-message-id` of the existing message to update. */
   codecMessageId: string;
   /** Outputs to apply to the target message. */
   events: TOutput[];
@@ -169,7 +169,7 @@ export interface PipeOptions<TOutput extends CodecOutputEvent> {
    *
    * Used to carry a subset of outputs within the stream to a different
    * message (e.g. `tool-output-available` chunks that belong on a prior
-   * assistant message, stamped with `x-ably-amend`). Must not be used
+   * assistant message, stamped with `amend`). Must not be used
    * for outputs that participate in the encoder's stream-append pipeline
    * — streaming state (stream tracker, append ordering) is anchored to
    * the stream's default identity and is not affected by per-output
@@ -336,7 +336,7 @@ export interface Run<TInput extends CodecInputEvent, TOutput extends CodecOutput
   /**
    * Publish events targeting existing messages in the tree. Each node
    * specifies a target message (by `codecMessageId`) and the events to apply.
-   * Events are encoded and published with the target's `x-ably-codec-message-id`,
+   * Events are encoded and published with the target's `codec-message-id`,
    * so receiving clients apply them to the existing node rather than
    * creating a new one.
    *
@@ -525,7 +525,7 @@ export type RunLifecycleEvent =
       clientId: string;
       /**
        * The invocation-id this run-start was published under (wire
-       * `x-ably-invocation-id`). The Tree records it on the RunNode on
+       * `invocation-id`). The Tree records it on the RunNode on
        * first creation so the optimistic Run exposes the invocation
        * synchronously, without waiting for a serial-bearing echo.
        */
@@ -534,13 +534,13 @@ export type RunLifecycleEvent =
       parent?: string;
       /**
        * The codec-message-id of the user prompt being forked, when the run is an
-       * edit. Carried verbatim from the `x-ably-fork-of` wire header.
+       * edit. Carried verbatim from the `fork-of` wire header.
        */
       forkOf?: string;
       /**
        * The codec-message-id of the assistant message this run regenerates, when
        * the run is a regenerate continuation. Carried verbatim from the
-       * `x-ably-msg-regenerate` wire header. The Tree treats regenerates
+       * `msg-regenerate` wire header. The Tree treats regenerates
        * as continuations (no `forkOf` at the Run level) — the View
        * realises the replacement when materialising messages.
        */
@@ -548,7 +548,7 @@ export type RunLifecycleEvent =
       /**
        * True when the agent published this `run-start` as a continuation
        * of an already-started run (e.g. a tool-result follow-up invocation
-       * under the same runId). Surfaced from the `x-ably-run-continue`
+       * under the same runId). Surfaced from the `run-continue`
        * wire header. Absent for the first start of a run.
        */
       isContinuation?: boolean;
@@ -632,11 +632,11 @@ export interface MessageNode<TMessage> {
   kind: 'message';
   /** The domain message. */
   message: TMessage;
-  /** The x-ably-codec-message-id of this node — primary key in the tree. */
+  /** The codec-message-id of this node — primary key in the tree. */
   codecMessageId: string;
-  /** Parent node's codec-message-id (x-ably-parent), or undefined for root messages. */
+  /** Parent node's codec-message-id (parent), or undefined for root messages. */
   parentId: string | undefined;
-  /** The codec-message-id this node forks from (x-ably-fork-of), or undefined if first version. */
+  /** The codec-message-id this node forks from (fork-of), or undefined if first version. */
   forkOf: string | undefined;
   /** Full Ably headers for this message. */
   headers: Record<string, string>;
@@ -664,26 +664,26 @@ export type TreeNode<TMessage> = MessageNode<TMessage>;
  * (runId, codecMessageId) being forked.
  */
 export interface RunNode<TProjection> {
-  /** The x-ably-run-id of this Run — primary key in the tree. */
+  /** The run-id of this Run — primary key in the tree. */
   runId: string;
   /**
    * The runId of the immediately preceding Run on this conversation chain,
    * or undefined for the root Run. Resolved by the Tree from the first
-   * observed message's `x-ably-parent` header via the codecMessageId -> runId index.
+   * observed message's `parent` header via the codecMessageId -> runId index.
    * May be `undefined` transiently if the parent's first message hasn't
    * been observed yet.
    */
   parentRunId: string | undefined;
   /**
    * The runId of the Run this Run replaces, or `undefined` if this Run is
-   * not a fork. Populated when the wire's `x-ably-fork-of` header points at
+   * not a fork. Populated when the wire's `fork-of` header points at
    * a codec-message-id that has been observed; the Tree resolves it to a runId via
    * the codecMessageId -> runId index.
    */
   forkOf: string | undefined;
   /**
    * The codec-message-id this Run regenerates, or `undefined` for non-regenerate
-   * Runs. Populated from the wire's `x-ably-msg-regenerate` header (and
+   * Runs. Populated from the wire's `msg-regenerate` header (and
    * the lifecycle event's `regenerates` field) verbatim — the Tree does
    * not resolve it to a runId because the anchor is a message position,
    * not a Run.
@@ -696,7 +696,7 @@ export interface RunNode<TProjection> {
   regeneratesCodecMessageId: string | undefined;
   /**
    * Identity of the Ably client that started this Run, sourced from the
-   * `x-ably-run-client-id` wire header (or the run-start lifecycle event's
+   * `run-client-id` wire header (or the run-start lifecycle event's
    * `clientId` field). Set once at Run creation and never updated; persists
    * through the Run's lifecycle, including after `run-end`. Empty string if
    * the wire didn't carry a client id.
@@ -711,7 +711,7 @@ export interface RunNode<TProjection> {
   /** Per-Run codec projection. Folded by the Tree from every event published under this run-id. */
   projection: TProjection;
   /**
-   * The first invocationId observed for this Run (wire `x-ably-invocation-id`).
+   * The first invocationId observed for this Run (wire `invocation-id`).
    * Set at Run creation from the optimistic insert's or first wire's headers,
    * and never reassigned: a dual-invocation race promotes a higher-serial
    * winner via the Tree's `_winningInvocations` map but does not rewrite this
@@ -728,7 +728,7 @@ export interface RunNode<TProjection> {
 
 /**
  * Materializes a branching conversation tree from a flat oplog of Ably
- * messages, keyed by `x-ably-run-id`.
+ * messages, keyed by `run-id`.
  *
  * The Tree owns the complete conversation state across every observed Run.
  * Each RunNode holds a per-Run codec {@link TProjection} which the Tree folds
@@ -792,7 +792,7 @@ export interface Tree<TProjection> {
    * Get the winning invocation-id for a run-id, if known.
    *
    * Within a run-id, the invocation whose user-message has the highest Ably
-   * channel serial is canonical. Continuation wires (`x-ably-run-continue`)
+   * channel serial is canonical. Continuation wires (`run-continue`)
    * do not update the winner. Earlier invocations are losers and their
    * events are filtered at fold time. Optimistic (null-serial) inserts
    * never win — the entry only updates once a relayed user-message with a
@@ -807,7 +807,7 @@ export interface Tree<TProjection> {
    * Return the most recent continuation invocation observed for `runId`,
    * or `undefined` if no continuation `ai-run-start` has been seen.
    * Updated on every continuation run-start (wire
-   * `x-ably-run-continue: 'true'`), independently of
+   * `run-continue: 'true'`), independently of
    * `getWinningInvocation` which stays scoped to original-invocation
    * conflict resolution. Used by the client-session run-end gate so
    * observer clients can accept a continuation's terminal `run-end`.

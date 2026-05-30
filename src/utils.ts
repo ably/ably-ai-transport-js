@@ -8,7 +8,7 @@
 
 import type * as Ably from 'ably';
 
-import { DOMAIN_HEADER_PREFIX } from './constants.js';
+import { CODEC_HEADER_PREFIX } from './constants.js';
 
 /**
  * Extract extras.headers from an Ably InboundMessage.
@@ -97,16 +97,16 @@ export const parseBool = (value: string | undefined): boolean | undefined => {
 
 /**
  * Build a domain headers record from key-value pairs. Each key is automatically
- * prefixed with {@link DOMAIN_HEADER_PREFIX}. Values that are undefined or null
+ * prefixed with {@link CODEC_HEADER_PREFIX}. Values that are undefined or null
  * are skipped; strings are set directly; booleans, numbers, and objects are
  * converted using the same rules as {@link setIfPresent}.
- * @param entries - Unprefixed key-value pairs (e.g. `{ toolCallId: 'tc-1' }` becomes `{ 'x-domain-toolCallId': 'tc-1' }`).
+ * @param entries - Unprefixed key-value pairs (e.g. `{ toolCallId: 'tc-1' }` becomes `{ 'codec-toolCallId': 'tc-1' }`).
  * @returns A new headers record with prefixed keys.
  */
 export const domainHeaders = (entries: Record<string, unknown>): Record<string, string> => {
   const h: Record<string, string> = {};
   for (const [key, value] of Object.entries(entries)) {
-    setIfPresent(h, DOMAIN_HEADER_PREFIX + key, value);
+    setIfPresent(h, CODEC_HEADER_PREFIX + key, value);
   }
   return h;
 };
@@ -114,11 +114,11 @@ export const domainHeaders = (entries: Record<string, unknown>): Record<string, 
 /**
  * Read a domain header value from a headers record.
  * @param headers - The headers record to read from.
- * @param key - The unprefixed domain key (e.g. `'toolCallId'` reads `'x-domain-toolCallId'`).
+ * @param key - The unprefixed domain key (e.g. `'toolCallId'` reads `'codec-toolCallId'`).
  * @returns The header value, or undefined if absent.
  */
 export const getDomainHeader = (headers: Record<string, string>, key: string): string | undefined =>
-  headers[DOMAIN_HEADER_PREFIX + key];
+  headers[CODEC_HEADER_PREFIX + key];
 
 /**
  * Mapped type that converts properties whose type includes `undefined`
@@ -213,15 +213,15 @@ export const headerWriter = (): DomainHeaderWriter => {
   const h: Record<string, string> = {};
   const writer: DomainHeaderWriter = {
     str: (key: string, value: string | undefined) => {
-      if (value !== undefined) h[DOMAIN_HEADER_PREFIX + key] = value;
+      if (value !== undefined) h[CODEC_HEADER_PREFIX + key] = value;
       return writer;
     },
     bool: (key: string, value: boolean | undefined) => {
-      if (value !== undefined) h[DOMAIN_HEADER_PREFIX + key] = String(value);
+      if (value !== undefined) h[CODEC_HEADER_PREFIX + key] = String(value);
       return writer;
     },
     json: (key: string, value: unknown) => {
-      if (value !== undefined && value !== null) h[DOMAIN_HEADER_PREFIX + key] = JSON.stringify(value);
+      if (value !== undefined && value !== null) h[CODEC_HEADER_PREFIX + key] = JSON.stringify(value);
       return writer;
     },
     build: () => h,

@@ -8,7 +8,7 @@
  * Domain decoders call `createDecoderCore(hooks, options)` and provide hooks
  * for stream classification, event building, and discrete decoding. Hooks
  * return a flat `TEvent[]` — no event-vs-message union. Per-message routing
- * concerns (`x-ably-codec-message-id`) are handled by the SDK via `ReducerMeta`, not
+ * concerns (`codec-message-id`) are handled by the SDK via `ReducerMeta`, not
  * here.
  */
 
@@ -49,14 +49,14 @@ export interface DecoderCoreHooks<TEvent> {
   buildDeltaEvents(tracker: StreamTrackerState, delta: string): TEvent[];
 
   /**
-   * Build domain events emitted when a stream completes (x-ably-status:complete).
+   * Build domain events emitted when a stream completes (status:complete).
    * Not called for cancelled streams. The closing headers may differ from
    * tracker.headers if the closing append carried updated headers.
    */
   buildEndEvents(tracker: StreamTrackerState, closingHeaders: Record<string, string>): TEvent[];
 
   /**
-   * Decode a discrete message (message.create where x-ably-stream is "false",
+   * Decode a discrete message (message.create where stream is "false",
    * or a non-streamable first-contact update). Handles user messages, tool
    * lifecycle, data-*, etc.
    */

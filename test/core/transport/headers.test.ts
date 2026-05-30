@@ -83,7 +83,7 @@ describe('buildTransportHeaders', () => {
     expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('');
   });
 
-  it('includes regenerates as x-ably-msg-regenerate when provided', () => {
+  it('includes regenerates as msg-regenerate when provided', () => {
     const headers = buildTransportHeaders({
       role: 'user',
       runId: 'run-1',

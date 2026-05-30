@@ -233,7 +233,7 @@ const UNRESOLVED_TOOL_STATES = new Set(['input-streaming', 'input-available', 'a
  *
  * Each input carries the prior assistant's tree codec-message-id (the one
  * holding the original `dynamic-tool` part the resolution targets) in its
- * `codecMessageId` field, so the encoder stamps `x-ably-codec-message-id`
+ * `codecMessageId` field, so the encoder stamps `codec-message-id`
  * and the reducer's direct-fold path lands the resolution on that assistant
  * in one step — no cross-message redirect-by-toolCallId fallback. Every
  * variant rides the `ai-input` wire, matching its publisher (client → input).
@@ -516,7 +516,7 @@ export const createChatTransport = (
     //
     // - Continuation: derive tool-resolution events from useChat's overlay
     //   vs the tree and pair each with the prior assistant's tree codec-message-id —
-    //   the SDK stamps the wire's `x-ably-codec-message-id` to that id so the
+    //   the SDK stamps the wire's `codec-message-id` to that id so the
     //   reducer's direct fold path runs (no redirect, no consume).
     // - Regenerate: route through `view.regenerate`. The View mints a
     //   wire-only regenerate event (`ait-regenerate`) carrying

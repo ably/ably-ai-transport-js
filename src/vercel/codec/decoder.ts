@@ -13,9 +13,9 @@
  * sequence for streamed output.
  *
  * Receive-side dispatch reads the wire `name` first and then routes by
- * the `x-domain-type` domain header carrying the codec event type.
- * Domain-specific headers use the `x-domain-` prefix. Transport-level
- * headers use the `x-ably-` prefix.
+ * the `codec-type` domain header carrying the codec event type.
+ * Domain-specific headers use the `codec-` prefix. Transport-level
+ * headers are unprefixed.
  */
 
 import type * as Ably from 'ably';
@@ -131,7 +131,7 @@ const parseJsonOrString = (value: string): unknown => {
 
 /**
  * Read the codec event type from a tracker's persistent headers. The
- * encoder stamps `x-domain-type` on every `ai-output` publish; the value
+ * encoder stamps `codec-type` on every `ai-output` publish; the value
  * carries the AI-SDK chunk family (`text` / `reasoning` / `tool-input`)
  * that the stream represents.
  * @param tracker - The stream tracker carrying the persistent headers.
@@ -588,7 +588,7 @@ const decodeAiOutputPayload = (
 };
 
 const decodeAiInputPayload = (codecType: string, input: MessagePayload, r: VercelHeaderReader): AnyEvent[] => {
-  // Multi-part user-message parts (text / file / data-*) carry x-ably-discrete
+  // Multi-part user-message parts (text / file / data-*) carry discrete
   // because they ride publishDiscreteBatch; the receive-side fans them back
   // out into a UserMessage.
   if (isDiscreteMessagePart(codecType, input.headers ?? {})) {

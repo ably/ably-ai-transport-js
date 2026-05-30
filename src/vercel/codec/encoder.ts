@@ -12,7 +12,7 @@
  *   publishes for everything else.
  *
  * The codec event's own discriminator (`kind` for inputs, `type` for
- * outputs) is carried in the `x-domain-type` domain header so the
+ * outputs) is carried in the `codec-type` domain header so the
  * decoder can dispatch. Stream-tracker state lives inside the encoder
  * core and is shared across both directions.
  */
@@ -357,7 +357,7 @@ class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
 
   /**
    * Publish a regenerate input as a discrete `ai-input` Ably message
-   * carrying `x-domain-type: 'regenerate'`. The wire carries no domain
+   * carrying `codec-type: 'regenerate'`. The wire carries no domain
    * payload — `parent` / `target` are stamped on the transport headers by
    * the client-session (it reads them off the input directly and builds
    * `buildTransportHeaders`).
@@ -371,7 +371,7 @@ class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
   /**
    * Publish a client-side tool output on the `ai-input` wire. Targets the
    * assistant addressed by `input.codecMessageId`; the wire's
-   * `x-ably-codec-message-id` is stamped via `perWrite.messageId` by the
+   * `codec-message-id` is stamped via `perWrite.messageId` by the
    * client-session.
    * @param input - The tool-output input.
    * @param perWrite - Per-write overrides carrying the wire codecMessageId.

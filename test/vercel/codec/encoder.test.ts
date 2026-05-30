@@ -3,7 +3,7 @@ import type * as AI from 'ai';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  DOMAIN_HEADER_PREFIX as D,
+  CODEC_HEADER_PREFIX as D,
   EVENT_AI_INPUT,
   EVENT_AI_OUTPUT,
   HEADER_CODEC_MESSAGE_ID,
@@ -271,7 +271,7 @@ describe('Vercel encoder', () => {
       expect(headersOf(msg)[`${D}messageId`]).toBe('chunk-id');
     });
 
-    it('stamps x-ably-codec-message-id from WriteOptions on all publishes', async () => {
+    it('stamps codec-message-id from WriteOptions on all publishes', async () => {
       const encoder = createEncoder(writer);
       const perWrite = { messageId: 'msg-1' };
       await encoder.publishOutput({ type: 'start', messageId: 'msg-1' }, perWrite);
@@ -546,7 +546,7 @@ describe('Vercel encoder', () => {
   // -- user message inputs (publishInput) -----------------------------------
 
   describe('publishing user-message inputs', () => {
-    it('publishes UIMessage parts as discrete ai-input batch with per-part x-domain-type', async () => {
+    it('publishes UIMessage parts as discrete ai-input batch with per-part codec-type', async () => {
       const encoder = createEncoder(writer);
       const msg: AI.UIMessage = {
         id: 'msg-1',
@@ -628,7 +628,7 @@ describe('Vercel encoder', () => {
       // toolCallId, not by codec-message-id.
       expect(headersOf(msg)[HEADER_CODEC_MESSAGE_ID]).toBe('continuation-codec-message-id');
       // No HEADER_AMEND on the wire — the amend concept has been retired.
-      expect(headersOf(msg)['x-ably-amend']).toBeUndefined();
+      expect(headersOf(msg).amend).toBeUndefined();
     });
   });
 
@@ -652,10 +652,10 @@ describe('Vercel encoder', () => {
           extras: {
             headers: {
               [HEADER_CODEC_MESSAGE_ID]: 'regen-codec-message-id',
-              'x-ably-event-id': 'prompt-1',
-              'x-ably-role': 'user',
-              'x-ably-parent': 'user-U1',
-              'x-ably-msg-regenerate': 'asst-A1',
+              'event-id': 'prompt-1',
+              role: 'user',
+              parent: 'user-U1',
+              'msg-regenerate': 'asst-A1',
             },
           },
         },
@@ -668,17 +668,17 @@ describe('Vercel encoder', () => {
       expect(msg.data).toBe('');
       const headers = headersOf(msg);
       expect(headers[HEADER_CODEC_MESSAGE_ID]).toBe('regen-codec-message-id');
-      expect(headers['x-ably-event-id']).toBe('prompt-1');
-      expect(headers['x-ably-role']).toBe('user');
-      expect(headers['x-ably-parent']).toBe('user-U1');
-      expect(headers['x-ably-msg-regenerate']).toBe('asst-A1');
+      expect(headers['event-id']).toBe('prompt-1');
+      expect(headers.role).toBe('user');
+      expect(headers.parent).toBe('user-U1');
+      expect(headers['msg-regenerate']).toBe('asst-A1');
     });
   });
 
   // -- client tool output inputs (publishInput → ai-input wire) -------------
 
   describe('publishing client tool output inputs', () => {
-    it('publishes a tool-result input on the ai-input wire with x-domain-type: tool-result', async () => {
+    it('publishes a tool-result input on the ai-input wire with codec-type: tool-result', async () => {
       const encoder = createEncoder(writer);
       // Client-published continuation tool results are first-class
       // VercelInputs and ride the `ai-input` wire (NOT `ai-output`).
@@ -700,13 +700,13 @@ describe('Vercel encoder', () => {
       expect(headersOf(msg)[`${D}type`]).toBe('tool-result');
       expect(headersOf(msg)[`${D}toolCallId`]).toBe('tc-1');
       expect(headersOf(msg)[HEADER_CODEC_MESSAGE_ID]).toBe('continuation-codec-message-id');
-      expect(headersOf(msg)['x-ably-amend']).toBeUndefined();
+      expect(headersOf(msg).amend).toBeUndefined();
       // CAST: data is unknown — we know the encoder shape from above.
       const data = msg.data as { output: unknown };
       expect(data.output).toEqual({ latitude: 51.5, longitude: -0.1 });
     });
 
-    it('publishes a tool-result-error input on the ai-input wire with x-domain-type: tool-result-error', async () => {
+    it('publishes a tool-result-error input on the ai-input wire with codec-type: tool-result-error', async () => {
       const encoder = createEncoder(writer);
       await encoder.publishInput(
         {
@@ -724,7 +724,7 @@ describe('Vercel encoder', () => {
       expect(headersOf(msg)[`${D}type`]).toBe('tool-result-error');
       expect(headersOf(msg)[`${D}toolCallId`]).toBe('tc-1');
       expect(headersOf(msg)[HEADER_CODEC_MESSAGE_ID]).toBe('continuation-codec-message-id');
-      expect(headersOf(msg)['x-ably-amend']).toBeUndefined();
+      expect(headersOf(msg).amend).toBeUndefined();
       // CAST: data is unknown — we know the encoder shape from above.
       const data = msg.data as { message: string };
       expect(data.message).toBe('geolocation denied');

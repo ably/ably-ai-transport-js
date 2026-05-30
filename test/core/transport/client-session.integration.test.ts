@@ -18,7 +18,7 @@ import type * as AI from 'ai';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
-  DOMAIN_HEADER_PREFIX,
+  CODEC_HEADER_PREFIX,
   EVENT_AI_INPUT,
   EVENT_AI_OUTPUT,
   EVENT_CANCEL,
@@ -263,7 +263,7 @@ const publishCompleteRun = async (
 
 /**
  * Publish a regenerate Run lifecycle on the channel. Emits a run-start
- * lifecycle carrying `x-ably-msg-regenerate` and `x-ably-parent`, streams
+ * lifecycle carrying `msg-regenerate` and `parent`, streams
  * an assistant text response under the new runId via the codec encoder,
  * then publishes run-end. Used to seed history for tests that exercise
  * the View's regenerate-sibling surface without standing up a separate
@@ -297,8 +297,8 @@ const publishRegenerateRun = async (
         [HEADER_RUN_ID]: opts.runId,
         [HEADER_RUN_CLIENT_ID]: opts.clientId,
         [HEADER_INVOCATION_ID]: opts.invocationId,
-        'x-ably-parent': opts.parentMsgId,
-        'x-ably-msg-regenerate': opts.regeneratesMsgId,
+        parent: opts.parentMsgId,
+        'msg-regenerate': opts.regeneratesMsgId,
       },
     },
   });
@@ -1312,7 +1312,7 @@ describe('ClientSession integration', () => {
     expect(found).toBeDefined();
 
     const foundHeaders = (found?.extras as { headers?: Record<string, string> } | undefined)?.headers ?? {};
-    expect(foundHeaders['x-ably-invocation-id']).toBeDefined();
+    expect(foundHeaders['invocation-id']).toBeDefined();
   });
 
   // -------------------------------------------------------------------------
@@ -1476,7 +1476,7 @@ describe('ClientSession integration', () => {
   /**
    * Scenario: with two concurrent agent runs in flight under different runIds,
    * `cancel(runId)` must cancel only the targeted run and leave the sibling
-   * untouched. The cancel publish on the channel must carry `x-ably-run-id`
+   * untouched. The cancel publish on the channel must carry `run-id`
    * and no other cancel headers.
    */
   it('cancel(runId) cancels only the targeted run', async () => {
@@ -1574,7 +1574,7 @@ describe('ClientSession integration', () => {
     await survivingRun.end('complete');
     await targetRun.end('cancelled');
 
-    // Verify the cancel wire message carried x-ably-run-id pointing at the target.
+    // Verify the cancel wire message carried run-id pointing at the target.
     expect(cancelMessages.length).toBeGreaterThanOrEqual(1);
     const firstCancel = cancelMessages[0];
     expect(firstCancel).toBeDefined();
@@ -1636,7 +1636,7 @@ describe('ClientSession integration', () => {
       if (headers[HEADER_ROLE] !== 'user') return;
       const runId = headers[HEADER_RUN_ID];
       const invocationId = headers[HEADER_INVOCATION_ID];
-      const inputEventId = headers['x-ably-event-id'];
+      const inputEventId = headers['event-id'];
       if (!runId || !invocationId || !inputEventId) return;
       observerChannel.unsubscribe(observerListener);
       resolveIds({ runId, invocationId, inputEventId });
@@ -1699,7 +1699,7 @@ describe('ClientSession integration', () => {
     await observerChannel.subscribe((msg) => {
       if (msg.name === EVENT_AI_INPUT) {
         inputMessages.push(msg);
-        if (getHeaders(msg)[`${DOMAIN_HEADER_PREFIX}type`] === 'tool-result') resolveInput();
+        if (getHeaders(msg)[`${CODEC_HEADER_PREFIX}type`] === 'tool-result') resolveInput();
       } else if (msg.name === EVENT_AI_OUTPUT) {
         outputMessages.push(msg);
       }
@@ -1727,14 +1727,14 @@ describe('ClientSession integration', () => {
 
     await gotInput;
 
-    const toolResult = inputMessages.find((m) => getHeaders(m)[`${DOMAIN_HEADER_PREFIX}type`] === 'tool-result');
+    const toolResult = inputMessages.find((m) => getHeaders(m)[`${CODEC_HEADER_PREFIX}type`] === 'tool-result');
     expect(toolResult).toBeDefined();
     if (toolResult) {
       const headers = getHeaders(toolResult);
-      expect(headers[`${DOMAIN_HEADER_PREFIX}toolCallId`]).toBe(toolCallId);
+      expect(headers[`${CODEC_HEADER_PREFIX}toolCallId`]).toBe(toolCallId);
     }
     // Crucially, no client tool result should ever appear on the ai-output wire.
-    expect(outputMessages.some((m) => getHeaders(m)[`${DOMAIN_HEADER_PREFIX}type`] === 'tool-result')).toBe(false);
+    expect(outputMessages.some((m) => getHeaders(m)[`${CODEC_HEADER_PREFIX}type`] === 'tool-result')).toBe(false);
   });
 
   /**
@@ -1766,7 +1766,7 @@ describe('ClientSession integration', () => {
         inputMessages.push(msg);
       } else if (msg.name === EVENT_AI_OUTPUT) {
         outputMessages.push(msg);
-        if (getHeaders(msg)[`${DOMAIN_HEADER_PREFIX}type`] === 'tool-output-available') resolveOutput();
+        if (getHeaders(msg)[`${CODEC_HEADER_PREFIX}type`] === 'tool-output-available') resolveOutput();
       }
     });
 
@@ -1791,11 +1791,11 @@ describe('ClientSession integration', () => {
 
     await gotOutput;
 
-    expect(outputMessages.some((m) => getHeaders(m)[`${DOMAIN_HEADER_PREFIX}type`] === 'tool-output-available')).toBe(
+    expect(outputMessages.some((m) => getHeaders(m)[`${CODEC_HEADER_PREFIX}type`] === 'tool-output-available')).toBe(
       true,
     );
     // The agent must NOT publish tool outputs on the input wire.
-    expect(inputMessages.some((m) => getHeaders(m)[`${DOMAIN_HEADER_PREFIX}type`] === 'tool-output-available')).toBe(
+    expect(inputMessages.some((m) => getHeaders(m)[`${CODEC_HEADER_PREFIX}type`] === 'tool-output-available')).toBe(
       false,
     );
   });

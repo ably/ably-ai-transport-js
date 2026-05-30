@@ -55,7 +55,7 @@ export interface WriteOptions {
   clientId?: string;
   /** Override the default extras for this write. */
   extras?: Extras;
-  /** Message identity for projection routing. Stamped as `x-ably-codec-message-id`. */
+  /** Message identity for projection routing. Stamped as `codec-message-id`. */
   messageId?: string;
 }
 
@@ -136,7 +136,7 @@ export interface ReducerMeta {
    */
   serial: string;
   /**
-   * Optional `x-ably-codec-message-id` from the inbound Ably message. Reducers use this
+   * Optional `codec-message-id` from the inbound Ably message. Reducers use this
    * to route an event to a target message within the projection (e.g. to
    * amend an existing message in the same Run).
    */
@@ -183,7 +183,7 @@ export interface EncoderOptions {
   /** Hook called before each Ably message is published. Mutate the message in place to add transport-level headers. */
   onMessage?: (message: Ably.Message) => void;
   /**
-   * Default `x-ably-codec-message-id` for messages where the event payload doesn't
+   * Default `codec-message-id` for messages where the event payload doesn't
    * supply one. Overridden by `WriteOptions.messageId` per-publish.
    */
   messageId?: string;
@@ -272,7 +272,7 @@ export interface CodecInputEvent {
    */
   kind: string;
   /**
-   * Sets the wire `x-ably-parent` header — the codec-message-id of the
+   * Sets the wire `parent` header — the codec-message-id of the
    * preceding codec-message on this branch. When omitted, the SDK
    * auto-computes the parent from the visible branch tail at send time.
    */
@@ -284,14 +284,14 @@ export interface CodecInputEvent {
    * `kind`s may give it other meanings. The input event itself does not
    * create a fork — it requests one. The fork relationship is established
    * on the agent's response (and on `ai-run-start`), which the codec
-   * encoder maps `target` to via the wire's `x-ably-fork-of` header.
+   * encoder maps `target` to via the wire's `fork-of` header.
    */
   target?: string;
   /**
    * Targets an existing codec-message-id instead of minting a fresh one.
    * Used by continuation inputs (tool results, approval responses) that
    * amend an existing assistant message rather than creating a new one;
-   * the wire's `x-ably-codec-message-id` is stamped with this value so
+   * the wire's `codec-message-id` is stamped with this value so
    * the reducer's direct-fold path matches by codec-message-id.
    */
   codecMessageId?: string;

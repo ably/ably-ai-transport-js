@@ -1,7 +1,7 @@
 import type * as Ably from 'ably';
 import { describe, expect, it } from 'vitest';
 
-import { DOMAIN_HEADER_PREFIX as D } from '../src/constants.js';
+import { CODEC_HEADER_PREFIX as D } from '../src/constants.js';
 import {
   getHeaders,
   headerReader,

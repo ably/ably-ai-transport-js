@@ -95,7 +95,7 @@ const apply = (tree: TreeInternal<TreeEvent, TestProjection>, opts: ApplyOpts): 
   if (opts.codecMessageId) h[HEADER_CODEC_MESSAGE_ID] = opts.codecMessageId;
   if (opts.parent) h[HEADER_PARENT] = opts.parent;
   if (opts.forkOf) h[HEADER_FORK_OF] = opts.forkOf;
-  if (opts.regenerates) h['x-ably-msg-regenerate'] = opts.regenerates;
+  if (opts.regenerates) h['msg-regenerate'] = opts.regenerates;
   if (opts.role) h[HEADER_ROLE] = opts.role;
   if (opts.invocationId) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.clientId) h[HEADER_RUN_CLIENT_ID] = opts.clientId;
@@ -199,7 +199,7 @@ describe('Tree', () => {
       expect(tree.getRunByCodecMessageId('m-unknown')).toBeUndefined();
     });
 
-    it('drops messages without an x-ably-run-id header', () => {
+    it('drops messages without an run-id header', () => {
       tree.applyMessage([{ type: 'append-message', message: { id: 'a', content: 'orphan' } }], {}, 's1');
       expect(tree.flattenNodes(NO_SELECTIONS)).toEqual([]);
     });
@@ -729,7 +729,7 @@ describe('Tree', () => {
         message: { id: 'asst1', content: 'reply' },
         serial: 's1',
       });
-      // R2's assistant wire arrives WITHOUT x-ably-msg-regenerate.
+      // R2's assistant wire arrives WITHOUT msg-regenerate.
       apply(tree, {
         runId: 'R2',
         codecMessageId: 'a2',
@@ -756,7 +756,7 @@ describe('Tree', () => {
         message: { id: 'user1', content: 'q' },
         serial: 's1',
       });
-      // R2's first wire (assistant) arrives WITHOUT x-ably-parent.
+      // R2's first wire (assistant) arrives WITHOUT parent.
       apply(tree, {
         runId: 'R2',
         codecMessageId: 'a2',
@@ -781,7 +781,7 @@ describe('Tree', () => {
         message: { id: 'user1', content: 'q' },
         serial: 's1',
       });
-      // R2's user wire arrives WITHOUT x-ably-parent / x-ably-fork-of.
+      // R2's user wire arrives WITHOUT parent / fork-of.
       apply(tree, {
         runId: 'R2',
         codecMessageId: 'u2',
@@ -806,7 +806,7 @@ describe('Tree', () => {
       //   1. User sends u1 -> R1 created, R1.parentRunId = undefined (root run).
       //   2. Agent streams a1 inside R1.
       //   3. Client publishes a tool-resolution continuation wire stamped
-      //      with x-ably-msg-id=a1, x-ably-parent=a1, x-ably-run-continue=true.
+      //      with msg-id=a1, parent=a1, run-continue=true.
       //   4. Agent's continuation run-start arrives carrying parent=a1
       //      (read from the matched continuation wire's headers).
       //   5. Pre-fix the backfill resolved msgIdToRunId[a1] = R1 and set
@@ -965,7 +965,7 @@ describe('Tree', () => {
         serial: 's1',
       });
 
-      // RunNode.clientId was populated from the x-ably-run-client-id header
+      // RunNode.clientId was populated from the run-client-id header
       // on Run creation; run-start does not overwrite it.
       expect(tree.getRunNode('R1')?.clientId).toBe('client-a');
 
@@ -1171,7 +1171,7 @@ describe('Tree', () => {
       expect(tree.getWinningInvocation('R1')).toBeUndefined();
     });
 
-    it('ignores continuation wires (x-ably-run-continue: true)', () => {
+    it('ignores continuation wires (run-continue: true)', () => {
       // Original user prompt sets the winner at s1.
       apply(tree, {
         runId: 'R1',

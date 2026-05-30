@@ -113,7 +113,7 @@ const withLiveMessages = (
  * Fold a pre-sorted array of wire messages for a single run into a projection.
  *
  * Skips lifecycle events (`ai-run-start`, `ai-run-end`) and stops before the
- * message whose `x-ably-codec-message-id` equals `truncateAt` (exclusive —
+ * message whose `codec-message-id` equals `truncateAt` (exclusive —
  * that message is not folded). Used by both `loadRunProjection` (no truncation)
  * and `loadConversation` (ancestor truncation for regenerate / fork).
  * @param codec - Codec used to decode and fold events.
@@ -240,12 +240,12 @@ const loadRunProjection = async <
  *
  * Scope: this awaits the data-carrying input events a send publishes —
  * fresh prompts, edits, regenerates, tool results, and approvals. Control
- * events (cancel etc.) carry no `x-ably-event-id`, are dispatched
+ * events (cancel etc.) carry no `event-id`, are dispatched
  * separately, and never enter this lookup.
  *
  * Each client-published event in a send (user-message AND amend events
  * such as tool-approval responses and client tool outputs) is stamped
- * with its own `x-ably-event-id`.
+ * with its own `event-id`.
  * The lookup matches incoming messages against the expected set; ids
  * not in the set are ignored, duplicates (rewind redelivering a message
  * also seen live) are deduped by event-id. The wait completes when
@@ -718,9 +718,9 @@ class DefaultAgentSession<
     const runId = headers[HEADER_RUN_ID];
 
     // Malformed cancel: drop with warn. The protocol requires a single
-    // `x-ably-run-id` header identifying the target run.
+    // `run-id` header identifying the target run.
     if (!runId) {
-      this._logger?.warn('DefaultAgentSession._handleCancelMessage(); missing x-ably-run-id header', {
+      this._logger?.warn('DefaultAgentSession._handleCancelMessage(); missing run-id header', {
         serial: msg.serial,
       });
       return;
@@ -825,10 +825,10 @@ class DefaultAgentSession<
       // Dispatch client-published input events to any pending
       // lookup keyed by invocation-id. Every client-originated event in
       // an invocation (user-message AND amend events such as tool-approval
-      // responses and client tool outputs) carries `x-ably-event-id`; the
+      // responses and client tool outputs) carries `event-id`; the
       // lookup waits for every promised id to arrive before letting the
       // run start LLM work. Server-side lifecycle messages (run-start,
-      // run-end, cancel, error) never stamp `x-ably-event-id`, so
+      // run-end, cancel, error) never stamp `event-id`, so
       // they're naturally excluded.
       const headers = getHeaders(msg);
       const invocationId = headers[HEADER_INVOCATION_ID];
@@ -1398,7 +1398,7 @@ class DefaultAgentSession<
         //   3. `resolvedParent` from the input-event lookup's `firstLookupHeaders`.
         //      For regenerate wires the lookup matches the event (by
         //      inputEventId) but produces no MessageNodes, so `viewMessages` is
-        //      empty — the regenerate event's `x-ably-parent` header carries
+        //      empty — the regenerate event's `parent` header carries
         //      the parent codec-message-id we need to thread under.
         // Owning the default here means agent routes don't have to remember
         // to pass `{ parent: lastUserCodecMessageId }` to keep tree threading correct;
@@ -1407,7 +1407,7 @@ class DefaultAgentSession<
         const lastViewCodecMessageId = viewMessages.at(-1)?.codecMessageId;
         const assistantParent = streamOpts?.parent ?? lastViewCodecMessageId ?? resolvedParent;
         const assistantForkOf = streamOpts?.forkOf ?? resolvedForkOf;
-        // Echo `x-ably-msg-regenerate` on the assistant wire so that a
+        // Echo `msg-regenerate` on the assistant wire so that a
         // client receiving the assistant chunk before `ai-run-start`
         // (e.g. via history pagination across a page boundary, or a lost
         // lifecycle publish) can still populate `RunNode.regeneratesCodecMessageId`

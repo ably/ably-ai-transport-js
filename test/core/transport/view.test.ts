@@ -131,7 +131,7 @@ const apply = (tree: DefaultTree<TestEvent, TestProjection>, opts: ApplyOpts): v
   if (opts.codecMessageId) h[HEADER_CODEC_MESSAGE_ID] = opts.codecMessageId;
   if (opts.parent) h[HEADER_PARENT] = opts.parent;
   if (opts.forkOf) h[HEADER_FORK_OF] = opts.forkOf;
-  if (opts.regenerates) h['x-ably-msg-regenerate'] = opts.regenerates;
+  if (opts.regenerates) h['msg-regenerate'] = opts.regenerates;
   if (opts.role) h[HEADER_ROLE] = opts.role;
   if (opts.invocationId) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.runContinue) h[HEADER_RUN_CONTINUE] = 'true';
@@ -669,7 +669,7 @@ describe('DefaultView', () => {
       const events = call[0];
       expect(events).toHaveLength(1);
       // The View pulls the caller TMessage.id through onto the input's
-      // `codecMessageId` so the wire `x-ably-codec-message-id` matches the
+      // `codecMessageId` so the wire `codec-message-id` matches the
       // local id; the wrapped UserMessage carries the original message.
       expect(events[0]).toMatchObject({
         kind: 'user-message',
@@ -909,7 +909,7 @@ describe('DefaultView', () => {
       const call = vi.mocked(sendDelegate).mock.calls[0];
       if (!call) throw new Error('expected delegate call');
       const [events, sendOptions, parentCodecMessageId] = call;
-      // The wire's `x-ably-parent` must be u1 (the user prompt), NOT a1
+      // The wire's `parent` must be u1 (the user prompt), NOT a1
       // (the hidden original assistant).
       expect(sendOptions?.parent).toBe('u1');
       expect(parentCodecMessageId).toBe('u1');
@@ -921,7 +921,7 @@ describe('DefaultView', () => {
       const event = events[0];
       // The regenerate input's `target` carries the anchor msg-id; the
       // session reads it directly off the input to stamp
-      // `x-ably-msg-regenerate` on the wire.
+      // `msg-regenerate` on the wire.
       if (!event || !('kind' in event) || event.kind !== 'regenerate') {
         throw new Error('expected regenerate input');
       }
@@ -1528,7 +1528,7 @@ describe('DefaultView', () => {
         extras: {
           headers: {
             [HEADER_RUN_ID]: 'R-empty',
-            'x-ably-run-client-id': '',
+            'run-client-id': '',
           },
         },
       } as unknown as Ably.InboundMessage;

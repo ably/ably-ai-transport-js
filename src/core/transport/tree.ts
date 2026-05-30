@@ -1,6 +1,6 @@
 /**
  * Tree — materializes a branching conversation as a forest of Runs,
- * keyed by `x-ably-run-id`.
+ * keyed by `run-id`.
  *
  * Each Run holds a per-Run codec {@link TProjection} which the Tree folds
  * from inbound events. The Tree owns the complete conversation state across
@@ -8,12 +8,12 @@
  * flat message list for rendering.
  *
  * `applyMessage()` is the entry point for inbound channel messages — it
- * routes by `x-ably-run-id`, folds events into the Run's projection, and
+ * routes by `run-id`, folds events into the Run's projection, and
  * maintains a secondary `codecMessageId -> runId` index. `applyRunLifecycle()`
  * handles run-start / run-end events.
  *
  * Sibling structure (edits / regenerates) is derived from RunNode.forkOf,
- * which the Tree resolves from the wire's `x-ably-fork-of` header via the
+ * which the Tree resolves from the wire's `fork-of` header via the
  * codecMessageId index.
  */
 
@@ -91,7 +91,7 @@ export interface TreeInternal<TEvent, TProjection> extends Tree<TProjection> {
    *
    * Three message kinds flow through here:
    * 1. Fresh user prompt: creates Run if missing, updates winner, folds events.
-   * 2. Continuation tool-resolution (`x-ably-run-continue: 'true'`): routes to
+   * 2. Continuation tool-resolution (`run-continue: 'true'`): routes to
    *    existing Run via codecMessageIdToRunId, folds events, skips winner update.
    * 3. Assistant/agent events: routes to existing Run by runId, folds events.
    * @param events - Decoded codec events to fold into the Run's projection.
@@ -148,7 +148,7 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
   private readonly _runIndex = new Map<string, InternalRunNode<TProjection>>();
 
   /**
-   * Maps observed `x-ably-codec-message-id` values to their owning runId. Used to
+   * Maps observed `codec-message-id` values to their owning runId. Used to
    * resolve fork-of codec-message-ids and parent codec-message-ids to run-ids, route
    * continuation amend wires to existing Runs, and back UI lookups that
    * hold a codec-message-id.
@@ -602,7 +602,7 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
         // canonical source for parent/forkOf/regenerates; only fill in
         // fields the wire didn't already populate.
         //
-        // Continuation run-starts (`x-ably-run-continue: 'true'`) are
+        // Continuation run-starts (`run-continue: 'true'`) are
         // NOT authoritative for structural metadata: the parent / forkOf
         // / regenerates carried on the wire are read from the client's
         // tool-resolution wire (whose parent points back at a message in
@@ -871,7 +871,7 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
    * with `role: user` and a non-null serial — optimistic (null-serial)
    * inserts never win, otherwise a fresh-but-unacked retry would prematurely
    * supersede the in-flight invocation. {@link applyMessage} gates this
-   * method on the `x-ably-run-continue` header, so continuation
+   * method on the `run-continue` header, so continuation
    * user-messages (tool-resolution traffic on the original prompt's runId)
    * never enter here — otherwise their higher serial would supersede the
    * original prompt.

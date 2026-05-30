@@ -34,16 +34,16 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
       const messages = Array.isArray(msg) ? msg : [msg];
       for (const m of messages) {
         const headers = (m.extras as { headers?: Record<string, string> } | undefined)?.headers ?? {};
-        if (headers['x-ably-role'] === 'user' && headers['x-ably-run-id'] && mock.listener) {
+        if (headers.role === 'user' && headers['run-id'] && mock.listener) {
           const captured = mock.listener;
           queueMicrotask(() => {
             captured({
               name: 'ai-run-start',
               extras: {
                 headers: {
-                  'x-ably-run-id': headers['x-ably-run-id'] ?? '',
-                  'x-ably-run-client-id': headers['x-ably-run-client-id'] ?? '',
-                  'x-ably-invocation-id': headers['x-ably-invocation-id'] ?? '',
+                  'run-id': headers['run-id'] ?? '',
+                  'run-client-id': headers['run-client-id'] ?? '',
+                  'invocation-id': headers['invocation-id'] ?? '',
                 },
               },
               serial: '01H_run_start_sim',

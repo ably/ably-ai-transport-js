@@ -365,11 +365,9 @@ class DefaultClientSession<
         }
 
         if (runId) {
-          // Defensive run-end gating: when a run has multiple invocations
-          // (e.g. developer manually retried under the same runId, OR the
-          // run was suspended and continued under a fresh invocation), only
-          // the currently-bound invocation's run-end should terminate the
-          // local run state.
+          // Defensive run-end gating: when a run was suspended and continued
+          // under a fresh invocation, only the currently-bound invocation's
+          // run-end should terminate the local run state.
           //
           // Resolution order:
           // 1. `_ownRunIds`: own runs always have the latest invocation
@@ -383,31 +381,23 @@ class DefaultClientSession<
           //    cleared (e.g. an earlier complete run-end already ran).
           // 3. `latestContinuation`: the most recent continuation
           //    run-start's invocation. Observer clients have no
-          //    `_ownRunIds` / `routerActive` entry, and `treeWinner`
-          //    stays pinned to the original invocation (continuations
-          //    don't advance it). Without this fallback, every
-          //    continuation's `run-end` would be dropped on observer
-          //    sessions, leaving status badges stuck on "streaming".
-          // 4. `treeWinner`: serial-derived winner for observer-run gating
-          //    of the ORIGINAL prompt's invocation. Only consulted when
-          //    no continuation has been observed; catches losing-
-          //    invocation echoes from competing agents publishing under
-          //    the same runId.
+          //    `_ownRunIds` / `routerActive` entry, so without this
+          //    fallback every continuation's `run-end` would be dropped
+          //    on observer sessions, leaving status badges stuck on
+          //    "streaming".
           //
           // A run-end whose invocation matches none of these is dropped.
           const ownActive = this._ownRunIds.get(runId);
           const routerActive = this._router.getActiveInvocation(runId);
           const latestContinuation = this._tree.getLatestContinuationInvocation(runId);
-          const treeWinner = this._tree.getWinningInvocation(runId)?.invocationId;
-          const expectedInvocation = ownActive ?? routerActive ?? latestContinuation ?? treeWinner;
+          const expectedInvocation = ownActive ?? routerActive ?? latestContinuation;
           if (invocationId !== undefined && expectedInvocation !== undefined && expectedInvocation !== invocationId) {
-            this._logger.debug('ClientSession.runEnd; ignoring losing-invocation run-end', {
+            this._logger.debug('ClientSession.runEnd; ignoring stale-invocation run-end', {
               runId,
               invocationId,
               ownActive,
               routerActive,
               latestContinuation,
-              treeWinner,
             });
             this._tree.emitAblyMessage(ablyMessage);
             return;

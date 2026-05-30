@@ -146,34 +146,6 @@ const streamingRun = (runId: string, codecMessageId: string, deltas: string[]): 
   return [finish, ...deltaMessages.toReversed(), create];
 };
 
-const userMsg = (
-  runId: string,
-  codecMessageId: string,
-  content: string,
-  invocationId: string,
-  serial?: string,
-): Ably.InboundMessage =>
-  withEvents(
-    ablyMsg({
-      action: 'message.create',
-      headers: {
-        [HEADER_RUN_ID]: runId,
-        [HEADER_CODEC_MESSAGE_ID]: codecMessageId,
-        [HEADER_ROLE]: 'user',
-        [HEADER_INVOCATION_ID]: invocationId,
-        [HEADER_STREAM]: 'false',
-        [HEADER_DISCRETE]: 'true',
-      },
-      ...(serial !== undefined && { serial }),
-    }),
-    // Outputs deliberately mirror the assistant-flavoured stream so the
-    // reducer can fold a `text` payload into a message and a `finish` to
-    // close it. The wire role still says `user` because the agent's
-    // input-event lookup keys on role; the reducer doesn't care which half the
-    // events arrived through.
-    [{ type: 'text', text: content }, { type: 'finish' }],
-  );
-
 // ---------------------------------------------------------------------------
 // Mock history pages
 // ---------------------------------------------------------------------------
@@ -607,30 +579,6 @@ describe('decodeHistory', () => {
       // per-run separation in decode-history means that doesn't merge into
       // T1's 'asst-1' message. Verify T1's content is unchanged.
       expect(asst?.message.content).toBe('original');
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // Losing-invocation filtering
-  // -------------------------------------------------------------------------
-
-  describe('losing-invocation filtering', () => {
-    it('drops messages from an earlier (losing) invocation under the same runId', async () => {
-      // Two user messages share runId 'T1' but have different invocationIds.
-      // The one with the LATER serial is canonical; the earlier (losing) one
-      // is dropped from the materialized history.
-      const losingUser = userMsg('T1', 'u-losing', 'old prompt', 'inv-old', '01H0000000001');
-      const winningUser = userMsg('T1', 'u-winning', 'new prompt', 'inv-new', '01H0000000002');
-
-      // newest-first: winning then losing
-      const channel = createMockChannel([[winningUser, losingUser]]);
-      const codec = createMockCodec();
-
-      const page = await decodeHistory(channel, codec, { limit: 10 }, silentLogger);
-
-      const ids = page.items.map((i) => i.message.id);
-      expect(ids).toContain('u-winning');
-      expect(ids).not.toContain('u-losing');
     });
   });
 

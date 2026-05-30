@@ -26,7 +26,7 @@ sequenceDiagram
     Note right of CD: stream complete
 ```
 
-Each stream has a lifecycle tracked by the `x-ably-status` header:
+Each stream has a lifecycle tracked by the `status` header:
 
 | Status      | Meaning                               |
 | ----------- | ------------------------------------- |

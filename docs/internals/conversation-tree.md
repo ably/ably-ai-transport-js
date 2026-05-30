@@ -1,6 +1,6 @@
 # Conversation tree
 
-The conversation tree (`src/core/transport/tree.ts`) materializes a branching conversation as a forest of **Runs**, keyed by `x-ably-run-id`. It handles Run ordering and sibling grouping for edit/regenerate forks. The tree is a data structure with codec wiring - it owns the per-Run [TProjection](glossary.md#tprojection) and folds inbound events into it, but selection state and navigation (`select()`, `getSelectedIndex()`) live on the View.
+The conversation tree (`src/core/transport/tree.ts`) materializes a branching conversation as a forest of **Runs**, keyed by `run-id`. It handles Run ordering and sibling grouping for edit/regenerate forks. The tree is a data structure with codec wiring - it owns the per-Run [TProjection](glossary.md#tprojection) and folds inbound events into it, but selection state and navigation (`select()`, `getSelectedIndex()`) live on the View.
 
 The tree is the single source of truth for conversation state. The view's `flattenNodes()` delegates to the tree's internal `flattenNodes()` with pagination filtering and branch selection.
 
@@ -13,7 +13,7 @@ Ably assigns a [serial](glossary.md#serial-ably) - a lexicographically sortable 
 - **Serial-bearing Runs** sort lexicographically by startSerial
 - **Null-startSerial Runs** (optimistic inserts before [server relay](wire-protocol.md#optimistic-reconciliation)) sort after all serial-bearing Runs, ordered among themselves by insertion sequence
 
-Note that serial order is not necessarily delivery order - Runs published concurrently from different connections may interleave in any order. Serial order provides a stable, deterministic total order, reflecting Ably's acceptance order rather than any single client's observation order. Parent headers ([`x-ably-parent`](wire-protocol.md#branching-headers)) are only structurally meaningful at branch points - for linear sequences, startSerial order is sufficient.
+Note that serial order is not necessarily delivery order - Runs published concurrently from different connections may interleave in any order. Serial order provides a stable, deterministic total order, reflecting Ably's acceptance order rather than any single client's observation order. Parent headers ([`parent`](wire-protocol.md#branching-headers)) are only structurally meaningful at branch points - for linear sequences, startSerial order is sufficient.
 
 ## Data structures
 
@@ -31,10 +31,10 @@ Each `RunNode<TProjection>` stores:
 
 ```typescript
 {
-  runId: string; // From x-ably-run-id
-  parentRunId: string | undefined; // Resolved via _msgIdToRunId from x-ably-parent
-  forkOf: string | undefined; // runId of the forked Run (resolved from x-ably-fork-of)
-  clientId: string; // From x-ably-run-client-id - the client that started this Run
+  runId: string; // From run-id
+  parentRunId: string | undefined; // Resolved via _msgIdToRunId from parent
+  forkOf: string | undefined; // runId of the forked Run (resolved from fork-of)
+  clientId: string; // From run-client-id - the client that started this Run
   status: 'active' | 'complete' | 'cancelled' | 'error' | 'suspended';
   projection: TProjection; // Codec-folded per-Run state
   startSerial: string | undefined; // First observed message's serial
@@ -48,12 +48,12 @@ The tree exposes two mutation methods on its internal interface (used by the ses
 
 ### `applyMessage(events, headers, serial?)`
 
-The entry point for every inbound channel message. Routes by `x-ably-run-id`, creates the Run if needed, folds events into the Run's projection, and maintains the `msgId -> runId` index.
+The entry point for every inbound channel message. Routes by `run-id`, creates the Run if needed, folds events into the Run's projection, and maintains the `msgId -> runId` index.
 
 Three message kinds flow through here:
 
 1. **Fresh user prompt**: creates the Run if missing, updates the winning-invocation map, folds events into the projection.
-2. **Continuation tool-resolution** (`x-ably-run-continue: 'true'`): routes to the existing Run via `_msgIdToRunId`, folds events, **skips the winner update** (continuation wires share the runId with the original prompt but represent tool-resolution traffic, not a competing user-prompt).
+2. **Continuation tool-resolution** (`run-continue: 'true'`): routes to the existing Run via `_msgIdToRunId`, folds events, **skips the winner update** (continuation wires share the runId with the original prompt but represent tool-resolution traffic, not a competing user-prompt).
 3. **Assistant/agent events**: routes to the existing Run by runId, folds events.
 
 The optimistic send path (client publishing a fresh user-message) calls `applyMessage` with a `undefined` serial. When the server relay arrives, the same Run's startSerial gets promoted from null to a real serial, and the Run re-sorts.
@@ -68,7 +68,7 @@ The tree maintains a `structuralVersion` counter (exposed via `TreeInternal`) th
 
 ## Winning-invocation filter
 
-The tree maintains a per-runId winning-invocation map. When two invocations share a runId (e.g. a developer-initiated retry under the same runId), the invocation whose user-message has the highest Ably serial is canonical; events from earlier invocations are dropped at fold time. Continuation wires (`x-ably-run-continue: 'true'`) bypass the winner update so their tool-resolution traffic doesn't supersede the original prompt's serial.
+The tree maintains a per-runId winning-invocation map. When two invocations share a runId (e.g. a developer-initiated retry under the same runId), the invocation whose user-message has the highest Ably serial is canonical; events from earlier invocations are dropped at fold time. Continuation wires (`run-continue: 'true'`) bypass the winner update so their tool-resolution traffic doesn't supersede the original prompt's serial.
 
 ## Sibling groups and fork chains
 

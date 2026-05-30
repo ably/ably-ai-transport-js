@@ -1,18 +1,18 @@
 # Header utilities
 
-The SDK uses two distinct header namespaces on every Ably message: **transport headers** (`x-ably-*`) managed by the transport layer, and **domain headers** (`x-domain-*`) managed by codec implementations. Two sets of utilities handle reading and writing these headers.
+The SDK uses two distinct header tiers on every Ably message: **transport headers** under `extras.ai.transport`, managed by the transport layer, and **codec headers** under `extras.ai.codec`, managed by codec implementations. Both are unprefixed — the tiers isolate them. Two sets of utilities handle reading and writing these headers.
 
 ## Transport headers
 
-Transport headers are built by [`buildTransportHeaders()`](transport-components.md#buildtransportheaders) in `src/core/transport/headers.ts`. See [Wire protocol](wire-protocol.md#transport-headers-x-ably) for the full specification.
+Transport headers are built by [`buildTransportHeaders()`](transport-components.md#buildtransportheaders) in `src/core/transport/headers.ts`. See [Wire protocol](wire-protocol.md#transport-headers) for the full specification.
 
-## Domain header utilities
+## Codec header utilities
 
-Domain headers (`src/utils.ts`) carry codec-specific metadata - field names like `id`, `providerMetadata`, `finishReason`. The prefix `x-domain-` is applied automatically by the writer and stripped by the reader, so codec code works with unprefixed keys.
+Codec headers (`src/utils.ts`) carry codec-specific metadata - field names like `id`, `providerMetadata`, `finishReason`. They live under `extras.ai.codec` and carry no prefix — the tier isolates them from transport headers.
 
 ### headerWriter
 
-A fluent builder for constructing domain header records. Each setter method auto-prefixes the key with `x-domain-` and returns the builder for chaining.
+A fluent builder for constructing codec header records under their bare keys, returning the builder for chaining.
 
 ```typescript
 import { headerWriter } from '@ably/ai-transport';
@@ -22,7 +22,7 @@ const headers = headerWriter()
   .str('finishReason', chunk.finishReason)
   .json('providerMetadata', chunk.providerMetadata)
   .build();
-// → { 'x-domain-id': 'msg-1', 'x-domain-finishReason': 'stop', ... }
+// → { 'id': 'msg-1', 'finishReason': 'stop', ... }
 ```
 
 | Method             | Value type             | Serialization                                         |
@@ -68,7 +68,8 @@ These are used internally by `headerWriter` / `headerReader` and by the transpor
 
 | Function                            | Purpose                                                                                                         |
 | ----------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `getHeaders(msg)`                   | Extract `extras.headers` from an Ably `InboundMessage`. Returns `{}` if absent.                                 |
+| `getTransportHeaders(msg)`          | Extract `extras.ai.transport` from an Ably `InboundMessage`. Returns `{}` if absent.                            |
+| `getCodecHeaders(msg)`              | Extract `extras.ai.codec` from an Ably `InboundMessage`. Returns `{}` if absent.                                |
 | `mergeHeaders(base, overrides)`     | Shallow merge of two header records (overrides win).                                                            |
 | `domainHeaders(entries)`            | Build a domain headers record from unprefixed key-value pairs.                                                  |
 | `getDomainHeader(headers, key)`     | Read a single domain header by unprefixed key.                                                                  |

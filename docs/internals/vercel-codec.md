@@ -25,21 +25,21 @@ Each `UIMessageChunk` type maps to exactly one encoder core operation:
 
 ### Complete messages (writeMessages)
 
-`writeMessages()` encodes `UIMessage[]` for discrete publishing (e.g. user messages via `addMessages()`). Each message is split into per-part Ably messages with a shared `x-domain-messageId`:
+`writeMessages()` encodes `UIMessage[]` for discrete publishing (e.g. user messages via `addMessages()`). Each message is split into per-part Ably messages with a shared `messageId`:
 
-Every part publishes under the single `ai-input` wire name; the part type is carried in the `x-domain-type` header (the decoder dispatches on it).
+Every part publishes under the single `ai-input` wire name; the part type is carried in the `type` header (the decoder dispatches on it).
 
-| Part type | Ably message name | `x-domain-type`        | Data        |
+| Part type | Ably message name | `type`                 | Data        |
 | --------- | ----------------- | ---------------------- | ----------- |
 | `text`    | `ai-input`        | `text`                 | `part.text` |
 | `file`    | `ai-input`        | `file`                 | `part.url`  |
 | `data-*`  | `ai-input`        | The part's type string | `part.data` |
 
-If a message has no encodable parts, a single `ai-input` message (`x-domain-type: text`) with empty data is published as a placeholder.
+If a message has no encodable parts, a single `ai-input` message (`type: text`) with empty data is published as a placeholder.
 
 ### Cancel handling
 
-On `abort` chunks (the AI SDK chunk type), the encoder cancels all in-progress streams (via `cancelAllStreams()`), then publishes a discrete event on the `ai-output` wire with `x-domain-type: abort` and `x-ably-status: cancelled`. The status header uses the transport's canonical `cancelled` value. The `_cancelled` flag prevents double-cancel.
+On `abort` chunks (the AI SDK chunk type), the encoder cancels all in-progress streams (via `cancelAllStreams()`), then publishes a discrete event on the `ai-output` wire with `type: abort` and `status: cancelled`. The status header uses the transport's canonical `cancelled` value. The `_cancelled` flag prevents double-cancel.
 
 ## Decoder
 
@@ -51,7 +51,7 @@ The decoder provides four hooks to the core:
 
 These hooks reconstruct `UIMessageChunk` events from stream tracker state. The decoder reads [domain headers](headers.md) to populate chunk fields:
 
-- **Start** → `text-start` or `reasoning-start` (based on `x-domain-type`)
+- **Start** → `text-start` or `reasoning-start` (based on `type`)
 - **Delta** → `text-delta` or `reasoning-delta`
 - **End** → `text-end` or `reasoning-end`
 
@@ -61,9 +61,9 @@ Start hooks also call `ensurePhases()` on the [lifecycle tracker](lifecycle-trac
 
 Handles non-streamed messages. Two categories:
 
-**Discrete message parts** (from `writeMessages()`) are identified by the presence of `x-ably-role` in headers. These are reconstructed into single-part `UIMessage` objects - the [conversation tree](conversation-tree.md) merges parts sharing the same `x-ably-codec-message-id`.
+**Discrete message parts** (from `writeMessages()`) are identified by the presence of `role` in headers. These are reconstructed into single-part `UIMessage` objects - the [conversation tree](conversation-tree.md) merges parts sharing the same `codec-message-id`.
 
-**Lifecycle events** ride the `ai-output` wire and are dispatched by `x-domain-type`:
+**Lifecycle events** ride the `ai-output` wire and are dispatched by `type`:
 
 | Name                                    | Produces             | Notes                                    |
 | --------------------------------------- | -------------------- | ---------------------------------------- |
@@ -80,7 +80,7 @@ Handles non-streamed messages. Two categories:
 
 `src/vercel/codec/accumulator.ts` - builds and maintains a `UIMessage[]` list from decoder outputs.
 
-The accumulator consumes `DecoderOutput[]` and groups streaming events into `UIMessage` objects using lifecycle boundaries (`start` / `finish`). Multiple messages can be in-progress concurrently - each identified by the `messageId` field on decoder output (read from `x-ably-codec-message-id`).
+The accumulator consumes `DecoderOutput[]` and groups streaming events into `UIMessage` objects using lifecycle boundaries (`start` / `finish`). Multiple messages can be in-progress concurrently - each identified by the `messageId` field on decoder output (read from `codec-message-id`).
 
 ### Message state management
 

@@ -135,7 +135,7 @@ Client tool resolutions are `tool-result` (or `tool-result-error`) inputs - they
 
 ## Multi-client tool execution
 
-When multiple clients share a channel, only the client that initiated the run should execute client-side tools. The `x-ably-run-client-id` header on each message identifies which client started the run. Compare it against the local `clientId` to skip observer tool calls:
+When multiple clients share a channel, only the client that initiated the run should execute client-side tools. The `run-client-id` header on each message identifies which client started the run. Compare it against the local `clientId` to skip observer tool calls:
 
 ```typescript
 const metadata = view.getMessageMetadata(assistant.id);
@@ -175,7 +175,7 @@ await run.end(reason);
 
 Tool call events persist in Ably channel history. When a client loads history, the decoder reconstructs tool parts with their final state - including cross-run events. A tool that was called, executed, and resolved in a previous session appears with `state: 'output-available'` and the full output.
 
-Cross-run events (from `view.update()` or server-side `run.addEvents()`) are stored in history with `x-ably-amend` header identifying the target message. The history decoder detects these and routes them to the correct message's accumulator, so the tool part state is reconstructed correctly.
+Cross-run events (from `view.update()` or server-side `run.addEvents()`) are stored in history with `amend` header identifying the target message. The history decoder detects these and routes them to the correct message's accumulator, so the tool part state is reconstructed correctly.
 
 To avoid re-executing client tools after a page refresh, check whether the tool call already has a follow-up assistant message (which means the model already consumed the result):
 

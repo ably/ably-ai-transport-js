@@ -8,9 +8,9 @@ Without tree-based history, regeneration and editing destroy the original respon
 
 Every message in the tree has:
 
-- **`msgId`** - unique identifier (stamped as `x-ably-msg-id`)
-- **`parentId`** - the preceding message in the thread (`x-ably-parent`)
-- **`forkOf`** - the message this one replaces (`x-ably-fork-of`), if it's a fork
+- **`msgId`** - unique identifier (stamped as `msg-id`)
+- **`parentId`** - the preceding message in the thread (`parent`)
+- **`forkOf`** - the message this one replaces (`fork-of`), if it's a fork
 
 When you regenerate or edit, the session sets `forkOf` to the original message's ID. Messages that share the same `parentId` and fork the same original are **siblings** - alternatives at the same point in the conversation.
 
@@ -32,7 +32,7 @@ import { useView } from '@ably/ai-transport/react';
 const { regenerate } = useView();
 
 // Fork the assistant message - starts a new run with no new user messages.
-// nodeId is the x-ably-msg-id (see treeMsgId helper in the quickstart).
+// nodeId is the msg-id (see treeMsgId helper in the quickstart).
 await regenerate(nodeId);
 ```
 
@@ -55,7 +55,7 @@ const newMessage = {
 };
 
 // Fork the user message with new content.
-// nodeId is the x-ably-msg-id (see treeMsgId helper in the quickstart).
+// nodeId is the msg-id (see treeMsgId helper in the quickstart).
 await edit(nodeId, [newMessage]);
 ```
 
@@ -123,7 +123,7 @@ const { reason } = await run.pipe(result.toUIMessageStream());
 await run.end(reason);
 ```
 
-The session stamps `x-ably-parent` and `x-ably-fork-of` headers on the published messages. All clients on the channel see these headers and update their local tree.
+The session stamps `parent` and `fork-of` headers on the published messages. All clients on the channel see these headers and update their local tree.
 
 ## Multiple views
 

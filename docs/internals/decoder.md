@@ -8,12 +8,12 @@ Domain codecs provide hooks that know how to build events from stream state. The
 
 The decoder's `decode()` method switches on `message.action`:
 
-| Action           | What it means                      | How the decoder handles it                                                                                           |
-| ---------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `message.create` | New message published              | Check `x-ably-stream` header: if `"true"`, start tracking a new stream. If `"false"`, delegate to `decodeDiscrete()` |
-| `message.append` | Delta appended to existing message | Look up stream tracker by serial, accumulate delta, check for terminal status                                        |
-| `message.update` | Message content replaced           | Either first-contact (create tracker + synthesize events) or prefix-match/replacement on existing tracker            |
-| `message.delete` | Message deleted                    | Fire `onStreamDelete` callback, mark tracker closed                                                                  |
+| Action           | What it means                      | How the decoder handles it                                                                                    |
+| ---------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `message.create` | New message published              | Check `stream` header: if `"true"`, start tracking a new stream. If `"false"`, delegate to `decodeDiscrete()` |
+| `message.append` | Delta appended to existing message | Look up stream tracker by serial, accumulate delta, check for terminal status                                 |
+| `message.update` | Message content replaced           | Either first-contact (create tracker + synthesize events) or prefix-match/replacement on existing tracker     |
+| `message.delete` | Message deleted                    | Fire `onStreamDelete` callback, mark tracker closed                                                           |
 
 ## Stream tracker
 
@@ -22,14 +22,14 @@ For each streamed message, the decoder maintains a `StreamTrackerState` keyed by
 ```typescript
 interface StreamTrackerState {
   name: string; // Ably message name (e.g. "text", "reasoning")
-  streamId: string; // From x-ably-stream-id header
+  streamId: string; // From stream-id header
   accumulated: string; // Full text accumulated so far
   headers: Record<string, string>; // Current headers
   closed: boolean; // Whether stream is complete or cancelled
 }
 ```
 
-The tracker is created on the first `message.create` with `x-ably-stream: "true"` and keyed by the message's serial. All subsequent appends and updates for that serial are routed to the same tracker.
+The tracker is created on the first `message.create` with `stream: "true"` and keyed by the message's serial. All subsequent appends and updates for that serial are routed to the same tracker.
 
 ## Domain hooks
 
@@ -53,7 +53,7 @@ When a `message.append` arrives:
 3. Extract the string delta from `message.data`
 4. Accumulate: `tracker.accumulated += delta`
 5. Call `buildDeltaEvents()` to emit domain events
-6. Check `x-ably-status`: if `"complete"`, call `buildEndEvents()` and mark closed - the event is [terminal](glossary.md#terminal-event). If `"cancelled"`, mark closed (no end events for cancels)
+6. Check `status`: if `"complete"`, call `buildEndEvents()` and mark closed - the event is [terminal](glossary.md#terminal-event). If `"cancelled"`, mark closed (no end events for cancels)
 
 ## Update handling: first-contact vs prefix-match
 
@@ -97,7 +97,7 @@ On `message.delete`:
 
 ## Message ID tagging
 
-After decoding, the decoder tags every event output with the [`x-ably-codec-message-id`](wire-protocol.md#message-identity-x-ably-codec-message-id) from the message headers. This ID is used by the [accumulator](codec-interface.md#accumulator) to route events to the correct in-progress domain message - for example, correlating a `text-delta` event to the `UIMessage` it belongs to.
+After decoding, the decoder tags every event output with the [`codec-message-id`](wire-protocol.md#message-identity-codec-message-id) from the message headers. This ID is used by the [accumulator](codec-interface.md#accumulator) to route events to the correct in-progress domain message - for example, correlating a `text-delta` event to the `UIMessage` it belongs to.
 
 ## Decoder output types
 

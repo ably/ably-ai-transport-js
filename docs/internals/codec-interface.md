@@ -113,7 +113,7 @@ The transport creates accumulators in two situations, and reads different proper
 
 ### Identity and ownership
 
-The accumulator does not own message identity. The transport assigns [`x-ably-codec-message-id`](wire-protocol.md#message-identity-x-ably-codec-message-id) and headers; the accumulator routes events to the correct in-progress message using the `messageId` field on decoder event outputs. The accumulator builds the domain object - the transport handles identity, headers, and tree placement.
+The accumulator does not own message identity. The transport assigns [`codec-message-id`](wire-protocol.md#message-identity-codec-message-id) and headers; the accumulator routes events to the correct in-progress message using the `messageId` field on decoder event outputs. The accumulator builds the domain object - the transport handles identity, headers, and tree placement.
 
 ## Lifecycle tracker
 
@@ -146,17 +146,17 @@ The Vercel codec (`src/vercel/codec/`) is the concrete implementation for the Ve
 | `start`, `finish`, `error` | Discrete message                              |
 | `data-*`                   | Discrete message                              |
 
-### Domain headers
+### Codec headers
 
-The Vercel codec uses [`x-domain-*` headers](wire-protocol.md#domain-headers-x-domain) to carry Vercel-specific metadata:
+The Vercel codec uses [codec headers](wire-protocol.md#codec-headers) (under `extras.ai.codec`) to carry Vercel-specific metadata:
 
-- `x-domain-id` - chunk/message ID
-- `x-domain-providerMetadata` - JSON-serialized `ProviderMetadata`
-- `x-domain-finishReason` - why the LLM stopped
-- `x-domain-error` - error message
-- `x-domain-data` - JSON-serialized data payload
+- `id` - chunk/message ID
+- `providerMetadata` - JSON-serialized `ProviderMetadata`
+- `finishReason` - why the LLM stopped
+- `error` - error message
+- `data` - JSON-serialized data payload
 
-These headers are read/written using `headerReader()` and `headerWriter()` utilities that automatically prefix keys with `x-domain-`. See [Headers](headers.md) for the full reader/writer API.
+These headers are read/written using the `headerReader()` and `headerWriter()` utilities over the bare codec-tier keys. See [Headers](headers.md) for the full reader/writer API.
 
 ## Writing a new codec
 

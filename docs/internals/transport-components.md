@@ -38,15 +38,15 @@ The run manager tracks active runs and publishes [run lifecycle events](wire-pro
 
 ### Operations
 
-| Method                                                 | What it does                                                                                                                                                                                                                                                                     |
-| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `startRun(runId, clientId?, controller?, metadata?)`   | Registers the run, publishes `ai-run-start`, returns an `AbortSignal`. `metadata` optionally stamps `parent`, `forkOf`, `invocationId`, `inputClientId` (→ `x-ably-input-client-id`), and a `continuation` flag (→ `x-ably-run-continue: "true"`) on the lifecycle event headers |
-| `endRun(runId, reason, invocationId?, inputClientId?)` | Publishes `ai-run-end` with the reason (and `invocationId` / `inputClientId` if provided), removes the run                                                                                                                                                                       |
-| `cancel(runId)`                                        | Fires the run's `AbortController.abort()` immediately                                                                                                                                                                                                                            |
-| `getSignal(runId)`                                     | Returns the `AbortSignal` for a run                                                                                                                                                                                                                                              |
-| `getClientId(runId)`                                   | Returns the clientId that owns a run                                                                                                                                                                                                                                             |
-| `getActiveRunIds()`                                    | Returns all active run IDs                                                                                                                                                                                                                                                       |
-| `close()`                                              | Cancels all active runs and clears state                                                                                                                                                                                                                                         |
+| Method                                                 | What it does                                                                                                                                                                                                                                                       |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `startRun(runId, clientId?, controller?, metadata?)`   | Registers the run, publishes `ai-run-start`, returns an `AbortSignal`. `metadata` optionally stamps `parent`, `forkOf`, `invocationId`, `inputClientId` (→ `input-client-id`), and a `continuation` flag (→ `run-continue: "true"`) on the lifecycle event headers |
+| `endRun(runId, reason, invocationId?, inputClientId?)` | Publishes `ai-run-end` with the reason (and `invocationId` / `inputClientId` if provided), removes the run                                                                                                                                                         |
+| `cancel(runId)`                                        | Fires the run's `AbortController.abort()` immediately                                                                                                                                                                                                              |
+| `getSignal(runId)`                                     | Returns the `AbortSignal` for a run                                                                                                                                                                                                                                |
+| `getClientId(runId)`                                   | Returns the clientId that owns a run                                                                                                                                                                                                                               |
+| `getActiveRunIds()`                                    | Returns all active run IDs                                                                                                                                                                                                                                         |
+| `close()`                                              | Cancels all active runs and clears state                                                                                                                                                                                                                           |
 
 ### AbortController per run
 
@@ -95,7 +95,7 @@ Cancel routing lives in the agent session (`src/core/transport/agent-session.ts`
 
 The agent session subscribes to [`ai-cancel`](wire-protocol.md#lifecycle-events) events on channel construction. When a cancel message arrives, it:
 
-1. Reads `x-ably-run-id` from the message headers — the protocol's single cancel target. Messages missing this header are dropped with a warn-level log.
+1. Reads `run-id` from the message headers — the protocol's single cancel target. Messages missing this header are dropped with a warn-level log.
 2. Looks up the registered run by id. If nothing matches, the cancel is a no-op.
 3. Calls the run's `onCancel` hook (if provided) — the hook can return `false` to reject the cancel.
 4. If allowed, fires `controller.abort()` on the run's AbortController.
@@ -106,7 +106,7 @@ Each `ai-cancel` event targets exactly one run, so cancel routing is one lookup 
 
 `src/core/transport/headers.ts` - used by both client and server.
 
-A single function that builds the standard [`x-ably-*` header set](wire-protocol.md#transport-headers-x-ably) for a message. Used by the agent session's `addMessages()` and `pipe()`, and by the client session for optimistic message stamping.
+A single function that builds the standard [transport header set](wire-protocol.md#transport-headers) for a message. Used by the agent session's `addMessages()` and `pipe()`, and by the client session for optimistic message stamping.
 
 ```typescript
 buildTransportHeaders({
@@ -121,14 +121,14 @@ buildTransportHeaders({
   inputEventId: 'e-1', // optional - per-event correlator (client side)
 });
 // → {
-//     'x-ably-role': 'assistant', 'x-ably-run-id': 'run-1',
-//     'x-ably-codec-message-id': 'msg-2', 'x-ably-run-client-id': 'user-1',
-//     'x-ably-parent': 'msg-1', 'x-ably-fork-of': 'msg-0',
-//     'x-ably-invocation-id': 'inv-1', 'x-ably-input-client-id': 'user-2',
-//     'x-ably-event-id': 'e-1',
+//     'role': 'assistant', 'run-id': 'run-1',
+//     'codec-message-id': 'msg-2', 'run-client-id': 'user-1',
+//     'parent': 'msg-1', 'fork-of': 'msg-0',
+//     'invocation-id': 'inv-1', 'input-client-id': 'user-2',
+//     'event-id': 'e-1',
 //   }
 ```
 
-Optional fields are omitted from the result entirely when undefined, not stamped as empty strings. The two `*ClientId` fields (`runClientId`, `inputClientId`) treat the empty string `''` as a present value and still stamp the header — so anonymous publishers surface as an explicit empty string rather than vanishing. Other optional fields (`parent`, `forkOf`, `invocationId`, `inputEventId`, `runContinue`) omit on any falsy value. See [Branching headers](wire-protocol.md#branching-headers) for how `parent` and `forkOf` shape the conversation tree, [Run.pipe parent resolution](wire-protocol.md#how-x-ably-parent-is-resolved) for the default-parent rules, and [Client identity](wire-protocol.md#client-identity) for the two `clientId` tiers.
+Optional fields are omitted from the result entirely when undefined, not stamped as empty strings. The two `*ClientId` fields (`runClientId`, `inputClientId`) treat the empty string `''` as a present value and still stamp the header — so anonymous publishers surface as an explicit empty string rather than vanishing. Other optional fields (`parent`, `forkOf`, `invocationId`, `inputEventId`, `runContinue`) omit on any falsy value. See [Branching headers](wire-protocol.md#branching-headers) for how `parent` and `forkOf` shape the conversation tree, [Run.pipe parent resolution](wire-protocol.md#how-parent-is-resolved) for the default-parent rules, and [Client identity](wire-protocol.md#client-identity) for the two `clientId` tiers.
 
 See [Client session](client-session.md) and [Agent session](agent-session.md) for how these sub-components are composed into the full session implementations. See [Wire protocol](wire-protocol.md) for the full header and event specification. See [Encoder](encoder.md) for how the encoder writes through the channel. See [Decoder](decoder.md) for how decoded events are produced for routing. See [Headers](headers.md) for the domain header reader/writer utilities.

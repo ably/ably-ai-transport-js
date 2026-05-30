@@ -35,9 +35,9 @@ The act of connecting to an Ably channel. A channel transitions from `initialize
 
 A parameter on Ably's `channel.history()` API that fetches messages up to the exact point where the channel was attached. This guarantees **gapless continuity** - history ends precisely where the live subscription begins, with no duplicates and no gaps. See [History hydration](history.md#channel-attach-and-untilattach).
 
-### extras.headers **(Ably)**
+### extras.ai **(Ably)**
 
-Every Ably message has an `extras` field that can carry metadata. The AI Transport protocol stores all its headers in `extras.headers` - a `Record<string, string>` of key-value pairs. Both [transport headers](wire-protocol.md#transport-headers-x-ably) (`x-ably-*`) and [domain headers](wire-protocol.md#domain-headers-x-domain) (`x-domain-*`) live here.
+Every Ably message has an `extras` field that can carry metadata. The AI Transport protocol stores all its headers under `extras.ai`, reserved for the SDK and split into two tiers: [transport headers](wire-protocol.md#transport-headers) under `extras.ai.transport` and [codec headers](wire-protocol.md#codec-headers) under `extras.ai.codec`. Each tier is a `Record<string, string>` of unprefixed key-value pairs — the tiers isolate the two namespaces, so neither needs a prefix. The separate `extras.headers` field is deliberately left untouched, reserved for the application's own use.
 
 ## Transport architecture
 
@@ -45,8 +45,8 @@ Every Ably message has an `extras` field that can carry metadata. The AI Transpo
 
 The SDK has two layers with a strict boundary:
 
-- **Transport layer** - generic machinery shared by all codecs. Handles run lifecycle, stream routing, optimistic reconciliation, cancel signals, and conversation tree management. Uses `x-ably-*` headers. Lives in `src/core/transport/`.
-- **Domain layer** - framework-specific encoding/decoding. Maps between domain events (e.g. Vercel's `UIMessageChunk`) and Ably messages. Uses `x-domain-*` headers. Lives in codec implementations (e.g. `src/vercel/codec/`).
+- **Transport layer** - generic machinery shared by all codecs. Handles run lifecycle, stream routing, optimistic reconciliation, cancel signals, and conversation tree management. Uses unprefixed transport headers. Lives in `src/core/transport/`.
+- **Domain layer** - framework-specific encoding/decoding. Maps between domain events (e.g. Vercel's `UIMessageChunk`) and Ably messages. Uses codec headers (`extras.ai.codec`). Lives in codec implementations (e.g. `src/vercel/codec/`).
 
 The [codec interface](codec-interface.md) is the boundary between these layers.
 
@@ -63,8 +63,8 @@ Both paths use the same accumulation logic. The only difference is that own runs
 
 The protocol attributes each event to a client at two concentric scopes:
 
-- **`runClientId`** (`x-ably-run-client-id`) — the client that **owns** the run, the one whose initiating `ai-input` started it. Constant for the lifetime of the run, even when later inputs come from other clients.
-- **`inputClientId`** (`x-ably-input-client-id`) — the clientId of the input event (the `ai-input`) that drove the current invocation. The agent reads it from the publisher's Ably-level `clientId` on the triggering wire message and re-stamps it on its own published events for that invocation. Updates on a continuation `ai-run-start` if the triggering input came from a different client (e.g. a tool-result publish from a non-owner).
+- **`runClientId`** (`run-client-id`) — the client that **owns** the run, the one whose initiating `ai-input` started it. Constant for the lifetime of the run, even when later inputs come from other clients.
+- **`inputClientId`** (`input-client-id`) — the clientId of the input event (the `ai-input`) that drove the current invocation. The agent reads it from the publisher's Ably-level `clientId` on the triggering wire message and re-stamps it on its own published events for that invocation. Updates on a continuation `ai-run-start` if the triggering input came from a different client (e.g. a tool-result publish from a non-owner).
 
 For a fresh run the two are equal. They diverge on continuation invocations triggered by an input event from someone other than the run owner. The Ably channel-level `clientId` on each message is a third, orthogonal identity field — the publisher of that particular event. See [Wire protocol: client identity](wire-protocol.md#client-identity).
 
@@ -72,16 +72,16 @@ For a fresh run the two are equal. They diverge on continuation invocations trig
 
 Two different identity headers serve different purposes:
 
-- **Run ID** (`x-ably-run-id`) - groups all messages in one request-response cycle. A single run may produce multiple messages (user message, assistant text, lifecycle events). Used for cancellation scope, active run tracking, and stream routing.
-- **Codec message ID** (`x-ably-codec-message-id`) - uniquely identifies a single domain message (a `crypto.randomUUID()` generated by the client or agent session). Used for [optimistic reconciliation](wire-protocol.md#optimistic-reconciliation), [accumulator routing](codec-interface.md#accumulator), and [conversation tree](conversation-tree.md) node identity. For streamed messages, every append carries the same codec-message-id so the entire message append lifecycle shares one identity.
+- **Run ID** (`run-id`) - groups all messages in one request-response cycle. A single run may produce multiple messages (user message, assistant text, lifecycle events). Used for cancellation scope, active run tracking, and stream routing.
+- **Codec message ID** (`codec-message-id`) - uniquely identifies a single domain message (a `crypto.randomUUID()` generated by the client or agent session). Used for [optimistic reconciliation](wire-protocol.md#optimistic-reconciliation), [accumulator routing](codec-interface.md#accumulator), and [conversation tree](conversation-tree.md) node identity. For streamed messages, every append carries the same codec-message-id so the entire message append lifecycle shares one identity.
 
-A run contains one or more messages. A message belongs to exactly one run. See [Wire protocol: message identity](wire-protocol.md#message-identity-x-ably-codec-message-id) for the full lifecycle.
+A run contains one or more messages. A message belongs to exactly one run. See [Wire protocol: message identity](wire-protocol.md#message-identity-codec-message-id) for the full lifecycle.
 
 ## Encoding/decoding concepts
 
 ### Terminal event
 
-An event that signals the end of a stream. For the Vercel codec, terminal events are `finish`, `error`, and `abort` chunks (the AI SDK chunk type, kept verbatim on the wire). The [stream router](transport-components.md#terminal-detection) uses the codec's `isTerminal()` predicate to automatically close the `ReadableStream` when a terminal event arrives. The [decoder](decoder.md#append-handling) checks `x-ably-status` for `"complete"` or `"cancelled"` to detect terminal state on the wire.
+An event that signals the end of a stream. For the Vercel codec, terminal events are `finish`, `error`, and `abort` chunks (the AI SDK chunk type, kept verbatim on the wire). The [stream router](transport-components.md#terminal-detection) uses the codec's `isTerminal()` predicate to automatically close the `ReadableStream` when a terminal event arrives. The [decoder](decoder.md#append-handling) checks `status` for `"complete"` or `"cancelled"` to detect terminal state on the wire.
 
 ### Fire-and-forget
 
@@ -97,7 +97,7 @@ When the [decoder](decoder.md#first-contact) receives an update for a serial it 
 
 ### Optimistic reconciliation
 
-When a client calls `send()`, it inserts an optimistic message into the conversation tree (with no serial). The server then relays that message onto the channel, and all clients - including the sender - receive it. The sending client matches the relayed message by `x-ably-codec-message-id` and reconciles the optimistic entry with the server-assigned serial ([serial promotion](conversation-tree.md#upsert-the-sole-mutation)) rather than creating a duplicate.
+When a client calls `send()`, it inserts an optimistic message into the conversation tree (with no serial). The server then relays that message onto the channel, and all clients - including the sender - receive it. The sending client matches the relayed message by `codec-message-id` and reconciles the optimistic entry with the server-assigned serial ([serial promotion](conversation-tree.md#upsert-the-sole-mutation)) rather than creating a duplicate.
 
 ## Conversation tree concepts
 

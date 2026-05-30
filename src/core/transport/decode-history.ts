@@ -28,10 +28,8 @@ import {
   HEADER_CODEC_MESSAGE_ID,
   HEADER_DISCRETE,
   HEADER_FORK_OF,
-  HEADER_INVOCATION_ID,
   HEADER_PARENT,
   HEADER_ROLE,
-  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
   HEADER_STATUS,
   HEADER_STREAM,
@@ -250,26 +248,6 @@ const decodeAll = <TInput extends CodecInputEvent, TOutput extends CodecOutputEv
 
   const sorted = [...runs.values()].toSorted((a, b) => a.firstSeen - b.firstSeen);
   for (const run of sorted) {
-    // Defensive latest-serial-wins rule: within a runId, the user-message
-    // with the highest Ably serial is canonical. Messages whose serial
-    // precedes the winning user-message's serial belong to a losing
-    // invocation and are dropped from the materialised history.
-    // Continuation user-messages (`run-continue: 'true'`) are
-    // skipped — they publish under the original run-id but represent
-    // tool-resolution traffic and would incorrectly supersede the
-    // original prompt's serial.
-    let winningSerial: string | undefined;
-    for (const [mid, hdrs] of run.msgHeaders) {
-      if (hdrs[HEADER_ROLE] !== 'user') continue;
-      if (hdrs[HEADER_RUN_CONTINUE] === 'true') continue;
-      if (!hdrs[HEADER_INVOCATION_ID]) continue;
-      const s = run.msgSerials.get(mid);
-      if (!s) continue;
-      if (winningSerial === undefined || s > winningSerial) {
-        winningSerial = s;
-      }
-    }
-
     const headerEntries = [...run.msgHeaders.entries()];
     let headerIdx = 0;
 
@@ -279,10 +257,6 @@ const decodeAll = <TInput extends CodecInputEvent, TOutput extends CodecOutputEv
         const [mid, hdrs] = entry;
         const serial = run.msgSerials.get(mid) ?? '';
         headerIdx++;
-        if (winningSerial !== undefined && serial && serial < winningSerial) {
-          // Loser: belongs to an earlier invocation under this run.
-          continue;
-        }
         completed.push({ message, headers: hdrs, serial });
       } else {
         completed.push({ message, headers: {}, serial: '' });

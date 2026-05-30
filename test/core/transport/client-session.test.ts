@@ -1608,15 +1608,11 @@ describe('ClientSession', () => {
     it('processes continuation run-end on an observer session (latestContinuation gate)', () => {
       // Observer-side reproduction of the multi-tab "stuck streaming" bug.
       // Observer clients have no `_ownRunIds` entry (they didn't send) and
-      // no router stream bound to the run (only originators bind one).
-      // The Tree's `getWinningInvocation` pins to the ORIGINAL prompt's
-      // invocation because continuation wires deliberately don't advance
-      // it. Without a dedicated continuation tracker, the continuation's
-      // terminal `run-end` mismatches `treeWinner` and is dropped, leaving
-      // the Run permanently `active` on the observer.
-      //
-      // The fix tracks the latest continuation invocation on the Tree and
-      // consults it in the run-end gate ahead of `treeWinner`.
+      // no router stream bound to the run (only originators bind one), so
+      // the run-end gate resolves the expected invocation from the Tree's
+      // latest-continuation tracker. The continuation's terminal `run-end`
+      // must be accepted so the Run reaches a terminal state rather than
+      // sticking at `active`.
       const inv1 = 'inv-original';
       const inv2 = 'inv-continuation';
       const userMsgSerial = 'serial-user-msg';

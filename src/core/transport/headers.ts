@@ -42,8 +42,7 @@ import {
  * @param opts.inputEventId - Per-event identifier. Set on each client-published user-prompt message; the invocation body's `inputEventIds` lists the ids the agent should look up.
  * @param opts.runContinue - When `true`, stamps `run-continue: 'true'` to mark
  *   the message as a continuation user-message (e.g. a tool-resolution publish under
- *   a suspended run). Continuation user-messages are skipped by the Tree's
- *   winner-rule so the original user-prompt remains visible in materialised history.
+ *   a suspended run), distinguishing it from a fresh user-prompt that opens a new run.
  * @returns A headers record with the transport headers set.
  */
 export const buildTransportHeaders = (opts: {

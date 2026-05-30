@@ -569,8 +569,7 @@ export interface ActiveRun<TOutput extends CodecOutputEvent> {
    * The invocation's unique identifier. Stamped on the published user
    * message and forwarded in the HTTP POST body so the agent's run
    * lifecycle events (`ai-run-start`, `ai-run-end`) can echo it
-   * back. The Tree's winning-invocation map and the run-end gate key on
-   * this value.
+   * back. The run-end gate keys on this value.
    */
   invocationId: string;
   /**
@@ -711,12 +710,9 @@ export interface RunNode<TProjection> {
   /** Per-Run codec projection. Folded by the Tree from every event published under this run-id. */
   projection: TProjection;
   /**
-   * The first invocationId observed for this Run (wire `invocation-id`).
-   * Set at Run creation from the optimistic insert's or first wire's headers,
-   * and never reassigned: a dual-invocation race promotes a higher-serial
-   * winner via the Tree's `_winningInvocations` map but does not rewrite this
-   * field, so consumers can still read the first-observed invocation
-   * synchronously without waiting for a serial-bearing echo.
+   * The invocationId observed for this Run (wire `invocation-id`). Set once at
+   * Run creation from the optimistic insert's or first wire's headers and never
+   * reassigned, so consumers can read it synchronously.
    * Empty string if the wire didn't carry an invocation-id.
    */
   invocationId: string;
@@ -789,28 +785,11 @@ export interface Tree<TProjection> {
   // --- Events ---
 
   /**
-   * Get the winning invocation-id for a run-id, if known.
-   *
-   * Within a run-id, the invocation whose user-message has the highest Ably
-   * channel serial is canonical. Continuation wires (`run-continue`)
-   * do not update the winner. Earlier invocations are losers and their
-   * events are filtered at fold time. Optimistic (null-serial) inserts
-   * never win — the entry only updates once a relayed user-message with a
-   * real serial arrives.
-   * @param runId - The run-id to query.
-   * @returns The winning invocation's id and serial, or undefined if no
-   *   user-message with this run-id has been observed yet.
-   */
-  getWinningInvocation(runId: string): { invocationId: string; serial: string } | undefined;
-
-  /**
    * Return the most recent continuation invocation observed for `runId`,
    * or `undefined` if no continuation `ai-run-start` has been seen.
-   * Updated on every continuation run-start (wire
-   * `run-continue: 'true'`), independently of
-   * `getWinningInvocation` which stays scoped to original-invocation
-   * conflict resolution. Used by the client-session run-end gate so
-   * observer clients can accept a continuation's terminal `run-end`.
+   * Updated on every continuation run-start (wire `run-continue: 'true'`).
+   * Used by the client-session run-end gate so observer clients can accept
+   * a continuation's terminal `run-end`.
    * @param runId - The run-id to query.
    * @returns The continuation invocation-id, or undefined.
    */
@@ -832,16 +811,6 @@ export interface Tree<TProjection> {
    * Used by the View to detect streaming deltas without a full tree walk.
    */
   on(event: 'run-projection-updated', handler: (event: { runId: string }) => void): () => void;
-
-  /**
-   * Subscribe to changes in the per-run winning invocation map. Fires when a
-   * run's winning invocation-id changes (either first observation or
-   * replacement by a higher-serial user-message).
-   */
-  on(
-    event: 'invocation-winner-changed',
-    handler: (event: { runId: string; invocationId: string; serial: string }) => void,
-  ): () => void;
 }
 
 // ---------------------------------------------------------------------------

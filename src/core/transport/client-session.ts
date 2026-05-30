@@ -429,17 +429,17 @@ class DefaultClientSession<
       const runId = headers[HEADER_RUN_ID];
       const invocationId = headers[HEADER_INVOCATION_ID];
 
-      // Fold into the Tree's per-Run projection. The Tree handles
-      // winning-invocation filtering and `run-continue` carve-out.
-      // This must run BEFORE router routing so the active stream's listeners
-      // see the projection updates when they consume the routed events.
+      // Fold into the Tree's per-Run projection. This must run BEFORE router
+      // routing so the active stream's listeners see the projection updates
+      // when they consume the routed events.
       if (events.length > 0 || runId) {
         this._tree.applyMessage(events, headers, serial);
       }
 
       // Route outputs to the active stream (if any). The router drops
-      // events from a losing invocation under the same runId. Only TOutput
-      // events flow on the consumer's `ActiveRun.stream`; client-published
+      // events whose invocation-id doesn't match the stream's bound
+      // invocation. Only TOutput events flow on the consumer's
+      // `ActiveRun.stream`; client-published
       // inputs (echoed back on `ai-input`) are folded into the projection
       // but not routed to the stream.
       if (runId) {

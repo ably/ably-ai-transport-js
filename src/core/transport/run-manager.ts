@@ -147,9 +147,10 @@ class DefaultRunManager implements RunManager {
       [HEADER_RUN_CLIENT_ID]: resolvedClientId,
       [HEADER_RUN_REASON]: reason,
     };
-    // Mirror startRun: stamp invocation-id so the client's defensive
-    // run-end gating can distinguish winning from losing invocations
-    // under the same run-id.
+    // Mirror startRun: stamp invocation-id so the client's run-end gating
+    // can match the terminating run-end against the invocation bound to the
+    // active run (e.g. distinguishing a continuation from the run it
+    // resumed under the same run-id).
     if (invocationId !== undefined) {
       headers[HEADER_INVOCATION_ID] = invocationId;
     }

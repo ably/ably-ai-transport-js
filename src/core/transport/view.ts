@@ -290,26 +290,7 @@ export class DefaultView<
       this._tree.on('run-projection-updated', (event) => {
         this._onTreeProjectionUpdated(event);
       }),
-      this._tree.on('invocation-winner-changed', () => {
-        this._onTreeWinningChange();
-      }),
     );
-  }
-
-  /**
-   * Re-filter the visible window when a run's winning invocation changes.
-   * Bypasses the structural-version short-circuit because invocation-winner-changed
-   * does not bump structuralVersion (the underlying Run identities are the same;
-   * only their projections may have shifted under the latest-serial rule).
-   */
-  private _onTreeWinningChange(): void {
-    if (this._processingHistory) return;
-    const nodes = this._computeFlatNodes();
-    if (this._visibleChanged(nodes)) {
-      this._cachedNodes = nodes;
-      this._updateVisibleSnapshot(nodes);
-      this._emitter.emit('update');
-    }
   }
 
   /**

@@ -61,8 +61,7 @@ const createMockWriter = (): MockWriter => {
  * @param msg - The Ably message.
  * @returns The headers record.
  */
-const headersOf = (msg: Ably.Message): Record<string, string> =>
-  (msg.extras as { headers: Record<string, string> }).headers;
+const headersOf = (msg: Ably.Message): Record<string, string> => (msg.extras as { ai: Record<string, string> }).ai;
 
 /**
  * Get first element of an array, throwing if absent.

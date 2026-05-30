@@ -27,7 +27,7 @@ const withHeaders = (msg: Partial<Ably.InboundMessage>, headers: Record<string, 
     name: 'text',
     data: '',
     ...msg,
-    extras: { headers },
+    extras: { ai: headers },
     // CAST: Tests construct a minimal Ably.InboundMessage stub; full shape isn't needed.
   }) as Ably.InboundMessage;
 

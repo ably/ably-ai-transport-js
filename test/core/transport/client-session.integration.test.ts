@@ -122,7 +122,7 @@ const publishRunStart = async (
   await channel.publish({
     name: EVENT_RUN_START,
     extras: {
-      headers: {
+      ai: {
         [HEADER_RUN_ID]: runId,
         [HEADER_RUN_CLIENT_ID]: clientId,
         [HEADER_INVOCATION_ID]: invocationId,
@@ -149,7 +149,7 @@ const publishRunEnd = async (
   await channel.publish({
     name: EVENT_RUN_END,
     extras: {
-      headers: {
+      ai: {
         [HEADER_RUN_ID]: runId,
         [HEADER_RUN_CLIENT_ID]: clientId,
         [HEADER_INVOCATION_ID]: invocationId,
@@ -293,7 +293,7 @@ const publishRegenerateRun = async (
   await channel.publish({
     name: EVENT_RUN_START,
     extras: {
-      headers: {
+      ai: {
         [HEADER_RUN_ID]: opts.runId,
         [HEADER_RUN_CLIENT_ID]: opts.clientId,
         [HEADER_INVOCATION_ID]: opts.invocationId,
@@ -1305,13 +1305,13 @@ describe('ClientSession integration', () => {
       await new Promise((r) => setTimeout(r, 200));
       const page = await channel.history({ limit: 10, direction: 'backwards' });
       found = page.items.find((m) => {
-        const headers = (m.extras as { headers?: Record<string, string> } | undefined)?.headers ?? {};
+        const headers = (m.extras as { ai?: Record<string, string> } | undefined)?.ai ?? {};
         return headers[HEADER_ROLE] === 'user' && headers[HEADER_RUN_ID] === clientRun.runId;
       });
     }
     expect(found).toBeDefined();
 
-    const foundHeaders = (found?.extras as { headers?: Record<string, string> } | undefined)?.headers ?? {};
+    const foundHeaders = (found?.extras as { ai?: Record<string, string> } | undefined)?.ai ?? {};
     expect(foundHeaders['invocation-id']).toBeDefined();
   });
 

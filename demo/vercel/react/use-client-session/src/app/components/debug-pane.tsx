@@ -22,8 +22,8 @@ interface DebugPaneProps {
 type Tab = 'ably' | 'uimessages' | 'lifecycle';
 
 function extractHeaders(msg: Ably.InboundMessage): Record<string, string> {
-  const extras = msg.extras as { headers?: Record<string, string> } | undefined;
-  return extras?.headers ?? {};
+  const extras = msg.extras as { ai?: Record<string, string> } | undefined;
+  return extras?.ai ?? {};
 }
 
 function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {

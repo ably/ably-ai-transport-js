@@ -40,7 +40,7 @@ import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-clien
  */
 const stampHeaders = (runId: string, messageId: string) => (msg: Ably.Message) => {
   // CAST: Ably SDK types `extras` as `any`; we trust the encoder always sets it.
-  const headers = (msg.extras as { headers?: Record<string, string> } | undefined)?.headers;
+  const headers = (msg.extras as { ai?: Record<string, string> } | undefined)?.ai;
   if (headers) {
     headers[HEADER_RUN_ID] = runId;
     headers[HEADER_CODEC_MESSAGE_ID] = messageId;
@@ -54,7 +54,7 @@ const stampHeaders = (runId: string, messageId: string) => (msg: Ably.Message) =
  */
 const metaOf = (msg: Ably.InboundMessage): { serial: string; messageId?: string } => {
   // CAST: Ably SDK types `extras` as `any`; we trust the runtime shape.
-  const headers = (msg.extras as { headers?: Record<string, string> } | undefined)?.headers ?? {};
+  const headers = (msg.extras as { ai?: Record<string, string> } | undefined)?.ai ?? {};
   const messageId = headers[HEADER_CODEC_MESSAGE_ID];
   return messageId === undefined ? { serial: msg.serial ?? '' } : { serial: msg.serial ?? '', messageId };
 };
@@ -671,7 +671,7 @@ describe('Vercel UIMessageCodec integration', () => {
     const msg = received[0];
     expect(msg?.name).toBe(EVENT_AI_INPUT);
     // CAST: Ably SDK types `extras` as `any`; we read the headers we stamped.
-    const headers = (msg?.extras as { headers?: Record<string, string> } | undefined)?.headers ?? {};
+    const headers = (msg?.extras as { ai?: Record<string, string> } | undefined)?.ai ?? {};
     expect(headers[`${D}type`]).toBe('tool-result');
     expect(headers[`${D}toolCallId`]).toBe('tc-1');
   });
@@ -720,7 +720,7 @@ describe('Vercel UIMessageCodec integration', () => {
     const msg = received[0];
     expect(msg?.name).toBe(EVENT_AI_OUTPUT);
     // CAST: Ably SDK types `extras` as `any`; we read the headers we stamped.
-    const headers = (msg?.extras as { headers?: Record<string, string> } | undefined)?.headers ?? {};
+    const headers = (msg?.extras as { ai?: Record<string, string> } | undefined)?.ai ?? {};
     expect(headers[`${D}type`]).toBe('tool-output-available');
     expect(headers[`${D}toolCallId`]).toBe('tc-1');
   });

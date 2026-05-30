@@ -33,14 +33,14 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
       // run-start response so `await session.view.sendInput(...)` resolves.
       const messages = Array.isArray(msg) ? msg : [msg];
       for (const m of messages) {
-        const headers = (m.extras as { headers?: Record<string, string> } | undefined)?.headers ?? {};
+        const headers = (m.extras as { ai?: Record<string, string> } | undefined)?.ai ?? {};
         if (headers.role === 'user' && headers['run-id'] && mock.listener) {
           const captured = mock.listener;
           queueMicrotask(() => {
             captured({
               name: 'ai-run-start',
               extras: {
-                headers: {
+                ai: {
                   'run-id': headers['run-id'] ?? '',
                   'run-client-id': headers['run-client-id'] ?? '',
                   'invocation-id': headers['invocation-id'] ?? '',

@@ -884,7 +884,7 @@ class DefaultClientSession<
 
     await this._channel.publish({
       name: EVENT_CANCEL,
-      extras: { headers: { [HEADER_RUN_ID]: runId } },
+      extras: { ai: { [HEADER_RUN_ID]: runId } },
     });
 
     // Close the local router stream so the caller's reader sees end-of-input.

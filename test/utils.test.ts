@@ -16,7 +16,7 @@ import {
 
 describe('getHeaders', () => {
   it('extracts headers from a well-formed message', () => {
-    const msg = { extras: { headers: { 'x-key': 'value' } } } as Ably.InboundMessage;
+    const msg = { extras: { ai: { 'x-key': 'value' } } } as Ably.InboundMessage;
     expect(getHeaders(msg)).toEqual({ 'x-key': 'value' });
   });
 

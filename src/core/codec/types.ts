@@ -43,9 +43,9 @@ export interface ChannelWriter {
 // Extras / WriteOptions — per-write overrides for encoder operations
 // ---------------------------------------------------------------------------
 
-/** Shape of the extras object passed through WriteOptions and EncoderOptions. */
+/** Shape of the extras config passed through WriteOptions and EncoderOptions. */
 export interface Extras {
-  /** Headers to attach to the Ably message extras. */
+  /** Headers to attach to the message's `extras.ai` namespace. */
   headers?: Record<string, string>;
 }
 
@@ -180,7 +180,7 @@ export interface EncoderOptions {
   clientId?: string;
   /** Default extras (e.g. headers) merged into every Ably message. */
   extras?: Extras;
-  /** Hook called before each Ably message is published. Mutate the message in place to add transport-level headers. */
+  /** Hook called before each Ably message is published. Mutate the message in place to add transport-level headers under `extras.ai`. */
   onMessage?: (message: Ably.Message) => void;
   /**
    * Default `codec-message-id` for messages where the event payload doesn't

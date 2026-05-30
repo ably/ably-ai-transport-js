@@ -206,7 +206,7 @@ export interface RunRuntime<TOutput extends CodecOutputEvent> {
 
   /**
    * Called before each Ably message is published in this run.
-   * Mutate the Ably message in place to add custom extras.headers.
+   * Mutate the Ably message in place to add custom headers under extras.ai.
    */
   onMessage?: (message: Ably.Message) => void;
 

@@ -23,7 +23,6 @@ _msgIdToRunId:       Map<msgId, runId>               Secondary: msg-id -> owning
 _sortedRuns:         InternalRunNode[]               All Runs, sorted by startSerial
 _parentIndex:        Map<parentRunId, Set<runId>>    Children of each parent Run
 _runClientIds:       Map<runId, clientId>            Active runs for cancel filtering
-_winningInvocations: Map<runId, {invocationId, serial}>  Loser-invocation filter
 _structuralVersion:  number                          Monotonic counter (see below)
 ```
 
@@ -52,8 +51,8 @@ The entry point for every inbound channel message. Routes by `run-id`, creates t
 
 Three message kinds flow through here:
 
-1. **Fresh user prompt**: creates the Run if missing, updates the winning-invocation map, folds events into the projection.
-2. **Continuation tool-resolution** (`run-continue: 'true'`): routes to the existing Run via `_msgIdToRunId`, folds events, **skips the winner update** (continuation wires share the runId with the original prompt but represent tool-resolution traffic, not a competing user-prompt).
+1. **Fresh user prompt**: creates the Run if missing, folds events into the projection.
+2. **Continuation tool-resolution** (`run-continue: 'true'`): routes to the existing Run via `_msgIdToRunId`, folds events.
 3. **Assistant/agent events**: routes to the existing Run by runId, folds events.
 
 The optimistic send path (client publishing a fresh user-message) calls `applyMessage` with a `undefined` serial. When the server relay arrives, the same Run's startSerial gets promoted from null to a real serial, and the Run re-sorts.
@@ -65,10 +64,6 @@ Handles `ai-run-start` and `ai-run-end` wire events. Run-start sets `status` to 
 ### Structural version
 
 The tree maintains a `structuralVersion` counter (exposed via `TreeInternal`) that increments on changes affecting `flattenNodes()`'s output structure - Run insertions, deletions, and startSerial promotions (which reorder `_sortedRuns`). **Projection-only updates do not bump the counter**: streaming deltas update an existing Run's projection in place, observable via the `'run-projection-updated'` event instead. The View uses this distinction to skip full tree walks during streaming.
-
-## Winning-invocation filter
-
-The tree maintains a per-runId winning-invocation map. When two invocations share a runId (e.g. a developer-initiated retry under the same runId), the invocation whose user-message has the highest Ably serial is canonical; events from earlier invocations are dropped at fold time. Continuation wires (`run-continue: 'true'`) bypass the winner update so their tool-resolution traffic doesn't supersede the original prompt's serial.
 
 ## Sibling groups and fork chains
 
@@ -111,13 +106,12 @@ Sibling group resolution is cached per `flattenNodes()` call using a `resolvedGr
 
 The public `Tree` interface exposes:
 
-| Method                        | Returns                                          |
-| ----------------------------- | ------------------------------------------------ |
-| `getRunNode(runId)`           | The `RunNode` by runId                           |
-| `getRunByMsgId(msgId)`        | The Run that owns a given msg-id                 |
-| `getSiblingRuns(runId)`       | All Runs in the sibling group containing `runId` |
-| `hasSiblingRuns(runId)`       | Whether the Run has alternative versions         |
-| `getWinningInvocation(runId)` | Winning invocation for a runId (transitional)    |
+| Method                  | Returns                                          |
+| ----------------------- | ------------------------------------------------ |
+| `getRunNode(runId)`     | The `RunNode` by runId                           |
+| `getRunByMsgId(msgId)`  | The Run that owns a given msg-id                 |
+| `getSiblingRuns(runId)` | All Runs in the sibling group containing `runId` |
+| `hasSiblingRuns(runId)` | Whether the Run has alternative versions         |
 
 The following are on the `View`, not the public `Tree` interface:
 

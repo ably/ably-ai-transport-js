@@ -59,8 +59,8 @@ The channel subscription handler (`_handleMessage`) processes every inbound Ably
 All other messages pass through the codec decoder. The session:
 
 1. Calls `decoder.decode(rawMessage)` to get `TEvent[]`.
-2. Calls `tree.applyMessage(events, headers, serial)` — the Tree folds events into the owning Run's projection, applying the winning-invocation filter and the `run-continue` carve-out.
-3. Per-event, calls `router.route(runId, invocationId, event)` to enqueue to the active stream (if any). The router drops events from a losing invocation under the same runId.
+2. Calls `tree.applyMessage(events, headers, serial)` — the Tree folds events into the owning Run's projection.
+3. Per-event, calls `router.route(runId, invocationId, event)` to enqueue to the active stream (if any). The router drops events whose invocation-id doesn't match the stream's bound invocation.
 4. Calls `tree.emitAblyMessage(rawMsg)` so subscribers to `'ably-message'` can observe the raw wire.
 
 There is no separate observer-state map. The Tree's per-Run projection is the single source of truth for every Run (own or observer); the View extracts messages on demand via `codec.getMessages(run.projection)`.

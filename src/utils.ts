@@ -11,7 +11,9 @@ import type * as Ably from 'ably';
 import { CODEC_HEADER_PREFIX } from './constants.js';
 
 /**
- * Extract extras.headers from an Ably InboundMessage.
+ * Extract the SDK's `extras.ai` header namespace from an Ably InboundMessage.
+ * `extras.ai` is the SDK's reserved corner of the message envelope; the
+ * application's own `extras.headers` is deliberately left untouched.
  * @param message - The Ably message to extract headers from.
  * @returns The headers record, or an empty object if absent.
  */
@@ -19,9 +21,9 @@ export const getHeaders = (message: Ably.InboundMessage): Record<string, string>
   // CAST: Ably SDK types `extras` as `any`; runtime checks below guard access.
   const extras = message.extras as unknown;
   if (!extras || typeof extras !== 'object') return {};
-  const headers = (extras as { headers?: unknown }).headers;
+  const headers = (extras as { ai?: unknown }).ai;
   if (!headers || typeof headers !== 'object') return {};
-  // CAST: Ably wire protocol guarantees headers is Record<string, string>
+  // CAST: Ably wire protocol guarantees the ai namespace is Record<string, string>
   // when present, verified by the runtime guards above.
   return headers as Record<string, string>;
 };

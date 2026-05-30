@@ -139,8 +139,8 @@ class DefaultEncoderCore implements EncoderCore {
     // The decoder relies on this header to distinguish message parts from lifecycle
     // events that also happen to be discrete (stream: false).
     for (const msg of msgs) {
-      // CAST: extras is built by _buildDiscreteMessage with a known { headers } shape.
-      (msg.extras as { headers: Record<string, string> }).headers[HEADER_DISCRETE] = 'true';
+      // CAST: extras is built by _buildDiscreteMessage with a known { ai } shape.
+      (msg.extras as { ai: Record<string, string> }).ai[HEADER_DISCRETE] = 'true';
     }
     return this._writer.publish(msgs);
   }
@@ -159,7 +159,7 @@ class DefaultEncoderCore implements EncoderCore {
     const msg: Ably.Message = {
       name: payload.name,
       data: payload.data,
-      extras: { headers: allHeaders },
+      extras: { ai: allHeaders },
       ...(clientId ? { clientId } : {}),
     };
 
@@ -210,7 +210,7 @@ class DefaultEncoderCore implements EncoderCore {
     const appendMsg: Ably.Message = {
       serial: tracker.serial,
       data,
-      extras: { headers: { ...tracker.persistentHeaders } },
+      extras: { ai: { ...tracker.persistentHeaders } },
     };
 
     this._invokeOnMessage(appendMsg);
@@ -241,7 +241,7 @@ class DefaultEncoderCore implements EncoderCore {
     const msg: Ably.Message = {
       serial: tracker.serial,
       data: payload.data,
-      extras: { headers: allHeaders },
+      extras: { ai: allHeaders },
     };
 
     this._invokeOnMessage(msg);
@@ -275,7 +275,7 @@ class DefaultEncoderCore implements EncoderCore {
     const msg: Ably.Message = {
       serial: tracker.serial,
       data: '',
-      extras: { headers: allHeaders },
+      extras: { ai: allHeaders },
     };
 
     this._invokeOnMessage(msg);
@@ -301,7 +301,7 @@ class DefaultEncoderCore implements EncoderCore {
       const msg: Ably.Message = {
         serial: tracker.serial,
         data: '',
-        extras: { headers: allHeaders },
+        extras: { ai: allHeaders },
       };
 
       this._invokeOnMessage(msg);
@@ -364,7 +364,7 @@ class DefaultEncoderCore implements EncoderCore {
       const msg: Ably.Message = {
         serial: tracker.serial,
         data: tracker.accumulated,
-        extras: { headers: { ...tracker.persistentHeaders, [HEADER_STATUS]: recoveryStatus } },
+        extras: { ai: { ...tracker.persistentHeaders, [HEADER_STATUS]: recoveryStatus } },
       };
 
       try {
@@ -439,7 +439,7 @@ class DefaultEncoderCore implements EncoderCore {
       name: payload.name,
       data: payload.data,
       extras: {
-        headers,
+        ai: headers,
         ...(payload.ephemeral ? { ephemeral: true } : {}),
       },
       ...(clientId ? { clientId } : {}),

@@ -414,7 +414,7 @@ describe('AgentSession integration', () => {
 
     await cancelChannel.publish({
       name: EVENT_CANCEL,
-      extras: { headers: { [HEADER_RUN_ID]: 'run-cancel-1' } },
+      extras: { ai: { [HEADER_RUN_ID]: 'run-cancel-1' } },
     });
 
     const result = await streamPromise;

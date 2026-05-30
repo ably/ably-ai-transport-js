@@ -52,9 +52,9 @@ const createMockWriter = (): MockWriter => {
 };
 
 const headersOf = (msg: Ably.Message): Record<string, string> => {
-  // CAST: Tests build messages with extras shaped { headers: ... }.
-  const extras = msg.extras as { headers: Record<string, string> };
-  return extras.headers;
+  // CAST: the encoder writes the SDK header record under extras.ai.
+  const extras = msg.extras as { ai: Record<string, string> };
+  return extras.ai;
 };
 
 const firstPublish = (writer: MockWriter): Ably.Message => {

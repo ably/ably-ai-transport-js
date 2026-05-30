@@ -45,7 +45,7 @@ export interface ChannelWriter {
 
 /** Shape of the extras config passed through WriteOptions and EncoderOptions. */
 export interface Extras {
-  /** Headers to attach to the message's `extras.ai` namespace. */
+  /** Transport-tier headers to attach to the message's `extras.ai.transport` namespace. */
   headers?: Record<string, string>;
 }
 
@@ -79,8 +79,14 @@ export interface MessagePayload {
   name: string;
   /** Message data. Ably handles serialization — strings, objects, and arrays are all valid. */
   data: unknown;
-  /** Headers from the Ably message extras. */
-  headers?: Record<string, string>;
+  /** Codec-tier headers — the codec's own fields, carried under `extras.ai.codec`. */
+  codecHeaders?: Record<string, string>;
+  /**
+   * Transport-tier headers a codec needs to stamp directly (e.g. `role`,
+   * `status`), carried under `extras.ai.transport`. Most codec payloads leave
+   * this unset and let the transport layer supply transport headers via config.
+   */
+  transportHeaders?: Record<string, string>;
   /** Mark this message as ephemeral (not persisted in channel history). Only meaningful on encode. */
   ephemeral?: boolean;
 }
@@ -95,8 +101,13 @@ export interface StreamPayload {
   name: string;
   /** Initial or closing data for the stream. Must be a string for append/accumulate semantics. */
   data: string;
-  /** Headers from the Ably message extras. */
-  headers?: Record<string, string>;
+  /** Codec-tier headers — the codec's own fields, carried under `extras.ai.codec`. */
+  codecHeaders?: Record<string, string>;
+  /**
+   * Transport-tier headers a codec needs to stamp directly (e.g. `role`,
+   * `status`), carried under `extras.ai.transport`.
+   */
+  transportHeaders?: Record<string, string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -114,8 +125,16 @@ export interface StreamTrackerState {
   streamId: string;
   /** Full accumulated text so far. */
   accumulated: string;
-  /** Current headers for this stream. Initially set from the first publish, but may be replaced on update. */
-  headers: Record<string, string>;
+  /**
+   * Current codec-tier headers (`extras.ai.codec`) for this stream. Initially
+   * set from the first publish, but may be replaced on update.
+   */
+  codecHeaders: Record<string, string>;
+  /**
+   * Current transport-tier headers (`extras.ai.transport`) for this stream.
+   * Initially set from the first publish, but may be replaced on update.
+   */
+  transportHeaders: Record<string, string>;
   /** Whether this stream has been closed (complete or cancelled). */
   closed: boolean;
 }

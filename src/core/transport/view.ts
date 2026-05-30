@@ -29,7 +29,7 @@ import {
 import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
-import { getHeaders } from '../../utils.js';
+import { getTransportHeaders } from '../../utils.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
 import { decodeHistory } from './decode-history.js';
 import type { TreeInternal } from './tree.js';
@@ -1185,7 +1185,7 @@ export class DefaultView<
     try {
       const decoder = this._codec.createDecoder();
       for (const rawMsg of page.rawMessages) {
-        const headers = getHeaders(rawMsg);
+        const headers = getTransportHeaders(rawMsg);
         const serial = rawMsg.serial;
 
         if (rawMsg.name === EVENT_RUN_START) {
@@ -1430,7 +1430,7 @@ export class DefaultView<
 
   private _onTreeAblyMessage(msg: Ably.InboundMessage): void {
     // Re-emit only if the message corresponds to a visible Run
-    const headers = getHeaders(msg);
+    const headers = getTransportHeaders(msg);
     const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
     const runId = headers[HEADER_RUN_ID];
 

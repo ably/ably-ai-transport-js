@@ -36,7 +36,10 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
   return mock as unknown as MockChannel & Ably.RealtimeChannel;
 };
 
-const headersOf = (msg: Ably.Message): Record<string, string> => (msg.extras as { ai: Record<string, string> }).ai;
+const headersOf = (msg: Ably.Message): Record<string, string> => {
+  const ai = (msg.extras as { ai?: { transport?: Record<string, string>; codec?: Record<string, string> } }).ai;
+  return { ...ai?.transport, ...ai?.codec };
+};
 
 // ---------------------------------------------------------------------------
 // Tests

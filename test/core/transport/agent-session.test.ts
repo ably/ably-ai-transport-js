@@ -152,7 +152,7 @@ const simulateCancel = (channel: MockChannel, headers: Record<string, string>): 
   if (!channel.listener) return;
   const msg = {
     name: EVENT_CANCEL,
-    extras: { ai: headers },
+    extras: { ai: { transport: headers } },
   } as unknown as Ably.InboundMessage;
   channel.listener(msg);
 };
@@ -309,7 +309,7 @@ const codecWithFunctionalDecoder = (): Codec<TestInput, TestOutput, TestProjecti
   createEncoder: vi.fn(() => createMockEncoder()),
   createDecoder: vi.fn(() => ({
     decode: (m: Ably.InboundMessage) => {
-      const hdrs = (m.extras as { ai?: Record<string, string> } | undefined)?.ai ?? {};
+      const hdrs = (m.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport ?? {};
       const id = hdrs[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
       // The functional decoder synthesises one user-message TInput per inbound
       // message — the agent's input-event lookup folds these into MessageNodes.
@@ -385,7 +385,7 @@ const deliverInputEvent = (ch: MockChannel, opts: DeliverInputEventOpts): void =
     name: opts.name ?? 'text',
     serial: opts.serial,
     clientId: opts.publisherClientId,
-    extras: { ai: headers },
+    extras: { ai: { transport: headers } },
   } as unknown as Ably.InboundMessage;
   if (ch.listener) ch.listener(msg);
 };
@@ -551,7 +551,7 @@ describe('AgentSession', () => {
 
       const startMsg = channel.publishCalls.find((m) => m.name === 'ai-run-start');
       expect(startMsg).toBeDefined();
-      const headers = (startMsg?.extras as { ai: Record<string, string> } | undefined)?.ai;
+      const headers = (startMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
       expect(headers?.[HEADER_RUN_ID]).toBe('run-1');
     });
 
@@ -585,7 +585,7 @@ describe('AgentSession', () => {
       await startPromise;
 
       const startMsg = ch.publishCalls.find((m) => m.name === 'ai-run-start');
-      const headers = (startMsg?.extras as { ai: Record<string, string> } | undefined)?.ai;
+      const headers = (startMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
       expect(headers?.['run-continue']).toBe('true');
       s.close();
     });
@@ -595,7 +595,7 @@ describe('AgentSession', () => {
       await run.start();
 
       const startMsg = channel.publishCalls.find((m) => m.name === 'ai-run-start');
-      const headers = (startMsg?.extras as { ai: Record<string, string> } | undefined)?.ai;
+      const headers = (startMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
       expect(headers?.['run-continue']).toBeUndefined();
     });
 
@@ -631,7 +631,7 @@ describe('AgentSession', () => {
       await startPromise;
 
       const startMsg = ch.publishCalls.find((m) => m.name === 'ai-run-start');
-      const headers = (startMsg?.extras as { ai: Record<string, string> } | undefined)?.ai;
+      const headers = (startMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
       expect(headers?.['msg-regenerate']).toBe('orig-asst');
       expect(headers?.parent).toBe('orig-user');
       expect(headers?.['fork-of']).toBeUndefined();
@@ -669,7 +669,7 @@ describe('AgentSession', () => {
       await startPromise;
 
       const startMsg = channel.publishCalls.find((m) => m.name === 'ai-run-start');
-      const headers = (startMsg?.extras as { ai: Record<string, string> } | undefined)?.ai;
+      const headers = (startMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
       expect(headers?.['input-client-id']).toBe('user-b');
     });
 
@@ -691,7 +691,7 @@ describe('AgentSession', () => {
       await run.end('complete');
 
       const endMsg = channel.publishCalls.find((m) => m.name === 'ai-run-end');
-      const headers = (endMsg?.extras as { ai: Record<string, string> } | undefined)?.ai;
+      const headers = (endMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
       expect(headers?.['input-client-id']).toBe('user-b');
     });
 
@@ -2017,7 +2017,8 @@ describe('Run.messages', () => {
     await startPromise;
 
     const runStart = ch.publishCalls.find((m) => m.name === 'ai-run-start');
-    const startHeaders = (runStart?.extras as { ai?: Record<string, string> } | undefined)?.ai;
+    const startHeaders = (runStart?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai
+      ?.transport;
     expect(startHeaders?.['run-continue']).toBe('true');
     session.close();
   });
@@ -2100,7 +2101,7 @@ const makeRunStartMsg = (
   return {
     name: EVENT_RUN_START,
     serial: `s-start-${runId}`,
-    extras: { headers },
+    extras: { ai: { transport: headers } },
   } as unknown as Ably.InboundMessage;
 };
 
@@ -2116,7 +2117,7 @@ const makeContentMsg = (runId: string, codecMsgId: string, serial?: string): Abl
   ({
     name: 'text',
     serial: serial ?? `s-${codecMsgId}`,
-    extras: { headers: { [HEADER_RUN_ID]: runId, [HEADER_CODEC_MESSAGE_ID]: codecMsgId } },
+    extras: { ai: { transport: { [HEADER_RUN_ID]: runId, [HEADER_CODEC_MESSAGE_ID]: codecMsgId } } },
   }) as unknown as Ably.InboundMessage;
 
 // ---------------------------------------------------------------------------

@@ -21,9 +21,17 @@ interface DebugPaneProps {
 
 type Tab = 'ably' | 'uimessages' | 'lifecycle';
 
-function extractHeaders(msg: Ably.InboundMessage): Record<string, string> {
-  const extras = msg.extras as { ai?: Record<string, string> } | undefined;
-  return extras?.ai ?? {};
+const AI_TIERS = ['transport', 'codec'] as const;
+
+/**
+ * Read the SDK's `extras.ai` namespace, preserving its two-tier structure:
+ * `extras.ai.transport` (transport headers) and `extras.ai.codec` (codec
+ * headers). Returns an empty record per tier when absent.
+ */
+function extractTiers(msg: Ably.InboundMessage): Record<(typeof AI_TIERS)[number], Record<string, string>> {
+  const ai = (msg.extras as { ai?: { transport?: Record<string, string>; codec?: Record<string, string> } } | undefined)
+    ?.ai;
+  return { transport: ai?.transport ?? {}, codec: ai?.codec ?? {} };
 }
 
 function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
@@ -44,7 +52,7 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
         <p className="text-xs text-zinc-700 text-center mt-8">Raw Ably messages will appear here.</p>
       )}
       {entries.map((entry, idx) => {
-        const headers = extractHeaders(entry);
+        const tiers = extractTiers(entry);
         return (
           <div
             key={idx}
@@ -56,20 +64,28 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
               <span className="text-emerald-500">{entry.name ?? '(unnamed)'}</span>
               <span className="text-amber-500">{String(entry.action ?? 'message.create')}</span>
             </div>
-            {Object.keys(headers).length > 0 && (
-              <div className="ml-2 mb-1 space-y-0.5">
-                {Object.entries(headers).map(([k, v]) => (
-                  <div
-                    key={k}
-                    className="text-zinc-600"
-                  >
-                    <span className="text-zinc-500">{k}</span>
-                    <span className="text-zinc-700">: </span>
-                    <span className="text-zinc-400">{v}</span>
-                  </div>
-                ))}
-              </div>
-            )}
+            {AI_TIERS.map((tier) => {
+              const tierHeaders = tiers[tier];
+              if (Object.keys(tierHeaders).length === 0) return null;
+              return (
+                <div
+                  key={tier}
+                  className="ml-2 mb-1 space-y-0.5"
+                >
+                  <div className="text-zinc-700">extras.ai.{tier}</div>
+                  {Object.entries(tierHeaders).map(([k, v]) => (
+                    <div
+                      key={k}
+                      className="text-zinc-600 ml-2"
+                    >
+                      <span className="text-zinc-500">{k}</span>
+                      <span className="text-zinc-700">: </span>
+                      <span className="text-zinc-400">{v}</span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
             {entry.data !== undefined && entry.data !== null && (
               <div className="mt-1 text-zinc-600 break-all whitespace-pre-wrap">
                 {typeof entry.data === 'string' ? entry.data : JSON.stringify(entry.data, null, 2)}

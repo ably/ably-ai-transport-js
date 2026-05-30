@@ -8,25 +8,47 @@
 
 import type * as Ably from 'ably';
 
-import { CODEC_HEADER_PREFIX } from './constants.js';
-
 /**
- * Extract the SDK's `extras.ai` header namespace from an Ably InboundMessage.
- * `extras.ai` is the SDK's reserved corner of the message envelope; the
- * application's own `extras.headers` is deliberately left untouched.
- * @param message - The Ably message to extract headers from.
- * @returns The headers record, or an empty object if absent.
+ * Read one tier of the SDK's `extras.ai` namespace from an Ably message.
+ * `extras.ai` is the SDK's reserved corner of the message envelope, split into
+ * a `transport` tier (generic transport headers) and a `codec` tier (codec
+ * headers). The application's own `extras.headers` is deliberately left
+ * untouched.
+ * @param message - The Ably message to read from.
+ * @param tier - Which `extras.ai` sub-namespace to read.
+ * @returns The tier's headers record, or an empty object if absent.
  */
-export const getHeaders = (message: Ably.InboundMessage): Record<string, string> => {
+const getAiTier = (message: Ably.InboundMessage, tier: 'transport' | 'codec'): Record<string, string> => {
   // CAST: Ably SDK types `extras` as `any`; runtime checks below guard access.
   const extras = message.extras as unknown;
   if (!extras || typeof extras !== 'object') return {};
-  const headers = (extras as { ai?: unknown }).ai;
-  if (!headers || typeof headers !== 'object') return {};
-  // CAST: Ably wire protocol guarantees the ai namespace is Record<string, string>
+  const ai = (extras as { ai?: unknown }).ai;
+  if (!ai || typeof ai !== 'object') return {};
+  const sub = (ai as Record<string, unknown>)[tier];
+  if (!sub || typeof sub !== 'object') return {};
+  // CAST: Ably wire protocol guarantees the tier is Record<string, string>
   // when present, verified by the runtime guards above.
-  return headers as Record<string, string>;
+  return sub as Record<string, string>;
 };
+
+/**
+ * Extract the transport-tier headers (`extras.ai.transport`) from an Ably
+ * InboundMessage. These are the generic transport headers (run/stream/identity/
+ * branching), set and read by the transport layer.
+ * @param message - The Ably message to extract headers from.
+ * @returns The transport headers record, or an empty object if absent.
+ */
+export const getTransportHeaders = (message: Ably.InboundMessage): Record<string, string> =>
+  getAiTier(message, 'transport');
+
+/**
+ * Extract the codec-tier headers (`extras.ai.codec`) from an Ably
+ * InboundMessage. These are the codec's own headers, with no prefix — the
+ * tier isolates them from transport headers.
+ * @param message - The Ably message to extract headers from.
+ * @returns The codec headers record, or an empty object if absent.
+ */
+export const getCodecHeaders = (message: Ably.InboundMessage): Record<string, string> => getAiTier(message, 'codec');
 
 /**
  * Parse a JSON string, returning undefined on failure.
@@ -98,29 +120,29 @@ export const parseBool = (value: string | undefined): boolean | undefined => {
 };
 
 /**
- * Build a domain headers record from key-value pairs. Each key is automatically
- * prefixed with {@link CODEC_HEADER_PREFIX}. Values that are undefined or null
- * are skipped; strings are set directly; booleans, numbers, and objects are
- * converted using the same rules as {@link setIfPresent}.
- * @param entries - Unprefixed key-value pairs (e.g. `{ toolCallId: 'tc-1' }` becomes `{ 'codec-toolCallId': 'tc-1' }`).
- * @returns A new headers record with prefixed keys.
+ * Build a domain headers record from key-value pairs. The keys are used
+ * as-is — the codec tier (`extras.ai.codec`) isolates them, so no prefix is
+ * applied. Values that are undefined or null are skipped; strings are set
+ * directly; booleans, numbers, and objects are converted using the same rules
+ * as {@link setIfPresent}.
+ * @param entries - Key-value pairs (e.g. `{ toolCallId: 'tc-1' }` becomes `{ toolCallId: 'tc-1' }`).
+ * @returns A new headers record.
  */
 export const domainHeaders = (entries: Record<string, unknown>): Record<string, string> => {
   const h: Record<string, string> = {};
   for (const [key, value] of Object.entries(entries)) {
-    setIfPresent(h, CODEC_HEADER_PREFIX + key, value);
+    setIfPresent(h, key, value);
   }
   return h;
 };
 
 /**
- * Read a domain header value from a headers record.
- * @param headers - The headers record to read from.
- * @param key - The unprefixed domain key (e.g. `'toolCallId'` reads `'codec-toolCallId'`).
+ * Read a domain header value from a codec-tier headers record.
+ * @param headers - The codec headers record to read from.
+ * @param key - The domain key (e.g. `'toolCallId'`).
  * @returns The header value, or undefined if absent.
  */
-export const getDomainHeader = (headers: Record<string, string>, key: string): string | undefined =>
-  headers[CODEC_HEADER_PREFIX + key];
+export const getDomainHeader = (headers: Record<string, string>, key: string): string | undefined => headers[key];
 
 /**
  * Mapped type that converts properties whose type includes `undefined`
@@ -208,22 +230,22 @@ export interface DomainHeaderWriter {
 }
 
 /**
- * Create a {@link DomainHeaderWriter} for building a domain headers record.
- * @returns A fluent builder that prefixes each key with the domain header prefix.
+ * Create a {@link DomainHeaderWriter} for building a codec-tier headers record.
+ * @returns A fluent builder that accumulates codec headers under their bare keys.
  */
 export const headerWriter = (): DomainHeaderWriter => {
   const h: Record<string, string> = {};
   const writer: DomainHeaderWriter = {
     str: (key: string, value: string | undefined) => {
-      if (value !== undefined) h[CODEC_HEADER_PREFIX + key] = value;
+      if (value !== undefined) h[key] = value;
       return writer;
     },
     bool: (key: string, value: boolean | undefined) => {
-      if (value !== undefined) h[CODEC_HEADER_PREFIX + key] = String(value);
+      if (value !== undefined) h[key] = String(value);
       return writer;
     },
     json: (key: string, value: unknown) => {
-      if (value !== undefined && value !== null) h[CODEC_HEADER_PREFIX + key] = JSON.stringify(value);
+      if (value !== undefined && value !== null) h[key] = JSON.stringify(value);
       return writer;
     },
     build: () => h,

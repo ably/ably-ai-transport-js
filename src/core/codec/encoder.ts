@@ -42,8 +42,20 @@ interface StreamState {
   name: string;
   streamId: string;
   accumulated: string;
-  persistentHeaders: Record<string, string>;
+  /** Transport-tier headers repeated on every append (`extras.ai.transport`). */
+  persistentTransport: Record<string, string>;
+  /** Codec-tier headers repeated on every append (`extras.ai.codec`). */
+  persistentCodec: Record<string, string>;
   cancelled: boolean;
+}
+
+/**
+ * The SDK's `extras.ai` namespace as written to the wire: a `transport` tier
+ * (always present on SDK-published messages) and an optional `codec` tier.
+ */
+interface AiExtras {
+  transport: Record<string, string>;
+  codec?: Record<string, string>;
 }
 
 interface PendingAppend {
@@ -134,14 +146,7 @@ class DefaultEncoderCore implements EncoderCore {
   async publishDiscreteBatch(payloads: MessagePayload[], opts?: WriteOptions): Promise<Ably.PublishResult> {
     this._assertNotClosed();
     this._logger?.trace('DefaultEncoderCore.publishDiscreteBatch();', { count: payloads.length });
-    const msgs = payloads.map((p) => this._buildDiscreteMessage(p, opts));
-    // Mark batch-published payloads as discrete message parts (from writeMessages).
-    // The decoder relies on this header to distinguish message parts from lifecycle
-    // events that also happen to be discrete (stream: false).
-    for (const msg of msgs) {
-      // CAST: extras is built by _buildDiscreteMessage with a known { ai } shape.
-      (msg.extras as { ai: Record<string, string> }).ai[HEADER_DISCRETE] = 'true';
-    }
+    const msgs = payloads.map((p) => this._buildDiscreteMessage(p, opts, true));
     return this._writer.publish(msgs);
   }
 
@@ -150,16 +155,17 @@ class DefaultEncoderCore implements EncoderCore {
     this._assertNotClosed();
     this._logger?.trace('DefaultEncoderCore.startStream();', { name: payload.name, streamId });
 
-    const allHeaders = this._buildHeaders(payload.headers ?? {}, opts);
-    allHeaders[HEADER_STREAM] = 'true';
-    allHeaders[HEADER_STATUS] = 'streaming';
-    allHeaders[HEADER_STREAM_ID] = streamId;
+    const transport = this._buildTransport(payload.transportHeaders, opts);
+    transport[HEADER_STREAM] = 'true';
+    transport[HEADER_STATUS] = 'streaming';
+    transport[HEADER_STREAM_ID] = streamId;
+    const codec = payload.codecHeaders ?? {};
 
     const clientId = this._resolveClientId(opts);
     const msg: Ably.Message = {
       name: payload.name,
       data: payload.data,
-      extras: { ai: allHeaders },
+      extras: { ai: this._aiExtras(transport, codec) },
       ...(clientId ? { clientId } : {}),
     };
 
@@ -181,7 +187,8 @@ class DefaultEncoderCore implements EncoderCore {
       name: payload.name,
       streamId,
       accumulated: payload.data,
-      persistentHeaders: allHeaders,
+      persistentTransport: transport,
+      persistentCodec: codec,
       cancelled: false,
     });
 
@@ -210,7 +217,7 @@ class DefaultEncoderCore implements EncoderCore {
     const appendMsg: Ably.Message = {
       serial: tracker.serial,
       data,
-      extras: { ai: { ...tracker.persistentHeaders } },
+      extras: { ai: this._aiExtras({ ...tracker.persistentTransport }, { ...tracker.persistentCodec }) },
     };
 
     this._invokeOnMessage(appendMsg);
@@ -235,13 +242,13 @@ class DefaultEncoderCore implements EncoderCore {
     // Accumulate closing data so recovery has the full content
     tracker.accumulated += payload.data;
 
-    const allHeaders = this._buildClosingHeaders(tracker, payload.headers ?? {});
-    allHeaders[HEADER_STATUS] = 'complete';
+    const { transport, codec } = this._buildClosing(tracker, payload);
+    transport[HEADER_STATUS] = 'complete';
 
     const msg: Ably.Message = {
       serial: tracker.serial,
       data: payload.data,
-      extras: { ai: allHeaders },
+      extras: { ai: this._aiExtras(transport, codec) },
     };
 
     this._invokeOnMessage(msg);
@@ -269,13 +276,13 @@ class DefaultEncoderCore implements EncoderCore {
 
     tracker.cancelled = true;
 
-    const allHeaders = this._buildClosingHeaders(tracker, {}, opts);
-    allHeaders[HEADER_STATUS] = 'cancelled';
+    const { transport, codec } = this._buildClosing(tracker, undefined, opts);
+    transport[HEADER_STATUS] = 'cancelled';
 
     const msg: Ably.Message = {
       serial: tracker.serial,
       data: '',
-      extras: { ai: allHeaders },
+      extras: { ai: this._aiExtras(transport, codec) },
     };
 
     this._invokeOnMessage(msg);
@@ -295,13 +302,13 @@ class DefaultEncoderCore implements EncoderCore {
     for (const tracker of this._trackers.values()) {
       tracker.cancelled = true;
 
-      const allHeaders = this._buildClosingHeaders(tracker, {}, opts);
-      allHeaders[HEADER_STATUS] = 'cancelled';
+      const { transport, codec } = this._buildClosing(tracker, undefined, opts);
+      transport[HEADER_STATUS] = 'cancelled';
 
       const msg: Ably.Message = {
         serial: tracker.serial,
         data: '',
-        extras: { ai: allHeaders },
+        extras: { ai: this._aiExtras(transport, codec) },
       };
 
       this._invokeOnMessage(msg);
@@ -364,7 +371,12 @@ class DefaultEncoderCore implements EncoderCore {
       const msg: Ably.Message = {
         serial: tracker.serial,
         data: tracker.accumulated,
-        extras: { ai: { ...tracker.persistentHeaders, [HEADER_STATUS]: recoveryStatus } },
+        extras: {
+          ai: this._aiExtras(
+            { ...tracker.persistentTransport, [HEADER_STATUS]: recoveryStatus },
+            { ...tracker.persistentCodec },
+          ),
+        },
       };
 
       try {
@@ -421,25 +433,53 @@ class DefaultEncoderCore implements EncoderCore {
     return opts?.clientId ?? this._defaultClientId;
   }
 
-  private _buildHeaders(codecHeaders: Record<string, string>, opts?: WriteOptions): Record<string, string> {
+  /**
+   * Build the transport-tier header record for a message: caller-configured
+   * transport headers (default extras + per-write overrides) layered with any
+   * transport headers the codec payload stamps directly, plus the message-id.
+   * @param payloadTransport - Transport headers carried on the codec payload.
+   * @param opts - Optional per-write overrides.
+   * @returns The transport-tier headers record (`extras.ai.transport`).
+   */
+  private _buildTransport(
+    payloadTransport: Record<string, string> | undefined,
+    opts?: WriteOptions,
+  ): Record<string, string> {
     const callerHeaders = mergeHeaders(this._defaultExtras?.headers, opts?.extras?.headers);
-    const merged = { ...callerHeaders, ...codecHeaders };
+    const transport = { ...callerHeaders, ...payloadTransport };
     if (opts?.messageId !== undefined) {
-      merged[HEADER_CODEC_MESSAGE_ID] = opts.messageId;
+      transport[HEADER_CODEC_MESSAGE_ID] = opts.messageId;
     }
-    return merged;
+    return transport;
   }
 
-  private _buildDiscreteMessage(payload: MessagePayload, opts?: WriteOptions): Ably.Message {
-    const headers = this._buildHeaders(payload.headers ?? {}, opts);
-    headers[HEADER_STREAM] = 'false';
+  /**
+   * Assemble the `extras.ai` namespace from its two tiers, omitting the codec
+   * tier when empty.
+   * @param transport - Transport-tier headers (always present on SDK messages).
+   * @param codec - Codec-tier headers; omitted from the wire when empty.
+   * @returns The `extras.ai` object.
+   */
+  private _aiExtras(transport: Record<string, string>, codec: Record<string, string>): AiExtras {
+    return Object.keys(codec).length > 0 ? { transport, codec } : { transport };
+  }
+
+  private _buildDiscreteMessage(payload: MessagePayload, opts?: WriteOptions, discrete = false): Ably.Message {
+    const transport = this._buildTransport(payload.transportHeaders, opts);
+    transport[HEADER_STREAM] = 'false';
+    if (discrete) {
+      // Mark batch-published payloads as discrete message parts (from writeMessages).
+      // The decoder relies on this header to distinguish message parts from lifecycle
+      // events that also happen to be discrete (stream: false).
+      transport[HEADER_DISCRETE] = 'true';
+    }
     const clientId = this._resolveClientId(opts);
 
     const msg: Ably.Message = {
       name: payload.name,
       data: payload.data,
       extras: {
-        ai: headers,
+        ai: this._aiExtras(transport, payload.codecHeaders ?? {}),
         ...(payload.ephemeral ? { ephemeral: true } : {}),
       },
       ...(clientId ? { clientId } : {}),
@@ -450,24 +490,23 @@ class DefaultEncoderCore implements EncoderCore {
   }
 
   /**
-   * Build headers for a closing append. Closing appends must repeat ALL
-   * persistent headers (Ably replaces the entire extras object on append).
+   * Build both header tiers for a closing append. Closing appends must repeat
+   * ALL persistent headers (Ably replaces the entire extras object on append).
    * Then layer caller and codec overrides.
    * @param tracker - The stream tracker with persistent headers.
-   * @param codecHeaders - Codec-layer headers to merge.
+   * @param payload - The closing stream payload (codec + transport headers).
    * @param opts - Optional per-write overrides.
-   * @returns Merged headers for the closing append.
+   * @returns The two tiers for the closing append.
    */
-  private _buildClosingHeaders(
+  private _buildClosing(
     tracker: StreamState,
-    codecHeaders: Record<string, string>,
+    payload: StreamPayload | undefined,
     opts?: WriteOptions,
-  ): Record<string, string> {
-    const h = { ...tracker.persistentHeaders };
+  ): { transport: Record<string, string>; codec: Record<string, string> } {
     const callerHeaders = mergeHeaders(this._defaultExtras?.headers, opts?.extras?.headers);
-    Object.assign(h, callerHeaders);
-    Object.assign(h, codecHeaders);
-    return h;
+    const transport = { ...tracker.persistentTransport, ...callerHeaders, ...payload?.transportHeaders };
+    const codec = { ...tracker.persistentCodec, ...payload?.codecHeaders };
+    return { transport, codec };
   }
 }
 

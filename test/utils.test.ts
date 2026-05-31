@@ -9,7 +9,6 @@ import {
   mergeHeaders,
   parseBool,
   parseJson,
-  setHeadersIfPresent,
   setIfPresent,
   stripUndefined,
 } from '../src/utils.js';
@@ -122,21 +121,6 @@ describe('setIfPresent', () => {
     const h: Record<string, string> = {};
     setIfPresent(h, 'num', 42);
     expect(h).toEqual({ num: '42' });
-  });
-});
-
-describe('setHeadersIfPresent', () => {
-  it('sets multiple headers at once', () => {
-    const h: Record<string, string> = {};
-    setHeadersIfPresent(h, { a: 'one', b: 2, c: true });
-    expect(h).toEqual({ a: 'one', b: '2', c: 'true' });
-  });
-
-  it('skips undefined and null entries', () => {
-    const h: Record<string, string> = { existing: 'keep' };
-    // eslint-disable-next-line unicorn/no-null -- testing null handling
-    setHeadersIfPresent(h, { a: 'set', b: undefined, c: null });
-    expect(h).toEqual({ existing: 'keep', a: 'set' });
   });
 });
 

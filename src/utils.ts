@@ -83,18 +83,6 @@ export const setIfPresent = (headers: Record<string, string>, key: string, value
 };
 
 /**
- * Set multiple headers at once, skipping entries whose values are undefined or null.
- * Each value is converted using the same rules as {@link setIfPresent}.
- * @param headers - The headers object to mutate.
- * @param entries - Key-value pairs to set.
- */
-export const setHeadersIfPresent = (headers: Record<string, string>, entries: Record<string, unknown>): void => {
-  for (const [key, value] of Object.entries(entries)) {
-    setIfPresent(headers, key, value);
-  }
-};
-
-/**
  * Merge two header records into a new object. Later values override earlier ones.
  * Undefined inputs are treated as empty.
  * @param base - Base headers (lower priority).
@@ -117,23 +105,6 @@ export const mergeHeaders = (
 export const parseBool = (value: string | undefined): boolean | undefined => {
   if (value === undefined) return undefined;
   return value === 'true';
-};
-
-/**
- * Build a domain headers record from key-value pairs. The keys are used
- * as-is — the codec tier (`extras.ai.codec`) isolates them, so no prefix is
- * applied. Values that are undefined or null are skipped; strings are set
- * directly; booleans, numbers, and objects are converted using the same rules
- * as {@link setIfPresent}.
- * @param entries - Key-value pairs (e.g. `{ toolCallId: 'tc-1' }` becomes `{ toolCallId: 'tc-1' }`).
- * @returns A new headers record.
- */
-export const domainHeaders = (entries: Record<string, unknown>): Record<string, string> => {
-  const h: Record<string, string> = {};
-  for (const [key, value] of Object.entries(entries)) {
-    setIfPresent(h, key, value);
-  }
-  return h;
 };
 
 /**

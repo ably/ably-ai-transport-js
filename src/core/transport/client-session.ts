@@ -96,8 +96,6 @@ class DefaultClientSession<
   // Typed event emitter — only 'error' remains on the session
   private readonly _emitter: EventEmitter<ClientSessionEventsMap>;
 
-  // Relay detection — tracks codec-message-ids of optimistic inserts for reconciliation
-  private readonly _ownCodecMessageIds = new Set<string>();
   /**
    * Active runs initiated by this session: runId → most-recent invocationId.
    * Cleared on run-end. Used by the auto-cancel-duplicate path to identify
@@ -105,9 +103,6 @@ class DefaultClientSession<
    * runId.
    */
   private readonly _ownRunIds = new Map<string, string>();
-
-  // Track codecMessageIds per run for cleanup on run-end
-  private readonly _runCodecMessageIds = new Map<string, Set<string>>();
 
   // Sub-components
   private readonly _tree: DefaultTree<TInput | TOutput, TProjection>;
@@ -408,11 +403,6 @@ class DefaultClientSession<
           // suspend.
           if (reason !== 'suspended') {
             this._router.closeStream(runId);
-            const codecMessageIds = this._runCodecMessageIds.get(runId);
-            if (codecMessageIds) {
-              for (const mid of codecMessageIds) this._ownCodecMessageIds.delete(mid);
-              this._runCodecMessageIds.delete(runId);
-            }
             this._ownRunIds.delete(runId);
           }
           this._tree.applyRunLifecycle({ type: EVENT_RUN_END, runId, clientId: runCid, reason }, ablyMessage.serial);
@@ -535,12 +525,6 @@ class DefaultClientSession<
    *   in sync with what observers see).
    */
   private _cleanupFailedSend(runId: string, options: { removeOptimistic: boolean }): void {
-    const codecMessageIds = this._runCodecMessageIds.get(runId);
-    if (codecMessageIds) {
-      for (const codecMessageId of codecMessageIds) {
-        this._ownCodecMessageIds.delete(codecMessageId);
-      }
-    }
     if (options.removeOptimistic) {
       // Drop the optimistic Run only if the publish never produced a
       // server-assigned serial (i.e. nothing live observed the Run). A
@@ -552,7 +536,6 @@ class DefaultClientSession<
       }
     }
     this._ownRunIds.delete(runId);
-    this._runCodecMessageIds.delete(runId);
   }
 
   // ---------------------------------------------------------------------------
@@ -648,7 +631,6 @@ class DefaultClientSession<
       // Use the input's `codecMessageId` when set (e.g. tool resolution
       // targeting the prior assistant); otherwise mint a fresh id.
       const codecMessageId = entry.codecMessageId ?? crypto.randomUUID();
-      this._ownCodecMessageIds.add(codecMessageId);
       codecMessageIds.add(codecMessageId);
 
       // Inputs that reference an existing message (regenerate, tool
@@ -701,8 +683,6 @@ class DefaultClientSession<
         autoParent = codecMessageId;
       }
     }
-
-    this._runCodecMessageIds.set(runId, codecMessageIds);
 
     // The primary trigger event is the last input — the one the agent looks
     // up on the channel via `event-id` and forwards in the POST body.
@@ -878,11 +858,10 @@ class DefaultClientSession<
     });
 
     // Close the local router stream so the caller's reader sees end-of-input.
-    // Don't tear down the Tree's RunNode or this session's `_ownRunIds` /
-    // `_runCodecMessageIds` entries here — late agent events (e.g. a cancel
-    // append, a trailing `status: cancelled`) arriving before run-end
-    // must still fold into the Run's projection. The run-end handler is the
-    // canonical cleanup point.
+    // Don't tear down the Tree's RunNode or this session's `_ownRunIds`
+    // entries here — late agent events (e.g. a cancel append, a trailing
+    // `status: cancelled`) arriving before run-end must still fold into the
+    // Run's projection. The run-end handler is the canonical cleanup point.
     this._router.closeStream(runId);
   }
 
@@ -927,8 +906,6 @@ class DefaultClientSession<
       this._pendingRunStarts.clear();
     }
     this._ownRunIds.clear();
-    this._ownCodecMessageIds.clear();
-    this._runCodecMessageIds.clear();
 
     // Best-effort encoder close — flushes any pending stream operations.
     // The client only uses the discrete path (writeMessages), so this is

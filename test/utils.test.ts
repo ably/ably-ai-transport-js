@@ -2,6 +2,7 @@ import type * as Ably from 'ably';
 import { describe, expect, it } from 'vitest';
 
 import {
+  compareBySerial,
   getCodecHeaders,
   getTransportHeaders,
   headerReader,
@@ -160,6 +161,26 @@ describe('parseBool', () => {
   it('returns undefined for undefined', () => {
     // eslint-disable-next-line unicorn/no-useless-undefined -- testing explicit undefined arg
     expect(parseBool(undefined)).toBeUndefined();
+  });
+});
+
+describe('compareBySerial', () => {
+  it('orders serials lexicographically ascending', () => {
+    const sorted = [{ serial: 'c' }, { serial: 'a' }, { serial: 'b' }].toSorted(compareBySerial);
+    expect(sorted.map((r) => r.serial)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('sorts undefined serials last', () => {
+    const sorted = [{ serial: 'b' }, { serial: undefined }, { serial: 'a' }].toSorted(compareBySerial);
+    expect(sorted.map((r) => r.serial)).toEqual(['a', 'b', undefined]);
+  });
+
+  it('treats two undefined serials as equal', () => {
+    expect(compareBySerial({ serial: undefined }, { serial: undefined })).toBe(0);
+  });
+
+  it('treats two equal serials as equal', () => {
+    expect(compareBySerial({ serial: 'x' }, { serial: 'x' })).toBe(0);
   });
 });
 

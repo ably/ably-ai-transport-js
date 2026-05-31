@@ -1591,6 +1591,33 @@ describe('ClientSession', () => {
       expect(runEnds).toHaveLength(1);
       expect(runEnds[0]?.runId).toBe(initial.runId);
     });
+
+    it('applies a simple observer run-end with no own-run or continuation tracking', () => {
+      // An observer (no send, so no own-run state and no router stream)
+      // must still apply a run's terminal run-end. Run-ends are applied
+      // unconditionally, so the Run reaches a terminal state regardless of
+      // how the observer learned about the run.
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_START, {
+          [HEADER_RUN_ID]: 'run-obs-simple',
+          [HEADER_RUN_CLIENT_ID]: 'other-client',
+          [HEADER_INVOCATION_ID]: 'inv-obs',
+        }),
+      );
+      expect(fix.session.tree.getRunNode('run-obs-simple')?.status).toBe('active');
+
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: 'run-obs-simple',
+          [HEADER_RUN_CLIENT_ID]: 'other-client',
+          [HEADER_INVOCATION_ID]: 'inv-obs',
+          [HEADER_RUN_REASON]: 'complete',
+        }),
+      );
+      expect(fix.session.tree.getRunNode('run-obs-simple')?.status).toBe('complete');
+    });
   });
 
   // -------------------------------------------------------------------------

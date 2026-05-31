@@ -28,7 +28,7 @@ import {
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
-import { getTransportHeaders, mergeHeaders } from '../../utils.js';
+import { compareBySerial, getTransportHeaders, mergeHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent, WriteOptions } from '../codec/types.js';
 import { buildTransportHeaders } from './headers.js';
@@ -62,20 +62,6 @@ import type {
 // ---------------------------------------------------------------------------
 
 /**
- * Compare two Ably messages by serial for chronological ordering (oldest first).
- * Messages without a serial sort last.
- * @param a - First message.
- * @param b - Second message.
- * @returns Negative if a is older, positive if b is older, 0 if equal.
- */
-const bySerial = (a: Ably.InboundMessage, b: Ably.InboundMessage): number => {
-  if (a.serial === undefined && b.serial === undefined) return 0;
-  if (a.serial === undefined) return 1;
-  if (b.serial === undefined) return -1;
-  return a.serial < b.serial ? -1 : a.serial > b.serial ? 1 : 0;
-};
-
-/**
  * Merge live-observed messages into a collection of history messages, then
  * return a deduplicated, chronologically sorted array.
  *
@@ -106,7 +92,7 @@ const withLiveMessages = (
       }
     }
   }
-  return result.toSorted(bySerial);
+  return result.toSorted(compareBySerial);
 };
 
 /**
@@ -429,14 +415,7 @@ const lookupInputEvents = async <
       // Sort by Ably serial ascending so callers see publish order regardless
       // of interleaved rewind+live delivery. Null serials sort last (defensive
       // — input events should always carry a serial).
-      collected.sort((a, b) => {
-        if (a.serial === undefined && b.serial === undefined) return 0;
-        if (a.serial === undefined) return 1;
-        if (b.serial === undefined) return -1;
-        if (a.serial < b.serial) return -1;
-        if (a.serial > b.serial) return 1;
-        return 0;
-      });
+      collected.sort(compareBySerial);
       logger?.debug('lookupInputEvents(); collected input events', {
         runId,
         invocationId,

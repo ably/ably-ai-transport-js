@@ -35,18 +35,7 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
   }, []);
 
   const view = useView({ limit: historyLimit ?? 30 });
-  const {
-    messages,
-    nodes,
-    hasOlder,
-    loading,
-    loadOlder,
-    hasMessageSiblings,
-    getMessageSiblings,
-    getSelectedMessageSiblingIndex,
-    selectMessageSibling,
-    getMessageMetadata,
-  } = view;
+  const { messages, hasOlder, loading, loadOlder, branchSelection, selectSibling, runOf } = view;
 
   useClientTools(view, clientId, api);
 
@@ -71,14 +60,14 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
     [api],
   );
 
-  // Derive "is a run in progress?" from the latest visible Run's status:
-  // 'complete' and 'cancelled' are terminal and hide the Stop button; any
-  // other status ('active', 'error', 'suspended') leaves Stop available so
-  // the user can still abort a stuck or paused run. The Run also carries
-  // the runId Stop needs to cancel.
-  const latestNode = nodes.at(-1);
-  const latestRunId = latestNode?.runId;
-  const latestStatus = latestNode?.status;
+  // Derive "is a run in progress?" from the latest visible message's
+  // owning Run status: 'complete' and 'cancelled' are terminal and hide
+  // the Stop button; any other status ('active', 'error', 'suspended')
+  // leaves Stop available so the user can still abort a stuck or paused
+  // run. The Run also carries the runId Stop needs to cancel.
+  const latestRun = runOf(messages.at(-1)?.id ?? '');
+  const latestRunId = latestRun?.runId;
+  const latestStatus = latestRun?.status;
   const isRunInProgress = latestRunId !== undefined && latestStatus !== 'complete' && latestStatus !== 'cancelled';
   const status = isRunInProgress ? 'running' : 'idle';
 
@@ -112,7 +101,7 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
 
   const ablyMessages = useAblyMessages();
 
-  const unfinishedSteps = useDemoProgress(messages, hasMessageSiblings, getMessageMetadata, ablyMessages);
+  const unfinishedSteps = useDemoProgress(messages, branchSelection, runOf, ablyMessages);
 
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -123,21 +112,25 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
 
   const handleToolApprove = useCallback(
     (codecMessageId: string, toolCallId: string) => {
-      const runId = view.getMessageMetadata(codecMessageId)?.runId;
-      if (!runId) return;
-      wake(view.sendInput([{ kind: 'tool-approval-response', codecMessageId, toolCallId, approved: true }], { runId }));
+      const run = view.runOf(codecMessageId);
+      if (!run) return;
+      wake(
+        view.sendInput([{ kind: 'tool-approval-response', codecMessageId, toolCallId, approved: true }], {
+          runId: run.runId,
+        }),
+      );
     },
     [view, wake],
   );
 
   const handleToolDeny = useCallback(
     (codecMessageId: string, toolCallId: string) => {
-      const runId = view.getMessageMetadata(codecMessageId)?.runId;
-      if (!runId) return;
+      const run = view.runOf(codecMessageId);
+      if (!run) return;
       wake(
         view.sendInput(
           [{ kind: 'tool-approval-response', codecMessageId, toolCallId, approved: false, reason: 'User denied' }],
-          { runId },
+          { runId: run.runId },
         ),
       );
     },
@@ -152,12 +145,10 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
           messages={messages}
           hasOlder={hasOlder}
           loading={loading}
-          siblings={{
-            hasMessageSiblings,
-            getMessageSiblings,
-            getSelectedMessageSiblingIndex,
-            selectMessageSibling,
-            getMessageMetadata,
+          view={{
+            branchSelection,
+            selectSibling,
+            runOf,
           }}
           onLoadOlder={() => void loadOlder()}
           onRegenerate={(codecMessageId) => wake(view.regenerate(codecMessageId))}

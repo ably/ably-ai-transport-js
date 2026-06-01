@@ -2,23 +2,21 @@
 
 import { useRef, useEffect } from 'react';
 import type { UIMessage } from 'ai';
-import type { MessageMetadata } from '@ably/ai-transport';
+import type { BranchSelection, RunInfo } from '@ably/ai-transport';
 import { MessageBubble } from './message-bubble';
 import { IntroCard } from './intro-card';
 
-interface SiblingApi {
-  hasMessageSiblings: (codecMessageId: string) => boolean;
-  getMessageSiblings: (codecMessageId: string) => UIMessage[];
-  getSelectedMessageSiblingIndex: (codecMessageId: string) => number;
-  selectMessageSibling: (codecMessageId: string, index: number) => void;
-  getMessageMetadata: (codecMessageId: string) => MessageMetadata | undefined;
+interface ViewLookupApi {
+  branchSelection: (codecMessageId: string) => BranchSelection<UIMessage>;
+  selectSibling: (codecMessageId: string, index: number) => void;
+  runOf: (codecMessageId: string) => RunInfo | undefined;
 }
 
 interface MessageListProps {
   messages: UIMessage[];
   hasOlder: boolean;
   loading: boolean;
-  siblings: SiblingApi;
+  view: ViewLookupApi;
   onLoadOlder: () => void;
   onRegenerate: (messageId: string) => void;
   onEdit: (messageId: string, newText: string) => void;
@@ -30,7 +28,7 @@ export function MessageList({
   messages,
   hasOlder,
   loading,
-  siblings,
+  view,
   onLoadOlder,
   onRegenerate,
   onEdit,
@@ -80,25 +78,28 @@ export function MessageList({
         <p className="text-sm text-zinc-600 text-center mt-20">Send a message to start chatting.</p>
       )}
       {messages.map((message) => {
-        // Project the per-message metadata into primitives at this glue
-        // layer so the MessageBubble component stays free of SDK type
-        // dependencies. Use the msg-anchored branch-nav API so arrows
-        // attach to the correct bubble: the user prompt for edits, the
-        // assistant for regens.
-        const metadata = siblings.getMessageMetadata(message.id);
-        const hasSiblings = siblings.hasMessageSiblings(message.id);
+        // Project the owning Run + branch-selection bundle into primitives
+        // at this glue layer so the MessageBubble component stays free of
+        // SDK type dependencies. The bundle is total — safe to destructure
+        // for any message; non-anchor bubbles return `siblings = [message]`
+        // (length 1) so the bubble's render condition uses `hasSiblings`.
+        const run = view.runOf(message.id);
+        const branch = view.branchSelection(message.id);
+        // Translate the literal Run lifecycle state to the bubble's
+        // rendering vocabulary: `'active'` → `'streaming'`.
+        const bubbleStatus = run?.status === 'active' ? 'streaming' : run?.status;
         return (
           <MessageBubble
             key={message.id}
             message={message}
-            clientId={metadata?.clientId || undefined}
-            runId={metadata?.runId}
-            status={metadata?.status}
-            hasSiblings={hasSiblings}
-            siblingCount={hasSiblings ? siblings.getMessageSiblings(message.id).length : 0}
-            selectedIndex={hasSiblings ? siblings.getSelectedMessageSiblingIndex(message.id) : 0}
+            clientId={run?.clientId || undefined}
+            runId={run?.runId}
+            status={bubbleStatus}
+            hasSiblings={branch.hasSiblings}
+            siblingCount={branch.siblings.length}
+            selectedIndex={branch.index}
             onSelectSibling={(index) => {
-              siblings.selectMessageSibling(message.id, index);
+              view.selectSibling(message.id, index);
             }}
             onRegenerate={message.role === 'assistant' ? () => onRegenerate(message.id) : undefined}
             onEdit={message.role === 'user' ? (text) => onEdit(message.id, text) : undefined}

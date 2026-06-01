@@ -94,12 +94,12 @@ const ALL_STEPS: DemoStep[] = [
   },
 ];
 
-import type { MessageMetadata } from '@ably/ai-transport';
+import type { BranchSelection, RunInfo } from '@ably/ai-transport';
 
 export function useDemoProgress(
   messages: UIMessage[],
-  hasMessageSiblings: (codecMessageId: string) => boolean,
-  getMessageMetadata: (codecMessageId: string) => MessageMetadata | undefined,
+  branchSelection: (codecMessageId: string) => BranchSelection<UIMessage>,
+  runOf: (codecMessageId: string) => RunInfo | undefined,
   ablyMessages: Ably.InboundMessage[],
 ): DemoStep[] {
   return useMemo(() => {
@@ -139,17 +139,17 @@ export function useDemoProgress(
 
     const turnClientIds = new Set<string>();
     for (const m of messages) {
-      const meta = getMessageMetadata(m.id);
-      if (meta?.clientId) turnClientIds.add(meta.clientId);
+      const run = runOf(m.id);
+      if (run?.clientId) turnClientIds.add(run.clientId);
     }
     if (turnClientIds.size > 1) completed.add('multi-tab');
 
     for (const m of messages) {
-      if (!hasMessageSiblings(m.id)) continue;
+      if (!branchSelection(m.id).hasSiblings) continue;
       if (m.role === 'assistant') completed.add('regenerate');
       if (m.role === 'user') completed.add('edit');
     }
 
     return ALL_STEPS.filter((s) => !completed.has(s.id));
-  }, [messages, hasMessageSiblings, getMessageMetadata, ablyMessages]);
+  }, [messages, branchSelection, runOf, ablyMessages]);
 }

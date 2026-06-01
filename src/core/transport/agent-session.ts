@@ -256,9 +256,9 @@ const loadRunProjection = async <
  *
  * Bounded by `timeoutMs` as a total budget across all N arrivals. The
  * caller's `signal` aborts the wait. On partial collection at timeout the
- * promise rejects with `PromptNotFound` and an error message including
+ * promise rejects with `InputEventNotFound` and an error message including
  * "received X of Y". If any decode throws mid-collection, the whole lookup
- * rejects with `PromptNotFound` wrapping the decode error as cause —
+ * rejects with `InputEventNotFound` wrapping the decode error as cause —
  * already-collected messages are discarded.
  * @param opts - Lookup parameters.
  * @param opts.register - Session-provided registration that delivers prompt-bearing messages for this invocationId. Returns an unregister function.
@@ -409,7 +409,7 @@ const lookupUserPrompt = async <
         reject(
           new Ably.ErrorInfo(
             `unable to look up prompt; decode failed for invocation ${invocationId}: ${error instanceof Error ? error.message : String(error)}`,
-            ErrorCode.PromptNotFound,
+            ErrorCode.InputEventNotFound,
             504,
             cause,
           ),
@@ -454,7 +454,7 @@ const lookupUserPrompt = async <
       reject(
         new Ably.ErrorInfo(
           `unable to look up user prompt; received ${String(collected.length)} of ${String(expectedCount)} user-messages for invocation ${invocationId} within ${String(timeoutMs)}ms`,
-          ErrorCode.PromptNotFound,
+          ErrorCode.InputEventNotFound,
           504,
         ),
       );
@@ -862,7 +862,7 @@ class DefaultAgentSession<
             if (this._promptBuffer.size >= this._promptBufferLimit) {
               // FIFO eviction: drop the oldest invocation entry (and all
               // its buffered messages). Clients whose prompt was evicted
-              // will fail their lookup with `PromptNotFound` — this warn
+              // will fail their lookup with `InputEventNotFound` — this warn
               // is the only operator-visible signal that capacity caused
               // the failure.
               const oldestKey = this._promptBuffer.keys().next().value;
@@ -1062,7 +1062,7 @@ class DefaultAgentSession<
                 ? error
                 : new Ably.ErrorInfo(
                     `unable to look up user prompt; ${error instanceof Error ? error.message : String(error)}`,
-                    ErrorCode.PromptNotFound,
+                    ErrorCode.InputEventNotFound,
                     504,
                   );
             // The rejection bubbles up to the developer's HTTP handler,

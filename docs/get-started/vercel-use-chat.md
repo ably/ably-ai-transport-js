@@ -99,7 +99,7 @@ import { createAgentSession } from '@ably/ai-transport/vercel';
 interface ChatRequestBody {
   runId: string;
   invocationId: string;
-  promptIds: string[];
+  inputEventIds: string[];
   history?: UIMessage[];
   chatId: string;
 }

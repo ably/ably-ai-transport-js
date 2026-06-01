@@ -10,7 +10,7 @@ export function userMessage(text: string): UIMessage {
   };
 }
 
-/** Construct a UserMessage TInput ready for view.sendEvent. */
+/** Construct a UserMessage TInput ready for view.sendInput. */
 export function userMessageEvent(text: string): VercelInput {
   return { kind: 'user-message', message: userMessage(text) };
 }

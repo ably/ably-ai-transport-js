@@ -111,7 +111,7 @@ const createMockSession = () => {
     flattenNodes: vi.fn(() => []),
     getMessages: vi.fn(() => []),
     getRunByCodecMessageId: vi.fn(),
-    sendEvent: send,
+    sendInput: send,
     regenerate: vi.fn(),
     edit: vi.fn(),
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
@@ -119,7 +119,7 @@ const createMockSession = () => {
   };
 
   const session = {
-    sendEvent: send,
+    sendInput: send,
     tree,
     view,
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
@@ -147,7 +147,7 @@ const createMultiRunMockSession = () => {
     flattenNodes: vi.fn(() => []),
     getMessages: vi.fn(() => []),
     getRunByCodecMessageId: vi.fn(),
-    sendEvent: send,
+    sendInput: send,
     regenerate: vi.fn(),
     edit: vi.fn(),
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
@@ -155,7 +155,7 @@ const createMultiRunMockSession = () => {
   };
 
   const session = {
-    sendEvent: send,
+    sendInput: send,
     tree,
     view,
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly

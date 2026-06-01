@@ -30,7 +30,7 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
     // eslint-disable-next-line @typescript-eslint/require-await -- mock fires synthetic run-start side effect; no awaitable work
     publish: vi.fn(async (msg: Ably.Message | Ably.Message[]) => {
       // When a client publishes a user message, simulate the agent's
-      // run-start response so `await session.view.sendEvent(...)` resolves.
+      // run-start response so `await session.view.sendInput(...)` resolves.
       const messages = Array.isArray(msg) ? msg : [msg];
       for (const m of messages) {
         const headers = (m.extras as { headers?: Record<string, string> } | undefined)?.headers ?? {};
@@ -98,7 +98,7 @@ describe('Vercel createClientSession', () => {
     });
     await session.connect();
 
-    await session.view.sendEvent({ kind: 'user-message', message: { id: '1', role: 'user', parts: [] } });
+    await session.view.sendInput({ kind: 'user-message', message: { id: '1', role: 'user', parts: [] } });
 
     await vi.waitFor(() => {
       expect(mockFetch).toHaveBeenCalledTimes(1);
@@ -126,7 +126,7 @@ describe('Vercel createClientSession', () => {
     await session.connect();
 
     // send() triggers a POST to the configured api endpoint with the configured fetch
-    const sendPromise = session.view.sendEvent({
+    const sendPromise = session.view.sendInput({
       kind: 'user-message',
       message: { id: '1', role: 'user', parts: [] },
     });

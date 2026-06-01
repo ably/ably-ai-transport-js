@@ -326,32 +326,32 @@ describe('useView', () => {
     });
   });
 
-  describe('sendEvent', () => {
-    it('delegates to view.sendEvent', async () => {
+  describe('sendInput', () => {
+    it('delegates to view.sendInput', async () => {
       const mock = createMockSession();
       const { result } = renderHook(() => useView({ session: mock.session }));
 
       const input = { kind: 'user-message' as const };
       await act(async () => {
-        await result.current.sendEvent([input], { body: { extra: true } });
+        await result.current.sendInput([input], { body: { extra: true } });
       });
 
-      expect(mock.sendEvent).toHaveBeenCalledWith([input], { body: { extra: true } });
+      expect(mock.sendInput).toHaveBeenCalledWith([input], { body: { extra: true } });
     });
 
     it('returns a stable reference across rerenders', () => {
       const mock = createMockSession();
       const { result, rerender } = renderHook(() => useView({ session: mock.session }));
-      const first = result.current.sendEvent;
+      const first = result.current.sendInput;
       rerender();
-      expect(result.current.sendEvent).toBe(first);
+      expect(result.current.sendInput).toBe(first);
     });
 
     it('throws when no view is available', async () => {
       const { result } = renderHook(() => useView());
 
       await act(async () => {
-        await expect(result.current.sendEvent([{ kind: 'user-message' }])).rejects.toMatchObject({
+        await expect(result.current.sendInput([{ kind: 'user-message' }])).rejects.toMatchObject({
           code: ErrorCode.InvalidArgument,
           statusCode: 400,
         });

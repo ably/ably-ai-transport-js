@@ -115,7 +115,7 @@ const position = await new Promise((resolve, reject) => navigator.geolocation.ge
 //    `codecMessageId` addresses the assistant message holding the tool call,
 //    so the reducer folds the result onto it. Routing lives on the input
 //    itself - no wrapper object.
-await view.sendEvent(
+await view.sendInput(
   [
     {
       kind: 'tool-result',

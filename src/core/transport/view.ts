@@ -141,9 +141,9 @@ type RegenSelection =
 // ---------------------------------------------------------------------------
 
 /**
- * Normalise the two input shapes `View.sendEvent` accepts (a single TInput
+ * Normalise the two input shapes `View.sendInput` accepts (a single TInput
  * or an array) into the array shape the SendDelegate consumes.
- * @param input - The raw input from `View.sendEvent`.
+ * @param input - The raw input from `View.sendInput`.
  * @returns The normalised input array.
  */
 const _normaliseSendInput = <TInput extends CodecInputEvent>(input: TInput | TInput[]): TInput[] =>
@@ -840,12 +840,12 @@ export class DefaultView<
         ? ({ ...base, codecMessageId } as unknown as TInput)
         : (base as unknown as TInput);
     });
-    return this.sendEvent(items, options);
+    return this.sendInput(items, options);
   }
 
   // Spec: AIT-CT3, AIT-CT4
-  async sendEvent(input: TInput | TInput[], options?: SendOptions): Promise<ActiveRun<TOutput>> {
-    this._logger.trace('DefaultView.sendEvent();');
+  async sendInput(input: TInput | TInput[], options?: SendOptions): Promise<ActiveRun<TOutput>> {
+    this._logger.trace('DefaultView.sendInput();');
     if (this._closed) {
       throw new Ably.ErrorInfo('unable to send; view is closed', ErrorCode.InvalidArgument, 400);
     }
@@ -1017,7 +1017,7 @@ export class DefaultView<
   }
 
   // Spec: AIT-CT6
-  async edit(messageId: string, newEvents: TInput | TInput[], options?: SendOptions): Promise<ActiveRun<TOutput>> {
+  async edit(messageId: string, inputs: TInput | TInput[], options?: SendOptions): Promise<ActiveRun<TOutput>> {
     this._logger.trace('DefaultView.edit();', { messageId });
 
     if (this._closed) {
@@ -1034,7 +1034,7 @@ export class DefaultView<
     }
     const parentCodecMessageId = this._findParentMsgId(targetRun, messageId);
 
-    return this.sendEvent(newEvents, {
+    return this.sendInput(inputs, {
       ...options,
       forkOf: messageId,
       parent: parentCodecMessageId,

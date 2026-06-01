@@ -100,7 +100,7 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
     (codecMessageId: string, toolCallId: string) => {
       const runId = view.getMessageMetadata(codecMessageId)?.runId;
       if (!runId) return;
-      void view.sendEvent([{ kind: 'tool-approval-response', codecMessageId, toolCallId, approved: true }], { runId });
+      void view.sendInput([{ kind: 'tool-approval-response', codecMessageId, toolCallId, approved: true }], { runId });
     },
     [view],
   );
@@ -109,7 +109,7 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
     (codecMessageId: string, toolCallId: string) => {
       const runId = view.getMessageMetadata(codecMessageId)?.runId;
       if (!runId) return;
-      void view.sendEvent(
+      void view.sendInput(
         [{ kind: 'tool-approval-response', codecMessageId, toolCallId, approved: false, reason: 'User denied' }],
         { runId },
       );

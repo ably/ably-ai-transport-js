@@ -73,7 +73,7 @@ vi.mock('../providers', () => ({
         getMessageMetadata: () => undefined,
         getRunNode: () => undefined,
         sendMessage: mockSendMessage,
-        sendEvent: vi.fn(),
+        sendInput: vi.fn(),
         regenerate: vi.fn(),
         edit: vi.fn(),
         on: () => () => {},

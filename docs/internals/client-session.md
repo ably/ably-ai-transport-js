@@ -2,7 +2,7 @@
 
 The client session (`src/core/transport/client-session.ts`) manages the full client-side conversation lifecycle over a single Ably channel. It composes a [stream router](transport-components.md#streamrouter), [conversation tree](conversation-tree.md), and codec [decoder](decoder.md) to handle receiving streamed responses and managing conversation state. Write operations (`sendMessage`, `sendInput`, `regenerate`, `edit`) live on the View, which delegates to the session's internal send machinery.
 
-The client publishes user messages directly to the channel via the shared codec encoder, and POSTs an HTTP invocation in parallel. The agent correlates the prompt by the `x-ably-invocation-id` header (channel rewind + live subscribe) and publishes [run lifecycle events](wire-protocol.md#lifecycle-events) plus assistant chunks. The channel is the durable session record — agents that weren't running at publish time can resume by reading channel rewind.
+The client publishes user messages directly to the channel via the shared codec encoder, and POSTs an HTTP invocation in parallel. The agent correlates the input event by the `x-ably-invocation-id` header (channel rewind + live subscribe) and publishes [run lifecycle events](wire-protocol.md#lifecycle-events) plus assistant chunks. The channel is the durable session record — agents that weren't running at publish time can resume by reading channel rewind.
 
 ## Composition
 
@@ -33,7 +33,7 @@ All sub-components are created in the constructor and share a single Ably channe
 7. **Wait for run-start** — `sendMessage()` awaits an `ai-run-start` event for the run+invocation, bounded by `runStartDeadlineMs` (default 30 000 ms). Deadline lapse rejects with `RunStartDeadlineExceeded`. POST failure also rejects.
 8. **Return `ActiveRun`** — once run-start arrives, the caller receives `{ stream, runId, invocationId, cancel(), optimisticCodecMessageIds, inputEventIds }`.
 
-`regenerate()` runs through the same 8-step flow as a regular send, with one carve-out: step 3 (optimistic tree-upsert) is skipped because the codec's `ait-regenerate` event decodes to zero TMessages. The wire still publishes — its `x-ably-msg-regenerate` and `x-ably-parent` headers carry the routing metadata; the agent's prompt-lookup matches it by `x-ably-prompt-id`. The POST and the run-start wait fire as usual. The Tree creates the new Run when `ai-run-start` arrives under the new runId, populating `regeneratesMsgId` from the lifecycle event's `regenerates` field.
+`regenerate()` runs through the same 8-step flow as a regular send, with one carve-out: step 3 (optimistic tree-upsert) is skipped because the codec's `ait-regenerate` event decodes to zero TMessages. The wire still publishes — its `x-ably-msg-regenerate` and `x-ably-parent` headers carry the routing metadata; the agent's input-event lookup matches it by `x-ably-event-id`. The POST and the run-start wait fire as usual. The Tree creates the new Run when `ai-run-start` arrives under the new runId, populating `regeneratesMsgId` from the lifecycle event's `regenerates` field.
 
 ### Multi-message chaining
 

@@ -422,8 +422,7 @@ export const createChatTransport = (
   // -- Stream routing --------------------------------------------------------
   // The chat-transport owns its own StreamRouter, fed by the session's
   // per-run decoded-output feed. This builds the ReadableStream useChat
-  // consumes directly from decoded outputs rather than reading
-  // `ActiveRun.stream`.
+  // consumes directly from decoded outputs.
   const router = createStreamRouter<VercelOutput>(
     // eslint-disable-next-line @typescript-eslint/no-deprecated -- isTerminal is the temporary bridge for terminal detection until LifecycleEvents land
     UIMessageCodec.isTerminal.bind(UIMessageCodec),
@@ -631,10 +630,28 @@ export const createChatTransport = (
       run = await session.view.sendInput(sendInput, sendOpts);
     }
 
+    // Build the consumer stream from our own router BEFORE wiring the abort
+    // handler, so that an already-aborted signal (see below) closes a real,
+    // registered stream rather than a no-op. A continuation reuses the
+    // existing stream for the run so a resume continues feeding the
+    // ReadableStream useChat is already reading; otherwise create a fresh
+    // stream. The stream is created before any output routes onto it: with a
+    // non-zero run-start deadline `sendEvent`/`regenerate` resolves only after
+    // ai-run-start (outputs always follow run-start), and with deadline 0
+    // (tests) it resolves synchronously before any simulated output.
+    activeRunIds.add(run.runId);
+    const source = isContinuation
+      ? (router.getStream(run.runId) ?? router.createStream(run.runId))
+      : router.createStream(run.runId);
+
     if (abortSignal) {
       const runId = run.runId;
       const onAbort = (): void => {
         void session.cancel(runId);
+        // Close the consumer's stream for immediacy so useChat sees
+        // end-of-input rather than waiting for the agent's run-end echo.
+        router.closeStream(runId);
+        activeRunIds.delete(runId);
       };
       // useChat sets `status: 'submitted'` synchronously inside `makeRequest`
       // BEFORE awaiting `transport.sendMessages`. That immediately enables
@@ -650,18 +667,6 @@ export const createChatTransport = (
         abortSignal.addEventListener('abort', onAbort, { once: true });
       }
     }
-
-    // Build the consumer stream from our own router. A continuation reuses
-    // the existing stream for the run (rebind) so a resume continues feeding
-    // the ReadableStream useChat is already reading; otherwise create a fresh
-    // stream. The stream is created before any output routes onto it: with a
-    // non-zero run-start deadline `sendEvent`/`regenerate` resolves only after
-    // ai-run-start (outputs always follow run-start), and with deadline 0
-    // (tests) it resolves synchronously before any simulated output.
-    activeRunIds.add(run.runId);
-    const source = isContinuation
-      ? (router.getStream(run.runId) ?? router.createStream(run.runId))
-      : router.createStream(run.runId);
 
     // Wrap the stream to detect completion. The streaming flag gates
     // useMessageSync so that setMessages doesn't interfere with

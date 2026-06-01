@@ -1,7 +1,7 @@
 /**
  * Core client-side session, parameterized by codec.
  *
- * Composes StreamRouter and Tree to handle the full client-side lifecycle.
+ * Composes the Tree to handle the full client-side lifecycle.
  * `connect()` subscribes to the Ably channel (which implicitly attaches it).
  * The same subscription, decoder, and channel are reused across runs.
  *
@@ -45,8 +45,6 @@ import { registerAgent } from '../agent.js';
 import type { CodecInputEvent, CodecOutputEvent, Decoder, Encoder } from '../codec/types.js';
 import { buildTransportHeaders } from './headers.js';
 import { Invocation } from './invocation.js';
-import type { StreamRouter } from './stream-router.js';
-import { createStreamRouter } from './stream-router.js';
 import type { DefaultTree } from './tree.js';
 import { createTree } from './tree.js';
 import type {
@@ -116,10 +114,10 @@ class DefaultClientSession<TInput extends CodecInputEvent, TOutput extends Codec
   private readonly _emitter: EventEmitter<ClientSessionEventsMap<TOutput>>;
 
   /**
-   * Run-ids of runs initiated by this session. Added on send, removed on
-   * run-end. Used to scope stream teardown to own runs: on channel
-   * continuity loss and on close, only own-run streams are errored/closed
-   * (observer runs have no consumer-facing stream).
+   * Run ids this client initiated (own runs). Used to scope `runError` to
+   * own runs on channel continuity loss — only runs this client started have
+   * a consumer awaiting their outputs. An entry is added on every send
+   * (including continuations) and removed on terminal run-end.
    */
   private readonly _ownRunIds = new Set<string>();
 
@@ -127,7 +125,6 @@ class DefaultClientSession<TInput extends CodecInputEvent, TOutput extends Codec
   private readonly _tree: DefaultTree<TInput | TOutput, TProjection>;
   private readonly _view: DefaultView<TInput, TOutput, TProjection, TMessage>;
   private readonly _views = new Set<DefaultView<TInput, TOutput, TProjection, TMessage>>();
-  private readonly _router: StreamRouter<TOutput>;
   private readonly _decoder: Decoder<TInput, TOutput>;
   /**
    * Shared encoder for the lifetime of the session. The client only ever
@@ -190,8 +187,6 @@ class DefaultClientSession<TInput extends CodecInputEvent, TOutput extends Codec
       logger: this._logger,
       onClose: () => this._views.delete(this._view),
     });
-    // eslint-disable-next-line @typescript-eslint/no-deprecated -- isTerminal is the temporary bridge for terminal detection until LifecycleEvents land
-    this._router = createStreamRouter<TOutput>(this._codec.isTerminal.bind(this._codec), this._logger);
     this._decoder = this._codec.createDecoder();
     this._encoder = this._codec.createEncoder(
       this._channel,
@@ -350,12 +345,11 @@ class DefaultClientSession<TInput extends CodecInputEvent, TOutput extends Codec
 
         // When reason is 'error' the agent surfaces a mid-run failure
         // via the error-code / error-message headers.
-        // Reify the error, route it to the active stream, emit the
-        // session error event, and carry it on the run-end lifecycle event
-        // (so stream-owning adapters can reject the run's stream from the
-        // same event). The agent only publishes `run-end` after it has
-        // published `run-start`, so no pending-run-start tracker is
-        // outstanding at this point.
+        // Reify the error, emit the session error event, and carry it on the
+        // run-end lifecycle event (so stream-owning adapters can reject the
+        // run's stream from the same event). The agent only publishes
+        // `run-end` after it has published `run-start`, so no
+        // pending-run-start tracker is outstanding at this point.
         let runEndError: Ably.ErrorInfo | undefined;
         if (reason === 'error') {
           const codeRaw = headers[HEADER_ERROR_CODE];
@@ -364,7 +358,6 @@ class DefaultClientSession<TInput extends CodecInputEvent, TOutput extends Codec
           const message = headers[HEADER_ERROR_MESSAGE] ?? 'agent reported an error';
           const statusCode = code >= 10000 && code < 60000 ? Math.floor(code / 100) : 500;
           runEndError = new Ably.ErrorInfo(message, code, statusCode);
-          if (runId) this._router.errorStream(runId, runEndError);
           this._logger.error('ClientSession._handleMessage(); agent error received', {
             runId,
             invocationId,
@@ -381,11 +374,9 @@ class DefaultClientSession<TInput extends CodecInputEvent, TOutput extends Codec
           // for the same run-id that we'd need to disambiguate by invocation.
           //
           // `suspended` keeps the run live so a continuation that reuses
-          // the runId picks up where it left off. Router stream survives.
-          // The `run` event still fires so listeners can react to the
-          // suspend.
+          // the runId picks up where it left off. The `run` event still
+          // fires so listeners can react to the suspend.
           if (reason !== 'suspended') {
-            this._router.closeStream(runId);
             this._ownRunIds.delete(runId);
           }
           this._tree.applyRunLifecycle(
@@ -410,21 +401,18 @@ class DefaultClientSession<TInput extends CodecInputEvent, TOutput extends Codec
       const serial = ablyMessage.serial;
       const runId = headers[HEADER_RUN_ID];
 
-      // Fold into the Tree's per-Run projection. This must run BEFORE router
-      // routing so the active stream's listeners see the projection updates
-      // when they consume the routed events.
+      // Fold into the Tree's per-Run projection. This must run BEFORE the
+      // output feed emits so feed consumers see the projection updates when
+      // they observe the outputs.
       if (events.length > 0 || runId) {
         this._tree.applyMessage(events, headers, serial);
       }
 
-      // Route outputs to the active stream (if any) and emit them on the
-      // per-run output feed for stream-owning adapters. Only TOutput events
-      // flow on the consumer's `ActiveRun.stream`; client-published inputs
-      // (echoed back on `ai-input`) are folded into the projection but not
-      // routed to the stream.
+      // Emit outputs on the per-run output feed for stream-owning adapters.
+      // Only TOutput events flow on the feed; client-published inputs (echoed
+      // back on `ai-input`) are folded into the projection but not emitted.
       if (runId) {
         for (const output of outputs) {
-          this._router.route(runId, output);
           this._emitter.emit('output', { runId, output });
         }
       }
@@ -488,13 +476,11 @@ class DefaultClientSession<TInput extends CodecInputEvent, TOutput extends Codec
     // must still accumulate into the tree. The run-end handler cleans up
     // local run state.
     //
-    // Only own-runs get an errored stream because only own-runs have a
-    // ReadableStream<TEvent> the caller is consuming. Observer-run state
-    // lives entirely in the Tree's projection and remains consistent
-    // regardless of channel continuity loss; nothing on this client is
-    // waiting on it.
+    // Only own-runs get a runError because only own-runs have a consumer
+    // (via the output feed) awaiting their outputs. Observer-run state lives
+    // entirely in the Tree's projection and remains consistent regardless of
+    // channel continuity loss; nothing on this client is waiting on it.
     for (const runId of this._ownRunIds) {
-      this._router.errorStream(runId, err);
       this._emitter.emit('runError', { runId, error: err });
     }
 
@@ -686,15 +672,6 @@ class DefaultClientSession<TInput extends CodecInputEvent, TOutput extends Codec
     // continuation, which keys by runId instead.
     const triggerCodecMessageId = items.at(-1)?.codecMessageId;
 
-    // Stream setup. Fresh send opens a new stream; continuation reuses the
-    // existing one. If the suspended stream was torn down (e.g. cancel /
-    // continuity loss), fall back to creating a fresh stream so the
-    // continuation still completes — observers will see the events even if
-    // the originally-returned readable was already drained.
-    const stream: ReadableStream<TOutput> = isContinuation
-      ? (this._router.getStream(runId) ?? this._router.createStream(runId))
-      : this._router.createStream(runId);
-
     // Arm the run-start tracker. It backs the returned `ActiveRun.started`
     // promise: the run-start handler resolves it when the agent's
     // `ai-run-start` for this send is observed; close() rejects it if the
@@ -757,7 +734,6 @@ class DefaultClientSession<TInput extends CodecInputEvent, TOutput extends Codec
           cause,
         );
         this._emitter.emit('error', err);
-        this._router.errorStream(runId, err);
         // The input never reached the channel — there is no run to wait on.
         // Drop the started tracker so close() doesn't later reject an orphan.
         this._pendingRunStarts.delete(startedKey);
@@ -775,7 +751,6 @@ class DefaultClientSession<TInput extends CodecInputEvent, TOutput extends Codec
     await publishPromise;
 
     return {
-      stream,
       started,
       runId,
       inputEventId: triggerInputEventId,
@@ -800,17 +775,16 @@ class DefaultClientSession<TInput extends CodecInputEvent, TOutput extends Codec
     if ((this._state as ClientSessionState) === ClientSessionState.CLOSED) return;
     this._logger.debug('ClientSession.cancel();', { runId });
 
+    // Publish `ai-cancel` only. Don't tear down the Tree's RunNode or this
+    // session's `_ownRunIds` entries here — late agent events (e.g. a cancel
+    // append, a trailing `status: cancelled`) arriving before run-end must
+    // still fold into the Run's projection. The run-end handler is the
+    // canonical cleanup point; the stream-owning adapter closes its own
+    // stream on abort for immediate end-of-input.
     await this._channel.publish({
       name: EVENT_CANCEL,
       extras: { ai: { transport: { [HEADER_RUN_ID]: runId } } },
     });
-
-    // Close the local router stream so the caller's reader sees end-of-input.
-    // Don't tear down the Tree's RunNode or this session's `_ownRunIds`
-    // entries here — late agent events (e.g. a cancel append, a trailing
-    // `status: cancelled`) arriving before run-end must still fold into the
-    // Run's projection. The run-end handler is the canonical cleanup point.
-    this._router.closeStream(runId);
   }
 
   // Spec: AIT-CT8, AIT-CT8c, AIT-CT8d
@@ -854,11 +828,6 @@ class DefaultClientSession<TInput extends CodecInputEvent, TOutput extends Codec
       this._channel.unsubscribe(this._onMessage);
     }
     this._channel.off(this._onChannelStateChange);
-
-    // Close any remaining active streams
-    for (const runId of this._ownRunIds) {
-      this._router.closeStream(runId);
-    }
 
     this._emitter.off();
     for (const v of this._views) v.close();

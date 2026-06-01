@@ -951,20 +951,31 @@ describe('AgentSession integration', () => {
       expect(firstText).toBe('First');
       expect(secondText).toBe('Second');
 
+      // Observe run-end on the client tree before piping, so the wait is
+      // armed when the agent publishes run-end below.
+      const runEnded = new Promise<void>((resolve) => {
+        const unsub = clientSession.tree.on('run', (event) => {
+          if (event.runId === activeRun.runId && event.type === EVENT_RUN_END) {
+            unsub();
+            resolve();
+          }
+        });
+      });
+
       const responseStream = textResponseStream('asst-multi-1', 'text-multi-1', 'Got both');
       const result = await serverRun.pipe(responseStream);
       await serverRun.end('complete');
       expect(result.reason).toBe('complete');
 
-      // Drain the client's stream to verify the response reached it.
-      const reader = activeRun.stream.getReader();
-      const events: VercelOutput[] = [];
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        events.push(value);
-      }
-      expect(events.some((e) => e.type === 'finish')).toBe(true);
+      // The generic client exposes no stream; observe via the View. Wait for
+      // run-end, then assert the codec-folded assistant message reached the
+      // client.
+      await runEnded;
+      const clientMessages = clientSession.view.getMessages();
+      const asstMsg = clientMessages.find((m) => m.role === 'assistant');
+      expect(asstMsg).toBeDefined();
+      const asstTextPart = asstMsg?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
+      expect(asstTextPart?.text).toBe('Got both');
     } finally {
       await clientSession.close();
     }

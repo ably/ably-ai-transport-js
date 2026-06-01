@@ -56,17 +56,6 @@ const getHeaders = (msg: Ably.InboundMessage): Record<string, string> => ({
   ...getCodecHeaders(msg),
 });
 
-const drain = async <T>(stream: ReadableStream<T>): Promise<T[]> => {
-  const reader = stream.getReader();
-  const results: T[] = [];
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    results.push(value);
-  }
-  return results;
-};
-
 const waitForMessages = async (ct: ClientSessionT, expected: number, timeout = 10_000): Promise<void> =>
   new Promise<void>((resolve, reject) => {
     if (ct.view.getMessages().length >= expected) {
@@ -88,13 +77,20 @@ const waitForMessages = async (ct: ClientSessionT, expected: number, timeout = 1
     });
   });
 
-const waitForRunEvent = async (
-  ct: ClientSessionT,
-  runId: string,
-  type: string,
-  timeout = 10_000,
-): Promise<RunLifecycleEvent> =>
-  new Promise<RunLifecycleEvent>((resolve, reject) => {
+const waitForRunEvent = async (ct: ClientSessionT, runId: string, type: string, timeout = 10_000): Promise<void> =>
+  new Promise<void>((resolve, reject) => {
+    // The run may already have reached the awaited lifecycle state before we
+    // subscribe: events arrive over Ably asynchronously and a fast agent can
+    // publish (and the client process) run-end before this helper runs. The
+    // tree records the terminal status, so treat a non-active run status as a
+    // run-end already observed. Check before subscribing AND immediately
+    // after, to close the gap between the initial check and the subscription.
+    const alreadyEnded = (): boolean =>
+      type === EVENT_RUN_END && (ct.tree.getRunNode(runId)?.status ?? 'active') !== 'active';
+    if (alreadyEnded()) {
+      resolve();
+      return;
+    }
     const timer = setTimeout(() => {
       unsub();
       reject(new Error(`timed out waiting for ${type} on run ${runId}`));
@@ -103,9 +99,14 @@ const waitForRunEvent = async (
       if (event.runId === runId && event.type === type) {
         clearTimeout(timer);
         unsub();
-        resolve(event);
+        resolve();
       }
     });
+    if (alreadyEnded()) {
+      clearTimeout(timer);
+      unsub();
+      resolve();
+    }
   });
 
 /**
@@ -385,9 +386,9 @@ describe('ClientSession integration', () => {
     await serverRun.pipe(stream);
     await serverRun.end('complete');
 
-    const events = await drain(clientRun.stream);
-    const types = events.map((e) => e.type);
-    expect(types).toContain('finish');
+    // Observe via the View: wait for the run to reach a terminal state, then
+    // assert the accumulated message (the codec folds chunks into the message).
+    await waitForRunEvent(clientSession, clientRun.runId, EVENT_RUN_END);
 
     await waitForMessages(clientSession, 2);
     const messages = clientSession.view.getMessages();
@@ -408,7 +409,7 @@ describe('ClientSession integration', () => {
     expect(tree).toBe(clientSession.tree);
   });
 
-  it('routes streamed events to the own-run ReadableStream', async () => {
+  it('folds streamed events into the own-run assistant message', async () => {
     const channelName = uniqueChannelName('ct-stream');
     const serverClient = ablyRealtimeClient();
     const clientClient = ablyRealtimeClient();
@@ -452,11 +453,17 @@ describe('ClientSession integration', () => {
     await serverRun.pipe(stream);
     await serverRun.end('complete');
 
-    const events = await drain(clientRun.stream);
-    const types = events.map((e) => e.type);
-    expect(types).toContain('start');
-    expect(types).toContain('text-delta');
-    expect(types).toContain('finish');
+    // The generic client no longer exposes a stream; the codec folds the
+    // streamed chunks into the assistant message. Wait for the run to reach a
+    // terminal state, then assert the accumulated message via the View.
+    await waitForRunEvent(clientSession, clientRun.runId, EVENT_RUN_END);
+    await waitForMessages(clientSession, 2);
+
+    const messages = clientSession.view.getMessages();
+    const asstMsg = messages.find((m) => m.role === 'assistant');
+    expect(asstMsg).toBeDefined();
+    const asstTextPart = asstMsg?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
+    expect(asstTextPart?.text).toBe('Server response');
   });
 
   it('tracks run lifecycle events from the server', async () => {
@@ -502,15 +509,15 @@ describe('ClientSession integration', () => {
     });
     await run.start();
 
-    const clientRun = await sendPromise;
+    await sendPromise;
     await startPromise;
 
     const stream = textResponseStream('msg-lc-1', 'text-lc-1', 'test');
     await run.pipe(stream);
     await run.end('complete');
 
+    // Run-end is the completion barrier now that the client exposes no stream.
     await endPromise;
-    await drain(clientRun.stream);
 
     expect(runEvents.some((e) => e.type === EVENT_RUN_START && e.runId === runId)).toBe(true);
     expect(runEvents.some((e) => e.type === EVENT_RUN_END && e.runId === runId)).toBe(true);
@@ -1138,13 +1145,13 @@ describe('ClientSession integration', () => {
       invocationId,
     });
     await run.start();
-    const clientRun = await sendPromise;
+    await sendPromise;
 
     await run.pipe(textResponseStream('asst-raw-1', 'text-raw-1', 'test'));
     await run.end('complete');
 
+    // Run-end is the completion barrier now that the client exposes no stream.
     await endPromise;
-    await drain(clientRun.stream);
 
     expect(rawMessages.length).toBeGreaterThan(0);
     const names = rawMessages.map((m) => m.name);
@@ -1193,7 +1200,8 @@ describe('ClientSession integration', () => {
     await run.pipe(textResponseStream('asst-hdr-1', 'text-hdr-1', 'Answer'));
     await run.end('complete');
 
-    await drain(clientRun.stream);
+    // Run-end is the completion barrier now that the client exposes no stream.
+    await waitForRunEvent(clientSession, clientRun.runId, EVENT_RUN_END);
     await waitForMessages(clientSession, 2);
 
     const messages = clientSession.view.getMessages();
@@ -1477,10 +1485,17 @@ describe('ClientSession integration', () => {
     await serverRun.pipe(responseStream);
     await serverRun.end('complete');
 
-    // The returned stream carries the assistant response.
+    // The generic client exposes no stream; observe completion via the View:
+    // wait for run-end, then assert the codec-folded assistant message.
     expect(activeRun.runId).toBe(runId);
-    const events = await drain(activeRun.stream);
-    expect(events.some((e) => e.type === 'finish')).toBe(true);
+    await waitForRunEvent(clientSession, activeRun.runId, EVENT_RUN_END);
+    await waitForMessages(clientSession, 2);
+
+    const messages = clientSession.view.getMessages();
+    const asstMsg = messages.find((m) => m.role === 'assistant');
+    expect(asstMsg).toBeDefined();
+    const asstTextPart = asstMsg?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
+    expect(asstTextPart?.text).toBe('Started');
   });
 
   // -------------------------------------------------------------------------

@@ -24,9 +24,9 @@ import type { Invocation } from './invocation.js';
  * - `error` — the run errored.
  * - `suspended` — the run paused waiting for input (e.g. a client tool
  *   output). The same `runId` can be resumed via a subsequent send that
- *   reuses it; observer state (router stream, tree run-tracking) survives
- *   the suspend signal so the resumed run feeds into the existing
- *   `ReadableStream`.
+ *   reuses it; the Tree's run-tracking survives the suspend signal so the
+ *   resumed run continues under the same `runId` (and a stream-owning
+ *   consumer keeps its open stream rather than closing it).
  */
 export type RunEndReason = 'complete' | 'cancelled' | 'error' | 'suspended';
 
@@ -471,11 +471,10 @@ export interface SendOptions {
   parent?: string;
   /**
    * Reuse an existing `runId` (e.g. resume a suspended run). When set,
-   * the send is treated as a continuation: the run's existing observer
-   * state (router stream, tree run-tracking) is reused; no fresh
-   * `crypto.randomUUID()` is minted. Pair with a fresh `invocationId`
-   * (or rely on the auto-generated one) so each continuation POST has
-   * a distinct invocation key.
+   * the send is treated as a continuation: the run's existing Tree
+   * run-tracking is reused; no fresh `crypto.randomUUID()` is minted. Pair
+   * with a fresh `invocationId` (or rely on the auto-generated one) so each
+   * continuation POST has a distinct invocation key.
    */
   runId?: string;
   /**
@@ -549,10 +548,21 @@ export type RunLifecycleEvent =
 // Active run handle
 // ---------------------------------------------------------------------------
 
-/** A handle to an active client-side run, returned by `sendMessage()`, `sendInput()`, `regenerate()`, and `edit()`. */
+/**
+ * A handle to an active client-side run, returned by `sendMessage()`,
+ * `sendInput()`, `regenerate()`, and `edit()`.
+ *
+ * The run's decoded outputs are not exposed here — generic consumers observe
+ * them via the {@link Tree} / {@link View}, and stream-owning adapters (e.g.
+ * the Vercel chat-transport) consume the internal per-run output feed.
+ *
+ * `TOutput` is unused by the handle's surface today but retained so callers
+ * can write `ActiveRun<TOutput>` symmetrically with the codec-parameterized
+ * {@link View} / {@link ClientSession} send methods without a breaking
+ * generic-arity change.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- TOutput retained for generic symmetry; see JSDoc.
 export interface ActiveRun<TOutput extends CodecOutputEvent> {
-  /** The decoded output stream for this run. May error if the delivery guarantee is broken (e.g. POST failure, channel continuity loss). */
-  stream: ReadableStream<TOutput>;
   /**
    * Resolves when the agent's `ai-run-start` for this run+invocation is
    * observed on the channel. `send()` itself resolves as soon as the input
@@ -567,9 +577,7 @@ export interface ActiveRun<TOutput extends CodecOutputEvent> {
   /**
    * The invocation's unique identifier. Stamped on the published user
    * message and forwarded in the HTTP POST body so the agent's run
-   * lifecycle events (`ai-run-start`, `ai-run-end`) can echo it back. The
-   * stream router keys on this value to filter output events to the bound
-   * invocation.
+   * lifecycle events (`ai-run-start`, `ai-run-end`) can echo it back.
    */
   invocationId: string;
   /**
@@ -578,7 +586,7 @@ export interface ActiveRun<TOutput extends CodecOutputEvent> {
    * agent can locate the exact triggering event.
    */
   inputEventId: string;
-  /** Cancel this specific run. Publishes a cancel message and closes the local stream. */
+  /** Cancel this specific run. Publishes a cancel message on the channel. */
   cancel(): Promise<void>;
   /**
    * The codec-message-ids of optimistically inserted user messages, in order.

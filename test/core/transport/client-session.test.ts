@@ -355,21 +355,6 @@ const ackPendingSend = async (
   return { runId, invocationId, codecMessageId };
 };
 
-// ---------------------------------------------------------------------------
-// Misc helpers
-// ---------------------------------------------------------------------------
-
-const drain = async <T>(stream: ReadableStream<T>): Promise<T[]> => {
-  const reader = stream.getReader();
-  const results: T[] = [];
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    results.push(value);
-  }
-  return results;
-};
-
 // CAST: DefaultClientSession implements ClientSessionOutputFeed; the feed is
 // internal and not on the public ClientSession surface.
 const feed = (
@@ -520,9 +505,8 @@ describe('ClientSession', () => {
   // -------------------------------------------------------------------------
 
   describe('send', () => {
-    it('returns an ActiveRun with stream, runId, invocationId, cancel', async () => {
+    it('returns an ActiveRun with runId, invocationId, cancel', async () => {
       const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
-      expect(run.stream).toBeInstanceOf(ReadableStream);
       expect(typeof run.runId).toBe('string');
       expect(typeof run.invocationId).toBe('string');
       expect(typeof run.cancel).toBe('function');
@@ -715,7 +699,7 @@ describe('ClientSession', () => {
       });
       fix.channel.state = 'attaching';
       const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
-      expect(run.stream).toBeInstanceOf(ReadableStream);
+      expect(typeof run.runId).toBe('string');
     });
   });
 
@@ -724,7 +708,7 @@ describe('ClientSession', () => {
   // -------------------------------------------------------------------------
 
   describe('send — continuation', () => {
-    it('reuses the runId, mints a fresh invocationId, and returns the existing stream', async () => {
+    it('reuses the runId and mints a fresh invocationId', async () => {
       const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
 
       const cont = await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], {
@@ -733,8 +717,6 @@ describe('ClientSession', () => {
 
       expect(cont.runId).toBe(initial.runId);
       expect(cont.invocationId).not.toBe(initial.invocationId);
-      // Same readable across the suspend/resume gap — useChat keeps reading.
-      expect(cont.stream).toBe(initial.stream);
     });
 
     it('publishes the continuation user-message with HEADER_RUN_ID and HEADER_RUN_CONTINUE', async () => {
@@ -915,7 +897,7 @@ describe('ClientSession', () => {
       // No run-start is ever simulated — send() must still resolve once the
       // input is published.
       const run = await s.view.sendInput({ kind: 'user-message', text: 'hi' });
-      expect(run.stream).toBeInstanceOf(ReadableStream);
+      expect(typeof run.runId).toBe('string');
       await s.close();
     });
 
@@ -1285,59 +1267,6 @@ describe('ClientSession', () => {
       expect(node?.content).toBe('hi');
     });
 
-    it('routes own-run events to the ActiveRun stream', async () => {
-      const ch = createMockChannel();
-      const decoder = createMockDecoder();
-      const codec = createMockCodec(decoder);
-      const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
-        client: createMockClient(ch),
-        channelName: 'test-channel',
-        codec,
-        clientId: 'client-1',
-      });
-      await s.connect();
-
-      const sendPromise = s.view.sendInput({ kind: 'user-message', text: 'hi' });
-      const { runId, invocationId } = await ackPendingSend(ch, codec);
-      const run = await sendPromise;
-
-      // Push a text event into the run's stream (decoder is shared with the
-      // session — same instance returned by codec.createDecoder()).
-      decoder.queue.push({ type: 'text', text: 'pong' });
-      simulateMessage(
-        ch,
-        ablyMsg('text', {
-          [HEADER_RUN_ID]: runId,
-          [HEADER_INVOCATION_ID]: invocationId,
-          [HEADER_CODEC_MESSAGE_ID]: 'a-1',
-        }),
-      );
-      // Push finish to terminate the stream
-      decoder.queue.push({ type: 'finish' });
-      simulateMessage(
-        ch,
-        ablyMsg('text', {
-          [HEADER_RUN_ID]: runId,
-          [HEADER_INVOCATION_ID]: invocationId,
-          [HEADER_CODEC_MESSAGE_ID]: 'a-1',
-        }),
-      );
-      // Close stream via run-end
-      simulateMessage(
-        ch,
-        ablyMsg(EVENT_RUN_END, {
-          [HEADER_RUN_ID]: runId,
-          [HEADER_RUN_CLIENT_ID]: 'client-1',
-          [HEADER_INVOCATION_ID]: invocationId,
-          [HEADER_RUN_REASON]: 'complete',
-        }),
-      );
-
-      const events = await drain(run.stream);
-      expect(events.map((e) => e.type)).toEqual(['text', 'finish']);
-      await s.close();
-    });
-
     it('ignores chunks with no decoded events but still updates observer headers', () => {
       simulateMessage(
         fix.channel,
@@ -1373,7 +1302,7 @@ describe('ClientSession', () => {
 
       const sendPromise = s.view.sendInput({ kind: 'user-message', text: 'hi' });
       const { runId } = await ackPendingSend(ch, codec);
-      const run = await sendPromise;
+      await sendPromise;
 
       // A run-end carrying an invocation-id that does NOT match the active
       // send still terminates the run — there is no gate that drops it.
@@ -1387,9 +1316,7 @@ describe('ClientSession', () => {
         }),
       );
 
-      // Stream closes (drain completes) and the run reaches a terminal state.
-      const events = await drain(run.stream);
-      expect(events).toEqual([]);
+      // The run reaches a terminal state regardless of the mismatched invocation.
       expect(s.tree.getRunNode(runId)?.status).toBe('complete');
       await s.close();
     });
@@ -1727,27 +1654,6 @@ describe('ClientSession', () => {
       expect(cancelMsg).toBeDefined();
       const headers = (cancelMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
       expect(headers?.[HEADER_RUN_ID]).toBe('run-1');
-    });
-
-    it('closes the targeted run stream', async () => {
-      const ch = createMockChannel();
-      const codec = createMockCodec();
-      const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
-        client: createMockClient(ch),
-        channelName: 'test-channel',
-        codec,
-        clientId: 'client-1',
-      });
-      await s.connect();
-
-      const sendPromise = s.view.sendInput({ kind: 'user-message', text: 'hi' });
-      await ackPendingSend(ch, codec);
-      const run = await sendPromise;
-
-      await s.cancel(run.runId);
-      const events = await drain(run.stream);
-      expect(events).toEqual([]);
-      await s.close();
     });
 
     it('cancel is a no-op after close', async () => {

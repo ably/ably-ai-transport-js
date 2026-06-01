@@ -620,7 +620,7 @@ describe('createChatTransport', () => {
       // *before* the adapter has the runId to attach a listener for. The
       // adapter must call `session.cancel(runId)` even when the signal is
       // already aborted by the time it gets a chance to look at it.
-      const { session, cancel, mockRun, view, emitRun } = createMockSession();
+      const { session, cancel, mockRun, view } = createMockSession();
       const chat = createChatTransport(session);
       const abortController = new AbortController();
 
@@ -651,10 +651,47 @@ describe('createChatTransport', () => {
 
       expect(cancel).toHaveBeenCalledWith(mockRun.runId);
 
-      // Clean up
-      emitRun(runEnd());
+      // The adapter creates the stream BEFORE wiring the abort handler, so the
+      // already-aborted path closes a real stream: the returned stream
+      // completes immediately without waiting for a run-end echo.
       const reader = stream.getReader();
-      await reader.read();
+      const result = await reader.read();
+      expect(result.done).toBe(true);
+    });
+
+    it('closes the returned stream when the run is aborted', async () => {
+      const { session, cancel, mockRun, emitOutput } = createMockSession();
+      const chat = createChatTransport(session);
+      const abortController = new AbortController();
+
+      const stream = await chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: [makeMessage('1')],
+        abortSignal: abortController.signal,
+      });
+
+      // Emit some chunks before the abort — these must reach the consumer.
+      emitOutput('run-1', { type: 'start', messageId: 'msg-1' });
+      emitOutput('run-1', { type: 'text-delta', id: 'text-1', delta: 'partial' });
+
+      // Abort: the adapter cancels the run AND closes its own router stream so
+      // the consumer sees end-of-input immediately rather than hanging.
+      abortController.abort();
+
+      expect(cancel).toHaveBeenCalledWith(mockRun.runId);
+
+      // Draining the returned stream completes cleanly with the pre-abort
+      // chunks and no error.
+      const reader = stream.getReader();
+      const chunks: AI.UIMessageChunk[] = [];
+      let result = await reader.read();
+      while (!result.done) {
+        chunks.push(result.value);
+        result = await reader.read();
+      }
+      expect(chunks.map((c) => c.type)).toEqual(['start', 'text-delta']);
     });
   });
 

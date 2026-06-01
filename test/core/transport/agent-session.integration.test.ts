@@ -259,7 +259,7 @@ describe('AgentSession integration', () => {
       const run = createRunFromOpts(agentSession, {
         runId: opts.runId,
         invocationId: opts.invocationId,
-        eventIds: [eventId],
+        eventId: eventId,
       });
       await run.start();
       await run.pipe(textResponseStream(...opts.streamArgs));
@@ -809,7 +809,7 @@ describe('AgentSession integration', () => {
     const serverRun = createRunFromOpts(session, {
       runId,
       invocationId,
-      eventIds: [eventId],
+      eventId: eventId,
     });
 
     // Begin the lookup. `start()` will not resolve until a user prompt
@@ -904,19 +904,19 @@ describe('AgentSession integration', () => {
       const serverRun = createRunFromOpts(session, {
         runId: activeRun.runId,
         invocationId: activeRun.invocationId,
-        eventIds: activeRun.eventIds,
+        eventId: activeRun.eventId,
       });
       await serverRun.start();
+      // start() only collects the primary trigger event; loadProjection() is
+      // required to see the full multi-message send from the channel.
+      await serverRun.loadProjection();
 
-      expect(serverRun.view.messages).toHaveLength(2);
-      const ids = serverRun.view.messages.map((n) => n.message.id);
+      const messages = serverRun.messages;
+      expect(messages).toHaveLength(2);
+      const ids = messages.map((m) => m.id);
       expect(ids).toEqual(['user-multi-1', 'user-multi-2']);
-      const firstText = serverRun.view.messages[0]?.message.parts.find(
-        (p): p is AI.TextUIPart => p.type === 'text',
-      )?.text;
-      const secondText = serverRun.view.messages[1]?.message.parts.find(
-        (p): p is AI.TextUIPart => p.type === 'text',
-      )?.text;
+      const firstText = messages[0]?.parts.find((p): p is AI.TextUIPart => p.type === 'text')?.text;
+      const secondText = messages[1]?.parts.find((p): p is AI.TextUIPart => p.type === 'text')?.text;
       expect(firstText).toBe('First');
       expect(secondText).toBe('Second');
 

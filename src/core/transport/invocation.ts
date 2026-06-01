@@ -7,15 +7,17 @@
  * is the entry point used by agent handlers:
  *
  * ```ts
- * const data = (await req.json()) as InvocationData<UIMessage>;
+ * const data = (await req.json()) as InvocationData;
  * const invocation = Invocation.fromJSON(data);
  * const run = session.createRun(invocation, { signal: req.signal });
+ * await run.start();
+ * await run.loadProjection(); // fetch run projection from the channel
+ * const messages = run.messages;
  * ```
  *
  * The body carries only what the agent needs out-of-band before the channel
  * is observable: identifiers (`runId`, `invocationId`), the session/channel
- * name, the prior-conversation context (`history`), and the wait-set
- * (`eventIds`). Per-message metadata — `clientId`, `parent`, `forkOf`,
+ * name, the `eventId` that triggered the invocation. Per-message metadata — `clientId`, `parent`, `forkOf`,
  * continuation flag — lives on the channel and is resolved by the agent from
  * the triggering input event, not from the body. The `inputClientId` the
  * agent re-stamps on its own publishes comes from the publisher's Ably
@@ -29,29 +31,20 @@
 /**
  * Wire shape of a single invocation — the JSON body sent from the client
  * transport's HTTP POST to the agent endpoint.
- * @template TMessage - Codec domain message type for history entries.
  */
-export interface InvocationData<TMessage> {
-  /** Identifier for the run this invocation creates. */
+export interface InvocationData {
+  /** Identifier for the run this invocation creates or continues. */
   runId: string;
   /** Identifier for this specific invocation under the run. The agent correlates client-published events on the channel by this id. */
   invocationId: string;
-  /** Logical name of the session (chat) — typically used as the Ably channel name. */
+  /**
+   * Identifier for the specific input event on the channel that triggered
+   * this invocation. The agent locates the event via the `x-ably-event-id`
+   * header.
+   */
+  eventId: string;
+  /** Logical name of the session (chat) — used as the Ably channel name. */
   sessionName: string;
-  /**
-   * Prior conversation along the selected branch, already projection-folded
-   * into the codec's TMessage shape. The agent feeds these straight to the
-   * model. Empty / omitted when there is no prior context (root run).
-   */
-  history?: TMessage[];
-  /**
-   * Per-event ids the agent should observe on the channel before starting
-   * LLM work — one entry per client-published event in the send (user-message
-   * AND continuation tool-resolution publishes). Matched against
-   * `x-ably-event-id` on inbound messages. Empty / omitted when the send
-   * carries no prompt-bearing events.
-   */
-  eventIds?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -62,31 +55,26 @@ export interface InvocationData<TMessage> {
  * Runtime view of an {@link InvocationData}. Constructed via
  * {@link Invocation.fromJSON}. Read-only; carries no behaviour beyond
  * exposing its fields.
- * @template TMessage - Codec domain message type for history entries.
  */
 // Spec: AIT-ST13
-export class Invocation<TMessage> {
+export class Invocation {
   /** Identifier for the run this invocation creates. */
   readonly runId: string;
   /** Identifier for this specific invocation under the run. */
   readonly invocationId: string;
-  /** Logical name of the session (chat). */
-  readonly sessionName: string;
-  /** Prior conversation history. Empty array when none supplied. */
-  readonly history: TMessage[];
   /**
-   * Per-event ids — one entry per client-published event in the send. The
-   * agent waits for every listed id to appear on the channel (matched via
-   * `x-ably-event-id`) before letting the run begin LLM work.
+   * Identifier for the specific input event on the channel that triggered
+   * this invocation.
    */
-  readonly eventIds: string[];
+  readonly eventId: string;
+  /** Logical name of the session (chat). Used as the Ably channel name. */
+  readonly sessionName: string;
 
-  private constructor(data: InvocationData<TMessage>) {
+  private constructor(data: InvocationData) {
     this.runId = data.runId;
     this.invocationId = data.invocationId;
+    this.eventId = data.eventId;
     this.sessionName = data.sessionName;
-    this.history = data.history ?? [];
-    this.eventIds = data.eventIds ?? [];
   }
 
   /**
@@ -94,7 +82,7 @@ export class Invocation<TMessage> {
    * @param data - Parsed JSON body matching {@link InvocationData}.
    * @returns A new Invocation exposing the same fields.
    */
-  static fromJSON<TMessage>(data: InvocationData<TMessage>): Invocation<TMessage> {
+  static fromJSON(data: InvocationData): Invocation {
     return new Invocation(data);
   }
 }

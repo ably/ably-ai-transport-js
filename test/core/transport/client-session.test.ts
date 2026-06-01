@@ -618,7 +618,7 @@ describe('ClientSession', () => {
       expect(secondMsgId).not.toBe('target-a');
     });
 
-    it('mints a distinct event-id per user-message and lists them in postBody.eventIds in order', async () => {
+    it('mints a distinct event-id per user-message; postBody.eventId is the last (primary trigger)', async () => {
       await fix.session.view.sendEvent([
         { type: 'user-message', text: 'first' },
         { type: 'user-message', text: 'second' },
@@ -634,10 +634,11 @@ describe('ClientSession', () => {
 
       await fix.fetch.waitForCalls(1);
       const body = fix.fetch.body(0);
-      expect(body.eventIds).toEqual(stampedIds);
+      // POST carries only the primary (last) trigger event's id.
+      expect(body.eventId).toBe(stampedIds[1]);
     });
 
-    it('fires HTTP POST with runId, invocationId, history, eventIds', async () => {
+    it('fires HTTP POST with runId, invocationId, sessionName, eventId', async () => {
       const run = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
       await fix.fetch.waitForCalls(1);
 
@@ -650,11 +651,8 @@ describe('ClientSession', () => {
       // resolved by the agent's prompt-lookup result. The agent reads the
       // input event's publisher `clientId` directly off the wire.
       expect(body.clientId).toBeUndefined();
-      expect(Array.isArray(body.eventIds)).toBe(true);
-      expect((body.eventIds as string[]).length).toBe(1);
-      expect(Array.isArray(body.history)).toBe(true);
-      // history excludes the brand-new optimistic message
-      expect((body.history as unknown[]).length).toBe(0);
+      expect(typeof body.eventId).toBe('string');
+      expect(body.history).toBeUndefined();
     });
 
     it('auto-computes parent from the last visible message', async () => {
@@ -824,7 +822,7 @@ describe('ClientSession', () => {
       expect(headers?.['x-ably-amend']).toBeUndefined();
     });
 
-    it('posts one eventId per continuation event', async () => {
+    it('posts one eventId for the continuation trigger event', async () => {
       const initial = await fix.session.view.sendEvent({ type: 'user-message', text: 'hi' });
 
       const cont = await fix.session.view.sendEvent([{ type: 'user-message', text: 'more' }], {
@@ -833,11 +831,7 @@ describe('ClientSession', () => {
 
       await fix.fetch.waitForCalls(2);
       const body = fix.fetch.body(1);
-      // Every client-published event in an invocation carries a eventId
-      // — the agent waits for all of them on the channel before starting
-      // LLM work.
-      expect(Array.isArray(body.eventIds)).toBe(true);
-      expect((body.eventIds as string[]).length).toBe(1);
+      expect(typeof body.eventId).toBe('string');
       expect(body.runId).toBe(cont.runId);
       expect(body.invocationId).toBe(cont.invocationId);
     });
@@ -855,7 +849,7 @@ describe('ClientSession', () => {
 
       await fix.fetch.waitForCalls(2);
       const body = fix.fetch.body(1);
-      expect(body.eventIds).toEqual([stampedId]);
+      expect(body.eventId).toBe(stampedId);
     });
 
     it('continuation publishes carry HEADER_RUN_CONTINUE=true while fresh sends do not', async () => {
@@ -2021,7 +2015,7 @@ describe('ClientSession', () => {
       expect(headers?.[HEADER_CODEC_MESSAGE_ID]).toBeDefined();
     });
 
-    it('mints a fresh event-id for the regenerate event and lists it in postBody.eventIds', async () => {
+    it('mints a fresh event-id for the regenerate event and forwards it in postBody.eventId', async () => {
       await fix.session.view.sendEvent({
         type: 'regenerate-event',
         parent: 'u1',
@@ -2030,13 +2024,12 @@ describe('ClientSession', () => {
 
       await fix.fetch.waitForCalls(1);
       const body = fix.fetch.body(0);
-      expect(Array.isArray(body.eventIds)).toBe(true);
-      expect((body.eventIds as string[]).length).toBe(1);
+      expect(typeof body.eventId).toBe('string');
 
       const enc = fix.codec.lastEncoder();
       const regeneratePublish = enc?.publishCalls.find((c) => c.event.type === 'regenerate-event');
       const eventId = regeneratePublish?.opts?.extras?.headers?.[HEADER_EVENT_ID];
-      expect((body.eventIds as string[])[0]).toBe(eventId);
+      expect(body.eventId).toBe(eventId);
     });
   });
 

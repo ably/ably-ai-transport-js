@@ -360,7 +360,7 @@ export interface AgentSession<TEvent, TProjection, TMessage> {
    * @param runtime - Optional runtime hooks and external AbortSignal
    *   (e.g. the HTTP request's `req.signal`).
    */
-  createRun(invocation: Invocation<TMessage>, runtime?: RunRuntime<TEvent>): Run<TEvent, TProjection, TMessage>;
+  createRun(invocation: Invocation, runtime?: RunRuntime<TEvent>): Run<TEvent, TProjection, TMessage>;
 
   /** Unsubscribe from cancel messages, cancel all active runs, and clean up. */
   close(): void;
@@ -457,6 +457,11 @@ export interface SendOptions {
    * `runId`. Defaults to `crypto.randomUUID()`.
    */
   invocationId?: string;
+  /**
+   * Override the `eventId` for this send. Useful for deterministic
+   * identification (tests). Defaults to `crypto.randomUUID()`.
+   */
+  eventId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -519,6 +524,13 @@ export interface ActiveRun<TEvent> {
    * this value.
    */
   invocationId: string;
+  /**
+   * The input event's unique identifier. Stamped on the primary input event
+   * published to the channel and forwarded in the HTTP POST body so the
+   * agent can locate the exact triggering event. The Tree's winning-invocation
+   * map and the run-end gate key on this value.
+   */
+  eventId: string;
   /** Cancel this specific run. Publishes a cancel message and closes the local stream. */
   cancel(): Promise<void>;
   /**
@@ -527,13 +539,6 @@ export interface ActiveRun<TEvent> {
    * regeneration (no user messages to insert optimistically).
    */
   optimisticCodecMessageIds: string[];
-  /**
-   * The per-event ids minted for this send, in order — one entry per
-   * user-message event published. Empty when the send carried no
-   * user-message events (continuation). The same list is sent in the
-   * POST body's `eventIds` field for the agent to look up.
-   */
-  eventIds: string[];
 }
 
 // ---------------------------------------------------------------------------

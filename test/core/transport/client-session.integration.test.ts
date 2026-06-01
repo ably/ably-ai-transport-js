@@ -1655,7 +1655,7 @@ describe('ClientSession integration', () => {
     const serverRun = createRunFromOpts(agentSession, {
       runId,
       invocationId,
-      eventIds: [eventId],
+      eventId: eventId,
     });
     await serverRun.start();
     const responseStream = textResponseStream('asst-rs-happy-1', 'text-rs-happy-1', 'Started');

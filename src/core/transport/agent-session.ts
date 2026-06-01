@@ -181,7 +181,7 @@ const loadRunProjection = async <TEvent, TProjection, TMessage>(opts: {
  *
  * Each client-published event in a send (user-message AND amend events
  * such as tool-approval responses and client tool outputs) is stamped
- * with its own `x-ably-event-id` and listed in `invocation.eventIds`.
+ * with its own `x-ably-event-id`.
  * The lookup matches incoming messages against the expected set; ids
  * not in the set are ignored, duplicates (rewind redelivering a message
  * also seen live) are deduped by event-id. The wait completes when
@@ -252,6 +252,12 @@ const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
    * @param m - The inbound Ably message to decode.
    * @returns The decoded MessageNodes carrying transport headers and serial.
    */
+  const collected: MessageNode<TMessage>[] = [];
+  const rawMessages: Ably.InboundMessage[] = [];
+  const matchedEventIds = new Set<string>();
+  let firstHeaders: Record<string, string> | undefined;
+  let firstClientId: string | undefined;
+
   const decode = (m: Ably.InboundMessage): MessageNode<TMessage>[] => {
     const decoder = codec.createDecoder();
     const headers = getHeaders(m);
@@ -265,8 +271,8 @@ const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
       kind: 'message' as const,
       message,
       codecMessageId,
-      parentId: headers['x-ably-parent'],
-      forkOf: headers['x-ably-fork-of'],
+      parentId: headers[HEADER_PARENT],
+      forkOf: headers[HEADER_FORK_OF],
       headers,
       serial: m.serial,
     }));
@@ -278,10 +284,6 @@ const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
     // listener also saw live. Scoped to the active lookup so it cannot
     // grow unbounded.
     const seenSerials = new Set<string>();
-    const collected: MessageNode<TMessage>[] = [];
-    const rawMessages: Ably.InboundMessage[] = [];
-    let firstHeaders: Record<string, string> | undefined;
-    let firstClientId: string | undefined;
     // Forward-declared so that cleanup() and onCancelled() can reference them
     // before they are assigned. cleanup may run synchronously inside
     // `register(...)` (when buffered prompts drain on registration) before
@@ -303,35 +305,35 @@ const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
       settled = true;
       cleanup();
       reject(
-        new Ably.ErrorInfo(`unable to look up user prompt; run ${runId} was cancelled`, ErrorCode.InvalidArgument, 400),
+        new Ably.ErrorInfo(`unable to look up prompt; run ${runId} was cancelled`, ErrorCode.InvalidArgument, 400),
       );
     };
     signal.addEventListener('abort', onCancelled, { once: true });
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- onCancelled may have settled the promise synchronously above when the signal was already aborted.
     if (settled) return;
-    const matchedEventIds = new Set<string>();
     unregister = register((m) => {
       if (settled) return;
       if (m.serial !== undefined && seenSerials.has(m.serial)) return;
-      // Filter by event-id: ignore messages whose event-id isn't in the
-      // expected set, and dedupe across rewind+live by event-id.
-      const wireHeaders = getHeaders(m);
-      const eventId = wireHeaders[HEADER_EVENT_ID];
-      if (eventId === undefined || !expectedSet.has(eventId)) return;
-      if (matchedEventIds.has(eventId)) return;
       if (m.serial !== undefined) seenSerials.add(m.serial);
-      matchedEventIds.add(eventId);
-      // Capture the first matched wire message's headers AND its Ably
-      // channel-level `clientId` so run-level metadata (parent / forkOf /
-      // continuation flag from headers; `inputClientId` from the wire
-      // publisher) is available even when the decode produces zero
-      // MessageNodes — the case for continuation tool-resolution wire
-      // messages whose chunks fold into a fresh empty projection without
+
+      const wireHeaders = getHeaders(m);
+
+      // Only count messages whose event-id is in the expected set.
+      const msgEventId = wireHeaders[HEADER_EVENT_ID];
+      if (!msgEventId || !expectedSet.has(msgEventId) || matchedEventIds.has(msgEventId)) return;
+      matchedEventIds.add(msgEventId);
+
+      // Capture the trigger event's headers AND its Ably channel-level `clientId`
+      // so run-level metadata (parent / forkOf / continuation flag from headers;
+      // `inputClientId` from the wire publisher) is available even when the decode
+      // produces zero MessageNodes — the case for continuation tool-resolution
+      // trigger events whose chunks fold into a fresh empty projection without
       // an assistant to land on.
       if (firstHeaders === undefined) {
         firstHeaders = wireHeaders;
         firstClientId = m.clientId;
       }
+
       let decoded: MessageNode<TMessage>[];
       try {
         decoded = decode(m);
@@ -341,7 +343,7 @@ const lookupUserPrompt = async <TEvent, TProjection, TMessage>(opts: {
         const cause = error instanceof Ably.ErrorInfo ? error : undefined;
         reject(
           new Ably.ErrorInfo(
-            `unable to look up user prompt; decode failed for invocation ${invocationId}: ${error instanceof Error ? error.message : String(error)}`,
+            `unable to look up prompt; decode failed for invocation ${invocationId}: ${error instanceof Error ? error.message : String(error)}`,
             ErrorCode.PromptNotFound,
             504,
             cause,
@@ -607,7 +609,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
   }
 
   // Spec: AIT-ST3
-  createRun(invocation: Invocation<TMessage>, runtime?: RunRuntime<TEvent>): Run<TEvent, TProjection, TMessage> {
+  createRun(invocation: Invocation, runtime?: RunRuntime<TEvent>): Run<TEvent, TProjection, TMessage> {
     this._logger?.trace('DefaultAgentSession.createRun();', { runId: invocation.runId });
     return this._createRun(invocation, runtime ?? {});
   }
@@ -840,10 +842,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
   // Run creation
   // -------------------------------------------------------------------------
 
-  private _createRun(
-    invocation: Invocation<TMessage>,
-    runtime: RunRuntime<TEvent>,
-  ): Run<TEvent, TProjection, TMessage> {
+  private _createRun(invocation: Invocation, runtime: RunRuntime<TEvent>): Run<TEvent, TProjection, TMessage> {
     const runId = invocation.runId;
     const invocationId = invocation.invocationId;
     const promptLookupTimeoutMs = this._promptLookupTimeoutMs;
@@ -860,7 +859,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
     // Spec: AIT-ST3a — register immediately so early cancels can fire the AbortSignal.
     const registration: RegisteredRun = {
       runId,
-      invocationId: invocation.invocationId,
+      invocationId,
       controller,
       signal,
       onCancel,
@@ -878,16 +877,11 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
     const requireConnected = this._requireConnected.bind(this);
     const registerPromptListener = this._registerPromptListener.bind(this);
     const recordCompletedLookup = this._recordCompletedLookup.bind(this);
-    const invocationEventIds = invocation.eventIds;
-    // Snapshot the invocation's prior-conversation history. `Run.start()`
-    // may overlay this with codec-folded state for continuation tool
-    // resolutions; `run.messages` exposes the result.
-    let resolvedHistory: TMessage[] = [...invocation.history];
+    const eventId = invocation.eventId;
 
     // `viewMessages` starts empty. `Run.start()` populates it via the
-    // channel-rewind prompt lookup when `invocation.eventIds` has entries,
-    // pulling in user-message MessageNodes as they arrive on the channel.
-    // Continuation sends list no eventIds and skip the lookup entirely.
+    // channel-rewind prompt lookup, pulling in user-message MessageNodes
+    // as they arrive on the channel.
     const viewMessages: MessageNode<TMessage>[] = [];
     const view: RunView<TMessage> = {
       get messages() {
@@ -935,12 +929,15 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
         return view;
       },
       get messages() {
-        return [...resolvedHistory, ...viewMessages.map((n) => n.message)];
+        if (cachedProjection !== undefined) {
+          return codec.getMessages(cachedProjection);
+        }
+        return viewMessages.map((n) => n.message);
       },
 
       // Spec: AIT-ST4, AIT-ST4a, AIT-ST4b
       start: async (): Promise<void> => {
-        logger?.trace('Run.start();', { runId, invocationId });
+        logger?.trace('Run.start();', { runId, eventId });
 
         await requireConnected('start');
 
@@ -955,26 +952,24 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
         if (state !== RunState.INITIALIZED) return;
         state = RunState.STARTED;
 
-        // Look up the user prompt on the channel when the invocation
-        // signals a fresh send (eventIds.length > 0) but didn't carry the
-        // messages inline. Skip when:
-        // - viewMessages already populated (legacy / pre-populated path)
-        // - promptLookupTimeoutMs === 0 (tests and in-process drivers)
-        // - eventIds.length === 0 (no client-published prompt-bearing
-        //   events — degenerate; agent runs without seeing any user input)
-        if (viewMessages.length === 0 && invocationEventIds.length > 0 && promptLookupTimeoutMs > 0) {
+        // Look up the triggering input event on the channel so the agent
+        // can read the user's message and per-run metadata (parent, forkOf,
+        // continuation flag) before publishing run-start. Skip when
+        // promptLookupTimeoutMs === 0 (tests and in-process drivers) or
+        // when no eventId is set (invocation requires no channel lookup).
+        if (eventId && promptLookupTimeoutMs > 0) {
           try {
             const found = await lookupUserPrompt<TEvent, TProjection, TMessage>({
               register: (callback) => registerPromptListener(invocationId, callback),
               codec,
               invocationId,
               runId,
-              expectedEventIds: invocationEventIds,
+              expectedEventIds: [eventId],
               timeoutMs: promptLookupTimeoutMs,
               signal,
               logger,
             });
-            recordCompletedLookup(invocationId, invocationEventIds.length);
+            recordCompletedLookup(invocationId, 1);
             for (const m of found.nodes) viewMessages.push(m);
             if (found.firstHeaders !== undefined) firstLookupHeaders = found.firstHeaders;
             if (found.firstClientId !== undefined) resolvedInputClientId = found.firstClientId;
@@ -1016,59 +1011,6 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
           resolvedContinuation = sourceHeaders[HEADER_RUN_CONTINUE] === 'true';
         }
 
-        // Continuation overlay: for runs resuming under an existing runId,
-        // any client-published tool resolutions on the channel have already
-        // mutated `dynamic-tool` parts on assistants in this run's projection.
-        // Fold the run's channel events through the codec, then overlay the
-        // resulting messages onto `resolvedHistory` by id — the model sees
-        // the resolved tool state instead of the unresolved snapshot the
-        // client POSTed. Best-effort: a failed fetch leaves the un-overlaid
-        // history in place; the reducer reconciles via subsequent echoes.
-        //
-        // The projection is also stashed in `cachedProjection` so that
-        // `Run.pipe`'s `resolveToolTarget` hook can redirect tool-output
-        // chunks emitted by streamText to the original assistant message
-        // (the one carrying the `approval-responded` / `approval-requested`
-        // dynamic-tool part). Without that, the wire `HEADER_CODEC_MESSAGE_ID` lands
-        // on the new step's assistant and the client reducer redirects via
-        // the toolCallId fallback — a path that's correct in isolation but
-        // collides with the new assistant's own streamed content (text,
-        // step-start). Setting cachedProjection makes the agent stamp the
-        // right wire id from the start.
-        if (resolvedContinuation) {
-          try {
-            const projection = await loadRunProjection<TEvent, TProjection, TMessage>({
-              channel,
-              codec,
-              runId,
-              signal,
-              logger,
-              liveMessages: liveLookupMessages,
-            });
-            cachedProjection = projection;
-            const projectedById = new Map<string, TMessage>();
-            for (const m of codec.getMessages(projection)) {
-              const id = (m as { id?: unknown }).id;
-              if (typeof id === 'string') projectedById.set(id, m);
-            }
-            if (projectedById.size > 0) {
-              resolvedHistory = invocation.history.map((m) => {
-                const id = (m as { id?: unknown }).id;
-                if (typeof id === 'string') {
-                  const overlaid = projectedById.get(id);
-                  if (overlaid) return overlaid;
-                }
-                return m;
-              });
-            }
-          } catch (error) {
-            logger?.warn('Run.start(); continuation overlay failed', {
-              runId,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-        }
-
         try {
           await runManager.startRun(runId, resolvedClientId, controller, {
             parent: resolvedParent,
@@ -1089,7 +1031,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
           throw errInfo;
         }
 
-        logger?.debug('Run.start(); run started', { runId, invocationId });
+        logger?.debug('Run.start(); run started', { runId, eventId });
       },
 
       // Spec: AIT-ST5, AIT-ST5a, AIT-ST5b, AIT-ST5c
@@ -1120,7 +1062,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
                 runClientId: opts?.clientId,
                 parent: node.parentId,
                 forkOf: node.forkOf,
-                invocationId,
+                eventId,
                 inputClientId: resolvedInputClientId,
               }),
               node.headers,
@@ -1211,6 +1153,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
           runId,
           signal,
           logger,
+          liveMessages: liveLookupMessages,
         });
         cachedProjection = projection;
         return projection;

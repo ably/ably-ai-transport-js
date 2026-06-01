@@ -536,7 +536,7 @@ describe('AgentSession', () => {
       const runId = 'run-cont';
       const invocationId = 'inv-cont';
       const eventId = 'p-cont';
-      const run = createRunFromOpts(s, { runId, invocationId, eventIds: [eventId] });
+      const run = createRunFromOpts(s, { runId, invocationId, eventId: eventId });
       const startPromise = run.start();
       deliverUserPrompt(ch, {
         invocationId,
@@ -581,7 +581,7 @@ describe('AgentSession', () => {
       const runId = 'run-regen';
       const invocationId = 'inv-regen';
       const promptId = 'p-regen';
-      const run = createRunFromOpts(s, { runId, invocationId, eventIds: [promptId] });
+      const run = createRunFromOpts(s, { runId, invocationId, eventId: promptId });
       const startPromise = run.start();
       deliverUserPrompt(ch, {
         invocationId,
@@ -620,7 +620,7 @@ describe('AgentSession', () => {
       const runId = 'run-icid-start';
       const invocationId = 'inv-icid-start';
       const eventId = 'p-icid-start';
-      const run = createRunFromOpts(session, { runId, invocationId, eventIds: [eventId] });
+      const run = createRunFromOpts(session, { runId, invocationId, eventId: eventId });
       const startPromise = run.start();
       deliverUserPrompt(channel, {
         invocationId,
@@ -641,7 +641,7 @@ describe('AgentSession', () => {
       const runId = 'run-icid-end';
       const invocationId = 'inv-icid-end';
       const eventId = 'p-icid-end';
-      const run = createRunFromOpts(session, { runId, invocationId, eventIds: [eventId] });
+      const run = createRunFromOpts(session, { runId, invocationId, eventId: eventId });
       const startPromise = run.start();
       deliverUserPrompt(channel, {
         invocationId,
@@ -720,7 +720,7 @@ describe('AgentSession', () => {
       const runId = 'run-icid-am';
       const invocationId = 'inv-icid-am';
       const eventId = 'p-icid-am';
-      const run = createRunFromOpts(session, { runId, invocationId, eventIds: [eventId] });
+      const run = createRunFromOpts(session, { runId, invocationId, eventId: eventId });
       const startPromise = run.start();
       deliverUserPrompt(channel, {
         invocationId,
@@ -824,7 +824,7 @@ describe('AgentSession', () => {
       const runId = 'run-icid-ae';
       const invocationId = 'inv-icid-ae';
       const eventId = 'p-icid-ae';
-      const run = createRunFromOpts(session, { runId, invocationId, eventIds: [eventId] });
+      const run = createRunFromOpts(session, { runId, invocationId, eventId: eventId });
       const startPromise = run.start();
       deliverUserPrompt(channel, {
         invocationId,
@@ -928,7 +928,7 @@ describe('AgentSession', () => {
       const runId = 'run-icid-pipe';
       const invocationId = 'inv-icid-pipe';
       const eventId = 'p-icid-pipe';
-      const run = createRunFromOpts(session, { runId, invocationId, eventIds: [eventId] });
+      const run = createRunFromOpts(session, { runId, invocationId, eventId: eventId });
       const startPromise = run.start();
       deliverUserPrompt(channel, {
         invocationId,
@@ -999,7 +999,7 @@ describe('AgentSession', () => {
       const runId = 'r-rg';
       const invocationId = 'inv-rg';
       const promptId = 'p-rg';
-      const run = createRunFromOpts(s, { runId, invocationId, eventIds: [promptId] });
+      const run = createRunFromOpts(s, { runId, invocationId, eventId: promptId });
       const startPromise = run.start();
       deliverUserPrompt(ch, {
         invocationId,
@@ -1048,7 +1048,7 @@ describe('AgentSession', () => {
 
       const runId = 'r-pp';
       const invocationId = 'inv-pp';
-      const run = createRunFromOpts(s, { runId, invocationId, eventIds: ['p-u1'] });
+      const run = createRunFromOpts(s, { runId, invocationId, eventId: 'p-u1' });
       const startPromise = run.start();
       deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'user-1', serial: '01', eventId: 'p-u1' });
       await startPromise;
@@ -1451,18 +1451,16 @@ describe('AgentSession', () => {
 
       const runId = 'r-multi';
       const invocationId = 'inv-multi';
-      const run = createRunFromOpts(s, { runId, invocationId, eventIds: ['p-a', 'p-b'] });
+      const run = createRunFromOpts(s, { runId, invocationId, eventId: 'p-a' });
       const startPromise = run.start();
 
-      // Deliver out of order with a duplicate of the first to assert dedup.
-      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'b', serial: '02', eventId: 'p-b' });
+      // Deliver with a duplicate to assert dedup.
       deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', eventId: 'p-a' });
-      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'b', serial: '02', eventId: 'p-b' });
+      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', eventId: 'p-a' });
 
       await startPromise;
-      expect(run.view.messages).toHaveLength(2);
+      expect(run.view.messages).toHaveLength(1);
       expect(run.view.messages[0]?.codecMessageId).toBe('a');
-      expect(run.view.messages[1]?.codecMessageId).toBe('b');
       s.close();
     });
 
@@ -1479,15 +1477,13 @@ describe('AgentSession', () => {
 
       const runId = 'r-partial';
       const invocationId = 'inv-partial';
-      const run = createRunFromOpts(s, { runId, invocationId, eventIds: ['p-a', 'p-b'] });
+      const run = createRunFromOpts(s, { runId, invocationId, eventId: 'p-a' });
       const startPromise = run.start();
 
-      // Deliver only 1 of 2 before timeout fires.
-      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'only', serial: '01', eventId: 'p-a' });
-
+      // Deliver nothing — timeout fires before the event arrives.
       const rejection = await startPromise.catch((error: unknown) => error);
       expect(rejection).toBeErrorInfoWithCode(ErrorCode.PromptNotFound);
-      expect((rejection as Ably.ErrorInfo).message).toContain('received 1 of 2');
+      expect((rejection as Ably.ErrorInfo).message).toContain('received 0 of 1');
       s.close();
     });
 
@@ -1504,17 +1500,15 @@ describe('AgentSession', () => {
 
       const runId = 'r-drain';
       const invocationId = 'inv-drain';
-      // Pre-buffer one message before any listener is registered.
+      // Pre-buffer the trigger event before any listener is registered.
       deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'first', serial: '01', eventId: 'p-first' });
 
-      const run = createRunFromOpts(s, { runId, invocationId, eventIds: ['p-first', 'p-second'] });
+      const run = createRunFromOpts(s, { runId, invocationId, eventId: 'p-first' });
       const startPromise = run.start();
 
-      // Second message arrives live after the listener registered.
-      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'second', serial: '02', eventId: 'p-second' });
-
+      // start() should resolve immediately by draining the buffer.
       await startPromise;
-      expect(run.view.messages.map((m) => m.codecMessageId)).toEqual(['first', 'second']);
+      expect(run.view.messages.map((m) => m.codecMessageId)).toEqual(['first']);
       s.close();
     });
 
@@ -1537,7 +1531,7 @@ describe('AgentSession', () => {
       const runId = 'r-cont';
       const invocationId = 'inv-cont';
       const eventId = 'p-cont';
-      const run = createRunFromOpts(s, { runId, invocationId, eventIds: [eventId] });
+      const run = createRunFromOpts(s, { runId, invocationId, eventId: eventId });
       const startPromise = run.start();
 
       // Deliver a synthetic continuation user-message — a `role: 'user'`
@@ -1580,7 +1574,7 @@ describe('AgentSession', () => {
 
       const runId = 'r-over';
       const invocationId = 'inv-over';
-      const run = createRunFromOpts(s, { runId, invocationId, eventIds: ['p-a'] });
+      const run = createRunFromOpts(s, { runId, invocationId, eventId: 'p-a' });
       const startPromise = run.start();
       deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', eventId: 'p-a' });
       await startPromise;
@@ -1643,7 +1637,7 @@ describe('AgentSession', () => {
 
       const runId = 'r-bad';
       const invocationId = 'inv-bad';
-      const run = createRunFromOpts(s, { runId, invocationId, eventIds: ['p-a', 'p-b'] });
+      const run = createRunFromOpts(s, { runId, invocationId, eventId: 'p-a' });
       const startPromise = run.start();
       deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', eventId: 'p-a' });
 
@@ -1666,7 +1660,7 @@ describe('AgentSession', () => {
 
       const runId = 'r-abort';
       const invocationId = 'inv-abort';
-      const run = createRunFromOpts(s, { runId, invocationId, eventIds: ['p-a', 'p-b'] });
+      const run = createRunFromOpts(s, { runId, invocationId, eventId: 'p-a' });
       const startPromise = run.start();
 
       // Cancel-by-runId triggers controller.abort() on the registered run.
@@ -1807,7 +1801,7 @@ describe('AgentSession prompt lookup', () => {
     const run = createRunFromOpts(session, {
       runId: 'run-1',
       invocationId: 'inv-needs-prompt',
-      eventIds: ['p-1'], // signal that a prompt should be looked up
+      eventId: 'p-1', // signal that a prompt should be looked up
     });
 
     await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.PromptNotFound);
@@ -1826,7 +1820,7 @@ describe('AgentSession prompt lookup', () => {
 // ---------------------------------------------------------------------------
 
 describe('Run.messages', () => {
-  it('equals invocation.history before start() resolves', () => {
+  it('is empty before start() resolves (no loadProjection yet)', () => {
     const channel = createMockChannel();
     const codec = codecWithFunctionalDecoder();
     const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
@@ -1834,19 +1828,15 @@ describe('Run.messages', () => {
       channelName: 'test-channel',
       codec,
     });
-    const history: TestMessage[] = [
-      { id: 'h1', content: 'hello' },
-      { id: 'h2', content: 'world' },
-    ];
-    const run = createRunFromOpts(session, { runId: 'run-1', history });
-    expect(run.messages).toEqual(history);
+    const run = createRunFromOpts(session, { runId: 'run-1' });
+    expect(run.messages).toEqual([]);
     // Fresh array per access — mutating the return value doesn't bleed.
     run.messages.push({ id: 'leak', content: 'no' });
-    expect(run.messages).toEqual(history);
+    expect(run.messages).toEqual([]);
     session.close();
   });
 
-  it('appends view-message contributions after start() resolves (fresh send)', async () => {
+  it('returns view-message contributions after start() resolves (fresh send)', async () => {
     const ch = createMockChannel();
     const codec = codecWithFunctionalDecoder();
     const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
@@ -1856,12 +1846,10 @@ describe('Run.messages', () => {
       promptLookupTimeoutMs: 5000,
     });
     await session.connect();
-    const history: TestMessage[] = [{ id: 'h1', content: 'old' }];
     const run = createRunFromOpts(session, {
       runId: 'run-1',
       invocationId: 'inv-1',
-      eventIds: ['p-fresh'],
-      history,
+      eventId: 'p-fresh',
     });
     const startPromise = run.start();
     deliverUserPrompt(ch, {
@@ -1874,31 +1862,13 @@ describe('Run.messages', () => {
     await startPromise;
 
     // The functional decoder produces { id: codecMessageId, content: codecMessageId }.
-    expect(run.messages).toEqual([
-      { id: 'h1', content: 'old' },
-      { id: 'user-new', content: 'user-new' },
-    ]);
+    expect(run.messages).toEqual([{ id: 'user-new', content: 'user-new' }]);
     session.close();
   });
 
-  it('overlays history with projection-folded messages on continuation', async () => {
+  it('returns view messages after start() resolves on continuation (no history overlay)', async () => {
     const ch = createMockChannel();
     const codec = codecWithFunctionalDecoder();
-    // channel.history() returns one wire message that the functional decoder
-    // folds into a TestMessage with id='h2' — same id as one of the history
-    // entries. The overlay must replace the history's `h2` with the projection's
-    // version; `h1` passes through unchanged.
-    const historyWire = {
-      name: 'text',
-      serial: 's-proj',
-      extras: { headers: { [HEADER_RUN_ID]: 'run-1', [HEADER_CODEC_MESSAGE_ID]: 'h2' } },
-    } as unknown as Ably.InboundMessage;
-    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns a Promise; vi.fn return type is inferred as void.
-    ch.history.mockImplementation(() => {
-      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
-      const page = { items: [historyWire], hasNext: () => false, next: () => Promise.resolve(page) };
-      return Promise.resolve(page);
-    });
 
     const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
       client: createMockClient(ch),
@@ -1907,15 +1877,10 @@ describe('Run.messages', () => {
       promptLookupTimeoutMs: 5000,
     });
     await session.connect();
-    const history: TestMessage[] = [
-      { id: 'h1', content: 'kept' },
-      { id: 'h2', content: 'stale' },
-    ];
     const run = createRunFromOpts(session, {
       runId: 'run-1',
       invocationId: 'inv-cont',
-      eventIds: ['p-cont'],
-      history,
+      eventId: 'p-cont',
     });
     const startPromise = run.start();
     deliverUserPrompt(ch, {
@@ -1928,29 +1893,14 @@ describe('Run.messages', () => {
     });
     await startPromise;
 
-    expect(run.messages).toEqual([
-      { id: 'h1', content: 'kept' }, // unchanged
-      { id: 'h2', content: 'h2' }, // overlaid by the projection
-      { id: 'm-cont', content: 'm-cont' }, // view contribution
-    ]);
+    // Before loadProjection, messages are the view messages from the prompt lookup.
+    expect(run.messages).toEqual([{ id: 'm-cont', content: 'm-cont' }]);
     session.close();
   });
 
-  it('leaves history unchanged on continuation when projection has no overlapping ids', async () => {
+  it('returns only view messages after start() on continuation (no history to pass through)', async () => {
     const ch = createMockChannel();
     const codec = codecWithFunctionalDecoder();
-    // channel.history returns a wire message with a non-overlapping id.
-    const historyWire = {
-      name: 'text',
-      serial: 's-proj',
-      extras: { headers: { [HEADER_RUN_ID]: 'run-1', [HEADER_CODEC_MESSAGE_ID]: 'no-match' } },
-    } as unknown as Ably.InboundMessage;
-    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns a Promise; vi.fn return type is inferred as void.
-    ch.history.mockImplementation(() => {
-      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
-      const page = { items: [historyWire], hasNext: () => false, next: () => Promise.resolve(page) };
-      return Promise.resolve(page);
-    });
 
     const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
       client: createMockClient(ch),
@@ -1959,12 +1909,10 @@ describe('Run.messages', () => {
       promptLookupTimeoutMs: 5000,
     });
     await session.connect();
-    const history: TestMessage[] = [{ id: 'h1', content: 'kept' }];
     const run = createRunFromOpts(session, {
       runId: 'run-1',
       invocationId: 'inv-cont',
-      eventIds: ['p-cont'],
-      history,
+      eventId: 'p-cont',
     });
     const startPromise = run.start();
     deliverUserPrompt(ch, {
@@ -1977,10 +1925,7 @@ describe('Run.messages', () => {
     });
     await startPromise;
 
-    expect(run.messages).toEqual([
-      { id: 'h1', content: 'kept' }, // unchanged
-      { id: 'm-cont', content: 'm-cont' },
-    ]);
+    expect(run.messages).toEqual([{ id: 'm-cont', content: 'm-cont' }]);
     session.close();
   });
 
@@ -2017,7 +1962,7 @@ describe('Run.messages', () => {
     const run = createRunFromOpts(session, {
       runId: 'run-1',
       invocationId: 'inv-cont',
-      eventIds: ['p-tool'],
+      eventId: 'p-tool',
     });
     const startPromise = run.start();
     // Deliver a continuation tool-resolution wire message — produces zero

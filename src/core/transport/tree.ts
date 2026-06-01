@@ -59,15 +59,6 @@ export interface TreeInternal<TEvent, TProjection> extends Tree<TProjection> {
   readonly structuralVersion: number;
 
   /**
-   * Flatten the tree along selected branches into a linear Run list.
-   * The `selections` map provides the selected sibling's runId at each
-   * fork point, keyed by group-root runId. Fork points not present in the
-   * map default to the latest sibling. If a selectedRunId is not found in
-   * the sibling group (stale/deleted), falls back to latest.
-   */
-  flattenNodes(selections: Map<string, string>): RunNode<TProjection>[];
-
-  /**
    * Get the "group root" runId for a sibling group — the original Run that
    * all forks in the group trace back to.
    */
@@ -114,7 +105,7 @@ export interface TreeInternal<TEvent, TProjection> extends Tree<TProjection> {
   applyRunLifecycle(event: RunLifecycleEvent, serial?: string): void;
 
   /**
-   * Remove a Run from the tree. Children become unreachable in `flattenNodes()`
+   * Remove a Run from the tree. Children become unreachable in `runs()`
    * because their parent is no longer on the active path.
    * @param runId - The Run to remove.
    */
@@ -405,8 +396,8 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
   // Public query methods
   // -------------------------------------------------------------------------
 
-  flattenNodes(selections: Map<string, string>): RunNode<TProjection>[] {
-    this._logger.trace('DefaultTree.flattenNodes();');
+  runs(selections: Map<string, string> = new Map<string, string>()): RunNode<TProjection>[] {
+    this._logger.trace('DefaultTree.runs();');
     const result: RunNode<TProjection>[] = [];
     const currentPath = new Set<string>();
     // Track which sibling groups we've already resolved to avoid
@@ -578,7 +569,7 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
         // / regenerates carried on the wire are read from the client's
         // tool-resolution wire (whose parent points back at a message in
         // the current run itself), so backfilling here would produce a
-        // self-parent cycle and the Run drops out of flattenNodes as
+        // self-parent cycle and the Run drops out of runs() as
         // unreachable. The original run-start already set these fields.
         if (!event.isContinuation) {
           if (run.node.parentRunId === undefined && event.parent !== undefined) {

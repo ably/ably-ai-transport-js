@@ -740,6 +740,23 @@ export interface RunNode<TProjection> {
  * message list for rendering.
  */
 export interface Tree<TProjection> {
+  /**
+   * Return the visible Run list along the selected branches, in
+   * chronological order. The `selections` map provides the selected
+   * sibling's runId at each fork point, keyed by group-root runId.
+   * Fork points not present in the map default to the latest sibling
+   * (newest by startSerial); a `selectedRunId` not found in its
+   * sibling group is treated the same.
+   *
+   * Pass an empty map (or omit the argument) to get the "latest at
+   * every fork" snapshot — useful for tests and for consumers that
+   * don't track their own selection state.
+   * @param selections - Per-fork-point sibling selection, keyed by
+   *   group-root runId. Defaults to an empty map.
+   * @returns The Runs along the selected branches in chronological order.
+   */
+  runs(selections?: Map<string, string>): RunNode<TProjection>[];
+
   /** Get a Run by runId, or undefined if not found. */
   getRunNode(runId: string): RunNode<TProjection> | undefined;
 
@@ -815,33 +832,73 @@ export interface Tree<TProjection> {
 // ---------------------------------------------------------------------------
 
 /**
- * Per-message metadata derived from the owning Run, returned by
- * {@link View.getMessageMetadata}.
+ * Projection-free, View-facing snapshot of a Run.
  *
- * Mirrors the subset of pre-tree-of-runs `MessageNode` fields that
- * applications consumed for rendering: identifiers, owner client id,
- * and stream status. Designed so the rendering layer receives
- * structured primitives without touching SDK domain types like
- * {@link RunNode}. If you need the full Run record (projection,
- * regeneratesMsgId, etc.), reach through the {@link Tree} surface
- * instead.
+ * Exposes the Run facts a UI consumer needs (`runId`, owner `clientId`,
+ * lifecycle `status`, `invocationId`) without leaking the codec's
+ * opaque per-Run projection or the Tree's structural fields. Callers
+ * that need the full Run record (parent / fork relationships, serials,
+ * projection) reach `session.tree.getRunNode(runId)` directly.
  */
-export interface MessageMetadata {
-  /** The codec-message-id this metadata describes. */
-  codecMessageId: string;
-  /** The runId of the Run that owns this message. */
+export interface RunInfo {
+  /** The Run's unique identifier. */
   runId: string;
   /**
-   * The clientId of the Run owner (Ably client that started the Run).
-   * Empty string when the wire did not carry an owner client id.
+   * Identity of the Ably client that started this Run. Empty string
+   * when the wire didn't carry an owner client id.
    */
   clientId: string;
   /**
-   * `'streaming'` while the owning Run is active, otherwise the
-   * {@link RunEndReason} the Run terminated with — `'complete'`,
-   * `'cancelled'`, `'error'`, or `'suspended'`.
+   * Run lifecycle status. `'active'` while the Run is streaming;
+   * otherwise the {@link RunEndReason} the Run terminated with.
+   * Literal lifecycle vocabulary — UIs that want `'streaming'`
+   * rendering language translate at the component boundary.
    */
-  status: 'streaming' | RunEndReason;
+  status: 'active' | RunEndReason;
+  /**
+   * The first `invocationId` observed for this Run. Stable across the
+   * Run's lifecycle. Empty string when the wire didn't carry an
+   * invocation-id.
+   */
+  invocationId: string;
+}
+
+/**
+ * Bundle returned by {@link View.branchSelection} describing the
+ * sibling group anchored at a given codec-message-id.
+ *
+ * Total / always-defined — `view.branchSelection(id)` is safe to call
+ * for any message:
+ *
+ *  - **Branch anchor (N ≥ 2 siblings)**: `siblings` carries every
+ *    sibling Run's view of the anchor slot, `index` is the selected
+ *    sibling's position, `selected === siblings[index]`,
+ *    `hasSiblings: true`.
+ *  - **Known non-anchor message**: `siblings = [thisMessage]`,
+ *    `index: 0`, `selected: thisMessage`, `hasSiblings: false`.
+ *  - **Unknown codec-message-id**: `siblings: []`, `index: 0`,
+ *    `selected: undefined`, `hasSiblings: false`.
+ *
+ * Because `siblings` always contains the currently rendered message
+ * (for known ids), `siblings.length` is `1` for a plain bubble (not
+ * `0`) and the indexing space matches between read and write —
+ * passing `branch.index` back into {@link View.selectSibling} is a
+ * round-trip no-op.
+ */
+export interface BranchSelection<TMessage> {
+  /** True when the codec-message-id is a branch anchor with more than one sibling. Equivalent to `siblings.length > 1`. */
+  hasSiblings: boolean;
+  /**
+   * The selected sibling and any alternatives, in tree-order (oldest
+   * first). Always contains the currently rendered message itself for
+   * known codec-message-ids; empty only when the id is unknown to the
+   * view.
+   */
+  siblings: TMessage[];
+  /** Index of the selected sibling within `siblings`. `0` when there is no real branching or the id is unknown. */
+  index: number;
+  /** Convenience reference to `siblings[index]`. `undefined` only when `siblings` is empty. */
+  selected: TMessage | undefined;
 }
 
 /**
@@ -852,17 +909,24 @@ export interface MessageMetadata {
  * `loadOlder()`. Events are scoped to the visible window — subscribers
  * are only notified when the visible output changes.
  */
-export interface View<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage> {
+export interface View<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TMessage> {
   /**
    * The visible domain messages along the selected branch. Computed by
-   * walking the visible {@link RunNode} chain (newest to root) and
-   * concatenating each Run's `codec.getMessages(projection)` in chronological
-   * order.
+   * walking the visible Run chain (newest to root) and concatenating
+   * each Run's `codec.getMessages(projection)` in chronological order.
    */
   getMessages(): TMessage[];
 
-  /** Visible Runs along the selected branch, filtered by the pagination window. */
-  flattenNodes(): RunNode<TProjection>[];
+  /**
+   * Snapshot of the visible Runs along the selected branch, in
+   * chronological order — already filtered by this view's pagination
+   * window, branch selection, and regenerate substitution. The
+   * companion to {@link getMessages}: same scope, exposed as
+   * projection-free {@link RunInfo} so consumers can iterate Run
+   * identity (runId, clientId, status, invocationId) without touching
+   * the Tree.
+   */
+  runs(): RunInfo[];
 
   /** Whether there are older Runs that can be loaded or revealed. */
   hasOlder(): boolean;
@@ -881,80 +945,48 @@ export interface View<TInput extends CodecInputEvent, TOutput extends CodecOutpu
    */
   loadOlder(limit?: number): Promise<void>;
 
+  // --- Run lookup ---
+
+  /**
+   * Look up the {@link RunInfo} for the Run that owns
+   * `codecMessageId`. Returns `undefined` when the codec-message-id
+   * hasn't been observed by the view.
+   * @param codecMessageId - The codec-message-id to look up.
+   */
+  runOf(codecMessageId: string): RunInfo | undefined;
+
+  /**
+   * Direct lookup by Run id. Kept for symmetry with {@link runOf} so
+   * callers that hold a `runId` (e.g. cancel handlers) get a one-step
+   * lookup. Returns `undefined` when the Run hasn't been observed.
+   * @param runId - The Run id to look up.
+   */
+  run(runId: string): RunInfo | undefined;
+
   // --- Branch navigation ---
 
   /**
-   * Select a sibling Run at a fork point by index. Updates this view's
-   * branch selection. Index is clamped to `[0, siblings.length - 1]`.
-   * Emits 'update' when the visible output changes.
-   * @param runId - Any runId in the sibling group. The View resolves the
-   *   group root internally.
-   */
-  select(runId: string, index: number): void;
-
-  /** Get the index of the currently selected sibling Run at a fork point. */
-  getSelectedIndex(runId: string): number;
-
-  /**
-   * Per-message metadata derived from the owning Run. The natural
-   * accessor for the rendering layer: returns primitives (runId,
-   * clientId, status) without leaking {@link RunNode} or the codec's
-   * projection generic into UI components. Returns `undefined` when
-   * the msg-id hasn't been observed.
-   * @param msgId - The msg-id to look up.
-   * @returns Structured per-message metadata, or `undefined`.
-   */
-  getMessageMetadata(msgId: string): MessageMetadata | undefined;
-
-  /**
-   * Whether the message at `codecMessageId` is a branch-point anchor — i.e.
-   * the UI should render navigation arrows next to this specific bubble.
+   * Resolve the {@link BranchSelection} bundle anchored at
+   * `codecMessageId`. Always returns a safe object — see
+   * {@link BranchSelection} for the per-case shape.
    *
-   * Per AITRFC-014, branch points are message-anchored: edit forks point at
-   * the user prompt's codec-message-id, regenerate forks point at the
-   * assistant message's codec-message-id. A Run that owns multiple messages
-   * may be "in a sibling group" via its runId, but only the message that
-   * corresponds to the branch anchor (the user prompt for edits, the
-   * assistant slot for regens) is the actual nav target.
-   * @param codecMessageId - The codec-message-id of the bubble being rendered.
-   * @returns True iff `codecMessageId` is the branch anchor of a sibling group.
-   */
-  hasMessageSiblings(codecMessageId: string): boolean;
-
-  /**
-   * Resolved sibling messages at the branch point anchored at
-   * `codecMessageId` — one TMessage per sibling Run, picking the message
-   * that occupies the anchor slot in each sibling. For an edit fork
-   * (anchor is the user prompt) this is each sibling's first message;
-   * for a regenerate fork (anchor is an assistant slot) this is each
-   * sibling's content for that slot.
-   *
-   * The returned list includes the currently-selected sibling, in the
-   * same order as the underlying sibling Runs (oldest first). Returns
-   * `[]` when `codecMessageId` is not a branch anchor.
+   * Per AITRFC-014, branch points are message-anchored: edit forks
+   * point at the user prompt's codec-message-id, regenerate forks
+   * point at the assistant message's codec-message-id.
    * @param codecMessageId - The codec-message-id of the bubble being rendered.
    */
-  getMessageSiblings(codecMessageId: string): TMessage[];
+  branchSelection(codecMessageId: string): BranchSelection<TMessage>;
 
   /**
-   * Index of the currently selected sibling Run for the branch point
-   * anchored at `codecMessageId`. Returns `0` if `codecMessageId` is not a
-   * branch anchor.
-   * @param codecMessageId - The codec-message-id of the bubble being rendered.
-   */
-  getSelectedMessageSiblingIndex(codecMessageId: string): number;
-
-  /**
-   * Select a sibling Run at the branch point anchored at `codecMessageId`.
-   * Updates this view's branch selection and emits `update`. No-op when
-   * `codecMessageId` is not a branch anchor or `index` is out of range.
+   * Select a sibling at the branch point anchored at
+   * `codecMessageId`. `index` is clamped to
+   * `[0, siblings.length - 1]`. Silent no-op when `codecMessageId`
+   * is not a branch anchor. Emits 'update' when the visible output
+   * changes.
    * @param codecMessageId - The codec-message-id of the bubble being rendered.
    * @param index - The index of the sibling to select.
    */
-  selectMessageSibling(codecMessageId: string, index: number): void;
-
-  /** Get a Run by runId, or undefined if not found. */
-  getRunNode(runId: string): RunNode<TProjection> | undefined;
+  selectSibling(codecMessageId: string, index: number): void;
 
   // --- Write operations ---
 
@@ -1043,7 +1075,7 @@ export interface ClientSession<
   readonly tree: Tree<TProjection>;
 
   /** The default paginated, branch-aware view for rendering — events scoped to visible messages. */
-  readonly view: View<TInput, TOutput, TProjection, TMessage>;
+  readonly view: View<TInput, TOutput, TMessage>;
 
   /**
    * Subscribe to the channel and (implicitly) attach. Idempotent —
@@ -1059,7 +1091,7 @@ export interface ClientSession<
    * The caller is responsible for calling `close()` on the returned view
    * when it is no longer needed, or it will be closed when the session closes.
    */
-  createView(): View<TInput, TOutput, TProjection, TMessage>;
+  createView(): View<TInput, TOutput, TMessage>;
 
   /** Cancel the specified run. Publishes a cancel message and closes the local stream. */
   cancel(runId: string): Promise<void>;

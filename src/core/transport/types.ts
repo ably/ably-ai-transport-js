@@ -76,49 +76,50 @@ export interface AgentSessionOptions<
   onError?: (error: Ably.ErrorInfo) => void;
 
   /**
-   * How long `Run.start()` will wait for the user-prompt message tagged with
+   * How long `Run.start()` will wait for the input event(s) tagged with
    * the run's `invocationId` to arrive on the channel (rewind + live wait)
    * before rejecting with `InputEventNotFound`. The rejection bubbles up to the
    * developer's HTTP handler, which should surface it as a non-2xx response
    * so the client's pending send fails.
    * Default: 30000 (30 seconds).
    */
-  promptLookupTimeoutMs?: number;
+  inputEventLookupTimeoutMs?: number;
 
   /**
-   * Maximum number of distinct invocation-ids whose user-prompt messages
+   * Maximum number of distinct invocation-ids whose input events
    * may be buffered while waiting for `Run.start()` to register a lookup
-   * listener. Channel rewind on attach can replay user messages before any
-   * run has been created for them; this buffer holds those messages so
+   * listener. Channel rewind on attach can replay input events before any
+   * run has been created for them; this buffer holds those events so
    * that subsequent `start()` calls can drain them on registration.
    *
    * Each entry corresponds to one invocation-id regardless of how many
-   * messages that invocation buffered. When the limit is exceeded the
-   * oldest invocation entry (and all its buffered messages) is FIFO-evicted
-   * — the client whose prompt was dropped will fail their lookup with
+   * events that invocation buffered. When the limit is exceeded the
+   * oldest invocation entry (and all its buffered events) is FIFO-evicted
+   * — the client whose input was dropped will fail their lookup with
    * `InputEventNotFound`. The eviction is logged at warn level so operators
    * can correlate capacity pressure with `InputEventNotFound` errors.
    *
    * Default: 200.
    */
-  promptBufferLimit?: number;
+  inputEventBufferLimit?: number;
 
   /**
-   * How far back the agent's channel attach rewinds when looking for
-   * user-prompt messages that were published before the session
-   * attached. Passed through verbatim to Ably's `params.rewind` channel
-   * parameter — accepts duration strings (`"2m"`, `"30s"`) or a count of
-   * messages as a string (e.g. `"50"`). Malformed values surface as a
-   * channel attach error from Ably; the SDK does not pre-validate.
+   * The channel rewind applied when the agent attaches. Replays the whole
+   * channel subscription on attach (not just input events) so the lookup
+   * can catch input events published before the session attached. Passed
+   * through verbatim to Ably's `params.rewind` channel parameter — accepts
+   * duration strings (`"2m"`, `"30s"`) or a count of messages as a string
+   * (e.g. `"50"`). Malformed values surface as a channel attach error from
+   * Ably; the SDK does not pre-validate.
    *
-   * A longer window improves the chances of finding a user prompt for an
+   * A longer window improves the chances of catching an input event for an
    * agent that takes a while to come up after the client published, but
-   * also increases the buffer pressure on `promptBufferLimit` because
-   * more user messages may be replayed on attach.
+   * also increases the buffer pressure on `inputEventBufferLimit` because
+   * more events may be replayed on attach.
    *
    * Default: `"2m"`.
    */
-  promptRewindWindow?: string;
+  rewindWindow?: string;
 }
 
 // ---------------------------------------------------------------------------

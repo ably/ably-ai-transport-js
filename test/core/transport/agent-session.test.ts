@@ -322,7 +322,7 @@ const codecWithFunctionalDecoder = (): Codec<TestInput, TestOutput, TestProjecti
   isTerminal: vi.fn(() => false),
 });
 
-interface DeliverUserPromptOpts {
+interface DeliverInputEventOpts {
   /** The invocation-id header to stamp on the synthetic message. */
   invocationId: string;
   /** Optional run-id header. */
@@ -343,13 +343,13 @@ interface DeliverUserPromptOpts {
    * `inputClientId` for re-stamping on its own published events.
    */
   publisherClientId?: string;
-  /** Optional `x-ably-parent` header — resolves the run's parent during prompt lookup. */
+  /** Optional `x-ably-parent` header — resolves the run's parent during input-event lookup. */
   parent?: string;
-  /** Optional `x-ably-fork-of` header — resolves the run's forkOf during prompt lookup. */
+  /** Optional `x-ably-fork-of` header — resolves the run's forkOf during input-event lookup. */
   forkOf?: string;
   /**
    * Optional `x-ably-msg-regenerate` header — resolves the run's regenerate
-   * anchor during prompt lookup. Mutually exclusive with `forkOf` per
+   * anchor during input-event lookup. Mutually exclusive with `forkOf` per
    * AITRFC-014 (edits and regenerates anchor at different headers).
    */
   regenerates?: string;
@@ -363,7 +363,7 @@ interface DeliverUserPromptOpts {
  * @param ch - The mock channel hosting the session's listener.
  * @param opts - Headers, serial, and message name for the synthetic message.
  */
-const deliverUserPrompt = (ch: MockChannel, opts: DeliverUserPromptOpts): void => {
+const deliverInputEvent = (ch: MockChannel, opts: DeliverInputEventOpts): void => {
   const headers: Record<string, string> = {
     [HEADER_ROLE]: 'user',
     [HEADER_INVOCATION_ID]: opts.invocationId,
@@ -574,7 +574,7 @@ describe('AgentSession', () => {
       const inputEventId = 'p-cont';
       const run = createRunFromOpts(s, { runId, invocationId, inputEventId: inputEventId });
       const startPromise = run.start();
-      deliverUserPrompt(ch, {
+      deliverInputEvent(ch, {
         invocationId,
         runId,
         codecMessageId: 'm-cont',
@@ -619,7 +619,7 @@ describe('AgentSession', () => {
       const promptId = 'p-regen';
       const run = createRunFromOpts(s, { runId, invocationId, inputEventId: promptId });
       const startPromise = run.start();
-      deliverUserPrompt(ch, {
+      deliverInputEvent(ch, {
         invocationId,
         runId,
         codecMessageId: 'm-regen',
@@ -658,7 +658,7 @@ describe('AgentSession', () => {
       const inputEventId = 'p-icid-start';
       const run = createRunFromOpts(session, { runId, invocationId, inputEventId: inputEventId });
       const startPromise = run.start();
-      deliverUserPrompt(channel, {
+      deliverInputEvent(channel, {
         invocationId,
         runId,
         codecMessageId: 'm-icid-start',
@@ -679,7 +679,7 @@ describe('AgentSession', () => {
       const inputEventId = 'p-icid-end';
       const run = createRunFromOpts(session, { runId, invocationId, inputEventId: inputEventId });
       const startPromise = run.start();
-      deliverUserPrompt(channel, {
+      deliverInputEvent(channel, {
         invocationId,
         runId,
         codecMessageId: 'm-icid-end',
@@ -760,7 +760,7 @@ describe('AgentSession', () => {
       const inputEventId = 'p-icid-am';
       const run = createRunFromOpts(session, { runId, invocationId, inputEventId: inputEventId });
       const startPromise = run.start();
-      deliverUserPrompt(channel, {
+      deliverInputEvent(channel, {
         invocationId,
         runId,
         codecMessageId: 'm-icid-am',
@@ -864,7 +864,7 @@ describe('AgentSession', () => {
       const inputEventId = 'p-icid-ae';
       const run = createRunFromOpts(session, { runId, invocationId, inputEventId: inputEventId });
       const startPromise = run.start();
-      deliverUserPrompt(channel, {
+      deliverInputEvent(channel, {
         invocationId,
         runId,
         codecMessageId: 'm-icid-ae',
@@ -969,7 +969,7 @@ describe('AgentSession', () => {
       const inputEventId = 'p-icid-pipe';
       const run = createRunFromOpts(session, { runId, invocationId, inputEventId: inputEventId });
       const startPromise = run.start();
-      deliverUserPrompt(channel, {
+      deliverInputEvent(channel, {
         invocationId,
         runId,
         codecMessageId: 'm-icid-pipe',
@@ -1041,7 +1041,7 @@ describe('AgentSession', () => {
       const promptId = 'p-rg';
       const run = createRunFromOpts(s, { runId, invocationId, inputEventId: promptId });
       const startPromise = run.start();
-      deliverUserPrompt(ch, {
+      deliverInputEvent(ch, {
         invocationId,
         runId,
         codecMessageId: 'm-rg',
@@ -1064,7 +1064,7 @@ describe('AgentSession', () => {
     });
 
     it('defaults assistant parent to the most recently looked-up user prompt', async () => {
-      // Stand up a session whose prompt lookup will resolve via the channel
+      // Stand up a session whose input-event lookup will resolve via the channel
       // dispatcher — this populates `run.view.messages` with the user prompt
       // before pipe runs, exercising the new default.
       const ch = createMockChannel();
@@ -1090,7 +1090,7 @@ describe('AgentSession', () => {
       const invocationId = 'inv-pp';
       const run = createRunFromOpts(s, { runId, invocationId, inputEventId: 'p-u1' });
       const startPromise = run.start();
-      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'user-1', serial: '01', inputEventId: 'p-u1' });
+      deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'user-1', serial: '01', inputEventId: 'p-u1' });
       await startPromise;
 
       await run.pipe(streamOf({ type: 'text', text: 'reply' }));
@@ -1477,7 +1477,7 @@ describe('AgentSession', () => {
     });
   });
 
-  describe('prompt lookup (multi-message)', () => {
+  describe('input-event lookup (multi-message)', () => {
     it('collects every expected event-id, dedupes by serial, and returns them sorted', async () => {
       const ch = createMockChannel();
       const c = codecWithFunctionalDecoder();
@@ -1495,8 +1495,8 @@ describe('AgentSession', () => {
       const startPromise = run.start();
 
       // Deliver with a duplicate to assert dedup.
-      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', inputEventId: 'p-a' });
-      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', inputEventId: 'p-a' });
+      deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', inputEventId: 'p-a' });
+      deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', inputEventId: 'p-a' });
 
       await startPromise;
       expect(run.view.messages).toHaveLength(1);
@@ -1541,7 +1541,7 @@ describe('AgentSession', () => {
       const runId = 'r-drain';
       const invocationId = 'inv-drain';
       // Pre-buffer the trigger event before any listener is registered.
-      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'first', serial: '01', inputEventId: 'p-first' });
+      deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'first', serial: '01', inputEventId: 'p-first' });
 
       const run = createRunFromOpts(s, { runId, invocationId, inputEventId: 'p-first' });
       const startPromise = run.start();
@@ -1578,7 +1578,7 @@ describe('AgentSession', () => {
       // wire message stamped with HEADER_RUN_CONTINUE so the agent reads
       // the run as a continuation. The lookup resolves solely because
       // the event-id is in the expected set.
-      deliverUserPrompt(ch, {
+      deliverInputEvent(ch, {
         invocationId,
         runId,
         codecMessageId: 'm-cont',
@@ -1592,7 +1592,7 @@ describe('AgentSession', () => {
     });
   });
 
-  describe('prompt lookup', () => {
+  describe('input-event lookup', () => {
     it('warns on over-arrival after a lookup has completed and does not buffer the extra message', async () => {
       const ch = createMockChannel();
       const c = codecWithFunctionalDecoder();
@@ -1616,12 +1616,12 @@ describe('AgentSession', () => {
       const invocationId = 'inv-over';
       const run = createRunFromOpts(s, { runId, invocationId, inputEventId: 'p-a' });
       const startPromise = run.start();
-      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', inputEventId: 'p-a' });
+      deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', inputEventId: 'p-a' });
       await startPromise;
 
       warn.mockClear();
       // Extra arrival after the lookup completed — must warn and drop.
-      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'b', serial: '02', inputEventId: 'p-b' });
+      deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'b', serial: '02', inputEventId: 'p-b' });
 
       const overArrivalCalls = warn.mock.calls.filter(
         (call) => typeof call[0] === 'string' && call[0].includes('over-arrival'),
@@ -1639,7 +1639,7 @@ describe('AgentSession', () => {
       // fires. If `msg b` were buffered, the buffer would now hold one
       // entry and this would evict it.
       warn.mockClear();
-      deliverUserPrompt(ch, { invocationId: 'inv-other', codecMessageId: 'c', serial: '03' });
+      deliverInputEvent(ch, { invocationId: 'inv-other', codecMessageId: 'c', serial: '03' });
       const evictCalls = warn.mock.calls.filter(
         (call) => typeof call[0] === 'string' && call[0].includes('input-event buffer full'),
       );
@@ -1678,7 +1678,7 @@ describe('AgentSession', () => {
       const invocationId = 'inv-bad';
       const run = createRunFromOpts(s, { runId, invocationId, inputEventId: 'p-a' });
       const startPromise = run.start();
-      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', inputEventId: 'p-a' });
+      deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', inputEventId: 'p-a' });
 
       const rejection = await startPromise.catch((error: unknown) => error);
       expect(rejection).toBeErrorInfoWithCode(ErrorCode.InputEventNotFound);
@@ -1710,8 +1710,8 @@ describe('AgentSession', () => {
     });
   });
 
-  describe('prompt buffer', () => {
-    it('warns and FIFO-evicts the oldest entry when the prompt buffer is full', async () => {
+  describe('input-event buffer', () => {
+    it('warns and FIFO-evicts the oldest entry when the input-event buffer is full', async () => {
       const ch = createMockChannel();
       const c = codecWithFunctionalDecoder();
       const { logger, warn } = captureWarnLogger();
@@ -1726,14 +1726,14 @@ describe('AgentSession', () => {
 
       // Default limit is 200. Fill it, then push one more to trigger eviction.
       for (let i = 0; i < 200; i++) {
-        deliverUserPrompt(ch, {
+        deliverInputEvent(ch, {
           invocationId: `inv-${String(i)}`,
           codecMessageId: `m${String(i)}`,
           serial: `s${String(i)}`,
         });
       }
       warn.mockClear();
-      deliverUserPrompt(ch, { invocationId: 'inv-overflow', codecMessageId: 'm-over', serial: 's-over' });
+      deliverInputEvent(ch, { invocationId: 'inv-overflow', codecMessageId: 'm-over', serial: 's-over' });
 
       const evictCalls = warn.mock.calls.filter(
         (call) => typeof call[0] === 'string' && call[0].includes('input-event buffer full'),
@@ -1761,7 +1761,7 @@ describe('AgentSession', () => {
 
       // Fill the 3-slot buffer; no eviction warns should fire yet.
       for (let i = 0; i < 3; i++) {
-        deliverUserPrompt(ch, {
+        deliverInputEvent(ch, {
           invocationId: `inv-${String(i)}`,
           codecMessageId: `m${String(i)}`,
           serial: `s${String(i)}`,
@@ -1773,7 +1773,7 @@ describe('AgentSession', () => {
       expect(evictCalls).toHaveLength(0);
 
       // The 4th distinct invocation-id must evict `inv-0` and log limit=3.
-      deliverUserPrompt(ch, { invocationId: 'inv-3', codecMessageId: 'm3', serial: 's3' });
+      deliverInputEvent(ch, { invocationId: 'inv-3', codecMessageId: 'm3', serial: 's3' });
       evictCalls = warn.mock.calls.filter(
         (call) => typeof call[0] === 'string' && call[0].includes('input-event buffer full'),
       );
@@ -1790,7 +1790,7 @@ describe('AgentSession', () => {
 // Prompt lookup (covers AgentSession's channel-rewind user-prompt flow)
 // ---------------------------------------------------------------------------
 
-describe('AgentSession prompt lookup', () => {
+describe('AgentSession input-event lookup', () => {
   it('start() succeeds when invocation has no inputEventIds (continuation send)', async () => {
     const channel = createMockChannel();
     const codec = createMockCodec();
@@ -1891,7 +1891,7 @@ describe('Run.messages', () => {
       inputEventId: 'p-fresh',
     });
     const startPromise = run.start();
-    deliverUserPrompt(ch, {
+    deliverInputEvent(ch, {
       invocationId: 'inv-1',
       runId: 'run-1',
       codecMessageId: 'user-new',
@@ -1922,7 +1922,7 @@ describe('Run.messages', () => {
       inputEventId: 'p-cont',
     });
     const startPromise = run.start();
-    deliverUserPrompt(ch, {
+    deliverInputEvent(ch, {
       invocationId: 'inv-cont',
       runId: 'run-1',
       codecMessageId: 'm-cont',
@@ -1954,7 +1954,7 @@ describe('Run.messages', () => {
       inputEventId: 'p-cont',
     });
     const startPromise = run.start();
-    deliverUserPrompt(ch, {
+    deliverInputEvent(ch, {
       invocationId: 'inv-cont',
       runId: 'run-1',
       codecMessageId: 'm-cont',
@@ -2005,7 +2005,7 @@ describe('Run.messages', () => {
     const startPromise = run.start();
     // Deliver a continuation tool-resolution wire message — produces zero
     // MessageNodes but carries HEADER_RUN_CONTINUE='true'.
-    deliverUserPrompt(ch, {
+    deliverInputEvent(ch, {
       invocationId: 'inv-cont',
       runId: 'run-1',
       codecMessageId: 'm-tool',
@@ -2338,7 +2338,7 @@ describe('Run.loadConversation', () => {
     await session.connect();
     // Deliver the user prompt before start() so it buffers and resolves during start().
     // parent='msg-1' sets resolvedParent which acts as the chain-seed fallback.
-    deliverUserPrompt(ch, {
+    deliverInputEvent(ch, {
       invocationId,
       runId,
       codecMessageId: 'msg-2',

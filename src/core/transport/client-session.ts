@@ -47,16 +47,7 @@ import { buildTransportHeaders } from './headers.js';
 import { Invocation } from './invocation.js';
 import type { DefaultTree } from './tree.js';
 import { createTree } from './tree.js';
-import type {
-  ActiveRun,
-  ClientSession,
-  ClientSessionOptions,
-  ClientSessionOutputFeed,
-  RunEndReason,
-  SendOptions,
-  Tree,
-  View,
-} from './types.js';
+import type { ActiveRun, ClientSession, ClientSessionOptions, RunEndReason, SendOptions, Tree, View } from './types.js';
 import { createView, type DefaultView } from './view.js';
 
 /**
@@ -80,20 +71,19 @@ enum ClientSessionState {
 // ---------------------------------------------------------------------------
 
 interface ClientSessionEventsMap<TOutput extends CodecOutputEvent> {
-  /** A non-fatal session error surfaced to the developer via the public `on('error')`. */
-  error: Ably.ErrorInfo;
+  /**
+   * A non-fatal session error surfaced to the developer via the public
+   * `on('error')`. When the error is scoped to a specific run (POST-leg
+   * failure, channel continuity loss affecting an own run) `runId` is set;
+   * session-wide errors omit it.
+   */
+  error: { error: Ably.ErrorInfo; runId?: string };
   /**
    * A decoded output for a run, emitted once per decoded output event in
-   * arrival order. Drives a consumer-owned stream router via
-   * {@link ClientSessionOutputFeed.onOutput}.
+   * arrival order. Drives a consumer-owned stream router via the public
+   * `on('output')`.
    */
   output: { runId: string; output: TOutput };
-  /**
-   * A run-scoped stream error not carried on the run lifecycle event —
-   * channel continuity loss. Surfaced via
-   * {@link ClientSessionOutputFeed.onRunError}.
-   */
-  runError: { runId: string; error: Ably.ErrorInfo };
 }
 
 // ---------------------------------------------------------------------------
@@ -101,23 +91,27 @@ interface ClientSessionEventsMap<TOutput extends CodecOutputEvent> {
 // ---------------------------------------------------------------------------
 
 // Spec: AIT-CT1
-class DefaultClientSession<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>
-  implements ClientSession<TInput, TOutput, TProjection, TMessage>, ClientSessionOutputFeed<TOutput>
-{
+class DefaultClientSession<
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+> implements ClientSession<TInput, TOutput, TProjection, TMessage> {
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: ClientSessionOptions<TInput, TOutput, TProjection, TMessage>['codec'];
   private readonly _clientId: string | undefined;
   private readonly _logger: Logger;
 
-  // Typed event emitter: public `error`, plus the internal per-run output
-  // feed (`output` / `runError`) consumed by stream-owning adapters.
+  // Typed event emitter backing the public `on('error')` / `on('output')`
+  // surface. `output` and run-scoped `error` events drive stream-owning
+  // adapters; session-wide `error` events reach plain `on('error')` subscribers.
   private readonly _emitter: EventEmitter<ClientSessionEventsMap<TOutput>>;
 
   /**
-   * Run ids this client initiated (own runs). Used to scope `runError` to
-   * own runs on channel continuity loss — only runs this client started have
-   * a consumer awaiting their outputs. An entry is added on every send
-   * (including continuations) and removed on terminal run-end.
+   * Run ids this client initiated (own runs). Used to scope run-tagged
+   * `error` events to own runs on channel continuity loss — only runs this
+   * client started have a consumer awaiting their outputs. An entry is added
+   * on every send (including continuations) and removed on terminal run-end.
    */
   private readonly _ownRunIds = new Set<string>();
 
@@ -264,7 +258,7 @@ class DefaultClientSession<TInput extends CodecInputEvent, TOutput extends Codec
           error instanceof Ably.ErrorInfo ? error : undefined,
         );
         this._logger.error('DefaultClientSession.connect(); subscribe failed');
-        this._emitter.emit('error', errInfo);
+        this._emitter.emit('error', { error: errInfo });
         throw errInfo;
       },
     );
@@ -363,7 +357,11 @@ class DefaultClientSession<TInput extends CodecInputEvent, TOutput extends Codec
             invocationId,
             code,
           });
-          this._emitter.emit('error', runEndError);
+          // Session-wide notification only (no runId): a stream-owning
+          // consumer rejects the run's stream from the run-end lifecycle
+          // event's `error` field, so tagging this with runId too would
+          // double-handle it.
+          this._emitter.emit('error', { error: runEndError });
         }
 
         if (runId) {
@@ -423,15 +421,14 @@ class DefaultClientSession<TInput extends CodecInputEvent, TOutput extends Codec
       this._tree.emitAblyMessage(ablyMessage);
     } catch (error) {
       const cause = error instanceof Ably.ErrorInfo ? error : undefined;
-      this._emitter.emit(
-        'error',
-        new Ably.ErrorInfo(
+      this._emitter.emit('error', {
+        error: new Ably.ErrorInfo(
           `unable to process channel message; ${error instanceof Error ? error.message : String(error)}`,
           ErrorCode.SessionSubscriptionError,
           500,
           cause,
         ),
-      );
+      });
     }
   }
 
@@ -476,15 +473,19 @@ class DefaultClientSession<TInput extends CodecInputEvent, TOutput extends Codec
     // must still accumulate into the tree. The run-end handler cleans up
     // local run state.
     //
-    // Only own-runs get a runError because only own-runs have a consumer
-    // (via the output feed) awaiting their outputs. Observer-run state lives
-    // entirely in the Tree's projection and remains consistent regardless of
-    // channel continuity loss; nothing on this client is waiting on it.
-    for (const runId of this._ownRunIds) {
-      this._emitter.emit('runError', { runId, error: err });
+    // Only own-runs get a run-tagged error because only own-runs have a
+    // consumer (via the `output` events) awaiting their outputs. Observer-run
+    // state lives entirely in the Tree's projection and remains consistent
+    // regardless of channel continuity loss; nothing on this client is waiting
+    // on it. When there are no own runs, emit a single session-wide error so a
+    // plain `on('error')` subscriber still learns of the loss.
+    if (this._ownRunIds.size > 0) {
+      for (const runId of this._ownRunIds) {
+        this._emitter.emit('error', { error: err, runId });
+      }
+    } else {
+      this._emitter.emit('error', { error: err });
     }
-
-    this._emitter.emit('error', err);
   }
 
   // ---------------------------------------------------------------------------
@@ -733,7 +734,7 @@ class DefaultClientSession<TInput extends CodecInputEvent, TOutput extends Codec
           isPermission ? 401 : 500,
           cause,
         );
-        this._emitter.emit('error', err);
+        this._emitter.emit('error', { error: err });
         // The input never reached the channel — there is no run to wait on.
         // Drop the started tracker so close() doesn't later reject an orphan.
         this._pendingRunStarts.delete(startedKey);
@@ -788,33 +789,13 @@ class DefaultClientSession<TInput extends CodecInputEvent, TOutput extends Codec
   }
 
   // Spec: AIT-CT8, AIT-CT8c, AIT-CT8d
-  on(event: 'error', handler: (error: Ably.ErrorInfo) => void): () => void {
+  on(event: 'error', handler: (event: { error: Ably.ErrorInfo; runId?: string }) => void): () => void;
+  on(event: 'output', handler: (event: { runId: string; output: TOutput }) => void): () => void;
+  on<E extends 'error' | 'output'>(event: E, handler: (event: ClientSessionEventsMap<TOutput>[E]) => void): () => void {
     if (this._state === ClientSessionState.CLOSED) return noopUnsubscribe;
-    // CAST: the overload signature enforces the correct handler type.
-    const cb = handler;
-    this._emitter.on(event, cb);
+    this._emitter.on(event, handler);
     return () => {
-      this._emitter.off(event, cb);
-    };
-  }
-
-  // --- Internal per-run output feed (ClientSessionOutputFeed) ---
-  // Consumed by stream-owning adapters (e.g. the Vercel chat-transport);
-  // not part of the public ClientSession surface.
-
-  onOutput(handler: (event: { runId: string; output: TOutput }) => void): () => void {
-    if (this._state === ClientSessionState.CLOSED) return noopUnsubscribe;
-    this._emitter.on('output', handler);
-    return () => {
-      this._emitter.off('output', handler);
-    };
-  }
-
-  onRunError(handler: (event: { runId: string; error: Ably.ErrorInfo }) => void): () => void {
-    if (this._state === ClientSessionState.CLOSED) return noopUnsubscribe;
-    this._emitter.on('runError', handler);
-    return () => {
-      this._emitter.off('runError', handler);
+      this._emitter.off(event, handler);
     };
   }
 

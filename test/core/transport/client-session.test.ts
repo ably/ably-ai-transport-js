@@ -41,7 +41,7 @@ import type {
   WriteOptions,
 } from '../../../src/core/codec/types.js';
 import { createClientSession } from '../../../src/core/transport/client-session.js';
-import type { ClientSession, ClientSessionOutputFeed, RunLifecycleEvent } from '../../../src/core/transport/types.js';
+import type { ClientSession, RunLifecycleEvent } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { createMockClient } from '../../helper/mock-client.js';
 
@@ -354,12 +354,6 @@ const ackPendingSend = async (
   );
   return { runId, invocationId, codecMessageId };
 };
-
-// CAST: DefaultClientSession implements ClientSessionOutputFeed; the feed is
-// internal and not on the public ClientSession surface.
-const feed = (
-  s: ClientSession<TestInput, TestOutput, TestProjection, TestMessage>,
-): ClientSessionOutputFeed<TestOutput> => s as unknown as ClientSessionOutputFeed<TestOutput>;
 
 interface SessionFixture {
   channel: MockChannel & Ably.RealtimeChannel;
@@ -814,7 +808,7 @@ describe('ClientSession', () => {
       await s.connect();
 
       const errors: Ably.ErrorInfo[] = [];
-      s.on('error', (e) => errors.push(e));
+      s.on('error', (e) => errors.push(e.error));
 
       await expect(s.view.sendInput({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
         ErrorCode.SessionSendFailed,
@@ -1771,7 +1765,7 @@ describe('ClientSession', () => {
         });
 
         const errors: Ably.ErrorInfo[] = [];
-        fix.session.on('error', (e) => errors.push(e));
+        fix.session.on('error', (e) => errors.push(e.error));
         simulateStateChange(fix.channel, {
           current: state,
           previous: 'attached',
@@ -1790,7 +1784,7 @@ describe('ClientSession', () => {
       });
 
       const errors: Ably.ErrorInfo[] = [];
-      fix.session.on('error', (e) => errors.push(e));
+      fix.session.on('error', (e) => errors.push(e.error));
       simulateStateChange(fix.channel, {
         current: 'attached',
         previous: 'attaching',
@@ -1813,7 +1807,7 @@ describe('ClientSession', () => {
       });
       await s.connect();
       const errors: Ably.ErrorInfo[] = [];
-      s.on('error', (e) => errors.push(e));
+      s.on('error', (e) => errors.push(e.error));
       simulateStateChange(ch, {
         current: 'attached',
         previous: 'attaching',
@@ -1957,15 +1951,14 @@ describe('ClientSession', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Per-run output feed (ClientSessionOutputFeed) — the seam a stream-owning
-  // adapter consumes. Behaviour-preserving feed introduced ahead of the
-  // Vercel chat-transport consuming it.
+  // Per-run output feed (on('output') / run-scoped on('error')) — the seam a
+  // stream-owning adapter consumes.
   // -------------------------------------------------------------------------
 
   describe('per-run output feed', () => {
-    it('emits onOutput with { runId, output } for each decoded output', async () => {
+    it("emits on('output') with { runId, output } for each decoded output", async () => {
       const outputs: { runId: string; output: TestOutput }[] = [];
-      feed(fix.session).onOutput((e) => outputs.push(e));
+      fix.session.on('output', (e) => outputs.push(e));
 
       const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
 
@@ -2018,11 +2011,10 @@ describe('ClientSession', () => {
       expect(end.error).toBeErrorInfo({ code: 50000, message: 'boom' });
     });
 
-    it('emits onRunError for own runs on channel continuity loss', async () => {
-      const runErrors: { runId: string; error: Ably.ErrorInfo }[] = [];
-      feed(fix.session).onRunError((e) => runErrors.push(e));
-      fix.session.on('error', () => {
-        /* consume the global error too */
+    it("emits a run-scoped on('error') for own runs on channel continuity loss", async () => {
+      const runErrors: { runId?: string; error: Ably.ErrorInfo }[] = [];
+      fix.session.on('error', (e) => {
+        if (e.runId !== undefined) runErrors.push(e);
       });
 
       const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });

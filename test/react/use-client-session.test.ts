@@ -150,7 +150,7 @@ describe('useClientSession', () => {
 
       const error = new Ably.ErrorInfo('test error', ErrorCode.BadRequest, 400);
       act(() => {
-        mock.emit('error', error);
+        mock.emit('error', { error });
       });
 
       expect(onError).toHaveBeenCalledWith(error);
@@ -166,7 +166,7 @@ describe('useClientSession', () => {
       unmount();
 
       act(() => {
-        mock.emit('error', new Ably.ErrorInfo('test error', ErrorCode.BadRequest, 400));
+        mock.emit('error', { error: new Ably.ErrorInfo('test error', ErrorCode.BadRequest, 400) });
       });
 
       expect(onError).not.toHaveBeenCalled();
@@ -180,7 +180,7 @@ describe('useClientSession', () => {
       });
 
       act(() => {
-        mock.emit('error', new Ably.ErrorInfo('test error', ErrorCode.BadRequest, 400));
+        mock.emit('error', { error: new Ably.ErrorInfo('test error', ErrorCode.BadRequest, 400) });
       });
 
       expect(onError).not.toHaveBeenCalled();

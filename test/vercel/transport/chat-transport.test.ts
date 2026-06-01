@@ -77,6 +77,8 @@ interface MockSession {
   emitOutput: (runId: string, output: VercelOutput) => void;
   /** Drive a per-run stream error through the session's output feed. */
   emitRunError: (runId: string, error: Ably.ErrorInfo) => void;
+  /** Drive a session-wide error (no runId) through the session's error event. */
+  emitSessionError: (error: Ably.ErrorInfo) => void;
   /** Fire a run lifecycle event through the tree's 'run' subscription. */
   emitRun: (event: RunLifecycleEvent) => void;
 }
@@ -84,11 +86,11 @@ interface MockSession {
 const createMockSession = (): MockSession => {
   const mockRun = createMockRun();
 
-  // Output-feed handlers registered by the chat-transport via the
-  // ClientSessionOutputFeed narrowing. Tests drive them through emitOutput /
-  // emitRunError.
+  // Output / error handlers registered by the chat-transport via
+  // session.on('output') / session.on('error'). Tests drive them through
+  // emitOutput / emitRunError.
   const outputHandlers = new Set<(event: { runId: string; output: VercelOutput }) => void>();
-  const runErrorHandlers = new Set<(event: { runId: string; error: Ably.ErrorInfo }) => void>();
+  const errorHandlers = new Set<(event: { error: Ably.ErrorInfo; runId?: string }) => void>();
   // Tree 'run' lifecycle handlers, fired by emitRun.
   const runHandlers = new Set<(event: RunLifecycleEvent) => void>();
 
@@ -147,16 +149,22 @@ const createMockSession = (): MockSession => {
     createView: vi.fn(() => view),
     cancel,
     close,
-    on: vi.fn(() => noop),
-    // ClientSessionOutputFeed surface — the chat-transport narrows the
-    // session to this interface and drives its own router from these.
-    onOutput: vi.fn((handler: (event: { runId: string; output: VercelOutput }) => void) => {
-      outputHandlers.add(handler);
-      return () => outputHandlers.delete(handler);
-    }),
-    onRunError: vi.fn((handler: (event: { runId: string; error: Ably.ErrorInfo }) => void) => {
-      runErrorHandlers.add(handler);
-      return () => runErrorHandlers.delete(handler);
+    // The chat-transport subscribes to 'output' and 'error'; record those
+    // handlers so tests can drive them via emitOutput / emitRunError.
+    on: vi.fn((event: string, handler: (event: unknown) => void) => {
+      if (event === 'output') {
+        // CAST: the event discriminant guarantees the handler's payload shape.
+        const cb = handler as (event: { runId: string; output: VercelOutput }) => void;
+        outputHandlers.add(cb);
+        return () => outputHandlers.delete(cb);
+      }
+      if (event === 'error') {
+        // CAST: the event discriminant guarantees the handler's payload shape.
+        const cb = handler as (event: { error: Ably.ErrorInfo; runId?: string }) => void;
+        errorHandlers.add(cb);
+        return () => errorHandlers.delete(cb);
+      }
+      return noop;
     }),
   } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
@@ -164,13 +172,29 @@ const createMockSession = (): MockSession => {
     for (const handler of outputHandlers) handler({ runId, output });
   };
   const emitRunError = (runId: string, error: Ably.ErrorInfo): void => {
-    for (const handler of runErrorHandlers) handler({ runId, error });
+    for (const handler of errorHandlers) handler({ error, runId });
+  };
+  const emitSessionError = (error: Ably.ErrorInfo): void => {
+    for (const handler of errorHandlers) handler({ error });
   };
   const emitRun = (event: RunLifecycleEvent): void => {
     for (const handler of runHandlers) handler(event);
   };
 
-  return { session, send, regenerate, cancel, close, mockRun, tree, view, emitOutput, emitRunError, emitRun };
+  return {
+    session,
+    send,
+    regenerate,
+    cancel,
+    close,
+    mockRun,
+    tree,
+    view,
+    emitOutput,
+    emitRunError,
+    emitSessionError,
+    emitRun,
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -502,6 +526,36 @@ describe('createChatTransport', () => {
 
       const reader = stream.getReader();
       await expect(reader.read()).rejects.toBe(error);
+    });
+
+    it('does not error the stream for a session-wide error (no runId)', async () => {
+      const { session, emitSessionError, emitOutput } = createMockSession();
+      const chat = createChatTransport(session);
+
+      const stream = await chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: [makeMessage('1')],
+        abortSignal: undefined,
+      });
+
+      emitOutput('run-1', { type: 'text-start', id: 'text-1' });
+      // A session-wide error (no runId) — e.g. a decode-loop fault or an agent
+      // mid-run error's run-id-less notification — must NOT reject this run's
+      // stream; it's not stream-scoped.
+      emitSessionError(new Ably.ErrorInfo('session-wide blip', 50000, 500));
+      // The run then completes normally and the stream closes cleanly.
+      emitOutput('run-1', { type: 'finish', finishReason: 'stop' });
+
+      const reader = stream.getReader();
+      const chunks: AI.UIMessageChunk[] = [];
+      let result = await reader.read();
+      while (!result.done) {
+        chunks.push(result.value);
+        result = await reader.read();
+      }
+      expect(chunks.map((c) => c.type)).toEqual(['text-start', 'finish']);
     });
   });
 

@@ -72,9 +72,9 @@ interface MockRun {
 }
 
 /**
- * Registries for a mock session's output feed and tree 'run' subscription.
- * The chat-transport narrows the session to {@link ClientSessionOutputFeed}
- * and subscribes to the tree's 'run' event; the mock runs drive these so
+ * Registries for a mock session's `on('output')` subscription and the tree's
+ * 'run' subscription. The chat-transport subscribes to the session's
+ * 'output' event and the tree's 'run' event; the mock runs drive these so
  * `enqueue` / `close` feed the chat-transport's own StreamRouter.
  */
 interface MockFeed {
@@ -156,9 +156,8 @@ const createMockTree = (feed: MockFeed) =>
   }) as unknown as Tree<VercelProjection>;
 
 /**
- * Build a mock session that exposes the {@link ClientSessionOutputFeed}
- * surface backed by `feed`, so chunks driven via mock runs reach the
- * chat-transport's router.
+ * Build a mock session whose `on('output')` is backed by `feed`, so chunks
+ * driven via mock runs reach the chat-transport's router.
  * @param feed - The shared output/run registries.
  * @param view - The mock view (carries the send mock).
  * @param tree - The mock tree (carries the 'run' subscription).
@@ -178,16 +177,20 @@ const createMockSessionObject = (
     close: vi.fn(() => Promise.resolve()),
     regenerate: vi.fn(),
     edit: vi.fn(),
-    on: vi.fn(() => noop),
+    // The chat-transport subscribes to 'output' (and 'error', not exercised
+    // here); record 'output' handlers so mock runs can feed the router.
+    on: vi.fn((event: string, handler: (event: unknown) => void) => {
+      if (event === 'output') {
+        // CAST: the event discriminant guarantees the handler's payload shape.
+        const cb = handler as (event: { runId: string; output: VercelOutput }) => void;
+        feed.outputHandlers.add(cb);
+        return () => feed.outputHandlers.delete(cb);
+      }
+      return noop;
+    }),
     getMessages: vi.fn(() => []),
     getAblyMessages: vi.fn(() => []),
     history: vi.fn(),
-    onOutput: vi.fn((handler: (event: { runId: string; output: VercelOutput }) => void) => {
-      feed.outputHandlers.add(handler);
-      return () => feed.outputHandlers.delete(handler);
-    }),
-    // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- run errors are not exercised here
-    onRunError: vi.fn(() => () => {}),
   }) as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
 const createMockSession = () => {

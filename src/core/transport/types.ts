@@ -554,7 +554,7 @@ export type RunLifecycleEvent =
  *
  * The run's decoded outputs are not exposed here — generic consumers observe
  * them via the {@link Tree} / {@link View}, and stream-owning adapters (e.g.
- * the Vercel chat-transport) consume the internal per-run output feed.
+ * the Vercel chat-transport) consume the session's `on('output')` events.
  *
  * `TOutput` is unused by the handle's surface today but retained so callers
  * can write `ActiveRun<TOutput>` symmetrically with the codec-parameterized
@@ -1069,14 +1069,26 @@ export interface ClientSession<
    */
   createView(): View<TInput, TOutput, TProjection, TMessage>;
 
-  /** Cancel the specified run. Publishes a cancel message and closes the local stream. */
+  /** Cancel the specified run. Publishes a cancel message on the channel. */
   cancel(runId: string): Promise<void>;
 
   /**
    * Subscribe to non-fatal session errors. These indicate something went
-   * wrong but the session is still operational. Returns an unsubscribe function.
+   * wrong but the session is still operational. When the error is scoped to a
+   * specific run (POST-leg failure, channel continuity loss affecting an own
+   * run), `runId` is set; session-wide errors omit it. Returns an unsubscribe
+   * function.
    */
-  on(event: 'error', handler: (error: Ably.ErrorInfo) => void): () => void;
+  on(event: 'error', handler: (event: { error: Ably.ErrorInfo; runId?: string }) => void): () => void;
+
+  /**
+   * Subscribe to decoded per-run outputs. Fires once per decoded output
+   * event, in arrival order, tagged with the owning run id. Drives a
+   * consumer-owned stream router (e.g. the Vercel chat-transport). Runs
+   * without a registered stream are still emitted (the consumer's router
+   * drops them). Returns an unsubscribe function.
+   */
+  on(event: 'output', handler: (event: { runId: string; output: TOutput }) => void): () => void;
 
   /**
    * Tear down the session: unsubscribe from the channel, close active
@@ -1087,36 +1099,4 @@ export interface ClientSession<
    * before `close()`.
    */
   close(): Promise<void>;
-}
-
-/**
- * Internal extension of {@link ClientSession} exposing the per-run decoded
- * output feed that drives a consumer-owned stream router (e.g. the Vercel
- * chat-transport).
- *
- * NOT part of the public package API — deliberately not re-exported from any
- * entry point. Generic consumers render from the {@link Tree} / {@link View};
- * only first-party transport adapters that need a raw `ReadableStream`
- * consume this feed. The `Default*` client session implements it; adapters
- * narrow the session to this interface.
- */
-export interface ClientSessionOutputFeed<TOutput extends CodecOutputEvent> {
-  /**
-   * Subscribe to decoded per-run outputs. Fires once per decoded output
-   * event, in arrival order, tagged with the owning run id. Runs without a
-   * registered stream are still emitted (the consumer's router drops them).
-   * @param handler - Called with the run id and the decoded output.
-   * @returns An unsubscribe function.
-   */
-  onOutput(handler: (event: { runId: string; output: TOutput }) => void): () => void;
-
-  /**
-   * Subscribe to per-run stream errors that are NOT carried on the run
-   * lifecycle event: channel continuity loss. (Agent mid-run errors arrive
-   * on the `run` lifecycle event's `error` field; send-time publish failures
-   * reject the send promise instead.) Returns an unsubscribe function.
-   * @param handler - Called with the run id and the error to reject the stream with.
-   * @returns An unsubscribe function.
-   */
-  onRunError(handler: (event: { runId: string; error: Ably.ErrorInfo }) => void): () => void;
 }

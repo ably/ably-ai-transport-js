@@ -26,7 +26,7 @@ import type * as AI from 'ai';
 
 import { EVENT_RUN_END } from '../../constants.js';
 import { createStreamRouter } from '../../core/transport/stream-router.js';
-import type { ActiveRun, ClientSession, ClientSessionOutputFeed, SendOptions } from '../../core/transport/types.js';
+import type { ActiveRun, ClientSession, SendOptions } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
 import { LogLevel, makeLogger } from '../../logger.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../codec/index.js';
@@ -421,7 +421,7 @@ export const createChatTransport = (
 
   // -- Stream routing --------------------------------------------------------
   // The chat-transport owns its own StreamRouter, fed by the session's
-  // per-run decoded-output feed. This builds the ReadableStream useChat
+  // per-run decoded `output` events. This builds the ReadableStream useChat
   // consumes directly from decoded outputs.
   const router = createStreamRouter<VercelOutput>(
     // eslint-disable-next-line @typescript-eslint/no-deprecated -- isTerminal is the temporary bridge for terminal detection until LifecycleEvents land
@@ -433,17 +433,16 @@ export const createChatTransport = (
   // sendMessages. Used to close any still-open streams on close().
   const activeRunIds = new Set<string>();
 
-  // CAST: the Vercel layer always builds a DefaultClientSession (via
-  // createClientSession), which implements ClientSessionOutputFeed. The feed
-  // methods are intentionally absent from the public ClientSession interface,
-  // so we narrow here to wire the per-run output feed into our router.
-  const feed = session as unknown as ClientSessionOutputFeed<VercelOutput>;
-
   const unsubscribers: (() => void)[] = [
-    feed.onOutput(({ runId, output }) => {
+    session.on('output', ({ runId, output }) => {
       router.route(runId, output);
     }),
-    feed.onRunError(({ runId, error }) => {
+    session.on('error', ({ error, runId }) => {
+      // Only run-scoped errors reject a stream. Session-wide errors
+      // (no runId) — connect/subscribe failures, decode-loop faults, agent
+      // mid-run errors (handled instead via the run-end lifecycle event) —
+      // are not stream-scoped.
+      if (runId === undefined) return;
       router.errorStream(runId, error);
       activeRunIds.delete(runId);
     }),

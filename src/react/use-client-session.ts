@@ -139,8 +139,8 @@ export const useClientSession = <
 
   useEffect(() => {
     if (!resolvedForEffect) return;
-    return resolvedForEffect.on('error', (errorInfo: Ably.ErrorInfo) => {
-      errorCallbackRef.current?.(errorInfo);
+    return resolvedForEffect.on('error', (event: { error: Ably.ErrorInfo; runId?: string }) => {
+      errorCallbackRef.current?.(event.error);
     });
   }, [resolvedForEffect]);
 

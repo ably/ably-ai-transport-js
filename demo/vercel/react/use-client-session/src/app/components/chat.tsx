@@ -101,8 +101,8 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
         },
       ]);
     });
-    const offErr = session.on('error', (error) => {
-      setCallbackLog((prev) => [...prev, { time: Date.now(), type: 'error', summary: error.message }]);
+    const offErr = session.on('error', (event) => {
+      setCallbackLog((prev) => [...prev, { time: Date.now(), type: 'error', summary: event.error.message }]);
     });
     return () => {
       offRun();

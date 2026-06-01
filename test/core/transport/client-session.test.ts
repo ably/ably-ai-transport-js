@@ -704,7 +704,7 @@ describe('ClientSession', () => {
       expect(body.invocationId).toBe(run.invocationId);
       // Per-message metadata (clientId/parent/forkOf/isContinuation) is not
       // in the POST body — those fields live on channel headers and are
-      // resolved by the agent's prompt-lookup result. The agent reads the
+      // resolved by the agent's input-event lookup result. The agent reads the
       // input event's publisher `clientId` directly off the wire.
       expect(body.clientId).toBeUndefined();
       expect(typeof body.inputEventId).toBe('string');
@@ -773,7 +773,7 @@ describe('ClientSession', () => {
 
     it('stamps forkOf on the publish headers when set', async () => {
       // forkOf moved off the POST body and onto the channel headers — the
-      // agent resolves it from the first prompt-lookup user-message header.
+      // agent resolves it from the first input-event lookup user-message header.
       await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' }, { forkOf: 'msg-original' });
       await fix.fetch.waitForCalls(1);
       expect(fix.fetch.body(0).forkOf).toBeUndefined();

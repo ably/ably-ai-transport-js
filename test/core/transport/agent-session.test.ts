@@ -4,7 +4,7 @@
  * Mock encoder uses split-direction `publishInput` / `publishOutput`;
  * `addMessages` flows through `codec.createUserMessage` + `encoder.publishInput`,
  * `addEvents` and `pipe` flow through `encoder.publishOutput`, and the channel
- * subscription is unfiltered (cancel + user-prompt + everything else dispatched
+ * subscription is unfiltered (cancel + input events + everything else dispatched
  * via the same listener).
  */
 
@@ -312,7 +312,7 @@ const codecWithFunctionalDecoder = (): Codec<TestInput, TestOutput, TestProjecti
       const hdrs = (m.extras as { headers?: Record<string, string> } | undefined)?.headers ?? {};
       const id = hdrs[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
       // The functional decoder synthesises one user-message TInput per inbound
-      // message — the agent's prompt-lookup folds these into MessageNodes.
+      // message — the agent's input-event lookup folds these into MessageNodes.
       return {
         inputs: [{ kind: 'user-message' as const, message: { id, content: id } }],
         outputs: [],
@@ -333,7 +333,7 @@ interface DeliverInputEventOpts {
   serial: string;
   /** Optional Ably message name; defaults to 'text'. */
   name?: string;
-  /** Prompt-id (`x-ably-event-id`) the agent matches against `invocation.inputEventIds`. */
+  /** Input-event id (`x-ably-event-id`) the agent matches against `invocation.inputEventIds`. */
   inputEventId?: string;
   /** Optional `x-ably-run-client-id` header — populates the run's `clientId` resolution. */
   runClientId?: string;
@@ -358,7 +358,7 @@ interface DeliverInputEventOpts {
 }
 
 /**
- * Deliver a synthetic user-prompt message to the session's unfiltered
+ * Deliver a synthetic input event to the session's unfiltered
  * channel listener. Mirrors the path real Ably messages would take.
  * @param ch - The mock channel hosting the session's listener.
  * @param opts - Headers, serial, and message name for the synthetic message.
@@ -368,7 +368,7 @@ const deliverInputEvent = (ch: MockChannel, opts: DeliverInputEventOpts): void =
     [HEADER_ROLE]: 'user',
     [HEADER_INVOCATION_ID]: opts.invocationId,
     [HEADER_CODEC_MESSAGE_ID]: opts.codecMessageId,
-    // Always stamp a event-id — the agent dispatcher routes prompt-bearing
+    // Always stamp a event-id — the agent dispatcher routes input-event
     // messages by `x-ably-event-id`, not by role, so without one the
     // synthetic message wouldn't reach the buffer/lookup path. Tests that
     // care about the specific id supply it via `opts.inputEventId`; otherwise
@@ -555,9 +555,9 @@ describe('AgentSession', () => {
       expect(headers?.[HEADER_RUN_ID]).toBe('run-1');
     });
 
-    it('start() stamps x-ably-run-continue on run-start when the prompt-lookup result carries the continuation flag', async () => {
+    it('start() stamps x-ably-run-continue on run-start when the input-event lookup result carries the continuation flag', async () => {
       // Per-run metadata (continuation, clientId, parent, forkOf) is now
-      // resolved from the first prompt-lookup MessageNode's headers — the
+      // resolved from the first input-event lookup MessageNode's headers — the
       // agent reads `x-ably-run-continue` off the channel, not the body.
       const ch = createMockChannel();
       const c = codecWithFunctionalDecoder();
@@ -599,9 +599,9 @@ describe('AgentSession', () => {
       expect(headers?.['x-ably-run-continue']).toBeUndefined();
     });
 
-    it('start() stamps x-ably-msg-regenerate on run-start when the prompt-lookup result carries the regenerate anchor', async () => {
+    it('start() stamps x-ably-msg-regenerate on run-start when the input-event lookup result carries the regenerate anchor', async () => {
       // Regenerate is a Run-level continuation, not a fork: the agent
-      // re-stamps the `x-ably-msg-regenerate` it observed on the prompt
+      // re-stamps the `x-ably-msg-regenerate` it observed on the input-event
       // wire onto run-start so the client Tree can record the
       // regeneratesCodecMessageId for message-level replacement.
       const ch = createMockChannel();
@@ -616,15 +616,15 @@ describe('AgentSession', () => {
 
       const runId = 'run-regen';
       const invocationId = 'inv-regen';
-      const promptId = 'p-regen';
-      const run = createRunFromOpts(s, { runId, invocationId, inputEventId: promptId });
+      const inputEventId = 'p-regen';
+      const run = createRunFromOpts(s, { runId, invocationId, inputEventId });
       const startPromise = run.start();
       deliverInputEvent(ch, {
         invocationId,
         runId,
         codecMessageId: 'm-regen',
         serial: 's-regen',
-        inputEventId: promptId,
+        inputEventId,
         parent: 'orig-user',
         regenerates: 'orig-asst',
       });
@@ -649,8 +649,8 @@ describe('AgentSession', () => {
 
     it('start() stamps x-ably-input-client-id from the triggering input event publisher', async () => {
       // The agent reads the publisher's Ably-level clientId off the input
-      // event matched by the prompt-lookup and re-stamps it on its own
-      // published events. Here the synthetic prompt is published by
+      // event matched by the input-event lookup and re-stamps it on its own
+      // published events. Here the synthetic input event is published by
       // 'user-b', so every agent-published event in the invocation carries
       // inputClientId: 'user-b' — independent of who owns the run.
       const runId = 'run-icid-start';
@@ -1011,7 +1011,7 @@ describe('AgentSession', () => {
       expect(headers[HEADER_PARENT]).toBe('parent-msg');
     });
 
-    it('echoes x-ably-msg-regenerate from the prompt-lookup onto the assistant pipe headers (race-condition safety)', async () => {
+    it('echoes x-ably-msg-regenerate from the input-event lookup onto the assistant pipe headers (race-condition safety)', async () => {
       // The lifecycle event is the canonical source for `regenerates`,
       // but if the assistant wire arrives before run-start on the client
       // (history pagination boundary or out-of-order delivery), the Tree
@@ -1038,15 +1038,15 @@ describe('AgentSession', () => {
 
       const runId = 'r-rg';
       const invocationId = 'inv-rg';
-      const promptId = 'p-rg';
-      const run = createRunFromOpts(s, { runId, invocationId, inputEventId: promptId });
+      const inputEventId = 'p-rg';
+      const run = createRunFromOpts(s, { runId, invocationId, inputEventId });
       const startPromise = run.start();
       deliverInputEvent(ch, {
         invocationId,
         runId,
         codecMessageId: 'm-rg',
         serial: 's-rg',
-        inputEventId: promptId,
+        inputEventId,
         parent: 'orig-user',
         regenerates: 'orig-asst',
       });
@@ -1063,9 +1063,9 @@ describe('AgentSession', () => {
       s.close();
     });
 
-    it('defaults assistant parent to the most recently looked-up user prompt', async () => {
+    it('defaults assistant parent to the most recently looked-up input event', async () => {
       // Stand up a session whose input-event lookup will resolve via the channel
-      // dispatcher — this populates `run.view.messages` with the user prompt
+      // dispatcher — this populates `run.view.messages` with the input event
       // before pipe runs, exercising the new default.
       const ch = createMockChannel();
       const base = codecWithFunctionalDecoder();
@@ -1100,7 +1100,7 @@ describe('AgentSession', () => {
     });
 
     it('omits parent header when view.messages is empty and no pipe parent is supplied', async () => {
-      // Per-message metadata is resolved from the prompt-lookup result. With
+      // Per-message metadata is resolved from the input-event lookup result. With
       // no event-id (and thus no lookup), `run.view.messages` stays empty
       // and pipe falls through with no parent header on the encoder defaults.
       const run = createRunFromOpts(session, { runId: 'run-1' });
@@ -1527,7 +1527,7 @@ describe('AgentSession', () => {
       s.close();
     });
 
-    it('drains buffered prompts in insertion order and stays registered for the remainder', async () => {
+    it('drains buffered input events in insertion order and stays registered for the remainder', async () => {
       const ch = createMockChannel();
       const c = codecWithFunctionalDecoder();
       const s = createAgentSession({
@@ -1787,7 +1787,7 @@ describe('AgentSession', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Prompt lookup (covers AgentSession's channel-rewind user-prompt flow)
+// Input-event lookup (covers AgentSession's channel-rewind input-event flow)
 // ---------------------------------------------------------------------------
 
 describe('AgentSession input-event lookup', () => {
@@ -1840,7 +1840,7 @@ describe('AgentSession input-event lookup', () => {
     const run = createRunFromOpts(session, {
       runId: 'run-1',
       invocationId: 'inv-needs-prompt',
-      inputEventId: 'p-1', // signal that a prompt should be looked up
+      inputEventId: 'p-1', // signal that an input event should be looked up
     });
 
     await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.InputEventNotFound);
@@ -1932,7 +1932,7 @@ describe('Run.messages', () => {
     });
     await startPromise;
 
-    // Before loadProjection, messages are the view messages from the prompt lookup.
+    // Before loadProjection, messages are the view messages from the input-event lookup.
     expect(run.messages).toEqual([{ id: 'm-cont', content: 'm-cont' }]);
     session.close();
   });
@@ -2313,7 +2313,7 @@ describe('Run.loadConversation', () => {
 
   it('resolves parent via resolvedParent fallback when ai-run-start is absent from history (indexing lag)', async () => {
     // run-2's ai-run-start has not yet been indexed in channel history (rare Ably lag).
-    // The prompt-lookup captured HEADER_PARENT='msg-1' (the last message from run-1),
+    // The input-event lookup captured HEADER_PARENT='msg-1' (the last message from run-1),
     // so resolvedParent='msg-1' is available as a fallback seed for the chain.
     const ch = createMockChannel();
     const codec = codecWithFunctionalDecoder();

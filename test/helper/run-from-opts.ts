@@ -13,7 +13,7 @@ import { Invocation } from '../../src/index.js';
 interface RunOpts<TOutput extends CodecOutputEvent> {
   runId: string;
   invocationId?: string;
-  /** Prompt-id the agent uses to locate the primary trigger event on the channel. */
+  /** Input-event id the agent uses to locate the primary trigger event on the channel. */
   inputEventId?: string;
   signal?: AbortSignal;
   onMessage?: (message: Ably.Message) => void;
@@ -27,7 +27,7 @@ interface RunOpts<TOutput extends CodecOutputEvent> {
  *
  * Per-message metadata (clientId, parent, forkOf, continuation flag) is no
  * longer carried by the invocation body — the agent reads it from the
- * channel via the prompt-lookup result. Tests that exercise those code
+ * channel via the input-event lookup result. Tests that exercise those code
  * paths should publish user-messages on the channel with the appropriate
  * transport headers and supply matching `inputEventIds`. Tests that need a
  * particular `inputClientId` on the agent's published events must publish

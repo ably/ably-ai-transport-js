@@ -7,7 +7,7 @@
  *
  * The client publishes user messages directly to the channel via the shared
  * codec encoder, and POSTs an HTTP invocation in parallel. The agent
- * correlates the prompt by the `x-ably-invocation-id` header and publishes
+ * correlates the input event by the `x-ably-invocation-id` header and publishes
  * run lifecycle events (run-start, run-end) plus assistant chunks. The
  * channel is the durable session record; agents that weren't running at
  * publish time can resume by reading channel rewind.
@@ -616,7 +616,7 @@ class DefaultClientSession<
 
     // Every send must carry at least one input. The only exception is a
     // continuation rebind under an existing runId that carries no new
-    // inputs (rare, but allowed — the agent's existing prompts are
+    // inputs (rare, but allowed — the run's existing input events are
     // already on the channel).
     if (input.length === 0 && !isContinuation) {
       throw new Ably.ErrorInfo(

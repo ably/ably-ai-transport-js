@@ -228,8 +228,8 @@ describe('AgentSession integration', () => {
     const agentSession = session;
 
     /**
-     * Publish a user-prompt input on the channel from the given publisher,
-     * then start a run that picks it up via the prompt-lookup. The
+     * Publish an input event on the channel from the given publisher,
+     * then start a run that picks it up via the input-event lookup. The
      * publisher's Ably-level `clientId` becomes the `inputClientId` the
      * agent stamps on every published event of the invocation.
      * @param opts - Scenario inputs.
@@ -783,9 +783,9 @@ describe('AgentSession integration', () => {
   });
 
   /**
-   * Scenario: forward-looking live wait for a user prompt.
+   * Scenario: forward-looking live wait for an input event.
    *
-   * The agent registers its prompt-lookup listener BEFORE the client
+   * The agent registers its input-event lookup listener BEFORE the client
    * publishes the user message — exercising the live-wait path inside
    * `lookupInputEvents` (not the rewind/buffer-drain path that other
    * tests in this file cover). The lookup must pick the message up as
@@ -796,7 +796,7 @@ describe('AgentSession integration', () => {
    * and call `start()` first, then the publisher publishes a message
    * tagged with the same invocation-id.
    */
-  it('collects a user prompt that arrives live after the lookup is registered', async () => {
+  it('collects an input event that arrives live after the lookup is registered', async () => {
     const channelName = uniqueChannelName('st-live-lookup');
     const serverClient = ablyRealtimeClient();
     const publisherClient = ablyRealtimeClient();
@@ -822,12 +822,12 @@ describe('AgentSession integration', () => {
       inputEventId: inputEventId,
     });
 
-    // Begin the lookup. `start()` will not resolve until a user prompt
+    // Begin the lookup. `start()` will not resolve until an input event
     // with the expected `inputEventId` arrives — and that message has not been
     // published yet.
     const startPromise = serverRun.start();
 
-    // Publish the user prompt from a separate client after the lookup
+    // Publish the input event from a separate client after the lookup
     // has had a chance to register. A short sleep here is enough to
     // ensure `start()` has crossed the requireConnected await and
     // installed the listener; the lookup itself has a 30s budget so

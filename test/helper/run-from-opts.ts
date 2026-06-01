@@ -32,7 +32,7 @@ interface RunOpts<TOutput extends CodecOutputEvent> {
  * transport headers and supply matching `inputEventIds`. Tests that need a
  * particular `inputClientId` on the agent's published events must publish
  * an input event with that publisher `clientId` on the wire (e.g. via
- * `deliverUserPrompt({ publisherClientId })`).
+ * `deliverInputEvent({ publisherClientId })`).
  * @param session - The agent session to create the run on.
  * @param opts - Run identity (runId, invocationId, inputEventIds) plus runtime hooks.
  * @returns The created Run.

@@ -1012,14 +1012,12 @@ export interface View<TInput extends CodecInputEvent, TOutput extends CodecOutpu
 
 /** Entry in the StreamRouter's run map. Not part of the public API. */
 export interface RunEntry<TOutput extends CodecOutputEvent> {
-  /** The ReadableStream consumed by the caller — retained so `rebindStream` can re-expose it across a suspend/resume cycle. */
+  /** The ReadableStream consumed by the caller — retained so `getStream` can re-expose it across a suspend/resume cycle. */
   stream: ReadableStream<TOutput>;
   /** The ReadableStream controller for this run. */
   controller: ReadableStreamDefaultController<TOutput>;
   /** The run's unique identifier. */
   runId: string;
-  /** The invocation-id this stream is bound to. Events from a different invocation under the same runId are dropped. */
-  invocationId: string;
 }
 
 // ---------------------------------------------------------------------------

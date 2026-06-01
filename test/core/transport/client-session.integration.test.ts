@@ -1489,7 +1489,7 @@ describe('ClientSession integration', () => {
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
-      promptLookupTimeoutMs: 0,
+      inputEventLookupTimeoutMs: 0,
     });
     await agentSession.connect();
 
@@ -1605,7 +1605,7 @@ describe('ClientSession integration', () => {
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
-      // Use the default `promptLookupTimeoutMs` so the agent's real
+      // Use the default `inputEventLookupTimeoutMs` so the agent's real
       // lookup path runs against the client's published user message.
     });
     await agentSession.connect();

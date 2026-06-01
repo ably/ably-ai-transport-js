@@ -81,7 +81,7 @@ export enum ErrorCode {
 
   /**
    * The agent attached to the channel and waited for the input event(s) the
-   * invocation points at (rewind + live wait) but `promptLookupTimeoutMs`
+   * invocation points at (rewind + live wait) but `inputEventLookupTimeoutMs`
    * lapsed without seeing them.
    */
   InputEventNotFound = 104010,

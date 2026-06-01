@@ -437,7 +437,7 @@ describe('AgentSession', () => {
       s.close();
     });
 
-    it('forwards a custom promptRewindWindow to params.rewind', () => {
+    it('forwards a custom rewindWindow to params.rewind', () => {
       const ch = createMockChannel();
       const client = createMockClient(ch);
       const c = createMockCodec();
@@ -445,7 +445,7 @@ describe('AgentSession', () => {
         client,
         channelName: 'rewind-channel',
         codec: c,
-        promptRewindWindow: '5m',
+        rewindWindow: '5m',
       });
       // eslint-disable-next-line @typescript-eslint/unbound-method -- accessing vi mock
       expect(client.channels.get).toHaveBeenCalledWith('rewind-channel', {
@@ -565,7 +565,7 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'continue',
         codec: c,
-        promptLookupTimeoutMs: 5000,
+        inputEventLookupTimeoutMs: 5000,
       });
       await s.connect();
 
@@ -610,7 +610,7 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'regen',
         codec: c,
-        promptLookupTimeoutMs: 5000,
+        inputEventLookupTimeoutMs: 5000,
       });
       await s.connect();
 
@@ -1032,7 +1032,7 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'pipe-regen-echo',
         codec: c,
-        promptLookupTimeoutMs: 5000,
+        inputEventLookupTimeoutMs: 5000,
       });
       await s.connect();
 
@@ -1082,7 +1082,7 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'pipe-parent-default',
         codec: c,
-        promptLookupTimeoutMs: 5000,
+        inputEventLookupTimeoutMs: 5000,
       });
       await s.connect();
 
@@ -1485,7 +1485,7 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'multi-msg',
         codec: c,
-        promptLookupTimeoutMs: 5000,
+        inputEventLookupTimeoutMs: 5000,
       });
       await s.connect();
 
@@ -1511,7 +1511,7 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'partial',
         codec: c,
-        promptLookupTimeoutMs: 5,
+        inputEventLookupTimeoutMs: 5,
       });
       await s.connect();
 
@@ -1534,7 +1534,7 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'drain',
         codec: c,
-        promptLookupTimeoutMs: 5000,
+        inputEventLookupTimeoutMs: 5000,
       });
       await s.connect();
 
@@ -1564,7 +1564,7 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'continuation-wait',
         codec: c,
-        promptLookupTimeoutMs: 5000,
+        inputEventLookupTimeoutMs: 5000,
       });
       await s.connect();
 
@@ -1601,13 +1601,13 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'over-arrival',
         codec: c,
-        promptLookupTimeoutMs: 5000,
+        inputEventLookupTimeoutMs: 5000,
         // Limit set to 1 so we can prove via the eviction warn that the
         // over-arrival did not occupy a buffer slot. If the over-arrival
         // were buffered, the next unrelated invocation would force a
         // FIFO eviction; with the drop-instead-of-buffer behavior, no
         // eviction occurs.
-        promptBufferLimit: 1,
+        inputEventBufferLimit: 1,
         logger,
       });
       await s.connect();
@@ -1670,7 +1670,7 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'decode-fail',
         codec,
-        promptLookupTimeoutMs: 5000,
+        inputEventLookupTimeoutMs: 5000,
       });
       await s.connect();
 
@@ -1693,7 +1693,7 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'abort-mid',
         codec: c,
-        promptLookupTimeoutMs: 5000,
+        inputEventLookupTimeoutMs: 5000,
       });
       await s.connect();
 
@@ -1719,7 +1719,7 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'evict',
         codec: c,
-        promptLookupTimeoutMs: 5000,
+        inputEventLookupTimeoutMs: 5000,
         logger,
       });
       await s.connect();
@@ -1745,7 +1745,7 @@ describe('AgentSession', () => {
       s.close();
     });
 
-    it('honours a custom promptBufferLimit option', async () => {
+    it('honours a custom inputEventBufferLimit option', async () => {
       const ch = createMockChannel();
       const c = codecWithFunctionalDecoder();
       const { logger, warn } = captureWarnLogger();
@@ -1753,8 +1753,8 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'evict-custom',
         codec: c,
-        promptLookupTimeoutMs: 5000,
-        promptBufferLimit: 3,
+        inputEventLookupTimeoutMs: 5000,
+        inputEventBufferLimit: 3,
         logger,
       });
       await s.connect();
@@ -1833,7 +1833,7 @@ describe('AgentSession prompt lookup', () => {
       client: createMockClient(channel),
       channelName: 'test-channel',
       codec,
-      promptLookupTimeoutMs: 10,
+      inputEventLookupTimeoutMs: 10,
     });
     await session.connect();
 
@@ -1882,7 +1882,7 @@ describe('Run.messages', () => {
       client: createMockClient(ch),
       channelName: 'fresh',
       codec,
-      promptLookupTimeoutMs: 5000,
+      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
     const run = createRunFromOpts(session, {
@@ -1913,7 +1913,7 @@ describe('Run.messages', () => {
       client: createMockClient(ch),
       channelName: 'cont-overlay',
       codec,
-      promptLookupTimeoutMs: 5000,
+      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
     const run = createRunFromOpts(session, {
@@ -1945,7 +1945,7 @@ describe('Run.messages', () => {
       client: createMockClient(ch),
       channelName: 'cont-no-overlap',
       codec,
-      promptLookupTimeoutMs: 5000,
+      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
     const run = createRunFromOpts(session, {
@@ -1994,7 +1994,7 @@ describe('Run.messages', () => {
       client: createMockClient(ch),
       channelName: 'cont-tool-only',
       codec,
-      promptLookupTimeoutMs: 5000,
+      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
     const run = createRunFromOpts(session, {
@@ -2045,7 +2045,7 @@ describe('Run.messages', () => {
       client: createMockClient(ch),
       channelName: 'msg-after-conversation',
       codec,
-      promptLookupTimeoutMs: 0,
+      inputEventLookupTimeoutMs: 0,
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId: 'run-2' });
@@ -2140,7 +2140,7 @@ describe('Run.loadConversation', () => {
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
-      promptLookupTimeoutMs: 0,
+      inputEventLookupTimeoutMs: 0,
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId: 'run-1' });
@@ -2176,7 +2176,7 @@ describe('Run.loadConversation', () => {
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
-      promptLookupTimeoutMs: 0,
+      inputEventLookupTimeoutMs: 0,
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId: 'run-2' });
@@ -2214,7 +2214,7 @@ describe('Run.loadConversation', () => {
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
-      promptLookupTimeoutMs: 0,
+      inputEventLookupTimeoutMs: 0,
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId: 'run-3' });
@@ -2255,7 +2255,7 @@ describe('Run.loadConversation', () => {
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
-      promptLookupTimeoutMs: 0,
+      inputEventLookupTimeoutMs: 0,
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId: 'run-2' });
@@ -2295,7 +2295,7 @@ describe('Run.loadConversation', () => {
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
-      promptLookupTimeoutMs: 0,
+      inputEventLookupTimeoutMs: 0,
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId: 'run-2' });
@@ -2333,7 +2333,7 @@ describe('Run.loadConversation', () => {
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
-      promptLookupTimeoutMs: 5000,
+      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
     // Deliver the user prompt before start() so it buffers and resolves during start().
@@ -2377,7 +2377,7 @@ describe('Run.loadConversation', () => {
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
-      promptLookupTimeoutMs: 0,
+      inputEventLookupTimeoutMs: 0,
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId: 'run-1' });
@@ -2412,7 +2412,7 @@ describe('Run.loadConversation', () => {
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
-      promptLookupTimeoutMs: 0,
+      inputEventLookupTimeoutMs: 0,
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId: 'run-1' });
@@ -2438,7 +2438,7 @@ describe('Run.loadConversation', () => {
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
-      promptLookupTimeoutMs: 0,
+      inputEventLookupTimeoutMs: 0,
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId: 'run-abort', signal: controller.signal });

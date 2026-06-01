@@ -562,17 +562,17 @@ class DefaultAgentSession<
     // agent session can locate a user prompt that was published before it
     // attached (closes the lookup race when a per-request agent is spun
     // up after the client has already POSTed). Tunable via
-    // `AgentSessionOptions.promptRewindWindow`.
+    // `AgentSessionOptions.rewindWindow`.
     const channelOptions: Ably.ChannelOptions = {
-      params: { ...registerOptions.params, rewind: options.promptRewindWindow ?? '2m' },
+      params: { ...registerOptions.params, rewind: options.rewindWindow ?? '2m' },
     };
     this._channel = options.client.channels.get(options.channelName, channelOptions);
     this._codec = options.codec;
     this._logger = options.logger?.withContext({ component: 'AgentSession' });
     this._onError = options.onError;
     this._runManager = createRunManager(this._channel, this._logger);
-    this._inputEventLookupTimeoutMs = options.promptLookupTimeoutMs ?? 30000;
-    this._inputEventBufferLimit = options.promptBufferLimit ?? 200;
+    this._inputEventLookupTimeoutMs = options.inputEventLookupTimeoutMs ?? 30000;
+    this._inputEventBufferLimit = options.inputEventBufferLimit ?? 200;
 
     this._channelListener = (msg: Ably.InboundMessage) => {
       this._handleChannelMessage(msg);
@@ -652,7 +652,7 @@ class DefaultAgentSession<
     // Drain any buffered user-prompt messages for this invocation-id —
     // rewind replays user messages on attach before run.start() can
     // register the callback. Without this drain, the lookup waits the
-    // full `promptLookupTimeoutMs` for a live arrival that never comes.
+    // full `inputEventLookupTimeoutMs` for a live arrival that never comes.
     const buffered = this._inputEventBuffer.get(invocationId);
     if (buffered) {
       this._inputEventBuffer.delete(invocationId);
@@ -1042,7 +1042,7 @@ class DefaultAgentSession<
         // Look up the triggering input event on the channel so the agent
         // can read the user's message and per-run metadata (parent, forkOf,
         // continuation flag) before publishing run-start. Skip when
-        // promptLookupTimeoutMs === 0 (tests and in-process drivers) or
+        // inputEventLookupTimeoutMs === 0 (tests and in-process drivers) or
         // when no inputEventId is set (invocation requires no channel lookup).
         if (inputEventId && inputEventLookupTimeoutMs > 0) {
           try {

@@ -17,7 +17,7 @@
  *
  * The body carries only what the agent needs out-of-band before the channel
  * is observable: identifiers (`runId`, `invocationId`), the session/channel
- * name, the `eventId` that triggered the invocation. Per-message metadata — `clientId`, `parent`, `forkOf`,
+ * name, the `inputEventId` that triggered the invocation. Per-message metadata — `clientId`, `parent`, `forkOf`,
  * continuation flag — lives on the channel and is resolved by the agent from
  * the triggering input event, not from the body. The `inputClientId` the
  * agent re-stamps on its own publishes comes from the publisher's Ably
@@ -42,7 +42,7 @@ export interface InvocationData {
    * this invocation. The agent locates the event via the `x-ably-event-id`
    * header.
    */
-  eventId: string;
+  inputEventId: string;
   /** Logical name of the session (chat) — used as the Ably channel name. */
   sessionName: string;
 }
@@ -66,14 +66,14 @@ export class Invocation {
    * Identifier for the specific input event on the channel that triggered
    * this invocation.
    */
-  readonly eventId: string;
+  readonly inputEventId: string;
   /** Logical name of the session (chat). Used as the Ably channel name. */
   readonly sessionName: string;
 
   private constructor(data: InvocationData) {
     this.runId = data.runId;
     this.invocationId = data.invocationId;
-    this.eventId = data.eventId;
+    this.inputEventId = data.inputEventId;
     this.sessionName = data.sessionName;
   }
 

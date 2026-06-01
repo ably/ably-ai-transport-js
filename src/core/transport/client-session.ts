@@ -654,7 +654,7 @@ class DefaultClientSession<
     // wire-only (no optimistic fold); other inputs fold into the projection
     // optimistically.
     for (const entry of input) {
-      const eventId = crypto.randomUUID();
+      const inputEventId = crypto.randomUUID();
       // Use the input's `codecMessageId` when set (e.g. tool resolution
       // targeting the prior assistant); otherwise mint a fresh id.
       const codecMessageId = entry.codecMessageId ?? crypto.randomUUID();
@@ -686,7 +686,7 @@ class DefaultClientSession<
         ...(forkOf !== undefined && { forkOf }),
         ...(regenerates !== undefined && { regenerates }),
         invocationId,
-        eventId,
+        inputEventId,
         runContinue: isContinuation,
       });
 
@@ -708,7 +708,7 @@ class DefaultClientSession<
 
     // The primary trigger event is the last input — the one the agent looks
     // up on the channel via `x-ably-event-id` and forwards in the POST body.
-    const triggerEventId = items.at(-1)?.headers[HEADER_EVENT_ID] ?? '';
+    const triggerInputEventId = items.at(-1)?.headers[HEADER_EVENT_ID] ?? '';
 
     // Stream setup. Fresh send opens a new stream; continuation rebinds the
     // existing one. If the suspended stream was torn down (e.g. cancel /
@@ -798,13 +798,13 @@ class DefaultClientSession<
     const resolvedBody = this._bodyFn?.() ?? {};
 
     // Minimal pointer body: the agent locates the triggering input event on the
-    // channel via eventId and reads conversation history via loadProjection().
+    // channel via inputEventId and reads conversation history via loadProjection().
     const postBody: Record<string, unknown> = {
       ...resolvedBody,
       ...sendOptions?.body,
       runId,
       invocationId,
-      eventId: triggerEventId,
+      inputEventId: triggerInputEventId,
       sessionName: this._channel.name,
     };
 
@@ -859,7 +859,7 @@ class DefaultClientSession<
     return {
       stream,
       runId,
-      eventId: triggerEventId,
+      inputEventId: triggerInputEventId,
       invocationId,
       cancel: async () => this.cancel(runId),
       optimisticCodecMessageIds: [...codecMessageIds],

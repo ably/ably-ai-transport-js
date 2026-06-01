@@ -118,7 +118,7 @@ buildTransportHeaders({
   forkOf: 'msg-0', // optional - sibling marker for fork chains
   invocationId: 'inv-1', // optional - per-invocation correlator
   inputClientId: 'user-2', // optional - publisher clientId of the triggering input event (see Client identity)
-  eventId: 'e-1', // optional - per-event correlator (client side)
+  inputEventId: 'e-1', // optional - per-event correlator (client side)
 });
 // → {
 //     'x-ably-role': 'assistant', 'x-ably-run-id': 'run-1',
@@ -129,6 +129,6 @@ buildTransportHeaders({
 //   }
 ```
 
-Optional fields are omitted from the result entirely when undefined, not stamped as empty strings. The two `*ClientId` fields (`runClientId`, `inputClientId`) treat the empty string `''` as a present value and still stamp the header — so anonymous publishers surface as an explicit empty string rather than vanishing. Other optional fields (`parent`, `forkOf`, `invocationId`, `eventId`, `runContinue`) omit on any falsy value. See [Branching headers](wire-protocol.md#branching-headers) for how `parent` and `forkOf` shape the conversation tree, [Run.pipe parent resolution](wire-protocol.md#how-x-ably-parent-is-resolved) for the default-parent rules, and [Client identity](wire-protocol.md#client-identity) for the two `clientId` tiers.
+Optional fields are omitted from the result entirely when undefined, not stamped as empty strings. The two `*ClientId` fields (`runClientId`, `inputClientId`) treat the empty string `''` as a present value and still stamp the header — so anonymous publishers surface as an explicit empty string rather than vanishing. Other optional fields (`parent`, `forkOf`, `invocationId`, `inputEventId`, `runContinue`) omit on any falsy value. See [Branching headers](wire-protocol.md#branching-headers) for how `parent` and `forkOf` shape the conversation tree, [Run.pipe parent resolution](wire-protocol.md#how-x-ably-parent-is-resolved) for the default-parent rules, and [Client identity](wire-protocol.md#client-identity) for the two `clientId` tiers.
 
 See [Client session](client-session.md) and [Agent session](agent-session.md) for how these sub-components are composed into the full session implementations. See [Wire protocol](wire-protocol.md) for the full header and event specification. See [Encoder](encoder.md) for how the encoder writes through the channel. See [Decoder](decoder.md) for how decoded events are produced for routing. See [Headers](headers.md) for the domain header reader/writer utilities.

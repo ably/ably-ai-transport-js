@@ -39,7 +39,7 @@ import {
  *   Ably-level `clientId` on the matched input event and re-stamps it on its
  *   own publishes (run lifecycle + outputs). Differs from `runClientId` on
  *   continuation invocations driven by an input from a non-owner.
- * @param opts.eventId - Per-event identifier. Set on each client-published user-prompt message; the invocation body's `eventIds` lists the ids the agent should look up.
+ * @param opts.inputEventId - Per-event identifier. Set on each client-published user-prompt message; the invocation body's `inputEventIds` lists the ids the agent should look up.
  * @param opts.runContinue - When `true`, stamps `x-ably-run-continue: 'true'` to mark
  *   the message as a continuation user-message (e.g. a tool-resolution publish under
  *   a suspended run). Continuation user-messages are skipped by the Tree's
@@ -56,7 +56,7 @@ export const buildTransportHeaders = (opts: {
   regenerates?: string;
   invocationId?: string;
   inputClientId?: string;
-  eventId?: string;
+  inputEventId?: string;
   runContinue?: boolean;
 }): Record<string, string> => {
   const h: Record<string, string> = {
@@ -70,7 +70,7 @@ export const buildTransportHeaders = (opts: {
   if (opts.regenerates) h[HEADER_MSG_REGENERATE] = opts.regenerates;
   if (opts.invocationId) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.inputClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.inputClientId;
-  if (opts.eventId) h[HEADER_EVENT_ID] = opts.eventId;
+  if (opts.inputEventId) h[HEADER_EVENT_ID] = opts.inputEventId;
   if (opts.runContinue) h[HEADER_RUN_CONTINUE] = 'true';
   return h;
 };

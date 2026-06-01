@@ -213,7 +213,7 @@ describe('createChatTransport', () => {
       // so the View mints an `ait-regenerate` event. The event publishes
       // wire-only with `x-ably-fork-of: A1`, `x-ably-parent: U1` headers
       // — U1 is never re-published. The agent's prompt-lookup catches the
-      // regenerate event by its eventId and reads parent/forkOf from those
+      // regenerate event by its inputEventId and reads parent/forkOf from those
       // transport headers; the LLM receives history through U1 inclusive
       // via the body. Routing through `sendInput([])` would skip this
       // entirely and the agent would have no way to learn the run's

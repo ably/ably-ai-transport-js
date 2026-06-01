@@ -1,8 +1,9 @@
+import * as Ably from 'ably';
 import type * as AI from 'ai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Invocation } from '../../../src/core/transport/invocation.js';
-import type { ClientSession, SendOptions, Tree, View } from '../../../src/core/transport/types.js';
+import type { ClientSession, RunLifecycleEvent, SendOptions, Tree, View } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
 import type { ChatTransportOptions } from '../../../src/vercel/transport/chat-transport.js';
@@ -24,6 +25,18 @@ const makeMessage = (id: string, role: AI.UIMessage['role'] = 'user'): AI.UIMess
   parts: [],
 });
 
+/**
+ * A run-end lifecycle event that closes the router stream.
+ * @param runId - The run id to end. Defaults to the mock run's id.
+ * @returns A complete run-end lifecycle event.
+ */
+const runEnd = (runId = 'run-1'): RunLifecycleEvent => ({
+  type: 'ai-run-end',
+  runId,
+  clientId: '',
+  reason: 'complete',
+});
+
 const makeAssistantWithToolPart = (id: string, part: AI.DynamicToolUIPart): AI.UIMessage => ({
   id,
   role: 'assistant',
@@ -31,47 +44,23 @@ const makeAssistantWithToolPart = (id: string, part: AI.DynamicToolUIPart): AI.U
 });
 
 interface MockRun {
-  stream: ReadableStream<AI.UIMessageChunk>;
-  started: Promise<void>;
   runId: string;
   invocationId: string;
   cancel: ReturnType<typeof vi.fn>;
   optimisticCodecMessageIds: string[];
+  /** The run's invocation pointer — POSTed by the transport to wake the agent. */
   toInvocation: () => Invocation;
-  /** Enqueue a chunk into the run stream. */
-  enqueue: (chunk: AI.UIMessageChunk) => void;
-  /** Resolve the stream by closing it. */
-  close: () => void;
-  /** Error the stream with the given reason. */
-  error: (reason: unknown) => void;
 }
 
 const createMockRun = (): MockRun => {
-  let controller!: ReadableStreamDefaultController<AI.UIMessageChunk>;
-  const stream = new ReadableStream<AI.UIMessageChunk>({
-    start: (c) => {
-      controller = c;
-    },
-  });
   const cancel = vi.fn();
   return {
-    stream,
-    started: Promise.resolve(),
     runId: 'run-1',
     invocationId: 'inv-1',
     cancel,
     optimisticCodecMessageIds: [],
     toInvocation: () =>
       Invocation.fromJSON({ runId: 'run-1', invocationId: 'inv-1', inputEventId: '', sessionName: 'chat-1' }),
-    enqueue: (chunk: AI.UIMessageChunk) => {
-      controller.enqueue(chunk);
-    },
-    close: () => {
-      controller.close();
-    },
-    error: (reason: unknown) => {
-      controller.error(reason);
-    },
   };
 };
 
@@ -84,10 +73,25 @@ interface MockSession {
   mockRun: MockRun;
   tree: Tree<VercelProjection>;
   view: View<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+  /** Drive a decoded output through the session's output feed. */
+  emitOutput: (runId: string, output: VercelOutput) => void;
+  /** Drive a per-run stream error through the session's output feed. */
+  emitRunError: (runId: string, error: Ably.ErrorInfo) => void;
+  /** Fire a run lifecycle event through the tree's 'run' subscription. */
+  emitRun: (event: RunLifecycleEvent) => void;
 }
 
 const createMockSession = (): MockSession => {
   const mockRun = createMockRun();
+
+  // Output-feed handlers registered by the chat-transport via the
+  // ClientSessionOutputFeed narrowing. Tests drive them through emitOutput /
+  // emitRunError.
+  const outputHandlers = new Set<(event: { runId: string; output: VercelOutput }) => void>();
+  const runErrorHandlers = new Set<(event: { runId: string; error: Ably.ErrorInfo }) => void>();
+  // Tree 'run' lifecycle handlers, fired by emitRun.
+  const runHandlers = new Set<(event: RunLifecycleEvent) => void>();
+
   const tree: Tree<VercelProjection> = {
     getRunNode: vi.fn(),
     getRunByCodecMessageId: vi.fn(),
@@ -95,8 +99,16 @@ const createMockSession = (): MockSession => {
     hasSiblingRuns: vi.fn(() => false),
     // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires explicit undefined return for the contract
     getRegenerateGroup: vi.fn(() => undefined),
-    // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
-    on: vi.fn(() => () => {}),
+    // CAST: the chat-transport only subscribes to the 'run' event; record
+    // those handlers so tests can fire run lifecycle events.
+    on: vi.fn((event: string, handler: (event: RunLifecycleEvent) => void) => {
+      if (event === 'run') {
+        runHandlers.add(handler);
+        return () => runHandlers.delete(handler);
+      }
+      // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- noop unsubscribe for unused events
+      return () => {};
+    }) as unknown as Tree<VercelProjection>['on'],
   };
 
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
@@ -136,9 +148,29 @@ const createMockSession = (): MockSession => {
     cancel,
     close,
     on: vi.fn(() => noop),
+    // ClientSessionOutputFeed surface — the chat-transport narrows the
+    // session to this interface and drives its own router from these.
+    onOutput: vi.fn((handler: (event: { runId: string; output: VercelOutput }) => void) => {
+      outputHandlers.add(handler);
+      return () => outputHandlers.delete(handler);
+    }),
+    onRunError: vi.fn((handler: (event: { runId: string; error: Ably.ErrorInfo }) => void) => {
+      runErrorHandlers.add(handler);
+      return () => runErrorHandlers.delete(handler);
+    }),
   } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
-  return { session, send, regenerate, cancel, close, mockRun, tree, view };
+  const emitOutput = (runId: string, output: VercelOutput): void => {
+    for (const handler of outputHandlers) handler({ runId, output });
+  };
+  const emitRunError = (runId: string, error: Ably.ErrorInfo): void => {
+    for (const handler of runErrorHandlers) handler({ runId, error });
+  };
+  const emitRun = (event: RunLifecycleEvent): void => {
+    for (const handler of runHandlers) handler(event);
+  };
+
+  return { session, send, regenerate, cancel, close, mockRun, tree, view, emitOutput, emitRunError, emitRun };
 };
 
 // ---------------------------------------------------------------------------
@@ -194,17 +226,16 @@ describe('createChatTransport', () => {
         { message: m3, codecMessageId: 'n3', parentId: 'n2', forkOf: undefined, headers: {}, serial: undefined },
       ]);
 
-      const streamPromise = chat.sendMessages({
+      // sendMessages resolves once the wrapped stream is returned, independent
+      // of whether the source closes — these assertions inspect the send call,
+      // not the stream contents, so no run-end is needed.
+      await chat.sendMessages({
         trigger: 'submit-message',
         chatId: 'chat-1',
         messageId: undefined,
         messages: [m1, m2, m3],
         abortSignal: undefined,
       });
-
-      // Close the run stream so the returned stream resolves
-      mockRun.close();
-      await streamPromise;
 
       expect(send).toHaveBeenCalledOnce();
       const [events] = send.mock.calls[0] as [VercelInput[], SendOptions];
@@ -271,7 +302,8 @@ describe('createChatTransport', () => {
         abortSignal: undefined,
       });
 
-      mockRun.close();
+      // Inspects the send call, not stream contents — the router stream is
+      // left open (sendMessages resolves once the wrapped stream is returned).
       await streamPromise;
 
       expect(regenerate).toHaveBeenCalledOnce();
@@ -309,7 +341,7 @@ describe('createChatTransport', () => {
 
   describe('sendMessages — submit-message with messageId (edit)', () => {
     it('resolves fork metadata from the conversation tree', async () => {
-      const { session, send, view, mockRun } = createMockSession();
+      const { session, send, view } = createMockSession();
 
       // Codec convention: TMessage.id == wire codec-message-id. The chat-transport's
       // edit path reads `messageId` (the UIMessage.id == wire codecMessageId) directly
@@ -328,7 +360,8 @@ describe('createChatTransport', () => {
         abortSignal: undefined,
       });
 
-      mockRun.close();
+      // Inspects the send call, not stream contents — the router stream is
+      // left open (sendMessages resolves once the wrapped stream is returned).
       await streamPromise;
 
       const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
@@ -337,7 +370,7 @@ describe('createChatTransport', () => {
     });
 
     it('falls back to raw messageId when node not found in tree', async () => {
-      const { session, send, view, mockRun } = createMockSession();
+      const { session, send, view } = createMockSession();
       (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([]);
 
       const chat = createChatTransport(session);
@@ -350,7 +383,8 @@ describe('createChatTransport', () => {
         abortSignal: undefined,
       });
 
-      mockRun.close();
+      // Inspects the send call, not stream contents — the router stream is
+      // left open (sendMessages resolves once the wrapped stream is returned).
       await streamPromise;
 
       const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
@@ -359,7 +393,7 @@ describe('createChatTransport', () => {
     });
 
     it('sends the edited message as new and prior messages as history', async () => {
-      const { session, send, view, mockRun } = createMockSession();
+      const { session, send, view } = createMockSession();
 
       const m1 = makeMessage('1');
       const edited = makeMessage('2');
@@ -379,7 +413,8 @@ describe('createChatTransport', () => {
         abortSignal: undefined,
       });
 
-      mockRun.close();
+      // Inspects the send call, not stream contents — the router stream is
+      // left open (sendMessages resolves once the wrapped stream is returned).
       await streamPromise;
 
       const [events, opts] = send.mock.calls[0] as [VercelInput[], SendOptions];
@@ -393,7 +428,7 @@ describe('createChatTransport', () => {
 
   describe('real stream return', () => {
     it('returns the run stream with chunks flowing through', async () => {
-      const { session, mockRun } = createMockSession();
+      const { session, emitOutput } = createMockSession();
       const chat = createChatTransport(session);
 
       const stream = await chat.sendMessages({
@@ -404,12 +439,12 @@ describe('createChatTransport', () => {
         abortSignal: undefined,
       });
 
-      // Enqueue chunks into the run stream
-      mockRun.enqueue({ type: 'start', messageId: 'msg-1' });
-      mockRun.enqueue({ type: 'text-start', id: 'text-1' });
-      mockRun.enqueue({ type: 'text-delta', id: 'text-1', delta: 'Hello' });
-      mockRun.enqueue({ type: 'finish', finishReason: 'stop' });
-      mockRun.close();
+      // Drive chunks through the output feed. The terminal `finish` chunk
+      // makes the router self-close the stream (isTerminal predicate).
+      emitOutput('run-1', { type: 'start', messageId: 'msg-1' });
+      emitOutput('run-1', { type: 'text-start', id: 'text-1' });
+      emitOutput('run-1', { type: 'text-delta', id: 'text-1', delta: 'Hello' });
+      emitOutput('run-1', { type: 'finish', finishReason: 'stop' });
 
       // Read the returned stream — should produce the enqueued chunks
       const reader = stream.getReader();
@@ -430,7 +465,7 @@ describe('createChatTransport', () => {
 
   describe('stream error propagation', () => {
     it('errors the returned stream when the run stream errors', async () => {
-      const { session, mockRun } = createMockSession();
+      const { session, emitRunError } = createMockSession();
       const chat = createChatTransport(session);
 
       const stream = await chat.sendMessages({
@@ -441,8 +476,29 @@ describe('createChatTransport', () => {
         abortSignal: undefined,
       });
 
-      const error = new Error('channel continuity lost');
-      mockRun.error(error);
+      const error = new Ably.ErrorInfo('channel continuity lost', 50000, 500);
+      emitRunError('run-1', error);
+
+      const reader = stream.getReader();
+      await expect(reader.read()).rejects.toBe(error);
+    });
+
+    it('errors the returned stream when the run ends with reason error', async () => {
+      const { session, emitRun } = createMockSession();
+      const chat = createChatTransport(session);
+
+      const stream = await chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: [makeMessage('1')],
+        abortSignal: undefined,
+      });
+
+      // Agent mid-run error arrives on the run-end lifecycle event (not the
+      // run-error feed), carrying the reified error.
+      const error = new Ably.ErrorInfo('agent blew up', 50000, 500);
+      emitRun({ type: 'ai-run-end', runId: 'run-1', clientId: '', reason: 'error', error });
 
       const reader = stream.getReader();
       await expect(reader.read()).rejects.toBe(error);
@@ -450,14 +506,14 @@ describe('createChatTransport', () => {
   });
 
   describe('invocation POST failure', () => {
-    it('errors the useChat stream with SessionSendFailed and leaves the run stream intact when the POST is non-OK', async () => {
+    it('errors the useChat stream with SessionSendFailed when the POST is non-OK', async () => {
       // Override the default 200 stub with a failing response.
       vi.stubGlobal(
         'fetch',
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
         vi.fn(() => Promise.resolve(new Response(undefined, { status: 500, statusText: 'Server Error' }))),
       );
-      const { session, mockRun } = createMockSession();
+      const { session } = createMockSession();
       const chat = createChatTransport(session);
 
       const stream = await chat.sendMessages({
@@ -468,15 +524,11 @@ describe('createChatTransport', () => {
         abortSignal: undefined,
       });
 
-      // The useChat-facing stream errors with the POST failure.
+      // The POST failure rejects the useChat-facing stream via the wrapper's
+      // `fail()`. The router source is left open (preventCancel) so the
+      // tree/observers continue to receive events.
       const reader = stream.getReader();
       await expect(reader.read()).rejects.toBeErrorInfo({ code: ErrorCode.SessionSendFailed });
-
-      // The source run stream is left untouched (preventCancel) — still
-      // enqueuable, so the tree/observers continue to receive events.
-      expect(() => {
-        mockRun.enqueue({ type: 'finish', finishReason: 'stop' });
-      }).not.toThrow();
     });
 
     it('errors the useChat stream when the POST rejects (network error)', async () => {
@@ -501,9 +553,41 @@ describe('createChatTransport', () => {
     });
   });
 
+  describe('suspend keeps the stream open', () => {
+    it('does not close the stream on a suspended run-end, so a resume keeps feeding it', async () => {
+      const { session, emitOutput, emitRun } = createMockSession();
+      const chat = createChatTransport(session);
+
+      const stream = await chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: [makeMessage('1')],
+        abortSignal: undefined,
+      });
+
+      emitOutput('run-1', { type: 'text-start', id: 'text-1' });
+      // Suspend (e.g. awaiting a tool result) must NOT close the stream.
+      emitRun({ type: 'ai-run-end', runId: 'run-1', clientId: '', reason: 'suspended' });
+      // The resume continues feeding the same stream, then completes.
+      emitOutput('run-1', { type: 'text-delta', id: 'text-1', delta: 'resumed' });
+      emitOutput('run-1', { type: 'finish', finishReason: 'stop' });
+
+      const reader = stream.getReader();
+      const chunks: AI.UIMessageChunk[] = [];
+      let result = await reader.read();
+      while (!result.done) {
+        chunks.push(result.value);
+        result = await reader.read();
+      }
+
+      expect(chunks.map((c) => c.type)).toEqual(['text-start', 'text-delta', 'finish']);
+    });
+  });
+
   describe('abort signal', () => {
     it('wires to session.cancel(runId) for the run just produced', async () => {
-      const { session, cancel, mockRun } = createMockSession();
+      const { session, cancel, mockRun, emitRun } = createMockSession();
       const chat = createChatTransport(session);
       const abortController = new AbortController();
 
@@ -522,7 +606,7 @@ describe('createChatTransport', () => {
       expect(cancel).toHaveBeenCalledWith(mockRun.runId);
 
       // Clean up
-      mockRun.close();
+      emitRun(runEnd());
       const reader = stream.getReader();
       await reader.read();
     });
@@ -536,7 +620,7 @@ describe('createChatTransport', () => {
       // *before* the adapter has the runId to attach a listener for. The
       // adapter must call `session.cancel(runId)` even when the signal is
       // already aborted by the time it gets a chance to look at it.
-      const { session, cancel, mockRun, view } = createMockSession();
+      const { session, cancel, mockRun, view, emitRun } = createMockSession();
       const chat = createChatTransport(session);
       const abortController = new AbortController();
 
@@ -568,7 +652,7 @@ describe('createChatTransport', () => {
       expect(cancel).toHaveBeenCalledWith(mockRun.runId);
 
       // Clean up
-      mockRun.close();
+      emitRun(runEnd());
       const reader = stream.getReader();
       await reader.read();
     });
@@ -598,7 +682,8 @@ describe('createChatTransport', () => {
         abortSignal: undefined,
       });
 
-      mockRun.close();
+      // Inspects the send call, not stream contents — the router stream is
+      // left open (sendMessages resolves once the wrapped stream is returned).
       await streamPromise;
 
       // Verify the hook was called with correct context
@@ -641,7 +726,8 @@ describe('createChatTransport', () => {
         abortSignal: undefined,
       });
 
-      mockRun.close();
+      // Inspects the send call, not stream contents — the router stream is
+      // left open (sendMessages resolves once the wrapped stream is returned).
       await streamPromise;
 
       // The hook fires with the regenerate-trigger context. For regenerate,
@@ -711,7 +797,8 @@ describe('createChatTransport', () => {
         abortSignal: undefined,
       });
 
-      mockRun.close();
+      // Inspects the send call, not stream contents — the router stream is
+      // left open (sendMessages resolves once the wrapped stream is returned).
       await streamPromise;
 
       // The invocation pointer carries only identifiers — the agent reads the
@@ -757,10 +844,10 @@ describe('createChatTransport', () => {
     });
 
     it('streaming becomes true during sendMessages and false after stream closes', async () => {
-      const { session, mockRun } = createMockSession();
+      const { session, emitRun } = createMockSession();
       const chat = createChatTransport(session);
 
-      const streamPromise = chat.sendMessages({
+      const stream = await chat.sendMessages({
         trigger: 'submit-message',
         chatId: 'chat-1',
         messageId: undefined,
@@ -768,11 +855,10 @@ describe('createChatTransport', () => {
         abortSignal: undefined,
       });
 
-      const stream = await streamPromise;
       expect(chat.streaming).toBe(true);
 
-      // Close the stream and drain it
-      mockRun.close();
+      // End the run so the router closes the stream, then drain it
+      emitRun(runEnd());
       const reader = stream.getReader();
       for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
         // drain
@@ -784,7 +870,7 @@ describe('createChatTransport', () => {
     });
 
     it('onStreamingChange fires on transitions', async () => {
-      const { session, mockRun } = createMockSession();
+      const { session, emitRun } = createMockSession();
       const chat = createChatTransport(session);
 
       const log: boolean[] = [];
@@ -800,7 +886,7 @@ describe('createChatTransport', () => {
 
       expect(log).toEqual([true]);
 
-      mockRun.close();
+      emitRun(runEnd());
       const reader = stream.getReader();
       for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
         // drain
@@ -812,8 +898,8 @@ describe('createChatTransport', () => {
       unsub();
     });
 
-    it('streaming resets to false when the source stream errors', async () => {
-      const { session, mockRun } = createMockSession();
+    it('streaming resets to false when the consumer cancels the stream', async () => {
+      const { session, emitOutput } = createMockSession();
       const chat = createChatTransport(session);
 
       const log: boolean[] = [];
@@ -829,9 +915,9 @@ describe('createChatTransport', () => {
 
       expect(chat.streaming).toBe(true);
 
-      // Error the source stream instead of closing it cleanly
-      mockRun.enqueue({ type: 'text-start', id: 'text-1' });
-      mockRun.close(); // close source so pipeTo finishes (error path is via reader cancel)
+      // Push one chunk, then cancel the reader — pipeTo aborts, which
+      // resolves `done` and clears the streaming flag.
+      emitOutput('run-1', { type: 'text-start', id: 'text-1' });
 
       const reader = stream.getReader();
       await reader.cancel('test cancel');
@@ -875,7 +961,7 @@ describe('createChatTransport', () => {
 
   describe('sendMessages — fork on unresolved tool call', () => {
     it('forks off the preceding assistant when it has approval-requested', async () => {
-      const { session, send, view, mockRun } = createMockSession();
+      const { session, send, view } = createMockSession();
 
       const user1 = makeMessage('u1');
       const assistant = makeAssistantWithToolPart('a1', {
@@ -898,7 +984,8 @@ describe('createChatTransport', () => {
         messages: [user1, assistant, user2],
         abortSignal: undefined,
       });
-      mockRun.close();
+      // Inspects the send call, not stream contents — the router stream is
+      // left open (sendMessages resolves once the wrapped stream is returned).
       await streamPromise;
 
       const [events, opts] = send.mock.calls[0] as [VercelInput[], SendOptions];
@@ -910,7 +997,7 @@ describe('createChatTransport', () => {
     });
 
     it('forks when the preceding assistant has input-available (client tool pending)', async () => {
-      const { session, send, view, mockRun } = createMockSession();
+      const { session, send, view } = createMockSession();
 
       const user1 = makeMessage('u1');
       const assistant = makeAssistantWithToolPart('a1', {
@@ -932,7 +1019,8 @@ describe('createChatTransport', () => {
         messages: [user1, assistant, user2],
         abortSignal: undefined,
       });
-      mockRun.close();
+      // Inspects the send call, not stream contents — the router stream is
+      // left open (sendMessages resolves once the wrapped stream is returned).
       await streamPromise;
 
       const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
@@ -941,7 +1029,7 @@ describe('createChatTransport', () => {
     });
 
     it('forks when the preceding assistant has input-streaming', async () => {
-      const { session, send, view, mockRun } = createMockSession();
+      const { session, send, view } = createMockSession();
 
       const user1 = makeMessage('u1');
       const assistant = makeAssistantWithToolPart('a1', {
@@ -963,7 +1051,8 @@ describe('createChatTransport', () => {
         messages: [user1, assistant, user2],
         abortSignal: undefined,
       });
-      mockRun.close();
+      // Inspects the send call, not stream contents — the router stream is
+      // left open (sendMessages resolves once the wrapped stream is returned).
       await streamPromise;
 
       const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
@@ -972,7 +1061,7 @@ describe('createChatTransport', () => {
     });
 
     it('does NOT fork when the preceding assistant has output-available (resolved)', async () => {
-      const { session, send, view, mockRun } = createMockSession();
+      const { session, send, view } = createMockSession();
 
       const user1 = makeMessage('u1');
       const assistant = makeAssistantWithToolPart('a1', {
@@ -1012,7 +1101,8 @@ describe('createChatTransport', () => {
         messages: [user1, assistant, user2],
         abortSignal: undefined,
       });
-      mockRun.close();
+      // Inspects the send call, not stream contents — the router stream is
+      // left open (sendMessages resolves once the wrapped stream is returned).
       await streamPromise;
 
       const [events, opts] = send.mock.calls[0] as [VercelInput[], SendOptions];
@@ -1022,7 +1112,7 @@ describe('createChatTransport', () => {
     });
 
     it('does NOT fork when the preceding assistant has approval-responded', async () => {
-      const { session, send, view, mockRun } = createMockSession();
+      const { session, send, view } = createMockSession();
 
       const user1 = makeMessage('u1');
       const assistant = makeAssistantWithToolPart('a1', {
@@ -1062,7 +1152,8 @@ describe('createChatTransport', () => {
         messages: [user1, assistant, user2],
         abortSignal: undefined,
       });
-      mockRun.close();
+      // Inspects the send call, not stream contents — the router stream is
+      // left open (sendMessages resolves once the wrapped stream is returned).
       await streamPromise;
 
       const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
@@ -1071,7 +1162,7 @@ describe('createChatTransport', () => {
     });
 
     it('does NOT fork in edit mode (messageId takes priority over preceding unresolved tool)', async () => {
-      const { session, send, view, mockRun } = createMockSession();
+      const { session, send, view } = createMockSession();
 
       const user1 = makeMessage('u1');
       const assistant = makeAssistantWithToolPart('a1', {
@@ -1094,7 +1185,8 @@ describe('createChatTransport', () => {
         messages: [user1, assistant, edited],
         abortSignal: undefined,
       });
-      mockRun.close();
+      // Inspects the send call, not stream contents — the router stream is
+      // left open (sendMessages resolves once the wrapped stream is returned).
       await streamPromise;
 
       const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
@@ -1110,7 +1202,7 @@ describe('createChatTransport', () => {
 
   describe('sendMessages — continuation codecMessageId', () => {
     it('passes the prior assistant tree codec-message-id as codecMessageId for a client-tool resolution', async () => {
-      const { session, send, view, mockRun } = createMockSession();
+      const { session, send, view } = createMockSession();
 
       const user1 = makeMessage('u1');
       // Tree view: getLocation is unresolved (input-available).
@@ -1157,7 +1249,8 @@ describe('createChatTransport', () => {
         messages: [user1, overlayAssistant],
         abortSignal: undefined,
       });
-      mockRun.close();
+      // Inspects the send call, not stream contents — the router stream is
+      // left open (sendMessages resolves once the wrapped stream is returned).
       await streamPromise;
 
       const [input] = send.mock.calls[0] as [VercelInput[]];
@@ -1173,7 +1266,7 @@ describe('createChatTransport', () => {
     });
 
     it('passes the prior assistant tree codec-message-id as codecMessageId for an approval response', async () => {
-      const { session, send, view, mockRun } = createMockSession();
+      const { session, send, view } = createMockSession();
 
       const user1 = makeMessage('u1');
       const treeAssistant = makeAssistantWithToolPart('a1', {
@@ -1216,7 +1309,8 @@ describe('createChatTransport', () => {
         messages: [user1, overlayAssistant],
         abortSignal: undefined,
       });
-      mockRun.close();
+      // Inspects the send call, not stream contents — the router stream is
+      // left open (sendMessages resolves once the wrapped stream is returned).
       await streamPromise;
 
       const [input] = send.mock.calls[0] as [VercelInput[]];

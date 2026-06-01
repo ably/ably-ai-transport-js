@@ -24,9 +24,13 @@
 import * as Ably from 'ably';
 import type * as AI from 'ai';
 
-import type { ActiveRun, ClientSession, SendOptions } from '../../core/transport/types.js';
+import { EVENT_RUN_END } from '../../constants.js';
+import { createStreamRouter } from '../../core/transport/stream-router.js';
+import type { ActiveRun, ClientSession, ClientSessionOutputFeed, SendOptions } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
+import { LogLevel, makeLogger } from '../../logger.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../codec/index.js';
+import { UIMessageCodec } from '../codec/index.js';
 
 // ---------------------------------------------------------------------------
 // ChatTransport options
@@ -162,6 +166,17 @@ export interface ChatTransport {
 // ---------------------------------------------------------------------------
 // Stream wrapper — passthrough that signals completion via a promise
 // ---------------------------------------------------------------------------
+
+/**
+ * Hand the run's output stream to useChat as-is. After the TInput/TOutput
+ * split, the agent's stream contains only `VercelOutput` (= `UIMessageChunk`)
+ * values — no codec-local input variants can leak onto this path. The
+ * passthrough exists so we can switch back to a TransformStream-based
+ * adapter later (e.g. for instrumentation) without changing call sites.
+ * @param source - The output stream from the active run.
+ * @returns The same stream, structurally typed as `UIMessageChunk` for useChat.
+ */
+const filterToChunks = (source: ReadableStream<VercelOutput>): ReadableStream<AI.UIMessageChunk> => source;
 
 /**
  * Wrap a ReadableStream in a passthrough TransformStream that resolves a
@@ -404,6 +419,49 @@ export const createChatTransport = (
   const fetchFn = chatOptions?.fetch ?? globalThis.fetch.bind(globalThis);
   const credentials = chatOptions?.credentials;
 
+  // -- Stream routing --------------------------------------------------------
+  // The chat-transport owns its own StreamRouter, fed by the session's
+  // per-run decoded-output feed. This builds the ReadableStream useChat
+  // consumes directly from decoded outputs rather than reading
+  // `ActiveRun.stream`.
+  const router = createStreamRouter<VercelOutput>(
+    // eslint-disable-next-line @typescript-eslint/no-deprecated -- isTerminal is the temporary bridge for terminal detection until LifecycleEvents land
+    UIMessageCodec.isTerminal.bind(UIMessageCodec),
+    makeLogger({ logLevel: LogLevel.Silent }),
+  );
+
+  // The set of run ids that have a stream registered on the router via
+  // sendMessages. Used to close any still-open streams on close().
+  const activeRunIds = new Set<string>();
+
+  // CAST: the Vercel layer always builds a DefaultClientSession (via
+  // createClientSession), which implements ClientSessionOutputFeed. The feed
+  // methods are intentionally absent from the public ClientSession interface,
+  // so we narrow here to wire the per-run output feed into our router.
+  const feed = session as unknown as ClientSessionOutputFeed<VercelOutput>;
+
+  const unsubscribers: (() => void)[] = [
+    feed.onOutput(({ runId, output }) => {
+      router.route(runId, output);
+    }),
+    feed.onRunError(({ runId, error }) => {
+      router.errorStream(runId, error);
+      activeRunIds.delete(runId);
+    }),
+    session.tree.on('run', (e) => {
+      if (e.type !== EVENT_RUN_END) return;
+      if (e.reason === 'error' && e.error) {
+        router.errorStream(e.runId, e.error);
+        activeRunIds.delete(e.runId);
+      } else if (e.reason !== 'suspended') {
+        // Suspended runs keep their stream open so a resume under the same
+        // runId can continue feeding the existing ReadableStream.
+        router.closeStream(e.runId);
+        activeRunIds.delete(e.runId);
+      }
+    }),
+  ];
+
   // -- Streaming state -------------------------------------------------------
   let _streaming = false;
   const streamingCallbacks = new Set<(streaming: boolean) => void>();
@@ -593,10 +651,22 @@ export const createChatTransport = (
       }
     }
 
+    // Build the consumer stream from our own router. A continuation reuses
+    // the existing stream for the run (rebind) so a resume continues feeding
+    // the ReadableStream useChat is already reading; otherwise create a fresh
+    // stream. The stream is created before any output routes onto it: with a
+    // non-zero run-start deadline `sendEvent`/`regenerate` resolves only after
+    // ai-run-start (outputs always follow run-start), and with deadline 0
+    // (tests) it resolves synchronously before any simulated output.
+    activeRunIds.add(run.runId);
+    const source = isContinuation
+      ? (router.getStream(run.runId) ?? router.createStream(run.runId))
+      : router.createStream(run.runId);
+
     // Wrap the stream to detect completion. The streaming flag gates
     // useMessageSync so that setMessages doesn't interfere with
     // useChat's internal write() during active streams.
-    const { stream, done, fail } = wrapStreamWithDone(run.stream);
+    const { stream, done, fail } = wrapStreamWithDone(filterToChunks(source));
     setStreaming(true);
 
     // Fire-and-forget: clear the streaming flag when the stream ends.
@@ -656,7 +726,11 @@ export const createChatTransport = (
     // eslint-disable-next-line unicorn/no-null, @typescript-eslint/promise-function-async -- null is required by the AI SDK ChatTransport contract; no await needed
     reconnectToStream: () => Promise.resolve(null),
 
-    close: async () => session.close(),
+    close: async () => {
+      for (const unsubscribe of unsubscribers) unsubscribe();
+      for (const id of activeRunIds) router.closeStream(id);
+      await session.close();
+    },
 
     get streaming(): boolean {
       return _streaming;

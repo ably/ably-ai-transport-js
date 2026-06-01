@@ -15,7 +15,7 @@ import { AbstractChat } from 'ai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Invocation } from '../../../src/core/transport/invocation.js';
-import type { ClientSession, Tree } from '../../../src/core/transport/types.js';
+import type { ClientSession, RunLifecycleEvent, Tree } from '../../../src/core/transport/types.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
 import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
 
@@ -61,40 +61,80 @@ class TestChat extends AbstractChat<AI.UIMessage> {
 // ---------------------------------------------------------------------------
 
 interface MockRun {
-  stream: ReadableStream<AI.UIMessageChunk>;
   runId: string;
   cancel: ReturnType<typeof vi.fn>;
   /** Build the run's invocation pointer (the transport POSTs this to wake the agent). */
   toInvocation: () => Invocation;
-  /** Enqueue a chunk into the run stream. */
+  /** Drive a chunk through the session's output feed for this run. */
   enqueue: (chunk: AI.UIMessageChunk) => void;
-  /** Close the run stream (simulates run end). */
+  /** Fire a run-end through the tree (simulates run end). */
   close: () => void;
 }
 
-const createMockRun = (runId = 'run-1'): MockRun => {
-  let controller!: ReadableStreamDefaultController<AI.UIMessageChunk>;
-  const stream = new ReadableStream<AI.UIMessageChunk>({
-    start: (c) => {
-      controller = c;
-    },
-  });
+/**
+ * Registries for a mock session's output feed and tree 'run' subscription.
+ * The chat-transport narrows the session to {@link ClientSessionOutputFeed}
+ * and subscribes to the tree's 'run' event; the mock runs drive these so
+ * `enqueue` / `close` feed the chat-transport's own StreamRouter.
+ */
+interface MockFeed {
+  outputHandlers: Set<(event: { runId: string; output: VercelOutput }) => void>;
+  runHandlers: Set<(event: RunLifecycleEvent) => void>;
+}
+
+const createMockFeed = (): MockFeed => ({
+  outputHandlers: new Set(),
+  runHandlers: new Set(),
+});
+
+const createMockRun = (feed: MockFeed, runId = 'run-1'): MockRun => {
+  // Buffer outputs and flush on a macrotask. In the real flow, outputs only
+  // arrive after `ai-run-start` resolves the send (so the chat-transport has
+  // already created the router stream). Tests drive chunks synchronously
+  // right after calling sendMessage — before the `await sendEvent` microtask
+  // resolves and the stream exists. Deferring the flush to a macrotask lets
+  // the stream be created first, mirroring real ordering.
+  // A serial queue of deferred deliveries (outputs and run-end), each fired on
+  // its own macrotask so they land after the send's microtask resolves and the
+  // router stream exists. Items run in enqueue order.
+  type Delivery = { kind: 'output'; chunk: AI.UIMessageChunk } | { kind: 'end' };
+  const pending: Delivery[] = [];
+  let scheduled = false;
+  const drain = (): void => {
+    scheduled = false;
+    const item = pending.shift();
+    if (!item) return;
+    if (item.kind === 'output') {
+      for (const handler of feed.outputHandlers) handler({ runId, output: item.chunk });
+    } else {
+      for (const handler of feed.runHandlers) {
+        handler({ type: 'ai-run-end', runId, clientId: '', reason: 'complete' });
+      }
+    }
+    schedule();
+  };
+  const schedule = (): void => {
+    if (scheduled || pending.length === 0) return;
+    scheduled = true;
+    setTimeout(drain, 0);
+  };
   return {
-    stream,
     runId,
     cancel: vi.fn(),
     toInvocation: () =>
       Invocation.fromJSON({ runId, invocationId: `${runId}-inv`, inputEventId: '', sessionName: 'chat-1' }),
     enqueue: (chunk: AI.UIMessageChunk) => {
-      controller.enqueue(chunk);
+      pending.push({ kind: 'output', chunk });
+      schedule();
     },
     close: () => {
-      controller.close();
+      pending.push({ kind: 'end' });
+      schedule();
     },
   };
 };
 
-const createMockTree = () =>
+const createMockTree = (feed: MockFeed) =>
   ({
     flattenNodes: vi.fn(() => []),
     getSiblingRuns: vi.fn(() => []),
@@ -103,11 +143,55 @@ const createMockTree = () =>
     select: vi.fn(),
     getRunNode: vi.fn(),
     getRunByCodecMessageId: vi.fn(),
+    on: vi.fn((event: string, handler: (event: RunLifecycleEvent) => void) => {
+      if (event === 'run') {
+        feed.runHandlers.add(handler);
+        return () => feed.runHandlers.delete(handler);
+      }
+      // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- noop unsubscribe for unused events
+      return () => {};
+    }),
   }) as unknown as Tree<VercelProjection>;
 
+/**
+ * Build a mock session that exposes the {@link ClientSessionOutputFeed}
+ * surface backed by `feed`, so chunks driven via mock runs reach the
+ * chat-transport's router.
+ * @param feed - The shared output/run registries.
+ * @param view - The mock view (carries the send mock).
+ * @param tree - The mock tree (carries the 'run' subscription).
+ * @returns A session typed as the public ClientSession.
+ */
+const createMockSessionObject = (
+  feed: MockFeed,
+  view: unknown,
+  tree: Tree<VercelProjection>,
+): ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> =>
+  ({
+    tree,
+    view,
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+    cancel: vi.fn(() => Promise.resolve()),
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+    close: vi.fn(() => Promise.resolve()),
+    regenerate: vi.fn(),
+    edit: vi.fn(),
+    on: vi.fn(() => noop),
+    getMessages: vi.fn(() => []),
+    getAblyMessages: vi.fn(() => []),
+    history: vi.fn(),
+    onOutput: vi.fn((handler: (event: { runId: string; output: VercelOutput }) => void) => {
+      feed.outputHandlers.add(handler);
+      return () => feed.outputHandlers.delete(handler);
+    }),
+    // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- run errors are not exercised here
+    onRunError: vi.fn(() => () => {}),
+  }) as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+
 const createMockSession = () => {
-  const mockRun = createMockRun();
-  const tree = createMockTree();
+  const feed = createMockFeed();
+  const tree = createMockTree(feed);
+  const mockRun = createMockRun(feed);
 
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const send = vi.fn(() => Promise.resolve(mockRun));
@@ -123,30 +207,17 @@ const createMockSession = () => {
     on: vi.fn(() => () => {}),
   };
 
-  const session = {
-    sendInput: send,
-    tree,
-    view,
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-    cancel: vi.fn(() => Promise.resolve()),
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-    close: vi.fn(() => Promise.resolve()),
-    regenerate: vi.fn(),
-    edit: vi.fn(),
-    on: vi.fn(() => noop),
-    getMessages: vi.fn(() => []),
-    getAblyMessages: vi.fn(() => []),
-    history: vi.fn(),
-  } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+  const session = createMockSessionObject(feed, view, tree);
 
   return { session, send, mockRun };
 };
 
 const createMultiRunMockSession = () => {
-  const runA = createMockRun('run-a');
-  const runB = createMockRun('run-b');
+  const feed = createMockFeed();
+  const tree = createMockTree(feed);
+  const runA = createMockRun(feed, 'run-a');
+  const runB = createMockRun(feed, 'run-b');
   const send = vi.fn().mockResolvedValueOnce(runA).mockResolvedValueOnce(runB);
-  const tree = createMockTree();
 
   const view = {
     flattenNodes: vi.fn(() => []),
@@ -159,21 +230,7 @@ const createMultiRunMockSession = () => {
     on: vi.fn(() => () => {}),
   };
 
-  const session = {
-    sendInput: send,
-    tree,
-    view,
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-    cancel: vi.fn(() => Promise.resolve()),
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-    close: vi.fn(() => Promise.resolve()),
-    regenerate: vi.fn(),
-    edit: vi.fn(),
-    on: vi.fn(() => noop),
-    getMessages: vi.fn(() => []),
-    getAblyMessages: vi.fn(() => []),
-    history: vi.fn(),
-  } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+  const session = createMockSessionObject(feed, view, tree);
 
   return { session, send, runA, runB };
 };

@@ -22,7 +22,6 @@
 
 import { after } from 'next/server';
 import { streamText, convertToModelMessages, stepCountIs } from 'ai';
-import type { UIMessage } from 'ai';
 import Ably from 'ably';
 import { createAgentSession, vercelRunEndReason } from '@ably/ai-transport/vercel';
 import type { InvocationData } from '@ably/ai-transport';
@@ -33,7 +32,7 @@ import { tools } from './tools';
 const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY! });
 
 export async function POST(req: Request) {
-  const data = (await req.json()) as InvocationData<UIMessage>;
+  const data = (await req.json()) as InvocationData;
   const invocation = Invocation.fromJSON(data);
 
   const session = createAgentSession({ client: ably, channelName: invocation.sessionName });
@@ -41,6 +40,7 @@ export async function POST(req: Request) {
   const run = session.createRun(invocation, { signal: req.signal });
 
   await run.start();
+  await run.loadProjection();
 
   const result = streamText({
     model: createModel(),

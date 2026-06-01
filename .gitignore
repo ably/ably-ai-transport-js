@@ -7,3 +7,5 @@ typedoc/
 .env.local
 .DS_Store
 *.vercel
+.idea
+.next

@@ -74,10 +74,9 @@ interface ViewEventsMap {
  * `undefined` for an empty conversation. The session uses it as the
  * auto-parent for fresh user messages.
  */
-export type SendDelegate<TEvent, TMessage> = (
+export type SendDelegate<TEvent> = (
   input: { event: TEvent; codecMessageId?: string }[],
   options: SendOptions | undefined,
-  history: TMessage[],
   parentCodecMessageId: string | undefined,
 ) => Promise<ActiveRun<TEvent>>;
 
@@ -94,7 +93,7 @@ export interface ViewOptions<TEvent, TProjection, TMessage> {
   /** The codec for decoding history messages. */
   codec: Codec<TEvent, TProjection, TMessage>;
   /** Delegate for executing sends through the session. */
-  sendDelegate: SendDelegate<TEvent, TMessage>;
+  sendDelegate: SendDelegate<TEvent>;
   /** Logger for diagnostic output. */
   logger: Logger;
   /** Called when the view is closed, allowing the owner to clean up references. */
@@ -205,7 +204,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
   private readonly _tree: TreeInternal<TEvent, TProjection>;
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: Codec<TEvent, TProjection, TMessage>;
-  private readonly _sendDelegate: SendDelegate<TEvent, TMessage>;
+  private readonly _sendDelegate: SendDelegate<TEvent>;
   private readonly _logger: Logger;
   private readonly _emitter: EventEmitter<ViewEventsMap>;
   private readonly _onClose?: () => void;
@@ -865,7 +864,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     const history = this.getMessages();
     const parentCodecMessageId = history.length > 0 ? _readMessageId(history.at(-1)) : undefined;
 
-    const result = await this._sendDelegate(normalised, options, history, parentCodecMessageId);
+    const result = await this._sendDelegate(normalised, options, parentCodecMessageId);
     this._applyForkAutoSelect(result, options);
     return result;
   }
@@ -1004,14 +1003,8 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
       }
     }
 
-    const history = this._getHistoryThrough(parentCodecMessageId);
-
     const sendOptions: SendOptions = {
       ...options,
-      body: {
-        history,
-        ...options?.body,
-      },
       parent: parentCodecMessageId,
     };
 
@@ -1021,7 +1014,7 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
     // `x-ably-parent` transport headers. The agent's prompt-lookup
     // catches it; no tree-upsert / projection fold runs locally.
     const regenerateEvent = this._codec.createRegenerateEvent(regenAnchorMsgId, parentCodecMessageId);
-    const result = await this._sendDelegate([{ event: regenerateEvent }], sendOptions, history, parentCodecMessageId);
+    const result = await this._sendDelegate([{ event: regenerateEvent }], sendOptions, parentCodecMessageId);
     this._applyRegenerateAutoSelect(result, regenAnchorMsgId);
     return result;
   }
@@ -1043,14 +1036,9 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
       );
     }
     const parentCodecMessageId = this._findParentMsgId(targetRun, messageId);
-    const history = this._getHistoryBefore(messageId);
 
     return this.sendEvent(newEvents, {
       ...options,
-      body: {
-        history,
-        ...options?.body,
-      },
       forkOf: messageId,
       parent: parentCodecMessageId,
     });
@@ -1097,42 +1085,6 @@ export class DefaultView<TEvent, TProjection, TMessage> implements View<TEvent, 
       }
     }
     return undefined;
-  }
-
-  /**
-   * Return the visible flat message list truncated to messages strictly
-   * before `messageId`. Used for edit (history excludes the edited message).
-   * @param messageId - The codec-message-id to slice the visible message list at.
-   * @returns The flat message list strictly before `messageId`.
-   */
-  private _getHistoryBefore(messageId: string): TMessage[] {
-    const all = this.getMessages();
-    const idx = all.findIndex((m) => _readMessageId(m) === messageId);
-    if (idx === -1) {
-      this._logger.warn('DefaultView._getHistoryBefore(); target not in visible messages, returning full list', {
-        messageId,
-      });
-      return all;
-    }
-    return all.slice(0, idx);
-  }
-
-  /**
-   * Return the visible flat message list truncated through `messageId`
-   * (inclusive). Used for regenerate (LLM gets the prompt back).
-   * @param messageId - The codec-message-id to include as the last entry.
-   * @returns The flat message list through `messageId` inclusive.
-   */
-  private _getHistoryThrough(messageId: string): TMessage[] {
-    const all = this.getMessages();
-    const idx = all.findIndex((m) => _readMessageId(m) === messageId);
-    if (idx === -1) {
-      this._logger.warn('DefaultView._getHistoryThrough(); target not in visible messages, returning full list', {
-        messageId,
-      });
-      return all;
-    }
-    return all.slice(0, idx + 1);
   }
 
   // -------------------------------------------------------------------------

@@ -87,17 +87,17 @@ const createMockChannel = (): Ably.RealtimeChannel =>
     attach: vi.fn(() => Promise.resolve()),
   }) as unknown as Ably.RealtimeChannel;
 
-const createMockSendDelegate = (): SendDelegate<TestEvent, TestMessage> =>
+const createMockSendDelegate = (): SendDelegate<TestEvent> =>
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   vi.fn(() =>
     Promise.resolve({
       stream: new ReadableStream(),
       runId: 'mock-run',
+      eventId: '',
       invocationId: 'mock-inv',
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
       cancel: () => Promise.resolve(),
       optimisticCodecMessageIds: [],
-      eventIds: [],
     }),
   );
 
@@ -147,7 +147,7 @@ const makePage = (
 describe('DefaultView', () => {
   let tree: DefaultTree<TestEvent, TestProjection>;
   let view: DefaultView<TestEvent, TestProjection, TestMessage>;
-  let sendDelegate: SendDelegate<TestEvent, TestMessage>;
+  let sendDelegate: SendDelegate<TestEvent>;
   let codec: Codec<TestEvent, TestProjection, TestMessage>;
 
   beforeEach(() => {
@@ -659,22 +659,21 @@ describe('DefaultView', () => {
       expect(events[0]?.event).toEqual({ type: 'user-message', message: { id: 'a', content: 'hello' } });
     });
 
-    it('sendMessage forwards history (TMessage[]) and parentCodecMessageId', async () => {
+    it('sendMessage forwards parentCodecMessageId', async () => {
       apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'first' }, serial: 's1' });
       await view.sendMessage({ id: 'b', content: 'second' });
 
       const call = vi.mocked(sendDelegate).mock.calls[0];
       if (!call) throw new Error('expected delegate call');
-      // The codec convention rebinds TMessage.id to the wire codecMessageId.
-      expect(call[2]).toEqual([{ id: 'm1', content: 'first' }]); // history
-      expect(call[3]).toBe('m1'); // parentCodecMessageId = last visible message's id (= wire codecMessageId)
+      // parentCodecMessageId = last visible message's codec-message-id.
+      expect(call[2]).toBe('m1');
     });
 
     it('sendMessage with empty visible chain passes undefined parentCodecMessageId', async () => {
       await view.sendMessage({ id: 'a', content: 'hi' });
       const call = vi.mocked(sendDelegate).mock.calls[0];
       if (!call) throw new Error('expected delegate call');
-      expect(call[3]).toBeUndefined();
+      expect(call[2]).toBeUndefined();
     });
 
     it('sendMessage forwards options through to the delegate', async () => {
@@ -719,9 +718,8 @@ describe('DefaultView', () => {
 
       const call = vi.mocked(sendDelegate).mock.calls[0];
       if (!call) throw new Error('expected delegate call');
-      // History should include u1 (user) and a2 (R2alt's reply), NOT a1
-      // (R2's reply, which is not on the selected branch).
-      expect(call[2].map((m) => m.id)).toEqual(['u1', 'a2']);
+      // parentCodecMessageId should be a2 (R2alt's reply on the selected branch).
+      expect(call[2]).toBe('a2');
     });
 
     it('sendEvent normalises a single TEvent input', async () => {
@@ -841,11 +839,6 @@ describe('DefaultView', () => {
       // For an edit of the root-level prompt, parent is undefined.
       expect(sendOptions?.parent).toBeUndefined();
       expect(sendOptions?.forkOf).toBe('u2');
-      // History sent to the LLM (overridden via body.history) excludes
-      // the edited prompt — the LLM doesn't see the prompt it's
-      // replacing.
-      const bodyHistory = (sendOptions?.body as { history?: TestMessage[] } | undefined)?.history;
-      expect(bodyHistory?.map((m) => m.id)).toEqual([]);
     });
 
     it('regenerate of an already-regenerated assistant resolves parent to the user prompt, not the hidden original assistant', async () => {
@@ -892,14 +885,11 @@ describe('DefaultView', () => {
 
       const call = vi.mocked(sendDelegate).mock.calls[0];
       if (!call) throw new Error('expected delegate call');
-      const [events, sendOptions, history, parentCodecMessageId] = call;
+      const [events, sendOptions, parentCodecMessageId] = call;
       // The wire's `x-ably-parent` must be u1 (the user prompt), NOT a1
       // (the hidden original assistant).
       expect(sendOptions?.parent).toBe('u1');
       expect(parentCodecMessageId).toBe('u1');
-      // History must end with the user prompt — the LLM is supposed to
-      // re-answer it; ending with an assistant breaks Anthropic prefill.
-      expect(history.map((m) => m.id)).toEqual(['u1']);
       // The regenerate event's anchor codec-message-id must be the CANONICAL
       // anchor (a1), not the clicked-on regen content (a1p). Anchoring
       // every regen at the same canonical codec-message-id grows a single group
@@ -1607,7 +1597,7 @@ describe('DefaultView', () => {
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
-        eventIds: [],
+        eventId: '',
       });
 
       await view.regenerate('a1');
@@ -1640,7 +1630,7 @@ describe('DefaultView', () => {
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
-        eventIds: [],
+        eventId: '',
       });
 
       await view.regenerate('a1');
@@ -1743,7 +1733,7 @@ describe('DefaultView', () => {
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: ['u-new'],
-        eventIds: [],
+        eventId: '',
       });
       // For the auto-select to land, the new Run needs to exist in the tree.
       // role omitted so the new user-content wire routes at wire-runId.
@@ -2040,7 +2030,7 @@ describe('DefaultView', () => {
 
       it('mints a regenerate event anchored at the trailing msg-id (not at the group root)', () => {
         // CAST: vi.fn returns a MockInstance that the codebase types via `SendDelegate`.
-        const mocked = sendDelegate as unknown as Mock<SendDelegate<TestEvent, TestMessage>>;
+        const mocked = sendDelegate as unknown as Mock<SendDelegate<TestEvent>>;
         const lastCall = mocked.mock.calls.at(-1);
         const events = lastCall?.[0];
         const event = events?.[0]?.event;

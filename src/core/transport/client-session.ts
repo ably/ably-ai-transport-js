@@ -22,6 +22,7 @@ import {
   HEADER_CODEC_MESSAGE_ID,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
+  HEADER_EVENT_ID,
   HEADER_FORK_OF,
   HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
@@ -577,7 +578,6 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
   private async _internalSend(
     input: { event: TEvent; codecMessageId?: string }[],
     sendOptions: SendOptions | undefined,
-    history: TMessage[],
     parentCodecMessageId: string | undefined,
   ): Promise<ActiveRun<TEvent>> {
     if (this._state === ClientSessionState.CLOSED) {
@@ -671,13 +671,8 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     }
 
     const runId = sendOptions?.runId ?? crypto.randomUUID();
-    const invocationId = sendOptions?.invocationId ?? crypto.randomUUID();
+    const invocationId = crypto.randomUUID();
     this._ownRunIds.set(runId, invocationId);
-
-    // The View pre-computed the visible branch's flat message list and the
-    // codec-message-id of its tail message before calling this delegate, so neither
-    // value reflects any optimistic insert.
-    const preInsertHistory = history;
 
     // Spec: AIT-CT3d
     // Auto-compute parent from the visible branch tail when not explicitly
@@ -689,10 +684,6 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     }
 
     const codecMessageIds = new Set<string>();
-    // One event-id minted per user-message item. The invocation body
-    // carries the list so the agent looks up exactly these prompts on the
-    // channel via `x-ably-event-id`.
-    const eventIds: string[] = [];
 
     // Optimistic tree insert per classified item.
     for (const item of classified) {
@@ -708,7 +699,6 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
         const eventId = crypto.randomUUID();
         this._ownCodecMessageIds.add(codecMessageId);
         codecMessageIds.add(codecMessageId);
-        eventIds.push(eventId);
 
         const regenerateHeaders = buildTransportHeaders({
           role: 'user',
@@ -735,7 +725,6 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
       const eventId = crypto.randomUUID();
       this._ownCodecMessageIds.add(codecMessageId);
       codecMessageIds.add(codecMessageId);
-      eventIds.push(eventId);
 
       const resolvedParent = sendOptions?.parent === undefined ? autoParent : sendOptions.parent;
 
@@ -769,6 +758,10 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     }
 
     this._runCodecMessageIds.set(runId, codecMessageIds);
+
+    // The primary trigger event is the last classified item — the one the
+    // agent will look up on the channel via `x-ably-event-id`.
+    const triggerEventId = classified.at(-1)?.state?.headers[HEADER_EVENT_ID] ?? '';
 
     // Stream setup. Fresh send opens a new stream; continuation rebinds the
     // existing one. If the suspended stream was torn down (e.g. cancel /
@@ -865,16 +858,15 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     const resolvedHeaders = this._headersFn?.() ?? {};
     const resolvedBody = this._bodyFn?.() ?? {};
 
-    // History is the projection-folded TMessage[] for the visible branch,
-    // pre-computed by the View. The agent feeds this straight to the LLM
-    // as prior conversation context.
+    // Minimal pointer body: the agent locates the triggering input event on the
+    // channel via eventId and reads conversation history via loadProjection().
     const postBody: Record<string, unknown> = {
       ...resolvedBody,
-      history: preInsertHistory,
       ...sendOptions?.body,
       runId,
       invocationId,
-      eventIds,
+      eventId: triggerEventId,
+      sessionName: this._channel.name,
     };
 
     const postHeaders: Record<string, string> = {
@@ -928,10 +920,10 @@ class DefaultClientSession<TEvent, TProjection, TMessage> implements ClientSessi
     return {
       stream,
       runId,
+      eventId: triggerEventId,
       invocationId,
       cancel: async () => this.cancel(runId),
       optimisticCodecMessageIds: [...codecMessageIds],
-      eventIds: [...eventIds],
     };
   }
 

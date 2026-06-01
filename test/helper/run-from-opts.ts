@@ -10,17 +10,11 @@ import type * as Ably from 'ably';
 import type { AgentSession, CancelRequest, Run } from '../../src/index.js';
 import { Invocation } from '../../src/index.js';
 
-interface RunOpts<TEvent, TMessage = unknown> {
+interface RunOpts<TEvent> {
   runId: string;
   invocationId?: string;
-  /**
-   * Prompt-ids the agent should wait for on the channel. Defaults to `[]`
-   * (no prompt lookup, `Run.start` resolves synchronously). Tests that
-   * exercise the channel prompt-lookup path supply one or more ids here.
-   */
-  eventIds?: string[];
-  /** Prior-conversation history seeded onto the invocation. Defaults to `[]`. */
-  history?: TMessage[];
+  /** Prompt-id the agent uses to locate the primary trigger event on the channel. */
+  eventId?: string;
   signal?: AbortSignal;
   onMessage?: (message: Ably.Message) => void;
   onCancelled?: (write: (event: TEvent) => Promise<void>) => void | Promise<void>;
@@ -45,14 +39,13 @@ interface RunOpts<TEvent, TMessage = unknown> {
  */
 export const createRunFromOpts = <TEvent, TProjection, TMessage>(
   session: AgentSession<TEvent, TProjection, TMessage>,
-  opts: RunOpts<TEvent, TMessage>,
+  opts: RunOpts<TEvent>,
 ): Run<TEvent, TProjection, TMessage> => {
-  const invocation = Invocation.fromJSON<TMessage>({
+  const invocation = Invocation.fromJSON({
     runId: opts.runId,
     invocationId: opts.invocationId ?? `${opts.runId}-inv`,
+    eventId: opts.eventId ?? '',
     sessionName: 'test',
-    history: opts.history ?? [],
-    ...(opts.eventIds !== undefined && { eventIds: opts.eventIds }),
   });
   return session.createRun(invocation, {
     signal: opts.signal,

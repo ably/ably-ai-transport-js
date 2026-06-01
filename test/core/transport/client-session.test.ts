@@ -619,12 +619,13 @@ describe('ClientSession', () => {
       expect(opts?.extras?.headers?.['x-ably-input-client-id']).toBeUndefined();
     });
 
-    it('uses TInput.codecMessageId to target an existing message instead of minting a fresh id', async () => {
+    it('pins the wire codec-message-id from TInput.codecMessageId instead of minting a fresh id', async () => {
       // Each TInput carries its routing fields directly via the
       // {@link CodecInputEvent} base. When `codecMessageId` is set, the
       // session stamps that value on the wire `x-ably-codec-message-id`
-      // header instead of minting a UUID — the reducer's direct-fold path
-      // then matches by codec-message-id and no cross-message redirect runs.
+      // header instead of minting a UUID. For a fresh user-message this
+      // pins the message's own id (the TMessage.id == wire id convention);
+      // for a continuation input it targets the assistant being amended.
       await fix.session.view.sendInput([
         { kind: 'user-message', text: 'first', codecMessageId: 'target-a' },
         { kind: 'user-message', text: 'second' },
@@ -642,6 +643,32 @@ describe('ClientSession', () => {
       const secondMsgId = userPublishes[1]?.opts?.extras?.headers?.[HEADER_CODEC_MESSAGE_ID];
       expect(secondMsgId).toBeDefined();
       expect(secondMsgId).not.toBe('target-a');
+    });
+
+    it('folds an optimistic user message even when it carries a caller-supplied codecMessageId', async () => {
+      // Regression: a fresh user-message that pins its own codec-message-id
+      // (the path View.sendMessage takes for every message with an id) must
+      // still fold into the local projection synchronously. Treating the
+      // presence of `codecMessageId` as "wire-only" suppressed the optimistic
+      // fold, so the user bubble only appeared once the publish echoed back
+      // off the channel — a round-trip race that flaked integration tests.
+      await fix.session.view.sendInput({
+        kind: 'user-message',
+        text: 'hello',
+        codecMessageId: 'pinned-id',
+      });
+
+      // No channel echo simulated — the message must be present purely from
+      // the optimistic fold.
+      const nodes = fix.session.view.flattenNodes();
+      expect(nodes).toHaveLength(1);
+      expect(nodes[0]?.runId).toBeDefined();
+      expect(nodes[0]?.invocationId).toBeDefined();
+
+      const messages = fix.session.view.getMessages();
+      expect(messages).toHaveLength(1);
+      expect(messages[0]?.id).toBe('pinned-id');
+      expect(messages[0]?.content).toBe('hello');
     });
 
     it('mints a distinct event-id per user-message; postBody.inputEventId is the last (primary trigger)', async () => {

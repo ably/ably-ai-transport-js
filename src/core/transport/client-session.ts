@@ -644,7 +644,7 @@ class DefaultClientSession<
       input: TInput;
       codecMessageId: string;
       headers: Record<string, string>;
-      /** Inputs that target an existing codec-message (e.g. tool result) are wire-only — no optimistic projection fold. */
+      /** Inputs that reference an existing codec-message without contributing fresh local content (regenerate, tool resolutions) are wire-only — no optimistic projection fold. Fresh user-messages always fold, even when they pin their own codecMessageId. */
       isWireOnly: boolean;
     }
     const items: ItemState[] = [];
@@ -666,7 +666,15 @@ class DefaultClientSession<
       // fold needed because either the receiving content doesn't
       // materialise on this side (regenerate) or the target already exists
       // and will be amended when the wire echoes back.
-      const isWireOnly = entry.kind === 'regenerate' || entry.codecMessageId !== undefined;
+      //
+      // A fresh `user-message` is never wire-only, even when it carries a
+      // `codecMessageId`: View.sendMessage threads a caller-supplied
+      // TMessage.id through that field so TMessage.id == the wire
+      // codec-message-id, but the message is still new content that must
+      // fold into the local projection immediately. Excluding it here keeps
+      // the optimistic user bubble from depending on the channel round-trip.
+      const isWireOnly =
+        entry.kind !== 'user-message' && (entry.kind === 'regenerate' || entry.codecMessageId !== undefined);
 
       // The input's own routing fields override the auto-parent /
       // sendOptions defaults. For regenerate inputs, `target` becomes the

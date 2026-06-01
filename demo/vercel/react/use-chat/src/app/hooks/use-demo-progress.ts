@@ -18,7 +18,7 @@
 import { useMemo } from 'react';
 import type * as Ably from 'ably';
 import type { DynamicToolUIPart, UIMessage } from 'ai';
-import { EVENT_CANCEL, type MessageMetadata } from '@ably/ai-transport';
+import { EVENT_CANCEL, type BranchSelection, type RunInfo } from '@ably/ai-transport';
 
 export type DemoStepId =
   | 'server-weather'
@@ -96,8 +96,8 @@ const ALL_STEPS: DemoStep[] = [
 
 export function useDemoProgress(
   messages: UIMessage[],
-  getMessageMetadata: (codecMessageId: string) => MessageMetadata | undefined,
-  hasMessageSiblings: (codecMessageId: string) => boolean,
+  runOf: (codecMessageId: string) => RunInfo | undefined,
+  branchSelection: (codecMessageId: string) => BranchSelection<UIMessage>,
   ablyMessages: Ably.InboundMessage[],
 ): DemoStep[] {
   return useMemo(() => {
@@ -137,15 +137,15 @@ export function useDemoProgress(
 
     const runClientIds = new Set<string>();
     for (const message of messages) {
-      const metadata = getMessageMetadata(message.id);
-      if (!metadata) continue;
-      if (metadata.clientId) runClientIds.add(metadata.clientId);
-      if (!hasMessageSiblings(message.id)) continue;
+      const run = runOf(message.id);
+      if (!run) continue;
+      if (run.clientId) runClientIds.add(run.clientId);
+      if (!branchSelection(message.id).hasSiblings) continue;
       if (message.role === 'assistant') completed.add('regenerate');
       if (message.role === 'user') completed.add('edit');
     }
     if (runClientIds.size > 1) completed.add('multi-tab');
 
     return ALL_STEPS.filter((s) => !completed.has(s.id));
-  }, [messages, getMessageMetadata, hasMessageSiblings, ablyMessages]);
+  }, [messages, runOf, branchSelection, ablyMessages]);
 }

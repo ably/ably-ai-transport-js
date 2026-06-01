@@ -17,7 +17,7 @@
 import { useEffect, useRef } from 'react';
 import type { DynamicToolUIPart, UIMessage } from 'ai';
 import type { ViewHandle } from '@ably/ai-transport/react';
-import type { VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
+import type { VercelInput, VercelOutput } from '@ably/ai-transport/vercel';
 
 import { wakeAgent } from '../helpers';
 
@@ -48,7 +48,7 @@ const clientTools: Record<string, ClientToolExecutor> = {
 };
 
 export function useClientTools(
-  view: ViewHandle<VercelInput, VercelOutput, VercelProjection, UIMessage>,
+  view: ViewHandle<VercelInput, VercelOutput, UIMessage>,
   clientId: string | undefined,
   api: string,
 ) {
@@ -67,9 +67,9 @@ export function useClientTools(
       // Other clients on the same channel see the tool call but should
       // not execute it - only the requesting client has the context
       // (e.g. browser geolocation) to provide the result.
-      const metadata = view.getMessageMetadata(msg.id);
-      if (!metadata) continue;
-      if (metadata.clientId && metadata.clientId !== clientId) continue;
+      const run = view.runOf(msg.id);
+      if (!run) continue;
+      if (run.clientId && run.clientId !== clientId) continue;
 
       // If there's a later assistant message, this tool call was already
       // resolved in a previous session - skip to prevent re-execution
@@ -87,7 +87,7 @@ export function useClientTools(
 
         handledRef.current.add(toolPart.toolCallId);
 
-        executeClientTool(view, api, metadata.runId, msg.id, toolPart);
+        executeClientTool(view, api, run.runId, msg.id, toolPart);
       }
     }
   }, [view, view.messages, clientId, api]);
@@ -97,7 +97,7 @@ export function useClientTools(
 // `codecMessageId`; the continuation reuses that run's runId so the
 // agent picks the result up off the channel and resumes generation.
 async function executeClientTool(
-  view: ViewHandle<VercelInput, VercelOutput, VercelProjection, UIMessage>,
+  view: ViewHandle<VercelInput, VercelOutput, UIMessage>,
   api: string,
   runId: string,
   codecMessageId: string,

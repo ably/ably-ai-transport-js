@@ -71,25 +71,15 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
   const hasAnyRuns = status === 'submitted' || status === 'streaming';
 
   // Auto-loads first page on mount
-  const {
-    messages,
-    hasOlder,
-    loading,
-    loadOlder,
-    hasMessageSiblings,
-    getMessageSiblings,
-    getSelectedMessageSiblingIndex,
-    selectMessageSibling,
-    getMessageMetadata,
-  } = useView({
+  const { messages, hasOlder, loading, loadOlder, branchSelection, selectSibling, runOf } = useView({
     limit: historyLimit ?? 30,
   });
 
-  useClientTools(session, messages, addToolResult, getMessageMetadata, clientId);
+  useClientTools(session, messages, addToolResult, runOf, clientId);
 
   const ablyMessages = useAblyMessages();
 
-  const unfinishedSteps = useDemoProgress(messages, getMessageMetadata, hasMessageSiblings, ablyMessages);
+  const unfinishedSteps = useDemoProgress(messages, runOf, branchSelection, ablyMessages);
 
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -106,12 +96,10 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
           messages={messages}
           hasOlder={hasOlder}
           loading={loading}
-          siblings={{
-            hasMessageSiblings,
-            getMessageSiblings,
-            getSelectedMessageSiblingIndex,
-            selectMessageSibling,
-            getMessageMetadata,
+          view={{
+            branchSelection,
+            selectSibling,
+            runOf,
           }}
           onLoadOlder={loadOlder}
           onRegenerate={(messageId) => regenerate({ messageId })}

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { useEffect, useState, type ReactNode } from 'react';
 import type * as AI from 'ai';
-import type { ClientSession, RunNode } from '@ably/ai-transport';
+import type { BranchSelection, ClientSession, RunInfo } from '@ably/ai-transport';
 import type { ChatTransport, VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
 
 // jsdom doesn't implement Element.prototype.scrollIntoView; MessageList's
@@ -20,7 +20,7 @@ Element.prototype.scrollIntoView = () => {};
 
 interface MockViewState {
   messages: AI.UIMessage[];
-  runs: Map<string, RunNode<VercelProjection>>;
+  runs: Map<string, RunInfo>;
 }
 
 let setMockViewState: ((state: MockViewState) => void) | null = null;
@@ -42,6 +42,13 @@ const mockSession = {
   on: vi.fn(() => () => {}),
 } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
+const emptyBranchSelection = (): BranchSelection<AI.UIMessage> => ({
+  hasSiblings: false,
+  siblings: [],
+  index: 0,
+  selected: undefined,
+});
+
 vi.mock('@ably/ai-transport/vercel/react', () => ({
   ChatTransportProvider: ({ children }: { children: ReactNode }) => children,
   useChatTransport: () => ({
@@ -61,18 +68,13 @@ vi.mock('@ably/ai-transport/vercel/react', () => ({
     }, []);
     return {
       messages: state.messages,
-      nodes: [...state.runs.values()],
       hasOlder: false,
       loading: false,
       loadOlder: async () => {},
-      getSelectedIndex: () => 0,
-      select: () => {},
-      hasMessageSiblings: () => false,
-      getMessageSiblings: () => [],
-      getSelectedMessageSiblingIndex: () => 0,
-      selectMessageSibling: () => {},
-      getMessageMetadata: () => undefined,
-      getRunNode: (runId: string) => state.runs.get(runId),
+      branchSelection: emptyBranchSelection,
+      selectSibling: () => {},
+      runOf: () => undefined,
+      run: (runId: string) => state.runs.get(runId),
     };
   },
 }));

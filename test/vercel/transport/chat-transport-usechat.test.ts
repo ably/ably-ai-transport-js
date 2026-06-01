@@ -88,15 +88,17 @@ const createMockFeed = (): MockFeed => ({
 });
 
 const createMockRun = (feed: MockFeed, runId = 'run-1'): MockRun => {
-  // Buffer outputs and flush on a macrotask. In the real flow, outputs only
-  // arrive after `ai-run-start` resolves the send (so the chat-transport has
-  // already created the router stream). Tests drive chunks synchronously
-  // right after calling sendMessage — before the `await sendEvent` microtask
-  // resolves and the stream exists. Deferring the flush to a macrotask lets
-  // the stream be created first, mirroring real ordering.
+  // Buffer outputs and flush on a microtask. In the real flow, outputs only
+  // arrive after `ai-run-start` resolves the send, so the chat-transport has
+  // already created the router stream. Tests may drive chunks synchronously
+  // right after calling sendMessage — before the `await sendEvent` resolves.
+  // The chat-transport creates the stream synchronously within that await's
+  // continuation, so deferring delivery to a microtask is enough to land
+  // after the stream exists, mirroring real ordering. A microtask (not a
+  // macrotask) is used deliberately so delivery never races the tests' own
+  // macrotask waits — all deliveries complete within the microtask phase.
   // A serial queue of deferred deliveries (outputs and run-end), each fired on
-  // its own macrotask so they land after the send's microtask resolves and the
-  // router stream exists. Items run in enqueue order.
+  // its own microtask so they run in enqueue order, one per turn.
   type Delivery = { kind: 'output'; chunk: AI.UIMessageChunk } | { kind: 'end' };
   const pending: Delivery[] = [];
   let scheduled = false;
@@ -116,7 +118,7 @@ const createMockRun = (feed: MockFeed, runId = 'run-1'): MockRun => {
   const schedule = (): void => {
     if (scheduled || pending.length === 0) return;
     scheduled = true;
-    setTimeout(drain, 0);
+    queueMicrotask(drain);
   };
   return {
     runId,

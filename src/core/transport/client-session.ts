@@ -97,12 +97,12 @@ class DefaultClientSession<
   private readonly _emitter: EventEmitter<ClientSessionEventsMap>;
 
   /**
-   * Active runs initiated by this session: runId → most-recent invocationId.
-   * Cleared on run-end. Used by the auto-cancel-duplicate path to identify
-   * the prior invocation when the developer manually retries under the same
-   * runId.
+   * Run-ids of runs initiated by this session. Added on send, removed on
+   * run-end. Used to scope stream teardown to own runs: on channel
+   * continuity loss and on close, only own-run streams are errored/closed
+   * (observer runs have no consumer-facing stream).
    */
-  private readonly _ownRunIds = new Map<string, string>();
+  private readonly _ownRunIds = new Set<string>();
 
   // Sub-components
   private readonly _tree: DefaultTree<TInput | TOutput, TProjection>;
@@ -360,43 +360,12 @@ class DefaultClientSession<
         }
 
         if (runId) {
-          // Defensive run-end gating: when a run was suspended and continued
-          // under a fresh invocation, only the currently-bound invocation's
-          // run-end should terminate the local run state.
+          // Every run-end is applied unconditionally. Concurrent work always
+          // runs under distinct run-ids, and a resume/continuation is
+          // sequential (the prior invocation's run-end is seen before the
+          // next invocation starts), so there is never a competing run-end
+          // for the same run-id that we'd need to disambiguate by invocation.
           //
-          // Resolution order:
-          // 1. `_ownRunIds`: own runs always have the latest invocation
-          //    here — set on every send (including continuations) and
-          //    only cleared by a complete/error run-end. Survives
-          //    `route()` closing the router stream on a `finish` chunk
-          //    or consumer cancellation, which both wipe `routerActive`
-          //    while the continuation's run-end is still in flight.
-          // 2. `routerActive`: the bound stream's invocation. Useful for
-          //    own runs whose `_ownRunIds` entry has already been
-          //    cleared (e.g. an earlier complete run-end already ran).
-          // 3. `latestContinuation`: the most recent continuation
-          //    run-start's invocation. Observer clients have no
-          //    `_ownRunIds` / `routerActive` entry, so without this
-          //    fallback every continuation's `run-end` would be dropped
-          //    on observer sessions, leaving status badges stuck on
-          //    "streaming".
-          //
-          // A run-end whose invocation matches none of these is dropped.
-          const ownActive = this._ownRunIds.get(runId);
-          const routerActive = this._router.getActiveInvocation(runId);
-          const latestContinuation = this._tree.getLatestContinuationInvocation(runId);
-          const expectedInvocation = ownActive ?? routerActive ?? latestContinuation;
-          if (invocationId !== undefined && expectedInvocation !== undefined && expectedInvocation !== invocationId) {
-            this._logger.debug('ClientSession.runEnd; ignoring stale-invocation run-end', {
-              runId,
-              invocationId,
-              ownActive,
-              routerActive,
-              latestContinuation,
-            });
-            this._tree.emitAblyMessage(ablyMessage);
-            return;
-          }
           // `suspended` keeps the run live so a continuation that reuses
           // the runId picks up where it left off. Router stream survives.
           // The `run` event still fires so listeners can react to the
@@ -495,14 +464,14 @@ class DefaultClientSession<
 
     // As with cancellation, do not clear _ownRunIds here — late events
     // must still accumulate into the tree. The run-end handler cleans up
-    // local maps.
+    // local run state.
     //
     // Only own-runs get an errored stream because only own-runs have a
     // ReadableStream<TEvent> the caller is consuming. Observer-run state
     // lives entirely in the Tree's projection and remains consistent
     // regardless of channel continuity loss; nothing on this client is
     // waiting on it.
-    for (const runId of this._ownRunIds.keys()) {
+    for (const runId of this._ownRunIds) {
       this._router.errorStream(runId, err);
     }
 
@@ -601,7 +570,7 @@ class DefaultClientSession<
 
     const runId = sendOptions?.runId ?? crypto.randomUUID();
     const invocationId = crypto.randomUUID();
-    this._ownRunIds.set(runId, invocationId);
+    this._ownRunIds.add(runId);
 
     // Spec: AIT-CT3d
     // Auto-compute parent from the visible branch tail when not explicitly
@@ -888,7 +857,7 @@ class DefaultClientSession<
     this._channel.off(this._onChannelStateChange);
 
     // Close any remaining active streams
-    for (const runId of this._ownRunIds.keys()) {
+    for (const runId of this._ownRunIds) {
       this._router.closeStream(runId);
     }
 

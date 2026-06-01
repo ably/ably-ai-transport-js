@@ -57,7 +57,6 @@ describe('StreamRouter', () => {
     it('registers the runId as active', () => {
       router.createStream('run-1', INV_A);
       expect(router.has('run-1')).toBe(true);
-      expect(router.getActiveInvocation('run-1')).toBe(INV_A);
     });
   });
 
@@ -136,7 +135,6 @@ describe('StreamRouter', () => {
       const original = router.createStream('run-1', INV_A);
       const rebound = router.rebindStream('run-1', INV_B);
       expect(rebound).toBe(original);
-      expect(router.getActiveInvocation('run-1')).toBe(INV_B);
 
       // Events tagged with the OLD invocation are now dropped
       expect(router.route('run-1', INV_A, { type: 'text', text: 'stale' })).toBe(false);

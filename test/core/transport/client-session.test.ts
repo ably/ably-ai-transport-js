@@ -1434,7 +1434,7 @@ describe('ClientSession', () => {
       expect(fix.codec.fold).not.toHaveBeenCalled();
     });
 
-    it('drops stale-invocation run-end (ignored when active invocation mismatches)', async () => {
+    it('applies a run-end regardless of its invocation-id (no stale-invocation gate)', async () => {
       const ch = createMockChannel();
       const codec = createMockCodec();
       const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
@@ -1449,49 +1449,35 @@ describe('ClientSession', () => {
       await s.connect();
 
       const sendPromise = s.view.sendInput({ kind: 'user-message', text: 'hi' });
-      const { runId, invocationId } = await ackPendingSend(ch, codec);
+      const { runId } = await ackPendingSend(ch, codec);
       const run = await sendPromise;
 
-      // Simulate a stale-invocation run-end — different invocationId
+      // A run-end carrying an invocation-id that does NOT match the active
+      // send still terminates the run — there is no gate that drops it.
       simulateMessage(
         ch,
         ablyMsg(EVENT_RUN_END, {
           [HEADER_RUN_ID]: runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
-          [HEADER_INVOCATION_ID]: 'losing-inv',
+          [HEADER_INVOCATION_ID]: 'some-other-inv',
           [HEADER_RUN_REASON]: 'complete',
         }),
       );
 
-      // Stream is still open. Now deliver the canonical run-end with the
-      // active invocation — stream should close.
-      simulateMessage(
-        ch,
-        ablyMsg(EVENT_RUN_END, {
-          [HEADER_RUN_ID]: runId,
-          [HEADER_RUN_CLIENT_ID]: 'client-1',
-          [HEADER_INVOCATION_ID]: invocationId,
-          [HEADER_RUN_REASON]: 'complete',
-        }),
-      );
-
+      // Stream closes (drain completes) and the run reaches a terminal state.
       const events = await drain(run.stream);
       expect(events).toEqual([]);
+      expect(s.tree.getRunNode(runId)?.status).toBe('complete');
       await s.close();
     });
 
     it('continuation run reaches status=complete live after a terminal event closes the router stream mid-continuation', async () => {
-      // End-to-end repro of the user-reported "stuck streaming" bug.
-      // After the continuation streams its content, the codec emits a
-      // terminal event (the Vercel codec marks `finish`/`error`/`abort`
-      // terminal) and `route()` calls `closeStream(runId)` — wiping the
-      // router entry, so `routerActive` is undefined when the
-      // continuation's run-end arrives. The gate must still match it via
-      // the `_ownRunIds` entry (kept until a complete/error run-end);
-      // without that the run-end is dropped and the Run stays at
-      // status=active forever — every bubble in the chat showed
-      // "streaming". A page refresh recovered because history replay
-      // bypasses the gate entirely.
+      // Suspend → continue → terminal-event → run-end sequence. After the
+      // continuation streams its content, the codec emits a terminal event
+      // (the Vercel codec marks `finish`/`error`/`abort` terminal) and
+      // `route()` calls `closeStream(runId)`, wiping the router entry. The
+      // continuation's run-end must still mark the Run complete; otherwise
+      // the Run stays at status=active and the UI sticks on "streaming".
       const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
 
       simulateMessage(
@@ -1541,8 +1527,6 @@ describe('ClientSession', () => {
         }),
       );
 
-      // With the fix, the gate consults `_ownRunIds` first (which still
-      // has the continuation's invocation-id), the gate passes, and
       // applyRunLifecycle marks the Run complete.
       expect(fix.session.tree.getRunNode(initial.runId)?.status).toBe('complete');
     });
@@ -1604,13 +1588,11 @@ describe('ClientSession', () => {
       expect(fix.session.tree.getRunNode(initial.runId)?.status).toBe('complete');
     });
 
-    it('processes continuation run-end on an observer session (latestContinuation gate)', () => {
-      // Observer-side reproduction of the multi-tab "stuck streaming" bug.
-      // Observer clients have no `_ownRunIds` entry (they didn't send) and
-      // no router stream bound to the run (only originators bind one), so
-      // the run-end gate resolves the expected invocation from the Tree's
-      // latest-continuation tracker. The continuation's terminal `run-end`
-      // must be accepted so the Run reaches a terminal state rather than
+    it('processes continuation run-end on an observer session', () => {
+      // Observer-side continuation: the observer has no `_ownRunIds` entry
+      // (it didn't send) and no router stream bound to the run (only
+      // originators bind one). The continuation's terminal `run-end` must
+      // still be applied so the Run reaches a terminal state rather than
       // sticking at `active`.
       const inv1 = 'inv-original';
       const inv2 = 'inv-continuation';
@@ -1660,16 +1642,14 @@ describe('ClientSession', () => {
         }),
       );
 
-      // Without the fix the continuation's run-end is dropped and status
-      // stays at 'active'. With the fix the gate accepts it via
-      // latestContinuation and the Run reaches a terminal state.
+      // The continuation's run-end is applied and the Run reaches a
+      // terminal state.
       expect(fix.session.tree.getRunNode('run-obs')?.status).toBe('complete');
     });
 
     it('processes continuation run-end (router-active invocation is fresh)', async () => {
       // Continuation rebinds the router stream to a new invocation. The
-      // gating must prefer the router for own runs so the continuation's
-      // run-end is accepted and the run cleans up.
+      // continuation's run-end is applied and the run cleans up.
       const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
       const continuation = await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], {
         runId: initial.runId,

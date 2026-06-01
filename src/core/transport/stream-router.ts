@@ -42,8 +42,6 @@ export interface StreamRouter<TOutput extends CodecOutputEvent> {
   route(runId: string, invocationId: string | undefined, event: TOutput): boolean;
   /** Whether a specific runId has an active stream. */
   has(runId: string): boolean;
-  /** The invocation-id currently bound to the run's stream, if any. */
-  getActiveInvocation(runId: string): string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -158,10 +156,6 @@ class DefaultStreamRouter<TOutput extends CodecOutputEvent> implements StreamRou
 
   has(runId: string): boolean {
     return this._runs.has(runId);
-  }
-
-  getActiveInvocation(runId: string): string | undefined {
-    return this._runs.get(runId)?.invocationId;
   }
 }
 

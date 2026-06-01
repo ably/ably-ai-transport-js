@@ -1641,7 +1641,7 @@ describe('AgentSession', () => {
       warn.mockClear();
       deliverUserPrompt(ch, { invocationId: 'inv-other', codecMessageId: 'c', serial: '03' });
       const evictCalls = warn.mock.calls.filter(
-        (call) => typeof call[0] === 'string' && call[0].includes('prompt buffer full'),
+        (call) => typeof call[0] === 'string' && call[0].includes('input-event buffer full'),
       );
       expect(evictCalls).toHaveLength(0);
       s.close();
@@ -1736,7 +1736,7 @@ describe('AgentSession', () => {
       deliverUserPrompt(ch, { invocationId: 'inv-overflow', codecMessageId: 'm-over', serial: 's-over' });
 
       const evictCalls = warn.mock.calls.filter(
-        (call) => typeof call[0] === 'string' && call[0].includes('prompt buffer full'),
+        (call) => typeof call[0] === 'string' && call[0].includes('input-event buffer full'),
       );
       expect(evictCalls).toHaveLength(1);
       const ctx = evictCalls[0]?.[1] as { evictedInvocationId?: string; limit?: number } | undefined;
@@ -1768,14 +1768,14 @@ describe('AgentSession', () => {
         });
       }
       let evictCalls = warn.mock.calls.filter(
-        (call) => typeof call[0] === 'string' && call[0].includes('prompt buffer full'),
+        (call) => typeof call[0] === 'string' && call[0].includes('input-event buffer full'),
       );
       expect(evictCalls).toHaveLength(0);
 
       // The 4th distinct invocation-id must evict `inv-0` and log limit=3.
       deliverUserPrompt(ch, { invocationId: 'inv-3', codecMessageId: 'm3', serial: 's3' });
       evictCalls = warn.mock.calls.filter(
-        (call) => typeof call[0] === 'string' && call[0].includes('prompt buffer full'),
+        (call) => typeof call[0] === 'string' && call[0].includes('input-event buffer full'),
       );
       expect(evictCalls).toHaveLength(1);
       const ctx = evictCalls[0]?.[1] as { evictedInvocationId?: string; limit?: number } | undefined;

@@ -74,12 +74,12 @@ export interface SessionHooks<TInput extends CodecInputEvent, TOutput extends Co
     /** Client session whose default view to subscribe to; defaults to the nearest {@link ClientSessionProvider}. */
     session?: ClientSession<TInput, TOutput, TProjection, TMessage> | null;
     /** A specific {@link View} to subscribe to directly. Takes priority over `session`. */
-    view?: View<TInput, TOutput, TProjection, TMessage> | null;
+    view?: View<TInput, TOutput, TMessage> | null;
     /** When provided, auto-loads the first page on mount. */
     limit?: number;
     /** When `true`, skip all subscriptions and return an empty handle. */
     skip?: boolean;
-  }) => ViewHandle<TInput, TOutput, TProjection, TMessage>;
+  }) => ViewHandle<TInput, TOutput, TMessage>;
   /**
    * Navigate conversation branches in the session tree.
    * Pass `session` to override; defaults to the nearest {@link ClientSessionProvider}.
@@ -111,7 +111,7 @@ export interface SessionHooks<TInput extends CodecInputEvent, TOutput extends Co
     limit?: number;
     /** When `true`, skip view creation and return an empty handle. */
     skip?: boolean;
-  }) => ViewHandle<TInput, TOutput, TProjection, TMessage>;
+  }) => ViewHandle<TInput, TOutput, TMessage>;
 }
 
 /**

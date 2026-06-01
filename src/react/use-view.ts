@@ -1,18 +1,18 @@
 /**
  * useView — reactive paginated view of the conversation.
  *
- * Subscribes to view updates and exposes the visible nodes, branch navigation,
- * write operations, pagination state, and a `loadOlder` callback. Pass `session`
- * to use a session's default view, or `view` to subscribe to a specific
- * {@link View} directly. When both are omitted, defaults to the nearest
- * {@link ClientSessionProvider}'s session via context.
+ * Subscribes to view updates and exposes the visible messages, msg-anchored
+ * branch navigation, write operations, pagination state, and a `loadOlder`
+ * callback. Pass `session` to use a session's default view, or `view` to
+ * subscribe to a specific {@link View} directly. When both are omitted,
+ * defaults to the nearest {@link ClientSessionProvider}'s session via context.
  */
 
 import * as Ably from 'ably';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { CodecInputEvent, CodecOutputEvent } from '../core/codec/types.js';
-import type { ActiveRun, MessageMetadata, RunNode, SendOptions, View } from '../core/transport/types.js';
+import type { ActiveRun, BranchSelection, RunInfo, SendOptions, View } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
 import type { BaseSessionOption } from './internal/use-resolved-session.js';
 import { useResolvedSession } from './internal/use-resolved-session.js';
@@ -25,7 +25,7 @@ export interface UseViewOptions<
   TMessage,
 > extends BaseSessionOption<TInput, TOutput, TProjection, TMessage> {
   /** A specific {@link View} to subscribe to directly. Takes priority over `session`. */
-  view?: View<TInput, TOutput, TProjection, TMessage> | null;
+  view?: View<TInput, TOutput, TMessage> | null;
   /** Maximum number of older messages to load per page. When provided, auto-loads on mount. */
   limit?: number;
   /** When `true`, skip all subscriptions and return an empty handle immediately. */
@@ -33,14 +33,12 @@ export interface UseViewOptions<
 }
 
 /** Handle for the paginated, branch-aware conversation view. */
-export interface ViewHandle<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage> {
+export interface ViewHandle<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TMessage> {
   /**
    * The visible domain messages along the selected branch, concatenated
    * across all visible Runs.
    */
   messages: TMessage[];
-  /** Visible Run nodes along the selected branch. */
-  nodes: RunNode<TProjection>[];
   /** Whether there are older messages that can be revealed via `loadOlder`. */
   hasOlder: boolean;
   /** Whether a page load is currently in progress. */
@@ -56,35 +54,29 @@ export interface ViewHandle<TInput extends CodecInputEvent, TOutput extends Code
    * On failure, `error` is set; on success, `error` is cleared.
    */
   loadOlder: () => Promise<void>;
-  /** Select a sibling Run at a fork point by index. Triggers a view update with the new branch. */
-  select: (runId: string, index: number) => void;
-  /** Index of the currently selected sibling Run at a fork point. */
-  getSelectedIndex: (runId: string) => number;
   /**
-   * Per-message metadata derived from the owning Run. The natural
-   * per-message accessor for the rendering layer: returns primitives
-   * without leaking {@link RunNode} or the codec's projection generic
-   * into UI components. See {@link View.getMessageMetadata}.
+   * Look up the {@link RunInfo} for the Run that owns `codecMessageId`.
+   * Returns `undefined` when the codec-message-id hasn't been observed.
+   * See {@link View.runOf}.
    */
-  getMessageMetadata: (msgId: string) => MessageMetadata | undefined;
+  runOf: (codecMessageId: string) => RunInfo | undefined;
   /**
-   * Whether the message at `codecMessageId` is a branch-point anchor. Use this for
-   * per-bubble UI decisions about rendering navigation arrows; see
-   * {@link View.hasMessageSiblings}.
+   * Direct lookup by runId. Returns `undefined` when the Run hasn't been
+   * observed. See {@link View.run}.
    */
-  hasMessageSiblings: (codecMessageId: string) => boolean;
+  run: (runId: string) => RunInfo | undefined;
   /**
-   * Resolved sibling messages at the branch point anchored at
-   * `codecMessageId` — one TMessage per sibling. Use `.length` for the
-   * sibling count. See {@link View.getMessageSiblings}.
+   * Resolve the {@link BranchSelection} bundle anchored at
+   * `codecMessageId`. Always returns a safe object — see
+   * {@link BranchSelection}. See {@link View.branchSelection}.
    */
-  getMessageSiblings: (codecMessageId: string) => TMessage[];
-  /** Index of the currently selected sibling for the branch point anchored at `codecMessageId`. */
-  getSelectedMessageSiblingIndex: (codecMessageId: string) => number;
-  /** Select a sibling at the branch point anchored at `codecMessageId`. */
-  selectMessageSibling: (codecMessageId: string, index: number) => void;
-  /** Get a Run by runId, or undefined if not found. */
-  getRunNode: (runId: string) => RunNode<TProjection> | undefined;
+  branchSelection: (codecMessageId: string) => BranchSelection<TMessage>;
+  /**
+   * Select a sibling at the branch point anchored at `codecMessageId`.
+   * `index` is clamped to `[0, siblings.length - 1]`. Silent no-op when
+   * `codecMessageId` isn't a branch anchor. See {@link View.selectSibling}.
+   */
+  selectSibling: (codecMessageId: string, index: number) => void;
   /** Send one or more user messages on the channel and fire a POST. See {@link View.sendMessage}. */
   sendMessage: (messages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveRun<TOutput>>;
   /** Send one or more TInputs on the channel and fire a POST. See {@link View.sendInput}. */
@@ -96,7 +88,19 @@ export interface ViewHandle<TInput extends CodecInputEvent, TOutput extends Code
 }
 
 /**
- * Subscribe to a view and return the visible node list with pagination, navigation, and write operations.
+ * Fallback returned by `branchSelection` when the view isn't resolved.
+ * Same shape the view returns for an unknown codec-message-id, so callers
+ * can destructure uniformly.
+ */
+const EMPTY_BRANCH_SELECTION: BranchSelection<never> = {
+  hasSiblings: false,
+  siblings: [],
+  index: 0,
+  selected: undefined,
+};
+
+/**
+ * Subscribe to a view and return the visible messages with pagination, navigation, and write operations.
  *
  * `view` takes priority over `session`. When neither is provided, the nearest
  * {@link ClientSessionProvider}'s session is used. When `limit` is provided, auto-loads
@@ -106,18 +110,17 @@ export interface ViewHandle<TInput extends CodecInputEvent, TOutput extends Code
  * @param props.view - A specific {@link View} to subscribe to directly. Takes priority over `session`.
  * @param props.limit - Max older messages per page; when provided, auto-loads on mount.
  * @param props.skip - When `true`, skip all subscriptions and return an empty handle.
- * @returns A {@link ViewHandle} with nodes, pagination state, navigation, write operations, and loadOlder.
+ * @returns A {@link ViewHandle} with messages, pagination state, navigation, write operations, and loadOlder.
  */
 export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>({
   session,
   view,
   limit,
   skip,
-}: UseViewOptions<TInput, TOutput, TProjection, TMessage> = {}): ViewHandle<TInput, TOutput, TProjection, TMessage> => {
+}: UseViewOptions<TInput, TOutput, TProjection, TMessage> = {}): ViewHandle<TInput, TOutput, TMessage> => {
   const resolvedSession = useResolvedSession({ session, skip });
   const resolvedView = skip ? undefined : (view ?? resolvedSession?.view);
 
-  const [nodes, setNodes] = useState<RunNode<TProjection>[]>(() => resolvedView?.flattenNodes() ?? []);
   const [messages, setMessages] = useState<TMessage[]>(() => resolvedView?.getMessages() ?? []);
   const [hasOlder, setHasOlder] = useState(() => resolvedView?.hasOlder() ?? false);
   const [loading, setLoading] = useState(false);
@@ -133,7 +136,6 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
   // Subscribe to view updates
   useEffect(() => {
     if (!resolvedView) {
-      setNodes([]);
       setMessages([]);
       setHasOlder(false);
       setLoadError(undefined);
@@ -144,13 +146,11 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
     autoLoadedRef.current = false;
 
     // Sync initial state
-    setNodes(resolvedView.flattenNodes());
     setMessages(resolvedView.getMessages());
     setHasOlder(resolvedView.hasOlder());
     setLoadError(undefined);
 
     const unsub = resolvedView.on('update', () => {
-      setNodes(resolvedView.flattenNodes());
       setMessages(resolvedView.getMessages());
       setHasOlder(resolvedView.hasOlder());
     });
@@ -182,41 +182,30 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
     void loadOlder();
   }, [autoLoad, resolvedView, loadOlder]);
 
-  // Branch navigation callbacks
-  const select = useCallback(
-    (runId: string, index: number) => {
-      resolvedView?.select(runId, index);
-    },
+  // Run lookups
+  const runOf = useCallback(
+    (codecMessageId: string): RunInfo | undefined => resolvedView?.runOf(codecMessageId),
     [resolvedView],
   );
 
-  const getSelectedIndex = useCallback((runId: string) => resolvedView?.getSelectedIndex(runId) ?? 0, [resolvedView]);
+  const run = useCallback((runId: string): RunInfo | undefined => resolvedView?.run(runId), [resolvedView]);
 
-  const getMessageMetadata = useCallback((msgId: string) => resolvedView?.getMessageMetadata(msgId), [resolvedView]);
-
-  const hasMessageSiblings = useCallback(
-    (codecMessageId: string) => resolvedView?.hasMessageSiblings(codecMessageId) ?? false,
+  // Branch navigation
+  const branchSelection = useCallback(
+    (codecMessageId: string): BranchSelection<TMessage> =>
+      // CAST: `EMPTY_BRANCH_SELECTION` is typed `BranchSelection<never>`; `never` is
+      // assignable to any `TMessage`, so the empty bundle is a valid fallback for
+      // the not-yet-resolved view case.
+      resolvedView?.branchSelection(codecMessageId) ?? (EMPTY_BRANCH_SELECTION as BranchSelection<TMessage>),
     [resolvedView],
   );
 
-  const getMessageSiblings = useCallback(
-    (codecMessageId: string) => resolvedView?.getMessageSiblings(codecMessageId) ?? [],
-    [resolvedView],
-  );
-
-  const getSelectedMessageSiblingIndex = useCallback(
-    (codecMessageId: string) => resolvedView?.getSelectedMessageSiblingIndex(codecMessageId) ?? 0,
-    [resolvedView],
-  );
-
-  const selectMessageSibling = useCallback(
+  const selectSibling = useCallback(
     (codecMessageId: string, index: number) => {
-      resolvedView?.selectMessageSibling(codecMessageId, index);
+      resolvedView?.selectSibling(codecMessageId, index);
     },
     [resolvedView],
   );
-
-  const getRunNode = useCallback((runId: string) => resolvedView?.getRunNode(runId), [resolvedView]);
 
   // Write operation callbacks
   const sendMessage = useCallback(
@@ -257,19 +246,14 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
 
   return {
     messages,
-    nodes,
     hasOlder,
     loading,
     loadError,
     loadOlder,
-    select,
-    getSelectedIndex,
-    getMessageMetadata,
-    hasMessageSiblings,
-    getMessageSiblings,
-    getSelectedMessageSiblingIndex,
-    selectMessageSibling,
-    getRunNode,
+    runOf,
+    run,
+    branchSelection,
+    selectSibling,
     sendMessage,
     sendInput,
     regenerate,

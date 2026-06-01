@@ -187,18 +187,6 @@ const wrapStreamWithDone = <T>(source: ReadableStream<T>): { stream: ReadableStr
 // ---------------------------------------------------------------------------
 
 /**
- * Whether an assistant message has a `dynamic-tool` part that can't resolve
- * without further user action. Matches:
- * - `input-streaming` / `input-available` — tool call emitted, not yet run.
- * - `approval-requested` — waiting for the user.
- *
- * Excludes `approval-responded` (streamText will run the tool this run)
- * and all terminal `output-*` states.
- * @param msg - The UIMessage to inspect.
- * @returns True when a fork-on-send is warranted to avoid shipping a
- *   dangling tool call to the LLM.
- */
-/**
  * Whether a UIMessage part is a tool part — either the codec-normalised
  * `dynamic-tool` shape or the AI SDK's statically-declared `tool-${name}`
  * shape. Both carry `toolCallId` and `state`; the shape check at the end
@@ -210,6 +198,18 @@ const wrapStreamWithDone = <T>(source: ReadableStream<T>): { stream: ReadableStr
 const _isToolPart = (part: AI.UIMessage['parts'][number]): part is AI.DynamicToolUIPart | AI.ToolUIPart =>
   (part.type === 'dynamic-tool' || part.type.startsWith('tool-')) && 'toolCallId' in part && 'state' in part;
 
+/**
+ * Whether an assistant message has a `dynamic-tool` part that can't resolve
+ * without further user action. Matches:
+ * - `input-streaming` / `input-available` — tool call emitted, not yet run.
+ * - `approval-requested` — waiting for the user.
+ *
+ * Excludes `approval-responded` (streamText will run the tool this run)
+ * and all terminal `output-*` states.
+ * @param msg - The UIMessage to inspect.
+ * @returns True when a fork-on-send is warranted to avoid shipping a
+ *   dangling tool call to the LLM.
+ */
 const hasUnresolvedToolCall = (msg: AI.UIMessage): boolean =>
   msg.role === 'assistant' &&
   msg.parts.some(

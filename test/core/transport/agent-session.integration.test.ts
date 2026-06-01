@@ -917,12 +917,20 @@ describe('AgentSession integration', () => {
         inputEventId: activeRun.inputEventId,
       });
       await serverRun.start();
-      // start() only collects the primary trigger event; loadProjection() is
-      // required to see the full multi-message send from the channel.
-      await serverRun.loadProjection();
+      // start() only collects the primary trigger event (the last message of
+      // the send). The non-trigger messages are read by loadProjection() from
+      // channel.history(), which is eventually consistent — so retry until
+      // both have been indexed rather than asserting after a single read.
+      let messages = serverRun.messages;
+      await vi.waitFor(
+        async () => {
+          await serverRun.loadProjection();
+          messages = serverRun.messages;
+          expect(messages).toHaveLength(2);
+        },
+        { timeout: 10_000 },
+      );
 
-      const messages = serverRun.messages;
-      expect(messages).toHaveLength(2);
       const ids = messages.map((m) => m.id);
       expect(ids).toEqual(['user-multi-1', 'user-multi-2']);
       const firstText = messages[0]?.parts.find((p): p is AI.TextUIPart => p.type === 'text')?.text;

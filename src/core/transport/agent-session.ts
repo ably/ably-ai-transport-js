@@ -232,7 +232,7 @@ const loadRunProjection = async <
 };
 
 /**
- * Wait for every event-id in `expectedEventIds` to arrive as a channel
+ * Wait for every event-id in `expectedInputEventIds` to arrive as a channel
  * message before letting the run proceed to LLM work. Uses the session's
  * unfiltered channel dispatcher (registered in `connect()`) so that
  * messages replayed via channel rewind on attach reach the lookup — no
@@ -265,7 +265,7 @@ const loadRunProjection = async <
  * @param opts.codec - Codec used to decode arriving messages.
  * @param opts.invocationId - Invocation identifier the dispatcher keys on.
  * @param opts.runId - Run identifier (used for logging and error messages).
- * @param opts.expectedEventIds - Prompt-ids the lookup must observe before resolving.
+ * @param opts.expectedInputEventIds - Prompt-ids the lookup must observe before resolving.
  * @param opts.timeoutMs - Maximum total time to wait for all event-id arrivals.
  * @param opts.signal - AbortSignal that cancels the wait when the run is cancelled.
  * @param opts.logger - Optional logger for diagnostic output.
@@ -302,13 +302,13 @@ const lookupUserPrompt = async <
   codec: import('../codec/types.js').Codec<TInput, TOutput, TProjection, TMessage>;
   invocationId: string;
   runId: string;
-  expectedEventIds: readonly string[];
+  expectedInputEventIds: readonly string[];
   timeoutMs: number;
   signal: AbortSignal;
   logger: Logger | undefined;
 }): Promise<PromptLookupResult<TMessage>> => {
-  const { register, codec, invocationId, runId, expectedEventIds, timeoutMs, signal, logger } = opts;
-  const expectedSet = new Set(expectedEventIds);
+  const { register, codec, invocationId, runId, expectedInputEventIds, timeoutMs, signal, logger } = opts;
+  const expectedSet = new Set(expectedInputEventIds);
   const expectedCount = expectedSet.size;
 
   /**
@@ -318,7 +318,7 @@ const lookupUserPrompt = async <
    */
   const collected: MessageNode<TMessage>[] = [];
   const rawMessages: Ably.InboundMessage[] = [];
-  const matchedEventIds = new Set<string>();
+  const matchedInputEventIds = new Set<string>();
   let firstHeaders: Record<string, string> | undefined;
   let firstClientId: string | undefined;
 
@@ -385,8 +385,8 @@ const lookupUserPrompt = async <
 
       // Only count messages whose event-id is in the expected set.
       const msgEventId = wireHeaders[HEADER_EVENT_ID];
-      if (!msgEventId || !expectedSet.has(msgEventId) || matchedEventIds.has(msgEventId)) return;
-      matchedEventIds.add(msgEventId);
+      if (!msgEventId || !expectedSet.has(msgEventId) || matchedInputEventIds.has(msgEventId)) return;
+      matchedInputEventIds.add(msgEventId);
 
       // Capture the trigger event's headers AND its Ably channel-level `clientId`
       // so run-level metadata (parent / forkOf / continuation flag from headers;
@@ -418,7 +418,7 @@ const lookupUserPrompt = async <
       }
       for (const node of decoded) collected.push(node);
       rawMessages.push(m);
-      if (matchedEventIds.size < expectedCount) return;
+      if (matchedInputEventIds.size < expectedCount) return;
       settled = true;
       cleanup();
       // Sort by Ably serial ascending so callers see publish order regardless
@@ -664,7 +664,7 @@ class DefaultAgentSession<
    * Record an invocation-id whose lookup has resolved successfully so a
    * subsequent unmatched arrival for the same invocation-id can be flagged
    * as an over-arrival (client published more user-prompts than the
-   * invocation's `eventIds` listed). Bounded FIFO eviction at
+   * invocation's `inputEventIds` listed). Bounded FIFO eviction at
    * `_completedLookupInvocationIdsLimit`.
    * @param invocationId - The invocation-id whose lookup just completed.
    * @param expectedCount - The number of event-ids the lookup resolved at — surfaced in the over-arrival warn.
@@ -834,7 +834,7 @@ class DefaultAgentSession<
         } else {
           // Over-arrival: lookup for this invocation already completed
           // successfully (e.g. client published more prompt-bearing
-          // events than the invocation's `eventIds` listed). Warn
+          // events than the invocation's `inputEventIds` listed). Warn
           // loudly so client-side bugs surface, then drop the message —
           // no listener will ever register for this completed lookup,
           // so buffering would just hold a slot until FIFO eviction.
@@ -950,7 +950,7 @@ class DefaultAgentSession<
     const requireConnected = this._requireConnected.bind(this);
     const registerPromptListener = this._registerPromptListener.bind(this);
     const recordCompletedLookup = this._recordCompletedLookup.bind(this);
-    const eventId = invocation.eventId;
+    const inputEventId = invocation.inputEventId;
 
     // `viewMessages` starts empty. `Run.start()` populates it via the
     // channel-rewind prompt lookup, pulling in user-message MessageNodes
@@ -1019,7 +1019,7 @@ class DefaultAgentSession<
 
       // Spec: AIT-ST4, AIT-ST4a, AIT-ST4b
       start: async (): Promise<void> => {
-        logger?.trace('Run.start();', { runId, eventId });
+        logger?.trace('Run.start();', { runId, inputEventId });
 
         await requireConnected('start');
 
@@ -1038,15 +1038,15 @@ class DefaultAgentSession<
         // can read the user's message and per-run metadata (parent, forkOf,
         // continuation flag) before publishing run-start. Skip when
         // promptLookupTimeoutMs === 0 (tests and in-process drivers) or
-        // when no eventId is set (invocation requires no channel lookup).
-        if (eventId && promptLookupTimeoutMs > 0) {
+        // when no inputEventId is set (invocation requires no channel lookup).
+        if (inputEventId && promptLookupTimeoutMs > 0) {
           try {
             const found = await lookupUserPrompt<TInput, TOutput, TProjection, TMessage>({
               register: (callback) => registerPromptListener(invocationId, callback),
               codec,
               invocationId,
               runId,
-              expectedEventIds: [eventId],
+              expectedInputEventIds: [inputEventId],
               timeoutMs: promptLookupTimeoutMs,
               signal,
               logger,
@@ -1113,7 +1113,7 @@ class DefaultAgentSession<
           throw errInfo;
         }
 
-        logger?.debug('Run.start(); run started', { runId, eventId });
+        logger?.debug('Run.start(); run started', { runId, inputEventId });
       },
 
       // Spec: AIT-ST5, AIT-ST5a, AIT-ST5b, AIT-ST5c
@@ -1144,7 +1144,7 @@ class DefaultAgentSession<
                 runClientId: opts?.clientId,
                 parent: node.parentId,
                 forkOf: node.forkOf,
-                eventId,
+                inputEventId,
                 inputClientId: resolvedInputClientId,
               }),
               node.headers,
@@ -1392,7 +1392,7 @@ class DefaultAgentSession<
         //      assistant threads under the user msg that triggered it.
         //   3. `resolvedParent` from the prompt-lookup's `firstLookupHeaders`.
         //      For regenerate wires the lookup matches the event (by
-        //      eventId) but produces no MessageNodes, so `viewMessages` is
+        //      inputEventId) but produces no MessageNodes, so `viewMessages` is
         //      empty — the regenerate event's `x-ably-parent` header carries
         //      the parent codec-message-id we need to thread under.
         // Owning the default here means agent routes don't have to remember

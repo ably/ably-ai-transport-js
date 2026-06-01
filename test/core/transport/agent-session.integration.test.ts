@@ -246,14 +246,14 @@ describe('AgentSession integration', () => {
       codecMessageId: string;
       streamArgs: [string, string, string];
     }): Promise<void> => {
-      const eventId = crypto.randomUUID();
+      const inputEventId = crypto.randomUUID();
       const publisherChannel = opts.publisher.channels.get(channelName);
       const headers = buildTransportHeaders({
         role: 'user',
         runId: opts.runId,
         codecMessageId: opts.codecMessageId,
         invocationId: opts.invocationId,
-        eventId,
+        inputEventId,
       });
       const encoder = UIMessageCodec.createEncoder(publisherChannel, { extras: { headers } });
       const userInput = UIMessageCodec.createUserMessage({
@@ -266,7 +266,7 @@ describe('AgentSession integration', () => {
       const run = createRunFromOpts(agentSession, {
         runId: opts.runId,
         invocationId: opts.invocationId,
-        eventId: eventId,
+        inputEventId: inputEventId,
       });
       await run.start();
       await run.pipe(textResponseStream(...opts.streamArgs));
@@ -815,15 +815,15 @@ describe('AgentSession integration', () => {
     const codecMessageId = crypto.randomUUID();
     const text = 'Live arrival';
 
-    const eventId = crypto.randomUUID();
+    const inputEventId = crypto.randomUUID();
     const serverRun = createRunFromOpts(session, {
       runId,
       invocationId,
-      eventId: eventId,
+      inputEventId: inputEventId,
     });
 
     // Begin the lookup. `start()` will not resolve until a user prompt
-    // with the expected `eventId` arrives — and that message has not been
+    // with the expected `inputEventId` arrives — and that message has not been
     // published yet.
     const startPromise = serverRun.start();
 
@@ -834,7 +834,7 @@ describe('AgentSession integration', () => {
     // a few hundred ms is safe.
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
     const publisherChannel = publisherClient.channels.get(channelName);
-    const headers = buildTransportHeaders({ role: 'user', runId, codecMessageId, invocationId, eventId });
+    const headers = buildTransportHeaders({ role: 'user', runId, codecMessageId, invocationId, inputEventId });
     const encoder = UIMessageCodec.createEncoder(publisherChannel, { extras: { headers } });
     const userInput = UIMessageCodec.createUserMessage({
       id: codecMessageId,
@@ -914,7 +914,7 @@ describe('AgentSession integration', () => {
       const serverRun = createRunFromOpts(session, {
         runId: activeRun.runId,
         invocationId: activeRun.invocationId,
-        eventId: activeRun.eventId,
+        inputEventId: activeRun.inputEventId,
       });
       await serverRun.start();
       // start() only collects the primary trigger event; loadProjection() is

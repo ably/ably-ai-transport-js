@@ -32,10 +32,9 @@ const mockSendMessage = vi.fn(
       stream: emptyEventStream(),
       runId: 'run-1',
       invocationId: 'inv-1',
-      eventId: 'ev-1',
+      inputEventId: 'ev-1',
       cancel: async () => {},
       optimisticCodecMessageIds: [],
-      eventIds: [],
     }),
 );
 

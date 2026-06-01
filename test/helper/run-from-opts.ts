@@ -14,7 +14,7 @@ interface RunOpts<TOutput extends CodecOutputEvent> {
   runId: string;
   invocationId?: string;
   /** Prompt-id the agent uses to locate the primary trigger event on the channel. */
-  eventId?: string;
+  inputEventId?: string;
   signal?: AbortSignal;
   onMessage?: (message: Ably.Message) => void;
   onCancelled?: (write: (event: TOutput) => Promise<void>) => void | Promise<void>;
@@ -29,12 +29,12 @@ interface RunOpts<TOutput extends CodecOutputEvent> {
  * longer carried by the invocation body — the agent reads it from the
  * channel via the prompt-lookup result. Tests that exercise those code
  * paths should publish user-messages on the channel with the appropriate
- * transport headers and supply matching `eventIds`. Tests that need a
+ * transport headers and supply matching `inputEventIds`. Tests that need a
  * particular `inputClientId` on the agent's published events must publish
  * an input event with that publisher `clientId` on the wire (e.g. via
  * `deliverUserPrompt({ publisherClientId })`).
  * @param session - The agent session to create the run on.
- * @param opts - Run identity (runId, invocationId, eventIds) plus runtime hooks.
+ * @param opts - Run identity (runId, invocationId, inputEventIds) plus runtime hooks.
  * @returns The created Run.
  */
 export const createRunFromOpts = <
@@ -49,7 +49,7 @@ export const createRunFromOpts = <
   const invocation = Invocation.fromJSON({
     runId: opts.runId,
     invocationId: opts.invocationId ?? `${opts.runId}-inv`,
-    eventId: opts.eventId ?? '',
+    inputEventId: opts.inputEventId ?? '',
     sessionName: 'test',
   });
   return session.createRun(invocation, {

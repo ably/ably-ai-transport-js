@@ -333,8 +333,8 @@ interface DeliverUserPromptOpts {
   serial: string;
   /** Optional Ably message name; defaults to 'text'. */
   name?: string;
-  /** Prompt-id (`x-ably-event-id`) the agent matches against `invocation.eventIds`. */
-  eventId?: string;
+  /** Prompt-id (`x-ably-event-id`) the agent matches against `invocation.inputEventIds`. */
+  inputEventId?: string;
   /** Optional `x-ably-run-client-id` header — populates the run's `clientId` resolution. */
   runClientId?: string;
   /**
@@ -371,9 +371,9 @@ const deliverUserPrompt = (ch: MockChannel, opts: DeliverUserPromptOpts): void =
     // Always stamp a event-id — the agent dispatcher routes prompt-bearing
     // messages by `x-ably-event-id`, not by role, so without one the
     // synthetic message wouldn't reach the buffer/lookup path. Tests that
-    // care about the specific id supply it via `opts.eventId`; otherwise
+    // care about the specific id supply it via `opts.inputEventId`; otherwise
     // we derive a unique value from the codec-message-id.
-    [HEADER_EVENT_ID]: opts.eventId ?? `p-${opts.codecMessageId}`,
+    [HEADER_EVENT_ID]: opts.inputEventId ?? `p-${opts.codecMessageId}`,
   };
   if (opts.runId) headers[HEADER_RUN_ID] = opts.runId;
   if (opts.runClientId) headers['x-ably-run-client-id'] = opts.runClientId;
@@ -571,15 +571,15 @@ describe('AgentSession', () => {
 
       const runId = 'run-cont';
       const invocationId = 'inv-cont';
-      const eventId = 'p-cont';
-      const run = createRunFromOpts(s, { runId, invocationId, eventId: eventId });
+      const inputEventId = 'p-cont';
+      const run = createRunFromOpts(s, { runId, invocationId, inputEventId: inputEventId });
       const startPromise = run.start();
       deliverUserPrompt(ch, {
         invocationId,
         runId,
         codecMessageId: 'm-cont',
         serial: 's-cont',
-        eventId,
+        inputEventId,
         runContinue: true,
       });
       await startPromise;
@@ -617,14 +617,14 @@ describe('AgentSession', () => {
       const runId = 'run-regen';
       const invocationId = 'inv-regen';
       const promptId = 'p-regen';
-      const run = createRunFromOpts(s, { runId, invocationId, eventId: promptId });
+      const run = createRunFromOpts(s, { runId, invocationId, inputEventId: promptId });
       const startPromise = run.start();
       deliverUserPrompt(ch, {
         invocationId,
         runId,
         codecMessageId: 'm-regen',
         serial: 's-regen',
-        eventId: promptId,
+        inputEventId: promptId,
         parent: 'orig-user',
         regenerates: 'orig-asst',
       });
@@ -655,15 +655,15 @@ describe('AgentSession', () => {
       // inputClientId: 'user-b' — independent of who owns the run.
       const runId = 'run-icid-start';
       const invocationId = 'inv-icid-start';
-      const eventId = 'p-icid-start';
-      const run = createRunFromOpts(session, { runId, invocationId, eventId: eventId });
+      const inputEventId = 'p-icid-start';
+      const run = createRunFromOpts(session, { runId, invocationId, inputEventId: inputEventId });
       const startPromise = run.start();
       deliverUserPrompt(channel, {
         invocationId,
         runId,
         codecMessageId: 'm-icid-start',
         serial: 's-icid-start',
-        eventId,
+        inputEventId,
         publisherClientId: 'user-b',
       });
       await startPromise;
@@ -676,15 +676,15 @@ describe('AgentSession', () => {
     it('end() stamps x-ably-input-client-id from the triggering input event publisher', async () => {
       const runId = 'run-icid-end';
       const invocationId = 'inv-icid-end';
-      const eventId = 'p-icid-end';
-      const run = createRunFromOpts(session, { runId, invocationId, eventId: eventId });
+      const inputEventId = 'p-icid-end';
+      const run = createRunFromOpts(session, { runId, invocationId, inputEventId: inputEventId });
       const startPromise = run.start();
       deliverUserPrompt(channel, {
         invocationId,
         runId,
         codecMessageId: 'm-icid-end',
         serial: 's-icid-end',
-        eventId,
+        inputEventId,
         publisherClientId: 'user-b',
       });
       await startPromise;
@@ -757,15 +757,15 @@ describe('AgentSession', () => {
     it('stamps x-ably-input-client-id from the triggering input event publisher on addMessages publishes', async () => {
       const runId = 'run-icid-am';
       const invocationId = 'inv-icid-am';
-      const eventId = 'p-icid-am';
-      const run = createRunFromOpts(session, { runId, invocationId, eventId: eventId });
+      const inputEventId = 'p-icid-am';
+      const run = createRunFromOpts(session, { runId, invocationId, inputEventId: inputEventId });
       const startPromise = run.start();
       deliverUserPrompt(channel, {
         invocationId,
         runId,
         codecMessageId: 'm-icid-am',
         serial: 's-icid-am',
-        eventId,
+        inputEventId,
         publisherClientId: 'user-b',
       });
       await startPromise;
@@ -861,15 +861,15 @@ describe('AgentSession', () => {
     it('stamps x-ably-input-client-id from the triggering input event publisher on addEvents publishes', async () => {
       const runId = 'run-icid-ae';
       const invocationId = 'inv-icid-ae';
-      const eventId = 'p-icid-ae';
-      const run = createRunFromOpts(session, { runId, invocationId, eventId: eventId });
+      const inputEventId = 'p-icid-ae';
+      const run = createRunFromOpts(session, { runId, invocationId, inputEventId: inputEventId });
       const startPromise = run.start();
       deliverUserPrompt(channel, {
         invocationId,
         runId,
         codecMessageId: 'm-icid-ae',
         serial: 's-icid-ae',
-        eventId,
+        inputEventId,
         publisherClientId: 'user-b',
       });
       await startPromise;
@@ -966,15 +966,15 @@ describe('AgentSession', () => {
     it('stamps x-ably-input-client-id from the triggering input event publisher on assistant publishes', async () => {
       const runId = 'run-icid-pipe';
       const invocationId = 'inv-icid-pipe';
-      const eventId = 'p-icid-pipe';
-      const run = createRunFromOpts(session, { runId, invocationId, eventId: eventId });
+      const inputEventId = 'p-icid-pipe';
+      const run = createRunFromOpts(session, { runId, invocationId, inputEventId: inputEventId });
       const startPromise = run.start();
       deliverUserPrompt(channel, {
         invocationId,
         runId,
         codecMessageId: 'm-icid-pipe',
         serial: 's-icid-pipe',
-        eventId,
+        inputEventId,
         publisherClientId: 'user-b',
       });
       await startPromise;
@@ -1039,14 +1039,14 @@ describe('AgentSession', () => {
       const runId = 'r-rg';
       const invocationId = 'inv-rg';
       const promptId = 'p-rg';
-      const run = createRunFromOpts(s, { runId, invocationId, eventId: promptId });
+      const run = createRunFromOpts(s, { runId, invocationId, inputEventId: promptId });
       const startPromise = run.start();
       deliverUserPrompt(ch, {
         invocationId,
         runId,
         codecMessageId: 'm-rg',
         serial: 's-rg',
-        eventId: promptId,
+        inputEventId: promptId,
         parent: 'orig-user',
         regenerates: 'orig-asst',
       });
@@ -1088,9 +1088,9 @@ describe('AgentSession', () => {
 
       const runId = 'r-pp';
       const invocationId = 'inv-pp';
-      const run = createRunFromOpts(s, { runId, invocationId, eventId: 'p-u1' });
+      const run = createRunFromOpts(s, { runId, invocationId, inputEventId: 'p-u1' });
       const startPromise = run.start();
-      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'user-1', serial: '01', eventId: 'p-u1' });
+      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'user-1', serial: '01', inputEventId: 'p-u1' });
       await startPromise;
 
       await run.pipe(streamOf({ type: 'text', text: 'reply' }));
@@ -1491,12 +1491,12 @@ describe('AgentSession', () => {
 
       const runId = 'r-multi';
       const invocationId = 'inv-multi';
-      const run = createRunFromOpts(s, { runId, invocationId, eventId: 'p-a' });
+      const run = createRunFromOpts(s, { runId, invocationId, inputEventId: 'p-a' });
       const startPromise = run.start();
 
       // Deliver with a duplicate to assert dedup.
-      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', eventId: 'p-a' });
-      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', eventId: 'p-a' });
+      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', inputEventId: 'p-a' });
+      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', inputEventId: 'p-a' });
 
       await startPromise;
       expect(run.view.messages).toHaveLength(1);
@@ -1517,7 +1517,7 @@ describe('AgentSession', () => {
 
       const runId = 'r-partial';
       const invocationId = 'inv-partial';
-      const run = createRunFromOpts(s, { runId, invocationId, eventId: 'p-a' });
+      const run = createRunFromOpts(s, { runId, invocationId, inputEventId: 'p-a' });
       const startPromise = run.start();
 
       // Deliver nothing — timeout fires before the event arrives.
@@ -1541,9 +1541,9 @@ describe('AgentSession', () => {
       const runId = 'r-drain';
       const invocationId = 'inv-drain';
       // Pre-buffer the trigger event before any listener is registered.
-      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'first', serial: '01', eventId: 'p-first' });
+      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'first', serial: '01', inputEventId: 'p-first' });
 
-      const run = createRunFromOpts(s, { runId, invocationId, eventId: 'p-first' });
+      const run = createRunFromOpts(s, { runId, invocationId, inputEventId: 'p-first' });
       const startPromise = run.start();
 
       // start() should resolve immediately by draining the buffer.
@@ -1570,8 +1570,8 @@ describe('AgentSession', () => {
 
       const runId = 'r-cont';
       const invocationId = 'inv-cont';
-      const eventId = 'p-cont';
-      const run = createRunFromOpts(s, { runId, invocationId, eventId: eventId });
+      const inputEventId = 'p-cont';
+      const run = createRunFromOpts(s, { runId, invocationId, inputEventId: inputEventId });
       const startPromise = run.start();
 
       // Deliver a synthetic continuation user-message — a `role: 'user'`
@@ -1583,7 +1583,7 @@ describe('AgentSession', () => {
         runId,
         codecMessageId: 'm-cont',
         serial: 's-cont',
-        eventId,
+        inputEventId,
         runContinue: true,
       });
 
@@ -1614,14 +1614,14 @@ describe('AgentSession', () => {
 
       const runId = 'r-over';
       const invocationId = 'inv-over';
-      const run = createRunFromOpts(s, { runId, invocationId, eventId: 'p-a' });
+      const run = createRunFromOpts(s, { runId, invocationId, inputEventId: 'p-a' });
       const startPromise = run.start();
-      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', eventId: 'p-a' });
+      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', inputEventId: 'p-a' });
       await startPromise;
 
       warn.mockClear();
       // Extra arrival after the lookup completed — must warn and drop.
-      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'b', serial: '02', eventId: 'p-b' });
+      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'b', serial: '02', inputEventId: 'p-b' });
 
       const overArrivalCalls = warn.mock.calls.filter(
         (call) => typeof call[0] === 'string' && call[0].includes('over-arrival'),
@@ -1676,9 +1676,9 @@ describe('AgentSession', () => {
 
       const runId = 'r-bad';
       const invocationId = 'inv-bad';
-      const run = createRunFromOpts(s, { runId, invocationId, eventId: 'p-a' });
+      const run = createRunFromOpts(s, { runId, invocationId, inputEventId: 'p-a' });
       const startPromise = run.start();
-      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', eventId: 'p-a' });
+      deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', inputEventId: 'p-a' });
 
       const rejection = await startPromise.catch((error: unknown) => error);
       expect(rejection).toBeErrorInfoWithCode(ErrorCode.PromptNotFound);
@@ -1699,7 +1699,7 @@ describe('AgentSession', () => {
 
       const runId = 'r-abort';
       const invocationId = 'inv-abort';
-      const run = createRunFromOpts(s, { runId, invocationId, eventId: 'p-a' });
+      const run = createRunFromOpts(s, { runId, invocationId, inputEventId: 'p-a' });
       const startPromise = run.start();
 
       // Cancel-by-runId triggers controller.abort() on the registered run.
@@ -1791,7 +1791,7 @@ describe('AgentSession', () => {
 // ---------------------------------------------------------------------------
 
 describe('AgentSession prompt lookup', () => {
-  it('start() succeeds when invocation has no eventIds (continuation send)', async () => {
+  it('start() succeeds when invocation has no inputEventIds (continuation send)', async () => {
     const channel = createMockChannel();
     const codec = createMockCodec();
     const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
@@ -1820,7 +1820,7 @@ describe('AgentSession prompt lookup', () => {
     await session.connect();
 
     // createRunFromOpts always passes messages: [] in invocation. Without
-    // eventIds, the lookup is skipped and start() completes synchronously.
+    // inputEventIds, the lookup is skipped and start() completes synchronously.
     const run = createRunFromOpts(session, { runId: 'run-1', invocationId: 'inv-1' });
     await expect(run.start()).resolves.toBeUndefined();
     session.close();
@@ -1840,7 +1840,7 @@ describe('AgentSession prompt lookup', () => {
     const run = createRunFromOpts(session, {
       runId: 'run-1',
       invocationId: 'inv-needs-prompt',
-      eventId: 'p-1', // signal that a prompt should be looked up
+      inputEventId: 'p-1', // signal that a prompt should be looked up
     });
 
     await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.PromptNotFound);
@@ -1888,7 +1888,7 @@ describe('Run.messages', () => {
     const run = createRunFromOpts(session, {
       runId: 'run-1',
       invocationId: 'inv-1',
-      eventId: 'p-fresh',
+      inputEventId: 'p-fresh',
     });
     const startPromise = run.start();
     deliverUserPrompt(ch, {
@@ -1896,7 +1896,7 @@ describe('Run.messages', () => {
       runId: 'run-1',
       codecMessageId: 'user-new',
       serial: 's-1',
-      eventId: 'p-fresh',
+      inputEventId: 'p-fresh',
     });
     await startPromise;
 
@@ -1919,7 +1919,7 @@ describe('Run.messages', () => {
     const run = createRunFromOpts(session, {
       runId: 'run-1',
       invocationId: 'inv-cont',
-      eventId: 'p-cont',
+      inputEventId: 'p-cont',
     });
     const startPromise = run.start();
     deliverUserPrompt(ch, {
@@ -1927,7 +1927,7 @@ describe('Run.messages', () => {
       runId: 'run-1',
       codecMessageId: 'm-cont',
       serial: 's-cont',
-      eventId: 'p-cont',
+      inputEventId: 'p-cont',
       runContinue: true,
     });
     await startPromise;
@@ -1951,7 +1951,7 @@ describe('Run.messages', () => {
     const run = createRunFromOpts(session, {
       runId: 'run-1',
       invocationId: 'inv-cont',
-      eventId: 'p-cont',
+      inputEventId: 'p-cont',
     });
     const startPromise = run.start();
     deliverUserPrompt(ch, {
@@ -1959,7 +1959,7 @@ describe('Run.messages', () => {
       runId: 'run-1',
       codecMessageId: 'm-cont',
       serial: 's-cont',
-      eventId: 'p-cont',
+      inputEventId: 'p-cont',
       runContinue: true,
     });
     await startPromise;
@@ -2000,7 +2000,7 @@ describe('Run.messages', () => {
     const run = createRunFromOpts(session, {
       runId: 'run-1',
       invocationId: 'inv-cont',
-      eventId: 'p-tool',
+      inputEventId: 'p-tool',
     });
     const startPromise = run.start();
     // Deliver a continuation tool-resolution wire message — produces zero
@@ -2010,7 +2010,7 @@ describe('Run.messages', () => {
       runId: 'run-1',
       codecMessageId: 'm-tool',
       serial: 's-tool',
-      eventId: 'p-tool',
+      inputEventId: 'p-tool',
       name: 'tool-output-available',
       runContinue: true,
     });
@@ -2328,7 +2328,7 @@ describe('Run.loadConversation', () => {
 
     const runId = 'run-2';
     const invocationId = 'inv-2';
-    const eventId = 'e-2';
+    const inputEventId = 'e-2';
     const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(ch),
       channelName: 'test-channel',
@@ -2343,10 +2343,10 @@ describe('Run.loadConversation', () => {
       runId,
       codecMessageId: 'msg-2',
       serial: 's-msg-2',
-      eventId,
+      inputEventId,
       parent: 'msg-1',
     });
-    const run = createRunFromOpts(session, { runId, invocationId, eventId });
+    const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
     await run.start();
 
     const history = await run.loadConversation();

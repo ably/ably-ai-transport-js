@@ -1627,8 +1627,8 @@ describe('ClientSession integration', () => {
     // effectively instant — a separate observer client would risk
     // missing the publish while it attaches.
     const observerChannel = serverClient.channels.get(channelName);
-    let resolveIds!: (ids: { runId: string; invocationId: string; eventId: string }) => void;
-    const idsPromise = new Promise<{ runId: string; invocationId: string; eventId: string }>((resolve) => {
+    let resolveIds!: (ids: { runId: string; invocationId: string; inputEventId: string }) => void;
+    const idsPromise = new Promise<{ runId: string; invocationId: string; inputEventId: string }>((resolve) => {
       resolveIds = resolve;
     });
     const observerListener = (msg: Ably.InboundMessage): void => {
@@ -1636,10 +1636,10 @@ describe('ClientSession integration', () => {
       if (headers[HEADER_ROLE] !== 'user') return;
       const runId = headers[HEADER_RUN_ID];
       const invocationId = headers[HEADER_INVOCATION_ID];
-      const eventId = headers['x-ably-event-id'];
-      if (!runId || !invocationId || !eventId) return;
+      const inputEventId = headers['x-ably-event-id'];
+      if (!runId || !invocationId || !inputEventId) return;
       observerChannel.unsubscribe(observerListener);
-      resolveIds({ runId, invocationId, eventId });
+      resolveIds({ runId, invocationId, inputEventId });
     };
     await observerChannel.subscribe(observerListener);
 
@@ -1651,14 +1651,14 @@ describe('ClientSession integration', () => {
       parts: [{ type: 'text', text: 'Need a run-start' }],
     });
 
-    const { runId, invocationId, eventId } = await idsPromise;
+    const { runId, invocationId, inputEventId } = await idsPromise;
 
     // Stand up the server-side run; its `start()` triggers the real
     // lookup (which finds the user message) and publishes run-start.
     const serverRun = createRunFromOpts(agentSession, {
       runId,
       invocationId,
-      eventId: eventId,
+      inputEventId: inputEventId,
     });
     await serverRun.start();
     const responseStream = textResponseStream('asst-rs-happy-1', 'text-rs-happy-1', 'Started');

@@ -506,10 +506,10 @@ export interface SendOptions {
    */
   invocationId?: string;
   /**
-   * Override the `eventId` for this send. Useful for deterministic
+   * Override the `inputEventId` for this send. Useful for deterministic
    * identification (tests). Defaults to `crypto.randomUUID()`.
    */
-  eventId?: string;
+  inputEventId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -578,7 +578,7 @@ export interface ActiveRun<TOutput extends CodecOutputEvent> {
    * agent can locate the exact triggering event. The Tree's winning-invocation
    * map and the run-end gate key on this value.
    */
-  eventId: string;
+  inputEventId: string;
   /** Cancel this specific run. Publishes a cancel message and closes the local stream. */
   cancel(): Promise<void>;
   /**

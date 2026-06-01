@@ -644,7 +644,7 @@ describe('ClientSession', () => {
       expect(secondMsgId).not.toBe('target-a');
     });
 
-    it('mints a distinct event-id per user-message; postBody.eventId is the last (primary trigger)', async () => {
+    it('mints a distinct event-id per user-message; postBody.inputEventId is the last (primary trigger)', async () => {
       await fix.session.view.sendInput([
         { kind: 'user-message', text: 'first' },
         { kind: 'user-message', text: 'second' },
@@ -664,10 +664,10 @@ describe('ClientSession', () => {
       await fix.fetch.waitForCalls(1);
       const body = fix.fetch.body(0);
       // POST carries only the primary (last) trigger event's id.
-      expect(body.eventId).toBe(stampedIds[1]);
+      expect(body.inputEventId).toBe(stampedIds[1]);
     });
 
-    it('fires HTTP POST with runId, invocationId, sessionName, eventId', async () => {
+    it('fires HTTP POST with runId, invocationId, sessionName, inputEventId', async () => {
       const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
       await fix.fetch.waitForCalls(1);
 
@@ -680,7 +680,7 @@ describe('ClientSession', () => {
       // resolved by the agent's prompt-lookup result. The agent reads the
       // input event's publisher `clientId` directly off the wire.
       expect(body.clientId).toBeUndefined();
-      expect(typeof body.eventId).toBe('string');
+      expect(typeof body.inputEventId).toBe('string');
       expect(body.history).toBeUndefined();
     });
 
@@ -855,7 +855,7 @@ describe('ClientSession', () => {
       expect(headers?.['x-ably-amend']).toBeUndefined();
     });
 
-    it('posts one eventId for the continuation trigger event', async () => {
+    it('posts one inputEventId for the continuation trigger event', async () => {
       const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
 
       const cont = await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], {
@@ -864,7 +864,7 @@ describe('ClientSession', () => {
 
       await fix.fetch.waitForCalls(2);
       const body = fix.fetch.body(1);
-      expect(typeof body.eventId).toBe('string');
+      expect(typeof body.inputEventId).toBe('string');
       expect(body.runId).toBe(cont.runId);
       expect(body.invocationId).toBe(cont.invocationId);
     });
@@ -884,7 +884,7 @@ describe('ClientSession', () => {
 
       await fix.fetch.waitForCalls(2);
       const body = fix.fetch.body(1);
-      expect(body.eventId).toBe(stampedId);
+      expect(body.inputEventId).toBe(stampedId);
     });
 
     it('continuation publishes carry HEADER_RUN_CONTINUE=true while fresh sends do not', async () => {
@@ -2053,7 +2053,7 @@ describe('ClientSession', () => {
       expect(headers?.[HEADER_CODEC_MESSAGE_ID]).toBeDefined();
     });
 
-    it('mints a fresh event-id for the regenerate input and forwards it in postBody.eventId', async () => {
+    it('mints a fresh event-id for the regenerate input and forwards it in postBody.inputEventId', async () => {
       await fix.session.view.sendInput({
         kind: 'regenerate',
         parent: 'u1',
@@ -2062,14 +2062,14 @@ describe('ClientSession', () => {
 
       await fix.fetch.waitForCalls(1);
       const body = fix.fetch.body(0);
-      expect(typeof body.eventId).toBe('string');
+      expect(typeof body.inputEventId).toBe('string');
 
       const enc = fix.codec.lastEncoder();
       const regeneratePublish = enc?.publishCalls.find(
         (c) => c.direction === 'input' && 'kind' in c.event && c.event.kind === 'regenerate',
       );
-      const eventId = regeneratePublish?.opts?.extras?.headers?.[HEADER_EVENT_ID];
-      expect(body.eventId).toBe(eventId);
+      const inputEventId = regeneratePublish?.opts?.extras?.headers?.[HEADER_EVENT_ID];
+      expect(body.inputEventId).toBe(inputEventId);
     });
   });
 

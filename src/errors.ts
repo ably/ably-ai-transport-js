@@ -80,10 +80,11 @@ export enum ErrorCode {
   RunStartDeadlineExceeded = 104009,
 
   /**
-   * The agent attached to the channel and waited for the user-prompt message
-   * (rewind + live wait) but `promptLookupTimeoutMs` lapsed without seeing it.
+   * The agent attached to the channel and waited for the input event(s) the
+   * invocation points at (rewind + live wait) but `promptLookupTimeoutMs`
+   * lapsed without seeing them.
    */
-  PromptNotFound = 104010,
+  InputEventNotFound = 104010,
 }
 
 /**

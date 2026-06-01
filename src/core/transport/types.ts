@@ -78,7 +78,7 @@ export interface AgentSessionOptions<
   /**
    * How long `Run.start()` will wait for the user-prompt message tagged with
    * the run's `invocationId` to arrive on the channel (rewind + live wait)
-   * before rejecting with `PromptNotFound`. The rejection bubbles up to the
+   * before rejecting with `InputEventNotFound`. The rejection bubbles up to the
    * developer's HTTP handler, which should surface it as a non-2xx response
    * so the client's pending send fails.
    * Default: 30000 (30 seconds).
@@ -96,8 +96,8 @@ export interface AgentSessionOptions<
    * messages that invocation buffered. When the limit is exceeded the
    * oldest invocation entry (and all its buffered messages) is FIFO-evicted
    * — the client whose prompt was dropped will fail their lookup with
-   * `PromptNotFound`. The eviction is logged at warn level so operators
-   * can correlate capacity pressure with `PromptNotFound` errors.
+   * `InputEventNotFound`. The eviction is logged at warn level so operators
+   * can correlate capacity pressure with `InputEventNotFound` errors.
    *
    * Default: 200.
    */

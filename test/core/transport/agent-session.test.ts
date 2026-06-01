@@ -1504,7 +1504,7 @@ describe('AgentSession', () => {
       s.close();
     });
 
-    it('rejects with PromptNotFound including "received X of Y" on partial collection at timeout', async () => {
+    it('rejects with InputEventNotFound including "received X of Y" on partial collection at timeout', async () => {
       const ch = createMockChannel();
       const c = codecWithFunctionalDecoder();
       const s = createAgentSession({
@@ -1522,7 +1522,7 @@ describe('AgentSession', () => {
 
       // Deliver nothing — timeout fires before the event arrives.
       const rejection = await startPromise.catch((error: unknown) => error);
-      expect(rejection).toBeErrorInfoWithCode(ErrorCode.PromptNotFound);
+      expect(rejection).toBeErrorInfoWithCode(ErrorCode.InputEventNotFound);
       expect((rejection as Ably.ErrorInfo).message).toContain('received 0 of 1');
       s.close();
     });
@@ -1681,7 +1681,7 @@ describe('AgentSession', () => {
       deliverUserPrompt(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', inputEventId: 'p-a' });
 
       const rejection = await startPromise.catch((error: unknown) => error);
-      expect(rejection).toBeErrorInfoWithCode(ErrorCode.PromptNotFound);
+      expect(rejection).toBeErrorInfoWithCode(ErrorCode.InputEventNotFound);
       expect((rejection as Ably.ErrorInfo).message).toContain('decode failed');
       s.close();
     });
@@ -1826,7 +1826,7 @@ describe('AgentSession prompt lookup', () => {
     session.close();
   });
 
-  it('start() rejects with PromptNotFound when timeout lapses', async () => {
+  it('start() rejects with InputEventNotFound when timeout lapses', async () => {
     const channel = createMockChannel();
     const codec = createMockCodec();
     const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
@@ -1843,7 +1843,7 @@ describe('AgentSession prompt lookup', () => {
       inputEventId: 'p-1', // signal that a prompt should be looked up
     });
 
-    await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.PromptNotFound);
+    await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.InputEventNotFound);
     // The failure surfaces purely as a `Run.start()` rejection; the agent
     // must not publish a phantom `ai-run-end` (no `ai-run-start` was ever
     // published, and `run-end` without `run-start` would break the

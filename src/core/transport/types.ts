@@ -568,15 +568,15 @@ export interface ActiveRun<TOutput extends CodecOutputEvent> {
   /**
    * The invocation's unique identifier. Stamped on the published user
    * message and forwarded in the HTTP POST body so the agent's run
-   * lifecycle events (`ai-run-start`, `ai-run-end`) can echo it
-   * back. The run-end gate keys on this value.
+   * lifecycle events (`ai-run-start`, `ai-run-end`) can echo it back. The
+   * stream router keys on this value to filter output events to the bound
+   * invocation.
    */
   invocationId: string;
   /**
    * The input event's unique identifier. Stamped on the primary input event
    * published to the channel and forwarded in the HTTP POST body so the
-   * agent can locate the exact triggering event. The Tree's winning-invocation
-   * map and the run-end gate key on this value.
+   * agent can locate the exact triggering event.
    */
   inputEventId: string;
   /** Cancel this specific run. Publishes a cancel message and closes the local stream. */
@@ -783,17 +783,6 @@ export interface Tree<TProjection> {
     | undefined;
 
   // --- Events ---
-
-  /**
-   * Return the most recent continuation invocation observed for `runId`,
-   * or `undefined` if no continuation `ai-run-start` has been seen.
-   * Updated on every continuation run-start (wire `run-continue: 'true'`).
-   * Used by the client-session run-end gate so observer clients can accept
-   * a continuation's terminal `run-end`.
-   * @param runId - The run-id to query.
-   * @returns The continuation invocation-id, or undefined.
-   */
-  getLatestContinuationInvocation(runId: string): string | undefined;
 
   /** Subscribe to tree structural changes (Run insert, delete, sort-reorder). */
   on(event: 'update', handler: () => void): () => void;

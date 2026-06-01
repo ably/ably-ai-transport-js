@@ -787,7 +787,7 @@ describe('AgentSession integration', () => {
    *
    * The agent registers its prompt-lookup listener BEFORE the client
    * publishes the user message — exercising the live-wait path inside
-   * `lookupUserPrompt` (not the rewind/buffer-drain path that other
+   * `lookupInputEvents` (not the rewind/buffer-drain path that other
    * tests in this file cover). The lookup must pick the message up as
    * it arrives live and resolve `run.start()`.
    *
@@ -859,7 +859,7 @@ describe('AgentSession integration', () => {
    *
    * The client publishes two user messages on the channel under a single
    * invocation-id (each as its own Ably message). The agent's
-   * `lookupUserPrompt` must collect both before resolving, surface them in
+   * `lookupInputEvents` must collect both before resolving, surface them in
    * `run.view.messages` ordered by publish order, then the agent can pipe
    * an assistant response that the client receives.
    *

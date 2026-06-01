@@ -238,6 +238,11 @@ const loadRunProjection = async <
  * messages replayed via channel rewind on attach reach the lookup — no
  * separate history fetch needed.
  *
+ * Scope: this awaits the data-carrying input events a send publishes —
+ * fresh prompts, edits, regenerates, tool results, and approvals. Control
+ * events (cancel etc.) carry no `x-ably-event-id`, are dispatched
+ * separately, and never enter this lookup.
+ *
  * Each client-published event in a send (user-message AND amend events
  * such as tool-approval responses and client tool outputs) is stamped
  * with its own `x-ably-event-id`.
@@ -278,7 +283,7 @@ const loadRunProjection = async <
  *   carries the publisher's Ably-level `clientId` from that same message — the
  *   source of `inputClientId` re-stamping on the agent's published events.
  */
-interface PromptLookupResult<TMessage> {
+interface InputEventLookupResult<TMessage> {
   nodes: MessageNode<TMessage>[];
   firstHeaders?: Record<string, string>;
   firstClientId?: string;
@@ -292,7 +297,7 @@ interface PromptLookupResult<TMessage> {
   rawMessages: Ably.InboundMessage[];
 }
 
-const lookupUserPrompt = async <
+const lookupInputEvents = async <
   TInput extends CodecInputEvent,
   TOutput extends CodecOutputEvent,
   TProjection,
@@ -306,7 +311,7 @@ const lookupUserPrompt = async <
   timeoutMs: number;
   signal: AbortSignal;
   logger: Logger | undefined;
-}): Promise<PromptLookupResult<TMessage>> => {
+}): Promise<InputEventLookupResult<TMessage>> => {
   const { register, codec, invocationId, runId, expectedInputEventIds, timeoutMs, signal, logger } = opts;
   const expectedSet = new Set(expectedInputEventIds);
   const expectedCount = expectedSet.size;
@@ -343,7 +348,7 @@ const lookupUserPrompt = async <
     }));
   };
 
-  return new Promise<PromptLookupResult<TMessage>>((resolve, reject) => {
+  return new Promise<InputEventLookupResult<TMessage>>((resolve, reject) => {
     let settled = false;
     // Dedupe across rewind-redelivery: rewind may surface a message the
     // listener also saw live. Scoped to the active lookup so it cannot
@@ -432,7 +437,7 @@ const lookupUserPrompt = async <
         if (a.serial > b.serial) return 1;
         return 0;
       });
-      logger?.debug('lookupUserPrompt(); collected user-prompt messages', {
+      logger?.debug('lookupInputEvents(); collected input events', {
         runId,
         invocationId,
         count: collected.length,
@@ -515,19 +520,19 @@ class DefaultAgentSession<
    * replayed via channel rewind (and live messages alike) reach the right
    * lookup without each lookup having to subscribe separately.
    */
-  private readonly _pendingPromptLookups = new Map<string, (msg: Ably.InboundMessage) => void>();
+  private readonly _pendingInputEventLookups = new Map<string, (msg: Ably.InboundMessage) => void>();
   /**
    * User-prompt messages buffered by invocation-id when no lookup callback
    * was registered at delivery time. Each invocation-id maps to an ordered
    * array because a single multi-message `send()` publishes N Ably messages
    * sharing one invocation-id. Rewind replays user messages on attach —
    * before `run.start()` runs — so without buffering they would be dropped.
-   * `_registerPromptListener` drains the buffer on registration. FIFO
-   * eviction at `_promptBufferLimit` invocation entries (each entry counts
+   * `_registerInputEventListener` drains the buffer on registration. FIFO
+   * eviction at `_inputEventBufferLimit` invocation entries (each entry counts
    * once regardless of array length).
    */
-  private readonly _promptBuffer = new Map<string, Ably.InboundMessage[]>();
-  private readonly _promptBufferLimit: number;
+  private readonly _inputEventBuffer = new Map<string, Ably.InboundMessage[]>();
+  private readonly _inputEventBufferLimit: number;
   /**
    * Bounded FIFO map of invocation-ids whose lookup has resolved
    * successfully, valued by the number of event-ids the lookup resolved at.
@@ -541,7 +546,7 @@ class DefaultAgentSession<
   private readonly _completedLookupInvocationIds = new Map<string, number>();
   private readonly _completedLookupInvocationIdsLimit = 256;
   private readonly _channelListener: (msg: Ably.InboundMessage) => void;
-  private readonly _promptLookupTimeoutMs: number;
+  private readonly _inputEventLookupTimeoutMs: number;
 
   private _state = SessionState.READY;
   private _connectPromise: Promise<void> | undefined;
@@ -566,8 +571,8 @@ class DefaultAgentSession<
     this._logger = options.logger?.withContext({ component: 'AgentSession' });
     this._onError = options.onError;
     this._runManager = createRunManager(this._channel, this._logger);
-    this._promptLookupTimeoutMs = options.promptLookupTimeoutMs ?? 30000;
-    this._promptBufferLimit = options.promptBufferLimit ?? 200;
+    this._inputEventLookupTimeoutMs = options.promptLookupTimeoutMs ?? 30000;
+    this._inputEventBufferLimit = options.promptBufferLimit ?? 200;
 
     this._channelListener = (msg: Ably.InboundMessage) => {
       this._handleChannelMessage(msg);
@@ -642,20 +647,20 @@ class DefaultAgentSession<
    * @param callback - Invoked once per matching Ably message, in buffer-insertion order for drained entries.
    * @returns Unregister function. Safe to call multiple times.
    */
-  private _registerPromptListener(invocationId: string, callback: (msg: Ably.InboundMessage) => void): () => void {
-    this._pendingPromptLookups.set(invocationId, callback);
+  private _registerInputEventListener(invocationId: string, callback: (msg: Ably.InboundMessage) => void): () => void {
+    this._pendingInputEventLookups.set(invocationId, callback);
     // Drain any buffered user-prompt messages for this invocation-id —
     // rewind replays user messages on attach before run.start() can
     // register the callback. Without this drain, the lookup waits the
     // full `promptLookupTimeoutMs` for a live arrival that never comes.
-    const buffered = this._promptBuffer.get(invocationId);
+    const buffered = this._inputEventBuffer.get(invocationId);
     if (buffered) {
-      this._promptBuffer.delete(invocationId);
+      this._inputEventBuffer.delete(invocationId);
       for (const m of buffered) callback(m);
     }
     return () => {
-      if (this._pendingPromptLookups.get(invocationId) === callback) {
-        this._pendingPromptLookups.delete(invocationId);
+      if (this._pendingInputEventLookups.get(invocationId) === callback) {
+        this._pendingInputEventLookups.delete(invocationId);
       }
     };
   }
@@ -697,8 +702,8 @@ class DefaultAgentSession<
       reg.controller.abort();
     }
     this._registeredRuns.clear();
-    this._pendingPromptLookups.clear();
-    this._promptBuffer.clear();
+    this._pendingInputEventLookups.clear();
+    this._inputEventBuffer.clear();
     this._completedLookupInvocationIds.clear();
     this._runManager.close();
     this._logger?.debug('DefaultAgentSession.close(); session closed');
@@ -828,7 +833,7 @@ class DefaultAgentSession<
       const headers = getHeaders(msg);
       const invocationId = headers[HEADER_INVOCATION_ID];
       if (invocationId && headers[HEADER_EVENT_ID] !== undefined) {
-        const listener = this._pendingPromptLookups.get(invocationId);
+        const listener = this._pendingInputEventLookups.get(invocationId);
         if (listener) {
           listener(msg);
         } else {
@@ -842,7 +847,7 @@ class DefaultAgentSession<
           const completedExpectedCount = this._completedLookupInvocationIds.get(invocationId);
           if (completedExpectedCount !== undefined) {
             this._logger?.warn(
-              'DefaultAgentSession._handleChannelMessage(); over-arrival prompt-bearing message after lookup completed',
+              'DefaultAgentSession._handleChannelMessage(); over-arrival input event after lookup completed',
               {
                 invocationId,
                 expectedCount: completedExpectedCount,
@@ -851,33 +856,33 @@ class DefaultAgentSession<
             );
             return;
           }
-          // Buffer for a future `_registerPromptListener` call. This is
+          // Buffer for a future `_registerInputEventListener` call. This is
           // load-bearing for the "agent attaches after publish" scenario
           // where channel rewind delivers user messages before
           // `run.start()` runs.
-          const existing = this._promptBuffer.get(invocationId);
+          const existing = this._inputEventBuffer.get(invocationId);
           if (existing) {
             existing.push(msg);
           } else {
-            if (this._promptBuffer.size >= this._promptBufferLimit) {
+            if (this._inputEventBuffer.size >= this._inputEventBufferLimit) {
               // FIFO eviction: drop the oldest invocation entry (and all
               // its buffered messages). Clients whose prompt was evicted
               // will fail their lookup with `InputEventNotFound` — this warn
               // is the only operator-visible signal that capacity caused
               // the failure.
-              const oldestKey = this._promptBuffer.keys().next().value;
+              const oldestKey = this._inputEventBuffer.keys().next().value;
               if (oldestKey !== undefined) {
-                this._promptBuffer.delete(oldestKey);
+                this._inputEventBuffer.delete(oldestKey);
                 this._logger?.warn(
-                  'DefaultAgentSession._handleChannelMessage(); prompt buffer full, dropping oldest entry',
+                  'DefaultAgentSession._handleChannelMessage(); input-event buffer full, dropping oldest entry',
                   {
                     evictedInvocationId: oldestKey,
-                    limit: this._promptBufferLimit,
+                    limit: this._inputEventBufferLimit,
                   },
                 );
               }
             }
-            this._promptBuffer.set(invocationId, [msg]);
+            this._inputEventBuffer.set(invocationId, [msg]);
           }
         }
       }
@@ -918,7 +923,7 @@ class DefaultAgentSession<
   ): Run<TInput, TOutput, TProjection, TMessage> {
     const runId = invocation.runId;
     const invocationId = invocation.invocationId;
-    const promptLookupTimeoutMs = this._promptLookupTimeoutMs;
+    const inputEventLookupTimeoutMs = this._inputEventLookupTimeoutMs;
     const { onMessage, onCancelled, onCancel, onError: runOnError, signal: externalSignal } = runtime;
 
     const controller = new AbortController();
@@ -948,7 +953,7 @@ class DefaultAgentSession<
     const channel = this._channel;
     const registeredRuns = this._registeredRuns;
     const requireConnected = this._requireConnected.bind(this);
-    const registerPromptListener = this._registerPromptListener.bind(this);
+    const registerInputEventListener = this._registerInputEventListener.bind(this);
     const recordCompletedLookup = this._recordCompletedLookup.bind(this);
     const inputEventId = invocation.inputEventId;
 
@@ -1039,15 +1044,15 @@ class DefaultAgentSession<
         // continuation flag) before publishing run-start. Skip when
         // promptLookupTimeoutMs === 0 (tests and in-process drivers) or
         // when no inputEventId is set (invocation requires no channel lookup).
-        if (inputEventId && promptLookupTimeoutMs > 0) {
+        if (inputEventId && inputEventLookupTimeoutMs > 0) {
           try {
-            const found = await lookupUserPrompt<TInput, TOutput, TProjection, TMessage>({
-              register: (callback) => registerPromptListener(invocationId, callback),
+            const found = await lookupInputEvents<TInput, TOutput, TProjection, TMessage>({
+              register: (callback) => registerInputEventListener(invocationId, callback),
               codec,
               invocationId,
               runId,
               expectedInputEventIds: [inputEventId],
-              timeoutMs: promptLookupTimeoutMs,
+              timeoutMs: inputEventLookupTimeoutMs,
               signal,
               logger,
             });
@@ -1071,7 +1076,7 @@ class DefaultAgentSession<
             // `ai-run-end` without a preceding `ai-run-start` would break
             // the lifecycle invariant for other channel observers.
             registeredRuns.delete(runId);
-            logger?.error('Run.start(); prompt lookup failed', { runId, invocationId });
+            logger?.error('Run.start(); input-event lookup failed', { runId, invocationId });
             throw errInfo;
           }
         }

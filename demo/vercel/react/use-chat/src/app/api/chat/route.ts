@@ -40,7 +40,7 @@ export async function POST(req: Request) {
   const run = session.createRun(invocation, { signal: req.signal });
 
   await run.start();
-  await run.loadProjection();
+  await run.loadConversation();
 
   const result = streamText({
     model: createModel(),

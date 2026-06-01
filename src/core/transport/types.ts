@@ -260,6 +260,22 @@ export interface RunView<TMessage> {
   readonly messages: MessageNode<TMessage>[];
 }
 
+/** Options for {@link Run.loadConversation}. */
+export interface LoadConversationOptions {
+  /**
+   * Number of wire messages to request per history page.
+   * Default: 200.
+   */
+  pageLimit?: number;
+  /**
+   * Maximum total wire messages to collect across all pages before
+   * stopping pagination. A safety bound so a long-lived channel
+   * doesn't exhaust memory.
+   * Default: 2000.
+   */
+  maxMessages?: number;
+}
+
 /** A server-side run with explicit lifecycle methods. */
 export interface Run<TEvent, TProjection, TMessage> {
   /** The run's unique identifier. */
@@ -272,14 +288,15 @@ export interface Run<TEvent, TProjection, TMessage> {
   readonly view: RunView<TMessage>;
 
   /**
-   * The conversation messages this run should feed to the model — the
-   * prior-conversation history overlaid with codec-folded state for any
-   * continuation tool resolutions, followed by the user-prompt messages
-   * looked up on the channel for this invocation.
+   * The conversation messages this run should feed to the model.
    *
-   * Before {@link start} resolves: equals the invocation's `history`
-   * (no view contribution yet). After {@link start}: continuation
-   * overlay applied + the run's own view-message contributions appended.
+   * - Before {@link start} resolves: empty (no view contribution yet).
+   * - After {@link start}: the user-prompt messages looked up on the
+   *   channel for this invocation.
+   * - After {@link loadConversation}: the full multi-turn conversation —
+   *   all ancestor run messages followed by the current run's messages,
+   *   oldest turn first. This is the value to pass to the LLM when the
+   *   agent handles a reply in an ongoing conversation.
    *
    * Each access returns a fresh array — safe to mutate without affecting
    * internal Run state.
@@ -332,6 +349,22 @@ export interface Run<TEvent, TProjection, TMessage> {
    *   {@link Codec.getMessages}.
    */
   loadProjection(): Promise<TProjection>;
+
+  /**
+   * Reconstruct the full multi-turn conversation by walking the ancestor
+   * run chain and concatenating each run's messages, oldest turn first.
+   *
+   * Performs a single `channel.history()` scan and builds projections for
+   * all ancestor runs plus the current run. After this call:
+   * - {@link Run.messages} returns the complete conversation (all ancestor
+   *   turns followed by the current run's messages), making it ready to
+   *   pass directly to the LLM.
+   * - The current run's projection is cached so {@link Run.pipe} works
+   *   correctly without a separate {@link Run.loadProjection} call.
+   * @param options - Optional tuning for history pagination.
+   * @returns The same message list now accessible via {@link Run.messages}.
+   */
+  loadConversation(options?: LoadConversationOptions): Promise<TMessage[]>;
 
   /** Publish run-end event to the channel and clean up. */
   end(reason: RunEndReason): Promise<void>;

@@ -15,9 +15,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   EVENT_CANCEL,
+  EVENT_RUN_START,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
+  HEADER_FORK_OF,
   HEADER_INVOCATION_ID,
+  HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_ID,
@@ -1981,6 +1984,394 @@ describe('Run.messages', () => {
     const runStart = ch.publishCalls.find((m) => m.name === 'ai-run-start');
     const startHeaders = (runStart?.extras as { headers?: Record<string, string> } | undefined)?.headers;
     expect(startHeaders?.['x-ably-run-continue']).toBe('true');
+    session.close();
+  });
+
+  it('returns the full conversation after loadConversation() is called', async () => {
+    // Before loadConversation: run.messages returns only the current run's
+    // view messages. After loadConversation: run.messages returns the full
+    // multi-turn conversation (ancestor runs + current run).
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
+    ch.history.mockImplementation(() => {
+      const items = [
+        makeContentMsg('run-2', 'msg-2', 's-04'),
+        makeRunStartMsg('run-2', 'msg-1'),
+        makeContentMsg('run-1', 'msg-1', 's-02'),
+        makeRunStartMsg('run-1'),
+      ];
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
+      const page = { items, hasNext: () => false, next: () => Promise.resolve(page) };
+      return Promise.resolve(page);
+    });
+
+    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'msg-after-conversation',
+      codec,
+      promptLookupTimeoutMs: 0,
+    });
+    await session.connect();
+    const run = createRunFromOpts(session, { runId: 'run-2' });
+    await run.start();
+
+    // Before loadConversation: only the current run's (empty) content.
+    expect(run.messages).toEqual([]);
+
+    await run.loadConversation();
+
+    // After loadConversation: full conversation including ancestor run-1.
+    expect(run.messages).toEqual([
+      { id: 'msg-1', content: 'msg-1' },
+      { id: 'msg-2', content: 'msg-2' },
+    ]);
+    // Each access returns a fresh array — mutations don't bleed back.
+    run.messages.push({ id: 'leak', content: 'no' });
+    expect(run.messages).toEqual([
+      { id: 'msg-1', content: 'msg-1' },
+      { id: 'msg-2', content: 'msg-2' },
+    ]);
+    session.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Helpers for Run.loadConversation tests
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a synthetic ai-run-start wire message for the given runId.
+ * The second argument is the HEADER_PARENT value — the codec-message-id
+ * of the last message from the parent run (not the run-id itself).
+ * `loadConversation` resolves the parent runId by looking up that
+ * codec-message-id in its codecMsgToRunId index.
+ * @param runId - The run identifier stamped on the start event.
+ * @param parentCodecMsgId - Optional codec-message-id of the parent message.
+ * @param opts - Optional regenerates / forkOf codec-message-ids.
+ * @param opts.regenerates - Codec-message-id of the message this run regenerates.
+ * @param opts.forkOf - Codec-message-id of the message this run forks from.
+ * @returns A synthetic inbound message mimicking an ai-run-start wire event.
+ */
+const makeRunStartMsg = (
+  runId: string,
+  parentCodecMsgId?: string,
+  opts?: { regenerates?: string; forkOf?: string },
+): Ably.InboundMessage => {
+  const headers: Record<string, string> = { [HEADER_RUN_ID]: runId };
+  if (parentCodecMsgId !== undefined) headers[HEADER_PARENT] = parentCodecMsgId;
+  if (opts?.regenerates !== undefined) headers[HEADER_MSG_REGENERATE] = opts.regenerates;
+  if (opts?.forkOf !== undefined) headers[HEADER_FORK_OF] = opts.forkOf;
+  return {
+    name: EVENT_RUN_START,
+    serial: `s-start-${runId}`,
+    extras: { headers },
+  } as unknown as Ably.InboundMessage;
+};
+
+/**
+ * Build a synthetic content wire message for a run. The functional decoder
+ * folds it into a TestMessage with id=codecMsgId.
+ * @param runId - The run that owns this message.
+ * @param codecMsgId - The message identifier (becomes the TestMessage id).
+ * @param serial - Optional serial override; defaults to `s-<codecMsgId>`.
+ * @returns A synthetic inbound message mimicking a codec content wire event.
+ */
+const makeContentMsg = (runId: string, codecMsgId: string, serial?: string): Ably.InboundMessage =>
+  ({
+    name: 'text',
+    serial: serial ?? `s-${codecMsgId}`,
+    extras: { headers: { [HEADER_RUN_ID]: runId, [HEADER_CODEC_MESSAGE_ID]: codecMsgId } },
+  }) as unknown as Ably.InboundMessage;
+
+// ---------------------------------------------------------------------------
+// Run.loadConversation
+// ---------------------------------------------------------------------------
+
+describe('Run.loadConversation', () => {
+  it('returns current run messages for a root run with no ancestors', async () => {
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
+    ch.history.mockImplementation(() => {
+      // Ably returns newest-first.
+      const items = [makeContentMsg('run-1', 'msg-1'), makeRunStartMsg('run-1')];
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
+      const page = { items, hasNext: () => false, next: () => Promise.resolve(page) };
+      return Promise.resolve(page);
+    });
+
+    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'test-channel',
+      codec,
+      promptLookupTimeoutMs: 0,
+    });
+    await session.connect();
+    const run = createRunFromOpts(session, { runId: 'run-1' });
+    await run.start();
+
+    const history = await run.loadConversation();
+    expect(history).toEqual([{ id: 'msg-1', content: 'msg-1' }]);
+    // Side effect: run.messages now returns the full conversation.
+    expect(run.messages).toEqual(history);
+    session.close();
+  });
+
+  it('concatenates ancestor messages then current run messages in a two-turn conversation', async () => {
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+    // run-1 (root) → run-2 (current). run-2's ai-run-start carries HEADER_PARENT='msg-1'
+    // so loadConversation resolves run-1 as run-2's parent via the codecMsgToRunId index.
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
+    ch.history.mockImplementation(() => {
+      // Ably returns newest-first; loadConversation sorts chronologically internally.
+      const items = [
+        makeContentMsg('run-2', 'msg-2', 's-04'),
+        makeRunStartMsg('run-2', 'msg-1'),
+        makeContentMsg('run-1', 'msg-1', 's-02'),
+        makeRunStartMsg('run-1'),
+      ];
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
+      const page = { items, hasNext: () => false, next: () => Promise.resolve(page) };
+      return Promise.resolve(page);
+    });
+
+    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'test-channel',
+      codec,
+      promptLookupTimeoutMs: 0,
+    });
+    await session.connect();
+    const run = createRunFromOpts(session, { runId: 'run-2' });
+    await run.start();
+
+    const history = await run.loadConversation();
+    expect(history).toEqual([
+      { id: 'msg-1', content: 'msg-1' },
+      { id: 'msg-2', content: 'msg-2' },
+    ]);
+    expect(run.messages).toEqual(history);
+    session.close();
+  });
+
+  it('walks the full ancestor chain oldest-first for a three-turn conversation', async () => {
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+    // run-1 → run-2 → run-3 (current).
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
+    ch.history.mockImplementation(() => {
+      const items = [
+        makeContentMsg('run-3', 'msg-3', 's-06'),
+        makeRunStartMsg('run-3', 'msg-2'),
+        makeContentMsg('run-2', 'msg-2', 's-04'),
+        makeRunStartMsg('run-2', 'msg-1'),
+        makeContentMsg('run-1', 'msg-1', 's-02'),
+        makeRunStartMsg('run-1'),
+      ];
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
+      const page = { items, hasNext: () => false, next: () => Promise.resolve(page) };
+      return Promise.resolve(page);
+    });
+
+    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'test-channel',
+      codec,
+      promptLookupTimeoutMs: 0,
+    });
+    await session.connect();
+    const run = createRunFromOpts(session, { runId: 'run-3' });
+    await run.start();
+
+    const history = await run.loadConversation();
+    expect(history).toEqual([
+      { id: 'msg-1', content: 'msg-1' },
+      { id: 'msg-2', content: 'msg-2' },
+      { id: 'msg-3', content: 'msg-3' },
+    ]);
+    expect(run.messages).toEqual(history);
+    session.close();
+  });
+
+  it('truncates the ancestor before the regenerated assistant message', async () => {
+    // run-1 has [msg-1-user, msg-2-asst].
+    // run-2 regenerates msg-2-asst — its ai-run-start carries:
+    //   HEADER_PARENT='msg-1-user'  (so run-1 is the parent)
+    //   HEADER_MSG_REGENERATE='msg-2-asst'  (the message being replaced)
+    // The ancestor fold for run-1 must stop before msg-2-asst.
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
+    ch.history.mockImplementation(() => {
+      const items = [
+        makeRunStartMsg('run-2', 'msg-1-user', { regenerates: 'msg-2-asst' }),
+        makeContentMsg('run-1', 'msg-2-asst', 's-03'),
+        makeContentMsg('run-1', 'msg-1-user', 's-02'),
+        makeRunStartMsg('run-1'),
+      ];
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
+      const page = { items, hasNext: () => false, next: () => Promise.resolve(page) };
+      return Promise.resolve(page);
+    });
+
+    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'test-channel',
+      codec,
+      promptLookupTimeoutMs: 0,
+    });
+    await session.connect();
+    const run = createRunFromOpts(session, { runId: 'run-2' });
+    await run.start();
+
+    const history = await run.loadConversation();
+    // run-1 is truncated before msg-2-asst; run-2 has no content yet.
+    expect(history).toEqual([{ id: 'msg-1-user', content: 'msg-1-user' }]);
+    expect(run.messages).toEqual(history);
+    session.close();
+  });
+
+  it('truncates the ancestor at the edited user message (forkOf)', async () => {
+    // run-1 has [msg-1-user, msg-2-asst, msg-3-user, msg-4-asst].
+    // run-2 edits msg-3-user — its ai-run-start carries:
+    //   HEADER_PARENT='msg-2-asst'  (the message before the edited user prompt)
+    //   HEADER_FORK_OF='msg-3-user'  (the message being replaced)
+    // The ancestor fold for run-1 must stop before msg-3-user.
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
+    ch.history.mockImplementation(() => {
+      const items = [
+        makeRunStartMsg('run-2', 'msg-2-asst', { forkOf: 'msg-3-user' }),
+        makeContentMsg('run-1', 'msg-4-asst', 's-05'),
+        makeContentMsg('run-1', 'msg-3-user', 's-04'),
+        makeContentMsg('run-1', 'msg-2-asst', 's-03'),
+        makeContentMsg('run-1', 'msg-1-user', 's-02'),
+        makeRunStartMsg('run-1'),
+      ];
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
+      const page = { items, hasNext: () => false, next: () => Promise.resolve(page) };
+      return Promise.resolve(page);
+    });
+
+    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'test-channel',
+      codec,
+      promptLookupTimeoutMs: 0,
+    });
+    await session.connect();
+    const run = createRunFromOpts(session, { runId: 'run-2' });
+    await run.start();
+
+    const history = await run.loadConversation();
+    // run-1 is truncated before msg-3-user (the edited message); run-2 has no content yet.
+    expect(history).toEqual([
+      { id: 'msg-1-user', content: 'msg-1-user' },
+      { id: 'msg-2-asst', content: 'msg-2-asst' },
+    ]);
+    expect(run.messages).toEqual(history);
+    session.close();
+  });
+
+  it('resolves parent via resolvedParent fallback when ai-run-start is absent from history (indexing lag)', async () => {
+    // run-2's ai-run-start has not yet been indexed in channel history (rare Ably lag).
+    // The prompt-lookup captured HEADER_PARENT='msg-1' (the last message from run-1),
+    // so resolvedParent='msg-1' is available as a fallback seed for the chain.
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
+    ch.history.mockImplementation(() => {
+      // History has run-1 content but no run-2 ai-run-start.
+      const items = [makeContentMsg('run-1', 'msg-1', 's-02'), makeRunStartMsg('run-1')];
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
+      const page = { items, hasNext: () => false, next: () => Promise.resolve(page) };
+      return Promise.resolve(page);
+    });
+
+    const runId = 'run-2';
+    const invocationId = 'inv-2';
+    const eventId = 'e-2';
+    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'test-channel',
+      codec,
+      promptLookupTimeoutMs: 5000,
+    });
+    await session.connect();
+    // Deliver the user prompt before start() so it buffers and resolves during start().
+    // parent='msg-1' sets resolvedParent which acts as the chain-seed fallback.
+    deliverUserPrompt(ch, {
+      invocationId,
+      runId,
+      codecMessageId: 'msg-2',
+      serial: 's-msg-2',
+      eventId,
+      parent: 'msg-1',
+    });
+    const run = createRunFromOpts(session, { runId, invocationId, eventId });
+    await run.start();
+
+    const history = await run.loadConversation();
+    // run-1's msg-1 comes from ancestor fold; msg-2 from liveLookupMessages via loadRunProjection.
+    expect(history).toEqual([
+      { id: 'msg-1', content: 'msg-1' },
+      { id: 'msg-2', content: 'msg-2' },
+    ]);
+    expect(run.messages).toEqual(history);
+    session.close();
+  });
+
+  it('terminates without hanging when a cycle is detected in the ancestor chain', async () => {
+    // run-1's ai-run-start has HEADER_PARENT='msg-1', which is also owned by run-1
+    // (makeContentMsg('run-1','msg-1')). This makes codecMsgToRunId.get('msg-1') = 'run-1',
+    // so runMap.get('run-1').parentRunId = 'run-1' — a self-referential cycle.
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
+    ch.history.mockImplementation(() => {
+      const items = [makeContentMsg('run-1', 'msg-1'), makeRunStartMsg('run-1', 'msg-1')];
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
+      const page = { items, hasNext: () => false, next: () => Promise.resolve(page) };
+      return Promise.resolve(page);
+    });
+
+    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'test-channel',
+      codec,
+      promptLookupTimeoutMs: 0,
+    });
+    await session.connect();
+    const run = createRunFromOpts(session, { runId: 'run-1' });
+    await run.start();
+
+    // Cycle guard prevents the while loop from running forever.
+    const history = await run.loadConversation();
+    expect(Array.isArray(history)).toBe(true);
+    expect(run.messages).toEqual(history);
+    session.close();
+  });
+
+  it('throws InvalidArgument when the run signal is already aborted', async () => {
+    const controller = new AbortController();
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'test-channel',
+      codec,
+      promptLookupTimeoutMs: 0,
+    });
+    await session.connect();
+    const run = createRunFromOpts(session, { runId: 'run-abort', signal: controller.signal });
+    await run.start();
+
+    controller.abort();
+
+    await expect(run.loadConversation()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     session.close();
   });
 });

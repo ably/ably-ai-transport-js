@@ -458,7 +458,7 @@ export interface ClientSessionOptions<
   messages?: TMessage[];
 
   /**
-   * How long `sendMessage()` / `sendEvent()` will wait for the agent's `ai-run-start` event for
+   * How long `sendMessage()` / `sendInput()` will wait for the agent's `ai-run-start` event for
    * the run+invocation before rejecting with `RunStartDeadlineExceeded`.
    * Default: 30000 (30 seconds).
    */
@@ -558,7 +558,7 @@ export type RunLifecycleEvent =
 // Active run handle
 // ---------------------------------------------------------------------------
 
-/** A handle to an active client-side run, returned by `sendMessage()`, `sendEvent()`, `regenerate()`, and `edit()`. */
+/** A handle to an active client-side run, returned by `sendMessage()`, `sendInput()`, `regenerate()`, and `edit()`. */
 export interface ActiveRun<TOutput extends CodecOutputEvent> {
   /** The decoded output stream for this run. May error if the delivery guarantee is broken (e.g. POST failure, channel continuity loss). */
   stream: ReadableStream<TOutput>;
@@ -1015,7 +1015,7 @@ export interface View<TInput extends CodecInputEvent, TOutput extends CodecOutpu
    * tool-resolution inputs is a continuation — pair with
    * `options.runId` to extend a suspended run.
    */
-  sendEvent(events: TInput | TInput[], options?: SendOptions): Promise<ActiveRun<TOutput>>;
+  sendInput(events: TInput | TInput[], options?: SendOptions): Promise<ActiveRun<TOutput>>;
 
   /**
    * Regenerate an assistant message. Creates a new run that forks the
@@ -1030,7 +1030,7 @@ export interface View<TInput extends CodecInputEvent, TOutput extends CodecOutpu
    * with replacement content. Automatically computes `forkOf`, `parent`,
    * and `history` from this view's branch.
    */
-  edit(messageId: string, newEvents: TInput | TInput[], options?: SendOptions): Promise<ActiveRun<TOutput>>;
+  edit(messageId: string, inputs: TInput | TInput[], options?: SendOptions): Promise<ActiveRun<TOutput>>;
 
   // --- Observation ---
 
@@ -1083,7 +1083,7 @@ export interface ClientSession<
   /**
    * Subscribe to the channel and (implicitly) attach. Idempotent —
    * subsequent calls return the same promise. `sendMessage()`,
-   * `sendEvent()`, `regenerate()`, `edit()`, `update()`, and `cancel()`
+   * `sendInput()`, `regenerate()`, `edit()`, `update()`, and `cancel()`
    * throw `InvalidArgument` until `connect()` resolves.
    */
   connect(): Promise<void>;

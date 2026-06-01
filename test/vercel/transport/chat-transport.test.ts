@@ -112,7 +112,7 @@ const createMockSession = (): MockSession => {
     getMessageMetadata: vi.fn(),
     getRunNode: vi.fn(),
     sendMessage: vi.fn(),
-    sendEvent: send,
+    sendInput: send,
     regenerate,
     edit: vi.fn(),
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
@@ -209,13 +209,13 @@ describe('createChatTransport', () => {
 
   describe('sendMessages — regenerate-message', () => {
     it('delegates to view.regenerate so a wire-only regenerate event is published', async () => {
-      // Regenerate must route through `view.regenerate` (not `view.sendEvent`)
+      // Regenerate must route through `view.regenerate` (not `view.sendInput`)
       // so the View mints an `ait-regenerate` event. The event publishes
       // wire-only with `x-ably-fork-of: A1`, `x-ably-parent: U1` headers
       // — U1 is never re-published. The agent's prompt-lookup catches the
       // regenerate event by its eventId and reads parent/forkOf from those
       // transport headers; the LLM receives history through U1 inclusive
-      // via the body. Routing through `sendEvent([])` would skip this
+      // via the body. Routing through `sendInput([])` would skip this
       // entirely and the agent would have no way to learn the run's
       // parent/forkOf.
       const { session, send, regenerate, mockRun } = createMockSession();
@@ -438,7 +438,7 @@ describe('createChatTransport', () => {
       // Repro: useChat sets `status: 'submitted'` synchronously before
       // awaiting `transport.sendMessages`. That exposes the Stop button to
       // the UI immediately. If the user clicks Stop while `sendMessages` is
-      // still awaiting `session.view.sendEvent(...)` (e.g. waiting for the
+      // still awaiting `session.view.sendInput(...)` (e.g. waiting for the
       // run-start ack — seconds for a real LLM), useChat fires the abort
       // *before* the adapter has the runId to attach a listener for. The
       // adapter must call `session.cancel(runId)` even when the signal is
@@ -447,13 +447,13 @@ describe('createChatTransport', () => {
       const chat = createChatTransport(session);
       const abortController = new AbortController();
 
-      // Defer the sendEvent resolution so we can abort the signal while it
+      // Defer the sendInput resolution so we can abort the signal while it
       // is still pending — this mirrors the run-start ack wait window.
       let resolveSend: ((run: typeof mockRun) => void) | undefined;
       const sendPromise = new Promise<typeof mockRun>((resolve) => {
         resolveSend = resolve;
       });
-      (view.sendEvent as ReturnType<typeof vi.fn>).mockReturnValue(sendPromise);
+      (view.sendInput as ReturnType<typeof vi.fn>).mockReturnValue(sendPromise);
 
       const streamPromise = chat.sendMessages({
         trigger: 'submit-message',
@@ -463,11 +463,11 @@ describe('createChatTransport', () => {
         abortSignal: abortController.signal,
       });
 
-      // Simulate the user clicking Stop while sendEvent is still awaiting.
+      // Simulate the user clicking Stop while sendInput is still awaiting.
       abortController.abort();
       expect(cancel).not.toHaveBeenCalled();
 
-      // sendEvent settles after the abort — by the time the adapter sees
+      // sendInput settles after the abort — by the time the adapter sees
       // run.runId, the signal is already aborted.
       resolveSend?.(mockRun);
       const stream = await streamPromise;
@@ -1062,7 +1062,7 @@ describe('createChatTransport', () => {
 
       const [input] = send.mock.calls[0] as [VercelInput[]];
 
-      // chat-transport passes tool-resolution inputs to view.sendEvent.
+      // chat-transport passes tool-resolution inputs to view.sendInput.
       // Each input carries `codecMessageId` so the SDK stamps the wire
       // HEADER_CODEC_MESSAGE_ID to 'a1' — the reducer's direct-fold path
       // then matches by codec-message-id and folds onto the existing

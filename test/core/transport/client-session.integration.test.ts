@@ -1718,7 +1718,7 @@ describe('ClientSession integration', () => {
 
     const codecMessageId = 'asst-tool-result-1';
     const toolCallId = 'tc-result-1';
-    await clientSession.view.sendEvent({
+    await clientSession.view.sendInput({
       kind: 'tool-result',
       codecMessageId,
       toolCallId,

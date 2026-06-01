@@ -38,7 +38,7 @@ The server encoder ensures `messageId` alignment by stamping the transport-assig
 
 ### Abort signal
 
-When `useChat()` provides an `abortSignal` (e.g. the user clicks stop), the adapter wires it to `session.cancel(runId)` for the run produced by the just-issued send. The abort listener closes over the `runId` returned by `sendEvent` / `regenerate`, so each stop fires exactly one cancel scoped to its originating send.
+When `useChat()` provides an `abortSignal` (e.g. the user clicks stop), the adapter wires it to `session.cancel(runId)` for the run produced by the just-issued send. The abort listener closes over the `runId` returned by `sendInput` / `regenerate`, so each stop fires exactly one cancel scoped to its originating send.
 
 ## reconnectToStream
 

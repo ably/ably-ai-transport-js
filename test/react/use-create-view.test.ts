@@ -97,10 +97,10 @@ describe('useCreateView', () => {
 
     const input = { kind: 'user-message' as const };
     await act(async () => {
-      await result.current.sendEvent([input]);
+      await result.current.sendInput([input]);
     });
 
-    expect(mock.sendEvent).toHaveBeenCalledWith([input], undefined);
+    expect(mock.sendInput).toHaveBeenCalledWith([input], undefined);
   });
 
   it('returns empty handle when no session and no nearest context', () => {

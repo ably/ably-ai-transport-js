@@ -87,12 +87,12 @@ export interface ViewHandle<TInput extends CodecInputEvent, TOutput extends Code
   getRunNode: (runId: string) => RunNode<TProjection> | undefined;
   /** Send one or more user messages on the channel and fire a POST. See {@link View.sendMessage}. */
   sendMessage: (messages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveRun<TOutput>>;
-  /** Send one or more TInputs on the channel and fire a POST. See {@link View.sendEvent}. */
-  sendEvent: (events: TInput | TInput[], options?: SendOptions) => Promise<ActiveRun<TOutput>>;
+  /** Send one or more TInputs on the channel and fire a POST. See {@link View.sendInput}. */
+  sendInput: (events: TInput | TInput[], options?: SendOptions) => Promise<ActiveRun<TOutput>>;
   /** Regenerate an assistant message, using this view's branch for history. */
   regenerate: (messageId: string, options?: SendOptions) => Promise<ActiveRun<TOutput>>;
   /** Edit a user message, forking from this view's branch. */
-  edit: (messageId: string, newEvents: TInput | TInput[], options?: SendOptions) => Promise<ActiveRun<TOutput>>;
+  edit: (messageId: string, inputs: TInput | TInput[], options?: SendOptions) => Promise<ActiveRun<TOutput>>;
 }
 
 /**
@@ -228,11 +228,11 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
     [resolvedView],
   );
 
-  const sendEvent = useCallback(
+  const sendInput = useCallback(
     async (events: TInput | TInput[], opts?: SendOptions) => {
       if (!resolvedView)
         throw new Ably.ErrorInfo('unable to send; view is not available', ErrorCode.InvalidArgument, 400);
-      return resolvedView.sendEvent(events, opts);
+      return resolvedView.sendInput(events, opts);
     },
     [resolvedView],
   );
@@ -247,10 +247,10 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
   );
 
   const edit = useCallback(
-    async (messageId: string, newEvents: TInput | TInput[], opts?: SendOptions) => {
+    async (messageId: string, inputs: TInput | TInput[], opts?: SendOptions) => {
       if (!resolvedView)
         throw new Ably.ErrorInfo('unable to edit; view is not available', ErrorCode.InvalidArgument, 400);
-      return resolvedView.edit(messageId, newEvents, opts);
+      return resolvedView.edit(messageId, inputs, opts);
     },
     [resolvedView],
   );
@@ -271,7 +271,7 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
     selectMessageSibling,
     getRunNode,
     sendMessage,
-    sendEvent,
+    sendInput,
     regenerate,
     edit,
   };

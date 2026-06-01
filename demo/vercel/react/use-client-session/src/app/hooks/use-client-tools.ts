@@ -5,7 +5,7 @@
  * Watches the view's message list for tool parts in `input-available` state
  * that match a registered client tool. Executes the tool, then publishes a
  * `tool-result` (or `tool-result-error`) TInput on the channel via
- * `view.sendEvent`. The codec's reducer folds the result onto the
+ * `view.sendInput`. The codec's reducer folds the result onto the
  * assistant message addressed by `codecMessageId` (matched by `toolCallId`
  * within that message).
  *
@@ -104,7 +104,7 @@ async function executeClientTool(
 
   try {
     const output = await executor(toolPart.input);
-    await view.sendEvent(
+    await view.sendInput(
       [
         {
           kind: 'tool-result',
@@ -116,7 +116,7 @@ async function executeClientTool(
       { runId },
     );
   } catch (error) {
-    await view.sendEvent(
+    await view.sendInput(
       [
         {
           kind: 'tool-result-error',

@@ -14,7 +14,7 @@ type Handler = ((...args: never[]) => void) | (() => void);
 export interface MockSession {
   session: ClientSession<CodecInputEvent, CodecOutputEvent, unknown, string>;
   sendMessage: ReturnType<typeof vi.fn>;
-  sendEvent: ReturnType<typeof vi.fn>;
+  sendInput: ReturnType<typeof vi.fn>;
   regenerate: ReturnType<typeof vi.fn>;
   edit: ReturnType<typeof vi.fn>;
   cancel: ReturnType<typeof vi.fn>;
@@ -119,7 +119,7 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const sendMessage = vi.fn(() => Promise.resolve(mockRun));
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-  const sendEvent = vi.fn(() => Promise.resolve(mockRun));
+  const sendInput = vi.fn(() => Promise.resolve(mockRun));
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const regenerate = vi.fn(() => Promise.resolve(mockRun));
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
@@ -141,7 +141,7 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
     selectMessageSibling: vi.fn(),
     getRunNode: vi.fn(),
     sendMessage,
-    sendEvent,
+    sendInput,
     regenerate,
     edit,
     on: makeTreeOn(viewHandlers),
@@ -171,7 +171,7 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
   return {
     session,
     sendMessage,
-    sendEvent,
+    sendInput,
     regenerate,
     edit,
     cancel,

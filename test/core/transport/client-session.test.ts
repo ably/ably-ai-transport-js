@@ -496,7 +496,7 @@ describe('ClientSession', () => {
         fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
         runStartDeadlineMs: 0,
       });
-      await expect(s.view.sendEvent({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
+      await expect(s.view.sendInput({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
         ErrorCode.InvalidArgument,
       );
       await s.close();
@@ -582,7 +582,7 @@ describe('ClientSession', () => {
 
   describe('send', () => {
     it('returns an ActiveRun with stream, runId, invocationId, cancel', async () => {
-      const run = await fix.session.view.sendEvent({ kind: 'user-message', text: 'hi' });
+      const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
       expect(run.stream).toBeInstanceOf(ReadableStream);
       expect(typeof run.runId).toBe('string');
       expect(typeof run.invocationId).toBe('string');
@@ -590,7 +590,7 @@ describe('ClientSession', () => {
     });
 
     it('inserts an optimistic user message into the tree', async () => {
-      await fix.session.view.sendEvent({ kind: 'user-message', text: 'hello' });
+      await fix.session.view.sendInput({ kind: 'user-message', text: 'hello' });
       const messages = fix.session.view.getMessages();
       expect(messages).toHaveLength(1);
       expect(messages[0]?.content).toBe('hello');
@@ -598,7 +598,7 @@ describe('ClientSession', () => {
 
     it('publishes the user-message TInput on the channel via encoder.publishInput with transport headers', async () => {
       const before = fix.codec.lastEncoder()?.publishCalls.length ?? 0;
-      await fix.session.view.sendEvent({ kind: 'user-message', text: 'hello' });
+      await fix.session.view.sendInput({ kind: 'user-message', text: 'hello' });
 
       const enc = fix.codec.lastEncoder();
       expect(enc).toBeDefined();
@@ -625,7 +625,7 @@ describe('ClientSession', () => {
       // session stamps that value on the wire `x-ably-codec-message-id`
       // header instead of minting a UUID — the reducer's direct-fold path
       // then matches by codec-message-id and no cross-message redirect runs.
-      await fix.session.view.sendEvent([
+      await fix.session.view.sendInput([
         { kind: 'user-message', text: 'first', codecMessageId: 'target-a' },
         { kind: 'user-message', text: 'second' },
       ]);
@@ -645,7 +645,7 @@ describe('ClientSession', () => {
     });
 
     it('mints a distinct event-id per user-message; postBody.eventId is the last (primary trigger)', async () => {
-      await fix.session.view.sendEvent([
+      await fix.session.view.sendInput([
         { kind: 'user-message', text: 'first' },
         { kind: 'user-message', text: 'second' },
       ]);
@@ -668,7 +668,7 @@ describe('ClientSession', () => {
     });
 
     it('fires HTTP POST with runId, invocationId, sessionName, eventId', async () => {
-      const run = await fix.session.view.sendEvent({ kind: 'user-message', text: 'hi' });
+      const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
       await fix.fetch.waitForCalls(1);
 
       expect(fix.fetch.calls[0]?.url).toBe('/api/chat');
@@ -698,7 +698,7 @@ describe('ClientSession', () => {
       await seeded.connect();
 
       const seedRunId = seeded.view.flattenNodes()[0]?.runId;
-      const run = await seeded.view.sendEvent({ kind: 'user-message', text: 'next' });
+      const run = await seeded.view.sendInput({ kind: 'user-message', text: 'next' });
 
       // Find the new Run — it should be parented to the seed Run.
       const nodes = seeded.view.flattenNodes();
@@ -710,7 +710,7 @@ describe('ClientSession', () => {
     });
 
     it('chains multi-message sends in a thread', async () => {
-      await fix.session.view.sendEvent([
+      await fix.session.view.sendInput([
         { kind: 'user-message', text: 'first' },
         { kind: 'user-message', text: 'second' },
       ]);
@@ -733,7 +733,7 @@ describe('ClientSession', () => {
     });
 
     it('merges sendOptions.body and sendOptions.headers into POST', async () => {
-      await fix.session.view.sendEvent(
+      await fix.session.view.sendInput(
         { kind: 'user-message', text: 'hi' },
         { body: { tag: 'v1' }, headers: { 'X-Custom': 'token' } },
       );
@@ -747,7 +747,7 @@ describe('ClientSession', () => {
     it('stamps forkOf on the publish headers when set', async () => {
       // forkOf moved off the POST body and onto the channel headers — the
       // agent resolves it from the first prompt-lookup user-message header.
-      await fix.session.view.sendEvent({ kind: 'user-message', text: 'hi' }, { forkOf: 'msg-original' });
+      await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' }, { forkOf: 'msg-original' });
       await fix.fetch.waitForCalls(1);
       expect(fix.fetch.body(0).forkOf).toBeUndefined();
       const enc = fix.codec.lastEncoder();
@@ -773,7 +773,7 @@ describe('ClientSession', () => {
         runStartDeadlineMs: 0,
       });
       await s.connect();
-      const run = await s.view.sendEvent({ kind: 'user-message', text: 'hi' });
+      const run = await s.view.sendInput({ kind: 'user-message', text: 'hi' });
       expect(run.stream).toBeInstanceOf(ReadableStream);
       await s.close();
     });
@@ -781,7 +781,7 @@ describe('ClientSession', () => {
     it('throws when session is closed', async () => {
       await fix.session.close();
       // View error wrapping: the view rejects with its "view is closed" error.
-      await expect(fix.session.view.sendEvent({ kind: 'user-message', text: 'hi' })).rejects.toThrow();
+      await expect(fix.session.view.sendInput({ kind: 'user-message', text: 'hi' })).rejects.toThrow();
     });
 
     for (const state of ['failed', 'suspended', 'detached', 'initialized'] as const) {
@@ -793,7 +793,7 @@ describe('ClientSession', () => {
           resumed: false,
         });
         fix.channel.state = state;
-        await expect(fix.session.view.sendEvent({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
+        await expect(fix.session.view.sendInput({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
           ErrorCode.ChannelNotReady,
         );
       });
@@ -806,7 +806,7 @@ describe('ClientSession', () => {
         resumed: false,
       });
       fix.channel.state = 'attaching';
-      const run = await fix.session.view.sendEvent({ kind: 'user-message', text: 'hi' });
+      const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
       expect(run.stream).toBeInstanceOf(ReadableStream);
     });
   });
@@ -817,9 +817,9 @@ describe('ClientSession', () => {
 
   describe('send — continuation', () => {
     it('reuses the runId, mints a fresh invocationId, and returns the existing stream', async () => {
-      const initial = await fix.session.view.sendEvent({ kind: 'user-message', text: 'hi' });
+      const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
 
-      const cont = await fix.session.view.sendEvent([{ kind: 'user-message', text: 'more' }], {
+      const cont = await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], {
         runId: initial.runId,
       });
 
@@ -830,12 +830,12 @@ describe('ClientSession', () => {
     });
 
     it('publishes the continuation user-message with HEADER_RUN_ID and HEADER_RUN_CONTINUE', async () => {
-      const initial = await fix.session.view.sendEvent({ kind: 'user-message', text: 'hi' });
+      const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
       const enc = fix.codec.lastEncoder();
       // Drop the initial publish from the call count
       const baseCalls = enc?.publishCalls.length ?? 0;
 
-      await fix.session.view.sendEvent([{ kind: 'user-message', text: 'more' }], { runId: initial.runId });
+      await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], { runId: initial.runId });
 
       const newCalls = (enc?.publishCalls.length ?? 0) - baseCalls;
       expect(newCalls).toBe(1);
@@ -856,9 +856,9 @@ describe('ClientSession', () => {
     });
 
     it('posts one eventId for the continuation trigger event', async () => {
-      const initial = await fix.session.view.sendEvent({ kind: 'user-message', text: 'hi' });
+      const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
 
-      const cont = await fix.session.view.sendEvent([{ kind: 'user-message', text: 'more' }], {
+      const cont = await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], {
         runId: initial.runId,
       });
 
@@ -870,10 +870,10 @@ describe('ClientSession', () => {
     });
 
     it('stamps the matching x-ably-event-id on each continuation publish', async () => {
-      const initial = await fix.session.view.sendEvent({ kind: 'user-message', text: 'hi' });
+      const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
       const before = fix.codec.lastEncoder()?.publishCalls.length ?? 0;
 
-      await fix.session.view.sendEvent([{ kind: 'user-message', text: 'more' }], { runId: initial.runId });
+      await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], { runId: initial.runId });
 
       const enc = fix.codec.lastEncoder();
       const contPublish = enc?.publishCalls
@@ -888,18 +888,18 @@ describe('ClientSession', () => {
     });
 
     it('continuation publishes carry HEADER_RUN_CONTINUE=true while fresh sends do not', async () => {
-      const fresh = await fix.session.view.sendEvent({ kind: 'user-message', text: 'hi' });
+      const fresh = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
       const enc = fix.codec.lastEncoder();
       const freshHeaders = enc?.publishCalls.at(-1)?.opts?.extras?.headers;
       expect(freshHeaders?.['x-ably-run-continue']).toBeUndefined();
 
-      await fix.session.view.sendEvent([{ kind: 'user-message', text: 'more' }], { runId: fresh.runId });
+      await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], { runId: fresh.runId });
       const contHeaders = enc?.publishCalls.at(-1)?.opts?.extras?.headers;
       expect(contHeaders?.['x-ably-run-continue']).toBe('true');
     });
 
     it('rejects an empty send with no runId and no forkOf', async () => {
-      await expect(fix.session.view.sendEvent([])).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await expect(fix.session.view.sendInput([])).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
   });
 
@@ -935,7 +935,7 @@ describe('ClientSession', () => {
       const errors: Ably.ErrorInfo[] = [];
       s.on('error', (e) => errors.push(e));
 
-      await expect(s.view.sendEvent({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
+      await expect(s.view.sendInput({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
         ErrorCode.SessionSendFailed,
       );
       expect(errors.length).toBeGreaterThanOrEqual(1);
@@ -967,7 +967,7 @@ describe('ClientSession', () => {
         /* consume */
       });
 
-      await expect(s.view.sendEvent({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
+      await expect(s.view.sendInput({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
         ErrorCode.InsufficientCapability,
       );
       await s.close();
@@ -998,7 +998,7 @@ describe('ClientSession', () => {
         /* consume */
       });
 
-      await expect(s.view.sendEvent({ kind: 'user-message', text: 'hi' })).rejects.toBeDefined();
+      await expect(s.view.sendInput({ kind: 'user-message', text: 'hi' })).rejects.toBeDefined();
       // Optimistic node removed since publish failed before any ack
       expect(s.view.flattenNodes()).toHaveLength(0);
       await s.close();
@@ -1019,7 +1019,7 @@ describe('ClientSession', () => {
       await s.connect();
       const errors: Ably.ErrorInfo[] = [];
       s.on('error', (e) => errors.push(e));
-      await s.view.sendEvent({ kind: 'user-message', text: 'hi' });
+      await s.view.sendInput({ kind: 'user-message', text: 'hi' });
       await fetch.waitForCalls(1);
       await flushMicrotasks();
       expect(errors).toHaveLength(1);
@@ -1044,7 +1044,7 @@ describe('ClientSession', () => {
       s.on('error', () => {
         /* consume */
       });
-      const run = await s.view.sendEvent({ kind: 'user-message', text: 'hi' });
+      const run = await s.view.sendInput({ kind: 'user-message', text: 'hi' });
       await flushMicrotasks();
       const reader = run.stream.getReader();
       await expect(reader.read()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSendFailed);
@@ -1073,7 +1073,7 @@ describe('ClientSession', () => {
       s.on('error', () => {
         /* consume */
       });
-      await expect(s.view.sendEvent({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
+      await expect(s.view.sendInput({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
         ErrorCode.RunStartDeadlineExceeded,
       );
       await s.close();
@@ -1093,7 +1093,7 @@ describe('ClientSession', () => {
       });
       await s.connect();
 
-      const sendPromise = s.view.sendEvent({ kind: 'user-message', text: 'hi' });
+      const sendPromise = s.view.sendInput({ kind: 'user-message', text: 'hi' });
       await ackPendingSend(ch, codec);
       const run = await sendPromise;
       expect(run.stream).toBeInstanceOf(ReadableStream);
@@ -1252,7 +1252,7 @@ describe('ClientSession', () => {
 
       // Optimistic insert. The session mints a random tree codecMessageId; the
       // projection's UIMessage id is `domain-hi` (from our custom fold).
-      await s.view.sendEvent({ kind: 'user-message', text: 'hi' });
+      await s.view.sendInput({ kind: 'user-message', text: 'hi' });
       const lastPublish = customCodec.lastEncoder()?.publishCalls.at(-1);
       const optimisticMsgId = lastPublish?.opts?.extras?.headers?.[HEADER_CODEC_MESSAGE_ID];
       const runId = lastPublish?.opts?.extras?.headers?.[HEADER_RUN_ID];
@@ -1344,7 +1344,7 @@ describe('ClientSession', () => {
       });
       await s.connect();
 
-      const sendPromise = s.view.sendEvent({ kind: 'user-message', text: 'hi' });
+      const sendPromise = s.view.sendInput({ kind: 'user-message', text: 'hi' });
       const { runId, invocationId } = await ackPendingSend(ch, codec);
       const run = await sendPromise;
 
@@ -1421,7 +1421,7 @@ describe('ClientSession', () => {
       });
       await s.connect();
 
-      const sendPromise = s.view.sendEvent({ kind: 'user-message', text: 'hi' });
+      const sendPromise = s.view.sendInput({ kind: 'user-message', text: 'hi' });
       const { runId, invocationId } = await ackPendingSend(ch, codec);
       const run = await sendPromise;
 
@@ -1466,7 +1466,7 @@ describe('ClientSession', () => {
       // the Run stayed at status=active forever — every bubble in the
       // chat showed "streaming". A page refresh recovered because
       // history replay bypasses the gate entirely.
-      const initial = await fix.session.view.sendEvent({ kind: 'user-message', text: 'hi' });
+      const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
 
       simulateMessage(
         fix.channel,
@@ -1478,7 +1478,7 @@ describe('ClientSession', () => {
         }),
       );
 
-      const continuation = await fix.session.view.sendEvent([{ kind: 'user-message', text: 'continue' }], {
+      const continuation = await fix.session.view.sendInput([{ kind: 'user-message', text: 'continue' }], {
         runId: initial.runId,
       });
 
@@ -1529,7 +1529,7 @@ describe('ClientSession', () => {
       // run-end suspended → continuation send (rebinds router) →
       // run-end complete. R1.status must end at the continuation's
       // reason, otherwise the UI stays stuck on "streaming".
-      const initial = await fix.session.view.sendEvent({ kind: 'user-message', text: 'hi' });
+      const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
 
       // First invocation suspends (e.g. tool call awaiting client output).
       simulateMessage(
@@ -1544,7 +1544,7 @@ describe('ClientSession', () => {
       expect(fix.session.tree.getRunNode(initial.runId)?.status).toBe('suspended');
 
       // Continuation send under the same runId — rebinds router to inv2.
-      const continuation = await fix.session.view.sendEvent([{ kind: 'user-message', text: 'continue' }], {
+      const continuation = await fix.session.view.sendInput([{ kind: 'user-message', text: 'continue' }], {
         runId: initial.runId,
       });
       expect(continuation.invocationId).not.toBe(initial.invocationId);
@@ -1671,8 +1671,8 @@ describe('ClientSession', () => {
       // Tree's winner stays on the original user-message's invocation. The
       // gating must prefer the router for own runs so the continuation's
       // run-end is accepted and the run cleans up.
-      const initial = await fix.session.view.sendEvent({ kind: 'user-message', text: 'hi' });
-      const continuation = await fix.session.view.sendEvent([{ kind: 'user-message', text: 'more' }], {
+      const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      const continuation = await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], {
         runId: initial.runId,
       });
       expect(continuation.invocationId).not.toBe(initial.invocationId);
@@ -1814,7 +1814,7 @@ describe('ClientSession', () => {
       });
       await s.connect();
 
-      const sendPromise = s.view.sendEvent({ kind: 'user-message', text: 'hi' });
+      const sendPromise = s.view.sendInput({ kind: 'user-message', text: 'hi' });
       await ackPendingSend(ch, codec);
       const run = await sendPromise;
 
@@ -1847,7 +1847,7 @@ describe('ClientSession', () => {
 
     it('closes the shared encoder', async () => {
       // Trigger creation of the shared encoder by sending
-      await fix.session.view.sendEvent({ kind: 'user-message', text: 'hi' });
+      await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
       const enc = fix.codec.lastEncoder();
       expect(enc).toBeDefined();
       await fix.session.close();
@@ -1878,7 +1878,7 @@ describe('ClientSession', () => {
         /* consume */
       });
 
-      const sendPromise = s.view.sendEvent({ kind: 'user-message', text: 'hi' });
+      const sendPromise = s.view.sendInput({ kind: 'user-message', text: 'hi' });
       // Don't ack — close while pending
       await flushMicrotasks();
       await s.close();
@@ -2014,7 +2014,7 @@ describe('ClientSession', () => {
   describe('regenerate events', () => {
     it('publishes a regenerate input without upserting the tree or folding the projection', async () => {
       // Seed a user message in the tree first.
-      await fix.session.view.sendEvent({ kind: 'user-message', text: 'hi' });
+      await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
       const runsBefore = fix.session.view.flattenNodes();
       expect(runsBefore).toHaveLength(1);
       const seedRunId = runsBefore[0]?.runId;
@@ -2023,7 +2023,7 @@ describe('ClientSession', () => {
       if (!userMsgId) throw new Error('expected user message id');
 
       // Send a regenerate input — wire-only, carries parent/target on headers.
-      await fix.session.view.sendEvent({
+      await fix.session.view.sendInput({
         kind: 'regenerate',
         parent: userMsgId,
         target: 'asst-1',
@@ -2054,7 +2054,7 @@ describe('ClientSession', () => {
     });
 
     it('mints a fresh event-id for the regenerate input and forwards it in postBody.eventId', async () => {
-      await fix.session.view.sendEvent({
+      await fix.session.view.sendInput({
         kind: 'regenerate',
         parent: 'u1',
         target: 'asst-1',

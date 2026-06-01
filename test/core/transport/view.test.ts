@@ -741,14 +741,14 @@ describe('DefaultView', () => {
       expect(call[2]).toBe('a2');
     });
 
-    it('sendEvent normalises a single TInput', async () => {
-      await view.sendEvent({ kind: 'user-message', message: { id: 'a', content: 'hi' } });
+    it('sendInput normalises a single TInput', async () => {
+      await view.sendInput({ kind: 'user-message', message: { id: 'a', content: 'hi' } });
       const events = vi.mocked(sendDelegate).mock.calls[0]?.[0];
       expect(events).toEqual([{ kind: 'user-message', message: { id: 'a', content: 'hi' } }]);
     });
 
-    it('sendEvent normalises a TInput[] input', async () => {
-      await view.sendEvent([
+    it('sendInput normalises a TInput[] input', async () => {
+      await view.sendInput([
         { kind: 'user-message', message: { id: 'a', content: 'hi' } },
         { kind: 'user-message', message: { id: 'b', content: 'bye' } },
       ]);
@@ -759,14 +759,14 @@ describe('DefaultView', () => {
       ]);
     });
 
-    it('sendEvent forwards an input with a pinned codecMessageId targeting an existing message', async () => {
+    it('sendInput forwards an input with a pinned codecMessageId targeting an existing message', async () => {
       // Inputs whose `codecMessageId` is set target an existing message
       // (continuation tool resolutions, approval responses). The View passes
       // them straight through — the routing field stays on the input itself.
       const input: TestInput[] = [
         { kind: 'user-message', message: { id: 'a', content: 'hi' }, codecMessageId: 'override' },
       ];
-      await view.sendEvent(input);
+      await view.sendInput(input);
       const events = vi.mocked(sendDelegate).mock.calls[0]?.[0];
       expect(events).toEqual(input);
     });
@@ -1570,9 +1570,9 @@ describe('DefaultView', () => {
       expect(onClose).toHaveBeenCalled();
     });
 
-    it('makes sendEvent reject with InvalidArgument after close', async () => {
+    it('makes sendInput reject with InvalidArgument after close', async () => {
       view.close();
-      await expect(view.sendEvent({ kind: 'user-message', message: { id: 'a', content: 'hi' } })).rejects.toThrow(
+      await expect(view.sendInput({ kind: 'user-message', message: { id: 'a', content: 'hi' } })).rejects.toThrow(
         /view is closed/,
       );
     });

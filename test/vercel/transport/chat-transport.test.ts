@@ -83,12 +83,13 @@ interface MockSession {
   close: ReturnType<typeof vi.fn>;
   mockRun: MockRun;
   tree: Tree<VercelProjection>;
-  view: View<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+  view: View<VercelInput, VercelOutput, AI.UIMessage>;
 }
 
 const createMockSession = (): MockSession => {
   const mockRun = createMockRun();
   const tree: Tree<VercelProjection> = {
+    runs: vi.fn(() => []),
     getRunNode: vi.fn(),
     getRunByCodecMessageId: vi.fn(),
     getSiblingRuns: vi.fn(() => []),
@@ -106,15 +107,15 @@ const createMockSession = (): MockSession => {
 
   // CAST: mock object satisfies the subset of View methods used by chat-transport tests
   const view = {
-    flattenNodes: vi.fn(() => []),
     getMessages: vi.fn(() => []),
+    runs: vi.fn(() => []),
     hasOlder: vi.fn(() => false),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     loadOlder: vi.fn(() => Promise.resolve()),
-    select: vi.fn(),
-    getSelectedIndex: vi.fn(() => 0),
-    getMessageMetadata: vi.fn(),
-    getRunNode: vi.fn(),
+    runOf: vi.fn(),
+    run: vi.fn(),
+    branchSelection: vi.fn(() => ({ hasSiblings: false, siblings: [], index: 0, selected: undefined })),
+    selectSibling: vi.fn(),
     sendMessage: vi.fn(),
     sendInput: send,
     regenerate,
@@ -122,7 +123,7 @@ const createMockSession = (): MockSession => {
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
     on: vi.fn(() => () => {}),
     close: vi.fn(),
-  } as unknown as View<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+  } as unknown as View<VercelInput, VercelOutput, AI.UIMessage>;
 
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const cancel = vi.fn(() => Promise.resolve());
@@ -188,11 +189,7 @@ describe('createChatTransport', () => {
       const m2 = makeMessage('2');
       const m3 = makeMessage('3');
 
-      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
-        { message: m1, codecMessageId: 'n1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
-        { message: m2, codecMessageId: 'n2', parentId: 'n1', forkOf: undefined, headers: {}, serial: undefined },
-        { message: m3, codecMessageId: 'n3', parentId: 'n2', forkOf: undefined, headers: {}, serial: undefined },
-      ]);
+      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([m1, m2, m3]);
 
       const streamPromise = chat.sendMessages({
         trigger: 'submit-message',
@@ -338,7 +335,7 @@ describe('createChatTransport', () => {
 
     it('falls back to raw messageId when node not found in tree', async () => {
       const { session, send, view, mockRun } = createMockSession();
-      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([]);
+      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([]);
 
       const chat = createChatTransport(session);
 
@@ -364,10 +361,7 @@ describe('createChatTransport', () => {
       const m1 = makeMessage('1');
       const edited = makeMessage('2');
 
-      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
-        { message: m1, codecMessageId: 'n1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
-        { message: edited, codecMessageId: 'n2', parentId: 'n1', forkOf: undefined, headers: {}, serial: undefined },
-      ]);
+      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([m1, edited]);
 
       const chat = createChatTransport(session);
 
@@ -674,32 +668,7 @@ describe('createChatTransport', () => {
       const m1 = makeMessage('1');
       const m2 = makeMessage('2');
       const m3 = makeMessage('3');
-      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
-        {
-          message: m1,
-          codecMessageId: 'h1',
-          parentId: undefined,
-          forkOf: undefined,
-          headers: { 'codec-message-id': 'h1' },
-          serial: undefined,
-        },
-        {
-          message: m2,
-          codecMessageId: 'h2',
-          parentId: 'h1',
-          forkOf: undefined,
-          headers: { 'codec-message-id': 'h2' },
-          serial: undefined,
-        },
-        {
-          message: m3,
-          codecMessageId: 'h3',
-          parentId: 'h2',
-          forkOf: undefined,
-          headers: { 'codec-message-id': 'h3' },
-          serial: undefined,
-        },
-      ]);
+      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([m1, m2, m3]);
 
       const chat = createChatTransport(session);
 
@@ -985,24 +954,7 @@ describe('createChatTransport', () => {
       });
       const user2 = makeMessage('u2');
 
-      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
-        {
-          message: user1,
-          codecMessageId: 'wire-u1',
-          parentId: undefined,
-          forkOf: undefined,
-          headers: {},
-          serial: undefined,
-        },
-        {
-          message: assistant,
-          codecMessageId: 'wire-a1',
-          parentId: 'wire-u1',
-          forkOf: undefined,
-          headers: {},
-          serial: undefined,
-        },
-      ]);
+      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([user1, assistant]);
 
       const chat = createChatTransport(session);
       const streamPromise = chat.sendMessages({
@@ -1035,24 +987,7 @@ describe('createChatTransport', () => {
       });
       const user2 = makeMessage('u2');
 
-      (view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue([
-        {
-          message: user1,
-          codecMessageId: 'wire-u1',
-          parentId: undefined,
-          forkOf: undefined,
-          headers: {},
-          serial: undefined,
-        },
-        {
-          message: assistant,
-          codecMessageId: 'wire-a1',
-          parentId: 'wire-u1',
-          forkOf: undefined,
-          headers: {},
-          serial: undefined,
-        },
-      ]);
+      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([user1, assistant]);
 
       const chat = createChatTransport(session);
       const streamPromise = chat.sendMessages({
@@ -1139,12 +1074,12 @@ describe('createChatTransport', () => {
       };
 
       (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([user1, treeAssistant]);
-      // Continuation flow calls getMessageMetadata(lastMessage.id) to find the runId.
-      (view.getMessageMetadata as ReturnType<typeof vi.fn>).mockReturnValue({
-        codecMessageId: treeAssistant.id,
+      // Continuation flow calls runOf(lastMessage.id) to find the runId.
+      (view.runOf as ReturnType<typeof vi.fn>).mockReturnValue({
         runId: 'run-a1',
         clientId: '',
-        status: 'streaming',
+        status: 'active',
+        invocationId: '',
       });
 
       const chat = createChatTransport(session);
@@ -1201,11 +1136,11 @@ describe('createChatTransport', () => {
       };
 
       (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([user1, treeAssistant]);
-      (view.getMessageMetadata as ReturnType<typeof vi.fn>).mockReturnValue({
-        codecMessageId: treeAssistant.id,
+      (view.runOf as ReturnType<typeof vi.fn>).mockReturnValue({
         runId: 'run-a1',
         clientId: '',
-        status: 'streaming',
+        status: 'active',
+        invocationId: '',
       });
 
       const chat = createChatTransport(session);

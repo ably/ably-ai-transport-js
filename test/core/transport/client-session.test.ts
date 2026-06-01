@@ -502,7 +502,7 @@ describe('ClientSession', () => {
       const messages = s.view.getMessages();
       expect(messages.map((m) => m.content)).toEqual(['first', 'second']);
       // Subsequent seed Runs chain off the prior one via parentRunId.
-      const nodes = s.view.flattenNodes();
+      const nodes = s.tree.runs();
       expect(nodes).toHaveLength(2);
       expect(nodes[1]?.parentRunId).toBe(nodes[0]?.runId);
       await s.close();
@@ -593,7 +593,7 @@ describe('ClientSession', () => {
 
       // No channel echo simulated — the message must be present purely from
       // the optimistic fold.
-      const nodes = fix.session.view.flattenNodes();
+      const nodes = fix.session.tree.runs();
       expect(nodes).toHaveLength(1);
       expect(nodes[0]?.runId).toBeDefined();
       expect(nodes[0]?.invocationId).toBeDefined();
@@ -636,11 +636,11 @@ describe('ClientSession', () => {
       });
       await seeded.connect();
 
-      const seedRunId = seeded.view.flattenNodes()[0]?.runId;
+      const seedRunId = seeded.tree.runs()[0]?.runId;
       const run = await seeded.view.sendInput({ kind: 'user-message', text: 'next' });
 
       // Find the new Run — it should be parented to the seed Run.
-      const nodes = seeded.view.flattenNodes();
+      const nodes = seeded.tree.runs();
       expect(nodes.length).toBeGreaterThan(1);
       const newNode = nodes.find((n) => n.parentRunId === seedRunId);
       expect(newNode).toBeDefined();
@@ -887,7 +887,7 @@ describe('ClientSession', () => {
 
       await expect(s.view.sendInput({ kind: 'user-message', text: 'hi' })).rejects.toBeDefined();
       // Optimistic node removed since publish failed before any ack
-      expect(s.view.flattenNodes()).toHaveLength(0);
+      expect(s.tree.runs()).toHaveLength(0);
       await s.close();
     });
   });
@@ -1230,7 +1230,7 @@ describe('ClientSession', () => {
       // The tree must contain exactly one Run — the optimistic insert,
       // converged with the echo. The Run's projection holds a single
       // domain message keyed by the codec's domain-id convention.
-      expect(s.view.flattenNodes()).toHaveLength(1);
+      expect(s.tree.runs()).toHaveLength(1);
       const owningRun = s.tree.getRunByCodecMessageId(optimisticMsgId);
       expect(owningRun).toBeDefined();
       // customCodec.fold uses `domain-${text}` as the id (not the wire codecMessageId);
@@ -1903,7 +1903,7 @@ describe('ClientSession', () => {
     it('publishes a regenerate input without upserting the tree or folding the projection', async () => {
       // Seed a user message in the tree first.
       await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
-      const runsBefore = fix.session.view.flattenNodes();
+      const runsBefore = fix.session.tree.runs();
       expect(runsBefore).toHaveLength(1);
       const seedRunId = runsBefore[0]?.runId;
       const userMsgId = fix.session.view.getMessages()[0]?.id;
@@ -1920,7 +1920,7 @@ describe('ClientSession', () => {
       // No new Run materialised: the regenerate publishes wire-only and
       // skips both tree-upsert and projection fold. The original Run is
       // unchanged.
-      const runsAfter = fix.session.view.flattenNodes();
+      const runsAfter = fix.session.tree.runs();
       expect(runsAfter).toHaveLength(1);
       expect(runsAfter[0]?.runId).toBe(seedRunId);
 

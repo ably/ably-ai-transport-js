@@ -366,7 +366,7 @@ describe('ClientSession integration', () => {
     // The send promise hasn't resolved yet — we need an agent run-start. Get
     // runId from the optimistic tree node.
     const tree = clientSession.tree;
-    const optimisticNode = clientSession.view.flattenNodes()[0];
+    const optimisticNode = clientSession.view.runs()[0];
     const runId = optimisticNode?.runId;
     const invocationId = optimisticNode?.invocationId;
     expect(runId).toBeDefined();
@@ -435,7 +435,7 @@ describe('ClientSession integration', () => {
     });
 
     await new Promise((r) => setTimeout(r, 50));
-    const optimisticNode = clientSession.view.flattenNodes()[0];
+    const optimisticNode = clientSession.view.runs()[0];
     const runId = optimisticNode?.runId;
     const invocationId = optimisticNode?.invocationId;
     if (!runId || !invocationId) throw new Error('expected ids');
@@ -488,7 +488,7 @@ describe('ClientSession integration', () => {
       parts: [{ type: 'text', text: 'test' }],
     });
     await new Promise((r) => setTimeout(r, 50));
-    const optimisticNode = clientSession.view.flattenNodes()[0];
+    const optimisticNode = clientSession.view.runs()[0];
     const runId = optimisticNode?.runId;
     const invocationId = optimisticNode?.invocationId;
     if (!runId || !invocationId) throw new Error('expected ids');
@@ -542,7 +542,7 @@ describe('ClientSession integration', () => {
       parts: [{ type: 'text', text: 'Long request' }],
     });
     await new Promise((r) => setTimeout(r, 50));
-    const optimisticNode = clientSession.view.flattenNodes()[0];
+    const optimisticNode = clientSession.view.runs()[0];
     const runId = optimisticNode?.runId;
     const invocationId = optimisticNode?.invocationId;
     if (!runId || !invocationId) throw new Error('expected ids');
@@ -678,7 +678,7 @@ describe('ClientSession integration', () => {
     // Run-based pagination: ask for 10 Runs; all three should fit in one page.
     await clientSession.view.loadOlder(10);
 
-    const nodes = clientSession.view.flattenNodes();
+    const nodes = clientSession.view.runs();
     expect(nodes.map((n) => n.runId)).toEqual(['run-turn-1', 'run-turn-2', 'run-turn-3']);
 
     const messages = clientSession.view.getMessages();
@@ -740,22 +740,24 @@ describe('ClientSession integration', () => {
     await clientSession.view.loadOlder(10);
 
     // Default selection at the fork is the latest sibling — run-t2-edit.
-    const nodesDefault = clientSession.view.flattenNodes();
+    const nodesDefault = clientSession.view.runs();
     expect(nodesDefault.map((n) => n.runId)).toEqual(['run-t1', 'run-t2-edit']);
     const messagesDefault = clientSession.view.getMessages();
     expect(messagesDefault.map((m) => m.id)).toEqual(['u1', 'a1', 'u2-edit', 'a2-edit']);
 
     // The fork point exposes two siblings — go through the Tree (the
-    // low-level surface) since the View no longer exposes runId-keyed
-    // sibling enumeration.
+    // low-level surface) for the underlying Run set, then exercise the
+    // View's msg-anchored selection API at the anchor codec-message-id
+    // (the user prompt for an edit fork).
     const siblings = clientSession.tree.getSiblingRuns('run-t2');
     expect(siblings.map((n) => n.runId).toSorted()).toEqual(['run-t2', 'run-t2-edit'].toSorted());
 
-    // Navigate back to the original branch.
-    const originalIdx = siblings.findIndex((n) => n.runId === 'run-t2');
-    clientSession.view.select('run-t2', originalIdx);
+    // Navigate back to the original branch via the user-prompt anchor.
+    const originalBranch = clientSession.view.branchSelection('u2');
+    const originalIdx = originalBranch.siblings.findIndex((m) => m.id === 'u2');
+    clientSession.view.selectSibling('u2', originalIdx);
 
-    const nodesOriginal = clientSession.view.flattenNodes();
+    const nodesOriginal = clientSession.view.runs();
     expect(nodesOriginal.map((n) => n.runId)).toEqual(['run-t1', 'run-t2']);
     const messagesOriginal = clientSession.view.getMessages();
     expect(messagesOriginal.map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2']);
@@ -813,13 +815,14 @@ describe('ClientSession integration', () => {
     expect(asstTextDefault).toBe('r2-regen');
 
     // a2 is the regenerate-group anchor; both members surface as siblings.
-    expect(clientSession.view.hasMessageSiblings('a2')).toBe(true);
-    expect(clientSession.view.getMessageSiblings('a2')).toHaveLength(2);
+    const a2Branch = clientSession.view.branchSelection('a2');
+    expect(a2Branch.hasSiblings).toBe(true);
+    expect(a2Branch.siblings).toHaveLength(2);
 
     // Sibling order is chronological by startSerial — the original
     // (run-t2) is index 0, the regenerator (run-t2-regen) is index 1.
     // Navigate back to the original assistant.
-    clientSession.view.selectMessageSibling('a2', 0);
+    clientSession.view.selectSibling('a2', 0);
 
     const messagesOriginal = clientSession.view.getMessages();
     const asstOriginal = messagesOriginal.find((m) => m.role === 'assistant' && m.id !== 'a1');
@@ -866,7 +869,7 @@ describe('ClientSession integration', () => {
       // Wait for A's optimistic Run to appear, then drive the agent so the
       // send resolves.
       await new Promise((r) => setTimeout(r, 100));
-      const aOptimistic = clientSession.view.flattenNodes()[0];
+      const aOptimistic = clientSession.view.runs()[0];
       if (!aOptimistic) throw new Error('expected A optimistic node');
       const serverRun = createRunFromOpts(agentSession, {
         runId: aOptimistic.runId,
@@ -894,8 +897,8 @@ describe('ClientSession integration', () => {
       expect(bText).toBe('hi from agent');
 
       // Run identity matches across both views.
-      const aRunIds = clientSession.view.flattenNodes().map((n) => n.runId);
-      const bRunIds = observer.view.flattenNodes().map((n) => n.runId);
+      const aRunIds = clientSession.view.runs().map((n) => n.runId);
+      const bRunIds = observer.view.runs().map((n) => n.runId);
       expect(aRunIds).toEqual(bRunIds);
     } finally {
       await observer.close();
@@ -954,19 +957,19 @@ describe('ClientSession integration', () => {
     // Reveal two Runs at a time. The loader fetches enough channel pages to
     // satisfy the Run-unit limit and withholds the rest.
     await clientSession.view.loadOlder(2);
-    const after1 = clientSession.view.flattenNodes().map((n) => n.runId);
+    const after1 = clientSession.view.runs().map((n) => n.runId);
     expect(after1.length).toBe(2);
     // Newest two Runs revealed first.
     expect(after1).toEqual(['run-page-5', 'run-page-6']);
     expect(clientSession.view.hasOlder()).toBe(true);
 
     await clientSession.view.loadOlder(2);
-    const after2 = clientSession.view.flattenNodes().map((n) => n.runId);
+    const after2 = clientSession.view.runs().map((n) => n.runId);
     expect(after2).toEqual(['run-page-3', 'run-page-4', 'run-page-5', 'run-page-6']);
     expect(clientSession.view.hasOlder()).toBe(true);
 
     await clientSession.view.loadOlder(2);
-    const after3 = clientSession.view.flattenNodes().map((n) => n.runId);
+    const after3 = clientSession.view.runs().map((n) => n.runId);
     expect(after3).toEqual(['run-page-1', 'run-page-2', 'run-page-3', 'run-page-4', 'run-page-5', 'run-page-6']);
 
     // One more call to let the loader probe past the last page and learn
@@ -974,7 +977,7 @@ describe('ClientSession integration', () => {
     // withhold buffer drains AND a subsequent fetch confirms no next page,
     // so the UI keeps showing a load-more affordance until probed.
     await clientSession.view.loadOlder(2);
-    expect(clientSession.view.flattenNodes()).toHaveLength(6);
+    expect(clientSession.view.runs()).toHaveLength(6);
     expect(clientSession.view.hasOlder()).toBe(false);
 
     // Final view: 6 turns x (user + assistant) = 12 messages, fully ordered.
@@ -1031,7 +1034,7 @@ describe('ClientSession integration', () => {
     });
 
     await new Promise((r) => setTimeout(r, 50));
-    const optimisticNode = clientSession.view.flattenNodes()[0];
+    const optimisticNode = clientSession.view.runs()[0];
     const runId = optimisticNode?.runId;
     const invocationId = optimisticNode?.invocationId;
     if (!runId || !invocationId) throw new Error('expected ids');
@@ -1126,7 +1129,7 @@ describe('ClientSession integration', () => {
       parts: [{ type: 'text', text: 'test' }],
     });
     await new Promise((r) => setTimeout(r, 50));
-    const optimisticNode = clientSession.view.flattenNodes()[0];
+    const optimisticNode = clientSession.view.runs()[0];
     const runId = optimisticNode?.runId;
     const invocationId = optimisticNode?.invocationId;
     if (!runId || !invocationId) throw new Error('expected ids');
@@ -1178,7 +1181,7 @@ describe('ClientSession integration', () => {
       parts: [{ type: 'text', text: 'Question' }],
     });
     await new Promise((r) => setTimeout(r, 50));
-    const optimisticNode = clientSession.view.flattenNodes()[0];
+    const optimisticNode = clientSession.view.runs()[0];
     const runId = optimisticNode?.runId;
     const invocationId = optimisticNode?.invocationId;
     if (!runId || !invocationId) throw new Error('expected ids');
@@ -1205,13 +1208,13 @@ describe('ClientSession integration', () => {
 
     if (userMsg) {
       expect(userMsg.id).toBeDefined();
-      const metadata = clientSession.view.getMessageMetadata(userMsg.id);
-      expect(metadata?.runId).toBe(runId);
+      const run = clientSession.view.runOf(userMsg.id);
+      expect(run?.runId).toBe(runId);
     }
     if (asstMsg) {
       expect(asstMsg.id).toBeDefined();
-      const metadata = clientSession.view.getMessageMetadata(asstMsg.id);
-      expect(metadata?.runId).toBe(runId);
+      const run = clientSession.view.runOf(asstMsg.id);
+      expect(run?.runId).toBe(runId);
     }
   });
 

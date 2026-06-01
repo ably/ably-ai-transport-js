@@ -645,8 +645,8 @@ export class DefaultView<
   }
 
   // Spec: AIT-CT13c, AIT-CT13d — msg-anchored branch-point API. The
-  // RFC anchors branch points at msg-ids (prompt-id for edits, msg-id
-  // for regens); these methods return per-bubble nav data so the UI
+  // RFC anchors branch points at msg-ids (the user message's id for edits,
+  // the assistant msg-id for regens); these methods return per-bubble nav data so the UI
   // doesn't surface arrows on bubbles whose msg-id is not the actual
   // anchor. Tree-level introspection (RunNode access, runId-keyed
   // sibling queries) remains on the {@link Tree} surface.
@@ -1006,7 +1006,7 @@ export class DefaultView<
     // `Regenerate` carries `target: regenAnchorMsgId` and `parent:
     // parentCodecMessageId`; the session reads those fields off the input
     // directly when building transport headers (`x-ably-fork-of` and
-    // `x-ably-parent`). The agent's prompt-lookup catches the wire signal;
+    // `x-ably-parent`). The agent's input-event lookup catches the wire signal;
     // no tree-upsert / projection fold runs locally.
     const regenerate = this._codec.createRegenerate(regenAnchorMsgId, parentCodecMessageId);
     // CAST: Regenerate is a well-known variant of TInput, but TS can't

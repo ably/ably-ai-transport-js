@@ -1079,7 +1079,7 @@ describe('Vercel decoder', () => {
     it('decodes ai-input regenerate wires into zero events (routing lives on transport headers)', () => {
       const decoder = createDecoder();
       // The regenerate wire carries `x-ably-parent` and `x-ably-msg-regenerate`
-      // on transport headers so the agent's prompt-lookup can resolve
+      // on transport headers so the agent's input-event lookup can resolve
       // run-routing metadata from `firstHeaders`. The decoder itself has
       // no domain events to emit — regenerate wires are wire-only.
       const msg = withHeaders(

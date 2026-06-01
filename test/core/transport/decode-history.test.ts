@@ -169,7 +169,7 @@ const userMsg = (
     // Outputs deliberately mirror the assistant-flavoured stream so the
     // reducer can fold a `text` payload into a message and a `finish` to
     // close it. The wire role still says `user` because the agent's
-    // prompt-lookup keys on role; the reducer doesn't care which half the
+    // input-event lookup keys on role; the reducer doesn't care which half the
     // events arrived through.
     [{ type: 'text', text: content }, { type: 'finish' }],
   );

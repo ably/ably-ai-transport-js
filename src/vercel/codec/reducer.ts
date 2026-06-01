@@ -173,7 +173,7 @@ export const fold = (
       case 'regenerate': {
         // Regenerate input — wire-only signal. Carries no projection state;
         // the agent reads `target` / `parent` from the wire headers via
-        // the prompt-lookup path. No fold work to do here.
+        // the input-event lookup path. No fold work to do here.
         break;
       }
       case 'tool-result': {

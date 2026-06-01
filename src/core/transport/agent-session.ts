@@ -83,7 +83,7 @@ const bySerial = (a: Ably.InboundMessage, b: Ably.InboundMessage): number => {
  * same message appears in both). Messages without a serial are dropped because
  * they cannot be reliably ordered.
  * @param collected - Raw messages from channel.history (any order).
- * @param live - Messages observed live (e.g. by the prompt-lookup); may be undefined.
+ * @param live - Messages observed live (e.g. by the input-event lookup); may be undefined.
  * @returns Deduplicated, chronologically sorted messages.
  */
 const withLiveMessages = (
@@ -170,7 +170,7 @@ const foldRunMessages = <TInput extends CodecInputEvent, TOutput extends CodecOu
  * @param opts.signal - AbortSignal that cancels the wait when the run is cancelled.
  * @param opts.logger - Optional logger for diagnostic output.
  * @param opts.liveMessages - Raw Ably messages already observed live (e.g. by
- *   the prompt-lookup). Folded alongside the history fetch so just-published
+ *   the input-event lookup). Folded alongside the history fetch so just-published
  *   client wires don't depend on Ably's history-indexing window.
  * @returns The projection produced by folding all run events in serial order.
  */
@@ -186,7 +186,7 @@ const loadRunProjection = async <
   signal: AbortSignal;
   logger: Logger | undefined;
   /**
-   * Wires the agent already observed live via the prompt-lookup channel
+   * Wires the agent already observed live via the input-event lookup channel
    * subscription. Folded alongside the history fetch so that the
    * just-published client wires (e.g. a tool-output-available
    * continuation) are guaranteed to land in the projection even if Ably
@@ -266,16 +266,16 @@ const loadRunProjection = async <
  * rejects with `InputEventNotFound` wrapping the decode error as cause —
  * already-collected messages are discarded.
  * @param opts - Lookup parameters.
- * @param opts.register - Session-provided registration that delivers prompt-bearing messages for this invocationId. Returns an unregister function.
+ * @param opts.register - Session-provided registration that delivers input events for this invocationId. Returns an unregister function.
  * @param opts.codec - Codec used to decode arriving messages.
  * @param opts.invocationId - Invocation identifier the dispatcher keys on.
  * @param opts.runId - Run identifier (used for logging and error messages).
- * @param opts.expectedInputEventIds - Prompt-ids the lookup must observe before resolving.
+ * @param opts.expectedInputEventIds - Input-event ids the lookup must observe before resolving.
  * @param opts.timeoutMs - Maximum total time to wait for all event-id arrivals.
  * @param opts.signal - AbortSignal that cancels the wait when the run is cancelled.
  * @param opts.logger - Optional logger for diagnostic output.
  * @returns The MessageNodes for arriving user-message events (sorted by Ably
- *   serial — empty when every prompt was a tool-resolution wire message that
+ *   serial — empty when every input event was a tool-resolution wire message that
  *   decoded to a chunk and produced no node), and the transport headers of
  *   the first matched wire message. `firstHeaders` is the canonical source for
  *   run-level metadata (clientId, parent, forkOf, continuation flag) because
@@ -288,7 +288,7 @@ interface InputEventLookupResult<TMessage> {
   firstHeaders?: Record<string, string>;
   firstClientId?: string;
   /**
-   * Raw Ably messages observed live for the matched prompt-ids, in
+   * Raw Ably messages observed live for the matched input-event ids, in
    * arrival order. The agent forwards these to `loadRunProjection` so a
    * continuation invocation can fold the just-published client wires
    * (e.g. a tool-output-available) without waiting on Ably's channel
@@ -356,7 +356,7 @@ const lookupInputEvents = async <
     const seenSerials = new Set<string>();
     // Forward-declared so that cleanup() and onCancelled() can reference them
     // before they are assigned. cleanup may run synchronously inside
-    // `register(...)` (when buffered prompts drain on registration) before
+    // `register(...)` (when buffered input events drain on registration) before
     // `unregister`/`timer` have been assigned — the no-op fallback for
     // unregister and undefined-guard for timer handle that window. The
     // settled-flag re-check after `register` returns reconciles the
@@ -375,7 +375,7 @@ const lookupInputEvents = async <
       settled = true;
       cleanup();
       reject(
-        new Ably.ErrorInfo(`unable to look up prompt; run ${runId} was cancelled`, ErrorCode.InvalidArgument, 400),
+        new Ably.ErrorInfo(`unable to look up input event; run ${runId} was cancelled`, ErrorCode.InvalidArgument, 400),
       );
     };
     signal.addEventListener('abort', onCancelled, { once: true });
@@ -413,7 +413,7 @@ const lookupInputEvents = async <
         const cause = error instanceof Ably.ErrorInfo ? error : undefined;
         reject(
           new Ably.ErrorInfo(
-            `unable to look up prompt; decode failed for invocation ${invocationId}: ${error instanceof Error ? error.message : String(error)}`,
+            `unable to look up input event; decode failed for invocation ${invocationId}: ${error instanceof Error ? error.message : String(error)}`,
             ErrorCode.InputEventNotFound,
             504,
             cause,
@@ -428,7 +428,7 @@ const lookupInputEvents = async <
       cleanup();
       // Sort by Ably serial ascending so callers see publish order regardless
       // of interleaved rewind+live delivery. Null serials sort last (defensive
-      // — user-prompt messages should always carry a serial).
+      // — input events should always carry a serial).
       collected.sort((a, b) => {
         if (a.serial === undefined && b.serial === undefined) return 0;
         if (a.serial === undefined) return 1;
@@ -444,7 +444,7 @@ const lookupInputEvents = async <
       });
       resolve({ nodes: collected, firstHeaders, firstClientId, rawMessages });
     });
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the register callback may have settled the promise synchronously during buffered-prompt drain.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the register callback may have settled the promise synchronously during buffered input-event drain.
     if (settled) {
       // Sync drain inside register settled the promise; cleanup ran but
       // could not detach the listener because `unregister` was still the
@@ -458,7 +458,7 @@ const lookupInputEvents = async <
       cleanup();
       reject(
         new Ably.ErrorInfo(
-          `unable to look up user prompt; received ${String(collected.length)} of ${String(expectedCount)} user-messages for invocation ${invocationId} within ${String(timeoutMs)}ms`,
+          `unable to look up input event; received ${String(collected.length)} of ${String(expectedCount)} input events for invocation ${invocationId} within ${String(timeoutMs)}ms`,
           ErrorCode.InputEventNotFound,
           504,
         ),
@@ -515,14 +515,14 @@ class DefaultAgentSession<
   private readonly _runManager: RunManager;
   private readonly _registeredRuns = new Map<string, RegisteredRun>();
   /**
-   * Active user-prompt lookups keyed by invocation-id. The channel listener
+   * Active input-event lookups keyed by invocation-id. The channel listener
    * dispatches matching user messages to these callbacks so that messages
    * replayed via channel rewind (and live messages alike) reach the right
    * lookup without each lookup having to subscribe separately.
    */
   private readonly _pendingInputEventLookups = new Map<string, (msg: Ably.InboundMessage) => void>();
   /**
-   * User-prompt messages buffered by invocation-id when no lookup callback
+   * Input events buffered by invocation-id when no lookup callback
    * was registered at delivery time. Each invocation-id maps to an ordered
    * array because a single multi-message `send()` publishes N Ably messages
    * sharing one invocation-id. Rewind replays user messages on attach —
@@ -536,7 +536,7 @@ class DefaultAgentSession<
   /**
    * Bounded FIFO map of invocation-ids whose lookup has resolved
    * successfully, valued by the number of event-ids the lookup resolved at.
-   * Used to distinguish over-arrival (extra user-prompt for a lookup that
+   * Used to distinguish over-arrival (extra input event for a lookup that
    * already completed with N event-ids) from a genuine late /
    * never-claimed arrival, so we can warn loudly on the former (with the
    * count the client claimed) without spamming on the latter. Reject paths
@@ -559,7 +559,7 @@ class DefaultAgentSession<
     // across sessions sharing one client.
     const registerOptions = registerAgent(options.client);
     // Attach with a rewind window (default 2m) so a freshly-constructed
-    // agent session can locate a user prompt that was published before it
+    // agent session can locate an input event that was published before it
     // attached (closes the lookup race when a per-request agent is spun
     // up after the client has already POSTed). Tunable via
     // `AgentSessionOptions.rewindWindow`.
@@ -609,9 +609,9 @@ class DefaultAgentSession<
     this._logger?.trace('DefaultAgentSession.connect();');
     // Subscribe unfiltered (before attach, per RTL7g — subscribe implicitly
     // attaches the channel). An unfiltered subscribe ensures that messages
-    // replayed via channel rewind reach the dispatcher so user-prompt
+    // replayed via channel rewind reach the dispatcher so input-event
     // lookups can match against them; the dispatcher then routes by name
-    // (cancel vs. user-prompt). A name-filtered subscribe would silently
+    // (cancel vs. input event). A name-filtered subscribe would silently
     // drop replayed user messages because rewind delivers them to listeners
     // registered at attach time only.
     this._connectPromise = this._channel.subscribe(this._channelListener).then(
@@ -634,7 +634,7 @@ class DefaultAgentSession<
   }
 
   /**
-   * Register a callback to receive user-prompt messages with the given
+   * Register a callback to receive input events with the given
    * `invocationId`. Lookups must share the session's unfiltered
    * subscription rather than registering their own subscribe — Ably's
    * rewind only delivers to listeners present at attach time.
@@ -649,7 +649,7 @@ class DefaultAgentSession<
    */
   private _registerInputEventListener(invocationId: string, callback: (msg: Ably.InboundMessage) => void): () => void {
     this._pendingInputEventLookups.set(invocationId, callback);
-    // Drain any buffered user-prompt messages for this invocation-id —
+    // Drain any buffered input events for this invocation-id —
     // rewind replays user messages on attach before run.start() can
     // register the callback. Without this drain, the lookup waits the
     // full `inputEventLookupTimeoutMs` for a live arrival that never comes.
@@ -668,7 +668,7 @@ class DefaultAgentSession<
   /**
    * Record an invocation-id whose lookup has resolved successfully so a
    * subsequent unmatched arrival for the same invocation-id can be flagged
-   * as an over-arrival (client published more user-prompts than the
+   * as an over-arrival (client published more input events than the
    * invocation's `inputEventIds` listed). Bounded FIFO eviction at
    * `_completedLookupInvocationIdsLimit`.
    * @param invocationId - The invocation-id whose lookup just completed.
@@ -822,7 +822,7 @@ class DefaultAgentSession<
         return;
       }
 
-      // Dispatch client-published prompt-bearing messages to any pending
+      // Dispatch client-published input events to any pending
       // lookup keyed by invocation-id. Every client-originated event in
       // an invocation (user-message AND amend events such as tool-approval
       // responses and client tool outputs) carries `x-ably-event-id`; the
@@ -838,7 +838,7 @@ class DefaultAgentSession<
           listener(msg);
         } else {
           // Over-arrival: lookup for this invocation already completed
-          // successfully (e.g. client published more prompt-bearing
+          // successfully (e.g. client published more input
           // events than the invocation's `inputEventIds` listed). Warn
           // loudly so client-side bugs surface, then drop the message —
           // no listener will ever register for this completed lookup,
@@ -866,7 +866,7 @@ class DefaultAgentSession<
           } else {
             if (this._inputEventBuffer.size >= this._inputEventBufferLimit) {
               // FIFO eviction: drop the oldest invocation entry (and all
-              // its buffered messages). Clients whose prompt was evicted
+              // its buffered messages). Clients whose input event was evicted
               // will fail their lookup with `InputEventNotFound` — this warn
               // is the only operator-visible signal that capacity caused
               // the failure.
@@ -958,7 +958,7 @@ class DefaultAgentSession<
     const inputEventId = invocation.inputEventId;
 
     // `viewMessages` starts empty. `Run.start()` populates it via the
-    // channel-rewind prompt lookup, pulling in user-message MessageNodes
+    // channel-rewind input-event lookup, pulling in user-message MessageNodes
     // as they arrive on the channel.
     const viewMessages: MessageNode<TMessage>[] = [];
     const view: RunView<TMessage> = {
@@ -967,7 +967,7 @@ class DefaultAgentSession<
       },
     };
 
-    // Per-run metadata resolved from the prompt-lookup result. The first
+    // Per-run metadata resolved from the input-event lookup result. The first
     // matched wire message's headers carry the run's `clientId`, `parent`,
     // `forkOf`, and continuation flag; its Ably-level publisher `clientId`
     // becomes the `inputClientId` re-stamped on the agent's own publishes.
@@ -982,7 +982,7 @@ class DefaultAgentSession<
     let resolvedContinuation = false;
     let firstLookupHeaders: Record<string, string> | undefined;
     /**
-     * Raw Ably messages observed live by the prompt-lookup. Passed to
+     * Raw Ably messages observed live by the input-event lookup. Passed to
      * `loadRunProjection` so the just-published client wires don't need
      * to wait on Ably's channel history indexing window. Empty when no
      * lookup ran or no messages matched.
@@ -1066,7 +1066,7 @@ class DefaultAgentSession<
               error instanceof Ably.ErrorInfo
                 ? error
                 : new Ably.ErrorInfo(
-                    `unable to look up user prompt; ${error instanceof Error ? error.message : String(error)}`,
+                    `unable to look up input event; ${error instanceof Error ? error.message : String(error)}`,
                     ErrorCode.InputEventNotFound,
                     504,
                   );
@@ -1319,7 +1319,7 @@ class DefaultAgentSession<
 
         // Seed the ancestor chain from the current run's parentRunId resolved from
         // channel history. If the current run's ai-run-start hasn't been indexed yet
-        // (rare Ably history lag), fall back to resolvedParent from the prompt-lookup
+        // (rare Ably history lag), fall back to resolvedParent from the input-event lookup
         // (a codec-message-id) resolved through the same index.
         // A cycle guard (seen Set) prevents an infinite loop on self-referential data.
         const lagFallback = resolvedParent ? codecMsgToRunId.get(resolvedParent) : undefined;
@@ -1349,7 +1349,7 @@ class DefaultAgentSession<
           // For the last ancestor (no child in the chain array), truncate at the
           // codec-message-id the current run regenerated or forked. Prefer the
           // value resolved from channel history (runMap.get(runId)); fall back to
-          // the prompt-lookup values in case the current run's ai-run-start hasn't
+          // the input-event lookup values in case the current run's ai-run-start hasn't
           // been indexed yet.
           const truncateAt =
             childRunId === undefined
@@ -1393,9 +1393,9 @@ class DefaultAgentSession<
 
         // Resolve the assistant message's parent. Priority (highest first):
         //   1. Explicit `streamOpts.parent` from the caller.
-        //   2. The most recently looked-up user prompt for this run — so the
+        //   2. The most recently looked-up input event for this run — so the
         //      assistant threads under the user msg that triggered it.
-        //   3. `resolvedParent` from the prompt-lookup's `firstLookupHeaders`.
+        //   3. `resolvedParent` from the input-event lookup's `firstLookupHeaders`.
         //      For regenerate wires the lookup matches the event (by
         //      inputEventId) but produces no MessageNodes, so `viewMessages` is
         //      empty — the regenerate event's `x-ably-parent` header carries

@@ -43,7 +43,7 @@ export const HEADER_INVOCATION_ID = 'x-ably-invocation-id';
  * codec-message-id, and so amend events that target an existing message can
  * carry their own per-send identity. The invocation body lists every
  * inputEventId the agent must observe on the channel before starting LLM
- * work — see `Run.start()`'s prompt lookup.
+ * work — see `Run.start()`'s input-event lookup.
  */
 export const HEADER_EVENT_ID = 'x-ably-event-id';
 

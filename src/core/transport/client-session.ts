@@ -49,7 +49,16 @@ import type { StreamRouter } from './stream-router.js';
 import { createStreamRouter } from './stream-router.js';
 import type { DefaultTree } from './tree.js';
 import { createTree } from './tree.js';
-import type { ActiveRun, ClientSession, ClientSessionOptions, RunEndReason, SendOptions, Tree, View } from './types.js';
+import type {
+  ActiveRun,
+  ClientSession,
+  ClientSessionOptions,
+  ClientSessionOutputFeed,
+  RunEndReason,
+  SendOptions,
+  Tree,
+  View,
+} from './types.js';
 import { createView, type DefaultView } from './view.js';
 
 /**
@@ -72,8 +81,21 @@ enum ClientSessionState {
 // Event map for the session's typed EventEmitter
 // ---------------------------------------------------------------------------
 
-interface ClientSessionEventsMap {
+interface ClientSessionEventsMap<TOutput extends CodecOutputEvent> {
+  /** A non-fatal session error surfaced to the developer via the public `on('error')`. */
   error: Ably.ErrorInfo;
+  /**
+   * A decoded output for a run, emitted once per decoded output event in
+   * arrival order. Drives a consumer-owned stream router via
+   * {@link ClientSessionOutputFeed.onOutput}.
+   */
+  output: { runId: string; output: TOutput };
+  /**
+   * A run-scoped stream error not carried on the run lifecycle event —
+   * channel continuity loss. Surfaced via
+   * {@link ClientSessionOutputFeed.onRunError}.
+   */
+  runError: { runId: string; error: Ably.ErrorInfo };
 }
 
 // ---------------------------------------------------------------------------
@@ -81,19 +103,17 @@ interface ClientSessionEventsMap {
 // ---------------------------------------------------------------------------
 
 // Spec: AIT-CT1
-class DefaultClientSession<
-  TInput extends CodecInputEvent,
-  TOutput extends CodecOutputEvent,
-  TProjection,
-  TMessage,
-> implements ClientSession<TInput, TOutput, TProjection, TMessage> {
+class DefaultClientSession<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>
+  implements ClientSession<TInput, TOutput, TProjection, TMessage>, ClientSessionOutputFeed<TOutput>
+{
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: ClientSessionOptions<TInput, TOutput, TProjection, TMessage>['codec'];
   private readonly _clientId: string | undefined;
   private readonly _logger: Logger;
 
-  // Typed event emitter — only 'error' remains on the session
-  private readonly _emitter: EventEmitter<ClientSessionEventsMap>;
+  // Typed event emitter: public `error`, plus the internal per-run output
+  // feed (`output` / `runError`) consumed by stream-owning adapters.
+  private readonly _emitter: EventEmitter<ClientSessionEventsMap<TOutput>>;
 
   /**
    * Run-ids of runs initiated by this session. Added on send, removed on
@@ -157,7 +177,7 @@ class DefaultClientSession<
       component: 'ClientSession',
     });
 
-    this._emitter = new EventEmitter<ClientSessionEventsMap>(this._logger);
+    this._emitter = new EventEmitter<ClientSessionEventsMap<TOutput>>(this._logger);
     this._hasAttachedOnce = this._channel.state === 'attached';
 
     // Compose sub-components
@@ -330,25 +350,27 @@ class DefaultClientSession<
 
         // When reason is 'error' the agent surfaces a mid-run failure
         // via the error-code / error-message headers.
-        // Reify the error, route it to the active stream, and emit the
-        // session error event before falling through to the regular
-        // run-end teardown. The agent only publishes `run-end` after it
-        // has published `run-start`, so no pending-run-start tracker is
+        // Reify the error, route it to the active stream, emit the
+        // session error event, and carry it on the run-end lifecycle event
+        // (so stream-owning adapters can reject the run's stream from the
+        // same event). The agent only publishes `run-end` after it has
+        // published `run-start`, so no pending-run-start tracker is
         // outstanding at this point.
+        let runEndError: Ably.ErrorInfo | undefined;
         if (reason === 'error') {
           const codeRaw = headers[HEADER_ERROR_CODE];
           const parsedCode = codeRaw === undefined ? Number.NaN : Number(codeRaw);
           const code = Number.isFinite(parsedCode) ? parsedCode : ErrorCode.SessionSubscriptionError;
           const message = headers[HEADER_ERROR_MESSAGE] ?? 'agent reported an error';
           const statusCode = code >= 10000 && code < 60000 ? Math.floor(code / 100) : 500;
-          const errInfo = new Ably.ErrorInfo(message, code, statusCode);
-          if (runId) this._router.errorStream(runId, errInfo);
+          runEndError = new Ably.ErrorInfo(message, code, statusCode);
+          if (runId) this._router.errorStream(runId, runEndError);
           this._logger.error('ClientSession._handleMessage(); agent error received', {
             runId,
             invocationId,
             code,
           });
-          this._emitter.emit('error', errInfo);
+          this._emitter.emit('error', runEndError);
         }
 
         if (runId) {
@@ -366,7 +388,16 @@ class DefaultClientSession<
             this._router.closeStream(runId);
             this._ownRunIds.delete(runId);
           }
-          this._tree.applyRunLifecycle({ type: EVENT_RUN_END, runId, clientId: runCid, reason }, ablyMessage.serial);
+          this._tree.applyRunLifecycle(
+            {
+              type: EVENT_RUN_END,
+              runId,
+              clientId: runCid,
+              reason,
+              ...(runEndError !== undefined && { error: runEndError }),
+            },
+            ablyMessage.serial,
+          );
         }
         this._tree.emitAblyMessage(ablyMessage);
         return;
@@ -386,13 +417,15 @@ class DefaultClientSession<
         this._tree.applyMessage(events, headers, serial);
       }
 
-      // Route outputs to the active stream (if any). Only TOutput events
+      // Route outputs to the active stream (if any) and emit them on the
+      // per-run output feed for stream-owning adapters. Only TOutput events
       // flow on the consumer's `ActiveRun.stream`; client-published inputs
       // (echoed back on `ai-input`) are folded into the projection but not
       // routed to the stream.
       if (runId) {
         for (const output of outputs) {
           this._router.route(runId, output);
+          this._emitter.emit('output', { runId, output });
         }
       }
 
@@ -462,6 +495,7 @@ class DefaultClientSession<
     // waiting on it.
     for (const runId of this._ownRunIds) {
       this._router.errorStream(runId, err);
+      this._emitter.emit('runError', { runId, error: err });
     }
 
     this._emitter.emit('error', err);
@@ -787,6 +821,26 @@ class DefaultClientSession<
     this._emitter.on(event, cb);
     return () => {
       this._emitter.off(event, cb);
+    };
+  }
+
+  // --- Internal per-run output feed (ClientSessionOutputFeed) ---
+  // Consumed by stream-owning adapters (e.g. the Vercel chat-transport);
+  // not part of the public ClientSession surface.
+
+  onOutput(handler: (event: { runId: string; output: TOutput }) => void): () => void {
+    if (this._state === ClientSessionState.CLOSED) return noopUnsubscribe;
+    this._emitter.on('output', handler);
+    return () => {
+      this._emitter.off('output', handler);
+    };
+  }
+
+  onRunError(handler: (event: { runId: string; error: Ably.ErrorInfo }) => void): () => void {
+    if (this._state === ClientSessionState.CLOSED) return noopUnsubscribe;
+    this._emitter.on('runError', handler);
+    return () => {
+      this._emitter.off('runError', handler);
     };
   }
 

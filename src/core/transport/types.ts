@@ -531,7 +531,19 @@ export type RunLifecycleEvent =
        */
       isContinuation?: boolean;
     }
-  | { type: 'ai-run-end'; runId: string; clientId: string; reason: RunEndReason };
+  | {
+      type: 'ai-run-end';
+      runId: string;
+      clientId: string;
+      reason: RunEndReason;
+      /**
+       * The reified error when `reason` is `'error'` — the agent's mid-run
+       * failure (code / message). Carried on the lifecycle event so a
+       * consumer driving a per-run stream can reject that stream from the
+       * same event it already observes. Absent for non-error reasons.
+       */
+      error?: Ably.ErrorInfo;
+    };
 
 // ---------------------------------------------------------------------------
 // Active run handle
@@ -1067,4 +1079,36 @@ export interface ClientSession<
    * before `close()`.
    */
   close(): Promise<void>;
+}
+
+/**
+ * Internal extension of {@link ClientSession} exposing the per-run decoded
+ * output feed that drives a consumer-owned stream router (e.g. the Vercel
+ * chat-transport).
+ *
+ * NOT part of the public package API — deliberately not re-exported from any
+ * entry point. Generic consumers render from the {@link Tree} / {@link View};
+ * only first-party transport adapters that need a raw `ReadableStream`
+ * consume this feed. The `Default*` client session implements it; adapters
+ * narrow the session to this interface.
+ */
+export interface ClientSessionOutputFeed<TOutput extends CodecOutputEvent> {
+  /**
+   * Subscribe to decoded per-run outputs. Fires once per decoded output
+   * event, in arrival order, tagged with the owning run id. Runs without a
+   * registered stream are still emitted (the consumer's router drops them).
+   * @param handler - Called with the run id and the decoded output.
+   * @returns An unsubscribe function.
+   */
+  onOutput(handler: (event: { runId: string; output: TOutput }) => void): () => void;
+
+  /**
+   * Subscribe to per-run stream errors that are NOT carried on the run
+   * lifecycle event: channel continuity loss. (Agent mid-run errors arrive
+   * on the `run` lifecycle event's `error` field; send-time publish failures
+   * reject the send promise instead.) Returns an unsubscribe function.
+   * @param handler - Called with the run id and the error to reject the stream with.
+   * @returns An unsubscribe function.
+   */
+  onRunError(handler: (event: { runId: string; error: Ably.ErrorInfo }) => void): () => void;
 }

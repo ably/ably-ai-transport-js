@@ -41,7 +41,7 @@ import type {
   WriteOptions,
 } from '../../../src/core/codec/types.js';
 import { createClientSession } from '../../../src/core/transport/client-session.js';
-import type { ClientSession, RunLifecycleEvent } from '../../../src/core/transport/types.js';
+import type { ClientSession, ClientSessionOutputFeed, RunLifecycleEvent } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { createMockClient } from '../../helper/mock-client.js';
 
@@ -369,6 +369,12 @@ const drain = async <T>(stream: ReadableStream<T>): Promise<T[]> => {
   }
   return results;
 };
+
+// CAST: DefaultClientSession implements ClientSessionOutputFeed; the feed is
+// internal and not on the public ClientSession surface.
+const feed = (
+  s: ClientSession<TestInput, TestOutput, TestProjection, TestMessage>,
+): ClientSessionOutputFeed<TestOutput> => s as unknown as ClientSessionOutputFeed<TestOutput>;
 
 interface SessionFixture {
   channel: MockChannel & Ably.RealtimeChannel;
@@ -2041,6 +2047,87 @@ describe('ClientSession', () => {
       // A new observer projection was created (one extra init); fold ran.
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked accessor
       expect(vi.mocked(fix.codec.fold).mock.calls.length).toBeGreaterThan(foldCallsBefore);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Per-run output feed (ClientSessionOutputFeed) — the seam a stream-owning
+  // adapter consumes. Behaviour-preserving feed introduced ahead of the
+  // Vercel chat-transport consuming it.
+  // -------------------------------------------------------------------------
+
+  describe('per-run output feed', () => {
+    it('emits onOutput with { runId, output } for each decoded output', async () => {
+      const outputs: { runId: string; output: TestOutput }[] = [];
+      feed(fix.session).onOutput((e) => outputs.push(e));
+
+      const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+
+      fix.decoder.queue.push({ type: 'text', text: 'pong' });
+      simulateMessage(
+        fix.channel,
+        ablyMsg('text', {
+          [HEADER_RUN_ID]: run.runId,
+          [HEADER_INVOCATION_ID]: run.invocationId,
+          [HEADER_CODEC_MESSAGE_ID]: 'a-1',
+        }),
+      );
+      fix.decoder.queue.push({ type: 'finish' });
+      simulateMessage(
+        fix.channel,
+        ablyMsg('text', {
+          [HEADER_RUN_ID]: run.runId,
+          [HEADER_INVOCATION_ID]: run.invocationId,
+          [HEADER_CODEC_MESSAGE_ID]: 'a-1',
+        }),
+      );
+
+      expect(outputs).toEqual([
+        { runId: run.runId, output: { type: 'text', text: 'pong' } },
+        { runId: run.runId, output: { type: 'finish' } },
+      ]);
+    });
+
+    it('carries the reified error on the run-end lifecycle event when reason is error', () => {
+      const runEnds: RunLifecycleEvent[] = [];
+      fix.session.tree.on('run', (e) => {
+        if (e.type === EVENT_RUN_END) runEnds.push(e);
+      });
+
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: 'run-err',
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+          [HEADER_RUN_REASON]: 'error',
+          [HEADER_ERROR_CODE]: '50000',
+          [HEADER_ERROR_MESSAGE]: 'boom',
+        }),
+      );
+
+      expect(runEnds).toHaveLength(1);
+      const end = runEnds[0];
+      // Narrow to the run-end variant to read `error`.
+      if (end?.type !== EVENT_RUN_END) throw new Error('expected run-end');
+      expect(end.error).toBeErrorInfo({ code: 50000, message: 'boom' });
+    });
+
+    it('emits onRunError for own runs on channel continuity loss', async () => {
+      const runErrors: { runId: string; error: Ably.ErrorInfo }[] = [];
+      feed(fix.session).onRunError((e) => runErrors.push(e));
+      fix.session.on('error', () => {
+        /* consume the global error too */
+      });
+
+      const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+
+      // The mock channel starts ATTACHED (initial attach already observed), so
+      // a single continuity-breaking transition trips the loss handler.
+      simulateStateChange(fix.channel, { current: 'suspended', previous: 'attached', resumed: false });
+
+      expect(runErrors).toHaveLength(1);
+      expect(runErrors[0]?.runId).toBe(run.runId);
+      expect(runErrors[0]?.error).toBeErrorInfoWithCode(ErrorCode.ChannelContinuityLost);
     });
   });
 });

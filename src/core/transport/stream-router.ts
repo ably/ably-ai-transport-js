@@ -19,27 +19,24 @@ import type { RunEntry } from './types.js';
 
 /** Routes decoded events to the correct run's ReadableStream. */
 export interface StreamRouter<TOutput extends CodecOutputEvent> {
-  /** Register a new stream for a (runId, invocationId). Returns the ReadableStream the consumer reads from. */
-  createStream(runId: string, invocationId: string): ReadableStream<TOutput>;
+  /** Register a new stream for a runId. Returns the ReadableStream the consumer reads from. */
+  createStream(runId: string): ReadableStream<TOutput>;
   /**
-   * Rebind an existing run's stream to a new invocation-id. Used when a
-   * suspended run resumes under the same runId with a fresh invocation —
-   * the ReadableStream the consumer is already reading stays open; only
-   * the invocation filter advances. Returns the existing ReadableStream on
-   * success, or `undefined` (and does nothing) if no stream is registered
-   * for the runId.
+   * Return the existing stream for a runId, or `undefined` if none is
+   * registered. Used on continuation: a suspended run that resumes under
+   * the same runId re-exposes the ReadableStream the consumer is already
+   * reading rather than opening a new one.
    */
-  rebindStream(runId: string, newInvocationId: string): ReadableStream<TOutput> | undefined;
+  getStream(runId: string): ReadableStream<TOutput> | undefined;
   /** Close the stream for a runId. Returns true if a stream existed. */
   closeStream(runId: string): boolean;
   /** Error the stream for a runId. The consumer's reader will reject with the given error. Returns true if a stream existed. */
   errorStream(runId: string, error: Ably.ErrorInfo): boolean;
   /**
-   * Enqueue an event to the correct stream. Returns true if routed successfully.
-   * Drops the event if no stream is registered for the runId, or if the
-   * registered stream is bound to a different invocationId.
+   * Enqueue an event to the run's stream. Returns true if routed
+   * successfully. Drops the event if no stream is registered for the runId.
    */
-  route(runId: string, invocationId: string | undefined, event: TOutput): boolean;
+  route(runId: string, event: TOutput): boolean;
   /** Whether a specific runId has an active stream. */
   has(runId: string): boolean;
 }
@@ -59,8 +56,8 @@ class DefaultStreamRouter<TOutput extends CodecOutputEvent> implements StreamRou
     this._logger = logger;
   }
 
-  createStream(runId: string, invocationId: string): ReadableStream<TOutput> {
-    this._logger.trace('StreamRouter.createStream();', { runId, invocationId });
+  createStream(runId: string): ReadableStream<TOutput> {
+    this._logger.trace('StreamRouter.createStream();', { runId });
 
     // Build stream+controller together. ReadableStream's start() runs synchronously
     // per spec, so the controller is captured before the constructor returns.
@@ -77,20 +74,12 @@ class DefaultStreamRouter<TOutput extends CodecOutputEvent> implements StreamRou
         500,
       );
     }
-    this._runs.set(runId, { stream, controller: entry.controller, runId, invocationId });
+    this._runs.set(runId, { stream, controller: entry.controller, runId });
     return stream;
   }
 
-  rebindStream(runId: string, newInvocationId: string): ReadableStream<TOutput> | undefined {
-    const run = this._runs.get(runId);
-    if (!run) return undefined;
-    this._logger.debug('StreamRouter.rebindStream();', {
-      runId,
-      from: run.invocationId,
-      to: newInvocationId,
-    });
-    run.invocationId = newInvocationId;
-    return run.stream;
+  getStream(runId: string): ReadableStream<TOutput> | undefined {
+    return this._runs.get(runId)?.stream;
   }
 
   // Spec: AIT-CT14b
@@ -124,22 +113,9 @@ class DefaultStreamRouter<TOutput extends CodecOutputEvent> implements StreamRou
   }
 
   // Spec: AIT-CT14a
-  route(runId: string, invocationId: string | undefined, event: TOutput): boolean {
+  route(runId: string, event: TOutput): boolean {
     const run = this._runs.get(runId);
     if (!run) return false;
-
-    // Drop events whose invocation-id doesn't match the bound stream.
-    // Events with no invocation-id header (e.g. agent-side events that
-    // don't carry it on every message) are routed to the registered
-    // stream — only an explicit mismatch is filtered.
-    if (invocationId !== undefined && invocationId !== run.invocationId) {
-      this._logger.debug('StreamRouter.route(); dropping mismatched-invocation event', {
-        runId,
-        eventInvocationId: invocationId,
-        streamInvocationId: run.invocationId,
-      });
-      return false;
-    }
 
     try {
       run.controller.enqueue(event);

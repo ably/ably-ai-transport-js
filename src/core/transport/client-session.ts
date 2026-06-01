@@ -386,7 +386,6 @@ class DefaultClientSession<
       const headers = getTransportHeaders(ablyMessage);
       const serial = ablyMessage.serial;
       const runId = headers[HEADER_RUN_ID];
-      const invocationId = headers[HEADER_INVOCATION_ID];
 
       // Fold into the Tree's per-Run projection. This must run BEFORE router
       // routing so the active stream's listeners see the projection updates
@@ -395,15 +394,13 @@ class DefaultClientSession<
         this._tree.applyMessage(events, headers, serial);
       }
 
-      // Route outputs to the active stream (if any). The router drops
-      // events whose invocation-id doesn't match the stream's bound
-      // invocation. Only TOutput events flow on the consumer's
-      // `ActiveRun.stream`; client-published
-      // inputs (echoed back on `ai-input`) are folded into the projection
-      // but not routed to the stream.
+      // Route outputs to the active stream (if any). Only TOutput events
+      // flow on the consumer's `ActiveRun.stream`; client-published inputs
+      // (echoed back on `ai-input`) are folded into the projection but not
+      // routed to the stream.
       if (runId) {
         for (const output of outputs) {
-          this._router.route(runId, invocationId, output);
+          this._router.route(runId, output);
         }
       }
 
@@ -557,9 +554,9 @@ class DefaultClientSession<
     const isContinuation = sendOptions?.runId !== undefined;
 
     // Every send must carry at least one input. The only exception is a
-    // continuation rebind under an existing runId that carries no new
-    // inputs (rare, but allowed — the run's existing input events are
-    // already on the channel).
+    // continuation under an existing runId that carries no new inputs
+    // (rare, but allowed — the run's existing input events are already on
+    // the channel).
     if (input.length === 0 && !isContinuation) {
       throw new Ably.ErrorInfo(
         'unable to send; inputs array is empty (pass options.runId for continuation, or include at least one input)',
@@ -657,18 +654,14 @@ class DefaultClientSession<
     // up on the channel via `event-id` and forwards in the POST body.
     const triggerInputEventId = items.at(-1)?.headers[HEADER_EVENT_ID] ?? '';
 
-    // Stream setup. Fresh send opens a new stream; continuation rebinds the
+    // Stream setup. Fresh send opens a new stream; continuation reuses the
     // existing one. If the suspended stream was torn down (e.g. cancel /
     // continuity loss), fall back to creating a fresh stream so the
     // continuation still completes — observers will see the events even if
     // the originally-returned readable was already drained.
-    let stream: ReadableStream<TOutput>;
-    if (isContinuation) {
-      const existing = this._router.rebindStream(runId, invocationId);
-      stream = existing ?? this._router.createStream(runId, invocationId);
-    } else {
-      stream = this._router.createStream(runId, invocationId);
-    }
+    const stream: ReadableStream<TOutput> = isContinuation
+      ? (this._router.getStream(runId) ?? this._router.createStream(runId))
+      : this._router.createStream(runId);
 
     // Arm a pending-run-start tracker keyed by invocationId. The run-start
     // handler resolves it; the deadline timer rejects it. A `runStartDeadlineMs`

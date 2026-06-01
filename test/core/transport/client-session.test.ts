@@ -1536,9 +1536,9 @@ describe('ClientSession', () => {
       // continuation completes, the Run stays at status=active in the
       // live client even though channel-history replay rebuilds it as
       // status=complete. Repro the full sequence: first send →
-      // run-end suspended → continuation send (rebinds router) →
-      // run-end complete. R1.status must end at the continuation's
-      // reason, otherwise the UI stays stuck on "streaming".
+      // run-end suspended → continuation send → run-end complete.
+      // R1.status must end at the continuation's reason, otherwise the
+      // UI stays stuck on "streaming".
       const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
 
       // First invocation suspends (e.g. tool call awaiting client output).
@@ -1553,7 +1553,7 @@ describe('ClientSession', () => {
       );
       expect(fix.session.tree.getRunNode(initial.runId)?.status).toBe('suspended');
 
-      // Continuation send under the same runId — rebinds router to inv2.
+      // Continuation send under the same runId with a fresh invocation.
       const continuation = await fix.session.view.sendInput([{ kind: 'user-message', text: 'continue' }], {
         runId: initial.runId,
       });
@@ -1647,8 +1647,8 @@ describe('ClientSession', () => {
       expect(fix.session.tree.getRunNode('run-obs')?.status).toBe('complete');
     });
 
-    it('processes continuation run-end (router-active invocation is fresh)', async () => {
-      // Continuation rebinds the router stream to a new invocation. The
+    it('processes a continuation run-end carrying a fresh invocation', async () => {
+      // A continuation reuses the runId under a fresh invocation. The
       // continuation's run-end is applied and the run cleans up.
       const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
       const continuation = await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], {

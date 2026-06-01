@@ -34,9 +34,6 @@ const drain = async <T>(stream: ReadableStream<T>): Promise<T[]> => {
   return results;
 };
 
-const INV_A = 'inv-a';
-const INV_B = 'inv-b';
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -50,64 +47,38 @@ describe('StreamRouter', () => {
 
   describe('createStream', () => {
     it('returns a ReadableStream for the given runId', () => {
-      const stream = router.createStream('run-1', INV_A);
+      const stream = router.createStream('run-1');
       expect(stream).toBeInstanceOf(ReadableStream);
     });
 
     it('registers the runId as active', () => {
-      router.createStream('run-1', INV_A);
+      router.createStream('run-1');
       expect(router.has('run-1')).toBe(true);
     });
   });
 
   describe('route', () => {
     it('enqueues events to the correct stream', async () => {
-      const stream = router.createStream('run-1', INV_A);
+      const stream = router.createStream('run-1');
       const event: TestEvent = { type: 'text', text: 'hello' };
       const terminal: TestEvent = { type: 'finish' };
 
-      expect(router.route('run-1', INV_A, event)).toBe(true);
-      expect(router.route('run-1', INV_A, terminal)).toBe(true);
+      expect(router.route('run-1', event)).toBe(true);
+      expect(router.route('run-1', terminal)).toBe(true);
 
       const items = await drain(stream);
       expect(items).toEqual([event, terminal]);
     });
 
     it('returns false when routing to a non-existent runId', () => {
-      expect(router.route('no-such-run', INV_A, { type: 'text' })).toBe(false);
-    });
-
-    it('drops events from a different invocation under the same runId', async () => {
-      const stream = router.createStream('run-1', INV_A);
-
-      // A late event from the losing invocation under the same runId.
-      expect(router.route('run-1', INV_B, { type: 'text', text: 'loser' })).toBe(false);
-
-      // Winning invocation's events still flow.
-      router.route('run-1', INV_A, { type: 'text', text: 'winner' });
-      router.route('run-1', INV_A, { type: 'finish' });
-
-      const items = await drain(stream);
-      expect(items).toEqual([{ type: 'text', text: 'winner' }, { type: 'finish' }]);
-    });
-
-    it('routes events with no invocation-id (legacy / agent-side events) to the registered stream', async () => {
-      const stream = router.createStream('run-1', INV_A);
-
-      // Some events on the wire may not carry an invocation-id (assistant
-      // chunks); they should be routed to whatever stream is registered.
-      expect(router.route('run-1', undefined, { type: 'text', text: 'plain' })).toBe(true);
-      router.route('run-1', undefined, { type: 'finish' });
-
-      const items = await drain(stream);
-      expect(items).toEqual([{ type: 'text', text: 'plain' }, { type: 'finish' }]);
+      expect(router.route('no-such-run', { type: 'text' })).toBe(false);
     });
 
     it('closes the stream on a terminal event', async () => {
-      const stream = router.createStream('run-1', INV_A);
+      const stream = router.createStream('run-1');
 
-      router.route('run-1', INV_A, { type: 'text', text: 'data' });
-      router.route('run-1', INV_A, { type: 'finish' });
+      router.route('run-1', { type: 'text', text: 'data' });
+      router.route('run-1', { type: 'finish' });
 
       // Stream should be closed — drain completes
       const items = await drain(stream);
@@ -118,28 +89,26 @@ describe('StreamRouter', () => {
     });
 
     it('removes the run when the controller throws on enqueue', () => {
-      const stream = router.createStream('run-1', INV_A);
+      const stream = router.createStream('run-1');
 
       // Close the stream externally by reading and cancelling
       void stream.cancel();
 
       // Now route should fail gracefully
-      const result = router.route('run-1', INV_A, { type: 'text' });
+      const result = router.route('run-1', { type: 'text' });
       expect(result).toBe(false);
       expect(router.has('run-1')).toBe(false);
     });
   });
 
-  describe('rebindStream', () => {
-    it('returns the existing stream and routes events tagged with the new invocation', async () => {
-      const original = router.createStream('run-1', INV_A);
-      const rebound = router.rebindStream('run-1', INV_B);
-      expect(rebound).toBe(original);
+  describe('getStream', () => {
+    it('returns the existing stream so a continuation reuses the open readable', async () => {
+      const original = router.createStream('run-1');
+      const reused = router.getStream('run-1');
+      expect(reused).toBe(original);
 
-      // Events tagged with the OLD invocation are now dropped
-      expect(router.route('run-1', INV_A, { type: 'text', text: 'stale' })).toBe(false);
-      // Events tagged with the NEW invocation route to the same readable
-      router.route('run-1', INV_B, { type: 'text', text: 'fresh' });
+      // Events route to the same readable the consumer is already reading.
+      router.route('run-1', { type: 'text', text: 'fresh' });
       router.closeStream('run-1');
 
       const items = await drain(original);
@@ -147,15 +116,15 @@ describe('StreamRouter', () => {
     });
 
     it('returns undefined when no stream is registered for the runId', () => {
-      expect(router.rebindStream('missing', INV_B)).toBeUndefined();
+      expect(router.getStream('missing')).toBeUndefined();
     });
   });
 
   describe('closeStream', () => {
     it('closes the stream and removes it from the router', async () => {
-      const stream = router.createStream('run-1', INV_A);
+      const stream = router.createStream('run-1');
 
-      router.route('run-1', INV_A, { type: 'text', text: 'hello' });
+      router.route('run-1', { type: 'text', text: 'hello' });
       router.closeStream('run-1');
 
       expect(router.has('run-1')).toBe(false);
@@ -165,7 +134,7 @@ describe('StreamRouter', () => {
     });
 
     it('returns true when a stream existed', () => {
-      router.createStream('run-1', INV_A);
+      router.createStream('run-1');
       expect(router.closeStream('run-1')).toBe(true);
     });
 
@@ -174,7 +143,7 @@ describe('StreamRouter', () => {
     });
 
     it('is idempotent — second close returns false', () => {
-      router.createStream('run-1', INV_A);
+      router.createStream('run-1');
       expect(router.closeStream('run-1')).toBe(true);
       expect(router.closeStream('run-1')).toBe(false);
     });
@@ -184,7 +153,7 @@ describe('StreamRouter', () => {
     const error = new Ably.ErrorInfo('test error', 104006, 500);
 
     it('errors the stream and removes it from the router', async () => {
-      const stream = router.createStream('run-1', INV_A);
+      const stream = router.createStream('run-1');
 
       router.errorStream('run-1', error);
 
@@ -195,7 +164,7 @@ describe('StreamRouter', () => {
     });
 
     it('returns true when a stream was errored', () => {
-      router.createStream('run-1', INV_A);
+      router.createStream('run-1');
       expect(router.errorStream('run-1', error)).toBe(true);
     });
 
@@ -204,7 +173,7 @@ describe('StreamRouter', () => {
     });
 
     it('is idempotent — second error returns false', () => {
-      router.createStream('run-1', INV_A);
+      router.createStream('run-1');
       expect(router.errorStream('run-1', error)).toBe(true);
       expect(router.errorStream('run-1', error)).toBe(false);
     });
@@ -216,8 +185,8 @@ describe('StreamRouter', () => {
     });
 
     it('reflects multiple concurrent streams', () => {
-      router.createStream('run-1', INV_A);
-      router.createStream('run-2', INV_B);
+      router.createStream('run-1');
+      router.createStream('run-2');
 
       expect(router.has('run-1')).toBe(true);
       expect(router.has('run-2')).toBe(true);
@@ -234,14 +203,14 @@ describe('StreamRouter', () => {
 
   describe('multiple concurrent streams', () => {
     it('routes events to the correct stream independently', async () => {
-      const stream1 = router.createStream('run-1', INV_A);
-      const stream2 = router.createStream('run-2', INV_B);
+      const stream1 = router.createStream('run-1');
+      const stream2 = router.createStream('run-2');
 
-      router.route('run-1', INV_A, { type: 'text', text: 'a' });
-      router.route('run-2', INV_B, { type: 'text', text: 'b' });
-      router.route('run-1', INV_A, { type: 'finish' });
-      router.route('run-2', INV_B, { type: 'text', text: 'c' });
-      router.route('run-2', INV_B, { type: 'finish' });
+      router.route('run-1', { type: 'text', text: 'a' });
+      router.route('run-2', { type: 'text', text: 'b' });
+      router.route('run-1', { type: 'finish' });
+      router.route('run-2', { type: 'text', text: 'c' });
+      router.route('run-2', { type: 'finish' });
 
       const items1 = await drain(stream1);
       const items2 = await drain(stream2);

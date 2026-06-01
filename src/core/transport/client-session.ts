@@ -114,7 +114,7 @@ class DefaultClientSession<
 
   // Spec: AIT-CT10, AIT-CT10a
   readonly tree: Tree<TProjection>;
-  readonly view: View<TInput, TOutput, TProjection, TMessage>;
+  readonly view: View<TInput, TOutput, TMessage>;
 
   // Channel subscription is established lazily on connect()
   private _connectPromise: Promise<void> | undefined;
@@ -478,7 +478,7 @@ class DefaultClientSession<
   // ---------------------------------------------------------------------------
 
   // Spec: AIT-CT10b
-  createView(): View<TInput, TOutput, TProjection, TMessage> {
+  createView(): View<TInput, TOutput, TMessage> {
     if (this._state === ClientSessionState.CLOSED) {
       throw new Ably.ErrorInfo('unable to create view; session is closed', ErrorCode.SessionClosed, 400);
     }

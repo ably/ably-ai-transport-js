@@ -30,8 +30,9 @@ import { parseRunLifecycle } from './headers.js';
 import type { TreeInternal } from './tree.js';
 import type {
   ActiveRun,
+  BranchSelection,
   HistoryPage,
-  MessageMetadata,
+  RunInfo,
   RunLifecycleEvent,
   RunNode,
   SendOptions,
@@ -98,11 +99,13 @@ export interface ViewOptions<TInput extends CodecInputEvent, TOutput extends Cod
 // ---------------------------------------------------------------------------
 
 /**
- * Tagged union representing why a branch was selected.
- * Stored per group-root runId in the View's `_branchSelections` map.
+ * Internal tagged union representing why a branch was selected for an
+ * edit-fork group. Stored per group-root runId in the View's
+ * `_branchSelections` map. Not the public-facing {@link BranchSelection}
+ * — that's a UI-facing bundle returned by `view.branchSelection(id)`.
  */
-type BranchSelection =
-  /** Explicit navigation via `select()`. */
+type BranchSelectionState =
+  /** Explicit navigation via `selectSibling()`. */
   | { kind: 'user'; selectedRunId: string }
   /** This view initiated a fork (edit) — auto-selected the result. */
   | { kind: 'auto'; selectedRunId: string }
@@ -113,7 +116,7 @@ type BranchSelection =
 
 /**
  * Selection state for a regenerate group. Keyed by the anchor codec-message-id (the
- * assistant codec-message-id being regenerated). Distinct from {@link BranchSelection}
+ * assistant codec-message-id being regenerated). Distinct from {@link BranchSelectionState}
  * because regenerate groups are message-level (group members share an
  * anchor codec-message-id rather than a parentRunId), not Run-level forks.
  *
@@ -123,7 +126,7 @@ type BranchSelection =
  * forward unless the user has explicitly selected an earlier member.
  */
 type RegenSelection =
-  /** Explicit navigation via `select()`. */
+  /** Explicit navigation via `selectSibling()`. */
   | { kind: 'user'; selectedRunId: string }
   /** This view initiated a regenerate — auto-selected the new Run when it arrived. */
   | { kind: 'auto'; selectedRunId: string }
@@ -176,6 +179,20 @@ const _readMessageId = (message: unknown): string | undefined =>
   // CAST: codec convention; see JSDoc above and AIT-801.
   (message as { id?: string }).id;
 
+/**
+ * Project a Tree `RunNode` down to the View-facing `RunInfo` shape:
+ * drop the codec projection and the structural fields that callers
+ * reach via `session.tree` when they need them.
+ * @param run - The tree's RunNode.
+ * @returns A projection-free RunInfo.
+ */
+const _toRunInfo = <TProjection>(run: RunNode<TProjection>): RunInfo => ({
+  runId: run.runId,
+  clientId: run.clientId,
+  status: run.status,
+  invocationId: run.invocationId,
+});
+
 // ---------------------------------------------------------------------------
 // Implementation
 // ---------------------------------------------------------------------------
@@ -185,7 +202,7 @@ export class DefaultView<
   TOutput extends CodecOutputEvent,
   TProjection,
   TMessage,
-> implements View<TInput, TOutput, TProjection, TMessage> {
+> implements View<TInput, TOutput, TMessage> {
   private readonly _tree: TreeInternal<TInput | TOutput, TProjection>;
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: Codec<TInput, TOutput, TProjection, TMessage>;
@@ -198,7 +215,7 @@ export class DefaultView<
    * View-local branch selections: group-root runId → selection intent.
    * Fork points not present here default to the latest sibling.
    */
-  private readonly _branchSelections = new Map<string, BranchSelection>();
+  private readonly _branchSelections = new Map<string, BranchSelectionState>();
 
   /**
    * View-local regenerate-group selections: anchor codec-message-id (the assistant
@@ -242,9 +259,10 @@ export class DefaultView<
   private readonly _unsubs: (() => void)[] = [];
 
   /**
-   * Cached result of the last flattenNodes computation. Public `flattenNodes()`
-   * returns this in O(1); internal callers use `_computeFlatNodes()` when a
-   * fresh tree walk is needed (structural changes, selection changes, history reveal).
+   * Cached result of the last flat-nodes computation. Drives the visible
+   * message snapshot exposed via `getMessages()`; refreshed by
+   * `_computeFlatNodes()` on structural changes, selection changes,
+   * and history reveal.
    */
   private _cachedNodes: RunNode<TProjection>[] = [];
 
@@ -319,9 +337,12 @@ export class DefaultView<
     return this._lastVisibleMessages;
   }
 
-  // Spec: AIT-CT9, AIT-CT11c
-  flattenNodes(): RunNode<TProjection>[] {
-    return this._cachedNodes;
+  runs(): RunInfo[] {
+    // `_cachedNodes` is the visible Run list with pagination, branch
+    // selection, and regenerate substitution already applied — it's
+    // refreshed by `_updateVisibleSnapshot()` after every relevant event.
+    // Reading from it directly avoids a redundant tree walk.
+    return this._cachedNodes.map((node) => _toRunInfo(node));
   }
 
   /**
@@ -330,7 +351,7 @@ export class DefaultView<
    * @returns A fresh array of visible Runs.
    */
   private _computeFlatNodes(): RunNode<TProjection>[] {
-    const treeNodes = this._tree.flattenNodes(this._resolveSelections());
+    const treeNodes = this._tree.runs(this._resolveSelections());
     const candidates: RunNode<TProjection>[] = [];
     for (const node of treeNodes) {
       if (this._withheldRunIds.has(node.runId)) continue;
@@ -396,7 +417,7 @@ export class DefaultView<
    * are filtered out of the visible chain; the owner Run (the one that
    * holds the regenerated codec-message-id) is always visible — only the
    * regenerated message itself is dropped by {@link _extractMessages}.
-   * @param node - A Run from `tree.flattenNodes`.
+   * @param node - A Run from `tree.runs`.
    * @returns True if the View's regen selection excludes this Run.
    */
   private _isRegenHiddenByGroupSelection(node: RunNode<TProjection>): boolean {
@@ -559,134 +580,84 @@ export class DefaultView<
   }
 
   // -------------------------------------------------------------------------
-  // Branch navigation
+  // Run lookup
   // -------------------------------------------------------------------------
 
-  // Spec: AIT-CT13c, AIT-CT13d
-  select(runId: string, index: number): void {
-    this._logger.trace('DefaultView.select();', { runId, index });
-
-    // Try fork-of group first; fall back to regenerate group.
-    const forkNodes = this._tree.getSiblingRuns(runId);
-    if (forkNodes.length > 1) {
-      const groupRoot = this._tree.getGroupRoot(runId);
-      const clamped = Math.max(0, Math.min(index, forkNodes.length - 1));
-      const selected = forkNodes[clamped];
-      if (!selected) return; // unreachable
-      this._branchSelections.set(groupRoot, { kind: 'user', selectedRunId: selected.runId });
-      this._logger.debug('DefaultView.select(); fork-of', { runId, index: clamped, selectedRunId: selected.runId });
-      this._cachedNodes = this._computeFlatNodes();
-      this._updateVisibleSnapshot(this._cachedNodes);
-      this._emitter.emit('update');
-      return;
-    }
-
-    const regenGroup = this._tree.getRegenerateGroup(runId);
-    if (regenGroup && regenGroup.runs.length > 1) {
-      const clamped = Math.max(0, Math.min(index, regenGroup.runs.length - 1));
-      const selected = regenGroup.runs[clamped];
-      if (!selected) return; // unreachable
-      this._regenSelections.set(regenGroup.anchorCodecMessageId, { kind: 'user', selectedRunId: selected.runId });
-      this._logger.debug('DefaultView.select(); regenerate', {
-        runId,
-        index: clamped,
-        selectedRunId: selected.runId,
-        anchorCodecMessageId: regenGroup.anchorCodecMessageId,
-      });
-      this._cachedNodes = this._computeFlatNodes();
-      this._updateVisibleSnapshot(this._cachedNodes);
-      this._emitter.emit('update');
-    }
-  }
-
-  getSelectedIndex(runId: string): number {
-    this._logger.trace('DefaultView.getSelectedIndex();', { runId });
-    const forkNodes = this._tree.getSiblingRuns(runId);
-    if (forkNodes.length > 1) {
-      const groupRoot = this._tree.getGroupRoot(runId);
-      const sel = this._branchSelections.get(groupRoot);
-      if (!sel || sel.kind === 'pending') return forkNodes.length - 1;
-      const idx = forkNodes.findIndex((n) => n.runId === sel.selectedRunId);
-      return idx === -1 ? forkNodes.length - 1 : idx;
-    }
-    const regenGroup = this._tree.getRegenerateGroup(runId);
-    if (regenGroup && regenGroup.runs.length > 1) {
-      const sel = this._regenSelections.get(regenGroup.anchorCodecMessageId);
-      if (!sel || sel.kind === 'pending') return regenGroup.runs.length - 1;
-      const idx = regenGroup.runs.findIndex((n) => n.runId === sel.selectedRunId);
-      return idx === -1 ? regenGroup.runs.length - 1 : idx;
-    }
-    return 0;
-  }
-
-  // Spec: AIT-CT13c, AIT-CT13d — msg-anchored branch-point API. The
-  // RFC anchors branch points at msg-ids (the user message's id for edits,
-  // the assistant msg-id for regens); these methods return per-bubble nav data so the UI
-  // doesn't surface arrows on bubbles whose msg-id is not the actual
-  // anchor. Tree-level introspection (RunNode access, runId-keyed
-  // sibling queries) remains on the {@link Tree} surface.
-
-  getMessageMetadata(codecMessageId: string): MessageMetadata | undefined {
+  runOf(codecMessageId: string): RunInfo | undefined {
+    this._logger.trace('DefaultView.runOf();', { codecMessageId });
     const run = this._tree.getRunByCodecMessageId(codecMessageId);
-    if (!run) return undefined;
-    return {
-      codecMessageId,
-      runId: run.runId,
-      clientId: run.clientId,
-      status: run.status === 'active' ? 'streaming' : run.status,
-    };
+    return run ? _toRunInfo(run) : undefined;
   }
 
-  // Spec: AIT-CT13c, AIT-CT13d — msg-anchored branch-point API
-  // (companion to runId-based hasSiblingRuns/getSiblingRuns/select). The
-  // RFC anchors branch points at codec-message-ids; these methods return
-  // per-bubble nav data so the UI doesn't surface arrows on bubbles whose
-  // codec-message-id is not the actual anchor.
-
-  hasMessageSiblings(codecMessageId: string): boolean {
-    return this._resolveMessageBranchPoint(codecMessageId) !== undefined;
+  run(runId: string): RunInfo | undefined {
+    this._logger.trace('DefaultView.run();', { runId });
+    const run = this._tree.getRunNode(runId);
+    return run ? _toRunInfo(run) : undefined;
   }
 
-  getMessageSiblings(codecMessageId: string): TMessage[] {
+  // -------------------------------------------------------------------------
+  // Branch navigation (msg-anchored)
+  // -------------------------------------------------------------------------
+
+  // Spec: AIT-CT13c, AIT-CT13d — branch points are codec-message-id
+  // anchored. The View resolves the anchor (the user prompt for edits,
+  // the assistant slot for regens) and routes the selection to the
+  // appropriate internal selection map. Tree-level introspection
+  // (RunNode access, runId-keyed queries) remains on the {@link Tree}.
+
+  branchSelection(codecMessageId: string): BranchSelection<TMessage> {
     const branch = this._resolveMessageBranchPoint(codecMessageId);
-    if (!branch) return [];
+    if (branch) {
+      const siblings =
+        branch.kind === 'fork-of'
+          ? branch.siblings.flatMap((s) => {
+              const first = this._codec.getMessages(s.projection).at(0);
+              return first ? [first] : [];
+            })
+          : branch.siblings.flatMap((s) => {
+              const msgs = this._codec.getMessages(s.projection);
+              const anchored = msgs.find((m) => _readMessageId(m) === branch.anchorCodecMessageId);
+              if (anchored) return [anchored];
+              const first = msgs.at(0);
+              return first ? [first] : [];
+            });
 
-    if (branch.kind === 'fork-of') {
-      // Anchor is the first message of each sibling Run (the user prompt).
-      return branch.siblings.flatMap((s) => {
-        const first = this._codec.getMessages(s.projection).at(0);
-        return first ? [first] : [];
-      });
+      if (siblings.length > 0) {
+        const index = this._resolveSelectedIndex(branch);
+        const clamped = Math.max(0, Math.min(index, siblings.length - 1));
+        const selected = siblings[clamped];
+        return {
+          hasSiblings: siblings.length > 1,
+          siblings,
+          index: clamped,
+          selected,
+        };
+      }
     }
 
-    // Regenerate: for the owner Run pick the message at the anchor
-    // codec-message-id; for each regenerator Run pick its first content
-    // message (regenerators contribute the replacement starting at index 0).
-    return branch.siblings.flatMap((s) => {
-      const msgs = this._codec.getMessages(s.projection);
-      const anchored = msgs.find((m) => _readMessageId(m) === branch.anchorCodecMessageId);
-      if (anchored) return [anchored];
-      const first = msgs.at(0);
-      return first ? [first] : [];
-    });
-  }
-
-  getSelectedMessageSiblingIndex(codecMessageId: string): number {
-    const branch = this._resolveMessageBranchPoint(codecMessageId);
-    if (!branch) return 0;
-    if (branch.kind === 'fork-of') {
-      const sel = this._branchSelections.get(branch.groupRoot);
-      if (!sel || sel.kind === 'pending') return branch.siblings.length - 1;
-      const idx = branch.siblings.findIndex((n) => n.runId === sel.selectedRunId);
-      return idx === -1 ? branch.siblings.length - 1 : idx;
+    // Known non-anchor message: the bundle's invariant is that
+    // `siblings` contains the rendered message itself for any known
+    // codec-message-id, so plain bubbles get `siblings.length === 1`
+    // (not `0`) and the indexing space matches between read and write.
+    const owner = this._tree.getRunByCodecMessageId(codecMessageId);
+    if (owner) {
+      const message = this._codec.getMessages(owner.projection).find((m) => _readMessageId(m) === codecMessageId);
+      if (message !== undefined) {
+        return { hasSiblings: false, siblings: [message], index: 0, selected: message };
+      }
     }
-    const sel = this._regenSelections.get(branch.anchorCodecMessageId);
-    if (!sel || sel.kind === 'pending') return branch.siblings.length - 1;
-    const idx = branch.siblings.findIndex((n) => n.runId === sel.selectedRunId);
-    return idx === -1 ? branch.siblings.length - 1 : idx;
+
+    // Unknown id, or the owner Run is known but the codec doesn't surface
+    // a message with this id from the projection (e.g. an event-only fold
+    // such as a tool result that mutates an assistant in-place without
+    // exposing its own TMessage). Treat both as "no rendered message",
+    // returning the safe empty bundle.
+    return { hasSiblings: false, siblings: [], index: 0, selected: undefined };
   }
 
-  selectMessageSibling(codecMessageId: string, index: number): void {
+  // Spec: AIT-CT13c, AIT-CT13d
+  selectSibling(codecMessageId: string, index: number): void {
+    this._logger.trace('DefaultView.selectSibling();', { codecMessageId, index });
     const branch = this._resolveMessageBranchPoint(codecMessageId);
     if (!branch) return;
     const clamped = Math.max(0, Math.min(index, branch.siblings.length - 1));
@@ -694,14 +665,14 @@ export class DefaultView<
     if (!selected) return; // unreachable: clamped is always in bounds
     if (branch.kind === 'fork-of') {
       this._branchSelections.set(branch.groupRoot, { kind: 'user', selectedRunId: selected.runId });
-      this._logger.debug('DefaultView.selectMessageSibling(); fork-of', {
+      this._logger.debug('DefaultView.selectSibling(); fork-of', {
         codecMessageId,
         index: clamped,
         selectedRunId: selected.runId,
       });
     } else {
       this._regenSelections.set(branch.anchorCodecMessageId, { kind: 'user', selectedRunId: selected.runId });
-      this._logger.debug('DefaultView.selectMessageSibling(); regenerate', {
+      this._logger.debug('DefaultView.selectSibling(); regenerate', {
         codecMessageId,
         index: clamped,
         selectedRunId: selected.runId,
@@ -711,6 +682,27 @@ export class DefaultView<
     this._cachedNodes = this._computeFlatNodes();
     this._updateVisibleSnapshot(this._cachedNodes);
     this._emitter.emit('update');
+  }
+
+  /**
+   * Resolve the currently selected sibling's index inside a branch group.
+   * Pending selections fall back to the latest sibling. The caller clamps
+   * the returned index against any post-extraction filtering.
+   * @param branch - Resolved branch-point descriptor from `_resolveMessageBranchPoint`.
+   * @returns The selected sibling's index within `branch.siblings`.
+   */
+  private _resolveSelectedIndex(
+    branch:
+      | { kind: 'fork-of'; groupRoot: string; siblings: RunNode<TProjection>[] }
+      | { kind: 'regen'; anchorCodecMessageId: string; siblings: RunNode<TProjection>[] },
+  ): number {
+    const sel =
+      branch.kind === 'fork-of'
+        ? this._branchSelections.get(branch.groupRoot)
+        : this._regenSelections.get(branch.anchorCodecMessageId);
+    if (!sel || sel.kind === 'pending') return branch.siblings.length - 1;
+    const idx = branch.siblings.findIndex((n) => n.runId === sel.selectedRunId);
+    return idx === -1 ? branch.siblings.length - 1 : idx;
   }
 
   /**
@@ -786,10 +778,6 @@ export class DefaultView<
     }
 
     return undefined;
-  }
-
-  getRunNode(runId: string): RunNode<TProjection> | undefined {
-    return this._tree.getRunNode(runId);
   }
 
   // -------------------------------------------------------------------------
@@ -1104,7 +1092,7 @@ export class DefaultView<
 
   private async _loadFirstPage(limit: number): Promise<void> {
     // Snapshot before loading: every Run already in the tree stays visible.
-    const beforeRunIds = new Set(this._tree.flattenNodes(this._resolveSelections()).map((n) => n.runId));
+    const beforeRunIds = new Set(this._tree.runs(this._resolveSelections()).map((n) => n.runId));
 
     // decodeHistory's limit counts complete domain messages per page (not
     // Runs); see `_RUN_TO_MESSAGE_FETCH_FACTOR` for the scaling rationale.
@@ -1121,7 +1109,7 @@ export class DefaultView<
   }
 
   private async _loadAndReveal(page: HistoryPage<TMessage>, limit: number): Promise<void> {
-    const alreadyKnown = new Set(this._tree.flattenNodes(this._resolveSelections()).map((n) => n.runId));
+    const alreadyKnown = new Set(this._tree.runs(this._resolveSelections()).map((n) => n.runId));
 
     const { newVisible, lastPage } = await this._loadUntilVisible(page, limit, alreadyKnown);
     if (this._closed) return;
@@ -1194,7 +1182,7 @@ export class DefaultView<
 
     const newVisibleCount = (): number => {
       let count = 0;
-      for (const n of this._tree.flattenNodes(this._resolveSelections())) {
+      for (const n of this._tree.runs(this._resolveSelections())) {
         if (!beforeRunIds.has(n.runId)) count++;
       }
       return count;
@@ -1207,7 +1195,7 @@ export class DefaultView<
       page = nextPage;
     }
 
-    const newVisible = this._tree.flattenNodes(this._resolveSelections()).filter((n) => !beforeRunIds.has(n.runId));
+    const newVisible = this._tree.runs(this._resolveSelections()).filter((n) => !beforeRunIds.has(n.runId));
     return { newVisible, lastPage: page };
   }
 
@@ -1239,7 +1227,7 @@ export class DefaultView<
     // Suppress update forwarding while processing history pages. During
     // _processHistoryPage, each tree.applyMessage() fires this handler
     // synchronously — but _withheldRunIds hasn't been populated yet, so
-    // flattenNodes() would return unfiltered history. Without this guard,
+    // _computeFlatNodes() would return unfiltered history. Without this guard,
     // subscribers briefly see all history Runs before the pagination window
     // is applied. The final update is emitted by _releaseWithheld after
     // withholding is set up.
@@ -1276,7 +1264,7 @@ export class DefaultView<
 
   /**
    * Build a resolved selections map from `_branchSelections` for passing to
-   * `tree.flattenNodes()`. Pending entries (no sibling yet) are omitted,
+   * `tree.runs()`. Pending entries (no sibling yet) are omitted,
    * causing the tree to use the default (latest sibling).
    * @returns Resolved map of groupRoot-runId → selectedRunId.
    */

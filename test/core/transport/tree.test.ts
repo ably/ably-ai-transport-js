@@ -113,12 +113,12 @@ const messagesOf = (tree: TreeInternal<TreeEvent, TestProjection>, runId: string
 const flatMessages = (
   tree: TreeInternal<TreeEvent, TestProjection>,
   selections: Map<string, string> = NO_SELECTIONS,
-): TestMessage[] => tree.flattenNodes(selections).flatMap((r) => testCodec.getMessages(r.projection));
+): TestMessage[] => tree.runs(selections).flatMap((r) => testCodec.getMessages(r.projection));
 
 const flatRunIds = (
   tree: TreeInternal<TreeEvent, TestProjection>,
   selections: Map<string, string> = NO_SELECTIONS,
-): string[] => tree.flattenNodes(selections).map((r) => r.runId);
+): string[] => tree.runs(selections).map((r) => r.runId);
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -201,7 +201,7 @@ describe('Tree', () => {
 
     it('drops messages without an run-id header', () => {
       tree.applyMessage([{ type: 'append-message', message: { id: 'a', content: 'orphan' } }], {}, 's1');
-      expect(tree.flattenNodes(NO_SELECTIONS)).toEqual([]);
+      expect(tree.runs(NO_SELECTIONS)).toEqual([]);
     });
   });
 
@@ -848,7 +848,7 @@ describe('Tree', () => {
       //   4. Agent's continuation run-start arrives carrying parent=a1
       //      (read from the matched continuation wire's headers).
       //   5. Pre-fix the backfill resolved msgIdToRunId[a1] = R1 and set
-      //      R1.parentRunId = R1 — a self-parent cycle — so flattenNodes()
+      //      R1.parentRunId = R1 — a self-parent cycle — so runs()
       //      filtered R1 out as unreachable and the View showed nothing.
       apply(tree, {
         runId: 'R1',
@@ -879,7 +879,7 @@ describe('Tree', () => {
       );
 
       expect(tree.getRunNode('R1')?.parentRunId).toBeUndefined();
-      const flat = tree.flattenNodes(new Map());
+      const flat = tree.runs(new Map());
       expect(flat.map((n) => n.runId)).toEqual(['R1']);
     });
   });

@@ -83,8 +83,8 @@ describe('Vercel createClientSession', () => {
     const channel = createMockChannel();
     const session = createClientSession({ client: createMockClient(channel), channelName: 'test-channel' });
 
-    // view.flattenNodes works without error — proves the codec is wired up
-    expect(session.view.flattenNodes()).toEqual([]);
+    // view.getMessages works without error — proves the codec is wired up
+    expect(session.view.getMessages()).toEqual([]);
 
     await session.close();
   });

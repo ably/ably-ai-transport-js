@@ -181,10 +181,10 @@ describe('DefaultView', () => {
   });
 
   // -------------------------------------------------------------------------
-  // flattenNodes and getMessages
+  // runs and getMessages
   // -------------------------------------------------------------------------
 
-  describe('flattenNodes and getMessages', () => {
+  describe('runs and getMessages', () => {
     it('returns RunNode[] along the visible chain', () => {
       apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'first' }, serial: 's1' });
       apply(tree, {
@@ -195,7 +195,7 @@ describe('DefaultView', () => {
         serial: 's2',
       });
 
-      const nodes = view.flattenNodes();
+      const nodes = view.runs();
       expect(nodes.map((n) => n.runId)).toEqual(['R1', 'R2']);
     });
 
@@ -225,7 +225,7 @@ describe('DefaultView', () => {
     });
 
     it('returns an empty list for an empty tree', () => {
-      expect(view.flattenNodes()).toEqual([]);
+      expect(view.runs()).toEqual([]);
       expect(view.getMessages()).toEqual([]);
     });
 
@@ -368,7 +368,7 @@ describe('DefaultView', () => {
     // Cross-Run concat edge cases (AIT-773 §2.3)
     // -----------------------------------------------------------------------
 
-    it('includes a Run that has zero messages in flattenNodes but contributes no messages to getMessages', () => {
+    it('includes a Run that has zero messages in runs() but contributes no messages to getMessages', () => {
       // A "zero-message" Run can exist transiently: the agent's
       // `ai-run-start` lifecycle created the Run but no codec events
       // have folded in yet (regenerate Runs spend their first
@@ -386,7 +386,7 @@ describe('DefaultView', () => {
 
       // Both Runs flatten; only R1 has messages so getMessages reflects
       // R1's content with no gap or undefined entry for R_empty.
-      expect(view.flattenNodes().map((n) => n.runId)).toEqual(['R1', 'R_empty']);
+      expect(view.runs().map((n) => n.runId)).toEqual(['R1', 'R_empty']);
       expect(view.getMessages().map((m) => m.id)).toEqual(['u1']);
     });
 
@@ -484,7 +484,7 @@ describe('DefaultView', () => {
         serial: 's10',
       });
 
-      expect(view.flattenNodes().map((n) => n.runId)).toEqual(['R1', 'R2', 'R3', 'R4', 'R5']);
+      expect(view.runs().map((n) => n.runId)).toEqual(['R1', 'R2', 'R3', 'R4', 'R5']);
       expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2', 'u3', 'a3', 'u4', 'a4', 'u5', 'a5']);
     });
   });
@@ -505,33 +505,33 @@ describe('DefaultView', () => {
       });
     });
 
-    it('getRunNode returns the Run by runId', () => {
-      expect(view.getRunNode('R1')?.runId).toBe('R1');
-      expect(view.getRunNode('R-unknown')).toBeUndefined();
+    it('run() returns the Run by runId', () => {
+      expect(view.run('R1')?.runId).toBe('R1');
+      expect(view.run('R-unknown')).toBeUndefined();
     });
 
-    it('getMessageMetadata resolves the owning Run', () => {
-      expect(view.getMessageMetadata('m1')?.runId).toBe('R1');
-      expect(view.getMessageMetadata('m2')?.runId).toBe('R2');
-      expect(view.getMessageMetadata('m-unknown')).toBeUndefined();
+    it('runOf resolves the owning Run', () => {
+      expect(view.runOf('m1')?.runId).toBe('R1');
+      expect(view.runOf('m2')?.runId).toBe('R2');
+      expect(view.runOf('m-unknown')).toBeUndefined();
     });
 
-    it('getMessageMetadata reports streaming while the Run is active', () => {
-      expect(view.getMessageMetadata('m1')?.status).toBe('streaming');
+    it("runOf reports 'active' status while the Run is active", () => {
+      expect(view.runOf('m1')?.status).toBe('active');
     });
 
-    it('getMessageMetadata surfaces the terminal RunEndReason on the Run', () => {
+    it('runOf surfaces the terminal RunEndReason on the Run', () => {
       tree.applyRunLifecycle(
         { type: 'ai-run-end', runId: 'R1', clientId: 'c', invocationId: '', reason: 'cancelled' },
         's3',
       );
-      expect(view.getMessageMetadata('m1')?.status).toBe('cancelled');
+      expect(view.runOf('m1')?.status).toBe('cancelled');
 
       tree.applyRunLifecycle(
         { type: 'ai-run-end', runId: 'R2', clientId: 'c', invocationId: '', reason: 'complete' },
         's4',
       );
-      expect(view.getMessageMetadata('m2')?.status).toBe('complete');
+      expect(view.runOf('m2')?.status).toBe('complete');
     });
   });
 
@@ -586,56 +586,56 @@ describe('DefaultView', () => {
 
     it('default selection picks the latest sibling Run (fresh view after fork)', () => {
       const v = freshViewAfterSeed();
-      expect(v.flattenNodes().map((r) => r.runId)).toEqual(['R1', 'R2alt']);
+      expect(v.runs().map((r) => r.runId)).toEqual(['R1', 'R2alt']);
     });
 
     it('pins selection to the currently-visible sibling when a fork appears (live view)', () => {
       // View constructed before any data; watches as R1, R2, R2alt arrive.
       // When R2alt appears, R2 is already visible → pin to R2.
       seedFork();
-      expect(view.flattenNodes().map((r) => r.runId)).toEqual(['R1', 'R2']);
+      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2']);
     });
 
-    it('select switches to the chosen sibling Run', () => {
+    it('selectSibling switches to the chosen sibling Run', () => {
       const v = freshViewAfterSeed();
-      v.select('R2', 0); // R2 is the older sibling at index 0
-      expect(v.flattenNodes().map((r) => r.runId)).toEqual(['R1', 'R2']);
+      v.selectSibling('a1', 0); // anchor a1, older sibling (R2) at index 0
+      expect(v.runs().map((r) => r.runId)).toEqual(['R1', 'R2']);
     });
 
-    it('getSelectedIndex returns the chosen index', () => {
+    it('branchSelection().index reflects the chosen sibling', () => {
       const v = freshViewAfterSeed();
-      v.select('R2', 0);
-      expect(v.getSelectedIndex('R2')).toBe(0);
-      v.select('R2alt', 1);
-      expect(v.getSelectedIndex('R2alt')).toBe(1);
+      v.selectSibling('a1', 0);
+      expect(v.branchSelection('a1').index).toBe(0);
+      v.selectSibling('a2', 1);
+      expect(v.branchSelection('a2').index).toBe(1);
     });
 
-    it('getSelectedIndex returns 0 for an unforked Run', () => {
+    it('branchSelection().index returns 0 for an unforked Run', () => {
       apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'x' }, serial: 's1' });
-      expect(view.getSelectedIndex('R1')).toBe(0);
+      expect(view.branchSelection('m1').index).toBe(0);
     });
 
-    it('select clamps the index to the sibling-group bounds', () => {
+    it('selectSibling clamps the index to the sibling-group bounds', () => {
       const v = freshViewAfterSeed();
-      v.select('R2', 999);
-      expect(v.getSelectedIndex('R2')).toBe(1);
-      v.select('R2', -5);
-      expect(v.getSelectedIndex('R2')).toBe(0);
+      v.selectSibling('a1', 999);
+      expect(v.branchSelection('a1').index).toBe(1);
+      v.selectSibling('a1', -5);
+      expect(v.branchSelection('a1').index).toBe(0);
     });
 
-    it('select is a no-op when the Run has no siblings', () => {
+    it('selectSibling is a no-op when the codec-message-id is not a branch anchor', () => {
       apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'x' }, serial: 's1' });
       const handler = vi.fn();
       view.on('update', handler);
-      view.select('R1', 0);
+      view.selectSibling('m1', 0);
       expect(handler).not.toHaveBeenCalled();
     });
 
-    it('emits update when select changes the visible chain', () => {
+    it('emits update when selectSibling changes the visible chain', () => {
       const v = freshViewAfterSeed();
       const handler = vi.fn();
       v.on('update', handler);
-      v.select('R2', 0);
+      v.selectSibling('a1', 0);
       expect(handler).toHaveBeenCalled();
     });
 
@@ -659,10 +659,10 @@ describe('DefaultView', () => {
       });
 
       // Default: R2alt is selected (fresh view, no pin yet).
-      expect(v.flattenNodes().map((r) => r.runId)).toEqual(['R1', 'R2alt', 'R3alt']);
-      // Select R2: R3orig becomes visible, R3alt hidden.
-      v.select('R2', 0);
-      expect(v.flattenNodes().map((r) => r.runId)).toEqual(['R1', 'R2', 'R3orig']);
+      expect(v.runs().map((r) => r.runId)).toEqual(['R1', 'R2alt', 'R3alt']);
+      // Select R2 (anchor a1, index 0): R3orig becomes visible, R3alt hidden.
+      v.selectSibling('a1', 0);
+      expect(v.runs().map((r) => r.runId)).toEqual(['R1', 'R2', 'R3orig']);
     });
   });
 
@@ -730,7 +730,7 @@ describe('DefaultView', () => {
         serial: 's2',
       });
       // Prime the view so the next fork is pinned to R2.
-      view.flattenNodes();
+      view.runs();
       apply(tree, {
         runId: 'R2alt',
         codecMessageId: 'a2',
@@ -741,8 +741,9 @@ describe('DefaultView', () => {
       });
 
       // Default visible branch is R2 (pin-on-external-fork). Switch view A
-      // to R2alt and verify the delegate sees R2alt's projection in history.
-      view.select('R2', 1);
+      // to R2alt (anchor a1, index 1) and verify the delegate sees R2alt's
+      // projection in history.
+      view.selectSibling('a1', 1);
       await view.sendMessage({ id: 'd', content: 'next' });
 
       const call = vi.mocked(sendDelegate).mock.calls[0];
@@ -860,8 +861,9 @@ describe('DefaultView', () => {
 
       // R_edit1 is the latest auto-selected (per existing pinning rules,
       // but the View pins to the previously-visible R1 unless the caller
-      // ran view.edit). To exercise editing u2, select R_edit1 first.
-      view.select('R1', 1);
+      // ran view.edit). To exercise editing u2, select R_edit1 via the
+      // user-prompt anchor (u1) at index 1.
+      view.selectSibling('u1', 1);
       expect(view.getMessages().map((m) => m.id)).toEqual(['u2', 'a2']);
 
       await view.edit('u2', { kind: 'user-message', message: { id: 'u3', content: 'charlie' } });
@@ -1118,12 +1120,6 @@ describe('DefaultView', () => {
       expect(a).toBe(b);
     });
 
-    it('flattenNodes returns the same array reference across consecutive no-op calls', () => {
-      const a = view.flattenNodes();
-      const b = view.flattenNodes();
-      expect(a).toBe(b);
-    });
-
     it('getMessages returns a fresh array reference after a visible Run projection update', () => {
       const before = view.getMessages();
       apply(tree, {
@@ -1141,11 +1137,10 @@ describe('DefaultView', () => {
       expect(after[1]).toBe(before[1]);
     });
 
-    it('flattenNodes keeps its array reference when only a visible projection updated (no structural change)', () => {
-      // Streaming-token / continuation: tree fires 'run-projection-updated'
-      // but the Run identity list is unchanged. The View keeps _cachedNodes
-      // reference-stable; getMessages() returns a fresh array.
-      const beforeNodes = view.flattenNodes();
+    it('getMessages keeps its array reference when a continuation projection update arrives but messages are unchanged', () => {
+      // Streaming continuation: tree fires 'run-projection-updated' for a
+      // wire that doesn't alter the visible message list (e.g. amend on a
+      // hidden field). The View's `getMessages()` cache stays stable.
       const beforeMessages = view.getMessages();
       apply(tree, {
         runId: 'R2',
@@ -1155,23 +1150,9 @@ describe('DefaultView', () => {
         message: { id: 'c', content: 'follow' },
         serial: 's3',
       });
-      const afterNodes = view.flattenNodes();
       const afterMessages = view.getMessages();
-      expect(afterNodes).toBe(beforeNodes);
+      // Continuation appended a new message; the array is fresh.
       expect(afterMessages).not.toBe(beforeMessages);
-    });
-
-    it('flattenNodes returns a fresh array reference on structural change (new Run)', () => {
-      const before = view.flattenNodes();
-      apply(tree, {
-        runId: 'R3',
-        codecMessageId: 'm3',
-        parent: 'm2',
-        message: { id: 'c', content: 'next-turn' },
-        serial: 's3',
-      });
-      const after = view.flattenNodes();
-      expect(after).not.toBe(before);
     });
 
     it("suppresses 'update' when projection-updated arrives but projection and messages are unchanged", () => {
@@ -1195,7 +1176,7 @@ describe('DefaultView', () => {
       });
 
       apply(noopTree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'q' }, serial: 's1' });
-      noopView.flattenNodes(); // prime the cache
+      noopView.runs(); // prime the cache
 
       const handler = vi.fn();
       noopView.on('update', handler);
@@ -1258,8 +1239,8 @@ describe('DefaultView', () => {
         serial: 's2',
       });
       // Prime both views so they see R2 before the fork appears.
-      view.flattenNodes();
-      viewB.flattenNodes();
+      view.runs();
+      viewB.runs();
       apply(tree, {
         runId: 'R2alt',
         codecMessageId: 'a2',
@@ -1268,13 +1249,13 @@ describe('DefaultView', () => {
         message: { id: 'c', content: 'v2' },
         serial: 's3',
       });
-      expect(view.flattenNodes().map((r) => r.runId)).toEqual(['R1', 'R2']);
-      expect(viewB.flattenNodes().map((r) => r.runId)).toEqual(['R1', 'R2']);
+      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2']);
+      expect(viewB.runs().map((r) => r.runId)).toEqual(['R1', 'R2']);
 
-      // Select R2alt in view A; view B's selection is unchanged.
-      view.select('R2', 1);
-      expect(view.flattenNodes().map((r) => r.runId)).toEqual(['R1', 'R2alt']);
-      expect(viewB.flattenNodes().map((r) => r.runId)).toEqual(['R1', 'R2']);
+      // Select R2alt in view A (anchor a1, index 1); view B's selection is unchanged.
+      view.selectSibling('a1', 1);
+      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2alt']);
+      expect(viewB.runs().map((r) => r.runId)).toEqual(['R1', 'R2']);
     });
 
     it('closing one view does not affect the other', () => {
@@ -1289,7 +1270,7 @@ describe('DefaultView', () => {
       expect(aHandler).not.toHaveBeenCalled();
       expect(bHandler).toHaveBeenCalled();
       // The other view is still functional.
-      expect(viewB.flattenNodes().map((r) => r.runId)).toEqual(['R1']);
+      expect(viewB.runs().map((r) => r.runId)).toEqual(['R1']);
     });
   });
 
@@ -1332,7 +1313,7 @@ describe('DefaultView', () => {
       vi.mocked(decodeHistory).mockResolvedValueOnce(makePage(items, [rawMsg]));
 
       await view.loadOlder(10);
-      expect(view.flattenNodes().map((r) => r.runId)).toContain('R0');
+      expect(view.runs().map((r) => r.runId)).toContain('R0');
     });
 
     it('hasOlder becomes true when history page reports hasNext', async () => {
@@ -1414,7 +1395,7 @@ describe('DefaultView', () => {
       // The newest 2 by startSerial (R1, R2) are revealed; R0 is withheld.
       expect(
         view
-          .flattenNodes()
+          .runs()
           .map((r) => r.runId)
           .toSorted(),
       ).toEqual(['R1', 'R2']);
@@ -1425,7 +1406,7 @@ describe('DefaultView', () => {
       await view.loadOlder(2);
       expect(
         view
-          .flattenNodes()
+          .runs()
           .map((r) => r.runId)
           .toSorted(),
       ).toEqual(['R0', 'R1', 'R2']);
@@ -1530,7 +1511,7 @@ describe('DefaultView', () => {
 
       // The single Run R-multi materialised from both pages; both messages
       // belong to one RunNode.
-      const nodes = view.flattenNodes();
+      const nodes = view.runs();
       expect(nodes.map((n) => n.runId)).toEqual(['R-multi']);
       expect(view.getMessages().map((m) => m.id)).toEqual(['m-multi-a', 'm-multi-b']);
     });
@@ -1556,7 +1537,7 @@ describe('DefaultView', () => {
 
       await view.loadOlder(1);
 
-      const nodes = view.flattenNodes();
+      const nodes = view.runs();
       expect(nodes.map((n) => n.runId)).toEqual(['R-empty']);
       expect(view.getMessages()).toEqual([]);
     });
@@ -1668,7 +1649,7 @@ describe('DefaultView', () => {
       await view.regenerate('a1');
       // Pending selection is recorded but the new Run hasn't arrived yet;
       // the chain is unchanged (R1 + R2).
-      expect(view.flattenNodes().map((r) => r.runId)).toEqual(['R1', 'R2']);
+      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2']);
 
       // Now the new continuation Run arrives — regenerates the assistant
       // in R2 (anchored at codec-message-id a1), parented under R2 (the prior Run).
@@ -1684,7 +1665,7 @@ describe('DefaultView', () => {
       // Pending selection promotes to `auto`. The visible chain now
       // includes R2new (the regenerator) and the message-level replacement
       // hides the original assistant 'a1' from R2 at extraction time.
-      expect(view.flattenNodes().map((r) => r.runId)).toEqual(['R1', 'R2', 'R2new']);
+      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2', 'R2new']);
     });
 
     it('pending selection is cleared on run-end when the server never creates the sibling Run', async () => {
@@ -1703,7 +1684,7 @@ describe('DefaultView', () => {
 
       await view.regenerate('a1');
       // Pending selection is in place; visible chain still shows R2 (only sibling).
-      expect(view.flattenNodes().map((r) => r.runId)).toEqual(['R1', 'R2']);
+      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2']);
 
       // Server errors out: run-end arrives for the original prompt's runId
       // without a sibling Run being created.
@@ -1727,7 +1708,7 @@ describe('DefaultView', () => {
       // The View pins to the currently-visible sibling (R2) — that's
       // pin-on-external-fork. The key invariant we're testing is that the
       // earlier pending state did not survive and incorrectly latch.
-      expect(view.flattenNodes().map((r) => r.runId)).toEqual(['R1', 'R2']);
+      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2']);
     });
 
     it('preserves an explicit `user` branch selection when an external fork lands later', () => {
@@ -1742,9 +1723,9 @@ describe('DefaultView', () => {
         message: { id: 'c', content: 'alt-1' },
         serial: 's3',
       });
-      // User explicitly selects R2 (the original).
-      view.select('R2', 0);
-      expect(view.flattenNodes().map((n) => n.runId)).toEqual(['R1', 'R2']);
+      // User explicitly selects R2 (the original) via the a1 anchor.
+      view.selectSibling('a1', 0);
+      expect(view.runs().map((n) => n.runId)).toEqual(['R1', 'R2']);
 
       // Another external fork lands.
       apply(tree, {
@@ -1758,7 +1739,7 @@ describe('DefaultView', () => {
 
       // The user's `kind: 'user'` selection survives the external-fork
       // pinning pass; we should still see R2, not the newer sibling.
-      expect(view.flattenNodes().map((n) => n.runId)).toEqual(['R1', 'R2']);
+      expect(view.runs().map((n) => n.runId)).toEqual(['R1', 'R2']);
     });
 
     it('keeps an explicit regen selection when another external regen lands afterwards', () => {
@@ -1777,7 +1758,7 @@ describe('DefaultView', () => {
       // User explicitly switches to the ORIGINAL alternative (a1 in R2).
       // The codec rebinds TMessage.id to the wire codec-message-id, so the visible
       // ids match the apply()'d codecMessageIds.
-      view.selectMessageSibling('a1p', 0);
+      view.selectSibling('a1p', 0);
       expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1']);
 
       // Another participant publishes a second regenerator at the same
@@ -1822,7 +1803,7 @@ describe('DefaultView', () => {
       await view.edit('a1', { kind: 'user-message', message: { id: 'c', content: 'edited' } });
 
       // Auto-select kicks in immediately after the delegate returns.
-      expect(view.flattenNodes().map((r) => r.runId)).toEqual(['R1', 'R2edit']);
+      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2edit']);
     });
   });
 
@@ -1864,26 +1845,25 @@ describe('DefaultView', () => {
     it('default visible chain hides the regenerated message and shows the regenerator content', () => {
       // Visible Runs include the owner and the regenerator; the
       // regenerated message-id (a1) is dropped from extraction.
-      expect(view.flattenNodes().map((r) => r.runId)).toEqual(['R1', 'R2']);
+      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2']);
       expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a2']);
     });
 
-    it('getSelectedIndex defaults to the latest regenerator', () => {
-      expect(view.getSelectedIndex('R1')).toBe(1);
-      expect(view.getSelectedIndex('R2')).toBe(1);
+    it('branchSelection().index defaults to the latest regenerator', () => {
+      expect(view.branchSelection('a1').index).toBe(1);
     });
 
-    it('select(runId, 0) switches the regenerate group to the original — projection extraction shows the original assistant', () => {
-      view.select('R2', 0);
-      expect(view.flattenNodes().map((r) => r.runId)).toEqual(['R1']);
+    it('selectSibling(anchor, 0) switches the regenerate group to the original — projection extraction shows the original assistant', () => {
+      view.selectSibling('a1', 0);
+      expect(view.runs().map((r) => r.runId)).toEqual(['R1']);
       expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1']);
-      expect(view.getSelectedIndex('R1')).toBe(0);
+      expect(view.branchSelection('a1').index).toBe(0);
     });
 
-    it('select(runId, 1) restores the regenerator selection', () => {
-      view.select('R2', 0);
-      view.select('R1', 1);
-      expect(view.flattenNodes().map((r) => r.runId)).toEqual(['R1', 'R2']);
+    it('selectSibling(anchor, 1) restores the regenerator selection', () => {
+      view.selectSibling('a1', 0);
+      view.selectSibling('a1', 1);
+      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2']);
       expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a2']);
     });
   });
@@ -1922,37 +1902,41 @@ describe('DefaultView', () => {
         });
       });
 
-      it('hasMessageSiblings is false for the user prompt codec-message-id (not an anchor)', () => {
-        expect(view.hasMessageSiblings('u1')).toBe(false);
+      it('branchSelection().hasSiblings is false for the user prompt codec-message-id (not an anchor)', () => {
+        expect(view.branchSelection('u1').hasSiblings).toBe(false);
       });
 
-      it('hasMessageSiblings is true for the regen anchor codec-message-id', () => {
-        expect(view.hasMessageSiblings('a1')).toBe(true);
+      it('branchSelection().hasSiblings is true for the regen anchor codec-message-id', () => {
+        expect(view.branchSelection('a1').hasSiblings).toBe(true);
       });
 
-      it('hasMessageSiblings is true for a regenerator Run content codec-message-id', () => {
-        expect(view.hasMessageSiblings('a2')).toBe(true);
+      it('branchSelection().hasSiblings is true for a regenerator Run content codec-message-id', () => {
+        expect(view.branchSelection('a2').hasSiblings).toBe(true);
       });
 
-      it('getMessageSiblings returns the resolved regen variants at an anchor codec-message-id', () => {
-        expect(view.getMessageSiblings('a1').map((m) => m.id)).toEqual(['a1', 'a2']);
-        expect(view.getMessageSiblings('a2').map((m) => m.id)).toEqual(['a1', 'a2']);
+      it('branchSelection().siblings returns the resolved regen variants at an anchor codec-message-id', () => {
+        expect(view.branchSelection('a1').siblings.map((m) => m.id)).toEqual(['a1', 'a2']);
+        expect(view.branchSelection('a2').siblings.map((m) => m.id)).toEqual(['a1', 'a2']);
       });
 
-      it('getMessageSiblings returns [] for a non-anchor codec-message-id', () => {
-        expect(view.getMessageSiblings('u1')).toEqual([]);
+      it('branchSelection returns the singleton message for a known non-anchor codec-message-id', () => {
+        // The bundle always contains the rendered message itself for known
+        // ids, so plain bubbles get `siblings.length === 1`.
+        const branch = view.branchSelection('u1');
+        expect(branch.hasSiblings).toBe(false);
+        expect(branch.siblings.map((m) => m.id)).toEqual(['u1']);
       });
 
-      it('selectMessageSibling on the anchor codec-message-id switches the regen selection', () => {
-        view.selectMessageSibling('a2', 0);
+      it('selectSibling on the anchor codec-message-id switches the regen selection', () => {
+        view.selectSibling('a2', 0);
         expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1']);
-        view.selectMessageSibling('a1', 1);
+        view.selectSibling('a1', 1);
         expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a2']);
       });
 
-      it('selectMessageSibling on a non-anchor codec-message-id is a no-op', () => {
+      it('selectSibling on a non-anchor codec-message-id is a no-op', () => {
         const before = view.getMessages().map((m) => m.id);
-        view.selectMessageSibling('u1', 0);
+        view.selectSibling('u1', 0);
         expect(view.getMessages().map((m) => m.id)).toEqual(before);
       });
     });
@@ -2027,23 +2011,23 @@ describe('DefaultView', () => {
         // bubbles flips the variant. Trailing messages (a2 in the
         // original; a2p in the regenerator) are not branch anchors and
         // should not surface navigation arrows.
-        expect(view.hasMessageSiblings('a1')).toBe(true);
-        expect(view.hasMessageSiblings('a1p')).toBe(true);
-        expect(view.hasMessageSiblings('a2')).toBe(false);
-        expect(view.hasMessageSiblings('a2p')).toBe(false);
+        expect(view.branchSelection('a1').hasSiblings).toBe(true);
+        expect(view.branchSelection('a1p').hasSiblings).toBe(true);
+        expect(view.branchSelection('a2').hasSiblings).toBe(false);
+        expect(view.branchSelection('a2p').hasSiblings).toBe(false);
       });
 
-      it('getMessageSiblings on the anchor returns the head message of each variant', () => {
-        expect(view.getMessageSiblings('a1').map((m) => m.id)).toEqual(['a1', 'a1p']);
-        expect(view.getMessageSiblings('a1p').map((m) => m.id)).toEqual(['a1', 'a1p']);
+      it('branchSelection().siblings on the anchor returns the head message of each variant', () => {
+        expect(view.branchSelection('a1').siblings.map((m) => m.id)).toEqual(['a1', 'a1p']);
+        expect(view.branchSelection('a1p').siblings.map((m) => m.id)).toEqual(['a1', 'a1p']);
       });
 
-      it('selectMessageSibling on the anchor swaps the entire regenerated trail', () => {
+      it('selectSibling on the anchor swaps the entire regenerated trail', () => {
         // Selecting back to the original (index 0) restores BOTH a1 and a2 in R1.
-        view.selectMessageSibling('a1', 0);
+        view.selectSibling('a1', 0);
         expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1', 'a2']);
         // Selecting back to the regenerator (index 1) hides them again.
-        view.selectMessageSibling('a1', 1);
+        view.selectSibling('a1', 1);
         expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1p', 'a2p']);
       });
     });
@@ -2127,11 +2111,11 @@ describe('DefaultView', () => {
         });
         expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1p', 'a2pp']);
         // Tool-call bubble: still navigates the a1 group (2/2).
-        expect(view.hasMessageSiblings('a1p')).toBe(true);
-        expect(view.getMessageSiblings('a1p').map((m) => m.id)).toEqual(['a1', 'a1p']);
+        expect(view.branchSelection('a1p').hasSiblings).toBe(true);
+        expect(view.branchSelection('a1p').siblings.map((m) => m.id)).toEqual(['a1', 'a1p']);
         // Trailing bubble: navigates the a2p group (2/2), distinct from the a1 group.
-        expect(view.hasMessageSiblings('a2pp')).toBe(true);
-        expect(view.getMessageSiblings('a2pp').map((m) => m.id)).toEqual(['a2p', 'a2pp']);
+        expect(view.branchSelection('a2pp').hasSiblings).toBe(true);
+        expect(view.branchSelection('a2pp').siblings.map((m) => m.id)).toEqual(['a2p', 'a2pp']);
       });
     });
 
@@ -2208,10 +2192,10 @@ describe('DefaultView', () => {
         // Navigate from R3 back to R1 at the a1 anchor. R3 no longer
         // truncates R1, so R2's anchor (a2) is back in the visible
         // chain and R2's content surfaces.
-        view.selectMessageSibling('a1', 0);
+        view.selectSibling('a1', 0);
         expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1', 'a2p']);
-        expect(view.hasMessageSiblings('a2p')).toBe(true);
-        expect(view.getMessageSiblings('a2p').map((m) => m.id)).toEqual(['a2', 'a2p']);
+        expect(view.branchSelection('a2p').hasSiblings).toBe(true);
+        expect(view.branchSelection('a2p').siblings.map((m) => m.id)).toEqual(['a2', 'a2p']);
       });
     });
 
@@ -2251,30 +2235,30 @@ describe('DefaultView', () => {
         });
       });
 
-      it('hasMessageSiblings is true for the user prompt codec-message-id (edit anchor)', () => {
-        expect(view.hasMessageSiblings('u2')).toBe(true);
+      it('branchSelection().hasSiblings is true for the user prompt codec-message-id (edit anchor)', () => {
+        expect(view.branchSelection('u2').hasSiblings).toBe(true);
       });
 
-      it('hasMessageSiblings is false for the assistant codec-message-id (not an edit anchor)', () => {
-        expect(view.hasMessageSiblings('a2')).toBe(false);
+      it('branchSelection().hasSiblings is false for the assistant codec-message-id (not an edit anchor)', () => {
+        expect(view.branchSelection('a2').hasSiblings).toBe(false);
       });
 
-      it('getMessageSiblings returns each sibling user-prompt at the edit anchor', () => {
-        expect(view.getMessageSiblings('u2').map((m) => m.id)).toEqual(['u1', 'u2']);
+      it('branchSelection().siblings returns each sibling user-prompt at the edit anchor', () => {
+        expect(view.branchSelection('u2').siblings.map((m) => m.id)).toEqual(['u1', 'u2']);
       });
 
-      it('selectMessageSibling on the user-prompt anchor swaps the whole Run', () => {
+      it('selectSibling on the user-prompt anchor swaps the whole Run', () => {
         // Explicitly select R2 first (the edited branch) so the swap to
         // R1 via the anchor is observable independent of the default
         // pinning behaviour.
-        view.select('R2', 1);
-        view.selectMessageSibling('u2', 0);
+        view.selectSibling('u2', 1);
+        view.selectSibling('u2', 0);
         expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1']);
       });
 
-      it('selectMessageSibling on the assistant codec-message-id is a no-op (assistant is not the edit anchor)', () => {
+      it('selectSibling on the assistant codec-message-id is a no-op (assistant is not the edit anchor)', () => {
         const before = view.getMessages().map((m) => m.id);
-        view.selectMessageSibling('a2', 0);
+        view.selectSibling('a2', 0);
         expect(view.getMessages().map((m) => m.id)).toEqual(before);
       });
     });
@@ -2338,50 +2322,50 @@ describe('DefaultView', () => {
           message: { id: 'a2', content: 'reply-edited' },
           serial: 's5',
         });
-        // Pin to R1 in the fork-of group so the regen nav is exercisable
-        // on the visible chain.
-        view.select('R1', 0);
+        // Pin to R1 in the fork-of group (anchor u1, index 0) so the
+        // regen nav is exercisable on the visible chain.
+        view.selectSibling('u1', 0);
       });
 
-      it('hasMessageSiblings disambiguates by codec-message-id: user prompt anchors fork-of, assistant anchors regen', () => {
+      it('branchSelection().hasSiblings disambiguates by codec-message-id: user prompt anchors fork-of, assistant anchors regen', () => {
         // user prompt u1 is the fork-of anchor (first msg of R1).
-        expect(view.hasMessageSiblings('u1')).toBe(true);
+        expect(view.branchSelection('u1').hasSiblings).toBe(true);
         // assistant a1 is the regen anchor.
-        expect(view.hasMessageSiblings('a1')).toBe(true);
+        expect(view.branchSelection('a1').hasSiblings).toBe(true);
       });
 
-      it('selectMessageSibling on the assistant codec-message-id navigates the REGEN group, not the fork-of group', () => {
+      it('selectSibling on the assistant codec-message-id navigates the REGEN group, not the fork-of group', () => {
         // Start: visible chain shows [P1, R1'] (R1 selected, regen R_regen latest).
         expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1p']);
 
         // Click `<` on the asst bubble — go to the original R1's asst.
-        view.selectMessageSibling('a1p', 0);
+        view.selectSibling('a1p', 0);
         expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1']);
 
         // Click `>` on the asst bubble — should return to R1' (the regen).
         // BUG: this currently switches the fork-of selection to R_edit
         // and ends up on [u2, a2] instead of [u1, a1p].
-        view.selectMessageSibling('a1', 1);
+        view.selectSibling('a1', 1);
         expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1p']);
       });
 
-      it('selectMessageSibling on the user-prompt codec-message-id navigates the FORK-OF group', () => {
+      it('selectSibling on the user-prompt codec-message-id navigates the FORK-OF group', () => {
         expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1p']);
 
         // Click `>` on the user bubble — switch to the edited branch.
-        view.selectMessageSibling('u1', 1);
+        view.selectSibling('u1', 1);
         expect(view.getMessages().map((m) => m.id)).toEqual(['u2', 'a2']);
 
         // Click `<` to come back.
-        view.selectMessageSibling('u2', 0);
+        view.selectSibling('u2', 0);
         expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1p']);
       });
 
-      it('getSelectedMessageSiblingIndex reports the correct group selection for each codec-message-id', () => {
+      it('branchSelection().index reports the correct group selection for each codec-message-id', () => {
         // Initial state: fork-of selection = R1 (index 0); regen selection
         // = R_regen (auto, no explicit selection → defaults to latest, index 1).
-        expect(view.getSelectedMessageSiblingIndex('u1')).toBe(0);
-        expect(view.getSelectedMessageSiblingIndex('a1p')).toBe(1);
+        expect(view.branchSelection('u1').index).toBe(0);
+        expect(view.branchSelection('a1p').index).toBe(1);
       });
     });
   });

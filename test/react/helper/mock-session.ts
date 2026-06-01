@@ -6,11 +6,24 @@ import { vi } from 'vitest';
 
 import type { CodecInputEvent, CodecOutputEvent } from '../../../src/core/codec/types.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
-import type { ClientSession, RunLifecycleEvent, RunNode, Tree, View } from '../../../src/core/transport/types.js';
+import type {
+  BranchSelection,
+  ClientSession,
+  RunLifecycleEvent,
+  Tree,
+  View,
+} from '../../../src/core/transport/types.js';
 
 type TreeEventType = 'update' | 'ably-message' | 'run' | 'run-projection-updated';
 type SessionEventType = 'error';
 type Handler = ((...args: never[]) => void) | (() => void);
+
+const emptyBranchSelection = (): BranchSelection<string> => ({
+  hasSiblings: false,
+  siblings: [],
+  index: 0,
+  selected: undefined,
+});
 
 export interface MockSession {
   session: ClientSession<CodecInputEvent, CodecOutputEvent, unknown, string>;
@@ -27,7 +40,7 @@ export interface MockSession {
   /** Fire an event on tree/view (update, ably-message, run, run-projection-updated). */
   emitTree: (event: TreeEventType, ...args: unknown[]) => void;
   tree: Tree<unknown>;
-  view: View<CodecInputEvent, CodecOutputEvent, unknown, string>;
+  view: View<CodecInputEvent, CodecOutputEvent, string>;
 }
 
 export const createMockSession = (initialMessages: string[] = []): MockSession => {
@@ -80,22 +93,8 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
       };
     });
 
-  const initialNodes: RunNode<unknown>[] = initialMessages.map(
-    (_, i): RunNode<unknown> => ({
-      runId: `run-${String(i)}`,
-      parentRunId: i > 0 ? `run-${String(i - 1)}` : undefined,
-      forkOf: undefined,
-      regeneratesCodecMessageId: undefined,
-      clientId: '',
-      invocationId: '',
-      status: 'complete',
-      projection: undefined,
-      startSerial: undefined,
-      endSerial: undefined,
-    }),
-  );
-
   const tree: Tree<unknown> = {
+    runs: vi.fn(() => []),
     getRunNode: vi.fn(),
     getRunByCodecMessageId: vi.fn(),
     getSiblingRuns: vi.fn(() => []),
@@ -127,21 +126,18 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const edit = vi.fn(() => Promise.resolve(mockRun));
 
-  const view: View<CodecInputEvent, CodecOutputEvent, unknown, string> = {
+  const view: View<CodecInputEvent, CodecOutputEvent, string> = {
     getMessages: vi.fn(() => initialMessages),
-    flattenNodes: vi.fn(() => initialNodes),
+    runs: vi.fn(() => []),
     hasOlder: vi.fn(() => false),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     loadOlder: vi.fn(() => Promise.resolve()),
-    select: vi.fn(),
-    getSelectedIndex: vi.fn(() => 0),
     // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires explicit undefined return for the contract
-    getMessageMetadata: vi.fn(() => undefined),
-    hasMessageSiblings: vi.fn(() => false),
-    getMessageSiblings: vi.fn(() => []),
-    getSelectedMessageSiblingIndex: vi.fn(() => 0),
-    selectMessageSibling: vi.fn(),
-    getRunNode: vi.fn(),
+    runOf: vi.fn(() => undefined),
+    // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires explicit undefined return for the contract
+    run: vi.fn(() => undefined),
+    branchSelection: vi.fn(emptyBranchSelection),
+    selectSibling: vi.fn(),
     sendMessage,
     sendInput,
     regenerate,

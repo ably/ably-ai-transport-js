@@ -14,7 +14,6 @@ describe('useCreateView', () => {
   it('returns empty handle when session is undefined', () => {
     const { result } = renderHook(() => useCreateView({ session: undefined }));
 
-    expect(result.current.nodes).toEqual([]);
     expect(result.current.messages).toEqual([]);
     expect(result.current.hasOlder).toBe(false);
   });
@@ -22,7 +21,7 @@ describe('useCreateView', () => {
   it('returns empty handle when session is null', () => {
     const { result } = renderHook(() => useCreateView({ session: null })); // eslint-disable-line unicorn/no-null -- testing the null input path
 
-    expect(result.current.nodes).toEqual([]);
+    expect(result.current.messages).toEqual([]);
   });
 
   it('creates a view and returns a populated handle', () => {
@@ -32,7 +31,6 @@ describe('useCreateView', () => {
 
     // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
     expect(mock.session.createView).toHaveBeenCalledOnce();
-    expect(result.current.nodes).toHaveLength(1);
     expect(result.current.messages).toEqual(['hello']);
   });
 
@@ -87,7 +85,7 @@ describe('useCreateView', () => {
 
     // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
     expect(mock.view.close).toHaveBeenCalledOnce();
-    expect(result.current.nodes).toEqual([]);
+    expect(result.current.messages).toEqual([]);
   });
 
   it('delegates write operations to the created view', async () => {
@@ -106,7 +104,6 @@ describe('useCreateView', () => {
   it('returns empty handle when no session and no nearest context', () => {
     const { result } = renderHook(() => useCreateView());
 
-    expect(result.current.nodes).toEqual([]);
     expect(result.current.messages).toEqual([]);
     expect(result.current.hasOlder).toBe(false);
   });
@@ -129,7 +126,6 @@ describe('useCreateView', () => {
 
     // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
     expect(mock.session.createView).toHaveBeenCalledOnce();
-    expect(result.current.nodes).toHaveLength(1);
     expect(result.current.messages).toEqual(['hello']);
   });
 });

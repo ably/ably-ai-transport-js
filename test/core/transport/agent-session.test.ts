@@ -2355,6 +2355,46 @@ describe('Run.loadConversation', () => {
     session.close();
   });
 
+  it('does not fold current-run messages twice when a continuation ai-run-start parents off the same run', async () => {
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
+    ch.history.mockImplementation(() => {
+      const items = [
+        // Newest first (Ably history order). serials are ascending for correct sort.
+        makeContentMsg('run-1', 'msg-3', 's-05'), // continuation user/tool-output message
+        makeRunStartMsg('run-1', 'msg-2'), // continuation run-start — parents off msg-2
+        makeContentMsg('run-1', 'msg-2', 's-03'), // assistant message from initial pass
+        makeContentMsg('run-1', 'msg-1', 's-02'), // user message from initial pass
+        makeRunStartMsg('run-1'), // initial run-start (no parent — root run)
+      ];
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
+      const page = { items, hasNext: () => false, next: () => Promise.resolve(page) };
+      return Promise.resolve(page);
+    });
+
+    const session = createAgentSession<TestEvent, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'test-channel',
+      codec,
+      promptLookupTimeoutMs: 0,
+    });
+    await session.connect();
+    const run = createRunFromOpts(session, { runId: 'run-1' });
+    await run.start();
+
+    const history = await run.loadConversation();
+
+    // Each of the three content messages must appear exactly once.
+    expect(history).toEqual([
+      { id: 'msg-1', content: 'msg-1' },
+      { id: 'msg-2', content: 'msg-2' },
+      { id: 'msg-3', content: 'msg-3' },
+    ]);
+    expect(run.messages).toEqual(history);
+    session.close();
+  });
+
   it('throws InvalidArgument when the run signal is already aborted', async () => {
     const controller = new AbortController();
     const ch = createMockChannel();

@@ -655,12 +655,14 @@ export interface ActiveRun {
    */
   optimisticCodecMessageIds: string[];
   /**
-   * Build the {@link Invocation} pointer for this run — `runId`,
-   * `invocationId`, `inputEventId`, and the session's channel name as
-   * `sessionName`. The application POSTs `run.toInvocation().toJSON()` to
-   * its agent endpoint to wake the agent; the agent rebuilds it via
-   * {@link Invocation.fromJSON}. The conversation itself is read from the
-   * channel, so the pointer carries only identifiers.
+   * Build the {@link Invocation} pointer for this run. The application POSTs
+   * `run.toInvocation().toJSON()` to its agent endpoint to wake the agent;
+   * the agent rebuilds it via {@link Invocation.fromJSON}. The body carries
+   * only client-owned identifiers — the triggering `inputEventId`, the
+   * session's channel name as `sessionName`, and `runId` only for a
+   * continuation. A fresh run carries no runId and no invocationId; the
+   * agent's POST handler mints both. The conversation itself is read from the
+   * channel.
    */
   toInvocation(): Invocation;
 }

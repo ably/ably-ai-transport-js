@@ -517,10 +517,6 @@ class DefaultClientSession<
     // run-id on the wire, so the Tree forms a provisional Run keyed by the
     // triggering input's codec-message-id.
     const runId = sendOptions?.runId;
-    // The invocation id is no longer stamped on the wire; it is still minted
-    // here for the out-of-band POST body (toInvocation). The POST body is
-    // trimmed to client-owned identifiers in a follow-up commit.
-    const invocationId = crypto.randomUUID();
 
     // Spec: AIT-CT3d
     // Auto-compute parent from the visible branch tail when not explicitly
@@ -747,10 +743,13 @@ class DefaultClientSession<
       inputEventId: triggerInputEventId,
       cancel,
       optimisticCodecMessageIds: [...codecMessageIds],
+      // The POST body carries only client-owned identifiers: the trigger
+      // event id, the session name, and runId only for a continuation. The
+      // agent's POST handler mints the invocation id (and, for a fresh run,
+      // the run id).
       toInvocation: () =>
         Invocation.fromJSON({
-          runId,
-          invocationId,
+          ...(runId !== undefined && { runId }),
           inputEventId: triggerInputEventId,
           sessionName: this._channel.name,
         }),

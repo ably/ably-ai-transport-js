@@ -1148,9 +1148,10 @@ describe('ClientSession', () => {
     it('serialises to the InvocationData wire shape the agent reads', async () => {
       const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
       const json = run.toInvocation().toJSON();
-      // Fresh send: no runId in the body; inputEventId + sessionName are the
-      // client-owned identifiers the agent reads.
+      // Fresh send: no runId and no invocation-id in the body (the agent mints
+      // both); inputEventId + sessionName are the client-owned identifiers.
       expect(json.runId).toBeUndefined();
+      expect('invocationId' in json).toBe(false);
       expect(json.inputEventId).toBe(run.inputEventId);
       expect(json.sessionName).toBe('test-channel');
     });

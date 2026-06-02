@@ -37,6 +37,26 @@ describe('Invocation', () => {
       expect(invocation.runId).toBeUndefined();
       expect('runId' in invocation.toJSON()).toBe(false);
     });
+
+    it('omits a minted invocationId from the wire shape (the agent mints its own)', () => {
+      // A fresh client pointer carries no invocation-id. The minted id is
+      // internal, so it must not leak into the POST body — the agent's POST
+      // handler mints the authoritative one.
+      const invocation = Invocation.fromJSON({ inputEventId: 'ev-1', sessionName: 'chat-session' });
+      expect(invocation.invocationId).toBeDefined();
+      expect('invocationId' in invocation.toJSON()).toBe(false);
+      expect(invocation.toJSON()).toEqual({ inputEventId: 'ev-1', sessionName: 'chat-session' });
+    });
+
+    it('re-emits a supplied invocationId on the wire shape', () => {
+      // A body that did carry an invocation-id round-trips it.
+      const invocation = Invocation.fromJSON({
+        invocationId: 'inv-supplied',
+        inputEventId: 'ev-1',
+        sessionName: 'chat-session',
+      });
+      expect(invocation.toJSON().invocationId).toBe('inv-supplied');
+    });
   });
 
   describe('identity minting', () => {

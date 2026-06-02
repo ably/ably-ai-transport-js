@@ -92,12 +92,20 @@ export class Invocation {
   readonly inputEventId: string;
   /** Logical name of the session (chat). Used as the Ably channel name. */
   readonly sessionName: string;
+  /**
+   * Whether `invocationId` came from the source body (true) or was minted
+   * here because the body omitted it (false). {@link toJSON} re-emits the id
+   * only when it was supplied, so a minted id stays internal — the client's
+   * POST body omits the invocation id and the agent's handler mints it.
+   */
+  private readonly _invocationIdFromBody: boolean;
 
   private constructor(data: InvocationData) {
     this.runId = data.runId;
     // Mint the invocation id when the body omitted it — invocation identity
-    // is the agent's to own. A supplied id (e.g. a client that still mints)
-    // is honoured so this stays compatible with both wire shapes.
+    // is the agent's to own. A supplied id is honoured so this stays
+    // compatible with a body that carries one.
+    this._invocationIdFromBody = data.invocationId !== undefined;
     this.invocationId = data.invocationId ?? crypto.randomUUID();
     this.inputEventId = data.inputEventId;
     this.sessionName = data.sessionName;
@@ -115,16 +123,18 @@ export class Invocation {
 
   /**
    * Serialise this invocation to its JSON wire shape — the body a client
-   * POSTs to the agent's endpoint to wake a run. `runId` is omitted when this
-   * invocation carries none (a fresh run).
+   * POSTs to the agent's endpoint to wake a run. Carries only client-owned
+   * identifiers: `inputEventId`, `sessionName`, and `runId` only for a
+   * continuation. The invocation id is omitted unless it was supplied in the
+   * source body (a minted id is internal) — the agent's POST handler mints it.
    * @returns The {@link InvocationData} carrying this invocation's identity.
    */
   toJSON(): InvocationData {
     return {
-      invocationId: this.invocationId,
       inputEventId: this.inputEventId,
       sessionName: this.sessionName,
       ...(this.runId !== undefined && { runId: this.runId }),
+      ...(this._invocationIdFromBody && { invocationId: this.invocationId }),
     };
   }
 }

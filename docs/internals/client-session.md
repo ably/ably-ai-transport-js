@@ -26,7 +26,7 @@ All sub-components are created in the constructor and share a single Ably channe
 
 1. **Generate identifiers** — a fresh `runId`, a fresh `invocationId`, and per-message `codecMessageId`s and `inputEventId`s (all `crypto.randomUUID()`).
 2. **Auto-compute parent** — the View pre-computes `parentCodecMessageId` from the visible branch's tail message and passes it to the delegate. When neither `options.parent` nor `options.forkOf` is set, the delegate uses `parentCodecMessageId` as the auto-parent.
-3. **Optimistic insert** — for each `user-message` event, the session builds transport headers (`role: "user"`, `run-id`, `invocation-id`, `codec-message-id`, parent, `event-id`) and calls `tree.applyMessage([event], headers, undefined)`. The user message itself does not carry `input-client-id` — the wire publisher's Ably `clientId` already conveys that. The Tree creates the Run on first message arrival, folds the event into the Run's projection, and emits `update`. This makes the optimistic state visible to the view before the publish ack lands.
+3. **Optimistic insert** — for each `user-message` event, the session builds transport headers (`role: "user"`, `run-id`, `invocation-id`, `codec-message-id`, parent, `event-id`) and calls `tree.applyMessage({ inputs: [event], outputs: [] }, headers, undefined)`. The user message itself does not carry `input-client-id` — the wire publisher's Ably `clientId` already conveys that. The Tree creates the Run on first message arrival, folds the event into the Run's projection, and emits `update`. This makes the optimistic state visible to the view before the publish ack lands.
 4. **Create stream** — the [stream router](transport-components.md#streamrouter) creates a `ReadableStream` bound to `(runId, invocationId)`. Events from a different invocation under the same `runId` are dropped.
 5. **Publish on the channel** — the session's shared encoder publishes each event via `encoder.publish(event, ...)`. Capability errors (Ably 401/403) are translated to `MissingPublishCapability` and reject `send()` before exposing the stream.
 6. **Return `ActiveRun`** — `send()` resolves as soon as the channel publish (step 5) completes. The core sends no HTTP. The caller receives `{ stream, started, runId, invocationId, inputEventId, cancel(), optimisticCodecMessageIds, toInvocation() }`.
@@ -52,15 +52,15 @@ The channel subscription handler (`_handleMessage`) processes every inbound Ably
 
 ### Run lifecycle events
 
-- **`ai-run-start`** — `tree.applyRunLifecycle({type: 'ai-run-start', runId, clientId, parent, forkOf, isContinuation?}, serial)` creates or activates the Run, registers it as active, emits a `run` event.
-- **`ai-run-end`** — close the stream router entry (unless `reason === 'suspended'`), clean up `_ownRunIds`/`_ownMsgIds`/`_runMsgIds`, then `tree.applyRunLifecycle({type: 'ai-run-end', runId, clientId, reason}, serial)` updates the RunNode's `status` and `endSerial`, deregisters from active tracking, emits a `run` event.
+- **`ai-run-start`** — `tree.applyRunLifecycle({type: 'ai-run-start', runId, clientId, invocationId, serial, parent, forkOf, isContinuation?})` creates or activates the Run, registers it as active, emits a `run` event. The channel serial rides on the event (`parseRunLifecycle` stamps it), so there is no separate serial argument.
+- **`ai-run-end`** — close the stream router entry (unless `reason === 'suspended'`), clean up `_ownRunIds`/`_ownMsgIds`/`_runMsgIds`, then `tree.applyRunLifecycle({type: 'ai-run-end', runId, clientId, invocationId, serial, reason})` updates the RunNode's `status` and `endSerial` (from the event's serial), deregisters from active tracking, emits a `run` event.
 
 ### Codec-decoded messages
 
 All other messages pass through the codec decoder. The session:
 
-1. Calls `decoder.decode(rawMessage)` to get `TEvent[]`.
-2. Calls `tree.applyMessage(events, headers, serial)` — the Tree folds events into the owning Run's projection.
+1. Calls `decoder.decode(rawMessage)` to get `{ inputs, outputs }` split by wire direction.
+2. Calls `tree.applyMessage({ inputs, outputs }, headers, serial)` — the Tree folds events into the owning Run's projection and emits an `output` event with the message's outputs.
 3. Per-event, calls `router.route(runId, invocationId, event)` to enqueue to the active stream (if any). The router drops events whose invocation-id doesn't match the stream's bound invocation.
 4. Calls `tree.emitAblyMessage(rawMsg)` so subscribers to `'ably-message'` can observe the raw wire.
 
@@ -112,11 +112,12 @@ After close, all methods that create runs throw `SessionClosed`. Event subscript
 
 ## Events
 
-| Event                    | Payload             | When                                                                                                                        |
-| ------------------------ | ------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `update` (on view)       | (none)              | View state changed - call `view.flattenNodes()` for current state                                                           |
-| `run` (on tree or view)  | `RunLifecycleEvent` | Run started or ended (includes runId, clientId, reason)                                                                     |
-| `error`                  | `Ably.ErrorInfo`    | Non-fatal error (channel publish failure, channel continuity loss, subscription error). These also error active run streams |
-| `ably-message` (on tree) | (none)              | Raw Ably message added - subscribe via `tree.on('ably-message')`                                                            |
+| Event                    | Payload                | When                                                                                                                         |
+| ------------------------ | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `update` (on view)       | (none)                 | View state changed - call `view.flattenNodes()` for current state                                                            |
+| `run` (on tree or view)  | `RunLifecycleEvent`    | Run started or ended (includes runId, clientId, invocationId, serial, reason)                                                |
+| `output` (on tree)       | `OutputEvent<TOutput>` | Decoded agent outputs folded into a Run - runId, codecMessageId, serial, and the output events (empty for inputs-only folds) |
+| `error`                  | `Ably.ErrorInfo`       | Non-fatal error (channel publish failure, channel continuity loss, subscription error). These also error active run streams  |
+| `ably-message` (on tree) | (none)                 | Raw Ably message added - subscribe via `tree.on('ably-message')`                                                             |
 
 See [Sessions concept](../concepts/sessions.md) for the public API perspective. See [Transport components](transport-components.md) for the sub-component internals. See [Message lifecycle](message-lifecycle.md) for the end-to-end message flow.

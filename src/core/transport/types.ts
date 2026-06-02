@@ -531,7 +531,19 @@ export type RunLifecycleEvent =
        */
       isContinuation?: boolean;
     }
-  | { type: 'ai-run-end'; runId: string; clientId: string; reason: RunEndReason };
+  | {
+      type: 'ai-run-end';
+      runId: string;
+      clientId: string;
+      /**
+       * The invocation-id this run-end was published under (wire
+       * `invocation-id`), mirroring the run-start. Lets consumers correlate
+       * a run's termination back to the invocation that drove it. Empty
+       * string if the wire didn't carry an invocation-id.
+       */
+      invocationId: string;
+      reason: RunEndReason;
+    };
 
 // ---------------------------------------------------------------------------
 // Active run handle

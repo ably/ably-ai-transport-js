@@ -204,5 +204,5 @@ export const makeRunEvent = (
   if (type === 'ai-run-start') {
     return { type, runId, clientId, invocationId: '' };
   }
-  return { type, runId, clientId, reason: reason ?? 'complete' };
+  return { type, runId, clientId, invocationId: '', reason: reason ?? 'complete' };
 };

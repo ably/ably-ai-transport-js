@@ -1,7 +1,8 @@
 /**
  * Validates that the ChatTransport correctly drives useChat features.
  *
- * The Ably ChatTransport returns the real run stream from sendMessages().
+ * The Ably ChatTransport returns a stream of the run's output chunks from
+ * sendMessages(), built from the session Tree's `output` / `run` events.
  * useChat's internal Chat class reads that stream to drive status transitions,
  * callbacks, and automatic resubmission. Since chunks flow through the stream,
  * these features work correctly.
@@ -22,9 +23,6 @@ import { createChatTransport } from '../../../src/vercel/transport/chat-transpor
 // ---------------------------------------------------------------------------
 // Concrete Chat subclass (mirrors what useChat does internally)
 // ---------------------------------------------------------------------------
-
-// eslint-disable-next-line @typescript-eslint/no-empty-function -- no-op stub
-const noop = (): void => {};
 
 class TestChat extends AbstractChat<AI.UIMessage> {
   constructor(options: Omit<ConstructorParameters<typeof AbstractChat<AI.UIMessage>>[0], 'state'>) {
@@ -60,41 +58,86 @@ class TestChat extends AbstractChat<AI.UIMessage> {
 // Mock session (same pattern as chat-transport.test.ts)
 // ---------------------------------------------------------------------------
 
+/**
+ * Minimal event registry mirroring the Tree/session `on(event, handler)`
+ * contract: returns an unsubscribe, dispatches synchronously. Lets the mock
+ * runs drive the transport's stream via the same `output` / `run` / `error`
+ * events the production stream subscribes to.
+ */
+interface MockEmitter {
+  on: (event: string, handler: (arg: never) => void) => () => void;
+  emit: (event: string, arg?: unknown) => void;
+}
+
+const makeEmitter = (): MockEmitter => {
+  const handlers = new Map<string, Set<(arg: never) => void>>();
+  const log: { event: string; arg: unknown }[] = [];
+  return {
+    on: (event, handler) => {
+      let set = handlers.get(event);
+      if (!set) {
+        set = new Set();
+        handlers.set(event, set);
+      }
+      set.add(handler);
+      // Replay buffered events of this type to the newly-subscribed handler,
+      // mirroring how a ReadableStream retains chunks enqueued before a reader
+      // attaches (the source the production transport used to read). This lets
+      // a test emit a run's chunks without racing the transport's async
+      // subscription, and lets a continuation's fresh stream pick up only its
+      // own (later, live) events — prior runs' buffered events are filtered out
+      // by runId inside the stream builder.
+      // CAST: the registry is untyped; the production `on` overloads guarantee
+      // each handler receives the payload matching its event.
+      for (const entry of log) if (entry.event === event) (handler as (a: unknown) => void)(entry.arg);
+      return () => {
+        set.delete(handler);
+      };
+    },
+    // CAST: as above — untyped registry, payloads matched by event name.
+    emit: (event, arg) => {
+      log.push({ event, arg });
+      for (const handler of handlers.get(event) ?? []) (handler as (a: unknown) => void)(arg);
+    },
+  };
+};
+
 interface MockRun {
   stream: ReadableStream<AI.UIMessageChunk>;
   runId: string;
   cancel: ReturnType<typeof vi.fn>;
   /** Build the run's invocation pointer (the transport POSTs this to wake the agent). */
   toInvocation: () => Invocation;
-  /** Enqueue a chunk into the run stream. */
+  /** Emit a chunk as a Tree `output` event for this run (drives the consumer stream). */
   enqueue: (chunk: AI.UIMessageChunk) => void;
-  /** Close the run stream (simulates run end). */
+  /** Emit a non-suspended `run-end` for this run (closes the consumer stream). */
   close: () => void;
 }
 
-const createMockRun = (runId = 'run-1'): MockRun => {
-  let controller!: ReadableStreamDefaultController<AI.UIMessageChunk>;
-  const stream = new ReadableStream<AI.UIMessageChunk>({
-    start: (c) => {
-      controller = c;
-    },
-  });
-  return {
-    stream,
-    runId,
-    cancel: vi.fn(),
-    toInvocation: () =>
-      Invocation.fromJSON({ runId, invocationId: `${runId}-inv`, inputEventId: '', sessionName: 'chat-1' }),
-    enqueue: (chunk: AI.UIMessageChunk) => {
-      controller.enqueue(chunk);
-    },
-    close: () => {
-      controller.close();
-    },
-  };
-};
+const createMockRun = (runId: string, treeEmit: MockEmitter['emit']): MockRun => ({
+  // Inert placeholder — the transport builds its own stream from Tree events.
+  // eslint-disable-next-line @typescript-eslint/no-empty-function -- inert placeholder stream
+  stream: new ReadableStream<AI.UIMessageChunk>({ start: () => {} }),
+  runId,
+  cancel: vi.fn(),
+  toInvocation: () =>
+    Invocation.fromJSON({ runId, invocationId: `${runId}-inv`, inputEventId: '', sessionName: 'chat-1' }),
+  enqueue: (chunk: AI.UIMessageChunk) => {
+    treeEmit('output', { runId, codecMessageId: 'm-1', serial: 's-1', events: [chunk] });
+  },
+  close: () => {
+    treeEmit('run', {
+      type: 'ai-run-end',
+      runId,
+      clientId: '',
+      invocationId: `${runId}-inv`,
+      serial: 's-1',
+      reason: 'complete',
+    });
+  },
+});
 
-const createMockTree = () =>
+const createMockTree = (treeEmitter: MockEmitter) =>
   ({
     flattenNodes: vi.fn(() => []),
     getSiblingRuns: vi.fn(() => []),
@@ -103,11 +146,14 @@ const createMockTree = () =>
     select: vi.fn(),
     getRunNode: vi.fn(),
     getRunByCodecMessageId: vi.fn(),
+    on: vi.fn(treeEmitter.on),
   }) as unknown as Tree<VercelOutput, VercelProjection>;
 
 const createMockSession = () => {
-  const mockRun = createMockRun();
-  const tree = createMockTree();
+  const treeEmitter = makeEmitter();
+  const sessionEmitter = makeEmitter();
+  const mockRun = createMockRun('run-1', treeEmitter.emit);
+  const tree = createMockTree(treeEmitter);
 
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const send = vi.fn(() => Promise.resolve(mockRun));
@@ -133,7 +179,7 @@ const createMockSession = () => {
     close: vi.fn(() => Promise.resolve()),
     regenerate: vi.fn(),
     edit: vi.fn(),
-    on: vi.fn(() => noop),
+    on: vi.fn(sessionEmitter.on),
     getMessages: vi.fn(() => []),
     getAblyMessages: vi.fn(() => []),
     history: vi.fn(),
@@ -143,10 +189,12 @@ const createMockSession = () => {
 };
 
 const createMultiRunMockSession = () => {
-  const runA = createMockRun('run-a');
-  const runB = createMockRun('run-b');
+  const treeEmitter = makeEmitter();
+  const sessionEmitter = makeEmitter();
+  const runA = createMockRun('run-a', treeEmitter.emit);
+  const runB = createMockRun('run-b', treeEmitter.emit);
   const send = vi.fn().mockResolvedValueOnce(runA).mockResolvedValueOnce(runB);
-  const tree = createMockTree();
+  const tree = createMockTree(treeEmitter);
 
   const view = {
     flattenNodes: vi.fn(() => []),
@@ -169,7 +217,7 @@ const createMultiRunMockSession = () => {
     close: vi.fn(() => Promise.resolve()),
     regenerate: vi.fn(),
     edit: vi.fn(),
-    on: vi.fn(() => noop),
+    on: vi.fn(sessionEmitter.on),
     getMessages: vi.fn(() => []),
     getAblyMessages: vi.fn(() => []),
     history: vi.fn(),

@@ -27,6 +27,7 @@ import type * as AI from 'ai';
 import type { ActiveRun, ClientSession, SendOptions } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../codec/index.js';
+import { createRunOutputStream } from './run-output-stream.js';
 
 // ---------------------------------------------------------------------------
 // ChatTransport options
@@ -573,10 +574,18 @@ export const createChatTransport = (
       run = await session.view.sendInput(sendInput, sendOpts);
     }
 
+    // Build the consumer-facing stream from the Tree's events for this run.
+    // Streaming is a useChat concern owned by the Vercel layer; the core
+    // session no longer exposes a per-run stream.
+    const runStream = createRunOutputStream(session, run.runId);
+
     if (abortSignal) {
       const runId = run.runId;
       const onAbort = (): void => {
         void session.cancel(runId);
+        // Close the consumer stream immediately so useChat's reader ends
+        // without waiting for the agent's run-end round-trip.
+        runStream.close();
       };
       // useChat sets `status: 'submitted'` synchronously inside `makeRequest`
       // BEFORE awaiting `transport.sendMessages`. That immediately enables
@@ -596,7 +605,7 @@ export const createChatTransport = (
     // Wrap the stream to detect completion. The streaming flag gates
     // useMessageSync so that setMessages doesn't interfere with
     // useChat's internal write() during active streams.
-    const { stream, done, fail } = wrapStreamWithDone(run.stream);
+    const { stream, done, fail } = wrapStreamWithDone(runStream.stream);
     setStreaming(true);
 
     // Fire-and-forget: clear the streaming flag when the stream ends.

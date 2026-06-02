@@ -654,7 +654,8 @@ const _foldLifecycle = (
     }
     case 'abort':
     case 'error': {
-      // No state mutation — observers detect terminal via Codec.isTerminal.
+      // No state mutation — run termination is observed via the wire run-end
+      // event, not the projection.
       return state;
     }
     case 'message-metadata': {

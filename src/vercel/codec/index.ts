@@ -61,8 +61,6 @@ export const UIMessageCodec: Codec<VercelInput, VercelOutput, VercelProjection, 
     }
     return undefined;
   },
-  isTerminal: (output: VercelOutput): boolean =>
-    output.type === 'finish' || output.type === 'error' || output.type === 'abort',
 };
 
 export type { VercelInput, VercelOutput } from './events.js';

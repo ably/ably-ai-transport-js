@@ -446,17 +446,6 @@ describe('Vercel reducer', () => {
       state = UIMessageCodec.fold(state, event, meta('s1'));
       expect(UIMessageCodec.getMessages(state)).toEqual([message]);
     });
-
-    it('isTerminal returns true for finish, error and abort', () => {
-      // eslint-disable-next-line @typescript-eslint/no-deprecated -- isTerminal is the bridge under test
-      expect(UIMessageCodec.isTerminal({ type: 'finish', finishReason: 'stop' })).toBe(true);
-      // eslint-disable-next-line @typescript-eslint/no-deprecated -- isTerminal is the bridge under test
-      expect(UIMessageCodec.isTerminal({ type: 'error', errorText: 'x' })).toBe(true);
-      // eslint-disable-next-line @typescript-eslint/no-deprecated -- isTerminal is the bridge under test
-      expect(UIMessageCodec.isTerminal({ type: 'abort', reason: 'cancelled' })).toBe(true);
-      // eslint-disable-next-line @typescript-eslint/no-deprecated -- isTerminal is the bridge under test
-      expect(UIMessageCodec.isTerminal({ type: 'start' })).toBe(false);
-    });
   });
 
   // -- mutation semantics --------------------------------------------------

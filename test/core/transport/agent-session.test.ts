@@ -237,7 +237,6 @@ const createMockCodec = (overrides?: { encoderFactory?: () => MockEncoder }): Mo
       return enc;
     }),
     createDecoder: vi.fn(() => createMockDecoder()),
-    isTerminal: vi.fn(() => false),
   };
   return codec;
 };
@@ -319,7 +318,6 @@ const codecWithFunctionalDecoder = (): Codec<TestInput, TestOutput, TestProjecti
       };
     },
   })),
-  isTerminal: vi.fn(() => false),
 });
 
 interface DeliverInputEventOpts {
@@ -1673,7 +1671,6 @@ describe('AgentSession', () => {
             throw new Error('boom');
           },
         })),
-        isTerminal: vi.fn(() => false),
       };
       const s = createAgentSession({
         client: createMockClient(ch),
@@ -1997,7 +1994,6 @@ describe('Run.messages', () => {
       resolveToolTarget: () => undefined,
       createEncoder: vi.fn(() => createMockEncoder()),
       createDecoder: vi.fn(() => ({ decode: () => ({ inputs: [], outputs: [] }) })),
-      isTerminal: vi.fn(() => false),
     };
     const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(ch),

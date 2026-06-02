@@ -78,22 +78,22 @@ const unsubscribe = view.on('update', () => {
 
 This is the primary consumption path. In React, the `useView()` hook handles the subscription automatically.
 
-### The event stream
+### The output event
 
-`send()` also returns a `ReadableStream<TOutput>` on the `ActiveRun`. This exists as an integration seam for framework adapters - Vercel's `useChat()` expects a `ReadableStream` as its transport contract. Most application code should use the view instead, since the accumulator provides the same per-token granularity.
+For per-event granularity, subscribe to the tree's `output` event. Every decoded run output — for any run, own or observed — surfaces here keyed by `runId`, carrying the raw `TOutput` events (for the Vercel codec, `UIMessageChunk`s):
 
 ```typescript
-// Framework adapter usage - most apps won't consume this directly
+// Per-event consumption - most apps use the view instead
 const run = await view.send(userMessage);
-const reader = run.stream.getReader();
-while (true) {
-  const { done, value } = await reader.read();
-  if (done) break;
-  // value is a UIMessageChunk (text-delta, finish, etc.)
-}
+const unsubscribe = session.tree.on('output', (event) => {
+  if (event.runId !== run.runId) return;
+  for (const chunk of event.events) {
+    // chunk is a UIMessageChunk (text-delta, finish, etc.)
+  }
+});
 ```
 
-For runs started by other clients (observer runs), there is no stream - events are accumulated into messages and the tree updates via `tree.on('ably-message')`. See [Message lifecycle](../internals/message-lifecycle.md#own-runs-vs-observer-runs) for the full routing picture.
+The view (and `useView()`) sit on top of this, so most application code never touches it. Framework adapters that need a `ReadableStream` build one from this event: Vercel's `useChat()` expects a `ReadableStream` as its transport contract, and the [chat transport](../internals/chat-transport.md) constructs a per-run stream from the tree's `output` event in the Vercel layer. See [Message lifecycle](../internals/message-lifecycle.md#how-run-outputs-surface) for the full picture.
 
 ## Recovery
 

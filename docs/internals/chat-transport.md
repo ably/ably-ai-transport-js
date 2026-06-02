@@ -12,7 +12,7 @@ Vercel's `useChat()` manages message state internally. When the user submits a m
 2. Compute fork metadata for regeneration
 3. Delegate to the core session's `send()` to publish on the channel
 4. POST the run's invocation pointer to wake the agent
-5. Return the run stream so `useChat` can drive status and callbacks
+5. Build a per-run `ReadableStream` from the session tree's events and return it so `useChat` can drive status and callbacks
 
 ## sendMessages
 
@@ -29,15 +29,15 @@ For regeneration, the adapter looks up the target message in the [conversation t
 
 After `send()` publishes on the channel and returns the `ActiveRun`, the transport POSTs `run.toInvocation().toJSON()` to its configured `api` (default `/api/chat`) to wake the agent. The body is the invocation pointer — `runId`, `invocationId`, `inputEventId`, `sessionName` (the channel name) — so the agent rebuilds it with `Invocation.fromJSON` and reads the conversation from the channel; no history is sent. The POST uses the configured `fetch` and `credentials`.
 
-The POST is fire-and-forget — the response arrives over the Ably channel, not the HTTP response, so awaiting it would needlessly delay the stream return. If the POST fails (non-2xx or network error), the agent never woke, so the transport errors **only** the `useChat`-facing stream with `SessionSendFailed` (which surfaces as `useChat` `status: 'error'`). It does this by aborting the wrapped readable with `preventCancel`, leaving the source run stream and the tree/observers untouched.
+The POST is fire-and-forget — the response arrives over the Ably channel, not the HTTP response, so awaiting it would needlessly delay the stream return. If the POST fails (non-2xx or network error), the agent never woke, so the transport errors **only** the `useChat`-facing stream with `SessionSendFailed` (which surfaces as `useChat` `status: 'error'`). It does this by failing the wrapped stream; the core session, conversation tree, and other observers are untouched.
 
 ### Request customization
 
 The `prepareSendMessagesRequest` hook (optional) lets the app add to the invocation POST. It receives the full context - trigger, history, messages, fork metadata - and returns `{ body, headers }`. The returned `body` is merged into the POST body (the run's invocation identifiers always win) and `headers` are added to the request — use it for auth headers or extra agent metadata. Without the hook, the POST body is just the invocation pointer.
 
-### Real stream return
+### Stream return
 
-The adapter returns the real run stream from `sendMessages()`. `useChat` consumes this stream to drive status transitions (`submitted` -> `streaming` -> `ready`), fire callbacks (`onToolCall`, `onData`, `onFinish`), and evaluate `sendAutomaticallyWhen`.
+The adapter builds a per-run `ReadableStream<UIMessageChunk>` from the session tree's `output` and `run` events (via `createRunOutputStream`, the Vercel-layer module that owns streaming) and returns it from `sendMessages()`. `useChat` consumes this stream to drive status transitions (`submitted` -> `streaming` -> `ready`), fire callbacks (`onToolCall`, `onData`, `onFinish`), and evaluate `sendAutomaticallyWhen`. The stream closes on a terminal chunk (`finish`/`error`/`abort`) — so a tool-calls `finish` ends the consumer stream and triggers continuation while the core run stays alive — or on a non-suspended run-end as a safety net.
 
 Both `useChat` and `useMessageSync` accumulate messages in parallel: `useChat` builds from the stream, while `useMessageSync` pushes from the session's message store via `setMessages` (a full replacement). The session's version is always authoritative - both accumulators produce identical messages from the same chunks, and `setMessages` overwrites `useChat`'s state on every session event.
 
@@ -45,7 +45,7 @@ The server encoder ensures `messageId` alignment by stamping the transport-assig
 
 ### Abort signal
 
-When `useChat()` provides an `abortSignal` (e.g. the user clicks stop), the adapter wires it to `session.cancel(runId)` for the run produced by the just-issued send. The abort listener closes over the `runId` returned by `sendInput` / `regenerate`, so each stop fires exactly one cancel scoped to its originating send.
+When `useChat()` provides an `abortSignal` (e.g. the user clicks stop), the adapter wires it to `session.cancel(runId)` for the run produced by the just-issued send and closes that run's per-run stream so `useChat`'s reader ends immediately without waiting for the agent's run-end round-trip. The abort listener closes over the `runId` returned by `sendInput` / `regenerate`, so each stop fires exactly one cancel scoped to its originating send. (Because `useChat` enables Stop synchronously, the adapter also handles an already-aborted signal — firing the cancel directly rather than via the `abort` listener, which would never fire.)
 
 ## reconnectToStream
 

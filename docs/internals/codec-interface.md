@@ -9,16 +9,14 @@ interface Codec<TEvent, TMessage> {
   createEncoder(channel: ChannelWriter, options?: EncoderOptions): StreamEncoder<TEvent, TMessage>;
   createDecoder(): StreamDecoder<TEvent, TMessage>;
   createAccumulator(): MessageAccumulator<TEvent, TMessage>;
-  isTerminal(event: TEvent): boolean;
 }
 ```
 
-| Method                | Purpose                                                                                                                                                                  |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `createEncoder()`     | Creates a [streaming encoder](encoder.md) that maps domain events to Ably publish operations                                                                             |
-| `createDecoder()`     | Creates a [decoder](decoder.md) that converts inbound Ably messages to domain events/messages                                                                            |
-| `createAccumulator()` | Creates an accumulator that builds complete messages from streaming events                                                                                               |
-| `isTerminal()`        | Returns true if an event signals stream completion (finish, error, abort). Used by the [stream router](transport-components.md#terminal-detection) to auto-close streams |
+| Method                | Purpose                                                                                       |
+| --------------------- | --------------------------------------------------------------------------------------------- |
+| `createEncoder()`     | Creates a [streaming encoder](encoder.md) that maps domain events to Ably publish operations  |
+| `createDecoder()`     | Creates a [decoder](decoder.md) that converts inbound Ably messages to domain events/messages |
+| `createAccumulator()` | Creates an accumulator that builds complete messages from streaming events                    |
 
 ## How the session uses the codec
 
@@ -37,8 +35,7 @@ The encoder translates domain events into [encoder core](encoder.md#stream-lifec
 The client session uses:
 
 - `createDecoder()` - decodes inbound Ably messages into domain events and messages
-- `createAccumulator()` - builds complete messages from events (for [observer runs](glossary.md#own-run-vs-observer-run) - other clients' streams)
-- `isTerminal()` - tells the [stream router](transport-components.md#terminal-detection) when to close a per-run ReadableStream
+- `createAccumulator()` - builds complete messages from events
 
 ## Encoder architecture
 
@@ -166,6 +163,5 @@ To support a new AI framework, implement the `Codec<TEvent, TMessage>` interface
 2. **Implement the encoder** - map domain events to encoder core operations (startStream, appendStream, closeStream, publishDiscrete)
 3. **Implement the decoder hooks** - build domain events from stream tracker state
 4. **Implement the accumulator** - build complete messages from decoder outputs
-5. **Implement isTerminal** - identify events that close a stream
 
 See [Vercel codec](vercel-codec.md) for the concrete Vercel implementation details. See [Encoder](encoder.md) for the encoder core that domain encoders delegate to. See [Decoder](decoder.md) for the decoder core and its hook interface. See [Wire protocol](wire-protocol.md) for the transport vs domain header discipline.

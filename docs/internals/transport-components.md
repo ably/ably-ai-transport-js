@@ -1,34 +1,8 @@
 # Transport sub-components
 
-The client and agent sessions are composed from several focused sub-components. Each handles one concern: routing events to streams, managing run lifecycle, piping streams through encoders, or publishing cancel signals.
+The client and agent sessions are composed from several focused sub-components. Each handles one concern: managing run lifecycle, piping streams through encoders, or publishing cancel signals.
 
-## StreamRouter
-
-`src/core/transport/stream-router.ts` - client-side only.
-
-The stream router maps decoded events to per-run `ReadableStream` instances for [own runs](glossary.md#own-run-vs-observer-run) - runs this client initiated via `send()`, `regenerate()`, or `edit()`. When the client starts a run, the router creates a new stream. As decoded events arrive from the channel subscription, the transport routes them through the router to the correct stream.
-
-The stream is **not the only destination** for own-run events. After routing an event to the stream, the transport also feeds it to a per-run [accumulator](codec-interface.md#accumulator) that builds complete domain messages for the [conversation tree](conversation-tree.md). This means the view updates on every event regardless of who started the run. The stream exists primarily as an integration seam for framework adapters (e.g. Vercel's `useChat()` expects a `ReadableStream`); most application code consumes accumulated messages via the view instead.
-
-Events from [observer runs](glossary.md#own-run-vs-observer-run) (other clients' runs) go to the accumulator only - the router has no stream for them because no caller on this client initiated the run. See [Message lifecycle](message-lifecycle.md#own-runs-vs-observer-runs) for the full routing picture.
-
-### Operations
-
-| Method                      | What it does                                                                             |
-| --------------------------- | ---------------------------------------------------------------------------------------- |
-| `createStream(runId)`       | Creates a `ReadableStream`, captures the controller synchronously, returns the stream    |
-| `route(runId, event)`       | Enqueues the event on the run's stream. If the event is terminal, auto-closes the stream |
-| `closeStream(runId)`        | Closes the controller and removes the entry                                              |
-| `errorStream(runId, error)` | Errors the controller with the given `ErrorInfo` and removes the entry                   |
-| `has(runId)`                | Checks whether a run has an active stream                                                |
-
-### Terminal detection
-
-The router accepts an [`isTerminal()`](codec-interface.md#the-codec-interface) predicate at construction (provided by the codec). When a routed event matches the predicate, the router automatically closes the stream after enqueueing the event. This means the stream consumer sees the [terminal event](glossary.md#terminal-event) as the last item before the stream ends.
-
-### Controller capture
-
-`ReadableStream`'s `start()` callback runs synchronously per the WHATWG spec. The router exploits this to capture the controller in the same tick as stream creation - no async gap where events could be lost.
+Per-run output streaming is **not** a core concern. The core client session surfaces every decoded run output on the [conversation tree](conversation-tree.md)'s `output` event — keyed by `runId` — and treats all runs identically regardless of who started them. The `ReadableStream` that Vercel's `useChat()` consumes is built in the Vercel layer by the [chat transport](chat-transport.md), which subscribes to those tree events for a single run. See [Message lifecycle](message-lifecycle.md#how-run-outputs-surface) for the full picture.
 
 ## RunManager
 

@@ -6,7 +6,7 @@ How a message travels from the Ably channel to the UI. This doc ties together th
 
 The entire generic layer is parameterized by two types: `TEvent` and `TMessage`.
 
-**`TEvent`** is a streaming fragment - an individually meaningless piece of a message. For the Vercel codec, this is `UIMessageChunk`: a text delta, a reasoning delta, a finish event. Events are the unit of real-time streaming. The [stream router](transport-components.md) delivers them one-by-one to own-run consumers; the [accumulator](codec-interface.md#accumulator) assembles them into complete messages.
+**`TEvent`** is a streaming fragment - an individually meaningless piece of a message. For the Vercel codec, this is `UIMessageChunk`: a text delta, a reasoning delta, a finish event. Events are the unit of real-time streaming. The [conversation tree](conversation-tree.md) surfaces them one-by-one on its `output` event; the [accumulator](codec-interface.md#accumulator) assembles them into complete messages.
 
 **`TMessage`** is a complete domain message - a fully-formed object with all its parts, metadata, and role. For the Vercel codec, this is `UIMessage`. Messages are the unit of state: what the [conversation tree](conversation-tree.md) stores, what the view's `flattenNodes()` returns, what React hooks render.
 
@@ -25,62 +25,29 @@ flowchart TD
     Channel[Ably channel] --> Decoder
     Decoder --> Outputs["DecoderOutput[]<br/>(events + discrete messages)"]
 
-    Outputs --> Own[Own run]
-    Outputs --> Observer[Observer run]
+    Outputs --> Accumulator["Accumulator<br/>(TEvent → TMessage)"]
     Outputs --> Discrete["Discrete message<br/>(any run)"]
 
-    Own --> StreamRouter["StreamRouter<br/>(ReadableStream)"]
-    Own --> Accumulator["Accumulator<br/>(TEvent → TMessage)"]
-    Observer --> Accumulator
-
-    Accumulator -- "snapshot latest message<br/>on each event" --> Tree["Tree .upsert()"]
+    Accumulator -- "snapshot latest message<br/>on each event" --> Tree["Tree .applyMessage()"]
     Discrete --> Tree
 
+    Tree -- "'output' event<br/>(per run, every fold)" --> Adapters["framework adapters<br/>(Vercel chat transport → useChat)"]
     Tree --> View[View]
     View --> Flatten[.flattenNodes]
     Flatten --> Hooks["React hooks<br/>(useState + 'update' event)"]
     Hooks --> UI[UI renders]
-    StreamRouter --> Adapters["framework adapters<br/>(e.g. useChat)"]
 ```
 
-## Own runs vs observer runs
+## How run outputs surface
 
-When the client session receives messages from the channel, it routes them based on who started the run:
+When the client session receives a message from the channel, it decodes it and folds the result into the owning run's projection in the [conversation tree](conversation-tree.md) — regardless of who started the run. There is no separate path for runs this client initiated versus runs it merely observes; the [own vs observer](glossary.md#own-run-vs-observer-run) distinction matters for cancel scoping and UI affordances, not for delivery.
 
-- **Own run** - a run this client initiated (via `view.send()`, `view.regenerate()`, `view.edit()`). Decoded events go to **both** the [stream router](transport-components.md) and a per-run [accumulator](codec-interface.md#accumulator). The stream router enqueues events on a `ReadableStream` that framework adapters can consume (see [why the stream exists](#why-own-runs-have-a-stream)). The accumulator simultaneously builds complete `TMessage` objects and upserts them into the tree on every event - so the view always reflects the latest partial state, even while streaming.
-- **Observer run** - a run started by another client. Decoded events go to the accumulator only. There is no stream because no caller initiated the run on this client - there is nobody holding a stream handle.
+Every fold emits the tree's `output` event — `{ runId, codecMessageId, serial, events }` — carrying that message's decoded output events (empty for inputs-only folds). This is the single fan-out point for streaming outputs. Two consumers subscribe to it:
 
-Both paths use the same `_accumulateAndEmit()` method. The only difference is that own runs additionally route through the stream router.
+- The **View** consumes it and, when the run is on the visible branch, recomputes its message list and emits an `update` event — the signal hooks render from. (The View does not re-expose `output`; it surfaces only `update`.)
+- The Vercel [chat transport](chat-transport.md) builds a per-run `ReadableStream<UIMessageChunk>` from it (via `createRunOutputStream`), which is what `useChat` consumes. Streaming is a useChat-integration concern owned by the Vercel layer — the generic core exposes only the `output` event, not a stream.
 
-Discrete message outputs (`kind: 'message'`) from the decoder bypass both paths and go directly to the conversation tree via `upsert()`.
-
-## How messages reach the tree
-
-### Observer runs: accumulator → tree
-
-For each observer run, the transport creates a dedicated accumulator. As decoded events arrive:
-
-1. The event is fed to the accumulator via `processOutputs()`
-2. The transport reads `accumulator.messages` to get the latest in-progress message
-3. It takes a snapshot (via `structuredClone`) and upserts it into the tree
-
-This happens on **every event** - the tree always has the latest partial state. The accumulator is a working buffer; the [conversation tree](conversation-tree.md) is the source of truth.
-
-### Own runs: stream + accumulator → tree
-
-For own runs, events flow to **both** the stream router and the accumulator. The stream router enqueues each event on the run's `ReadableStream<TEvent>`. Simultaneously, the same event is fed to the accumulator, which builds the in-progress `TMessage` and upserts it into the tree - identical to the observer path. This means the view updates on every event regardless of who started the run.
-
-Discrete messages (e.g. user messages published by `send()`) are inserted into the tree directly.
-
-### Why own runs have a stream
-
-The `ReadableStream<TEvent>` returned from `view.send()` exists primarily as an **integration seam for framework adapters**. Vercel's `useChat()`, for example, expects a `ReadableStream` as its transport contract - the stream is how AI Transport plugs into the Vercel AI SDK's rendering pipeline.
-
-For most application code, the accumulated messages via `view.flattenNodes()` / `view.on('update')` are the right consumption path. The accumulator updates the tree on every event, so it provides the same granularity as the stream - you see each partial message as tokens arrive. The stream offers no timing advantage.
-
-Cases where direct stream consumption adds value are narrow: non-rendering side effects that need per-event granularity (e.g. playing a sound per token, logging individual event types), or custom accumulation logic that differs from the codec's accumulator.
-
-Observer runs have no stream because there is no caller holding a handle - nobody on this client called `view.send()` for that run. If observer-side event streaming were needed, it would require a separate API surface (e.g. `transport.observeRun(runId)`).
+For most application code, the accumulated messages via `view.flattenNodes()` / `view.on('update')` are the right consumption path — the tree updates on every event, so the view always reflects the latest partial state while streaming. Subscribing to `tree.on('output')` directly is for the narrow cases that need raw per-event granularity: non-rendering side effects (e.g. playing a sound per token) or custom accumulation that differs from the codec's.
 
 ### Discrete messages: direct insert
 

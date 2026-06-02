@@ -292,6 +292,44 @@ describe('Tree', () => {
       apply(tree, { runId: 'R1', codecMessageId: 'm2', parent: 'm1', message: { id: 'b', content: 'v2' } });
       expect(tree.getRunNode('R1')?.startSerial).toBe('s1');
     });
+
+    it('reconciles an echo to the optimistic node by codec-message-id even when the wire run-id differs', () => {
+      // Optimistic insert under R1 (no serial).
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'optimistic' } });
+      expect(tree.getRunNode('R1')?.startSerial).toBeUndefined();
+
+      // The echo arrives with a DIVERGENT run-id but the same codec-message-id
+      // and a serial. It must reconcile to the optimistic R1 (promote it), not
+      // spawn a second Run under the divergent id — reconciliation is by
+      // codec-message-id, not the wire run-id.
+      apply(tree, {
+        runId: 'R2-divergent',
+        codecMessageId: 'm1',
+        message: { id: 'a', content: 'confirmed' },
+        serial: 's10',
+      });
+
+      expect(tree.getRunNode('R1')?.startSerial).toBe('s10');
+      expect(tree.getRunNode('R2-divergent')).toBeUndefined();
+      // The codec-message-id stays indexed against the owning (reconciled) Run.
+      expect(tree.getRunByCodecMessageId('m1')?.runId).toBe('R1');
+      // The echo's events fold into the reconciled Run, not a phantom one.
+      expect(messagesOf(tree, 'R1').map((m) => m.id)).toContain('a');
+      expect(messagesOf(tree, 'R2-divergent')).toHaveLength(0);
+    });
+
+    it('does not reconcile by codec-message-id when the indexed Run is already serialized', () => {
+      // R1 is established and serialized; it owns codec-message-id m1.
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'v1' }, serial: 's1' });
+
+      // A later message reuses m1 under a different run-id (the shape of a
+      // continuation amend targeting a prior message). Because R1 is already
+      // serialized — not an optimistic insert awaiting its echo — this routes
+      // by the wire run-id and creates R2 rather than folding back into R1.
+      apply(tree, { runId: 'R2', codecMessageId: 'm1', message: { id: 'b', content: 'amend' }, serial: 's2' });
+      expect(tree.getRunNode('R2')).toBeDefined();
+      expect(tree.getRunNode('R1')?.startSerial).toBe('s1');
+    });
   });
 
   // -------------------------------------------------------------------------

@@ -494,26 +494,49 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
       return;
     }
 
-    const runId = wireRunId;
+    let run = this._runIndex.get(wireRunId);
 
-    let run = this._runIndex.get(runId);
+    // Reconcile an optimistic insert with its serial-bearing echo by
+    // codec-message-id rather than the wire run-id: when the wire run-id finds
+    // no Run but the message's codec-message-id already maps to an as-yet-
+    // unserialized (optimistic) Run, that Run is the owner — even if the
+    // echo's run-id differs from the one the optimistic insert used. This
+    // keeps optimistic reconciliation from depending on the client-minted
+    // run-id matching. The wire run-id stays the primary key, so every other
+    // message (assistant chunks, continuation tool-resolutions, fresh Runs)
+    // routes exactly as before.
+    //
+    // This relaxes the run-id-EQUALITY requirement only. A message with no
+    // run-id at all is still dropped by the guard above; forming the node
+    // without any run-id (so the agent can mint and adopt one) is the
+    // run-less-node change deferred to the agent-minting PR.
+    if (!run && codecMessageId !== undefined) {
+      const indexedRunId = this._codecMessageIdToRunId.get(codecMessageId);
+      const indexed = indexedRunId === undefined ? undefined : this._runIndex.get(indexedRunId);
+      if (indexed && indexed.node.startSerial === undefined) run = indexed;
+    }
+
     if (!run) {
-      run = this._createRunFromHeaders(runId, headers, serial);
-      this._runIndex.set(runId, run);
-      this._addToParentIndex(run.node.parentRunId, runId);
+      run = this._createRunFromHeaders(wireRunId, headers, serial);
+      this._runIndex.set(wireRunId, run);
+      this._addToParentIndex(run.node.parentRunId, wireRunId);
       this._insertSortedRun(run);
       this._structuralVersion++;
-      this._logger.debug('Tree.applyMessage(); created new Run', { runId, wireRunId, isContinuation });
+      this._logger.debug('Tree.applyMessage(); created new Run', { runId: wireRunId, isContinuation });
     } else if (serial && !run.node.startSerial) {
-      // Promote optimistic startSerial when the relay arrives.
-      this._logger.debug('Tree.applyMessage(); promoting startSerial', { runId, serial });
+      // Promote optimistic startSerial when the relay/echo arrives.
+      this._logger.debug('Tree.applyMessage(); promoting startSerial', { runId: run.node.runId, serial });
       run.node.startSerial = serial;
       this._removeSortedRun(run);
       this._insertSortedRun(run);
       this._structuralVersion++;
     }
 
-    if (codecMessageId) this._codecMessageIdToRunId.set(codecMessageId, runId);
+    // Index the codec-message-id against the Run that actually owns it — the
+    // reconciled optimistic Run when the echo was matched by codec-message-id,
+    // otherwise the wire Run (identical in the common case where they agree).
+    const ownerRunId = run.node.runId;
+    if (codecMessageId) this._codecMessageIdToRunId.set(codecMessageId, ownerRunId);
 
     for (const event of events) {
       try {
@@ -522,11 +545,11 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
           messageId: codecMessageId,
         });
       } catch (error) {
-        this._logger.error('Tree.applyMessage(); fold threw', { runId, err: error });
+        this._logger.error('Tree.applyMessage(); fold threw', { runId: ownerRunId, err: error });
       }
     }
 
-    this._emitter.emit('run-projection-updated', { runId });
+    this._emitter.emit('run-projection-updated', { runId: ownerRunId });
     this._emitter.emit('update');
   }
 

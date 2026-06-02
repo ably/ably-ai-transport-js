@@ -1600,57 +1600,61 @@ describe('AgentSession', () => {
   });
 
   describe('input-event lookup', () => {
-    it('warns on over-arrival after a lookup has completed and does not buffer the extra message', async () => {
+    it('buffers an input event with no registered lookup and drains it when a lookup registers', async () => {
+      // With dispatch keyed by event-id, an input event whose event-id has
+      // no pending lookup is buffered (not dropped) so a run.start() that
+      // registers afterwards still finds it. This is the agent-attaches-
+      // after-publish / rewind-before-start path.
       const ch = createMockChannel();
       const c = codecWithFunctionalDecoder();
-      const { logger, warn } = captureWarnLogger();
       const s = createAgentSession({
         client: createMockClient(ch),
-        channelName: 'over-arrival',
+        channelName: 'buffer-then-drain',
         codec: c,
         inputEventLookupTimeoutMs: 5000,
-        // Limit set to 1 so we can prove via the eviction warn that the
-        // over-arrival did not occupy a buffer slot. If the over-arrival
-        // were buffered, the next unrelated invocation would force a
-        // FIFO eviction; with the drop-instead-of-buffer behavior, no
-        // eviction occurs.
-        inputEventBufferLimit: 1,
-        logger,
       });
       await s.connect();
 
-      const runId = 'r-over';
-      const invocationId = 'inv-over';
-      const run = createRunFromOpts(s, { runId, invocationId, inputEventId: 'p-a' });
-      const startPromise = run.start();
+      const runId = 'r-buf';
+      const invocationId = 'inv-buf';
+      // Arrives before any lookup is registered — buffered by event-id.
       deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', inputEventId: 'p-a' });
+
+      const run = createRunFromOpts(s, { runId, invocationId, inputEventId: 'p-a' });
+      await run.start();
+
+      expect(run.view.messages.map((m) => m.codecMessageId)).toEqual(['a']);
+      s.close();
+    });
+
+    it('routes input events by event-id, ignoring the invocation-id header', async () => {
+      // The dispatcher no longer keys on invocation-id: a lookup resolves
+      // when its expected event-id arrives even if the wire message carries
+      // an unrelated invocation-id.
+      const ch = createMockChannel();
+      const c = codecWithFunctionalDecoder();
+      const s = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'route-by-event-id',
+        codec: c,
+        inputEventLookupTimeoutMs: 5000,
+      });
+      await s.connect();
+
+      const run = createRunFromOpts(s, { runId: 'r-route', invocationId: 'inv-expected', inputEventId: 'p-a' });
+      const startPromise = run.start();
+
+      // Deliver the trigger event-id under a different invocation-id.
+      deliverInputEvent(ch, {
+        invocationId: 'inv-DIFFERENT',
+        runId: 'r-route',
+        codecMessageId: 'a',
+        serial: '01',
+        inputEventId: 'p-a',
+      });
+
       await startPromise;
-
-      warn.mockClear();
-      // Extra arrival after the lookup completed — must warn and drop.
-      deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'b', serial: '02', inputEventId: 'p-b' });
-
-      const overArrivalCalls = warn.mock.calls.filter(
-        (call) => typeof call[0] === 'string' && call[0].includes('over-arrival'),
-      );
-      expect(overArrivalCalls).toHaveLength(1);
-      const ctx = overArrivalCalls[0]?.[1] as
-        | { invocationId?: string; expectedCount?: number; codecMessageId?: string }
-        | undefined;
-      expect(ctx?.invocationId).toBe(invocationId);
-      expect(ctx?.expectedCount).toBe(1);
-      expect(ctx?.codecMessageId).toBe('b');
-
-      // Prove the over-arrival did not occupy the single buffer slot:
-      // deliver a different invocation and assert no FIFO eviction warn
-      // fires. If `msg b` were buffered, the buffer would now hold one
-      // entry and this would evict it.
-      warn.mockClear();
-      deliverInputEvent(ch, { invocationId: 'inv-other', codecMessageId: 'c', serial: '03' });
-      const evictCalls = warn.mock.calls.filter(
-        (call) => typeof call[0] === 'string' && call[0].includes('input-event buffer full'),
-      );
-      expect(evictCalls).toHaveLength(0);
+      expect(run.view.messages.map((m) => m.codecMessageId)).toEqual(['a']);
       s.close();
     });
 
@@ -1745,8 +1749,8 @@ describe('AgentSession', () => {
         (call) => typeof call[0] === 'string' && call[0].includes('input-event buffer full'),
       );
       expect(evictCalls).toHaveLength(1);
-      const ctx = evictCalls[0]?.[1] as { evictedInvocationId?: string; limit?: number } | undefined;
-      expect(ctx?.evictedInvocationId).toBe('inv-0');
+      const ctx = evictCalls[0]?.[1] as { evictedEventId?: string; limit?: number } | undefined;
+      expect(ctx?.evictedEventId).toBe('p-m0');
       expect(ctx?.limit).toBe(200);
       s.close();
     });
@@ -1778,14 +1782,14 @@ describe('AgentSession', () => {
       );
       expect(evictCalls).toHaveLength(0);
 
-      // The 4th distinct invocation-id must evict `inv-0` and log limit=3.
+      // The 4th distinct event-id must evict `p-m0` and log limit=3.
       deliverInputEvent(ch, { invocationId: 'inv-3', codecMessageId: 'm3', serial: 's3' });
       evictCalls = warn.mock.calls.filter(
         (call) => typeof call[0] === 'string' && call[0].includes('input-event buffer full'),
       );
       expect(evictCalls).toHaveLength(1);
-      const ctx = evictCalls[0]?.[1] as { evictedInvocationId?: string; limit?: number } | undefined;
-      expect(ctx?.evictedInvocationId).toBe('inv-0');
+      const ctx = evictCalls[0]?.[1] as { evictedEventId?: string; limit?: number } | undefined;
+      expect(ctx?.evictedEventId).toBe('p-m0');
       expect(ctx?.limit).toBe(3);
       s.close();
     });

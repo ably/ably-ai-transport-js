@@ -77,14 +77,14 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
   useEffect(() => {
     const offRun = session.tree.on('run', (event) => {
       const summary =
-        event.type === 'ai-run-start'
+        event.type === 'start'
           ? `runId=${event.runId.slice(0, 8)}, clientId=${event.clientId}${event.isContinuation ? ', continuation' : ''}`
           : `runId=${event.runId.slice(0, 8)}, clientId=${event.clientId}, reason=${event.reason}`;
       setCallbackLog((prev) => [
         ...prev,
         {
           time: Date.now(),
-          type: event.type === 'ai-run-start' ? 'runStart' : 'runEnd',
+          type: event.type === 'start' ? 'runStart' : 'runEnd',
           summary,
         },
       ]);

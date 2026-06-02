@@ -49,7 +49,7 @@ interface InternalRunNode<TProjection> {
 // ---------------------------------------------------------------------------
 
 /** Internal tree surface used by View and ClientSession — not part of the public Tree API. */
-export interface TreeInternal<TEvent, TProjection> extends Tree<TProjection> {
+export interface TreeInternal<TInput, TOutput, TProjection> extends Tree<TProjection> {
   /**
    * Monotonic counter that increments on structural changes (Run insert,
    * delete, startSerial promotion/reorder) but NOT on projection updates
@@ -84,11 +84,18 @@ export interface TreeInternal<TEvent, TProjection> extends Tree<TProjection> {
    * 2. Continuation tool-resolution (`run-continue: 'true'`): routes to
    *    existing Run via codecMessageIdToRunId, folds events.
    * 3. Assistant/agent events: routes to existing Run by runId, folds events.
-   * @param events - Decoded codec events to fold into the Run's projection.
+   * @param events - Decoded codec events, split by wire direction. Both are
+   *   folded into the Run's projection, inputs first.
+   * @param events.inputs - Client-published events (`ai-input` wire).
+   * @param events.outputs - Agent-published events (`ai-output` wire).
    * @param headers - Transport headers from the inbound Ably message.
    * @param serial - Ably channel serial; undefined for optimistic inserts.
    */
-  applyMessage(events: TEvent[], headers: Record<string, string>, serial?: string): void;
+  applyMessage(
+    events: { inputs: TInput[]; outputs: TOutput[] },
+    headers: Record<string, string>,
+    serial?: string,
+  ): void;
 
   /**
    * Apply a run-lifecycle event.
@@ -128,8 +135,8 @@ interface TreeEventsMap {
 }
 
 // Spec: AIT-CT13
-export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TProjection> {
-  private readonly _codec: Reducer<TEvent, TProjection>;
+export class DefaultTree<TInput, TOutput, TProjection> implements TreeInternal<TInput, TOutput, TProjection> {
+  private readonly _codec: Reducer<TInput | TOutput, TProjection>;
   private readonly _logger: Logger;
   private readonly _emitter: EventEmitter<TreeEventsMap>;
 
@@ -186,7 +193,7 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
     return this._structuralVersion;
   }
 
-  constructor(codec: Reducer<TEvent, TProjection>, logger: Logger) {
+  constructor(codec: Reducer<TInput | TOutput, TProjection>, logger: Logger) {
     this._codec = codec;
     this._logger = logger;
     this._emitter = new EventEmitter<TreeEventsMap>(logger);
@@ -465,7 +472,11 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
   // Mutation
   // -------------------------------------------------------------------------
 
-  applyMessage(events: TEvent[], headers: Record<string, string>, serial?: string): void {
+  applyMessage(
+    events: { inputs: TInput[]; outputs: TOutput[] },
+    headers: Record<string, string>,
+    serial?: string,
+  ): void {
     const wireRunId = headers[HEADER_RUN_ID];
     if (!wireRunId) {
       this._logger.warn('Tree.applyMessage(); message missing run-id header; skipping');
@@ -475,13 +486,16 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
     const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
     const isContinuation = headers[HEADER_RUN_CONTINUE] === 'true';
 
+    // Fold inputs first, then outputs, preserving wire order.
+    const all: (TInput | TOutput)[] = [...events.inputs, ...events.outputs];
+
     // Wire-only metadata-carrier messages (e.g. `ait-regenerate`) decode to
     // zero events and don't need a Run at the tree level — the eventual
     // assistant Run is created later by run-start, and any regenerate /
     // parent information the wire carried is reread from the run-start
     // headers. Skipping here avoids a phantom Run with empty projection
     // that would otherwise inflate sibling-group counts.
-    if (events.length === 0 && !this._runIndex.has(wireRunId)) {
+    if (all.length === 0 && !this._runIndex.has(wireRunId)) {
       return;
     }
 
@@ -529,7 +543,7 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
     const ownerRunId = run.node.runId;
     if (codecMessageId) this._codecMessageIdToRunId.set(codecMessageId, ownerRunId);
 
-    for (const event of events) {
+    for (const event of all) {
       try {
         run.node.projection = this._codec.fold(run.node.projection, event, {
           serial: serial ?? '',
@@ -876,7 +890,7 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
  *   directly for internal methods (applyMessage, applyRunLifecycle,
  *   emitAblyMessage). Public consumers see the narrower {@link Tree} interface.
  */
-export const createTree = <TEvent, TProjection>(
-  codec: Reducer<TEvent, TProjection>,
+export const createTree = <TInput, TOutput, TProjection>(
+  codec: Reducer<TInput | TOutput, TProjection>,
   logger: Logger,
-): DefaultTree<TEvent, TProjection> => new DefaultTree(codec, logger);
+): DefaultTree<TInput, TOutput, TProjection> => new DefaultTree<TInput, TOutput, TProjection>(codec, logger);

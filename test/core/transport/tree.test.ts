@@ -90,7 +90,7 @@ interface ApplyOpts {
 
 type TreeEvent = TestInput | TestOutput;
 
-const apply = (tree: TreeInternal<TreeEvent, TestProjection>, opts: ApplyOpts): void => {
+const apply = (tree: TreeInternal<TestInput, TestOutput, TestProjection>, opts: ApplyOpts): void => {
   const h: Record<string, string> = { [HEADER_RUN_ID]: opts.runId };
   if (opts.codecMessageId) h[HEADER_CODEC_MESSAGE_ID] = opts.codecMessageId;
   if (opts.parent) h[HEADER_PARENT] = opts.parent;
@@ -102,21 +102,23 @@ const apply = (tree: TreeInternal<TreeEvent, TestProjection>, opts: ApplyOpts): 
   if (opts.runContinue) h[HEADER_RUN_CONTINUE] = 'true';
 
   const events: TreeEvent[] = opts.events ?? (opts.message ? [{ type: 'append-message', message: opts.message }] : []);
-  tree.applyMessage(events, h, opts.serial);
+  const inputs = events.filter((e): e is TestInput => 'kind' in e);
+  const outputs = events.filter((e): e is TestOutput => 'type' in e);
+  tree.applyMessage({ inputs, outputs }, h, opts.serial);
 };
 
-const messagesOf = (tree: TreeInternal<TreeEvent, TestProjection>, runId: string): TestMessage[] => {
+const messagesOf = (tree: TreeInternal<TestInput, TestOutput, TestProjection>, runId: string): TestMessage[] => {
   const run = tree.getRunNode(runId);
   return run ? testCodec.getMessages(run.projection) : [];
 };
 
 const flatMessages = (
-  tree: TreeInternal<TreeEvent, TestProjection>,
+  tree: TreeInternal<TestInput, TestOutput, TestProjection>,
   selections: Map<string, string> = NO_SELECTIONS,
 ): TestMessage[] => tree.runs(selections).flatMap((r) => testCodec.getMessages(r.projection));
 
 const flatRunIds = (
-  tree: TreeInternal<TreeEvent, TestProjection>,
+  tree: TreeInternal<TestInput, TestOutput, TestProjection>,
   selections: Map<string, string> = NO_SELECTIONS,
 ): string[] => tree.runs(selections).map((r) => r.runId);
 
@@ -125,10 +127,10 @@ const flatRunIds = (
 // ---------------------------------------------------------------------------
 
 describe('Tree', () => {
-  let tree: TreeInternal<TreeEvent, TestProjection>;
+  let tree: TreeInternal<TestInput, TestOutput, TestProjection>;
 
   beforeEach(() => {
-    tree = createTree(testCodec, silentLogger);
+    tree = createTree<TestInput, TestOutput, TestProjection>(testCodec, silentLogger);
   });
 
   // -------------------------------------------------------------------------
@@ -200,7 +202,11 @@ describe('Tree', () => {
     });
 
     it('drops messages without an run-id header', () => {
-      tree.applyMessage([{ type: 'append-message', message: { id: 'a', content: 'orphan' } }], {}, 's1');
+      tree.applyMessage(
+        { inputs: [], outputs: [{ type: 'append-message', message: { id: 'a', content: 'orphan' } }] },
+        {},
+        's1',
+      );
       expect(tree.runs(NO_SELECTIONS)).toEqual([]);
     });
   });

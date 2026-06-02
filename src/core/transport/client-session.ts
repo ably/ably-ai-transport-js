@@ -100,7 +100,7 @@ class DefaultClientSession<
   private readonly _ownRunIds = new Set<string>();
 
   // Sub-components
-  private readonly _tree: DefaultTree<TInput | TOutput, TProjection>;
+  private readonly _tree: DefaultTree<TInput, TOutput, TProjection>;
   private readonly _view: DefaultView<TInput, TOutput, TProjection, TMessage>;
   private readonly _views = new Set<DefaultView<TInput, TOutput, TProjection, TMessage>>();
   private readonly _router: StreamRouter<TOutput>;
@@ -157,7 +157,7 @@ class DefaultClientSession<
     this._hasAttachedOnce = this._channel.state === 'attached';
 
     // Compose sub-components
-    this._tree = createTree<TInput | TOutput, TProjection>(this._codec, this._logger);
+    this._tree = createTree<TInput, TOutput, TProjection>(this._codec, this._logger);
     this._view = createView<TInput, TOutput, TProjection, TMessage>({
       tree: this._tree,
       channel: this._channel,
@@ -198,7 +198,10 @@ class DefaultClientSession<
         // produced by `codec.createUserMessage`; TInput is the codec's full
         // input union, of which UserMessage<TMessage> is one member.
         // TypeScript can't see the membership through the generic boundary.
-        this._tree.applyMessage([this._codec.createUserMessage(msg) as unknown as TInput], seedHeaders);
+        this._tree.applyMessage(
+          { inputs: [this._codec.createUserMessage(msg) as unknown as TInput], outputs: [] },
+          seedHeaders,
+        );
         prevMsgId = codecMessageId;
       }
     }
@@ -352,7 +355,6 @@ class DefaultClientSession<
 
       // --- Codec-decoded events ---
       const { inputs, outputs } = this._decoder.decode(ablyMessage);
-      const events: (TInput | TOutput)[] = [...inputs, ...outputs];
       const headers = getTransportHeaders(ablyMessage);
       const serial = ablyMessage.serial;
       const runId = headers[HEADER_RUN_ID];
@@ -360,8 +362,8 @@ class DefaultClientSession<
       // Fold into the Tree's per-Run projection. This must run BEFORE router
       // routing so the active stream's listeners see the projection updates
       // when they consume the routed events.
-      if (events.length > 0 || runId) {
-        this._tree.applyMessage(events, headers, serial);
+      if (inputs.length > 0 || outputs.length > 0 || runId) {
+        this._tree.applyMessage({ inputs, outputs }, headers, serial);
       }
 
       // Route outputs to the active stream (if any). Only TOutput events
@@ -607,7 +609,7 @@ class DefaultClientSession<
 
       // Spec: AIT-CT3c — optimistic fold for non-wire-only inputs.
       if (!isWireOnly) {
-        this._tree.applyMessage([entry], headers);
+        this._tree.applyMessage({ inputs: [entry], outputs: [] }, headers);
       }
 
       items.push({ input: entry, codecMessageId, headers, isWireOnly });

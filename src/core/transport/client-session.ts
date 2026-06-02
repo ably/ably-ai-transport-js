@@ -113,7 +113,7 @@ class DefaultClientSession<
   private readonly _encoder: Encoder<TInput, TOutput>;
 
   // Spec: AIT-CT10, AIT-CT10a
-  readonly tree: Tree<TProjection>;
+  readonly tree: Tree<TOutput, TProjection>;
   readonly view: View<TInput, TOutput, TMessage>;
 
   // Channel subscription is established lazily on connect()

@@ -12,6 +12,7 @@ export type {
   EventsNode,
   LoadConversationOptions,
   MessageNode,
+  OutputEvent,
   PipeOptions,
   Run,
   RunEndReason,

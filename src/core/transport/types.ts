@@ -741,6 +741,33 @@ export interface RunNode<TProjection> {
 }
 
 /**
+ * Payload of the Tree's `output` event: the decoded agent outputs folded
+ * for a Run from a single inbound message, carrying the routing metadata a
+ * consumer needs to attribute or stream them.
+ */
+export interface OutputEvent<TOutput extends CodecOutputEvent> {
+  /** The runId the outputs were folded into. */
+  runId: string;
+  /**
+   * The `codec-message-id` the outputs were published under, or `undefined`
+   * when the message carried none.
+   */
+  codecMessageId: string | undefined;
+  /**
+   * Ably channel serial of the message that carried the outputs, or
+   * `undefined` for an optimistic local fold (no serial assigned yet).
+   */
+  serial: string | undefined;
+  /**
+   * The decoded agent outputs from this message, in wire order. Empty when
+   * the folded message carried only inputs (e.g. an optimistic user
+   * message); the event still fires so consumers can observe that the Run's
+   * projection changed.
+   */
+  events: TOutput[];
+}
+
+/**
  * Materializes a branching conversation tree from a flat oplog of Ably
  * messages, keyed by `run-id`.
  *
@@ -749,7 +776,7 @@ export interface RunNode<TProjection> {
  * from inbound events. The View walks the parent chain to extract a flat
  * message list for rendering.
  */
-export interface Tree<TProjection> {
+export interface Tree<TOutput extends CodecOutputEvent, TProjection> {
   /**
    * Return the visible Run list along the selected branches, in
    * chronological order. The `selections` map provides the selected
@@ -835,6 +862,15 @@ export interface Tree<TProjection> {
    * Used by the View to detect streaming deltas without a full tree walk.
    */
   on(event: 'run-projection-updated', handler: (event: { runId: string }) => void): () => void;
+
+  /**
+   * Subscribe to decoded agent outputs as they are folded into a Run.
+   * Fires once per inbound message after its fold, carrying the message's
+   * output events plus routing metadata (runId, codec-message-id, serial).
+   * Fires with an empty `events` array for inputs-only folds so it can also
+   * serve as a projection-changed signal.
+   */
+  on(event: 'output', handler: (event: OutputEvent<TOutput>) => void): () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -1082,7 +1118,7 @@ export interface ClientSession<
   TMessage,
 > {
   /** The complete conversation tree — all known Run nodes, events for any change. */
-  readonly tree: Tree<TProjection>;
+  readonly tree: Tree<TOutput, TProjection>;
 
   /** The default paginated, branch-aware view for rendering — events scoped to visible messages. */
   readonly view: View<TInput, TOutput, TMessage>;

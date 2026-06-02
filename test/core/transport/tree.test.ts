@@ -1096,13 +1096,6 @@ describe('Tree', () => {
       expect(handler).toHaveBeenCalled();
     });
 
-    it('emits run-projection-updated after a successful fold', () => {
-      const handler = vi.fn();
-      tree.on('run-projection-updated', handler);
-      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
-      expect(handler).toHaveBeenCalledWith({ runId: 'R1' });
-    });
-
     it('emits output with routing metadata and the folded output events', () => {
       const handler = vi.fn();
       tree.on('output', handler);

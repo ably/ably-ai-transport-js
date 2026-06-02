@@ -100,10 +100,7 @@ export const buildTransportHeaders = (opts: {
  * @returns The lifecycle event, or `undefined` when `name` is not a
  *   run-lifecycle event name or the message carries no `run-id`.
  */
-export const parseRunLifecycle = (
-  name: string,
-  headers: Record<string, string>,
-): RunLifecycleEvent | undefined => {
+export const parseRunLifecycle = (name: string, headers: Record<string, string>): RunLifecycleEvent | undefined => {
   const runId = headers[HEADER_RUN_ID];
   if (!runId) return undefined;
 

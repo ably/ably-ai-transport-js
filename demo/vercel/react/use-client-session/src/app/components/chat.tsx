@@ -1,8 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ActiveRun } from '@ably/ai-transport';
+import type { VercelOutput } from '@ably/ai-transport/vercel';
 
-import { userMessage, userMessageEvent } from '../helpers';
+import { userMessage, userMessageEvent, wakeAgent } from '../helpers';
 import { useClientTools } from '../hooks/use-client-tools';
 import { useDemoProgress } from '../hooks/use-demo-progress';
 import { MessageList } from './message-list';
@@ -18,9 +20,11 @@ interface ChatProps {
   chatId: string;
   clientId?: string;
   historyLimit?: number;
+  /** Agent endpoint the demo POSTs invocations to, to wake the serverless agent. */
+  api: string;
 }
 
-export function Chat({ clientId, historyLimit }: ChatProps) {
+export function Chat({ clientId, historyLimit, api }: ChatProps) {
   const { session } = useClientSession();
 
   const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);
@@ -44,7 +48,28 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
     getMessageMetadata,
   } = view;
 
-  useClientTools(view, clientId);
+  useClientTools(view, clientId, api);
+
+  // Wake the agent for a freshly-sent run by POSTing its invocation pointer.
+  // The core session never sends HTTP — the app owns the trigger. Send sites
+  // pass the `view.send*` promise; a POST failure is surfaced in the log.
+  const wake = useCallback(
+    (runPromise: Promise<ActiveRun<VercelOutput>>) => {
+      void runPromise
+        .then((run) => wakeAgent(api, run))
+        .catch((error: unknown) => {
+          setCallbackLog((prev) => [
+            ...prev,
+            {
+              time: Date.now(),
+              type: 'error',
+              summary: error instanceof Error ? error.message : 'failed to wake agent',
+            },
+          ]);
+        });
+    },
+    [api],
+  );
 
   // Derive "is a run in progress?" from the latest visible Run's status:
   // 'complete' and 'cancelled' are terminal and hide the Stop button; any
@@ -100,21 +125,23 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
     (codecMessageId: string, toolCallId: string) => {
       const runId = view.getMessageMetadata(codecMessageId)?.runId;
       if (!runId) return;
-      void view.sendInput([{ kind: 'tool-approval-response', codecMessageId, toolCallId, approved: true }], { runId });
+      wake(view.sendInput([{ kind: 'tool-approval-response', codecMessageId, toolCallId, approved: true }], { runId }));
     },
-    [view],
+    [view, wake],
   );
 
   const handleToolDeny = useCallback(
     (codecMessageId: string, toolCallId: string) => {
       const runId = view.getMessageMetadata(codecMessageId)?.runId;
       if (!runId) return;
-      void view.sendInput(
-        [{ kind: 'tool-approval-response', codecMessageId, toolCallId, approved: false, reason: 'User denied' }],
-        { runId },
+      wake(
+        view.sendInput(
+          [{ kind: 'tool-approval-response', codecMessageId, toolCallId, approved: false, reason: 'User denied' }],
+          { runId },
+        ),
       );
     },
-    [view],
+    [view, wake],
   );
 
   return (
@@ -133,8 +160,8 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
             getMessageMetadata,
           }}
           onLoadOlder={() => void loadOlder()}
-          onRegenerate={(codecMessageId) => void view.regenerate(codecMessageId)}
-          onEdit={(codecMessageId, text) => void view.edit(codecMessageId, [userMessageEvent(text)])}
+          onRegenerate={(codecMessageId) => wake(view.regenerate(codecMessageId))}
+          onEdit={(codecMessageId, text) => wake(view.edit(codecMessageId, [userMessageEvent(text)]))}
           onToolApprove={handleToolApprove}
           onToolDeny={handleToolDeny}
         />
@@ -147,7 +174,7 @@ export function Chat({ clientId, historyLimit }: ChatProps) {
             value={input}
             onChange={setInput}
             inputRef={inputRef}
-            onSend={(text) => void view.sendMessage(userMessage(text))}
+            onSend={(text) => wake(view.sendMessage(userMessage(text)))}
             onStop={() => {
               if (!latestRunId) return;
               void session.cancel(latestRunId);

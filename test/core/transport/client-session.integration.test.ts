@@ -108,9 +108,6 @@ const waitForRunEvent = async (
     });
   });
 
-// eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-const noopFetch = () => Promise.resolve(new Response(undefined, { status: 200 }));
-
 /**
  * Publish a run-start lifecycle event with the invocation-id header attached
  * so the client's run-end gate can match the invocation bound to the run.
@@ -354,8 +351,6 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
-      fetch: noopFetch,
-      api: '/test',
     });
     await clientSession.connect();
 
@@ -430,8 +425,6 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
-      fetch: noopFetch,
-      api: '/test',
     });
     await clientSession.connect();
 
@@ -483,8 +476,6 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
-      fetch: noopFetch,
-      api: '/test',
     });
     await clientSession.connect();
 
@@ -542,8 +533,6 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
-      fetch: noopFetch,
-      api: '/test',
     });
     await clientSession.connect();
 
@@ -614,8 +603,6 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: historyClient.auth.clientId,
-      fetch: noopFetch,
-      api: '/test',
     });
     await clientSession.connect();
 
@@ -685,8 +672,6 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: historyClient.auth.clientId,
-      fetch: noopFetch,
-      api: '/test',
     });
     await clientSession.connect();
 
@@ -750,8 +735,6 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: historyClient.auth.clientId,
-      fetch: noopFetch,
-      api: '/test',
     });
     await clientSession.connect();
     await clientSession.view.loadOlder(10);
@@ -819,8 +802,6 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: historyClient.auth.clientId,
-      fetch: noopFetch,
-      api: '/test',
     });
     await clientSession.connect();
     await clientSession.view.loadOlder(10);
@@ -864,8 +845,6 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: aClient.auth.clientId,
-      fetch: noopFetch,
-      api: '/test',
     });
     await clientSession.connect();
 
@@ -874,8 +853,6 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: bClient.auth.clientId,
-      fetch: noopFetch,
-      api: '/test',
     });
     await observer.connect();
 
@@ -971,8 +948,6 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: historyClient.auth.clientId,
-      fetch: noopFetch,
-      api: '/test',
     });
     await clientSession.connect();
 
@@ -1046,8 +1021,6 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
-      fetch: noopFetch,
-      api: '/test',
     });
     await clientSession.connect();
 
@@ -1141,8 +1114,6 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
-      fetch: noopFetch,
-      api: '/test',
     });
     await clientSession.connect();
 
@@ -1198,8 +1169,6 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
-      fetch: noopFetch,
-      api: '/test',
     });
     await clientSession.connect();
 
@@ -1264,8 +1233,6 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
-      fetch: noopFetch,
-      api: '/test',
     });
     await clientSession.connect();
 
@@ -1314,8 +1281,6 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
-      fetch: noopFetch,
-      api: '/test',
     });
     await clientSession.connect();
 
@@ -1373,8 +1338,6 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
-      fetch: noopFetch,
-      api: '/test',
     });
     await clientSession.connect();
 
@@ -1486,8 +1449,6 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
-      fetch: noopFetch,
-      api: '/test',
     });
     await clientSession.connect();
 
@@ -1559,8 +1520,6 @@ describe('ClientSession integration', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
-      fetch: noopFetch,
-      api: '/test',
     });
     await clientSession.connect();
 

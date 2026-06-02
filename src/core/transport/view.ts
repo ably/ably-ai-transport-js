@@ -32,6 +32,7 @@ import type {
   ActiveRun,
   BranchSelection,
   HistoryPage,
+  OutputEvent,
   RunInfo,
   RunLifecycleEvent,
   RunNode,
@@ -299,31 +300,31 @@ export class DefaultView<
       this._tree.on('run', (event) => {
         this._onTreeRun(event);
       }),
-      this._tree.on('run-projection-updated', (event) => {
-        this._onTreeProjectionUpdated(event);
+      this._tree.on('output', (event) => {
+        this._onTreeOutput(event);
       }),
     );
   }
 
   /**
-   * Handle a per-Run projection update (streaming delta). If the run is on
-   * the visible chain, recompute the flat message list and emit `update`.
-   * @param event - The projection-updated event from the Tree.
-   * @param event.runId - The runId whose projection was updated.
+   * Handle decoded outputs folded into a Run (streaming delta). If the run
+   * is on the visible chain, recompute the flat message list and emit
+   * `update`.
+   * @param event - The output event from the Tree.
    */
-  private _onTreeProjectionUpdated(event: { runId: string }): void {
+  private _onTreeOutput(event: OutputEvent<TOutput>): void {
     if (this._processingHistory) return;
     if (!this._lastVisibleRunIdSet.has(event.runId)) return;
 
-    // The Tree only emits `run-projection-updated` when fold() actually
-    // ran on this Run's projection, so we always re-emit. The Reducer
-    // contract permits in-place mutation, which means we cannot use
-    // projection-ref or TMessage-ref equality to detect change: a
-    // streaming chunk legitimately mutates the same UIMessage object,
-    // and a ref-equality short-circuit would suppress every update.
-    // React state setters at the subscriber boundary already dedup by
-    // array reference, so a redundant emit is a no-op for unchanged
-    // hook consumers.
+    // The Tree emits `output` once per inbound message fold (with empty
+    // `events` for inputs-only folds), so it fires whenever a visible Run's
+    // projection changed and we always re-emit. The Reducer contract permits
+    // in-place mutation, which means we cannot use projection-ref or
+    // TMessage-ref equality to detect change: a streaming chunk legitimately
+    // mutates the same UIMessage object, and a ref-equality short-circuit
+    // would suppress every update. React state setters at the subscriber
+    // boundary already dedup by array reference, so a redundant emit is a
+    // no-op for unchanged hook consumers.
     this._lastVisibleProjections = this._cachedNodes.map((n) => n.projection);
     this._lastVisibleMessages = this._extractMessages(this._cachedNodes);
     this._emitter.emit('update');
@@ -1284,7 +1285,7 @@ export class DefaultView<
 
     // Content-only fast path: the tree structure hasn't changed (no new
     // Runs, deletions, or sort-reorders). Streaming projection updates
-    // come through 'run-projection-updated' separately, so 'update' with
+    // come through the 'output' event separately, so 'update' with
     // no structural change is rare — but possible (e.g. status fill on
     // run-end). Skip.
     if (currentVersion === this._lastStructuralVersion) {

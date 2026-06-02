@@ -1322,11 +1322,11 @@ describe('DefaultView', () => {
       expect(handler).toHaveBeenCalled();
     });
 
-    it('forwards run-projection-updated as update when the run is on the visible chain', () => {
+    it('forwards a tree output event as update when the run is on the visible chain', () => {
       apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
       const handler = vi.fn();
       view.on('update', handler);
-      // Folding another message into R1 fires run-projection-updated for a
+      // Folding another message into R1 fires the tree 'output' event for a
       // visible run.
       apply(tree, {
         runId: 'R1',
@@ -1465,7 +1465,7 @@ describe('DefaultView', () => {
     });
 
     it('getMessages keeps its array reference when a continuation projection update arrives but messages are unchanged', () => {
-      // Streaming continuation: tree fires 'run-projection-updated' for a
+      // Streaming continuation: tree fires the 'output' event for a
       // wire that doesn't alter the visible message list (e.g. amend on a
       // hidden field). The View's `getMessages()` cache stays stable.
       const beforeMessages = view.getMessages();
@@ -1519,10 +1519,10 @@ describe('DefaultView', () => {
       );
 
       // structural emit on the new codecMessageId index entry is allowed; the
-      // run-projection-updated path must not double-emit.
+      // output-event path must not double-emit.
       const afterCalls = handler.mock.calls.length;
       // At most one emit (the structural one). The reference-equality
-      // short-circuit in _onTreeProjectionUpdated suppresses the second.
+      // short-circuit in _onTreeOutput suppresses the second.
       expect(afterCalls - beforeCalls).toBeLessThanOrEqual(1);
     });
   });

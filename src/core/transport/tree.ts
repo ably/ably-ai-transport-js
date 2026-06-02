@@ -135,7 +135,6 @@ interface TreeEventsMap<TOutput extends CodecOutputEvent> {
   update: undefined;
   'ably-message': Ably.InboundMessage;
   run: RunLifecycleEvent;
-  'run-projection-updated': { runId: string };
   output: OutputEvent<TOutput>;
 }
 
@@ -564,7 +563,6 @@ export class DefaultTree<
     }
 
     this._emitter.emit('output', { runId: ownerRunId, codecMessageId, serial, events: events.outputs });
-    this._emitter.emit('run-projection-updated', { runId: ownerRunId });
     this._emitter.emit('update');
   }
 
@@ -860,15 +858,13 @@ export class DefaultTree<
   on(event: 'update', handler: () => void): () => void;
   on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
   on(event: 'run', handler: (event: RunLifecycleEvent) => void): () => void;
-  on(event: 'run-projection-updated', handler: (event: { runId: string }) => void): () => void;
   on(event: 'output', handler: (event: OutputEvent<TOutput>) => void): () => void;
   on(
-    event: 'update' | 'ably-message' | 'run' | 'run-projection-updated' | 'output',
+    event: 'update' | 'ably-message' | 'run' | 'output',
     handler:
       | (() => void)
       | ((msg: Ably.InboundMessage) => void)
       | ((event: RunLifecycleEvent) => void)
-      | ((event: { runId: string }) => void)
       | ((event: OutputEvent<TOutput>) => void),
   ): () => void {
     // CAST: overload signatures enforce correct handler types per event name.

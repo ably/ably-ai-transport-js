@@ -15,7 +15,7 @@ import type {
   View,
 } from '../../../src/core/transport/types.js';
 
-type TreeEventType = 'update' | 'ably-message' | 'run' | 'run-projection-updated' | 'output';
+type TreeEventType = 'update' | 'ably-message' | 'run' | 'output';
 type SessionEventType = 'error';
 type Handler = ((...args: never[]) => void) | (() => void);
 
@@ -38,7 +38,7 @@ export interface MockSession {
   on: ReturnType<typeof vi.fn>;
   /** Fire an event on the session (only 'error'). */
   emit: (event: SessionEventType, ...args: unknown[]) => void;
-  /** Fire an event on tree/view (update, ably-message, run, run-projection-updated, output). */
+  /** Fire an event on tree/view (update, ably-message, run, output). */
   emitTree: (event: TreeEventType, ...args: unknown[]) => void;
   tree: Tree<CodecOutputEvent, unknown>;
   view: View<CodecInputEvent, CodecOutputEvent, string>;

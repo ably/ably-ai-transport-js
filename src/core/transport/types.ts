@@ -856,14 +856,6 @@ export interface Tree<TOutput extends CodecOutputEvent, TProjection> {
   on(event: 'run', handler: (event: RunLifecycleEvent) => void): () => void;
 
   /**
-   * Subscribe to per-Run projection updates. Fires after every successful
-   * `codec.fold` on an existing Run's projection. Does NOT fire on
-   * structural changes (Run insert/delete); use 'update' for those.
-   * Used by the View to detect streaming deltas without a full tree walk.
-   */
-  on(event: 'run-projection-updated', handler: (event: { runId: string }) => void): () => void;
-
-  /**
    * Subscribe to decoded agent outputs as they are folded into a Run.
    * Fires once per inbound message after its fold, carrying the message's
    * output events plus routing metadata (runId, codec-message-id, serial).

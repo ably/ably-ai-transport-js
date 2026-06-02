@@ -18,21 +18,24 @@ Note that serial order is not necessarily delivery order - Runs published concur
 ## Data structures
 
 ```
-_runIndex:           Map<runId, InternalRunNode>     Primary index
-_msgIdToRunId:       Map<msgId, runId>               Secondary: msg-id -> owning runId
-_sortedRuns:         InternalRunNode[]               All Runs, sorted by startSerial
-_parentIndex:        Map<parentRunId, Set<runId>>    Children of each parent Run
-_runClientIds:       Map<runId, clientId>            Active runs for cancel filtering
-_structuralVersion:  number                          Monotonic counter (see below)
+_runIndex:            Map<key, InternalRunNode>       Primary index, by the Run's stable key
+_codecMessageIdToKey: Map<codecMessageId, key>        codec-message-id -> owning Run key
+_keyByRunId:          Map<runId, key>                 Agent-minted runId -> Run key (adoption)
+_sortedRuns:          InternalRunNode[]               All Runs, sorted by startSerial
+_parentIndex:         Map<parentKey, Set<key>>        Children of each parent Run
+_structuralVersion:   number                          Monotonic counter (see below)
 ```
+
+A Run's **key** is its stable identity: the wire `run-id` when the message carries one (history, agent output, continuation), otherwise the triggering `codec-message-id`. The latter is the agent-minted case — a fresh client `ai-input` carries no `run-id`, so the Run is formed **provisionally** keyed by the input's `codec-message-id` until the agent's runId is [adopted](#runid-adoption) at `run-start`.
 
 Each `RunNode<TProjection>` stores:
 
 ```typescript
 {
-  runId: string; // From run-id
-  parentRunId: string | undefined; // Resolved via _msgIdToRunId from parent
-  forkOf: string | undefined; // runId of the forked Run (resolved from fork-of)
+  key: string; // Stable Tree identity (codec-message-id for a provisional run, else the runId)
+  runId: string | undefined; // Agent-minted run-id; undefined until adopted
+  parentRunId: string | undefined; // Parent Run's key (resolved from parent codec-message-id)
+  forkOf: string | undefined; // Key of the forked Run (resolved from fork-of)
   clientId: string; // From run-client-id - the client that started this Run
   status: 'active' | 'complete' | 'cancelled' | 'error' | 'suspended';
   projection: TProjection; // Codec-folded per-Run state
@@ -47,19 +50,23 @@ The tree exposes two mutation methods on its internal interface (used by the ses
 
 ### `applyMessage({ inputs, outputs }, headers, serial?)`
 
-The entry point for every inbound channel message. The decoded events arrive split by wire direction — `inputs` (client-published, `ai-input`) and `outputs` (agent-published, `ai-output`). Routes by `run-id`, creates the Run if needed, folds both sets into the Run's projection (inputs first), and maintains the `msgId -> runId` index. After the fold it emits an `'output'` event carrying the message's `outputs` plus routing metadata (`runId`, `codecMessageId`, `serial`), then `'update'` when the structure changed.
+The entry point for every inbound channel message. The decoded events arrive split by wire direction — `inputs` (client-published, `ai-input`) and `outputs` (agent-published, `ai-output`). Routes to the owning Run by its **key** — the wire `run-id` resolved through `_keyByRunId` when present, else the `codec-message-id` (the run-less, agent-minted case) — creates the Run if needed, folds both sets into the Run's projection (inputs first), and maintains the `_codecMessageIdToKey` index. After the fold it emits an `'output'` event carrying the message's `outputs` plus routing metadata (`runId` — actually the run **key**, `codecMessageId`, `serial`), then `'update'` when the structure changed.
 
 Three message kinds flow through here:
 
-1. **Fresh user prompt**: creates the Run if missing, folds events into the projection.
-2. **Continuation tool-resolution** (`run-continue: 'true'`): routes to the existing Run via `_msgIdToRunId`, folds events.
-3. **Assistant/agent events**: routes to the existing Run by runId, folds events.
+1. **Fresh user prompt** (no `run-id`): forms a provisional Run keyed by the input's `codec-message-id`, folds events into the projection.
+2. **Continuation tool-resolution** (`run-continue: 'true'`): routes to the existing Run via `_codecMessageIdToKey`, folds events.
+3. **Assistant/agent events**: routes to the existing Run by its `run-id` (resolved to the key through `_keyByRunId` for an adopted run), folds events.
 
 The optimistic send path (client publishing a fresh user-message) calls `applyMessage` with a `undefined` serial. When the server relay arrives, the same Run's startSerial gets promoted from null to a real serial, and the Run re-sorts.
 
 ### `applyRunLifecycle(event)`
 
-Handles `ai-run-start` and `ai-run-end` wire events. The event carries its own channel `serial`. Run-start sets `status` to `'active'`, promotes `startSerial` from the event's serial, and tracks the run as active. Run-end sets `status` to the end reason, sets `endSerial` from the event's serial, and untracks the run. Always emits a `'run'` event to subscribers.
+Handles `ai-run-start` and `ai-run-end` wire events. The event carries its own channel `serial`. Run-start sets `status` to `'active'`, promotes `startSerial` from the event's serial, and tracks the run as active. Run-end sets `status` to the end reason, sets `endSerial` from the event's serial, and untracks the run. Always emits a `'run'` event to subscribers (carrying the agent's `run-id`, which `_onTreeRun`/consumers resolve back to the key via `_keyByRunId`).
+
+#### runId adoption
+
+The agent mints a fresh run's `run-id`. When the first `ai-run-start` for an agent-minted run arrives, it echoes the triggering input's `codec-message-id` as `input-codec-message-id`. `applyRunLifecycle` matches the provisional Run by that key (via `_codecMessageIdToKey`), **adopts** the run-id onto it (`node.runId = event.runId`), and records `_keyByRunId[runId] = key`. The Run keeps its key, so every existing index stays valid; the new index lets the run's later outputs and `run-end` (which carry the run-id) resolve back to it. A run-start whose `run-id` already resolves to a Run (a continuation, or a run whose key equals its run-id) simply re-activates it without adoption.
 
 ### Structural version
 

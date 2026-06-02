@@ -897,7 +897,6 @@ describe('AgentSession integration', () => {
       // requires `send()` to publish the user messages first. The
       // happy-path run-start wait is exercised in client-session integration
       // tests (Commit 2); this test focuses on the lookup itself.
-      runStartDeadlineMs: 0,
       clientId: clientClient.auth.clientId,
       fetch: noopFetch,
       api: '/test',

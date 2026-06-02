@@ -31,6 +31,7 @@ const makeAssistantWithToolPart = (id: string, part: AI.DynamicToolUIPart): AI.U
 
 interface MockRun {
   stream: ReadableStream<AI.UIMessageChunk>;
+  started: Promise<void>;
   runId: string;
   invocationId: string;
   cancel: ReturnType<typeof vi.fn>;
@@ -53,6 +54,7 @@ const createMockRun = (): MockRun => {
   const cancel = vi.fn();
   return {
     stream,
+    started: Promise.resolve(),
     runId: 'run-1',
     invocationId: 'inv-1',
     cancel,

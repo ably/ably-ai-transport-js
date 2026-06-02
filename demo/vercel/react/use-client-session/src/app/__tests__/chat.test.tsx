@@ -30,6 +30,7 @@ const mockSendMessage = vi.fn(
   (_messages: AI.UIMessage | AI.UIMessage[], _opts?: SendOptions): Promise<ActiveRun<VercelOutput>> =>
     Promise.resolve({
       stream: emptyEventStream(),
+      started: Promise.resolve(),
       runId: 'run-1',
       invocationId: 'inv-1',
       inputEventId: 'ev-1',

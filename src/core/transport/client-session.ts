@@ -129,18 +129,13 @@ class DefaultClientSession<
   private _hasAttachedOnce: boolean;
   private readonly _onChannelStateChange: Ably.channelEventCallback;
 
-  /** Default deadline for the agent's `ai-run-start` to arrive after a `send()`. */
-  private readonly _runStartDeadlineMs: number;
-
   /**
-   * Pending send() promises awaiting `ai-run-start` for their invocation.
-   * Keyed by invocation-id (which is unique per send). Resolved on run-start
-   * receive; rejected on deadline lapse.
+   * Backing settlers for each in-flight run's `ActiveRun.started` promise,
+   * keyed by invocation-id (unique per send). Resolved when the matching
+   * `ai-run-start` is observed; rejected if the session closes first. There
+   * is no deadline — `send()` no longer blocks on run-start.
    */
-  private readonly _pendingRunStarts = new Map<
-    string,
-    { resolve: () => void; reject: (e: Ably.ErrorInfo) => void; timer: ReturnType<typeof setTimeout> }
-  >();
+  private readonly _pendingRunStarts = new Map<string, { resolve: () => void; reject: (e: Ably.ErrorInfo) => void }>();
 
   constructor(options: ClientSessionOptions<TInput, TOutput, TProjection, TMessage>) {
     // Spec: AIT-CT1a, AIT-CT1a2 — register this SDK on both the connection
@@ -167,7 +162,6 @@ class DefaultClientSession<
           ? () => options.body as Record<string, unknown>
           : undefined;
     this._fetchFn = options.fetch ?? globalThis.fetch.bind(globalThis);
-    this._runStartDeadlineMs = options.runStartDeadlineMs ?? 30000;
     this._logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
       component: 'ClientSession',
     });
@@ -318,7 +312,6 @@ class DefaultClientSession<
           if (invocationId) {
             const pending = this._pendingRunStarts.get(invocationId);
             if (pending) {
-              clearTimeout(pending.timer);
               this._pendingRunStarts.delete(invocationId);
               pending.resolve();
             }
@@ -663,42 +656,22 @@ class DefaultClientSession<
       ? (this._router.getStream(runId) ?? this._router.createStream(runId))
       : this._router.createStream(runId);
 
-    // Arm a pending-run-start tracker keyed by invocationId. The run-start
-    // handler resolves it; the deadline timer rejects it. A `runStartDeadlineMs`
-    // of 0 disables the wait entirely — tests and in-process drivers use it.
-    const waitForRunStart = this._runStartDeadlineMs > 0;
-    const runStartPromise: Promise<void> = waitForRunStart
-      ? new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(() => {
-            if (!this._pendingRunStarts.has(invocationId)) return;
-            this._pendingRunStarts.delete(invocationId);
-            const err = new Ably.ErrorInfo(
-              `unable to start run; no run-start for invocation ${invocationId} within ${String(this._runStartDeadlineMs)}ms`,
-              ErrorCode.RunStartDeadlineExceeded,
-              504,
-            );
-            this._logger.warn('ClientSession.send(); runStartDeadlineMs exceeded', {
-              runId,
-              invocationId,
-            });
-            this._router.errorStream(runId, err);
-            reject(err);
-          }, this._runStartDeadlineMs);
-          this._pendingRunStarts.set(invocationId, { resolve, reject, timer });
-        })
-      : Promise.resolve();
-
-    runStartPromise.catch(() => {
-      /* handled below via await; suppress unhandled-rejection warning */
+    // Arm the run-start tracker keyed by invocationId. It backs the returned
+    // `ActiveRun.started` promise: the run-start handler resolves it when the
+    // agent's `ai-run-start` for this invocation is observed; close() rejects
+    // it if the session is torn down first. There is no deadline — `send()`
+    // resolves on publish, and callers who want to bound the run-start wait
+    // race `started` against their own timeout.
+    // The executor runs synchronously, so the tracker entry is registered
+    // before `new Promise` returns.
+    const started = new Promise<void>((resolve, reject) => {
+      this._pendingRunStarts.set(invocationId, { resolve, reject });
     });
-
-    const failPending = (err: Ably.ErrorInfo): void => {
-      const pending = this._pendingRunStarts.get(invocationId);
-      if (!pending) return;
-      clearTimeout(pending.timer);
-      this._pendingRunStarts.delete(invocationId);
-      pending.reject(err);
-    };
+    // Suppress unhandled-rejection warnings for callers that never await
+    // `started`; the caller still observes the rejection if it does await.
+    started.catch(() => {
+      /* observed via run.started, if at all */
+    });
 
     // Publish each input in original order via the shared encoder. The
     // codec routes user-message inputs into a per-part discrete batch and
@@ -726,7 +699,9 @@ class DefaultClientSession<
         );
         this._emitter.emit('error', err);
         this._router.errorStream(runId, err);
-        failPending(err);
+        // The input never reached the channel — there is no run to wait on.
+        // Drop the started tracker so close() doesn't later reject an orphan.
+        this._pendingRunStarts.delete(invocationId);
         // Continuations didn't insert optimistic nodes, so removeOptimistic
         // is moot for them — only fresh sends need to clear their inserts.
         this._cleanupFailedSend(runId, { removeOptimistic: !isContinuation });
@@ -772,10 +747,10 @@ class DefaultClientSession<
           );
           this._emitter.emit('error', err);
           this._router.errorStream(runId, err);
-          failPending(err);
           // POST failed AFTER the channel publish completed. Keep optimistic
           // nodes so the local tree mirrors what observers see; only clear
-          // active-run maps.
+          // active-run maps. `started` stays pending — it settles only on
+          // run-start or session close.
           this._cleanupFailedSend(runId, { removeOptimistic: false });
         }
       })
@@ -789,15 +764,16 @@ class DefaultClientSession<
         );
         this._emitter.emit('error', err);
         this._router.errorStream(runId, err);
-        failPending(err);
         this._cleanupFailedSend(runId, { removeOptimistic: false });
       });
 
+    // `send()` resolves once the input is published — it does not block on the
+    // agent's run-start. Callers that need that signal await `run.started`.
     await publishPromise;
-    await runStartPromise;
 
     return {
       stream,
+      started,
       runId,
       inputEventId: triggerInputEventId,
       invocationId,
@@ -857,12 +833,11 @@ class DefaultClientSession<
     this._emitter.off();
     for (const v of this._views) v.close();
     this._views.clear();
-    // Reject any in-flight pending run-starts and clear their timers so the
-    // owning send() promises settle rather than hang.
+    // Reject any in-flight `started` promises so callers awaiting run-start
+    // settle rather than hang.
     if (this._pendingRunStarts.size > 0) {
       const closedErr = new Ably.ErrorInfo('unable to await run-start; session closed', ErrorCode.SessionClosed, 400);
       for (const pending of this._pendingRunStarts.values()) {
-        clearTimeout(pending.timer);
         pending.reject(closedErr);
       }
       this._pendingRunStarts.clear();

@@ -9,8 +9,8 @@
  * Rewritten against the event-sourced
  * `Codec<TEvent, TProjection, TMessage>` contract and the new client send
  * model: the client publishes its user message on the channel and the agent
- * issues a run-start carrying the invocation-id so the client's pending
- * send() resolves.
+ * issues a run-start carrying the invocation-id so the client's `run.started`
+ * promise resolves.
  */
 
 import type * as Ably from 'ably';
@@ -33,7 +33,6 @@ import { createAgentSession } from '../../../src/core/transport/agent-session.js
 import { createClientSession } from '../../../src/core/transport/client-session.js';
 import { buildTransportHeaders } from '../../../src/core/transport/headers.js';
 import type { AgentSession, ClientSession, RunLifecycleEvent } from '../../../src/core/transport/types.js';
-import { ErrorCode } from '../../../src/errors.js';
 import { getCodecHeaders, getTransportHeaders } from '../../../src/utils.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
 import { UIMessageCodec } from '../../../src/vercel/codec/index.js';
@@ -357,7 +356,6 @@ describe('ClientSession integration', () => {
       clientId: clientClient.auth.clientId,
       fetch: noopFetch,
       api: '/test',
-      runStartDeadlineMs: 5000,
     });
     await clientSession.connect();
 
@@ -434,7 +432,6 @@ describe('ClientSession integration', () => {
       clientId: clientClient.auth.clientId,
       fetch: noopFetch,
       api: '/test',
-      runStartDeadlineMs: 5000,
     });
     await clientSession.connect();
 
@@ -488,7 +485,6 @@ describe('ClientSession integration', () => {
       clientId: clientClient.auth.clientId,
       fetch: noopFetch,
       api: '/test',
-      runStartDeadlineMs: 5000,
     });
     await clientSession.connect();
 
@@ -548,7 +544,6 @@ describe('ClientSession integration', () => {
       clientId: clientClient.auth.clientId,
       fetch: noopFetch,
       api: '/test',
-      runStartDeadlineMs: 5000,
     });
     await clientSession.connect();
 
@@ -621,7 +616,6 @@ describe('ClientSession integration', () => {
       clientId: historyClient.auth.clientId,
       fetch: noopFetch,
       api: '/test',
-      runStartDeadlineMs: 0,
     });
     await clientSession.connect();
 
@@ -693,7 +687,6 @@ describe('ClientSession integration', () => {
       clientId: historyClient.auth.clientId,
       fetch: noopFetch,
       api: '/test',
-      runStartDeadlineMs: 0,
     });
     await clientSession.connect();
 
@@ -759,7 +752,6 @@ describe('ClientSession integration', () => {
       clientId: historyClient.auth.clientId,
       fetch: noopFetch,
       api: '/test',
-      runStartDeadlineMs: 0,
     });
     await clientSession.connect();
     await clientSession.view.loadOlder(10);
@@ -829,7 +821,6 @@ describe('ClientSession integration', () => {
       clientId: historyClient.auth.clientId,
       fetch: noopFetch,
       api: '/test',
-      runStartDeadlineMs: 0,
     });
     await clientSession.connect();
     await clientSession.view.loadOlder(10);
@@ -875,7 +866,6 @@ describe('ClientSession integration', () => {
       clientId: aClient.auth.clientId,
       fetch: noopFetch,
       api: '/test',
-      runStartDeadlineMs: 0,
     });
     await clientSession.connect();
 
@@ -886,7 +876,6 @@ describe('ClientSession integration', () => {
       clientId: bClient.auth.clientId,
       fetch: noopFetch,
       api: '/test',
-      runStartDeadlineMs: 0,
     });
     await observer.connect();
 
@@ -984,7 +973,6 @@ describe('ClientSession integration', () => {
       clientId: historyClient.auth.clientId,
       fetch: noopFetch,
       api: '/test',
-      runStartDeadlineMs: 0,
     });
     await clientSession.connect();
 
@@ -1060,7 +1048,6 @@ describe('ClientSession integration', () => {
       clientId: clientClient.auth.clientId,
       fetch: noopFetch,
       api: '/test',
-      runStartDeadlineMs: 5000,
     });
     await clientSession.connect();
 
@@ -1156,7 +1143,6 @@ describe('ClientSession integration', () => {
       clientId: clientClient.auth.clientId,
       fetch: noopFetch,
       api: '/test',
-      runStartDeadlineMs: 5000,
     });
     await clientSession.connect();
 
@@ -1214,7 +1200,6 @@ describe('ClientSession integration', () => {
       clientId: clientClient.auth.clientId,
       fetch: noopFetch,
       api: '/test',
-      runStartDeadlineMs: 5000,
     });
     await clientSession.connect();
 
@@ -1278,15 +1263,14 @@ describe('ClientSession integration', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      runStartDeadlineMs: 0,
       clientId: clientClient.auth.clientId,
       fetch: noopFetch,
       api: '/test',
     });
     await clientSession.connect();
 
-    // Client sends BEFORE any agent is up. send() resolves immediately
-    // because runStartDeadlineMs is 0. The channel publish happens regardless.
+    // Client sends BEFORE any agent is up. send() resolves as soon as the
+    // input is published — it never blocks on run-start.
     const clientRun = await clientSession.view.sendMessage({
       id: 'user-late-agent',
       role: 'user',
@@ -1312,42 +1296,52 @@ describe('ClientSession integration', () => {
   });
 
   // -------------------------------------------------------------------------
-  // runStartDeadlineMs timeout
+  // Non-blocking send
   // -------------------------------------------------------------------------
 
   /**
-   * Scenario: with a non-zero runStartDeadlineMs and no agent on the channel,
-   * send() must reject with `RunStartDeadlineExceeded` once the deadline
-   * lapses. Most existing tests bypass this path via `runStartDeadlineMs: 0`.
+   * Scenario: with no agent on the channel, send() still resolves as soon as
+   * the input is published — it does not block on run-start. The returned
+   * run's `started` promise stays pending until an agent publishes run-start
+   * (which never happens here).
    */
-  it('rejects send() when runStartDeadlineMs lapses without seeing run-start', async () => {
-    const channelName = uniqueChannelName('ct-run-start-deadline');
+  it('send() resolves on publish even when no agent ever sends run-start', async () => {
+    const channelName = uniqueChannelName('ct-nonblocking-send');
     const clientClient = ablyRealtimeClient();
 
     clientSession = createClientSession({
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      runStartDeadlineMs: 500,
       clientId: clientClient.auth.clientId,
       fetch: noopFetch,
       api: '/test',
     });
     await clientSession.connect();
 
-    const started = Date.now();
-    await expect(
-      clientSession.view.sendMessage({
-        id: 'user-deadline-1',
-        role: 'user',
-        parts: [{ type: 'text', text: 'no-one is listening' }],
+    // send() resolves promptly off the channel publish, with no agent present.
+    const activeRun = await clientSession.view.sendMessage({
+      id: 'user-nonblocking-1',
+      role: 'user',
+      parts: [{ type: 'text', text: 'no-one is listening' }],
+    });
+    expect(activeRun.runId).toBeDefined();
+
+    // `started` must stay pending — no agent published run-start. Race it
+    // against a short timer to prove it neither resolves nor rejects.
+    const pendingMarker = Symbol('pending');
+    const outcome = await Promise.race([
+      activeRun.started.then(
+        () => 'resolved',
+        () => 'rejected',
+      ),
+      new Promise<symbol>((resolve) => {
+        setTimeout(() => {
+          resolve(pendingMarker);
+        }, 500);
       }),
-    ).rejects.toMatchObject({ code: ErrorCode.RunStartDeadlineExceeded });
-    const elapsed = Date.now() - started;
-    // Sanity: the rejection should follow the deadline, not fire instantly.
-    expect(elapsed).toBeGreaterThanOrEqual(400);
-    // And it should not take dramatically longer than the deadline in CI.
-    expect(elapsed).toBeLessThan(5000);
+    ]);
+    expect(outcome).toBe(pendingMarker);
   });
 
   // -------------------------------------------------------------------------
@@ -1378,7 +1372,6 @@ describe('ClientSession integration', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      runStartDeadlineMs: 0,
       clientId: clientClient.auth.clientId,
       fetch: noopFetch,
       api: '/test',
@@ -1465,19 +1458,16 @@ describe('ClientSession integration', () => {
   });
 
   /**
-   * Scenario: real run-start await on the happy path.
+   * Scenario: `run.started` against a real agent on the happy path.
    *
-   * Almost every other test in this file sets `runStartDeadlineMs: 0` to
-   * skip the run-start wait — so a regression in the client's run-start
-   * handling would not be caught here. This test exercises the real
-   * `runStartDeadlineMs` path end-to-end: the client uses the default
-   * deadline, a real `DefaultAgentSession` on a second Ably client
-   * collects the user prompt via the real lookup, publishes run-start,
-   * pipes a short assistant stream, and ends the run. `send()` resolves
-   * cleanly (no `RunStartDeadlineExceeded`) and the resulting stream
-   * carries the assistant response.
+   * `send()` resolves immediately off the channel publish and hands back the
+   * run's identity directly. A real `DefaultAgentSession` on a second Ably
+   * client then collects the user prompt via the real lookup, publishes
+   * run-start, pipes a short assistant stream, and ends the run. The client's
+   * `run.started` resolves cleanly when run-start lands and the returned
+   * stream carries the assistant response.
    */
-  it('resolves send() against the real run-start await when an agent publishes run-start', async () => {
+  it('resolves run.started when an agent publishes run-start', async () => {
     const channelName = uniqueChannelName('ct-run-start-happy');
     const serverClient = ablyRealtimeClient();
     const clientClient = ablyRealtimeClient();
@@ -1495,60 +1485,38 @@ describe('ClientSession integration', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      // No `runStartDeadlineMs` override — the default (30s) wait is the SUT.
       clientId: clientClient.auth.clientId,
       fetch: noopFetch,
       api: '/test',
     });
     await clientSession.connect();
 
-    // Snoop on the channel BEFORE issuing send() so we don't race the
-    // client's publish. Use the agent's serverClient channel (already
-    // attached via `agentSession.connect()` above) so subscribe is
-    // effectively instant — a separate observer client would risk
-    // missing the publish while it attaches.
-    const observerChannel = serverClient.channels.get(channelName);
-    let resolveIds!: (ids: { runId: string; invocationId: string; inputEventId: string }) => void;
-    const idsPromise = new Promise<{ runId: string; invocationId: string; inputEventId: string }>((resolve) => {
-      resolveIds = resolve;
-    });
-    const observerListener = (msg: Ably.InboundMessage): void => {
-      const headers = getHeaders(msg);
-      if (headers[HEADER_ROLE] !== 'user') return;
-      const runId = headers[HEADER_RUN_ID];
-      const invocationId = headers[HEADER_INVOCATION_ID];
-      const inputEventId = headers['event-id'];
-      if (!runId || !invocationId || !inputEventId) return;
-      observerChannel.unsubscribe(observerListener);
-      resolveIds({ runId, invocationId, inputEventId });
-    };
-    await observerChannel.subscribe(observerListener);
-
-    // Kick off the client send; do NOT await yet — the agent has to handle
-    // the lookup and publish run-start before this resolves.
-    const sendPromise = clientSession.view.sendMessage({
+    // send() resolves on publish and carries the run's identity directly —
+    // no need to snoop the channel for the published ids.
+    const activeRun = await clientSession.view.sendMessage({
       id: 'user-rs-happy-1',
       role: 'user',
       parts: [{ type: 'text', text: 'Need a run-start' }],
     });
-
-    const { runId, invocationId, inputEventId } = await idsPromise;
+    const { runId, invocationId, inputEventId } = activeRun;
 
     // Stand up the server-side run; its `start()` triggers the real
     // lookup (which finds the user message) and publishes run-start.
     const serverRun = createRunFromOpts(agentSession, {
       runId,
       invocationId,
-      inputEventId: inputEventId,
+      inputEventId,
     });
     await serverRun.start();
+
+    // run-start has now landed — `started` must resolve.
+    await expect(activeRun.started).resolves.toBeUndefined();
+
     const responseStream = textResponseStream('asst-rs-happy-1', 'text-rs-happy-1', 'Started');
     await serverRun.pipe(responseStream);
     await serverRun.end('complete');
 
-    // The client's send() must now resolve (run-start has landed) and the
-    // returned stream must carry the assistant response.
-    const activeRun = await sendPromise;
+    // The returned stream carries the assistant response.
     expect(activeRun.runId).toBe(runId);
     const events = await drain(activeRun.stream);
     expect(events.some((e) => e.type === 'finish')).toBe(true);
@@ -1590,7 +1558,6 @@ describe('ClientSession integration', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      runStartDeadlineMs: 0,
       clientId: clientClient.auth.clientId,
       fetch: noopFetch,
       api: '/test',

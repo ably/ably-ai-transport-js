@@ -348,12 +348,11 @@ const createMockCodec = (decoder?: MockDecoder): MockCodec => {
 
 /**
  * Wait for at least one user-message publish, then simulate the matching
- * agent run-start so a pending send() can resolve. Returns the simulated
- * runId / invocationId / codecMessageId triple.
+ * agent run-start so the run's `started` promise resolves. Returns the
+ * simulated runId / invocationId / codecMessageId triple.
  *
- * Use when the test creates a session with `runStartDeadlineMs > 0` (the
- * default). Tests that don't care about the wait can construct the session
- * with `runStartDeadlineMs: 0`.
+ * `send()` itself no longer blocks on run-start, so this is only needed by
+ * tests that assert on `run.started` or that drive subsequent run lifecycle.
  * @param channel - Mock channel.
  * @param codec - Mock codec.
  * @returns The published codecMessageId/runId/invocationId.
@@ -423,7 +422,6 @@ interface SessionFixture {
 const createFixture = async (overrides?: {
   api?: string;
   clientId?: string;
-  runStartDeadlineMs?: number;
   fetchStatus?: number;
 }): Promise<SessionFixture> => {
   const channel = createMockChannel();
@@ -437,7 +435,6 @@ const createFixture = async (overrides?: {
     clientId: overrides?.clientId ?? 'client-1',
     api: overrides?.api ?? '/api/chat',
     fetch: fetchMock.fn as unknown as typeof globalThis.fetch,
-    runStartDeadlineMs: overrides?.runStartDeadlineMs ?? 0,
   });
   await session.connect();
   return { channel, decoder, codec, fetch: fetchMock, session };
@@ -471,7 +468,6 @@ describe('ClientSession', () => {
         codec: createMockCodec(),
         api: '/api/chat',
         fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
-        runStartDeadlineMs: 0,
       });
       const p1 = s.connect();
       const p2 = s.connect();
@@ -494,7 +490,6 @@ describe('ClientSession', () => {
         codec: createMockCodec(),
         api: '/api/chat',
         fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
-        runStartDeadlineMs: 0,
       });
       await expect(s.view.sendInput({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
         ErrorCode.InvalidArgument,
@@ -510,7 +505,6 @@ describe('ClientSession', () => {
         codec: createMockCodec(),
         api: '/api/chat',
         fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
-        runStartDeadlineMs: 0,
       });
       await expect(s.cancel('run-x')).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
       await s.close();
@@ -526,7 +520,6 @@ describe('ClientSession', () => {
         codec: createMockCodec(),
         api: '/api/chat',
         fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
-        runStartDeadlineMs: 0,
       });
       await expect(s.connect()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSubscriptionError);
       await s.close();
@@ -562,7 +555,6 @@ describe('ClientSession', () => {
           { id: 'seed-2', content: 'second' },
         ],
         fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
-        runStartDeadlineMs: 0,
       });
       await s.connect();
 
@@ -720,7 +712,6 @@ describe('ClientSession', () => {
         api: '/api/chat',
         messages: [{ id: 'seed', content: 'first' }],
         fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
-        runStartDeadlineMs: 0,
       });
       await seeded.connect();
 
@@ -797,7 +788,6 @@ describe('ClientSession', () => {
         codec: createMockCodec(),
         api: '/api/chat',
         fetch: blockingFetch,
-        runStartDeadlineMs: 0,
       });
       await s.connect();
       const run = await s.view.sendInput({ kind: 'user-message', text: 'hi' });
@@ -955,7 +945,6 @@ describe('ClientSession', () => {
         clientId: 'client-1',
         api: '/api/chat',
         fetch: fetchMock.fn as unknown as typeof globalThis.fetch,
-        runStartDeadlineMs: 0,
       });
       await s.connect();
 
@@ -987,7 +976,6 @@ describe('ClientSession', () => {
         clientId: 'client-1',
         api: '/api/chat',
         fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
-        runStartDeadlineMs: 0,
       });
       await s.connect();
       s.on('error', () => {
@@ -1018,7 +1006,6 @@ describe('ClientSession', () => {
         clientId: 'client-1',
         api: '/api/chat',
         fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
-        runStartDeadlineMs: 0,
       });
       await s.connect();
       s.on('error', () => {
@@ -1041,7 +1028,6 @@ describe('ClientSession', () => {
         clientId: 'client-1',
         api: '/api/chat',
         fetch: fetch.fn as unknown as typeof globalThis.fetch,
-        runStartDeadlineMs: 0,
       });
       await s.connect();
       const errors: Ably.ErrorInfo[] = [];
@@ -1065,7 +1051,6 @@ describe('ClientSession', () => {
         clientId: 'client-1',
         api: '/api/chat',
         fetch: fetchFn,
-        runStartDeadlineMs: 0,
       });
       await s.connect();
       s.on('error', () => {
@@ -1083,30 +1068,26 @@ describe('ClientSession', () => {
   // run-start deadline
   // -------------------------------------------------------------------------
 
-  describe('runStartDeadlineMs', () => {
-    it('rejects with RunStartDeadlineExceeded when no run-start arrives in time', async () => {
+  describe('started', () => {
+    it('send() resolves on publish without waiting for run-start', async () => {
       const ch = createMockChannel();
-      const fetchMock = createMockFetch();
       const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
         clientId: 'client-1',
         api: '/api/chat',
-        fetch: fetchMock.fn as unknown as typeof globalThis.fetch,
-        runStartDeadlineMs: 20,
+        fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
       });
       await s.connect();
-      s.on('error', () => {
-        /* consume */
-      });
-      await expect(s.view.sendInput({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
-        ErrorCode.RunStartDeadlineExceeded,
-      );
+      // No run-start is ever simulated — send() must still resolve once the
+      // input is published.
+      const run = await s.view.sendInput({ kind: 'user-message', text: 'hi' });
+      expect(run.stream).toBeInstanceOf(ReadableStream);
       await s.close();
     });
 
-    it('resolves when a matching run-start is delivered before the deadline', async () => {
+    it('run.started resolves when a matching run-start is delivered', async () => {
       const ch = createMockChannel();
       const codec = createMockCodec();
       const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
@@ -1116,14 +1097,12 @@ describe('ClientSession', () => {
         clientId: 'client-1',
         api: '/api/chat',
         fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
-        runStartDeadlineMs: 5000,
       });
       await s.connect();
 
-      const sendPromise = s.view.sendInput({ kind: 'user-message', text: 'hi' });
+      const run = await s.view.sendInput({ kind: 'user-message', text: 'hi' });
       await ackPendingSend(ch, codec);
-      const run = await sendPromise;
-      expect(run.stream).toBeInstanceOf(ReadableStream);
+      await expect(run.started).resolves.toBeUndefined();
       await s.close();
     });
   });
@@ -1273,7 +1252,6 @@ describe('ClientSession', () => {
         api: '/api/chat',
         clientId: 'client-1',
         fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
-        runStartDeadlineMs: 0,
       });
       await s.connect();
 
@@ -1367,7 +1345,6 @@ describe('ClientSession', () => {
         clientId: 'client-1',
         api: '/api/chat',
         fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
-        runStartDeadlineMs: 5000,
       });
       await s.connect();
 
@@ -1444,7 +1421,6 @@ describe('ClientSession', () => {
         clientId: 'client-1',
         api: '/api/chat',
         fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
-        runStartDeadlineMs: 5000,
       });
       await s.connect();
 
@@ -1789,7 +1765,6 @@ describe('ClientSession', () => {
         clientId: 'client-1',
         api: '/api/chat',
         fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
-        runStartDeadlineMs: 5000,
       });
       await s.connect();
 
@@ -1840,7 +1815,7 @@ describe('ClientSession', () => {
       expect(cancelMsgs).toHaveLength(0);
     });
 
-    it('rejects pending run-starts with SessionClosed', async () => {
+    it('rejects in-flight run.started promises with SessionClosed', async () => {
       const ch = createMockChannel();
       const codec = createMockCodec();
       const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
@@ -1850,18 +1825,18 @@ describe('ClientSession', () => {
         clientId: 'client-1',
         api: '/api/chat',
         fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
-        runStartDeadlineMs: 5000,
       });
       await s.connect();
       s.on('error', () => {
         /* consume */
       });
 
-      const sendPromise = s.view.sendInput({ kind: 'user-message', text: 'hi' });
-      // Don't ack — close while pending
-      await flushMicrotasks();
+      // send() resolves on publish; run.started stays pending until run-start
+      // (which never arrives here) or close.
+      const run = await s.view.sendInput({ kind: 'user-message', text: 'hi' });
+      const rejection = expect(run.started).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
       await s.close();
-      await expect(sendPromise).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+      await rejection;
     });
   });
 
@@ -1961,7 +1936,6 @@ describe('ClientSession', () => {
         clientId: 'client-1',
         api: '/api/chat',
         fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
-        runStartDeadlineMs: 0,
       });
       await s.connect();
       const errors: Ably.ErrorInfo[] = [];

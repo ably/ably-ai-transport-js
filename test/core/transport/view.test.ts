@@ -104,6 +104,7 @@ const createMockSendDelegate = (): SendDelegate<TestInput, TestOutput> =>
   vi.fn(() =>
     Promise.resolve({
       stream: new ReadableStream<TestOutput>(),
+      started: Promise.resolve(),
       runId: 'mock-run',
       inputEventId: '',
       invocationId: 'mock-inv',
@@ -1644,6 +1645,7 @@ describe('DefaultView', () => {
     it('regenerate sets a pending regenerate selection that resolves when the new Run arrives', async () => {
       vi.mocked(sendDelegate).mockResolvedValueOnce({
         stream: new ReadableStream(),
+        started: Promise.resolve(),
         runId: 'R2new',
         invocationId: 'inv-new',
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
@@ -1677,6 +1679,7 @@ describe('DefaultView', () => {
     it('pending selection is cleared on run-end when the server never creates the sibling Run', async () => {
       vi.mocked(sendDelegate).mockResolvedValueOnce({
         stream: new ReadableStream(),
+        started: Promise.resolve(),
         runId: 'R2new',
         invocationId: 'inv-new',
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
@@ -1780,6 +1783,7 @@ describe('DefaultView', () => {
     it('edit auto-selects the new sibling Run from optimisticCodecMessageIds', async () => {
       vi.mocked(sendDelegate).mockResolvedValueOnce({
         stream: new ReadableStream(),
+        started: Promise.resolve(),
         runId: 'R2edit',
         invocationId: 'inv-edit',
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock

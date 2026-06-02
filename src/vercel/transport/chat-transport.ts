@@ -556,7 +556,7 @@ export const createChatTransport = (
     //   through U1 inclusive via the body.
     // - Fresh send / edit: publish the new user-message input(s) via
     //   `view.sendInput`.
-    let run: ActiveRun<VercelOutput>;
+    let run: ActiveRun;
     if (isContinuation) {
       const sendInput = deriveContinuationInputs(session, messages);
       run = await session.view.sendInput(sendInput, sendOpts);

@@ -17,7 +17,7 @@
 import { useEffect, useRef } from 'react';
 import type { DynamicToolUIPart, UIMessage } from 'ai';
 import type { ViewHandle } from '@ably/ai-transport/react';
-import type { VercelInput, VercelOutput } from '@ably/ai-transport/vercel';
+import type { VercelInput } from '@ably/ai-transport/vercel';
 
 import { wakeAgent } from '../helpers';
 
@@ -47,11 +47,7 @@ const clientTools: Record<string, ClientToolExecutor> = {
   },
 };
 
-export function useClientTools(
-  view: ViewHandle<VercelInput, VercelOutput, UIMessage>,
-  clientId: string | undefined,
-  api: string,
-) {
+export function useClientTools(view: ViewHandle<VercelInput, UIMessage>, clientId: string | undefined, api: string) {
   // Track which tool calls we've already handled to avoid re-executing
   const handledRef = useRef(new Set<string>());
 
@@ -97,7 +93,7 @@ export function useClientTools(
 // `codecMessageId`; the continuation reuses that run's runId so the
 // agent picks the result up off the channel and resumes generation.
 async function executeClientTool(
-  view: ViewHandle<VercelInput, VercelOutput, UIMessage>,
+  view: ViewHandle<VercelInput, UIMessage>,
   api: string,
   runId: string,
   codecMessageId: string,

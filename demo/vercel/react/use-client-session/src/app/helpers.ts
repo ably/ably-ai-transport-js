@@ -1,5 +1,5 @@
 import type { ActiveRun } from '@ably/ai-transport';
-import type { VercelInput, VercelOutput } from '@ably/ai-transport/vercel';
+import type { VercelInput } from '@ably/ai-transport/vercel';
 import type { UIMessage } from 'ai';
 
 /** Construct a user UIMessage from a text string. */
@@ -24,7 +24,7 @@ export function userMessageEvent(text: string): VercelInput {
  * @param api - The agent endpoint URL.
  * @param run - The run returned by `view.sendMessage` / `sendInput` / `regenerate` / `edit`.
  */
-export async function wakeAgent(api: string, run: ActiveRun<VercelOutput>): Promise<void> {
+export async function wakeAgent(api: string, run: ActiveRun): Promise<void> {
   await fetch(api, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

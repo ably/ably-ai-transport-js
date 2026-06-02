@@ -25,7 +25,7 @@ export interface UseViewOptions<
   TMessage,
 > extends BaseSessionOption<TInput, TOutput, TProjection, TMessage> {
   /** A specific {@link View} to subscribe to directly. Takes priority over `session`. */
-  view?: View<TInput, TOutput, TMessage> | null;
+  view?: View<TInput, TMessage> | null;
   /** Maximum number of older messages to load per page. When provided, auto-loads on mount. */
   limit?: number;
   /** When `true`, skip all subscriptions and return an empty handle immediately. */
@@ -33,7 +33,7 @@ export interface UseViewOptions<
 }
 
 /** Handle for the paginated, branch-aware conversation view. */
-export interface ViewHandle<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TMessage> {
+export interface ViewHandle<TInput extends CodecInputEvent, TMessage> {
   /**
    * The visible domain messages along the selected branch, concatenated
    * across all visible Runs.
@@ -78,13 +78,13 @@ export interface ViewHandle<TInput extends CodecInputEvent, TOutput extends Code
    */
   selectSibling: (codecMessageId: string, index: number) => void;
   /** Send one or more user messages on the channel and fire a POST. See {@link View.sendMessage}. */
-  sendMessage: (messages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveRun<TOutput>>;
+  sendMessage: (messages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveRun>;
   /** Send one or more TInputs on the channel and fire a POST. See {@link View.sendInput}. */
-  sendInput: (events: TInput | TInput[], options?: SendOptions) => Promise<ActiveRun<TOutput>>;
+  sendInput: (events: TInput | TInput[], options?: SendOptions) => Promise<ActiveRun>;
   /** Regenerate an assistant message, using this view's branch for history. */
-  regenerate: (messageId: string, options?: SendOptions) => Promise<ActiveRun<TOutput>>;
+  regenerate: (messageId: string, options?: SendOptions) => Promise<ActiveRun>;
   /** Edit a user message, forking from this view's branch. */
-  edit: (messageId: string, inputs: TInput | TInput[], options?: SendOptions) => Promise<ActiveRun<TOutput>>;
+  edit: (messageId: string, inputs: TInput | TInput[], options?: SendOptions) => Promise<ActiveRun>;
 }
 
 /**
@@ -117,7 +117,7 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
   view,
   limit,
   skip,
-}: UseViewOptions<TInput, TOutput, TProjection, TMessage> = {}): ViewHandle<TInput, TOutput, TMessage> => {
+}: UseViewOptions<TInput, TOutput, TProjection, TMessage> = {}): ViewHandle<TInput, TMessage> => {
   const resolvedSession = useResolvedSession({ session, skip });
   const resolvedView = skip ? undefined : (view ?? resolvedSession?.view);
 

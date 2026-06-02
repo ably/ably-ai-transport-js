@@ -84,7 +84,7 @@ interface MockSession {
   close: ReturnType<typeof vi.fn>;
   mockRun: MockRun;
   tree: Tree<VercelOutput, VercelProjection>;
-  view: View<VercelInput, VercelOutput, AI.UIMessage>;
+  view: View<VercelInput, AI.UIMessage>;
 }
 
 const createMockSession = (): MockSession => {
@@ -157,7 +157,7 @@ const createMockSession = (): MockSession => {
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
     on: vi.fn(() => () => {}),
     close: vi.fn(),
-  } as unknown as View<VercelInput, VercelOutput, AI.UIMessage>;
+  } as unknown as View<VercelInput, AI.UIMessage>;
 
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const cancel = vi.fn(() => Promise.resolve());

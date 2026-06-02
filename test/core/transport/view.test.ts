@@ -97,7 +97,7 @@ const createMockChannel = (): Ably.RealtimeChannel =>
     attach: vi.fn(() => Promise.resolve()),
   }) as unknown as Ably.RealtimeChannel;
 
-const createMockSendDelegate = (): SendDelegate<TestInput, TestOutput> =>
+const createMockSendDelegate = (): SendDelegate<TestInput> =>
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   vi.fn(() =>
     Promise.resolve({
@@ -159,7 +159,7 @@ const makePage = (
 describe('DefaultView', () => {
   let tree: DefaultTree<TestInput, TestOutput, TestProjection>;
   let view: DefaultView<TestInput, TestOutput, TestProjection, TestMessage>;
-  let sendDelegate: SendDelegate<TestInput, TestOutput>;
+  let sendDelegate: SendDelegate<TestInput>;
   let codec: Codec<TestInput, TestOutput, TestProjection, TestMessage>;
 
   beforeEach(() => {
@@ -1097,7 +1097,7 @@ describe('DefaultView', () => {
       });
 
       // First regen completes — promoted to auto.
-      let deferredResolve: ((value: ActiveRun<TestOutput>) => void) | undefined;
+      let deferredResolve: ((value: ActiveRun) => void) | undefined;
       vi.mocked(sendDelegate).mockResolvedValueOnce({
         started: Promise.resolve(),
         runId: 'Rregen1',
@@ -1134,7 +1134,7 @@ describe('DefaultView', () => {
       vi.mocked(sendDelegate).mockImplementationOnce(
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- need to capture the resolver
         () =>
-          new Promise<ActiveRun<TestOutput>>((resolve) => {
+          new Promise<ActiveRun>((resolve) => {
             deferredResolve = resolve;
           }),
       );
@@ -2399,7 +2399,7 @@ describe('DefaultView', () => {
     // of the trailing text: a new Run anchored at a2p, contributing a
     // single new text bubble while a1p stays put with its 2/2 counter.
     describe('regenerate target inside a regenerator Run', () => {
-      let regen2: ActiveRun<TestOutput>;
+      let regen2: ActiveRun;
       beforeEach(async () => {
         apply(tree, {
           runId: 'R1',
@@ -2443,7 +2443,7 @@ describe('DefaultView', () => {
 
       it('mints a regenerate event anchored at the trailing msg-id (not at the group root)', () => {
         // CAST: vi.fn returns a MockInstance that the codebase types via `SendDelegate`.
-        const mocked = sendDelegate as unknown as Mock<SendDelegate<TestInput, TestOutput>>;
+        const mocked = sendDelegate as unknown as Mock<SendDelegate<TestInput>>;
         const lastCall = mocked.mock.calls.at(-1);
         const events = lastCall?.[0];
         const event = events?.[0];

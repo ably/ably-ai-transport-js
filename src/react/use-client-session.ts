@@ -31,13 +31,13 @@ const SKIPPED_SESSION: ClientSession<CodecInputEvent, CodecOutputEvent, unknown,
   get tree(): Tree<CodecOutputEvent, unknown> {
     throw new Ably.ErrorInfo('unable to access tree; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
-  get view(): View<CodecInputEvent, CodecOutputEvent, unknown> {
+  get view(): View<CodecInputEvent, unknown> {
     throw new Ably.ErrorInfo('unable to access view; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   connect: () => {
     throw new Ably.ErrorInfo('unable to connect; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
-  createView: (): View<CodecInputEvent, CodecOutputEvent, unknown> => {
+  createView: (): View<CodecInputEvent, unknown> => {
     throw new Ably.ErrorInfo('unable to create view; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   cancel: () => {

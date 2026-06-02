@@ -870,6 +870,30 @@ describe('createChatTransport', () => {
       expect(chat.streaming).toBe(false);
       expect(log).toEqual([]);
     });
+
+    it('isolates a throwing onStreamingChange subscriber from the others', async () => {
+      const { session } = createMockSession();
+      const chat = createChatTransport(session);
+
+      const log: boolean[] = [];
+      chat.onStreamingChange(() => {
+        throw new Error('bad subscriber');
+      });
+      chat.onStreamingChange((s) => log.push(s));
+
+      // The throwing subscriber must not prevent the good one from firing or
+      // block the streaming-state transition.
+      await chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: [makeMessage('1')],
+        abortSignal: undefined,
+      });
+
+      expect(chat.streaming).toBe(true);
+      expect(log).toEqual([true]);
+    });
   });
 
   // -------------------------------------------------------------------------

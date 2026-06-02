@@ -13,6 +13,7 @@ export type {
   InvocationData,
   LoadConversationOptions,
   MessageNode,
+  OutputEvent,
   PipeOptions,
   Run,
   RunEndReason,

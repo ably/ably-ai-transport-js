@@ -82,13 +82,13 @@ interface MockSession {
   cancel: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
   mockRun: MockRun;
-  tree: Tree<VercelProjection>;
+  tree: Tree<VercelOutput, VercelProjection>;
   view: View<VercelInput, VercelOutput, AI.UIMessage>;
 }
 
 const createMockSession = (): MockSession => {
   const mockRun = createMockRun();
-  const tree: Tree<VercelProjection> = {
+  const tree: Tree<VercelOutput, VercelProjection> = {
     runs: vi.fn(() => []),
     getRunNode: vi.fn(),
     getRunByCodecMessageId: vi.fn(),

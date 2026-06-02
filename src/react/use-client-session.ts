@@ -28,7 +28,7 @@ import { ErrorCode } from '../errors.js';
 import { ClientSessionContext } from './contexts/client-session-context.js';
 
 const SKIPPED_SESSION: ClientSession<CodecInputEvent, CodecOutputEvent, unknown, unknown> = {
-  get tree(): Tree<unknown> {
+  get tree(): Tree<CodecOutputEvent, unknown> {
     throw new Ably.ErrorInfo('unable to access tree; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   get view(): View<CodecInputEvent, CodecOutputEvent, unknown> {

@@ -10,11 +10,12 @@ import type {
   BranchSelection,
   ClientSession,
   RunLifecycleEvent,
+  RunNode,
   Tree,
   View,
 } from '../../../src/core/transport/types.js';
 
-type TreeEventType = 'update' | 'ably-message' | 'run' | 'run-projection-updated';
+type TreeEventType = 'update' | 'ably-message' | 'run' | 'run-projection-updated' | 'output';
 type SessionEventType = 'error';
 type Handler = ((...args: never[]) => void) | (() => void);
 
@@ -37,9 +38,9 @@ export interface MockSession {
   on: ReturnType<typeof vi.fn>;
   /** Fire an event on the session (only 'error'). */
   emit: (event: SessionEventType, ...args: unknown[]) => void;
-  /** Fire an event on tree/view (update, ably-message, run, run-projection-updated). */
+  /** Fire an event on tree/view (update, ably-message, run, run-projection-updated, output). */
   emitTree: (event: TreeEventType, ...args: unknown[]) => void;
-  tree: Tree<unknown>;
+  tree: Tree<CodecOutputEvent, unknown>;
   view: View<CodecInputEvent, CodecOutputEvent, string>;
 }
 
@@ -93,8 +94,24 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
       };
     });
 
-  const tree: Tree<unknown> = {
-    runs: vi.fn(() => []),
+  const initialNodes: RunNode<unknown>[] = initialMessages.map(
+    (_, i): RunNode<unknown> => ({
+      runId: `run-${String(i)}`,
+      parentRunId: i > 0 ? `run-${String(i - 1)}` : undefined,
+      parentCodecMessageId: undefined,
+      forkOf: undefined,
+      regeneratesCodecMessageId: undefined,
+      clientId: '',
+      invocationId: '',
+      status: 'complete',
+      projection: undefined,
+      startSerial: undefined,
+      endSerial: undefined,
+    }),
+  );
+
+  const tree: Tree<CodecOutputEvent, unknown> = {
+    runs: vi.fn(() => initialNodes),
     getRunNode: vi.fn(),
     getRunByCodecMessageId: vi.fn(),
     getSiblingRuns: vi.fn(() => []),

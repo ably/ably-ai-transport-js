@@ -1103,6 +1103,42 @@ describe('Tree', () => {
       expect(handler).toHaveBeenCalledWith({ runId: 'R1' });
     });
 
+    it('emits output with routing metadata and the folded output events', () => {
+      const handler = vi.fn();
+      tree.on('output', handler);
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
+      expect(handler).toHaveBeenCalledWith({
+        runId: 'R1',
+        codecMessageId: 'm1',
+        serial: 's1',
+        events: [{ type: 'append-message', message: { id: 'a', content: 'hi' } }],
+      });
+    });
+
+    it('emits output with empty events for an inputs-only fold', () => {
+      const handler = vi.fn();
+      tree.on('output', handler);
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm1',
+        events: [{ kind: 'append-input', message: { id: 'a', content: 'hi' } }],
+        serial: 's1',
+      });
+      expect(handler).toHaveBeenCalledWith({ runId: 'R1', codecMessageId: 'm1', serial: 's1', events: [] });
+    });
+
+    it('emits output with undefined serial for an optimistic fold', () => {
+      const handler = vi.fn();
+      tree.on('output', handler);
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' } });
+      expect(handler).toHaveBeenCalledWith({
+        runId: 'R1',
+        codecMessageId: 'm1',
+        serial: undefined,
+        events: [{ type: 'append-message', message: { id: 'a', content: 'hi' } }],
+      });
+    });
+
     it('emits update on delete', () => {
       apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
       const handler = vi.fn();

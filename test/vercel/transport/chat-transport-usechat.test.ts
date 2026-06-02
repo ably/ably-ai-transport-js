@@ -103,7 +103,7 @@ const createMockTree = () =>
     select: vi.fn(),
     getRunNode: vi.fn(),
     getRunByCodecMessageId: vi.fn(),
-  }) as unknown as Tree<VercelProjection>;
+  }) as unknown as Tree<VercelOutput, VercelProjection>;
 
 const createMockSession = () => {
   const mockRun = createMockRun();

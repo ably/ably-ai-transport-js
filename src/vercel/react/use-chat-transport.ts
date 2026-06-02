@@ -23,7 +23,7 @@ import type { ChatTransport } from '../transport/index.js';
 import { ChatTransportContext } from './contexts/chat-transport-context.js';
 
 const SKIPPED_CLIENT_SESSION: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> = {
-  get tree(): Tree<VercelProjection> {
+  get tree(): Tree<VercelOutput, VercelProjection> {
     throw new Ably.ErrorInfo('unable to access tree; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   get view(): View<VercelInput, VercelOutput, AI.UIMessage> {

@@ -31,8 +31,8 @@ import {
 } from '../../constants.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
-import type { Reducer } from '../codec/types.js';
-import type { RunLifecycleEvent, RunNode, Tree } from './types.js';
+import type { CodecInputEvent, CodecOutputEvent, Reducer } from '../codec/types.js';
+import type { OutputEvent, RunLifecycleEvent, RunNode, Tree } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Internal node type
@@ -49,7 +49,11 @@ interface InternalRunNode<TProjection> {
 // ---------------------------------------------------------------------------
 
 /** Internal tree surface used by View and ClientSession — not part of the public Tree API. */
-export interface TreeInternal<TInput, TOutput, TProjection> extends Tree<TProjection> {
+export interface TreeInternal<
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+> extends Tree<TOutput, TProjection> {
   /**
    * Monotonic counter that increments on structural changes (Run insert,
    * delete, startSerial promotion/reorder) but NOT on projection updates
@@ -127,18 +131,23 @@ export interface TreeInternal<TInput, TOutput, TProjection> extends Tree<TProjec
 // ---------------------------------------------------------------------------
 
 /** EventEmitter events map for the tree. */
-interface TreeEventsMap {
+interface TreeEventsMap<TOutput extends CodecOutputEvent> {
   update: undefined;
   'ably-message': Ably.InboundMessage;
   run: RunLifecycleEvent;
   'run-projection-updated': { runId: string };
+  output: OutputEvent<TOutput>;
 }
 
 // Spec: AIT-CT13
-export class DefaultTree<TInput, TOutput, TProjection> implements TreeInternal<TInput, TOutput, TProjection> {
+export class DefaultTree<
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+> implements TreeInternal<TInput, TOutput, TProjection> {
   private readonly _codec: Reducer<TInput | TOutput, TProjection>;
   private readonly _logger: Logger;
-  private readonly _emitter: EventEmitter<TreeEventsMap>;
+  private readonly _emitter: EventEmitter<TreeEventsMap<TOutput>>;
 
   /** All Run nodes indexed by runId. */
   private readonly _runIndex = new Map<string, InternalRunNode<TProjection>>();
@@ -196,7 +205,7 @@ export class DefaultTree<TInput, TOutput, TProjection> implements TreeInternal<T
   constructor(codec: Reducer<TInput | TOutput, TProjection>, logger: Logger) {
     this._codec = codec;
     this._logger = logger;
-    this._emitter = new EventEmitter<TreeEventsMap>(logger);
+    this._emitter = new EventEmitter<TreeEventsMap<TOutput>>(logger);
   }
 
   // -------------------------------------------------------------------------
@@ -554,6 +563,7 @@ export class DefaultTree<TInput, TOutput, TProjection> implements TreeInternal<T
       }
     }
 
+    this._emitter.emit('output', { runId: ownerRunId, codecMessageId, serial, events: events.outputs });
     this._emitter.emit('run-projection-updated', { runId: ownerRunId });
     this._emitter.emit('update');
   }
@@ -851,16 +861,18 @@ export class DefaultTree<TInput, TOutput, TProjection> implements TreeInternal<T
   on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
   on(event: 'run', handler: (event: RunLifecycleEvent) => void): () => void;
   on(event: 'run-projection-updated', handler: (event: { runId: string }) => void): () => void;
+  on(event: 'output', handler: (event: OutputEvent<TOutput>) => void): () => void;
   on(
-    event: 'update' | 'ably-message' | 'run' | 'run-projection-updated',
+    event: 'update' | 'ably-message' | 'run' | 'run-projection-updated' | 'output',
     handler:
       | (() => void)
       | ((msg: Ably.InboundMessage) => void)
       | ((event: RunLifecycleEvent) => void)
-      | ((event: { runId: string }) => void),
+      | ((event: { runId: string }) => void)
+      | ((event: OutputEvent<TOutput>) => void),
   ): () => void {
     // CAST: overload signatures enforce correct handler types per event name.
-    const cb = handler as (arg: TreeEventsMap[keyof TreeEventsMap]) => void;
+    const cb = handler as (arg: TreeEventsMap<TOutput>[keyof TreeEventsMap<TOutput>]) => void;
     this._emitter.on(event, cb);
     return () => {
       this._emitter.off(event, cb);
@@ -890,7 +902,7 @@ export class DefaultTree<TInput, TOutput, TProjection> implements TreeInternal<T
  *   directly for internal methods (applyMessage, applyRunLifecycle,
  *   emitAblyMessage). Public consumers see the narrower {@link Tree} interface.
  */
-export const createTree = <TInput, TOutput, TProjection>(
+export const createTree = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection>(
   codec: Reducer<TInput | TOutput, TProjection>,
   logger: Logger,
 ): DefaultTree<TInput, TOutput, TProjection> => new DefaultTree<TInput, TOutput, TProjection>(codec, logger);

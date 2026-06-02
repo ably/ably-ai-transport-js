@@ -502,6 +502,12 @@ export type RunLifecycleEvent =
       runId: string;
       clientId: string;
       /**
+       * Ably channel serial of the run-start message, or `undefined` for an
+       * optimistic local event (no serial assigned yet). The Tree reads it to
+       * promote the Run's startSerial.
+       */
+      serial: string | undefined;
+      /**
        * The invocation-id this run-start was published under (wire
        * `invocation-id`). The Tree records it on the RunNode on
        * first creation so the optimistic Run exposes the invocation
@@ -535,6 +541,11 @@ export type RunLifecycleEvent =
       type: 'ai-run-end';
       runId: string;
       clientId: string;
+      /**
+       * Ably channel serial of the run-end message, or `undefined` for an
+       * optimistic local event. The Tree reads it to set the Run's endSerial.
+       */
+      serial: string | undefined;
       /**
        * The invocation-id this run-end was published under (wire
        * `invocation-id`), mirroring the run-start. Lets consumers correlate

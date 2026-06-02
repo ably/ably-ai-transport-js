@@ -215,7 +215,7 @@ export const makeRunEvent = (
   reason?: 'complete' | 'cancelled' | 'error',
 ): RunLifecycleEvent => {
   if (type === 'ai-run-start') {
-    return { type, runId, clientId, invocationId: '' };
+    return { type, runId, clientId, serial: undefined, invocationId: '' };
   }
-  return { type, runId, clientId, invocationId: '', reason: reason ?? 'complete' };
+  return { type, runId, clientId, serial: undefined, invocationId: '', reason: reason ?? 'complete' };
 };

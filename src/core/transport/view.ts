@@ -1201,8 +1201,8 @@ export class DefaultView<
         const serial = rawMsg.serial;
 
         if (rawMsg.name === EVENT_RUN_START || rawMsg.name === EVENT_RUN_END) {
-          const event = parseRunLifecycle(rawMsg.name, headers);
-          if (event) this._tree.applyRunLifecycle(event, serial);
+          const event = parseRunLifecycle(rawMsg.name, headers, serial);
+          if (event) this._tree.applyRunLifecycle(event);
           continue;
         }
 

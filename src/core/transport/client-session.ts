@@ -278,9 +278,9 @@ class DefaultClientSession<
       // --- Run lifecycle events from the agent ---
       if (ablyMessage.name === EVENT_RUN_START) {
         const headers = getTransportHeaders(ablyMessage);
-        const event = parseRunLifecycle(EVENT_RUN_START, headers);
+        const event = parseRunLifecycle(EVENT_RUN_START, headers, ablyMessage.serial);
         if (event) {
-          this._tree.applyRunLifecycle(event, ablyMessage.serial);
+          this._tree.applyRunLifecycle(event);
           // Resolve the pending `started` for this run-start. Every send that
           // carries an input event — fresh OR continuation (a continuation is
           // itself an input event, e.g. a tool-approval or tool-result, with
@@ -346,8 +346,8 @@ class DefaultClientSession<
             this._router.closeStream(runId);
             this._ownRunIds.delete(runId);
           }
-          const event = parseRunLifecycle(EVENT_RUN_END, headers);
-          if (event) this._tree.applyRunLifecycle(event, ablyMessage.serial);
+          const event = parseRunLifecycle(EVENT_RUN_END, headers, ablyMessage.serial);
+          if (event) this._tree.applyRunLifecycle(event);
         }
         this._tree.emitAblyMessage(ablyMessage);
         return;

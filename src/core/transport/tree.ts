@@ -110,10 +110,9 @@ export interface TreeInternal<
    *   Untracks the run from active.
    *
    * Always emits a 'run' event to subscribers.
-   * @param event - Lifecycle event payload.
-   * @param serial - Ably channel serial of the lifecycle message.
+   * @param event - Lifecycle event payload, including the channel serial.
    */
-  applyRunLifecycle(event: RunLifecycleEvent, serial?: string): void;
+  applyRunLifecycle(event: RunLifecycleEvent): void;
 
   /**
    * Remove a Run from the tree. Children become unreachable in `runs()`
@@ -566,7 +565,7 @@ export class DefaultTree<
     this._emitter.emit('update');
   }
 
-  applyRunLifecycle(event: RunLifecycleEvent, serial?: string): void {
+  applyRunLifecycle(event: RunLifecycleEvent): void {
     this._logger.trace('DefaultTree.applyRunLifecycle();', { type: event.type, runId: event.runId });
     if (event.type === 'ai-run-start') {
       let run = this._runIndex.get(event.runId);
@@ -574,8 +573,8 @@ export class DefaultTree<
         if (run.node.status !== 'active') {
           run.node.status = 'active';
         }
-        if (serial && !run.node.startSerial) {
-          run.node.startSerial = serial;
+        if (event.serial && !run.node.startSerial) {
+          run.node.startSerial = event.serial;
           this._removeSortedRun(run);
           this._insertSortedRun(run);
           this._structuralVersion++;
@@ -620,7 +619,7 @@ export class DefaultTree<
           }
         }
       } else {
-        run = this._createRunFromLifecycle(event, serial);
+        run = this._createRunFromLifecycle(event);
         this._runIndex.set(event.runId, run);
         this._addToParentIndex(run.node.parentRunId, event.runId);
         this._insertSortedRun(run);
@@ -635,7 +634,7 @@ export class DefaultTree<
     const run = this._runIndex.get(event.runId);
     if (run) {
       run.node.status = event.reason;
-      run.node.endSerial = serial;
+      run.node.endSerial = event.serial;
     }
     this._emitter.emit('run', event);
     this._emitter.emit('update');
@@ -712,14 +711,11 @@ export class DefaultTree<
   /**
    * Build a fresh RunNode from a run-start lifecycle event. Used when a
    * run-start event arrives before any message for its runId.
-   * @param event - The run-start lifecycle event from the agent.
-   * @param serial - Ably channel serial of the run-start message.
+   * @param event - The run-start lifecycle event from the agent, including
+   *   its channel serial.
    * @returns A newly-allocated internal run node ready for insertion.
    */
-  private _createRunFromLifecycle(
-    event: RunLifecycleEvent & { type: 'ai-run-start' },
-    serial: string | undefined,
-  ): InternalRunNode<TProjection> {
+  private _createRunFromLifecycle(event: RunLifecycleEvent & { type: 'ai-run-start' }): InternalRunNode<TProjection> {
     const parentCodecMessageId = event.parent;
     const parentRunId = parentCodecMessageId ? this._codecMessageIdToRunId.get(parentCodecMessageId) : undefined;
     const forkOfMsgId = event.forkOf;
@@ -736,7 +732,7 @@ export class DefaultTree<
       invocationId: event.invocationId,
       status: 'active',
       projection: this._codec.init(),
-      startSerial: serial,
+      startSerial: event.serial,
       endSerial: undefined,
     };
 

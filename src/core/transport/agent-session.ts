@@ -19,7 +19,6 @@ import {
   HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
   HEADER_FORK_OF,
-  HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_RUN_CLIENT_ID,
@@ -252,9 +251,9 @@ const loadRunProjection = async <
  * rejects with `InputEventNotFound` wrapping the decode error as cause —
  * already-collected messages are discarded.
  * @param opts - Lookup parameters.
- * @param opts.register - Session-provided registration that delivers input events for this invocationId. Returns an unregister function.
+ * @param opts.register - Session-provided registration that delivers the input events for the expected event-ids. Returns an unregister function.
  * @param opts.codec - Codec used to decode arriving messages.
- * @param opts.invocationId - Invocation identifier the dispatcher keys on.
+ * @param opts.invocationId - Invocation identifier — used only for diagnostic logging and error messages.
  * @param opts.runId - Run identifier (used for logging and error messages).
  * @param opts.expectedInputEventIds - Input-event ids the lookup must observe before resolving.
  * @param opts.timeoutMs - Maximum total time to wait for all event-id arrivals.
@@ -494,36 +493,26 @@ class DefaultAgentSession<
   private readonly _runManager: RunManager;
   private readonly _registeredRuns = new Map<string, RegisteredRun>();
   /**
-   * Active input-event lookups keyed by invocation-id. The channel listener
-   * dispatches matching user messages to these callbacks so that messages
-   * replayed via channel rewind (and live messages alike) reach the right
-   * lookup without each lookup having to subscribe separately.
+   * Active input-event lookups keyed by `event-id`. The channel listener
+   * dispatches each input event to the lookup that registered for its
+   * `event-id`, so that messages replayed via channel rewind (and live
+   * messages alike) reach the right lookup without each lookup having to
+   * subscribe separately, and without depending on a client-minted
+   * `invocation-id`.
    */
   private readonly _pendingInputEventLookups = new Map<string, (msg: Ably.InboundMessage) => void>();
   /**
-   * Input events buffered by invocation-id when no lookup callback
-   * was registered at delivery time. Each invocation-id maps to an ordered
-   * array because a single multi-message `send()` publishes N Ably messages
-   * sharing one invocation-id. Rewind replays user messages on attach —
+   * Input events buffered by `event-id` when no lookup callback was
+   * registered at delivery time. Rewind replays user messages on attach —
    * before `run.start()` runs — so without buffering they would be dropped.
-   * `_registerInputEventListener` drains the buffer on registration. FIFO
-   * eviction at `_inputEventBufferLimit` invocation entries (each entry counts
+   * Each `event-id` maps to an ordered array so rewind redelivery of the
+   * same event before registration is preserved (the lookup later dedupes by
+   * serial). `_registerInputEventListener` drains the buffer on registration.
+   * FIFO eviction at `_inputEventBufferLimit` event entries (each entry counts
    * once regardless of array length).
    */
   private readonly _inputEventBuffer = new Map<string, Ably.InboundMessage[]>();
   private readonly _inputEventBufferLimit: number;
-  /**
-   * Bounded FIFO map of invocation-ids whose lookup has resolved
-   * successfully, valued by the number of event-ids the lookup resolved at.
-   * Used to distinguish over-arrival (extra input event for a lookup that
-   * already completed with N event-ids) from a genuine late /
-   * never-claimed arrival, so we can warn loudly on the former (with the
-   * count the client claimed) without spamming on the latter. Reject paths
-   * do not populate this map — their cause is already surfaced via the
-   * rejection.
-   */
-  private readonly _completedLookupInvocationIds = new Map<string, number>();
-  private readonly _completedLookupInvocationIdsLimit = 256;
   private readonly _channelListener: (msg: Ably.InboundMessage) => void;
   private readonly _inputEventLookupTimeoutMs: number;
 
@@ -613,53 +602,47 @@ class DefaultAgentSession<
   }
 
   /**
-   * Register a callback to receive input events with the given
-   * `invocationId`. Lookups must share the session's unfiltered
+   * Register a callback to receive the input events carrying any of the
+   * given `eventIds`. Lookups must share the session's unfiltered
    * subscription rather than registering their own subscribe — Ably's
    * rewind only delivers to listeners present at attach time.
    *
-   * The listener remains registered after the initial buffer drain so
-   * subsequent live arrivals reach the lookup until it unregisters itself.
-   * Multi-message `send()` relies on this: the buffer may hold K of N
-   * messages on register, with the remaining N-K arriving live.
-   * @param invocationId - The invocation-id this listener cares about.
+   * The listener remains registered after the initial buffer drain so a
+   * matching event that arrives live (rather than from the buffer) still
+   * reaches the lookup until it unregisters itself. Today the only caller
+   * registers a single trigger event-id; the array form keeps the
+   * registration capable of awaiting several ids without changing callers.
+   * @param eventIds - The `event-id`s this listener cares about.
    * @param callback - Invoked once per matching Ably message, in buffer-insertion order for drained entries.
    * @returns Unregister function. Safe to call multiple times.
    */
-  private _registerInputEventListener(invocationId: string, callback: (msg: Ably.InboundMessage) => void): () => void {
-    this._pendingInputEventLookups.set(invocationId, callback);
-    // Drain any buffered input events for this invocation-id —
-    // rewind replays user messages on attach before run.start() can
-    // register the callback. Without this drain, the lookup waits the
-    // full `inputEventLookupTimeoutMs` for a live arrival that never comes.
-    const buffered = this._inputEventBuffer.get(invocationId);
-    if (buffered) {
-      this._inputEventBuffer.delete(invocationId);
-      for (const m of buffered) callback(m);
+  private _registerInputEventListener(
+    eventIds: readonly string[],
+    callback: (msg: Ably.InboundMessage) => void,
+  ): () => void {
+    for (const eventId of eventIds) {
+      this._pendingInputEventLookups.set(eventId, callback);
+    }
+    // Drain any buffered input events for these event-ids — rewind replays
+    // user messages on attach before run.start() can register the callback.
+    // Without this drain, the lookup waits the full
+    // `inputEventLookupTimeoutMs` for a live arrival that never comes. Set
+    // all listeners before draining so a drain that completes the lookup
+    // synchronously cannot leave a later event-id unmapped.
+    for (const eventId of eventIds) {
+      const buffered = this._inputEventBuffer.get(eventId);
+      if (buffered) {
+        this._inputEventBuffer.delete(eventId);
+        for (const m of buffered) callback(m);
+      }
     }
     return () => {
-      if (this._pendingInputEventLookups.get(invocationId) === callback) {
-        this._pendingInputEventLookups.delete(invocationId);
+      for (const eventId of eventIds) {
+        if (this._pendingInputEventLookups.get(eventId) === callback) {
+          this._pendingInputEventLookups.delete(eventId);
+        }
       }
     };
-  }
-
-  /**
-   * Record an invocation-id whose lookup has resolved successfully so a
-   * subsequent unmatched arrival for the same invocation-id can be flagged
-   * as an over-arrival (client published more input events than the
-   * invocation's `inputEventIds` listed). Bounded FIFO eviction at
-   * `_completedLookupInvocationIdsLimit`.
-   * @param invocationId - The invocation-id whose lookup just completed.
-   * @param expectedCount - The number of event-ids the lookup resolved at — surfaced in the over-arrival warn.
-   */
-  private _recordCompletedLookup(invocationId: string, expectedCount: number): void {
-    if (this._completedLookupInvocationIds.has(invocationId)) return;
-    if (this._completedLookupInvocationIds.size >= this._completedLookupInvocationIdsLimit) {
-      const oldest = this._completedLookupInvocationIds.keys().next().value;
-      if (oldest !== undefined) this._completedLookupInvocationIds.delete(oldest);
-    }
-    this._completedLookupInvocationIds.set(invocationId, expectedCount);
   }
 
   // Spec: AIT-ST3
@@ -683,7 +666,6 @@ class DefaultAgentSession<
     this._registeredRuns.clear();
     this._pendingInputEventLookups.clear();
     this._inputEventBuffer.clear();
-    this._completedLookupInvocationIds.clear();
     this._runManager.close();
     this._logger?.debug('DefaultAgentSession.close(); session closed');
   }
@@ -801,51 +783,34 @@ class DefaultAgentSession<
         return;
       }
 
-      // Dispatch client-published input events to any pending
-      // lookup keyed by invocation-id. Every client-originated event in
-      // an invocation (user-message AND amend events such as tool-approval
-      // responses and client tool outputs) carries `event-id`; the
-      // lookup waits for every promised id to arrive before letting the
-      // run start LLM work. Server-side lifecycle messages (run-start,
-      // run-end, cancel, error) never stamp `event-id`, so
-      // they're naturally excluded.
+      // Dispatch client-published input events to the lookup registered
+      // for their `event-id`. Every client-originated event in an
+      // invocation (user-message AND amend events such as tool-approval
+      // responses and client tool outputs) carries `event-id`; the lookup
+      // waits for every promised id to arrive before letting the run start
+      // LLM work. Routing by `event-id` rather than `invocation-id` keeps
+      // the dispatcher independent of any client-minted invocation
+      // identity. Server-side lifecycle messages (run-start, run-end,
+      // cancel, error) never stamp `event-id`, so they're naturally
+      // excluded.
       const headers = getTransportHeaders(msg);
-      const invocationId = headers[HEADER_INVOCATION_ID];
-      if (invocationId && headers[HEADER_EVENT_ID] !== undefined) {
-        const listener = this._pendingInputEventLookups.get(invocationId);
+      const eventId = headers[HEADER_EVENT_ID];
+      if (eventId !== undefined) {
+        const listener = this._pendingInputEventLookups.get(eventId);
         if (listener) {
           listener(msg);
         } else {
-          // Over-arrival: lookup for this invocation already completed
-          // successfully (e.g. client published more input
-          // events than the invocation's `inputEventIds` listed). Warn
-          // loudly so client-side bugs surface, then drop the message —
-          // no listener will ever register for this completed lookup,
-          // so buffering would just hold a slot until FIFO eviction.
-          // The run is not cancelled.
-          const completedExpectedCount = this._completedLookupInvocationIds.get(invocationId);
-          if (completedExpectedCount !== undefined) {
-            this._logger?.warn(
-              'DefaultAgentSession._handleChannelMessage(); over-arrival input event after lookup completed',
-              {
-                invocationId,
-                expectedCount: completedExpectedCount,
-                codecMessageId: headers[HEADER_CODEC_MESSAGE_ID],
-              },
-            );
-            return;
-          }
           // Buffer for a future `_registerInputEventListener` call. This is
           // load-bearing for the "agent attaches after publish" scenario
           // where channel rewind delivers user messages before
           // `run.start()` runs.
-          const existing = this._inputEventBuffer.get(invocationId);
+          const existing = this._inputEventBuffer.get(eventId);
           if (existing) {
             existing.push(msg);
           } else {
             if (this._inputEventBuffer.size >= this._inputEventBufferLimit) {
-              // FIFO eviction: drop the oldest invocation entry (and all
-              // its buffered messages). Clients whose input event was evicted
+              // FIFO eviction: drop the oldest event entry (and all its
+              // buffered redeliveries). Clients whose input event was evicted
               // will fail their lookup with `InputEventNotFound` — this warn
               // is the only operator-visible signal that capacity caused
               // the failure.
@@ -855,13 +820,13 @@ class DefaultAgentSession<
                 this._logger?.warn(
                   'DefaultAgentSession._handleChannelMessage(); input-event buffer full, dropping oldest entry',
                   {
-                    evictedInvocationId: oldestKey,
+                    evictedEventId: oldestKey,
                     limit: this._inputEventBufferLimit,
                   },
                 );
               }
             }
-            this._inputEventBuffer.set(invocationId, [msg]);
+            this._inputEventBuffer.set(eventId, [msg]);
           }
         }
       }
@@ -933,7 +898,6 @@ class DefaultAgentSession<
     const registeredRuns = this._registeredRuns;
     const requireConnected = this._requireConnected.bind(this);
     const registerInputEventListener = this._registerInputEventListener.bind(this);
-    const recordCompletedLookup = this._recordCompletedLookup.bind(this);
     const inputEventId = invocation.inputEventId;
 
     // `viewMessages` starts empty. `Run.start()` populates it via the
@@ -1027,7 +991,7 @@ class DefaultAgentSession<
         if (inputEventId && inputEventLookupTimeoutMs > 0) {
           try {
             const found = await lookupInputEvents<TInput, TOutput, TProjection, TMessage>({
-              register: (callback) => registerInputEventListener(invocationId, callback),
+              register: (callback) => registerInputEventListener([inputEventId], callback),
               codec,
               invocationId,
               runId,
@@ -1036,7 +1000,6 @@ class DefaultAgentSession<
               signal,
               logger,
             });
-            recordCompletedLookup(invocationId, 1);
             for (const m of found.nodes) viewMessages.push(m);
             if (found.firstHeaders !== undefined) firstLookupHeaders = found.firstHeaders;
             if (found.firstClientId !== undefined) resolvedInputClientId = found.firstClientId;

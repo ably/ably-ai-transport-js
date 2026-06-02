@@ -81,7 +81,7 @@ export type SendDelegate<TInput extends CodecInputEvent, TOutput extends CodecOu
 /** Options for creating a View. */
 export interface ViewOptions<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage> {
   /** The tree to project. */
-  tree: TreeInternal<TInput | TOutput, TProjection>;
+  tree: TreeInternal<TInput, TOutput, TProjection>;
   /** The Ably channel to load history from. */
   channel: Ably.RealtimeChannel;
   /** The codec for decoding history messages. */
@@ -203,7 +203,7 @@ export class DefaultView<
   TProjection,
   TMessage,
 > implements View<TInput, TOutput, TMessage> {
-  private readonly _tree: TreeInternal<TInput | TOutput, TProjection>;
+  private readonly _tree: TreeInternal<TInput, TOutput, TProjection>;
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: Codec<TInput, TOutput, TProjection, TMessage>;
   private readonly _sendDelegate: SendDelegate<TInput, TOutput>;
@@ -1207,8 +1207,7 @@ export class DefaultView<
 
         const { inputs, outputs } = decoder.decode(rawMsg);
         if (headers[HEADER_RUN_ID]) {
-          const events: (TInput | TOutput)[] = [...inputs, ...outputs];
-          this._tree.applyMessage(events, headers, serial);
+          this._tree.applyMessage({ inputs, outputs }, headers, serial);
         }
       }
 

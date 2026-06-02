@@ -51,8 +51,6 @@ interface TestOutput {
   message: TestMessage;
 }
 
-type TestEvent = TestInput | TestOutput;
-
 interface TestProjection {
   messages: TestMessage[];
 }
@@ -130,7 +128,7 @@ interface ApplyOpts {
   message?: TestMessage;
 }
 
-const apply = (tree: DefaultTree<TestEvent, TestProjection>, opts: ApplyOpts): void => {
+const apply = (tree: DefaultTree<TestInput, TestOutput, TestProjection>, opts: ApplyOpts): void => {
   const h: Record<string, string> = { [HEADER_RUN_ID]: opts.runId };
   if (opts.codecMessageId) h[HEADER_CODEC_MESSAGE_ID] = opts.codecMessageId;
   if (opts.parent) h[HEADER_PARENT] = opts.parent;
@@ -139,8 +137,8 @@ const apply = (tree: DefaultTree<TestEvent, TestProjection>, opts: ApplyOpts): v
   if (opts.role) h[HEADER_ROLE] = opts.role;
   if (opts.invocationId) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.runContinue) h[HEADER_RUN_CONTINUE] = 'true';
-  const events: TestEvent[] = opts.message ? [{ type: 'append-message', message: opts.message }] : [];
-  tree.applyMessage(events, h, opts.serial);
+  const events: TestOutput[] = opts.message ? [{ type: 'append-message', message: opts.message }] : [];
+  tree.applyMessage({ inputs: [], outputs: events }, h, opts.serial);
 };
 
 const makePage = (
@@ -161,7 +159,7 @@ const makePage = (
 // ---------------------------------------------------------------------------
 
 describe('DefaultView', () => {
-  let tree: DefaultTree<TestEvent, TestProjection>;
+  let tree: DefaultTree<TestInput, TestOutput, TestProjection>;
   let view: DefaultView<TestInput, TestOutput, TestProjection, TestMessage>;
   let sendDelegate: SendDelegate<TestInput, TestOutput>;
   let codec: Codec<TestInput, TestOutput, TestProjection, TestMessage>;
@@ -169,7 +167,7 @@ describe('DefaultView', () => {
   beforeEach(() => {
     vi.mocked(decodeHistory).mockReset();
     codec = makeTestCodec();
-    tree = createTree(codec, silentLogger);
+    tree = createTree<TestInput, TestOutput, TestProjection>(codec, silentLogger);
     sendDelegate = createMockSendDelegate();
     view = new DefaultView({
       tree,
@@ -1495,7 +1493,7 @@ describe('DefaultView', () => {
       noopCodec.init = () => sharedProjection;
       noopCodec.getMessages = (p) => p.messages;
 
-      const noopTree = createTree(noopCodec, silentLogger);
+      const noopTree = createTree<TestInput, TestOutput, TestProjection>(noopCodec, silentLogger);
       const noopView = new DefaultView({
         tree: noopTree,
         channel: createMockChannel(),
@@ -1512,10 +1510,13 @@ describe('DefaultView', () => {
       const beforeCalls = handler.mock.calls.length;
 
       // Trigger a fold that returns the same projection + same messages.
-      noopTree.applyMessage([{ type: 'append-message', message: { id: 'x', content: 'noop' } }], {
-        [HEADER_RUN_ID]: 'R1',
-        [HEADER_CODEC_MESSAGE_ID]: 'm-noop',
-      });
+      noopTree.applyMessage(
+        { inputs: [], outputs: [{ type: 'append-message', message: { id: 'x', content: 'noop' } }] },
+        {
+          [HEADER_RUN_ID]: 'R1',
+          [HEADER_CODEC_MESSAGE_ID]: 'm-noop',
+        },
+      );
 
       // structural emit on the new codecMessageId index entry is allowed; the
       // run-projection-updated path must not double-emit.

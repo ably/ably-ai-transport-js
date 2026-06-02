@@ -19,25 +19,19 @@
 
 import * as Ably from 'ably';
 
-import {
-  EVENT_RUN_END,
-  EVENT_RUN_START,
-  HEADER_CODEC_MESSAGE_ID,
-  HEADER_INVOCATION_ID,
-  HEADER_RUN_ID,
-} from '../../constants.js';
+import { EVENT_RUN_END, EVENT_RUN_START, HEADER_CODEC_MESSAGE_ID, HEADER_RUN_ID } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
 import { decodeHistory } from './decode-history.js';
+import { parseRunLifecycle } from './headers.js';
 import type { TreeInternal } from './tree.js';
 import type {
   ActiveRun,
   HistoryPage,
   MessageMetadata,
-  RunEndReason,
   RunLifecycleEvent,
   RunNode,
   SendOptions,
@@ -1169,45 +1163,9 @@ export class DefaultView<
         const headers = getTransportHeaders(rawMsg);
         const serial = rawMsg.serial;
 
-        if (rawMsg.name === EVENT_RUN_START) {
-          const runId = headers[HEADER_RUN_ID];
-          if (runId) {
-            const parentRaw = headers.parent;
-            const forkOf = headers['fork-of'];
-            const regenerates = headers['msg-regenerate'];
-            const isContinuation = headers['run-continue'] === 'true';
-            this._tree.applyRunLifecycle(
-              {
-                type: EVENT_RUN_START,
-                runId,
-                clientId: headers['run-client-id'] ?? '',
-                invocationId: headers[HEADER_INVOCATION_ID] ?? '',
-                ...(parentRaw !== undefined && { parent: parentRaw }),
-                ...(forkOf !== undefined && { forkOf }),
-                ...(regenerates !== undefined && { regenerates }),
-                ...(isContinuation && { isContinuation: true }),
-              },
-              serial,
-            );
-          }
-          continue;
-        }
-
-        if (rawMsg.name === EVENT_RUN_END) {
-          const runId = headers[HEADER_RUN_ID];
-          if (runId) {
-            // CAST: agent always writes a valid RunEndReason; default to 'complete' for robustness
-            const reason = (headers['run-reason'] ?? 'complete') as RunEndReason;
-            this._tree.applyRunLifecycle(
-              {
-                type: EVENT_RUN_END,
-                runId,
-                clientId: headers['run-client-id'] ?? '',
-                reason,
-              },
-              serial,
-            );
-          }
+        if (rawMsg.name === EVENT_RUN_START || rawMsg.name === EVENT_RUN_END) {
+          const event = parseRunLifecycle(rawMsg.name, headers);
+          if (event) this._tree.applyRunLifecycle(event, serial);
           continue;
         }
 

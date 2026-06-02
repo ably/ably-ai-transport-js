@@ -24,7 +24,6 @@
 import * as Ably from 'ably';
 import type * as AI from 'ai';
 
-import { EVENT_RUN_END } from '../../constants.js';
 import type { ClientSession } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../codec/index.js';
@@ -125,7 +124,7 @@ export const createRunOutputStream = (session: VercelSession, runId: string): Ru
       }
     }),
     session.tree.on('run', (event) => {
-      if (event.type === EVENT_RUN_END && event.runId === runId && event.reason !== 'suspended') {
+      if (event.type === 'end' && event.runId === runId && event.reason !== 'suspended') {
         close();
       }
     }),

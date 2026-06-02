@@ -104,9 +104,9 @@ export interface TreeInternal<
   /**
    * Apply a run-lifecycle event.
    *
-   * - `ai-run-start`: creates the Run (if missing) or sets status to 'active'.
+   * - `start`: creates the Run (if missing) or sets status to 'active'.
    *   Tracks the run as active.
-   * - `ai-run-end`: sets RunNode.status to the end reason and `endSerial`.
+   * - `end`: sets RunNode.status to the end reason and `endSerial`.
    *   Untracks the run from active.
    *
    * Always emits a 'run' event to subscribers.
@@ -579,7 +579,7 @@ export class DefaultTree<
     // backfill on run-start). A run-end only mutates status/endSerial on an
     // existing node — content, not structure — so it emits no `update`.
     const structuralBefore = this._structuralVersion;
-    if (event.type === 'ai-run-start') {
+    if (event.type === 'start') {
       let run = this._runIndex.get(event.runId);
       if (run) {
         if (run.node.status !== 'active') {
@@ -642,7 +642,7 @@ export class DefaultTree<
       return;
     }
 
-    // ai-run-end
+    // run-end (event.type === 'end')
     const run = this._runIndex.get(event.runId);
     if (run) {
       run.node.status = event.reason;
@@ -727,7 +727,7 @@ export class DefaultTree<
    *   its channel serial.
    * @returns A newly-allocated internal run node ready for insertion.
    */
-  private _createRunFromLifecycle(event: RunLifecycleEvent & { type: 'ai-run-start' }): InternalRunNode<TProjection> {
+  private _createRunFromLifecycle(event: RunLifecycleEvent & { type: 'start' }): InternalRunNode<TProjection> {
     const parentCodecMessageId = event.parent;
     const parentRunId = parentCodecMessageId ? this._codecMessageIdToRunId.get(parentCodecMessageId) : undefined;
     const forkOfMsgId = event.forkOf;

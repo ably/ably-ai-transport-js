@@ -132,7 +132,7 @@ describe('parseRunLifecycle', () => {
     const event = parseRunLifecycle(EVENT_RUN_START, { [HEADER_RUN_ID]: 'run-1' }, 's1');
 
     expect(event).toEqual({
-      type: EVENT_RUN_START,
+      type: 'start',
       runId: 'run-1',
       clientId: '',
       serial: 's1',
@@ -156,7 +156,7 @@ describe('parseRunLifecycle', () => {
     );
 
     expect(event).toEqual({
-      type: EVENT_RUN_START,
+      type: 'start',
       runId: 'run-1',
       clientId: 'user-a',
       serial: 's2',
@@ -208,7 +208,7 @@ describe('parseRunLifecycle', () => {
     );
 
     expect(event).toEqual({
-      type: EVENT_RUN_END,
+      type: 'end',
       runId: 'run-1',
       clientId: 'user-a',
       serial: 's5',
@@ -222,7 +222,7 @@ describe('parseRunLifecycle', () => {
     const event = parseRunLifecycle(EVENT_RUN_END, { [HEADER_RUN_ID]: 'run-1' }, noSerial);
 
     expect(event).toEqual({
-      type: EVENT_RUN_END,
+      type: 'end',
       runId: 'run-1',
       clientId: '',
       serial: undefined,

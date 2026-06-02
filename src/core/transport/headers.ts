@@ -117,7 +117,7 @@ export const parseRunLifecycle = (
     const regenerates = headers[HEADER_MSG_REGENERATE];
     const isContinuation = headers[HEADER_RUN_CONTINUE] === 'true';
     return {
-      type: EVENT_RUN_START,
+      type: 'start',
       runId,
       clientId,
       serial,
@@ -132,7 +132,7 @@ export const parseRunLifecycle = (
   if (name === EVENT_RUN_END) {
     // CAST: agent always writes a valid RunEndReason; default to 'complete' for robustness.
     const reason = (headers[HEADER_RUN_REASON] ?? 'complete') as RunEndReason;
-    return { type: EVENT_RUN_END, runId, clientId, serial, invocationId: headers[HEADER_INVOCATION_ID] ?? '', reason };
+    return { type: 'end', runId, clientId, serial, invocationId: headers[HEADER_INVOCATION_ID] ?? '', reason };
   }
 
   return undefined;

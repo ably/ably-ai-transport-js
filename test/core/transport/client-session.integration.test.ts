@@ -79,7 +79,7 @@ const collectRunOutputs = async (session: ClientSessionT, runId: string, timeout
       if (e.runId === runId) collected.push(...e.events);
     });
     const unsubRun = session.tree.on('run', (e) => {
-      if (e.runId === runId && e.type === EVENT_RUN_END) {
+      if (e.runId === runId && e.type === 'end') {
         clearTimeout(timer);
         unsubOutput();
         unsubRun();
@@ -516,8 +516,8 @@ describe('ClientSession integration', () => {
     const invocationId = optimisticNode?.invocationId;
     if (!runId || !invocationId) throw new Error('expected ids');
 
-    const startPromise = waitForRunEvent(clientSession, runId, EVENT_RUN_START);
-    const endPromise = waitForRunEvent(clientSession, runId, EVENT_RUN_END);
+    const startPromise = waitForRunEvent(clientSession, runId, 'start');
+    const endPromise = waitForRunEvent(clientSession, runId, 'end');
 
     const run = createRunFromOpts(agentSession, {
       runId,
@@ -534,8 +534,8 @@ describe('ClientSession integration', () => {
 
     await endPromise;
 
-    expect(runEvents.some((e) => e.type === EVENT_RUN_START && e.runId === runId)).toBe(true);
-    expect(runEvents.some((e) => e.type === EVENT_RUN_END && e.runId === runId)).toBe(true);
+    expect(runEvents.some((e) => e.type === 'start' && e.runId === runId)).toBe(true);
+    expect(runEvents.some((e) => e.type === 'end' && e.runId === runId)).toBe(true);
   });
 
   it('client cancel aborts the server stream', async () => {
@@ -1156,7 +1156,7 @@ describe('ClientSession integration', () => {
     const invocationId = optimisticNode?.invocationId;
     if (!runId || !invocationId) throw new Error('expected ids');
 
-    const endPromise = waitForRunEvent(clientSession, runId, EVENT_RUN_END);
+    const endPromise = waitForRunEvent(clientSession, runId, 'end');
 
     const run = createRunFromOpts(agentSession, {
       runId,

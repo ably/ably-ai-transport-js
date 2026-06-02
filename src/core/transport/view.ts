@@ -895,7 +895,7 @@ export class DefaultView<
 
     // Bound pending entry lifetime to the run — clean up on run-end.
     const runUnsub = this._tree.on('run', (evt) => {
-      if (evt.type !== EVENT_RUN_END || evt.runId !== result.runId) return;
+      if (evt.type !== 'end' || evt.runId !== result.runId) return;
       const sel = this._branchSelections.get(groupRoot);
       if (sel?.kind === 'pending' && sel.runId === result.runId) {
         this._branchSelections.delete(groupRoot);
@@ -942,7 +942,7 @@ export class DefaultView<
 
     // Bound pending entry lifetime to the run — clean up on run-end.
     const runUnsub = this._tree.on('run', (evt) => {
-      if (evt.type !== EVENT_RUN_END || evt.runId !== result.runId) return;
+      if (evt.type !== 'end' || evt.runId !== result.runId) return;
       const sel = this._regenSelections.get(anchorCodecMessageId);
       if (sel?.kind === 'pending' && sel.runId === result.runId) {
         this._regenSelections.delete(anchorCodecMessageId);
@@ -1418,7 +1418,7 @@ export class DefaultView<
     // For run-start, use branch metadata to predict visibility before
     // messages arrive. Own runs have optimistic inserts (caught above).
     // Remote runs carry parent/forkOf from the agent.
-    if (event.type === EVENT_RUN_START && this._isRunStartVisible(event)) {
+    if (event.type === 'start' && this._isRunStartVisible(event)) {
       this._lastVisibleRunIdSet.add(event.runId);
       this._emitter.emit('run', event);
     }
@@ -1430,7 +1430,7 @@ export class DefaultView<
    * @param event - The run-start lifecycle event.
    * @returns True if the run is expected to be visible on this view's branch.
    */
-  private _isRunStartVisible(event: RunLifecycleEvent & { type: typeof EVENT_RUN_START }): boolean {
+  private _isRunStartVisible(event: RunLifecycleEvent & { type: 'start' }): boolean {
     const { parent } = event;
 
     // No parent metadata — can't determine branch, forward as default.

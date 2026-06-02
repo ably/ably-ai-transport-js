@@ -1069,8 +1069,8 @@ describe('ClientSession', () => {
       );
 
       expect(lifecycle).toHaveLength(2);
-      expect(lifecycle[0]?.type).toBe(EVENT_RUN_START);
-      expect(lifecycle[1]?.type).toBe(EVENT_RUN_END);
+      expect(lifecycle[0]?.type).toBe('start');
+      expect(lifecycle[1]?.type).toBe('end');
     });
 
     it('surfaces isContinuation on the run-start event when run-continue is set', () => {
@@ -1094,10 +1094,10 @@ describe('ClientSession', () => {
       );
 
       const [cont, fresh] = lifecycle;
-      expect(cont?.type).toBe(EVENT_RUN_START);
-      if (cont?.type !== EVENT_RUN_START) throw new Error('expected run-start');
+      expect(cont?.type).toBe('start');
+      if (cont?.type !== 'start') throw new Error('expected run-start');
       expect(cont.isContinuation).toBe(true);
-      if (fresh?.type !== EVENT_RUN_START) throw new Error('expected run-start');
+      if (fresh?.type !== 'start') throw new Error('expected run-start');
       expect(fresh.isContinuation).toBeUndefined();
     });
 
@@ -1123,11 +1123,11 @@ describe('ClientSession', () => {
       );
 
       const [regen, fresh] = lifecycle;
-      if (regen?.type !== EVENT_RUN_START) throw new Error('expected run-start');
+      if (regen?.type !== 'start') throw new Error('expected run-start');
       expect(regen.regenerates).toBe('orig-asst');
       expect(regen.parent).toBe('orig-user');
       expect(regen.forkOf).toBeUndefined();
-      if (fresh?.type !== EVENT_RUN_START) throw new Error('expected run-start');
+      if (fresh?.type !== 'start') throw new Error('expected run-start');
       expect(fresh.regenerates).toBeUndefined();
     });
 
@@ -1545,7 +1545,7 @@ describe('ClientSession', () => {
 
       const runEnds: RunLifecycleEvent[] = [];
       fix.session.tree.on('run', (e) => {
-        if (e.type === EVENT_RUN_END) runEnds.push(e);
+        if (e.type === 'end') runEnds.push(e);
       });
 
       simulateMessage(

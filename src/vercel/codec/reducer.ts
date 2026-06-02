@@ -299,7 +299,7 @@ const _conflictKeyOf = (event: VercelInput | VercelOutput, meta: ReducerMeta): s
 
 const _foldUserMessage = (state: VercelProjection, message: AI.UIMessage, meta: ReducerMeta): VercelProjection => {
   // Align the projection's UIMessage.id with the wire `codec-message-id`
-  // (= meta.messageId) so the Tree's _codecMessageIdToRunId index is reachable from
+  // (= meta.messageId) so the Tree's _codecMessageIdToKey index is reachable from
   // any consumer holding the UIMessage. Without this, useChat-supplied
   // domain ids leak through, and downstream lookups (view.regenerate /
   // view.edit / view.getRunByCodecMessageId) silently miss because the tree only

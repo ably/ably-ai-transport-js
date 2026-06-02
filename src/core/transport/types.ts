@@ -693,12 +693,29 @@ export type TreeNode<TMessage> = MessageNode<TMessage>;
  * (runId, codecMessageId) being forked.
  */
 export interface RunNode<TProjection> {
-  /** The run-id of this Run — primary key in the tree. */
-  runId: string;
   /**
-   * The runId of the immediately preceding Run on this conversation chain,
-   * or undefined for the root Run. Resolved by the Tree from the first
-   * observed message's `parent` header via the codecMessageId -> runId index.
+   * Stable identity of this Run within the tree — the key every index, the
+   * parent/fork references, and the View address it by. Assigned once at
+   * creation and never changed, so it is safe for callers (and React) to key
+   * on across the Run's lifecycle. It is the Run's {@link runId} when one is
+   * known at creation (the common case: history and agent-published runs); for
+   * a client-originated Run observed before any runId exists it is the
+   * triggering input's codec-message-id, and it stays fixed when the agent's
+   * runId is later adopted onto {@link runId}.
+   */
+  key: string;
+  /**
+   * The run-id of this Run, once known. `undefined` for a provisional Run
+   * created from a client input before the agent has minted (and the client
+   * has observed) the run's id — adopted later from the run-start lifecycle
+   * event. Use {@link key} for stable identity; use `runId` when you need the
+   * agent's run id specifically (cancel, continuation).
+   */
+  runId: string | undefined;
+  /**
+   * The {@link key} of the immediately preceding Run on this conversation
+   * chain, or undefined for the root Run. Resolved by the Tree from the first
+   * observed message's `parent` header via the codecMessageId -> key index.
    * May be `undefined` transiently if the parent's first message hasn't
    * been observed yet.
    */
@@ -714,10 +731,10 @@ export interface RunNode<TProjection> {
    */
   parentCodecMessageId: string | undefined;
   /**
-   * The runId of the Run this Run replaces, or `undefined` if this Run is
-   * not a fork. Populated when the wire's `fork-of` header points at
-   * a codec-message-id that has been observed; the Tree resolves it to a runId via
-   * the codecMessageId -> runId index.
+   * The {@link key} of the Run this Run replaces, or `undefined` if this Run
+   * is not a fork. Populated when the wire's `fork-of` header points at
+   * a codec-message-id that has been observed; the Tree resolves it to a key
+   * via the codecMessageId -> key index.
    */
   forkOf: string | undefined;
   /**
@@ -906,8 +923,18 @@ export interface Tree<TOutput extends CodecOutputEvent, TProjection> {
  * projection) reach `session.tree.getRunNode(runId)` directly.
  */
 export interface RunInfo {
-  /** The Run's unique identifier. */
-  runId: string;
+  /**
+   * Stable identity of the Run — safe to key UI state on across the Run's
+   * lifecycle. Equals {@link runId} once a runId is known; for a provisional
+   * Run (a client input observed before its runId) it is the triggering
+   * input's codec-message-id and stays fixed when the runId is adopted.
+   */
+  key: string;
+  /**
+   * The Run's run-id, once known. `undefined` for a provisional Run before
+   * its runId has been adopted. Use {@link key} for stable identity.
+   */
+  runId: string | undefined;
   /**
    * Identity of the Ably client that started this Run. Empty string
    * when the wire didn't carry an owner client id.

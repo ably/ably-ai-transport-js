@@ -119,7 +119,10 @@ const flatMessages = (
 const flatRunIds = (
   tree: TreeInternal<TestInput, TestOutput, TestProjection>,
   selections: Map<string, string> = NO_SELECTIONS,
-): string[] => tree.runs(selections).map((r) => r.runId);
+): string[] => tree.runs(selections).map((r) => r.key);
+
+// A client input event carrying a single message.
+const userInput = (id: string): TestInput => ({ kind: 'append-input', message: { id, content: id } });
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1244,6 +1247,62 @@ describe('Tree', () => {
       const fakeMsg = { name: 'fake', data: 'x' } as unknown as Parameters<typeof tree.emitAblyMessage>[0];
       tree.emitAblyMessage(fakeMsg);
       expect(handler).toHaveBeenCalledWith(fakeMsg);
+    });
+  });
+
+  // A run-less input is the agent-minted case: the client publishes before
+  // any runId exists, so the Tree keys the Run by the triggering input's
+  // codec-message-id and leaves runId undefined until it is adopted.
+  describe('provisional (run-less) runs', () => {
+    it('forms a provisional Run from a run-less input, keyed by codec-message-id with runId undefined', () => {
+      tree.applyMessage({ inputs: [userInput('u1')], outputs: [] }, { [HEADER_CODEC_MESSAGE_ID]: 'cm1' });
+
+      const node = tree.getRunByCodecMessageId('cm1');
+      expect(node?.key).toBe('cm1');
+      expect(node?.runId).toBeUndefined();
+      expect(node && testCodec.getMessages(node.projection)).toEqual([{ id: 'u1', content: 'u1' }]);
+    });
+
+    it('makes a provisional Run visible in runs() immediately', () => {
+      tree.applyMessage({ inputs: [userInput('u1')], outputs: [] }, { [HEADER_CODEC_MESSAGE_ID]: 'cm1' });
+
+      const visible = tree.runs(NO_SELECTIONS);
+      expect(visible.map((r) => r.key)).toEqual(['cm1']);
+      expect(visible[0]?.runId).toBeUndefined();
+    });
+
+    it('reconciles a serial-bearing run-less echo into the same provisional Run and promotes its serial', () => {
+      const headers = { [HEADER_CODEC_MESSAGE_ID]: 'cm1' };
+      tree.applyMessage({ inputs: [userInput('u1')], outputs: [] }, headers); // optimistic, no serial
+      tree.applyMessage({ inputs: [userInput('u1')], outputs: [] }, headers, 's1'); // serial-bearing echo
+
+      expect(tree.runs(NO_SELECTIONS)).toHaveLength(1); // no phantom second Run
+      expect(tree.getRunByCodecMessageId('cm1')?.startSerial).toBe('s1');
+    });
+
+    it('drops a message carrying neither a run-id nor a codec-message-id', () => {
+      tree.applyMessage({ inputs: [userInput('u1')], outputs: [] }, {});
+      expect(tree.runs(NO_SELECTIONS)).toHaveLength(0);
+    });
+
+    it('resolves a later Run parented at a provisional Run by its key, keeping both in the chain', () => {
+      // A provisional Run participates in the structural indices by its key:
+      // a following Run whose `parent` points at the provisional input's
+      // codec-message-id must resolve its parentRunId to that key and stay
+      // reachable in runs(). The provisional input carries a serial (its wire
+      // echo has landed) so it orders ahead of the child in the chain.
+      tree.applyMessage({ inputs: [userInput('u1')], outputs: [] }, { [HEADER_CODEC_MESSAGE_ID]: 'cm1' }, 's1');
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'cm2',
+        parent: 'cm1',
+        message: { id: 'a', content: 'a' },
+        serial: 's2',
+      });
+
+      const child = tree.getRunNode('R2');
+      expect(child?.parentRunId).toBe('cm1'); // resolved to the provisional Run's key
+      expect(tree.runs(NO_SELECTIONS).map((r) => r.key)).toEqual(['cm1', 'R2']);
     });
   });
 });

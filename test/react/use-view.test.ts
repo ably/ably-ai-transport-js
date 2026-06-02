@@ -134,7 +134,7 @@ describe('useView', () => {
   describe('Run lookup callbacks', () => {
     it('runOf forwards to view.runOf', () => {
       const mock = createMockSession();
-      const info: RunInfo = { runId: 'run-1', clientId: 'c1', status: 'active', invocationId: 'inv-1' };
+      const info: RunInfo = { key: 'run-1', runId: 'run-1', clientId: 'c1', status: 'active', invocationId: 'inv-1' };
       (mock.view.runOf as ReturnType<typeof vi.fn>).mockReturnValue(info);
       const { result } = renderHook(() => useView({ session: mock.session }));
       expect(result.current.runOf('msg-1')).toEqual(info);
@@ -142,7 +142,7 @@ describe('useView', () => {
 
     it('run forwards to view.run', () => {
       const mock = createMockSession();
-      const info: RunInfo = { runId: 'run-1', clientId: 'c1', status: 'complete', invocationId: 'inv-1' };
+      const info: RunInfo = { key: 'run-1', runId: 'run-1', clientId: 'c1', status: 'complete', invocationId: 'inv-1' };
       (mock.view.run as ReturnType<typeof vi.fn>).mockReturnValue(info);
       const { result } = renderHook(() => useView({ session: mock.session }));
       expect(result.current.run('run-1')).toEqual(info);

@@ -188,6 +188,7 @@ const _readMessageId = (message: unknown): string | undefined =>
  * @returns A projection-free RunInfo.
  */
 const _toRunInfo = <TProjection>(run: RunNode<TProjection>): RunInfo => ({
+  key: run.key,
   runId: run.runId,
   clientId: run.clientId,
   status: run.status,
@@ -372,7 +373,7 @@ export class DefaultView<
     // and re-check parent reachability against that set.
     const visibleRunIds = new Set<string>();
     for (const node of treeNodes) {
-      if (this._withheldRunIds.has(node.runId)) continue;
+      if (this._withheldRunIds.has(node.key)) continue;
       if (this._isRegenHiddenByGroupSelection(node)) continue;
       if (node.parentRunId !== undefined && !visibleRunIds.has(node.parentRunId)) continue;
       // Drop follow-up Runs whose parent msg is being regen-substituted.
@@ -386,7 +387,7 @@ export class DefaultView<
       ) {
         continue;
       }
-      visibleRunIds.add(node.runId);
+      visibleRunIds.add(node.key);
       candidates.push(node);
     }
 
@@ -404,10 +405,10 @@ export class DefaultView<
       if (node.regeneratesCodecMessageId === undefined) continue;
       const anchorIdx = this._anchorIndexInOwner(node.regeneratesCodecMessageId);
       if (anchorIdx === undefined) continue;
-      const ownerRunId = anchorIdx.ownerRunId;
-      const existing = earliestTruncationByOwner.get(ownerRunId);
+      const ownerKey = anchorIdx.ownerKey;
+      const existing = earliestTruncationByOwner.get(ownerKey);
       if (existing === undefined || anchorIdx.index < existing) {
-        earliestTruncationByOwner.set(ownerRunId, anchorIdx.index);
+        earliestTruncationByOwner.set(ownerKey, anchorIdx.index);
       }
     }
 
@@ -416,7 +417,7 @@ export class DefaultView<
       if (node.regeneratesCodecMessageId !== undefined) {
         const anchorIdx = this._anchorIndexInOwner(node.regeneratesCodecMessageId);
         if (anchorIdx !== undefined) {
-          const earliest = earliestTruncationByOwner.get(anchorIdx.ownerRunId);
+          const earliest = earliestTruncationByOwner.get(anchorIdx.ownerKey);
           if (earliest !== undefined && anchorIdx.index > earliest) {
             continue;
           }
@@ -430,16 +431,16 @@ export class DefaultView<
   /**
    * Locate `anchorMsgId` inside its owning Run's projection.
    * @param anchorMsgId - The msg-id to look up.
-   * @returns The owner runId and the message's index in that Run's
+   * @returns The owner Run's key and the message's index in that Run's
    *   projection, or `undefined` when the msg-id has no owner.
    */
-  private _anchorIndexInOwner(anchorMsgId: string): { ownerRunId: string; index: number } | undefined {
+  private _anchorIndexInOwner(anchorMsgId: string): { ownerKey: string; index: number } | undefined {
     const ownerRun = this._tree.getRunByCodecMessageId(anchorMsgId);
     if (!ownerRun) return undefined;
     const messages = this._codec.getMessages(ownerRun.projection);
     const index = messages.findIndex((m) => _readMessageId(m) === anchorMsgId);
     if (index === -1) return undefined;
-    return { ownerRunId: ownerRun.runId, index };
+    return { ownerKey: ownerRun.key, index };
   }
 
   /**
@@ -454,8 +455,8 @@ export class DefaultView<
   private _isRegenHiddenByGroupSelection(node: RunNode<TProjection>): boolean {
     const regenTarget = node.regeneratesCodecMessageId;
     if (regenTarget === undefined) return false;
-    const selectedRunId = this._resolveRegenSelection(regenTarget);
-    return selectedRunId !== undefined && selectedRunId !== node.runId;
+    const selectedKey = this._resolveRegenSelection(regenTarget);
+    return selectedKey !== undefined && selectedKey !== node.key;
   }
 
   /**
@@ -469,23 +470,23 @@ export class DefaultView<
    */
   private _resolveRegenSelection(anchorCodecMessageId: string): string | undefined {
     const sel = this._regenSelections.get(anchorCodecMessageId);
-    if (sel === undefined) return this._latestRegenMemberRunId(anchorCodecMessageId);
-    if (sel.kind === 'pending') return this._latestRegenMemberRunId(anchorCodecMessageId);
+    if (sel === undefined) return this._latestRegenMemberKey(anchorCodecMessageId);
+    if (sel.kind === 'pending') return this._latestRegenMemberKey(anchorCodecMessageId);
     return sel.selectedRunId;
   }
 
   /**
-   * The latest member runId for the regenerate group anchored at
+   * The latest member key for the regenerate group anchored at
    * `anchorCodecMessageId`. Returns undefined when the group has zero or one
    * members (one-member groups behave as if no regenerate happened —
    * the owner Run is the only visible member).
    * @param anchorCodecMessageId - The codec-message-id that anchors the group.
-   * @returns The latest member's runId, or undefined for empty/single groups.
+   * @returns The latest member's key, or undefined for empty/single groups.
    */
-  private _latestRegenMemberRunId(anchorCodecMessageId: string): string | undefined {
+  private _latestRegenMemberKey(anchorCodecMessageId: string): string | undefined {
     const group = this._tree.getRegenerateGroupByMsgId(anchorCodecMessageId);
     if (group.length <= 1) return undefined;
-    return group.at(-1)?.runId;
+    return group.at(-1)?.key;
   }
 
   /**
@@ -518,24 +519,24 @@ export class DefaultView<
    */
   private _extractMessages(nodes: RunNode<TProjection>[]): TMessage[] {
     const regeneratorByAnchor = new Map<string, RunNode<TProjection>>();
-    const regeneratorRunIds = new Set<string>();
+    const regeneratorKeys = new Set<string>();
     for (const node of nodes) {
       if (node.regeneratesCodecMessageId !== undefined) {
         regeneratorByAnchor.set(node.regeneratesCodecMessageId, node);
-        regeneratorRunIds.add(node.runId);
+        regeneratorKeys.add(node.key);
       }
     }
 
     const messages: TMessage[] = [];
     const emitted = new Set<string>();
     const emitFromRun = (run: RunNode<TProjection>): void => {
-      if (emitted.has(run.runId)) return;
-      emitted.add(run.runId);
+      if (emitted.has(run.key)) return;
+      emitted.add(run.key);
       for (const m of this._codec.getMessages(run.projection)) {
         const id = _readMessageId(m);
         if (id !== undefined) {
           const substitute = regeneratorByAnchor.get(id);
-          if (substitute && substitute.runId !== run.runId) {
+          if (substitute && substitute.key !== run.key) {
             emitFromRun(substitute);
             return;
           }
@@ -545,7 +546,7 @@ export class DefaultView<
     };
 
     for (const node of nodes) {
-      if (regeneratorRunIds.has(node.runId)) continue;
+      if (regeneratorKeys.has(node.key)) continue;
       emitFromRun(node);
     }
     return messages;
@@ -695,14 +696,14 @@ export class DefaultView<
     const selected = branch.siblings[clamped];
     if (!selected) return; // unreachable: clamped is always in bounds
     if (branch.kind === 'fork-of') {
-      this._branchSelections.set(branch.groupRoot, { kind: 'user', selectedRunId: selected.runId });
+      this._branchSelections.set(branch.groupRoot, { kind: 'user', selectedRunId: selected.key });
       this._logger.debug('DefaultView.selectSibling(); fork-of', {
         codecMessageId,
         index: clamped,
         selectedRunId: selected.runId,
       });
     } else {
-      this._regenSelections.set(branch.anchorCodecMessageId, { kind: 'user', selectedRunId: selected.runId });
+      this._regenSelections.set(branch.anchorCodecMessageId, { kind: 'user', selectedRunId: selected.key });
       this._logger.debug('DefaultView.selectSibling(); regenerate', {
         codecMessageId,
         index: clamped,
@@ -732,7 +733,7 @@ export class DefaultView<
         ? this._branchSelections.get(branch.groupRoot)
         : this._regenSelections.get(branch.anchorCodecMessageId);
     if (!sel || sel.kind === 'pending') return branch.siblings.length - 1;
-    const idx = branch.siblings.findIndex((n) => n.runId === sel.selectedRunId);
+    const idx = branch.siblings.findIndex((n) => n.key === sel.selectedRunId);
     return idx === -1 ? branch.siblings.length - 1 : idx;
   }
 
@@ -769,11 +770,11 @@ export class DefaultView<
     // Fork-of branch point: the first message of an edit Run is the
     // anchor (the user prompt the fork resolves at). The codec is the
     // source of truth for message order within a Run's projection.
-    const forkSiblings = this._tree.getSiblingRuns(run.runId);
+    const forkSiblings = this._tree.getSiblingRuns(run.key);
     if (forkSiblings.length > 1) {
       const firstMsg = this._codec.getMessages(run.projection).at(0);
       if (firstMsg && _readMessageId(firstMsg) === codecMessageId) {
-        return { kind: 'fork-of', groupRoot: this._tree.getGroupRoot(run.runId), siblings: forkSiblings };
+        return { kind: 'fork-of', groupRoot: this._tree.getGroupRoot(run.key), siblings: forkSiblings };
       }
     }
 
@@ -870,7 +871,7 @@ export class DefaultView<
     // operates at Run granularity.
     const forkTargetRun = this._tree.getRunByCodecMessageId(options.forkOf);
     if (!forkTargetRun) return;
-    const groupRoot = this._tree.getGroupRoot(forkTargetRun.runId);
+    const groupRoot = this._tree.getGroupRoot(forkTargetRun.key);
 
     if (result.optimisticCodecMessageIds.length > 0) {
       // The delegate optimistically inserted a user-message Run (edit path).
@@ -1137,7 +1138,7 @@ export class DefaultView<
 
   private async _loadFirstPage(limit: number): Promise<void> {
     // Snapshot before loading: every Run already in the tree stays visible.
-    const beforeRunIds = new Set(this._tree.runs(this._resolveSelections()).map((n) => n.runId));
+    const beforeRunIds = new Set(this._tree.runs(this._resolveSelections()).map((n) => n.key));
 
     // decodeHistory's limit counts complete domain messages per page (not
     // Runs); see `_RUN_TO_MESSAGE_FETCH_FACTOR` for the scaling rationale.
@@ -1154,7 +1155,7 @@ export class DefaultView<
   }
 
   private async _loadAndReveal(page: HistoryPage<TMessage>, limit: number): Promise<void> {
-    const alreadyKnown = new Set(this._tree.runs(this._resolveSelections()).map((n) => n.runId));
+    const alreadyKnown = new Set(this._tree.runs(this._resolveSelections()).map((n) => n.key));
 
     const { newVisible, lastPage } = await this._loadUntilVisible(page, limit, alreadyKnown);
     if (this._closed) return;
@@ -1175,7 +1176,7 @@ export class DefaultView<
     const batch = newVisible.slice(-limit);
     const withheld = newVisible.slice(0, -limit);
     for (const n of withheld) {
-      this._withheldRunIds.add(n.runId);
+      this._withheldRunIds.add(n.key);
     }
     this._withheldBuffer.push(...withheld);
     this._releaseWithheld(batch);
@@ -1227,7 +1228,7 @@ export class DefaultView<
     const newVisibleCount = (): number => {
       let count = 0;
       for (const n of this._tree.runs(this._resolveSelections())) {
-        if (!beforeRunIds.has(n.runId)) count++;
+        if (!beforeRunIds.has(n.key)) count++;
       }
       return count;
     };
@@ -1239,14 +1240,14 @@ export class DefaultView<
       page = nextPage;
     }
 
-    const newVisible = this._tree.runs(this._resolveSelections()).filter((n) => !beforeRunIds.has(n.runId));
+    const newVisible = this._tree.runs(this._resolveSelections()).filter((n) => !beforeRunIds.has(n.key));
     return { newVisible, lastPage: page };
   }
 
   // Spec: AIT-CT11a
   private _releaseWithheld(nodes: RunNode<TProjection>[]): void {
     for (const n of nodes) {
-      this._withheldRunIds.delete(n.runId);
+      this._withheldRunIds.delete(n.key);
     }
     if (nodes.length > 0) {
       this._cachedNodes = this._computeFlatNodes();
@@ -1261,7 +1262,7 @@ export class DefaultView<
 
   private _updateVisibleSnapshot(nodes?: RunNode<TProjection>[]): void {
     const resolved = nodes ?? this._cachedNodes;
-    this._lastVisibleRunIds = resolved.map((n) => n.runId);
+    this._lastVisibleRunIds = resolved.map((n) => n.key);
     this._lastVisibleRunIdSet = new Set(this._lastVisibleRunIds);
     this._lastVisibleProjections = resolved.map((n) => n.projection);
     this._lastVisibleMessages = this._extractMessages(resolved);
@@ -1337,7 +1338,7 @@ export class DefaultView<
             runId,
             newestRunId: newest.runId,
           });
-          this._branchSelections.set(groupRoot, { kind: 'auto', selectedRunId: newest.runId });
+          this._branchSelections.set(groupRoot, { kind: 'auto', selectedRunId: newest.key });
         }
         continue;
       }
@@ -1363,7 +1364,7 @@ export class DefaultView<
       const newest = group.at(-1);
       if (!newest) continue;
       if (newest.runId !== sel.runId) continue;
-      this._regenSelections.set(anchorCodecMessageId, { kind: 'auto', selectedRunId: newest.runId });
+      this._regenSelections.set(anchorCodecMessageId, { kind: 'auto', selectedRunId: newest.key });
     }
   }
 
@@ -1385,7 +1386,7 @@ export class DefaultView<
           groupRoot,
           newestRunId: newest.runId,
         });
-        this._branchSelections.set(groupRoot, { kind: 'auto', selectedRunId: newest.runId });
+        this._branchSelections.set(groupRoot, { kind: 'auto', selectedRunId: newest.key });
       }
     }
   }
@@ -1440,13 +1441,13 @@ export class DefaultView<
     // owning runId, then check visibility.
     const parentRun = this._tree.getRunByCodecMessageId(parent);
     if (!parentRun) return true; // unknown parent: forward conservatively
-    return this._lastVisibleRunIdSet.has(parentRun.runId);
+    return this._lastVisibleRunIdSet.has(parentRun.key);
   }
 
   private _visibleChanged(newNodes: RunNode<TProjection>[]): boolean {
     if (newNodes.length !== this._lastVisibleRunIds.length) return true;
     for (const [i, node] of newNodes.entries()) {
-      if (node.runId !== this._lastVisibleRunIds[i]) return true;
+      if (node.key !== this._lastVisibleRunIds[i]) return true;
       if (node.projection !== this._lastVisibleProjections[i]) return true;
     }
     return false;

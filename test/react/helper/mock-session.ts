@@ -96,6 +96,7 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
 
   const initialNodes: RunNode<unknown>[] = initialMessages.map(
     (_, i): RunNode<unknown> => ({
+      key: `run-${String(i)}`,
       runId: `run-${String(i)}`,
       parentRunId: i > 0 ? `run-${String(i - 1)}` : undefined,
       parentCodecMessageId: undefined,

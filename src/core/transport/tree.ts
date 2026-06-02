@@ -63,10 +63,10 @@ export interface TreeInternal<
   readonly structuralVersion: number;
 
   /**
-   * Get the "group root" runId for a sibling group — the original Run that
+   * Get the "group root" key for a sibling group — the original Run that
    * all forks in the group trace back to.
    */
-  getGroupRoot(runId: string): string;
+  getGroupRoot(key: string): string;
 
   /**
    * Resolve the regenerate sibling group anchored at `codecMessageId`.
@@ -147,16 +147,18 @@ export class DefaultTree<
   private readonly _logger: Logger;
   private readonly _emitter: EventEmitter<TreeEventsMap<TOutput>>;
 
-  /** All Run nodes indexed by runId. */
+  /** All Run nodes indexed by their stable {@link RunNode.key}. */
   private readonly _runIndex = new Map<string, InternalRunNode<TProjection>>();
 
   /**
-   * Maps observed `codec-message-id` values to their owning runId. Used to
-   * resolve fork-of codec-message-ids and parent codec-message-ids to run-ids, route
-   * continuation amend wires to existing Runs, and back UI lookups that
-   * hold a codec-message-id.
+   * Maps observed `codec-message-id` values to their owning Run's
+   * {@link RunNode.key}. Used to resolve fork-of and parent codec-message-ids
+   * to run keys, route continuation amend wires to existing Runs, and back UI
+   * lookups that hold a codec-message-id. The key equals the runId for a Run
+   * that has one; for a provisional Run it is the triggering input's
+   * codec-message-id.
    */
-  private readonly _codecMessageIdToRunId = new Map<string, string>();
+  private readonly _codecMessageIdToKey = new Map<string, string>();
 
   /**
    * All Runs sorted by startSerial (lexicographic). Null-startSerial Runs
@@ -166,15 +168,16 @@ export class DefaultTree<
   private readonly _sortedRuns: InternalRunNode<TProjection>[] = [];
 
   /**
-   * Parent index: parentRunId to set of child runIds.
+   * Parent index: parent Run key to the set of child Run keys.
    * Root Runs (no parent) are indexed under the key `undefined`.
    */
   private readonly _parentIndex = new Map<string | undefined, Set<string>>();
 
   /**
-   * Regenerated codec-message-id -> set of runIds that regenerate it. A Run with
-   * `regeneratesCodecMessageId` set inserts here on creation; the View uses this
-   * index to resolve message-level regenerate sibling groups in one lookup.
+   * Regenerated codec-message-id -> set of Run keys that regenerate it. A Run
+   * with `regeneratesCodecMessageId` set inserts here on creation; the View
+   * uses this index to resolve message-level regenerate sibling groups in one
+   * lookup.
    */
   private readonly _regenerateByMsgId = new Map<string, Set<string>>();
 
@@ -299,111 +302,111 @@ export class DefaultTree<
   // -------------------------------------------------------------------------
 
   /**
-   * Get the sibling group that `runId` belongs to.
+   * Get the sibling group that the Run with key `key` belongs to.
    *
-   * A sibling group is: the original Run + all Runs whose `forkOf.runId`
+   * A sibling group is: the original Run + all Runs whose `forkOf`
    * points to the original (or transitively to a sibling). We find the
    * group root by following `forkOf` chains to the earliest ancestor that
    * has no `forkOf` (or whose `forkOf` target doesn't share the same
    * parentRunId).
-   * @param runId - The runId to look up the sibling group for.
+   * @param key - The key of the Run to look up the sibling group for.
    * @returns The ordered list of sibling Runs.
    */
   // Spec: AIT-CT13b
-  private _getSiblingGroup(runId: string): InternalRunNode<TProjection>[] {
+  private _getSiblingGroup(key: string): InternalRunNode<TProjection>[] {
     if (this._siblingCacheVersion !== this._structuralVersion) {
       this._siblingCache.clear();
       this._siblingCacheVersion = this._structuralVersion;
     }
-    const cached = this._siblingCache.get(runId);
+    const cached = this._siblingCache.get(key);
     if (cached) return cached;
 
-    const entry = this._runIndex.get(runId);
+    const entry = this._runIndex.get(key);
     if (!entry) return [];
 
     // Find the "original" — the Run at the root of the fork chain that
     // shares the same parentRunId. Guard against cycles in forkOf chains.
     let original = entry.node;
-    const visitedGroup = new Set<string>([original.runId]);
+    const visitedGroup = new Set<string>([original.key]);
     while (original.forkOf) {
       if (visitedGroup.has(original.forkOf)) break;
       const forkTarget = this._runIndex.get(original.forkOf);
       if (!forkTarget || forkTarget.node.parentRunId !== original.parentRunId) break;
       original = forkTarget.node;
-      visitedGroup.add(original.runId);
+      visitedGroup.add(original.key);
     }
 
     // Collect all siblings: Runs with the same parentRunId that either ARE
     // the original or have a forkOf chain leading to the original.
     const parentRunId = original.parentRunId;
-    const originalRunId = original.runId;
+    const originalKey = original.key;
     const siblings: InternalRunNode<TProjection>[] = [];
 
     const candidateIds = this._parentIndex.get(parentRunId);
     if (candidateIds) {
-      for (const childRunId of candidateIds) {
-        const childEntry = this._runIndex.get(childRunId);
-        if (childEntry && this._isSiblingOf(childEntry.node, originalRunId)) {
+      for (const childKey of candidateIds) {
+        const childEntry = this._runIndex.get(childKey);
+        if (childEntry && this._isSiblingOf(childEntry.node, originalKey)) {
           siblings.push(childEntry);
         }
       }
     }
 
     siblings.sort((a, b) => this._compareRuns(a, b));
-    // Cache against the queried runId AND every member of the group:
+    // Cache against the queried key AND every member of the group:
     // a single sibling group is the same array regardless of which
     // member triggered the lookup, so subsequent queries against any
     // member hit without recomputing.
     for (const sib of siblings) {
-      this._siblingCache.set(sib.node.runId, siblings);
+      this._siblingCache.set(sib.node.key, siblings);
     }
-    this._siblingCache.set(runId, siblings);
+    this._siblingCache.set(key, siblings);
     return siblings;
   }
 
   /**
-   * Check if `node` belongs to the sibling group rooted at `originalRunId`.
+   * Check if `node` belongs to the sibling group rooted at `originalKey`.
    * A Run is a sibling if it IS the original or its forkOf chain leads
    * to the original (with the same parentRunId).
    * @param node - The Run to check.
-   * @param originalRunId - The group root to match against.
+   * @param originalKey - The group root key to match against.
    * @returns True if the Run belongs to the sibling group.
    */
-  private _isSiblingOf(node: RunNode<TProjection>, originalRunId: string): boolean {
-    if (node.runId === originalRunId) return true;
+  private _isSiblingOf(node: RunNode<TProjection>, originalKey: string): boolean {
+    if (node.key === originalKey) return true;
     let current = node;
-    const visited = new Set<string>([current.runId]);
+    const visited = new Set<string>([current.key]);
     while (current.forkOf) {
-      if (current.forkOf === originalRunId) return true;
+      if (current.forkOf === originalKey) return true;
       if (visited.has(current.forkOf)) break;
       const target = this._runIndex.get(current.forkOf);
       if (!target) break;
       current = target.node;
-      visited.add(current.runId);
+      visited.add(current.key);
     }
     return false;
   }
 
   /**
-   * Get the "group root" runId for a sibling group — the original Run
+   * Get the "group root" key for a sibling group — the original Run
    * that all forks trace back to.
-   * @param runId - Any runId in the sibling group.
-   * @returns The runId of the group root.
+   * @param key - The key of any Run in the sibling group.
+   * @returns The key of the group root.
    */
-  getGroupRoot(runId: string): string {
-    const entry = this._runIndex.get(runId);
-    if (!entry) return runId;
+  getGroupRoot(key: string): string {
+    const entry = this._runIndex.get(key);
+    if (!entry) return key;
 
     let current = entry.node;
-    const visited = new Set<string>([current.runId]);
+    const visited = new Set<string>([current.key]);
     while (current.forkOf) {
       if (visited.has(current.forkOf)) break;
       const forkTarget = this._runIndex.get(current.forkOf);
       if (!forkTarget || forkTarget.node.parentRunId !== current.parentRunId) break;
       current = forkTarget.node;
-      visited.add(current.runId);
+      visited.add(current.key);
     }
-    return current.runId;
+    return current.key;
   }
 
   // -------------------------------------------------------------------------
@@ -416,11 +419,11 @@ export class DefaultTree<
     const currentPath = new Set<string>();
     // Track which sibling groups we've already resolved to avoid
     // re-resolving for every member of the group.
-    const resolvedGroups = new Map<string, string>(); // groupRootRunId -> selected runId
+    const resolvedGroups = new Map<string, string>(); // groupRootKey -> selected key
 
     for (const internal of this._sortedRuns) {
       const node = internal.node;
-      const { runId, parentRunId } = node;
+      const { key, parentRunId } = node;
 
       // Step 1: Parent reachability.
       if (parentRunId !== undefined && !currentPath.has(parentRunId)) {
@@ -428,27 +431,27 @@ export class DefaultTree<
       }
 
       // Step 2: Sibling selection.
-      const group = this._getSiblingGroup(runId);
+      const group = this._getSiblingGroup(key);
       if (group.length > 1) {
-        const groupRootRunId = this.getGroupRoot(runId);
-        let selectedRunId = resolvedGroups.get(groupRootRunId);
-        if (selectedRunId === undefined) {
-          const preferredRunId = selections.get(groupRootRunId);
-          if (preferredRunId && group.some((n) => n.node.runId === preferredRunId)) {
-            selectedRunId = preferredRunId;
+        const groupRootKey = this.getGroupRoot(key);
+        let selectedKey = resolvedGroups.get(groupRootKey);
+        if (selectedKey === undefined) {
+          const preferredKey = selections.get(groupRootKey);
+          if (preferredKey && group.some((n) => n.node.key === preferredKey)) {
+            selectedKey = preferredKey;
           } else {
             const latest = group.at(-1);
             if (!latest) break; // unreachable: group.length > 1
-            selectedRunId = latest.node.runId;
+            selectedKey = latest.node.key;
           }
-          resolvedGroups.set(groupRootRunId, selectedRunId);
+          resolvedGroups.set(groupRootKey, selectedKey);
         }
-        if (runId !== selectedRunId) {
+        if (key !== selectedKey) {
           continue;
         }
       }
 
-      currentPath.add(runId);
+      currentPath.add(key);
       result.push(node);
     }
 
@@ -462,7 +465,7 @@ export class DefaultTree<
 
   getRunByCodecMessageId(codecMessageId: string): RunNode<TProjection> | undefined {
     this._logger.trace('DefaultTree.getRunByCodecMessageId();', { codecMessageId });
-    const runId = this._codecMessageIdToRunId.get(codecMessageId);
+    const runId = this._codecMessageIdToKey.get(codecMessageId);
     return runId ? this._runIndex.get(runId)?.node : undefined;
   }
 
@@ -485,26 +488,23 @@ export class DefaultTree<
     serial?: string,
   ): void {
     const wireRunId = headers[HEADER_RUN_ID];
-    if (!wireRunId) {
-      this._logger.warn('Tree.applyMessage(); message missing run-id header; skipping');
-      return;
-    }
-
     const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
     const isContinuation = headers[HEADER_RUN_CONTINUE] === 'true';
 
-    // Fold inputs first, then outputs, preserving wire order.
-    const all: (TInput | TOutput)[] = [...events.inputs, ...events.outputs];
-
-    // Wire-only metadata-carrier messages (e.g. `ait-regenerate`) decode to
-    // zero events and don't need a Run at the tree level — the eventual
-    // assistant Run is created later by run-start, and any regenerate /
-    // parent information the wire carried is reread from the run-start
-    // headers. Skipping here avoids a phantom Run with empty projection
-    // that would otherwise inflate sibling-group counts.
-    if (all.length === 0 && !this._runIndex.has(wireRunId)) {
+    // A Run's stable key is the wire run-id when the message carries one
+    // (history, agent output, continuation) and otherwise the
+    // codec-message-id. The run-less case is a client input published in the
+    // agent-minted world — before any runId exists; the Run holds the input
+    // optimistically and the agent's runId is adopted onto it later from
+    // run-start. A message with neither id can't be placed.
+    const key = wireRunId ?? codecMessageId;
+    if (key === undefined) {
+      this._logger.warn('Tree.applyMessage(); message missing run-id and codec-message-id header; skipping');
       return;
     }
+
+    // Fold inputs first, then outputs, preserving wire order.
+    const all: (TInput | TOutput)[] = [...events.inputs, ...events.outputs];
 
     // `update` is the structural channel: emit it only when this apply
     // actually changes the tree shape (new Run, startSerial promotion).
@@ -513,7 +513,7 @@ export class DefaultTree<
     // no `update`.
     const structuralBefore = this._structuralVersion;
 
-    let run = this._runIndex.get(wireRunId);
+    let run = this._runIndex.get(key);
 
     // Reconcile an optimistic insert with its serial-bearing echo by
     // codec-message-id rather than the wire run-id: when the wire run-id finds
@@ -523,28 +523,35 @@ export class DefaultTree<
     // keeps optimistic reconciliation from depending on the client-minted
     // run-id matching. The wire run-id stays the primary key, so every other
     // message (assistant chunks, continuation tool-resolutions, fresh Runs)
-    // routes exactly as before.
-    //
-    // This relaxes the run-id-EQUALITY requirement only. A message with no
-    // run-id at all is still dropped by the guard above; forming the node
-    // without any run-id (so the agent can mint and adopt one) is the
-    // run-less-node change deferred to the agent-minting PR.
-    if (!run && codecMessageId !== undefined) {
-      const indexedRunId = this._codecMessageIdToRunId.get(codecMessageId);
-      const indexed = indexedRunId === undefined ? undefined : this._runIndex.get(indexedRunId);
+    // routes exactly as before. Skipped when the key already IS the
+    // codec-message-id (the run-less path, where the primary lookup already
+    // consulted it).
+    if (!run && codecMessageId !== undefined && codecMessageId !== key) {
+      const indexedKey = this._codecMessageIdToKey.get(codecMessageId);
+      const indexed = indexedKey === undefined ? undefined : this._runIndex.get(indexedKey);
       if (indexed && indexed.node.startSerial === undefined) run = indexed;
     }
 
+    // Wire-only metadata-carrier messages (e.g. `ait-regenerate`) decode to
+    // zero events and don't need a Run at the tree level — the eventual
+    // assistant Run is created later by run-start, and any regenerate /
+    // parent information the wire carried is reread from the run-start
+    // headers. Skipping here avoids a phantom Run with empty projection
+    // that would otherwise inflate sibling-group counts.
+    if (all.length === 0 && run === undefined) {
+      return;
+    }
+
     if (!run) {
-      run = this._createRunFromHeaders(wireRunId, headers, serial);
-      this._runIndex.set(wireRunId, run);
-      this._addToParentIndex(run.node.parentRunId, wireRunId);
+      run = this._createRunFromHeaders(key, wireRunId, headers, serial);
+      this._runIndex.set(key, run);
+      this._addToParentIndex(run.node.parentRunId, key);
       this._insertSortedRun(run);
       this._structuralVersion++;
-      this._logger.debug('Tree.applyMessage(); created new Run', { runId: wireRunId, isContinuation });
+      this._logger.debug('Tree.applyMessage(); created new Run', { key, runId: wireRunId, isContinuation });
     } else if (serial && !run.node.startSerial) {
       // Promote optimistic startSerial when the relay/echo arrives.
-      this._logger.debug('Tree.applyMessage(); promoting startSerial', { runId: run.node.runId, serial });
+      this._logger.debug('Tree.applyMessage(); promoting startSerial', { key: run.node.key, serial });
       run.node.startSerial = serial;
       this._removeSortedRun(run);
       this._insertSortedRun(run);
@@ -553,9 +560,9 @@ export class DefaultTree<
 
     // Index the codec-message-id against the Run that actually owns it — the
     // reconciled optimistic Run when the echo was matched by codec-message-id,
-    // otherwise the wire Run (identical in the common case where they agree).
-    const ownerRunId = run.node.runId;
-    if (codecMessageId) this._codecMessageIdToRunId.set(codecMessageId, ownerRunId);
+    // otherwise the keyed Run (identical in the common case where they agree).
+    const ownerKey = run.node.key;
+    if (codecMessageId) this._codecMessageIdToKey.set(codecMessageId, ownerKey);
 
     for (const event of all) {
       try {
@@ -564,11 +571,19 @@ export class DefaultTree<
           messageId: codecMessageId,
         });
       } catch (error) {
-        this._logger.error('Tree.applyMessage(); fold threw', { runId: ownerRunId, err: error });
+        this._logger.error('Tree.applyMessage(); fold threw', { key: ownerKey, err: error });
       }
     }
 
-    this._emitter.emit('output', { runId: ownerRunId, codecMessageId, serial, events: events.outputs });
+    // The output event routes streaming deltas to the View, which matches it
+    // against its visible-Run keys. Output-bearing Runs always carry a runId
+    // (the agent published them under one) and a runId-bearing Run's key IS
+    // its runId, so this resolves to the key the View indexes by; the `??`
+    // only covers a run-less input fold, which has no outputs to route. NOTE:
+    // when runId adoption lands (a Run whose key differs from its adopted
+    // runId), this must emit `ownerKey` (the View matches on key), not the
+    // runId — handled by the output-routing commit alongside adoption.
+    this._emitter.emit('output', { runId: run.node.runId ?? ownerKey, codecMessageId, serial, events: events.outputs });
     if (this._structuralVersion !== structuralBefore) this._emitter.emit('update');
   }
 
@@ -609,7 +624,7 @@ export class DefaultTree<
             run.node.parentCodecMessageId = event.parent;
           }
           if (run.node.parentRunId === undefined && event.parent !== undefined) {
-            const parentRunId = this._codecMessageIdToRunId.get(event.parent);
+            const parentRunId = this._codecMessageIdToKey.get(event.parent);
             if (parentRunId !== undefined && parentRunId !== event.runId) {
               this._removeFromParentIndex(undefined, event.runId);
               run.node.parentRunId = parentRunId;
@@ -618,7 +633,7 @@ export class DefaultTree<
             }
           }
           if (run.node.forkOf === undefined && event.forkOf !== undefined) {
-            const forkOfRunId = this._codecMessageIdToRunId.get(event.forkOf);
+            const forkOfRunId = this._codecMessageIdToKey.get(event.forkOf);
             if (forkOfRunId !== undefined && forkOfRunId !== event.runId) {
               run.node.forkOf = forkOfRunId;
               this._structuralVersion++;
@@ -682,24 +697,29 @@ export class DefaultTree<
 
   /**
    * Build a fresh RunNode from a wire message's headers. Used when an
-   * inbound message arrives before any run-start event for its runId.
-   * @param runId - The run-id from the inbound wire.
+   * inbound message arrives before any run-start event for its Run.
+   * @param key - The Run's stable key (the wire run-id, or the
+   *   codec-message-id for a run-less input).
+   * @param runId - The run-id from the inbound wire, or undefined for a
+   *   run-less (provisional) input whose runId the agent has yet to mint.
    * @param headers - Transport headers from the inbound Ably message.
    * @param serial - Ably channel serial; undefined for optimistic inserts.
    * @returns A newly-allocated internal run node ready for insertion.
    */
   private _createRunFromHeaders(
-    runId: string,
+    key: string,
+    runId: string | undefined,
     headers: Record<string, string>,
     serial: string | undefined,
   ): InternalRunNode<TProjection> {
     const parentCodecMessageId = headers[HEADER_PARENT];
-    const parentRunId = parentCodecMessageId ? this._codecMessageIdToRunId.get(parentCodecMessageId) : undefined;
+    const parentRunId = parentCodecMessageId ? this._codecMessageIdToKey.get(parentCodecMessageId) : undefined;
     const forkOfMsgId = headers[HEADER_FORK_OF];
-    const forkOf = forkOfMsgId ? this._codecMessageIdToRunId.get(forkOfMsgId) : undefined;
+    const forkOf = forkOfMsgId ? this._codecMessageIdToKey.get(forkOfMsgId) : undefined;
     const regeneratesCodecMessageId = headers[HEADER_MSG_REGENERATE];
 
     const node: RunNode<TProjection> = {
+      key,
       runId,
       parentRunId,
       parentCodecMessageId,
@@ -714,7 +734,7 @@ export class DefaultTree<
     };
 
     if (regeneratesCodecMessageId !== undefined) {
-      this._indexRegenerate(runId, regeneratesCodecMessageId);
+      this._indexRegenerate(key, regeneratesCodecMessageId);
     }
 
     return { node, insertSeq: this._seqCounter++ };
@@ -729,12 +749,15 @@ export class DefaultTree<
    */
   private _createRunFromLifecycle(event: RunLifecycleEvent & { type: 'start' }): InternalRunNode<TProjection> {
     const parentCodecMessageId = event.parent;
-    const parentRunId = parentCodecMessageId ? this._codecMessageIdToRunId.get(parentCodecMessageId) : undefined;
+    const parentRunId = parentCodecMessageId ? this._codecMessageIdToKey.get(parentCodecMessageId) : undefined;
     const forkOfMsgId = event.forkOf;
-    const forkOf = forkOfMsgId ? this._codecMessageIdToRunId.get(forkOfMsgId) : undefined;
+    const forkOf = forkOfMsgId ? this._codecMessageIdToKey.get(forkOfMsgId) : undefined;
     const regeneratesCodecMessageId = event.regenerates;
 
+    // A run-start always carries the agent's runId, so a Run created here is
+    // never provisional: its key is its runId.
     const node: RunNode<TProjection> = {
+      key: event.runId,
       runId: event.runId,
       parentRunId,
       parentCodecMessageId,
@@ -757,18 +780,18 @@ export class DefaultTree<
 
   /**
    * Track a Run as a regenerator of the given codec-message-id. Maintained as a
-   * forward map (`regenerated codec-message-id -> set of runIds that regenerate it`)
+   * forward map (`regenerated codec-message-id -> set of Run keys that regenerate it`)
    * so the View can resolve regenerate sibling groups in one lookup.
-   * @param runId - The runId of the regenerating Run.
+   * @param key - The {@link RunNode.key} of the regenerating Run.
    * @param regeneratesCodecMessageId - The codec-message-id the Run regenerates.
    */
-  private _indexRegenerate(runId: string, regeneratesCodecMessageId: string): void {
+  private _indexRegenerate(key: string, regeneratesCodecMessageId: string): void {
     let set = this._regenerateByMsgId.get(regeneratesCodecMessageId);
     if (!set) {
       set = new Set();
       this._regenerateByMsgId.set(regeneratesCodecMessageId, set);
     }
-    set.add(runId);
+    set.add(key);
   }
 
   /**
@@ -782,23 +805,23 @@ export class DefaultTree<
   getRegenerateGroupByMsgId(codecMessageId: string): RunNode<TProjection>[] {
     const result: RunNode<TProjection>[] = [];
 
-    const ownerRunId = this._codecMessageIdToRunId.get(codecMessageId);
-    if (ownerRunId) {
-      const owner = this._runIndex.get(ownerRunId);
+    const ownerKey = this._codecMessageIdToKey.get(codecMessageId);
+    if (ownerKey) {
+      const owner = this._runIndex.get(ownerKey);
       if (owner) result.push(owner.node);
     }
 
-    const regenIds = this._regenerateByMsgId.get(codecMessageId);
-    if (regenIds) {
-      for (const id of regenIds) {
-        const entry = this._runIndex.get(id);
+    const regenKeys = this._regenerateByMsgId.get(codecMessageId);
+    if (regenKeys) {
+      for (const regenKey of regenKeys) {
+        const entry = this._runIndex.get(regenKey);
         if (entry) result.push(entry.node);
       }
     }
 
     result.sort((a, b) => {
-      const ai = this._runIndex.get(a.runId)?.insertSeq ?? 0;
-      const bi = this._runIndex.get(b.runId)?.insertSeq ?? 0;
+      const ai = this._runIndex.get(a.key)?.insertSeq ?? 0;
+      const bi = this._runIndex.get(b.key)?.insertSeq ?? 0;
       const sa = a.startSerial;
       const sb = b.startSerial;
       if (sa === undefined && sb === undefined) return ai - bi;
@@ -844,12 +867,12 @@ export class DefaultTree<
     }
 
     // Case 2: this Run owns a codec-message-id that has been regenerated. Iterate
-    // the regenerate index and match ownership via `_codecMessageIdToRunId`. The
+    // the regenerate index and match ownership via `_codecMessageIdToKey`. The
     // index is keyed by regenerated codec-message-id, so the search is bounded by
     // the number of distinct regen anchors in the tree (small in practice).
     for (const [anchorCodecMessageId, regenRunIds] of this._regenerateByMsgId) {
       if (regenRunIds.size === 0) continue;
-      const ownerRunId = this._codecMessageIdToRunId.get(anchorCodecMessageId);
+      const ownerRunId = this._codecMessageIdToKey.get(anchorCodecMessageId);
       if (ownerRunId !== runId) continue;
       const runs = this.getRegenerateGroupByMsgId(anchorCodecMessageId);
       if (runs.length > 1) return { anchorCodecMessageId, runs };

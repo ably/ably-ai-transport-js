@@ -51,15 +51,23 @@ export interface RunOutputStream {
 }
 
 /**
- * Create a consumer-facing output stream for `runId`, sourced from the
- * session Tree's events. See the module docs for close/error semantics. The
- * returned `close`/`error` let the caller settle the stream for conditions the
- * Tree doesn't surface (local cancel, POST failure).
+ * Create a consumer-facing output stream for the run identified by `key`,
+ * sourced from the session Tree's events. See the module docs for close/error
+ * semantics. The returned `close`/`error` let the caller settle the stream for
+ * conditions the Tree doesn't surface (local cancel, POST failure).
+ *
+ * The run is keyed by its stable Tree `key` (the triggering input's
+ * codec-message-id, which `ActiveRun.key` exposes) because the agent mints the
+ * runId and the client doesn't know it at send time. The Tree's `output`
+ * events carry that key. The run's `run-end`, however, carries the
+ * agent-minted runId — so the stream learns that runId from the run's
+ * `run-start` (which echoes the key as `input-codec-message-id`) and matches
+ * the terminal `run-end` against it.
  * @param session - The Vercel client session whose Tree to observe.
- * @param runId - The run whose outputs to project.
+ * @param key - The stable Tree key of the run whose outputs to project.
  * @returns The stream and its external settle handles.
  */
-export const createRunOutputStream = (session: VercelSession, runId: string): RunOutputStream => {
+export const createRunOutputStream = (session: VercelSession, key: string): RunOutputStream => {
   const holder: { controller?: ReadableStreamDefaultController<VercelOutput> } = {};
   // ReadableStream's start() runs synchronously, so the controller is captured
   // before the constructor returns.
@@ -107,9 +115,13 @@ export const createRunOutputStream = (session: VercelSession, runId: string): Ru
     teardown();
   };
 
+  // The agent-minted runId of this run, learned from its run-start so the
+  // terminal run-end (which carries the runId, not the key) can be matched.
+  let adoptedRunId: string | undefined;
   unsubscribe.push(
     session.tree.on('output', (event) => {
-      if (event.runId !== runId) return;
+      // The Tree emits `output` keyed by the run key.
+      if (event.runId !== key) return;
       for (const output of event.events) {
         try {
           controller.enqueue(output);
@@ -124,7 +136,18 @@ export const createRunOutputStream = (session: VercelSession, runId: string): Ru
       }
     }),
     session.tree.on('run', (event) => {
-      if (event.type === 'end' && event.runId === runId && event.reason !== 'suspended') {
+      if (event.type === 'start') {
+        // Learn this run's agent-minted runId. The adopting run-start echoes
+        // the key as `input-codec-message-id`; a legacy/equal run has
+        // `runId === key`.
+        if (event.inputCodecMessageId === key || event.runId === key) {
+          adoptedRunId = event.runId;
+        }
+        return;
+      }
+      // run-end carries the agent runId; match it against the learned runId
+      // (or the key, when they coincide).
+      if (event.reason !== 'suspended' && (event.runId === adoptedRunId || event.runId === key)) {
         close();
       }
     }),

@@ -47,8 +47,10 @@ const makeEmitter = (): {
 
 interface MockSession {
   session: VercelSession;
-  /** Emit a Tree `output` event. */
-  output: (runId: string, events: VercelOutput[]) => void;
+  /** Emit a Tree `output` event keyed by the run key. */
+  output: (runKey: string, events: VercelOutput[]) => void;
+  /** Emit a Tree `run` run-start event carrying the agent runId + echoed key. */
+  runStart: (runId: string, inputCodecMessageId: string) => void;
   /** Emit a Tree `run` run-end event with the given reason. */
   runEnd: (runId: string, reason: string) => void;
   /** Emit a session `error`. */
@@ -67,8 +69,18 @@ const createMockSession = (): MockSession => {
 
   return {
     session,
-    output: (runId, events) => {
-      treeEmitter.emit('output', { runId, codecMessageId: 'm-1', serial: 's-1', events });
+    output: (runKey, events) => {
+      treeEmitter.emit('output', { runId: runKey, codecMessageId: 'm-1', serial: 's-1', events });
+    },
+    runStart: (runId, inputCodecMessageId) => {
+      treeEmitter.emit('run', {
+        type: 'start',
+        runId,
+        clientId: '',
+        invocationId: 'inv-1',
+        serial: 's-1',
+        inputCodecMessageId,
+      });
     },
     runEnd: (runId, reason) => {
       treeEmitter.emit('run', {
@@ -125,6 +137,42 @@ describe('createRunOutputStream', () => {
 
     const events = await drain(stream);
     expect(events.map((e) => e.type)).toEqual(['finish']);
+  });
+
+  it('keyed by codec-message-id: learns the agent runId from run-start and closes on its run-end', async () => {
+    // Agent-minted run: the stream is keyed by the run key (the triggering
+    // input's codec-message-id), which differs from the agent-minted runId.
+    const mock = createMockSession();
+    const key = 'cmid-trigger';
+    const { stream } = createRunOutputStream(mock.session, key);
+
+    // The adopting run-start echoes the key as input-codec-message-id and
+    // carries the divergent agent runId.
+    mock.runStart('agent-run-1', key);
+    // Outputs are keyed by the run key.
+    mock.output(key, [textDelta('hi')]);
+    // The terminal run-end carries the agent runId, not the key — the stream
+    // must still close because it learned the runId from run-start.
+    mock.runEnd('agent-run-1', 'complete');
+
+    const events = await drain(stream);
+    expect(events.map((e) => e.type)).toEqual(['text-delta']);
+  });
+
+  it('ignores a run-end whose runId is neither the key nor the learned runId', async () => {
+    const mock = createMockSession();
+    const key = 'cmid-trigger';
+    const { stream, close } = createRunOutputStream(mock.session, key);
+
+    mock.runStart('agent-run-1', key);
+    mock.output(key, [textDelta('hi')]);
+    // An unrelated run's run-end must not close this stream.
+    mock.runEnd('agent-run-OTHER', 'complete');
+    mock.output(key, [finish()]); // our own terminal chunk closes it
+
+    const events = await drain(stream);
+    expect(events.map((e) => e.type)).toEqual(['text-delta', 'finish']);
+    close();
   });
 
   it('does not close on a suspended run-end but closes on a non-suspended one', async () => {

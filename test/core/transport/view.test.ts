@@ -1386,6 +1386,62 @@ describe('DefaultView', () => {
       expect(handler).toHaveBeenCalled();
     });
 
+    it('forwards run + ably-message for an adopted run whose runId differs from its key', () => {
+      // Agent-minted run: a run-less input forms a provisional Run keyed by its
+      // codec-message-id; run-start adopts the divergent agent runId. The
+      // run/ably-message events then carry the agent runId, which the View must
+      // resolve back to the visible key.
+      const key = 'cmid-1';
+      const agentRunId = 'agent-run-1';
+      // Run-less node (no run-id header) keyed by its codec-message-id.
+      tree.applyMessage(
+        { inputs: [], outputs: [{ type: 'append-message', message: { id: key, content: 'hi' } }] },
+        { [HEADER_CODEC_MESSAGE_ID]: key },
+        's1',
+      );
+      tree.applyRunLifecycle({
+        type: 'start',
+        runId: agentRunId,
+        clientId: 'c',
+        invocationId: 'inv',
+        inputCodecMessageId: key,
+        serial: 's2',
+      });
+
+      const runHandler = vi.fn();
+      const msgHandler = vi.fn();
+      view.on('run', runHandler);
+      view.on('ably-message', msgHandler);
+
+      // run-end carries the agent runId (≠ key) — must still be forwarded.
+      tree.applyRunLifecycle({
+        type: 'end',
+        runId: agentRunId,
+        clientId: 'c',
+        invocationId: 'inv',
+        serial: 's3',
+        reason: 'complete',
+      });
+      expect(runHandler).toHaveBeenCalled();
+
+      // An ably-message carrying the agent runId resolves to the visible key.
+      const agentMsg = {
+        name: 'fake',
+        extras: { ai: { transport: { [HEADER_RUN_ID]: agentRunId } } },
+      } as unknown as Ably.InboundMessage;
+      tree.emitAblyMessage(agentMsg);
+      expect(msgHandler).toHaveBeenCalledWith(agentMsg);
+
+      // A fresh input ably-message carries only the codec-message-id (no
+      // run-id) — it too resolves to the visible key.
+      const inputMsg = {
+        name: 'ai-input',
+        extras: { ai: { transport: { [HEADER_CODEC_MESSAGE_ID]: key } } },
+      } as unknown as Ably.InboundMessage;
+      tree.emitAblyMessage(inputMsg);
+      expect(msgHandler).toHaveBeenCalledWith(inputMsg);
+    });
+
     it('unsubscribe stops forwarding', () => {
       const handler = vi.fn();
       const unsub = view.on('update', handler);

@@ -1415,14 +1415,30 @@ export class DefaultView<
       return;
     }
 
-    if (runId && this._lastVisibleRunIdSet.has(runId)) {
+    // Resolve the owning Run's stable key: from the wire run-id (agent runId →
+    // key) when present, or from the codec-message-id (a fresh client input
+    // carries no run-id). Re-emit only when that key is on the visible branch.
+    // The Tree has already applied this message, so the lookups resolve.
+    let runKey: string | undefined;
+    if (runId !== undefined) {
+      runKey = this._tree.getRunNode(runId)?.key ?? runId;
+    } else if (codecMessageId !== undefined) {
+      runKey = this._tree.getRunByCodecMessageId(codecMessageId)?.key;
+    }
+
+    if (runKey !== undefined && this._lastVisibleRunIdSet.has(runKey)) {
       this._emitter.emit('ably-message', msg);
     }
   }
 
   private _onTreeRun(event: RunLifecycleEvent): void {
+    // The run event carries the agent-minted runId; resolve it to the run's
+    // stable key, which is what the visible set tracks. (They coincide for a
+    // run whose key equals its runId.)
+    const runKey = this._tree.getRunNode(event.runId)?.key ?? event.runId;
+
     // Check if the run is already on the visible branch.
-    if (this._lastVisibleRunIdSet.has(event.runId)) {
+    if (this._lastVisibleRunIdSet.has(runKey)) {
       this._emitter.emit('run', event);
       return;
     }
@@ -1431,7 +1447,7 @@ export class DefaultView<
     // messages arrive. Own runs have optimistic inserts (caught above).
     // Remote runs carry parent/forkOf from the agent.
     if (event.type === 'start' && this._isRunStartVisible(event)) {
-      this._lastVisibleRunIdSet.add(event.runId);
+      this._lastVisibleRunIdSet.add(runKey);
       this._emitter.emit('run', event);
     }
   }

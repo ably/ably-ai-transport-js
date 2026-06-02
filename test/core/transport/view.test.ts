@@ -15,6 +15,7 @@ import {
 import type { Codec, CodecInputEvent, ReducerMeta } from '../../../src/core/codec/types.js';
 // Vitest hoists vi.mock above imports, so this static import gets the mock.
 import { decodeHistory } from '../../../src/core/transport/decode-history.js';
+import { Invocation } from '../../../src/core/transport/invocation.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
 import type { ActiveRun, HistoryPage, RunLifecycleEvent } from '../../../src/core/transport/types.js';
@@ -111,6 +112,8 @@ const createMockSendDelegate = (): SendDelegate<TestInput, TestOutput> =>
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
       cancel: () => Promise.resolve(),
       optimisticCodecMessageIds: [],
+      toInvocation: () =>
+        Invocation.fromJSON({ runId: 'mock-run', invocationId: 'mock-inv', inputEventId: '', sessionName: 'test' }),
     }),
   );
 
@@ -1652,6 +1655,8 @@ describe('DefaultView', () => {
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
         inputEventId: '',
+        toInvocation: () =>
+          Invocation.fromJSON({ runId: 'R2new', invocationId: 'inv-new', inputEventId: '', sessionName: 'test' }),
       });
 
       await view.regenerate('a1');
@@ -1686,6 +1691,8 @@ describe('DefaultView', () => {
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
         inputEventId: '',
+        toInvocation: () =>
+          Invocation.fromJSON({ runId: 'R2new', invocationId: 'inv-new', inputEventId: '', sessionName: 'test' }),
       });
 
       await view.regenerate('a1');
@@ -1790,6 +1797,8 @@ describe('DefaultView', () => {
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: ['u-new'],
         inputEventId: '',
+        toInvocation: () =>
+          Invocation.fromJSON({ runId: 'R2edit', invocationId: 'inv-edit', inputEventId: '', sessionName: 'test' }),
       });
       // For the auto-select to land, the new Run needs to exist in the tree.
       // role omitted so the new user-content wire routes at wire-runId.

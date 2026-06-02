@@ -85,4 +85,19 @@ export class Invocation {
   static fromJSON(data: InvocationData): Invocation {
     return new Invocation(data);
   }
+
+  /**
+   * Serialise this invocation to its JSON wire shape — the body a client
+   * POSTs to the agent's endpoint to wake a run. Round-trips through
+   * {@link Invocation.fromJSON}.
+   * @returns The {@link InvocationData} carrying this invocation's identity.
+   */
+  toJSON(): InvocationData {
+    return {
+      runId: this.runId,
+      invocationId: this.invocationId,
+      inputEventId: this.inputEventId,
+      sessionName: this.sessionName,
+    };
+  }
 }

@@ -1108,6 +1108,32 @@ describe('ClientSession', () => {
   });
 
   // -------------------------------------------------------------------------
+  // toInvocation — the run's developer-sendable pointer
+  // -------------------------------------------------------------------------
+
+  describe('toInvocation', () => {
+    it('carries the run identity and the channel name as sessionName', async () => {
+      const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      const invocation = run.toInvocation();
+      expect(invocation.runId).toBe(run.runId);
+      expect(invocation.invocationId).toBe(run.invocationId);
+      expect(invocation.inputEventId).toBe(run.inputEventId);
+      // The fixture's session is bound to the 'test-channel' channel.
+      expect(invocation.sessionName).toBe('test-channel');
+    });
+
+    it('serialises to the InvocationData wire shape the agent reads', async () => {
+      const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      expect(run.toInvocation().toJSON()).toEqual({
+        runId: run.runId,
+        invocationId: run.invocationId,
+        inputEventId: run.inputEventId,
+        sessionName: 'test-channel',
+      });
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Message routing — observer projection + own-run stream
   // -------------------------------------------------------------------------
 

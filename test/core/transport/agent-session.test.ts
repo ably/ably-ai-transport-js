@@ -861,6 +861,7 @@ describe('AgentSession', () => {
       // the existing message via its standard per-message-id fold path.
       expect(headers[HEADER_CODEC_MESSAGE_ID]).toBe('target-msg-1');
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
+      expect(headers[HEADER_INVOCATION_ID]).toBe('run-1-inv');
     });
 
     it('stamps input attribution from the triggering input event on addEvents publishes', async () => {
@@ -967,6 +968,7 @@ describe('AgentSession', () => {
       const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
       expect(headers[HEADER_ROLE]).toBe('assistant');
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
+      expect(headers[HEADER_INVOCATION_ID]).toBe('run-1-inv');
     });
 
     it('stamps input attribution from the triggering input event on assistant publishes', async () => {

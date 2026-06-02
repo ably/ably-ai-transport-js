@@ -1191,6 +1191,7 @@ class DefaultAgentSession<
               runId,
               codecMessageId: node.codecMessageId,
               runClientId: runOwnerClientId,
+              invocationId,
               inputClientId: resolvedInputClientId,
               inputCodecMessageId: resolvedInputCodecMessageId,
             });
@@ -1407,6 +1408,7 @@ class DefaultAgentSession<
           runClientId: runOwnerClientId,
           parent: assistantParent,
           forkOf: assistantForkOf,
+          invocationId,
           inputClientId: resolvedInputClientId,
           inputCodecMessageId: resolvedInputCodecMessageId,
           regenerates: assistantRegenerates,

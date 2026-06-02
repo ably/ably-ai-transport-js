@@ -284,12 +284,11 @@ const UNRESOLVED_TOOL_STATES = new Set(['input-streaming', 'input-available', 'a
  * to see them because the channel publish happens before the POST inside
  * `_internalSend`.
  *
- * Four resolutions are produced:
+ * Three resolutions are produced:
  *
  * - `approval-responded` overlay vs `approval-requested` tree →
- *   `tool-approval-response` (approved = true)
- * - `output-denied` overlay vs `approval-requested` tree →
- *   `tool-approval-response` (approved = false)
+ *   `tool-approval-response` carrying the user's decision
+ *   (`approved` = `overlayPart.approval.approved`, i.e. approve or deny)
  * - `output-available` overlay vs unresolved tree → `tool-result`
  * - `output-error` overlay vs unresolved tree → `tool-result-error`
  * @param codecMessages - The visible tree messages paired with their codec-message-ids.
@@ -327,25 +326,15 @@ const deriveContinuationInputs = (
       );
 
       // Approval response: useChat's `addToolApprovalResponse` flipped the
-      // overlay part to `approval-responded` (approve) or `output-denied`
-      // (deny) while the tree still sits on `approval-requested`. Publish
-      // a `tool-approval-response` TInput so the agent's projection sees
-      // the decision.
+      // overlay part to `approval-responded` while the tree still sits on
+      // `approval-requested`. Publish a `tool-approval-response` TInput so the
+      // agent's projection sees the decision.
       if (overlayPart.state === 'approval-responded' && (!treePart || treePart.state === 'approval-requested')) {
         inputs.push(
           UIMessageCodec.createToolApprovalResponse(codecMessageId, {
             toolCallId: overlayPart.toolCallId,
-            approved: true,
+            approved: overlayPart.approval.approved,
             ...(overlayPart.approval.reason === undefined ? {} : { reason: overlayPart.approval.reason }),
-          }),
-        );
-        continue;
-      }
-      if (overlayPart.state === 'output-denied' && (!treePart || treePart.state === 'approval-requested')) {
-        inputs.push(
-          UIMessageCodec.createToolApprovalResponse(codecMessageId, {
-            toolCallId: overlayPart.toolCallId,
-            approved: false,
           }),
         );
         continue;

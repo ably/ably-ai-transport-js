@@ -1294,57 +1294,74 @@ describe('createChatTransport', () => {
       expect(opts.runId).toBe('run-a1');
     });
 
-    it('passes the prior assistant tree codec-message-id as codecMessageId for an approval response', async () => {
-      const { session, send, view, mockRun } = createMockSession();
+    // useChat's `addToolApprovalResponse` sets the overlay part to
+    // `approval-responded` for both approve and deny; the decision lives in
+    // `approval.approved`, which the derived `tool-approval-response` must
+    // carry. The response targets the prior assistant's tree codec-message-id.
+    it.each([
+      { label: 'an approval', approved: true, reason: undefined },
+      { label: 'a denial', approved: false, reason: 'User denied' },
+    ])(
+      'derives $label carrying approved=$approved, with the prior assistant tree codec-message-id',
+      async ({ approved, reason }) => {
+        const { session, send, view, mockRun } = createMockSession();
 
-      const user1 = makeMessage('u1');
-      const treeAssistant = makeAssistantWithToolPart('a1', {
-        type: 'dynamic-tool',
-        toolName: 'getWeatherForecast',
-        toolCallId: 'tc1',
-        state: 'approval-requested',
-        input: { location: 'London' },
-        approval: { id: 'ap-1' },
-      });
-      const overlayAssistant: AI.UIMessage = {
-        id: 'a1',
-        role: 'assistant',
-        parts: [
-          { type: 'text', text: 'intro' },
-          {
-            type: 'dynamic-tool',
-            toolName: 'getWeatherForecast',
+        const user1 = makeMessage('u1');
+        const treeAssistant = makeAssistantWithToolPart('a1', {
+          type: 'dynamic-tool',
+          toolName: 'getWeatherForecast',
+          toolCallId: 'tc1',
+          state: 'approval-requested',
+          input: { location: 'London' },
+          approval: { id: 'ap-1' },
+        });
+        const overlayAssistant: AI.UIMessage = {
+          id: 'a1',
+          role: 'assistant',
+          parts: [
+            { type: 'text', text: 'intro' },
+            {
+              type: 'dynamic-tool',
+              toolName: 'getWeatherForecast',
+              toolCallId: 'tc1',
+              state: 'approval-responded',
+              input: { location: 'London' },
+              approval: { id: 'ap-1', approved, ...(reason === undefined ? {} : { reason }) },
+            },
+          ],
+        };
+
+        (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue(asPairs([user1, treeAssistant]));
+        (view.runOf as ReturnType<typeof vi.fn>).mockReturnValue({
+          runId: 'run-a1',
+          clientId: '',
+          status: 'active',
+          invocationId: '',
+        });
+
+        const chat = createChatTransport(session);
+        const streamPromise = chat.sendMessages({
+          trigger: 'submit-message',
+          chatId: 'chat-1',
+          messageId: undefined,
+          messages: [user1, overlayAssistant],
+          abortSignal: undefined,
+        });
+        mockRun.close();
+        await streamPromise;
+
+        const [input] = send.mock.calls[0] as [VercelInput[]];
+        expect(input).toHaveLength(1);
+        expect(input[0]).toMatchObject({
+          kind: 'tool-approval-response',
+          codecMessageId: 'a1',
+          payload: {
             toolCallId: 'tc1',
-            state: 'approval-responded',
-            input: { location: 'London' },
-            approval: { id: 'ap-1', approved: true },
+            approved,
+            ...(reason === undefined ? {} : { reason }),
           },
-        ],
-      };
-
-      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue(asPairs([user1, treeAssistant]));
-      (view.runOf as ReturnType<typeof vi.fn>).mockReturnValue({
-        runId: 'run-a1',
-        clientId: '',
-        status: 'active',
-        invocationId: '',
-      });
-
-      const chat = createChatTransport(session);
-      const streamPromise = chat.sendMessages({
-        trigger: 'submit-message',
-        chatId: 'chat-1',
-        messageId: undefined,
-        messages: [user1, overlayAssistant],
-        abortSignal: undefined,
-      });
-      mockRun.close();
-      await streamPromise;
-
-      const [input] = send.mock.calls[0] as [VercelInput[]];
-      expect(input).toHaveLength(1);
-      expect(input[0]?.kind).toBe('tool-approval-response');
-      expect(input[0]?.codecMessageId).toBe('a1');
-    });
+        });
+      },
+    );
   });
 });

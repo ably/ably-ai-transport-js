@@ -126,7 +126,7 @@ export const parseRunLifecycle = (name: string, headers: Record<string, string>)
   if (name === EVENT_RUN_END) {
     // CAST: agent always writes a valid RunEndReason; default to 'complete' for robustness.
     const reason = (headers[HEADER_RUN_REASON] ?? 'complete') as RunEndReason;
-    return { type: EVENT_RUN_END, runId, clientId, reason };
+    return { type: EVENT_RUN_END, runId, clientId, invocationId: headers[HEADER_INVOCATION_ID] ?? '', reason };
   }
 
   return undefined;

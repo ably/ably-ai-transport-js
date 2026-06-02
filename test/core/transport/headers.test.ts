@@ -190,6 +190,7 @@ describe('parseRunLifecycle', () => {
     const event = parseRunLifecycle(EVENT_RUN_END, {
       [HEADER_RUN_ID]: 'run-1',
       [HEADER_RUN_CLIENT_ID]: 'user-a',
+      [HEADER_INVOCATION_ID]: 'inv-1',
       [HEADER_RUN_REASON]: 'cancelled',
     });
 
@@ -197,11 +198,12 @@ describe('parseRunLifecycle', () => {
       type: EVENT_RUN_END,
       runId: 'run-1',
       clientId: 'user-a',
+      invocationId: 'inv-1',
       reason: 'cancelled',
     });
   });
 
-  it('defaults the run-end reason to "complete" when absent', () => {
+  it('defaults the run-end reason to "complete" and invocationId to "" when absent', () => {
     const event = parseRunLifecycle(EVENT_RUN_END, {
       [HEADER_RUN_ID]: 'run-1',
     });
@@ -210,6 +212,7 @@ describe('parseRunLifecycle', () => {
       type: EVENT_RUN_END,
       runId: 'run-1',
       clientId: '',
+      invocationId: '',
       reason: 'complete',
     });
   });

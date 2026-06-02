@@ -106,6 +106,7 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
 
   const mockRun = {
     stream: new ReadableStream(),
+    started: Promise.resolve(),
     runId: 'run-1',
     inputEventId: '',
     invocationId: 'inv-1',

@@ -74,12 +74,6 @@ export enum ErrorCode {
   StreamError = 104008,
 
   /**
-   * The client's send() did not observe `ai-run-start` for the run+invocation
-   * within the configured `runStartDeadlineMs`.
-   */
-  RunStartDeadlineExceeded = 104009,
-
-  /**
    * The agent attached to the channel and waited for the input event(s) the
    * invocation points at (rewind + live wait) but `inputEventLookupTimeoutMs`
    * lapsed without seeing them.

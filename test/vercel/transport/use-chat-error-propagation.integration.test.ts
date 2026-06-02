@@ -132,7 +132,6 @@ describe('useChat error propagation', () => {
       // (createRunFromOpts mints its own), so the client's
       // run-start-by-invocation matcher won't resolve. Disable the wait so
       // send() resolves on publish ack and useChat gets the stream.
-      runStartDeadlineMs: 0,
     });
     await clientSession.connect();
 

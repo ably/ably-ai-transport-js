@@ -647,12 +647,14 @@ describe('AgentSession', () => {
       expect(endMsg).toBeDefined();
     });
 
-    it('start() stamps input-client-id from the triggering input event publisher', async () => {
-      // The agent reads the publisher's Ably-level clientId off the input
-      // event matched by the input-event lookup and re-stamps it on its own
-      // published events. Here the synthetic input event is published by
-      // 'user-b', so every agent-published event in the invocation carries
-      // inputClientId: 'user-b' — independent of who owns the run.
+    it('start() stamps input attribution from the triggering input event', async () => {
+      // The agent reads the publisher's Ably-level clientId AND the input's
+      // codec-message-id off the input event matched by the input-event lookup
+      // and re-stamps both on its own published events. Here the synthetic
+      // input event is published by 'user-b' with codec-message-id
+      // 'm-icid-start', so every agent-published event in the invocation
+      // carries inputClientId: 'user-b' and input-codec-message-id:
+      // 'm-icid-start' — independent of who owns the run.
       const runId = 'run-icid-start';
       const invocationId = 'inv-icid-start';
       const inputEventId = 'p-icid-start';
@@ -671,9 +673,10 @@ describe('AgentSession', () => {
       const startMsg = channel.publishCalls.find((m) => m.name === 'ai-run-start');
       const headers = (startMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
       expect(headers?.['input-client-id']).toBe('user-b');
+      expect(headers?.['input-codec-message-id']).toBe('m-icid-start');
     });
 
-    it('end() stamps input-client-id from the triggering input event publisher', async () => {
+    it('end() stamps input attribution from the triggering input event', async () => {
       const runId = 'run-icid-end';
       const invocationId = 'inv-icid-end';
       const inputEventId = 'p-icid-end';
@@ -693,6 +696,7 @@ describe('AgentSession', () => {
       const endMsg = channel.publishCalls.find((m) => m.name === 'ai-run-end');
       const headers = (endMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
       expect(headers?.['input-client-id']).toBe('user-b');
+      expect(headers?.['input-codec-message-id']).toBe('m-icid-end');
     });
 
     it('start() is idempotent (subsequent calls are no-ops)', async () => {
@@ -754,7 +758,7 @@ describe('AgentSession', () => {
       expect(headers[HEADER_CODEC_MESSAGE_ID]).toBeDefined();
     });
 
-    it('stamps input-client-id from the triggering input event publisher on addMessages publishes', async () => {
+    it('stamps input attribution from the triggering input event on addMessages publishes', async () => {
       const runId = 'run-icid-am';
       const invocationId = 'inv-icid-am';
       const inputEventId = 'p-icid-am';
@@ -773,6 +777,7 @@ describe('AgentSession', () => {
 
       const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
       expect(headers['input-client-id']).toBe('user-b');
+      expect(headers['input-codec-message-id']).toBe('m-icid-am');
     });
 
     it('creates one encoder per message (distinct headers)', async () => {
@@ -858,7 +863,7 @@ describe('AgentSession', () => {
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
     });
 
-    it('stamps input-client-id from the triggering input event publisher on addEvents publishes', async () => {
+    it('stamps input attribution from the triggering input event on addEvents publishes', async () => {
       const runId = 'run-icid-ae';
       const invocationId = 'inv-icid-ae';
       const inputEventId = 'p-icid-ae';
@@ -877,6 +882,7 @@ describe('AgentSession', () => {
 
       const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
       expect(headers['input-client-id']).toBe('user-b');
+      expect(headers['input-codec-message-id']).toBe('m-icid-ae');
     });
 
     it('calls encoder.publishOutput per event', async () => {
@@ -963,7 +969,7 @@ describe('AgentSession', () => {
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
     });
 
-    it('stamps input-client-id from the triggering input event publisher on assistant publishes', async () => {
+    it('stamps input attribution from the triggering input event on assistant publishes', async () => {
       const runId = 'run-icid-pipe';
       const invocationId = 'inv-icid-pipe';
       const inputEventId = 'p-icid-pipe';
@@ -982,6 +988,7 @@ describe('AgentSession', () => {
 
       const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
       expect(headers['input-client-id']).toBe('user-b');
+      expect(headers['input-codec-message-id']).toBe('m-icid-pipe');
     });
 
     it('publishes each stream event through encoder.publishOutput', async () => {

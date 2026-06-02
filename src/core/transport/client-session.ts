@@ -430,24 +430,22 @@ class DefaultClientSession<
   // ---------------------------------------------------------------------------
 
   /**
-   * Tear down local state for a send whose channel publish failed.
+   * Tear down local state for a fresh send whose channel publish failed.
    * Idempotent.
-   * @param runId - The runId of the failed send.
-   * @param options - Cleanup options.
-   * @param options.removeOptimistic - When true, delete optimistic tree
-   *   nodes for this send that haven't been acked yet (no serial). True for
-   *   a fresh send (the optimistic insert never reached the channel); false
-   *   for a continuation, which inserts no optimistic nodes.
+   * @param optimisticKeys - The Tree keys of the provisional Runs the fresh
+   *   send inserted optimistically (one per non-wire-only input, keyed by its
+   *   codec-message-id). Empty for a continuation, which folds into an existing
+   *   Run and inserts none.
    */
-  private _cleanupFailedSend(runId: string, options: { removeOptimistic: boolean }): void {
-    if (options.removeOptimistic) {
+  private _cleanupFailedSend(optimisticKeys: readonly string[]): void {
+    for (const key of optimisticKeys) {
       // Drop the optimistic Run only if the publish never produced a
       // server-assigned serial (i.e. nothing live observed the Run). A
       // server-acked Run is part of the canonical channel state and must
       // stay; the View / observers already see it.
-      const run = this._tree.getRunNode(runId);
+      const run = this._tree.getRunNode(key);
       if (run && run.startSerial === undefined) {
-        this._tree.delete(runId);
+        this._tree.delete(key);
       }
     }
   }
@@ -513,7 +511,15 @@ class DefaultClientSession<
       );
     }
 
-    const runId = sendOptions?.runId ?? crypto.randomUUID();
+    // The client no longer mints a runId for a fresh run — the agent assigns it
+    // and the client adopts it from run-start. `runId` is defined only for a
+    // continuation (the reused id the caller passed). A fresh send carries no
+    // run-id on the wire, so the Tree forms a provisional Run keyed by the
+    // triggering input's codec-message-id.
+    const runId = sendOptions?.runId;
+    // The invocation id is no longer stamped on the wire; it is still minted
+    // here for the out-of-band POST body (toInvocation). The POST body is
+    // trimmed to client-owned identifiers in a follow-up commit.
     const invocationId = crypto.randomUUID();
 
     // Spec: AIT-CT3d
@@ -572,13 +578,14 @@ class DefaultClientSession<
 
       const headers = buildTransportHeaders({
         role: 'user',
-        runId,
+        // Omitted for a fresh send (agent-minted runId); the reused id for a
+        // continuation. No invocation-id is stamped on the wire any more.
+        ...(runId !== undefined && { runId }),
         codecMessageId,
         runClientId: this._clientId,
         ...(parent !== undefined && { parent }),
         ...(forkOf !== undefined && { forkOf }),
         ...(regenerates !== undefined && { regenerates }),
-        invocationId,
         inputEventId,
         runContinue: isContinuation,
       });
@@ -636,6 +643,16 @@ class DefaultClientSession<
     // The executor runs synchronously, so the tracker entry is registered
     // before `new Promise` returns.
     const startedKey = triggerCodecMessageId ?? runId;
+    if (startedKey === undefined) {
+      // Invariant: a fresh send carries ≥1 input (validated above) so
+      // `triggerCodecMessageId` is defined, and an empty-input continuation has
+      // a `runId`. This guards the type and an impossible misuse.
+      throw new Ably.ErrorInfo(
+        'unable to send; no correlation handle (empty fresh send)',
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
     const started = new Promise<RunStarted>((resolve, reject) => {
       this._pendingRunStarts.set(startedKey, { resolve, reject });
     });
@@ -673,9 +690,12 @@ class DefaultClientSession<
         // The input never reached the channel — there is no run to wait on.
         // Drop the started tracker so close() doesn't later reject an orphan.
         this._pendingRunStarts.delete(startedKey);
-        // Continuations didn't insert optimistic nodes, so removeOptimistic
-        // is moot for them — only fresh sends need to clear their inserts.
-        this._cleanupFailedSend(runId, { removeOptimistic: !isContinuation });
+        // Clear the optimistic provisional Runs this fresh send inserted (one
+        // per non-wire-only input, each keyed by its codec-message-id). A
+        // continuation folds into an existing Run and inserts none, so its
+        // optimistic-key list is empty.
+        const optimisticKeys = isContinuation ? [] : items.filter((i) => !i.isWireOnly).map((i) => i.codecMessageId);
+        this._cleanupFailedSend(optimisticKeys);
         throw err;
       }
     })();
@@ -686,11 +706,12 @@ class DefaultClientSession<
     // and await `run.started` if they need to know it was picked up.
     await publishPromise;
 
-    // The run's stable Tree key. The client stamps `run-id` on every wire
-    // message today, so the Tree keys the run by that runId — `key === runId`.
-    // (Once the client stops minting, a fresh send carries no run-id and the
-    // key becomes the triggering codec-message-id.)
-    const runKey = runId;
+    // The run's stable Tree key. A continuation reuses an existing run, so its
+    // key is that run's key (which differs from the reused runId when the run
+    // was an adopted provisional one). A fresh send carries no run-id, so the
+    // Tree keyed its provisional Run by the triggering input's codec-message-id
+    // (= startedKey); the agent's runId is adopted onto it from run-start.
+    const runKey = runId === undefined ? startedKey : (this._tree.getRunNode(runId)?.key ?? runId);
 
     // Cancel handling. The client owns a run's id at send time only for a
     // continuation (the reused runId in `sendOptions`); a fresh run's id is

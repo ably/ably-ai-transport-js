@@ -357,12 +357,17 @@ const ackPendingSend = async (
   }
   if (!publishedHeaders) throw new Error('no user-message publish observed');
 
-  const runId = publishedHeaders[HEADER_RUN_ID] ?? '';
-  const invocationId = publishedHeaders[HEADER_INVOCATION_ID] ?? '';
   const codecMessageId = publishedHeaders[HEADER_CODEC_MESSAGE_ID] ?? '';
   const runContinue = publishedHeaders[HEADER_RUN_CONTINUE] === 'true';
+  // The agent owns run/invocation identity. A fresh send carries no run-id on
+  // the wire, so the agent mints one here; a continuation carries the reused
+  // run-id, which the agent honours. The invocation-id is always agent-minted
+  // (the client no longer stamps it on the wire).
+  const runId = publishedHeaders[HEADER_RUN_ID] ?? `agent-run-${crypto.randomUUID()}`;
+  const invocationId = `agent-inv-${crypto.randomUUID()}`;
   // Mirror the agent: thread the triggering input's codec-message-id back as
-  // `input-codec-message-id` (the handle a fresh send's `started` resolves on)
+  // `input-codec-message-id` (the handle a fresh send's `started` resolves on,
+  // and by which the Tree adopts the minted runId onto the provisional Run)
   // and mark continuations with `run-continue` (which the client resolves by
   // the reused runId instead).
   simulateMessage(
@@ -573,8 +578,10 @@ describe('ClientSession', () => {
       expect(call?.event && 'kind' in call.event ? call.event.kind : undefined).toBe('user-message');
       const opts = call?.opts;
       expect(opts?.messageId).toBeDefined();
-      expect(opts?.extras?.headers?.[HEADER_RUN_ID]).toBeDefined();
-      expect(opts?.extras?.headers?.[HEADER_INVOCATION_ID]).toBeDefined();
+      // A fresh send no longer carries run-id or invocation-id on the wire —
+      // the agent mints both and the client adopts the runId from run-start.
+      expect(opts?.extras?.headers?.[HEADER_RUN_ID]).toBeUndefined();
+      expect(opts?.extras?.headers?.[HEADER_INVOCATION_ID]).toBeUndefined();
       expect(opts?.extras?.headers?.[HEADER_ROLE]).toBe('user');
       expect(opts?.extras?.headers?.['event-id']).toBeDefined();
       // `ai-input` events do not carry `input-client-id` — the wire
@@ -626,8 +633,11 @@ describe('ClientSession', () => {
       // the optimistic fold.
       const nodes = fix.session.tree.runs();
       expect(nodes).toHaveLength(1);
-      expect(nodes[0]?.runId).toBeDefined();
-      expect(nodes[0]?.invocationId).toBeDefined();
+      // The fresh send carries no run-id, so the optimistic Run is provisional:
+      // keyed by the input's codec-message-id, with no runId until the agent's
+      // run-start is adopted.
+      expect(nodes[0]?.key).toBe('pinned-id');
+      expect(nodes[0]?.runId).toBeUndefined();
 
       const messages = fix.session.view.getMessages();
       expect(messages).toHaveLength(1);
@@ -684,7 +694,11 @@ describe('ClientSession', () => {
         { kind: 'user-message', text: 'first' },
         { kind: 'user-message', text: 'second' },
       ]);
-      // Both messages land in the same Run's projection (one Run per send).
+      // Both messages are visible in order via the parent chain. With no
+      // client-minted run-id, each fresh input forms its own provisional Run
+      // (keyed by its codec-message-id), parent-chained — the View walks the
+      // chain and concatenates them. See the dedicated provisional-Run test
+      // below for the run-level shape.
       const messages = fix.session.view.getMessages();
       expect(messages).toHaveLength(2);
       expect(messages[0]?.content).toBe('first');
@@ -700,6 +714,42 @@ describe('ClientSession', () => {
       const firstMsgId = userPublishes[0]?.opts?.extras?.headers?.[HEADER_CODEC_MESSAGE_ID];
       const secondParent = userPublishes[1]?.opts?.extras?.headers?.[HEADER_PARENT];
       expect(secondParent).toBe(firstMsgId);
+    });
+
+    it('a multi-input fresh send forms one provisional Run per input; the agent runId adopts onto the last', async () => {
+      // With no client-minted run-id, each fresh non-wire-only input forms its
+      // own provisional Run keyed by its codec-message-id, parent-chained. The
+      // agent echoes the triggering (last) input's codec-message-id on
+      // run-start, so its runId is adopted onto the last input's Run; the
+      // earlier input's Run stays provisional (runId undefined).
+      await fix.session.view.sendInput([
+        { kind: 'user-message', text: 'first' },
+        { kind: 'user-message', text: 'second' },
+      ]);
+
+      const runsBefore = fix.session.tree.runs();
+      expect(runsBefore).toHaveLength(2);
+      expect(runsBefore.every((r) => r.runId === undefined)).toBe(true);
+      // The second Run is parented to the first (the auto-parent chain).
+      expect(runsBefore[1]?.parentRunId).toBe(runsBefore[0]?.key);
+
+      // The agent's run-start echoes the triggering (last) input's
+      // codec-message-id, so its runId adopts onto the last Run only.
+      const lastKey = runsBefore[1]?.key ?? '';
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_START, {
+          [HEADER_RUN_ID]: 'agent-run-multi',
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+          [HEADER_INVOCATION_ID]: 'agent-inv-multi',
+          [HEADER_INPUT_CODEC_MESSAGE_ID]: lastKey,
+        }),
+      );
+      const adopted = fix.session.tree.getRunNode('agent-run-multi');
+      expect(adopted?.key).toBe(lastKey);
+      // The earlier input's Run remains provisional.
+      const firstKey = runsBefore[0]?.key ?? '';
+      expect(fix.session.tree.getRunNode(firstKey)?.runId).toBeUndefined();
     });
 
     it('stamps forkOf on the publish headers when set', async () => {
@@ -749,30 +799,33 @@ describe('ClientSession', () => {
   // -------------------------------------------------------------------------
 
   describe('send — continuation', () => {
-    it('reuses the runId and mints a fresh invocationId', async () => {
+    it('reuses the agent-minted runId on the continuation wire and stamps no invocation-id', async () => {
+      // Send a fresh run and let the agent mint+adopt its runId.
       await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
-      const initialWire = publishedRunIdentity(fix.codec, 0);
+      const initialAck = await ackPendingSend(fix.channel, fix.codec);
 
       const cont = await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], {
-        runId: initialWire.runId,
+        runId: initialAck.runId,
       });
 
-      // The continuation reuses the run-id (its key is that runId) and the
-      // wire carries a fresh invocation-id.
+      // The continuation reuses the adopted runId on the wire. Its key is the
+      // original run's key (the initial trigger codec-message-id), not the
+      // reused runId, since that run was an adopted provisional one.
       const contWire = publishedRunIdentity(fix.codec, 1);
-      expect(cont.key).toBe(initialWire.runId);
-      expect(contWire.runId).toBe(initialWire.runId);
-      expect(contWire.invocationId).not.toBe(initialWire.invocationId);
+      expect(contWire.runId).toBe(initialAck.runId);
+      expect(cont.key).toBe(initialAck.codecMessageId);
+      // The client never stamps invocation-id on the wire — it is agent-minted.
+      expect(contWire.invocationId).toBe('');
     });
 
     it('publishes the continuation user-message with HEADER_RUN_ID and HEADER_RUN_CONTINUE', async () => {
       await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
-      const initialWire = publishedRunIdentity(fix.codec, 0);
+      const initialAck = await ackPendingSend(fix.channel, fix.codec);
       const enc = fix.codec.lastEncoder();
       // Drop the initial publish from the call count
       const baseCalls = enc?.publishCalls.length ?? 0;
 
-      await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], { runId: initialWire.runId });
+      await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], { runId: initialAck.runId });
 
       const newCalls = (enc?.publishCalls.length ?? 0) - baseCalls;
       expect(newCalls).toBe(1);
@@ -780,10 +833,10 @@ describe('ClientSession', () => {
       expect(call?.direction).toBe('input');
       expect(call?.event && 'kind' in call.event ? call.event.kind : undefined).toBe('user-message');
       const headers = call?.opts?.extras?.headers;
-      expect(headers?.[HEADER_RUN_ID]).toBe(initialWire.runId);
-      // A fresh invocation-id is minted for the continuation.
-      expect(headers?.[HEADER_INVOCATION_ID]).toBeDefined();
-      expect(headers?.[HEADER_INVOCATION_ID]).not.toBe(initialWire.invocationId);
+      // A continuation reuses the adopted run-id on the wire.
+      expect(headers?.[HEADER_RUN_ID]).toBe(initialAck.runId);
+      // The client never stamps invocation-id on the wire (agent-minted).
+      expect(headers?.[HEADER_INVOCATION_ID]).toBeUndefined();
       // Continuation publishes carry HEADER_RUN_CONTINUE='true' on the wire.
       expect(headers?.['run-continue']).toBe('true');
       // Continuation user-messages publish as role:'user'.
@@ -792,29 +845,26 @@ describe('ClientSession', () => {
       expect(headers?.amend).toBeUndefined();
     });
 
-    it('surfaces the continuation trigger event id and run identity on the ActiveRun', async () => {
+    it('surfaces the continuation trigger event id and run key on the ActiveRun', async () => {
       await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
-      const initialWire = publishedRunIdentity(fix.codec, 0);
+      const initialAck = await ackPendingSend(fix.channel, fix.codec);
 
       const cont = await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], {
-        runId: initialWire.runId,
+        runId: initialAck.runId,
       });
 
-      // The continuation's key is the reused runId; the wire carries a fresh
-      // invocation-id.
-      const contWire = publishedRunIdentity(fix.codec, 1);
       expect(typeof cont.inputEventId).toBe('string');
-      expect(cont.key).toBe(initialWire.runId);
-      expect(contWire.invocationId).not.toBe(initialWire.invocationId);
+      // The continuation's key is the original run's key (its codec-message-id).
+      expect(cont.key).toBe(initialAck.codecMessageId);
     });
 
     it('stamps the continuation event-id on the publish and surfaces it on the ActiveRun', async () => {
       await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
-      const initialWire = publishedRunIdentity(fix.codec, 0);
+      const initialAck = await ackPendingSend(fix.channel, fix.codec);
       const before = fix.codec.lastEncoder()?.publishCalls.length ?? 0;
 
       const cont = await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], {
-        runId: initialWire.runId,
+        runId: initialAck.runId,
       });
 
       const enc = fix.codec.lastEncoder();
@@ -831,9 +881,9 @@ describe('ClientSession', () => {
       const enc = fix.codec.lastEncoder();
       const freshHeaders = enc?.publishCalls.at(-1)?.opts?.extras?.headers;
       expect(freshHeaders?.['run-continue']).toBeUndefined();
-      const freshWire = publishedRunIdentity(fix.codec, 0);
+      const freshAck = await ackPendingSend(fix.channel, fix.codec);
 
-      await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], { runId: freshWire.runId });
+      await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], { runId: freshAck.runId });
       const contHeaders = enc?.publishCalls.at(-1)?.opts?.extras?.headers;
       expect(contHeaders?.['run-continue']).toBe('true');
     });
@@ -1003,9 +1053,9 @@ describe('ClientSession', () => {
 
     it('continuation: run.started resolves by the triggering input codec-message-id, like a fresh send', async () => {
       await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
-      const initialWire = publishedRunIdentity(fix.codec, 0);
+      const initialAck = await ackPendingSend(fix.channel, fix.codec);
       const cont = await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], {
-        runId: initialWire.runId,
+        runId: initialAck.runId,
       });
       // A continuation is itself an input event with its own codec-message-id,
       // which the agent echoes back on the continuation run-start. Resolution
@@ -1034,19 +1084,19 @@ describe('ClientSession', () => {
       // An empty-input continuation publishes no input event, so there is no
       // codec-message-id to key on — it resolves purely by the reused runId.
       await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
-      const initialWire = publishedRunIdentity(fix.codec, 0);
-      const cont = await fix.session.view.sendInput([], { runId: initialWire.runId });
+      const initialAck = await ackPendingSend(fix.channel, fix.codec);
+      const cont = await fix.session.view.sendInput([], { runId: initialAck.runId });
 
       simulateMessage(
         fix.channel,
         ablyMsg(EVENT_RUN_START, {
-          [HEADER_RUN_ID]: initialWire.runId,
+          [HEADER_RUN_ID]: initialAck.runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
           [HEADER_RUN_CONTINUE]: 'true',
         }),
       );
 
-      await expect(cont.started).resolves.toEqual({ runId: initialWire.runId, invocationId: '' });
+      await expect(cont.started).resolves.toEqual({ runId: initialAck.runId, invocationId: '' });
     });
 
     it('does not resolve run.started for a run-start matching neither the trigger codec-message-id nor the runId', async () => {
@@ -1087,10 +1137,9 @@ describe('ClientSession', () => {
   describe('toInvocation', () => {
     it('carries the run identity and the channel name as sessionName', async () => {
       const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
-      const wire = publishedRunIdentity(fix.codec, 0);
       const invocation = run.toInvocation();
-      expect(invocation.runId).toBe(wire.runId);
-      expect(invocation.invocationId).toBe(wire.invocationId);
+      // A fresh send owns no runId at send time — the agent mints it.
+      expect(invocation.runId).toBeUndefined();
       expect(invocation.inputEventId).toBe(run.inputEventId);
       // The fixture's session is bound to the 'test-channel' channel.
       expect(invocation.sessionName).toBe('test-channel');
@@ -1098,13 +1147,12 @@ describe('ClientSession', () => {
 
     it('serialises to the InvocationData wire shape the agent reads', async () => {
       const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
-      const wire = publishedRunIdentity(fix.codec, 0);
-      expect(run.toInvocation().toJSON()).toEqual({
-        runId: wire.runId,
-        invocationId: wire.invocationId,
-        inputEventId: run.inputEventId,
-        sessionName: 'test-channel',
-      });
+      const json = run.toInvocation().toJSON();
+      // Fresh send: no runId in the body; inputEventId + sessionName are the
+      // client-owned identifiers the agent reads.
+      expect(json.runId).toBeUndefined();
+      expect(json.inputEventId).toBe(run.inputEventId);
+      expect(json.sessionName).toBe('test-channel');
     });
   });
 
@@ -1346,17 +1394,20 @@ describe('ClientSession', () => {
       await s.connect();
 
       const sendPromise = s.view.sendInput({ kind: 'user-message', text: 'hi' });
-      const { runId, invocationId } = await ackPendingSend(ch, codec);
+      const { runId, invocationId, codecMessageId } = await ackPendingSend(ch, codec);
       await sendPromise;
 
       const outputs: TestOutput[] = [];
+      // The Tree's `output` event carries the run's key (the triggering input's
+      // codec-message-id), not the agent-minted runId, so filter by that.
       s.tree.on('output', (e) => {
-        if (e.runId === runId) outputs.push(...e.events);
+        if (e.runId === codecMessageId) outputs.push(...e.events);
       });
 
       // Decoded output events surface on the Tree's `output` event keyed by
-      // runId (decoder is shared with the session — same instance returned
-      // by codec.createDecoder()).
+      // the run key (decoder is shared with the session — same instance
+      // returned by codec.createDecoder()). The agent publishes them under
+      // run-id, which the Tree resolves back to the run's key.
       decoder.queue.push({ type: 'text', text: 'pong' });
       simulateMessage(
         ch,
@@ -1441,29 +1492,30 @@ describe('ClientSession', () => {
       // continuation's run-end must still mark the Run complete; otherwise
       // the Run stays at status=active and the UI sticks on "streaming".
       await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
-      const initialWire = publishedRunIdentity(fix.codec, 0);
+      // The agent mints+adopts the runId on run-start, then the run suspends.
+      const initialAck = await ackPendingSend(fix.channel, fix.codec);
+      const contInv = 'agent-inv-continuation';
 
       simulateMessage(
         fix.channel,
         ablyMsg(EVENT_RUN_END, {
-          [HEADER_RUN_ID]: initialWire.runId,
+          [HEADER_RUN_ID]: initialAck.runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
-          [HEADER_INVOCATION_ID]: initialWire.invocationId,
+          [HEADER_INVOCATION_ID]: initialAck.invocationId,
           [HEADER_RUN_REASON]: 'suspended',
         }),
       );
 
       await fix.session.view.sendInput([{ kind: 'user-message', text: 'continue' }], {
-        runId: initialWire.runId,
+        runId: initialAck.runId,
       });
-      const continuationWire = publishedRunIdentity(fix.codec, 1);
 
       simulateMessage(
         fix.channel,
         ablyMsg(EVENT_RUN_START, {
-          [HEADER_RUN_ID]: initialWire.runId,
+          [HEADER_RUN_ID]: initialAck.runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
-          [HEADER_INVOCATION_ID]: continuationWire.invocationId,
+          [HEADER_INVOCATION_ID]: contInv,
           'run-continue': 'true',
         }),
       );
@@ -1473,9 +1525,9 @@ describe('ClientSession', () => {
       simulateMessage(
         fix.channel,
         ablyMsg('finish', {
-          [HEADER_RUN_ID]: initialWire.runId,
+          [HEADER_RUN_ID]: initialAck.runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
-          [HEADER_INVOCATION_ID]: continuationWire.invocationId,
+          [HEADER_INVOCATION_ID]: contInv,
           'run-continue': 'true',
         }),
       );
@@ -1483,15 +1535,15 @@ describe('ClientSession', () => {
       simulateMessage(
         fix.channel,
         ablyMsg(EVENT_RUN_END, {
-          [HEADER_RUN_ID]: initialWire.runId,
+          [HEADER_RUN_ID]: initialAck.runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
-          [HEADER_INVOCATION_ID]: continuationWire.invocationId,
+          [HEADER_INVOCATION_ID]: contInv,
           [HEADER_RUN_REASON]: 'complete',
         }),
       );
 
       // applyRunLifecycle marks the Run complete.
-      expect(fix.session.tree.getRunNode(initialWire.runId)?.status).toBe('complete');
+      expect(fix.session.tree.getRunNode(initialAck.runId)?.status).toBe('complete');
     });
 
     it('continuation run reaches status=complete live after suspended → continuation → complete sequence', async () => {
@@ -1503,46 +1555,48 @@ describe('ClientSession', () => {
       // R1.status must end at the continuation's reason, otherwise the
       // UI stays stuck on "streaming".
       await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
-      const initialWire = publishedRunIdentity(fix.codec, 0);
+      // The agent mints+adopts the runId on the first run-start.
+      const initialAck = await ackPendingSend(fix.channel, fix.codec);
+      const contInv = 'agent-inv-continuation';
 
       // First invocation suspends (e.g. tool call awaiting client output).
       simulateMessage(
         fix.channel,
         ablyMsg(EVENT_RUN_END, {
-          [HEADER_RUN_ID]: initialWire.runId,
+          [HEADER_RUN_ID]: initialAck.runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
-          [HEADER_INVOCATION_ID]: initialWire.invocationId,
+          [HEADER_INVOCATION_ID]: initialAck.invocationId,
           [HEADER_RUN_REASON]: 'suspended',
         }),
       );
-      expect(fix.session.tree.getRunNode(initialWire.runId)?.status).toBe('suspended');
+      expect(fix.session.tree.getRunNode(initialAck.runId)?.status).toBe('suspended');
 
-      // Continuation send under the same runId with a fresh invocation.
+      // Continuation send under the same runId; the agent mints a fresh
+      // invocation for the continuation run-start.
       await fix.session.view.sendInput([{ kind: 'user-message', text: 'continue' }], {
-        runId: initialWire.runId,
+        runId: initialAck.runId,
       });
-      const continuationWire = publishedRunIdentity(fix.codec, 1);
-      expect(continuationWire.invocationId).not.toBe(initialWire.invocationId);
+      expect(contInv).not.toBe(initialAck.invocationId);
 
       // Continuation's run-start (from agent) re-activates the run.
       simulateMessage(
         fix.channel,
         ablyMsg(EVENT_RUN_START, {
-          [HEADER_RUN_ID]: initialWire.runId,
+          [HEADER_RUN_ID]: initialAck.runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
-          [HEADER_INVOCATION_ID]: continuationWire.invocationId,
+          [HEADER_INVOCATION_ID]: contInv,
           'run-continue': 'true',
         }),
       );
-      expect(fix.session.tree.getRunNode(initialWire.runId)?.status).toBe('active');
+      expect(fix.session.tree.getRunNode(initialAck.runId)?.status).toBe('active');
 
       // Continuation run-end (complete).
       simulateMessage(
         fix.channel,
         ablyMsg(EVENT_RUN_END, {
-          [HEADER_RUN_ID]: initialWire.runId,
+          [HEADER_RUN_ID]: initialAck.runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
-          [HEADER_INVOCATION_ID]: continuationWire.invocationId,
+          [HEADER_INVOCATION_ID]: contInv,
           [HEADER_RUN_REASON]: 'complete',
         }),
       );
@@ -1550,7 +1604,7 @@ describe('ClientSession', () => {
       // The continuation's run-end must apply — otherwise the Run stays
       // at status=active and any UI gating on Run status sticks on
       // "streaming" / shows "Stop" forever.
-      expect(fix.session.tree.getRunNode(initialWire.runId)?.status).toBe('complete');
+      expect(fix.session.tree.getRunNode(initialAck.runId)?.status).toBe('complete');
     });
 
     it('processes continuation run-end on an observer session', () => {
@@ -1612,15 +1666,15 @@ describe('ClientSession', () => {
     });
 
     it('processes a continuation run-end carrying a fresh invocation', async () => {
-      // A continuation reuses the runId under a fresh invocation. The
-      // continuation's run-end is applied and the run cleans up.
+      // A continuation reuses the runId under a fresh (agent-minted)
+      // invocation. The continuation's run-end is applied and the run cleans up.
       await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
-      const initialWire = publishedRunIdentity(fix.codec, 0);
+      const initialAck = await ackPendingSend(fix.channel, fix.codec);
       await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], {
-        runId: initialWire.runId,
+        runId: initialAck.runId,
       });
-      const continuationWire = publishedRunIdentity(fix.codec, 1);
-      expect(continuationWire.invocationId).not.toBe(initialWire.invocationId);
+      const contInv = 'agent-inv-continuation';
+      expect(contInv).not.toBe(initialAck.invocationId);
 
       const runEnds: RunLifecycleEvent[] = [];
       fix.session.tree.on('run', (e) => {
@@ -1630,15 +1684,16 @@ describe('ClientSession', () => {
       simulateMessage(
         fix.channel,
         ablyMsg(EVENT_RUN_END, {
-          [HEADER_RUN_ID]: initialWire.runId,
+          [HEADER_RUN_ID]: initialAck.runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
-          [HEADER_INVOCATION_ID]: continuationWire.invocationId,
+          [HEADER_INVOCATION_ID]: contInv,
           [HEADER_RUN_REASON]: 'complete',
         }),
       );
 
       expect(runEnds).toHaveLength(1);
-      expect(runEnds[0]?.runId).toBe(initialWire.runId);
+      // The run event carries the agent runId the continuation reused.
+      expect(runEnds[0]?.runId).toBe(initialAck.runId);
     });
   });
 
@@ -1755,16 +1810,16 @@ describe('ClientSession', () => {
     // learned from run-start, so a fresh-run cancel defers until then.
     it('ActiveRun.cancel() on a continuation publishes immediately under the reused runId', async () => {
       await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
-      const initialWire = publishedRunIdentity(fix.codec, 0);
+      const initialAck = await ackPendingSend(fix.channel, fix.codec);
       const cont = await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], {
-        runId: initialWire.runId,
+        runId: initialAck.runId,
       });
 
       // The reused runId is known synchronously — cancel fires without waiting
       // for any run-start.
       await cont.cancel();
       const headers = await lastCancelHeaders(fix.channel);
-      expect(headers?.[HEADER_RUN_ID]).toBe(initialWire.runId);
+      expect(headers?.[HEADER_RUN_ID]).toBe(initialAck.runId);
     });
 
     it('ActiveRun.cancel() on a fresh run defers until run-start, then publishes under the adopted runId', async () => {

@@ -31,6 +31,18 @@ describe('buildTransportHeaders', () => {
     expect(headers[HEADER_CODEC_MESSAGE_ID]).toBe('msg-1');
   });
 
+  it('omits run-id when runId is undefined (agent-minted fresh send)', () => {
+    // A fresh client send carries no run-id — the agent assigns it.
+    const headers = buildTransportHeaders({
+      role: 'user',
+      codecMessageId: 'msg-1',
+    });
+
+    expect(headers).not.toHaveProperty(HEADER_RUN_ID);
+    expect(headers[HEADER_ROLE]).toBe('user');
+    expect(headers[HEADER_CODEC_MESSAGE_ID]).toBe('msg-1');
+  });
+
   it('includes runClientId when provided', () => {
     const headers = buildTransportHeaders({
       role: 'assistant',

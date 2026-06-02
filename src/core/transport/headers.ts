@@ -29,7 +29,9 @@ import type { RunEndReason, RunLifecycleEvent } from './types.js';
  * Build the standard transport header set for a message.
  * @param opts - The header values to include.
  * @param opts.role - Message role (e.g. "user", "assistant").
- * @param opts.runId - Run correlation ID.
+ * @param opts.runId - Run correlation ID. Omitted on a fresh client send in the
+ *   agent-minted model (the agent assigns the runId at run-start); present on a
+ *   continuation (the reused runId) and on every agent-published message.
  * @param opts.codecMessageId - Message identity — the wire `codec-message-id` for this message.
  * @param opts.runClientId - ClientId of the run initiator.
  * @param opts.parent - Preceding message's codec-message-id (for branching).
@@ -58,7 +60,7 @@ import type { RunEndReason, RunLifecycleEvent } from './types.js';
  */
 export const buildTransportHeaders = (opts: {
   role: string;
-  runId: string;
+  runId?: string;
   codecMessageId: string;
   runClientId?: string;
   parent?: string;
@@ -72,9 +74,9 @@ export const buildTransportHeaders = (opts: {
 }): Record<string, string> => {
   const h: Record<string, string> = {
     [HEADER_ROLE]: opts.role,
-    [HEADER_RUN_ID]: opts.runId,
     [HEADER_CODEC_MESSAGE_ID]: opts.codecMessageId,
   };
+  if (opts.runId !== undefined) h[HEADER_RUN_ID] = opts.runId;
   if (opts.runClientId !== undefined) h[HEADER_RUN_CLIENT_ID] = opts.runClientId;
   if (opts.parent) h[HEADER_PARENT] = opts.parent;
   if (opts.forkOf) h[HEADER_FORK_OF] = opts.forkOf;

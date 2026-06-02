@@ -104,8 +104,12 @@ const makeEmitter = (): MockEmitter => {
 
 interface MockRun {
   stream: ReadableStream<AI.UIMessageChunk>;
-  runId: string;
+  started: Promise<{ runId: string; invocationId: string }>;
+  /** The run's stable Tree key — what the transport keys the output stream on. */
+  key: string;
+  inputEventId: string;
   cancel: ReturnType<typeof vi.fn>;
+  optimisticCodecMessageIds: string[];
   /** Build the run's invocation pointer (the transport POSTs this to wake the agent). */
   toInvocation: () => Invocation;
   /** Emit a chunk as a Tree `output` event for this run (drives the consumer stream). */
@@ -118,8 +122,12 @@ const createMockRun = (runId: string, treeEmit: MockEmitter['emit']): MockRun =>
   // Inert placeholder — the transport builds its own stream from Tree events.
   // eslint-disable-next-line @typescript-eslint/no-empty-function -- inert placeholder stream
   stream: new ReadableStream<AI.UIMessageChunk>({ start: () => {} }),
-  runId,
+  started: Promise.resolve({ runId, invocationId: `${runId}-inv` }),
+  // The client still mints here, so the run's key equals the runId.
+  key: runId,
+  inputEventId: '',
   cancel: vi.fn(),
+  optimisticCodecMessageIds: [],
   toInvocation: () =>
     Invocation.fromJSON({ runId, invocationId: `${runId}-inv`, inputEventId: '', sessionName: 'chat-1' }),
   enqueue: (chunk: AI.UIMessageChunk) => {
@@ -173,8 +181,8 @@ const createMockSession = () => {
     sendInput: send,
     tree,
     view,
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-    cancel: vi.fn(() => Promise.resolve()),
+
+    cancel: vi.fn(),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     close: vi.fn(() => Promise.resolve()),
     regenerate: vi.fn(),
@@ -211,8 +219,8 @@ const createMultiRunMockSession = () => {
     sendInput: send,
     tree,
     view,
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-    cancel: vi.fn(() => Promise.resolve()),
+
+    cancel: vi.fn(),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     close: vi.fn(() => Promise.resolve()),
     regenerate: vi.fn(),

@@ -43,7 +43,16 @@ import { buildTransportHeaders, parseRunLifecycle } from './headers.js';
 import { Invocation } from './invocation.js';
 import type { DefaultTree } from './tree.js';
 import { createTree } from './tree.js';
-import type { ActiveRun, ClientSession, ClientSessionOptions, RunEndReason, SendOptions, Tree, View } from './types.js';
+import type {
+  ActiveRun,
+  ClientSession,
+  ClientSessionOptions,
+  RunEndReason,
+  RunStarted,
+  SendOptions,
+  Tree,
+  View,
+} from './types.js';
 import { createView, type DefaultView } from './view.js';
 
 /**
@@ -128,7 +137,10 @@ class DefaultClientSession<
    * empty-input continuation, which publishes no input and so keys by the
    * reused `runId` instead.
    */
-  private readonly _pendingRunStarts = new Map<string, { resolve: () => void; reject: (e: Ably.ErrorInfo) => void }>();
+  private readonly _pendingRunStarts = new Map<
+    string,
+    { resolve: (started: RunStarted) => void; reject: (e: Ably.ErrorInfo) => void }
+  >();
 
   constructor(options: ClientSessionOptions<TInput, TOutput, TProjection, TMessage>) {
     // Spec: AIT-CT1a, AIT-CT1a2 — register this SDK on both the connection
@@ -281,7 +293,10 @@ class DefaultClientSession<
           const pending = this._pendingRunStarts.get(startedKey);
           if (pending) {
             this._pendingRunStarts.delete(startedKey);
-            pending.resolve();
+            // Hand the caller the agent-minted identity it could not know at
+            // send time: the runId carried on run-start and the invocation-id
+            // echoed alongside it.
+            pending.resolve({ runId: event.runId, invocationId: headers[HEADER_INVOCATION_ID] ?? '' });
           }
         }
         this._tree.emitAblyMessage(ablyMessage);
@@ -621,7 +636,7 @@ class DefaultClientSession<
     // The executor runs synchronously, so the tracker entry is registered
     // before `new Promise` returns.
     const startedKey = triggerCodecMessageId ?? runId;
-    const started = new Promise<void>((resolve, reject) => {
+    const started = new Promise<RunStarted>((resolve, reject) => {
       this._pendingRunStarts.set(startedKey, { resolve, reject });
     });
     // Suppress unhandled-rejection warnings for callers that never await
@@ -671,11 +686,16 @@ class DefaultClientSession<
     // and await `run.started` if they need to know it was picked up.
     await publishPromise;
 
+    // The run's stable Tree key. The client stamps `run-id` on every wire
+    // message today, so the Tree keys the run by that runId — `key === runId`.
+    // (Once the client stops minting, a fresh send carries no run-id and the
+    // key becomes the triggering codec-message-id.)
+    const runKey = runId;
+
     return {
       started,
-      runId,
+      key: runKey,
       inputEventId: triggerInputEventId,
-      invocationId,
       cancel: async () => this.cancel(runId),
       optimisticCodecMessageIds: [...codecMessageIds],
       toInvocation: () =>

@@ -112,8 +112,12 @@ type BranchSelectionState =
   | { kind: 'auto'; selectedRunId: string }
   /** An external fork appeared — pinned to the currently-visible sibling to prevent drift. */
   | { kind: 'pinned'; selectedRunId: string }
-  /** This view's `edit()` is in flight — select newest when run's response arrives. */
-  | { kind: 'pending'; runId: string };
+  /**
+   * This view's `edit()` is in flight — select newest when run's response
+   * arrives. Tracked by the run's stable key (the client-owned handle known
+   * at send time), since the agent-minted runId is not yet known.
+   */
+  | { kind: 'pending'; key: string };
 
 /**
  * Selection state for a regenerate group. Keyed by the anchor codec-message-id (the
@@ -131,8 +135,12 @@ type RegenSelection =
   | { kind: 'user'; selectedRunId: string }
   /** This view initiated a regenerate — auto-selected the new Run when it arrived. */
   | { kind: 'auto'; selectedRunId: string }
-  /** This view's `regenerate()` is in flight — promote to `auto` when the run's first content folds. */
-  | { kind: 'pending'; runId: string };
+  /**
+   * This view's `regenerate()` is in flight — promote to `auto` when the
+   * run's first content folds. Tracked by the run's stable key, since the
+   * agent-minted runId is not yet known.
+   */
+  | { kind: 'pending'; key: string };
 
 // ---------------------------------------------------------------------------
 // Send-input normalisation
@@ -875,8 +883,8 @@ export class DefaultView<
 
     if (result.optimisticCodecMessageIds.length > 0) {
       // The delegate optimistically inserted a user-message Run (edit path).
-      // Auto-select the new sibling Run by its runId.
-      this._branchSelections.set(groupRoot, { kind: 'auto', selectedRunId: result.runId });
+      // Auto-select the new sibling Run by its key.
+      this._branchSelections.set(groupRoot, { kind: 'auto', selectedRunId: result.key });
       this._cachedNodes = this._computeFlatNodes();
       this._updateVisibleSnapshot(this._cachedNodes);
       this._emitter.emit('update');
@@ -887,18 +895,20 @@ export class DefaultView<
     // auto-selection until the new Run's first message arrives. Store the
     // group root so _pinBranchSelections can match regardless of which
     // sibling is currently visible.
-    this._branchSelections.set(groupRoot, { kind: 'pending', runId: result.runId });
+    this._branchSelections.set(groupRoot, { kind: 'pending', key: result.key });
     this._logger.debug('DefaultView._applyForkAutoSelect(); deferring fork auto-selection', {
       forkOf: options.forkOf,
       groupRoot,
-      runId: result.runId,
+      key: result.key,
     });
 
-    // Bound pending entry lifetime to the run — clean up on run-end.
+    // Bound pending entry lifetime to the run — clean up on run-end. The run
+    // event carries the agent-minted runId; resolve it back to the Run's key
+    // so the match holds whether or not the key equals the runId.
     const runUnsub = this._tree.on('run', (evt) => {
-      if (evt.type !== 'end' || evt.runId !== result.runId) return;
+      if (evt.type !== 'end' || this._tree.getRunNode(evt.runId)?.key !== result.key) return;
       const sel = this._branchSelections.get(groupRoot);
-      if (sel?.kind === 'pending' && sel.runId === result.runId) {
+      if (sel?.kind === 'pending' && sel.key === result.key) {
         this._branchSelections.delete(groupRoot);
       }
       runUnsub();
@@ -921,10 +931,10 @@ export class DefaultView<
    * @param anchorCodecMessageId - The codec-message-id of the assistant being regenerated.
    */
   private _applyRegenerateAutoSelect(result: ActiveRun, anchorCodecMessageId: string): void {
-    this._regenSelections.set(anchorCodecMessageId, { kind: 'pending', runId: result.runId });
+    this._regenSelections.set(anchorCodecMessageId, { kind: 'pending', key: result.key });
     this._logger.debug('DefaultView._applyRegenerateAutoSelect(); deferring regenerate selection', {
       anchorCodecMessageId,
-      runId: result.runId,
+      key: result.key,
     });
 
     // The agent's ai-run-start may have arrived before the publish ACK
@@ -941,11 +951,12 @@ export class DefaultView<
       this._emitter.emit('update');
     }
 
-    // Bound pending entry lifetime to the run — clean up on run-end.
+    // Bound pending entry lifetime to the run — clean up on run-end. Resolve
+    // the run event's agent-minted runId back to the Run's key to match.
     const runUnsub = this._tree.on('run', (evt) => {
-      if (evt.type !== 'end' || evt.runId !== result.runId) return;
+      if (evt.type !== 'end' || this._tree.getRunNode(evt.runId)?.key !== result.key) return;
       const sel = this._regenSelections.get(anchorCodecMessageId);
-      if (sel?.kind === 'pending' && sel.runId === result.runId) {
+      if (sel?.kind === 'pending' && sel.key === result.key) {
         this._regenSelections.delete(anchorCodecMessageId);
       }
       runUnsub();
@@ -1333,10 +1344,10 @@ export class DefaultView<
       if (existing?.kind === 'pending') {
         const nodes = this._tree.getSiblingRuns(runId);
         const newest = nodes.at(-1);
-        if (newest && newest.runId !== runId && newest.runId === existing.runId) {
+        if (newest && newest.key !== runId && newest.key === existing.key) {
           this._logger.debug('DefaultView._pinBranchSelections(); auto-selecting pending fork', {
             runId,
-            newestRunId: newest.runId,
+            newestKey: newest.key,
           });
           this._branchSelections.set(groupRoot, { kind: 'auto', selectedRunId: newest.key });
         }
@@ -1363,7 +1374,7 @@ export class DefaultView<
       if (group.length <= 1) continue;
       const newest = group.at(-1);
       if (!newest) continue;
-      if (newest.runId !== sel.runId) continue;
+      if (newest.key !== sel.key) continue;
       this._regenSelections.set(anchorCodecMessageId, { kind: 'auto', selectedRunId: newest.key });
     }
   }
@@ -1380,11 +1391,11 @@ export class DefaultView<
       const nodes = this._tree.getSiblingRuns(groupRoot);
       if (nodes.length <= 1) continue;
       const newest = nodes.at(-1);
-      if (!newest || newest.runId === groupRoot) continue;
-      if (newest.runId === sel.runId) {
+      if (!newest || newest.key === groupRoot) continue;
+      if (newest.key === sel.key) {
         this._logger.debug('DefaultView._resolvePendingSelections(); resolving off-branch pending', {
           groupRoot,
-          newestRunId: newest.runId,
+          newestKey: newest.key,
         });
         this._branchSelections.set(groupRoot, { kind: 'auto', selectedRunId: newest.key });
       }

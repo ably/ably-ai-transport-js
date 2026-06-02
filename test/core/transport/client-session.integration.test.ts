@@ -1276,7 +1276,7 @@ describe('ClientSession integration', () => {
       const page = await channel.history({ limit: 10, direction: 'backwards' });
       found = page.items.find((m) => {
         const headers = getHeaders(m);
-        return headers[HEADER_ROLE] === 'user' && headers[HEADER_RUN_ID] === clientRun.runId;
+        return headers[HEADER_ROLE] === 'user' && headers[HEADER_RUN_ID] === clientRun.key;
       });
     }
     expect(found).toBeDefined();
@@ -1313,7 +1313,7 @@ describe('ClientSession integration', () => {
       role: 'user',
       parts: [{ type: 'text', text: 'no-one is listening' }],
     });
-    expect(activeRun.runId).toBeDefined();
+    expect(activeRun.key).toBeDefined();
 
     // `started` must stay pending — no agent published run-start. Race it
     // against a short timer to prove it neither resolves nor rejects.
@@ -1482,28 +1482,28 @@ describe('ClientSession integration', () => {
       role: 'user',
       parts: [{ type: 'text', text: 'Need a run-start' }],
     });
-    const { runId, invocationId, inputEventId } = activeRun;
 
-    // Stand up the server-side run; its `start()` triggers the real
-    // lookup (which finds the user message) and publishes run-start.
+    // Stand up the server-side run; its `start()` triggers the real lookup
+    // (which finds the user message) and publishes run-start. The agent owns
+    // run identity; pin the server run to the run's key (the client-owned
+    // handle) so it correlates while the client still mints.
     const serverRun = createRunFromOpts(agentSession, {
-      runId,
-      invocationId,
-      inputEventId,
+      runId: activeRun.key,
+      inputEventId: activeRun.inputEventId,
     });
     await serverRun.start();
 
-    // run-start has now landed — `started` must resolve.
-    await expect(activeRun.started).resolves.toBeUndefined();
+    // run-start has now landed — `started` resolves with the run's identity.
+    const started = await activeRun.started;
+    expect(started.runId).toBe(activeRun.key);
 
-    const outputsPromise = collectRunOutputs(clientSession, runId);
+    const outputsPromise = collectRunOutputs(clientSession, activeRun.key);
 
     const responseStream = textResponseStream('asst-rs-happy-1', 'text-rs-happy-1', 'Started');
     await serverRun.pipe(responseStream);
     await serverRun.end('complete');
 
     // The run's outputs surface on the Tree and carry the assistant response.
-    expect(activeRun.runId).toBe(runId);
     const events = await outputsPromise;
     expect(events.some((e) => e.type === 'finish')).toBe(true);
   });

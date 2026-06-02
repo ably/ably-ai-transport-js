@@ -124,10 +124,9 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
 
   const mockRun = {
     stream: new ReadableStream(),
-    started: Promise.resolve(),
-    runId: 'run-1',
+    started: Promise.resolve({ runId: 'run-1', invocationId: 'inv-1' }),
+    key: 'run-1',
     inputEventId: '',
-    invocationId: 'inv-1',
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     cancel: vi.fn(() => Promise.resolve()),
     optimisticCodecMessageIds: [] as string[],

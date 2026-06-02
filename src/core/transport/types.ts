@@ -576,6 +576,27 @@ export type RunLifecycleEvent =
 // ---------------------------------------------------------------------------
 
 /**
+ * The run and invocation identity learned when the agent's `ai-run-start` is
+ * observed. In the agent-minted model the client does not choose these ids at
+ * send time — the agent assigns them and the client adopts them from
+ * run-start. {@link ActiveRun.started} resolves with this once the run begins.
+ */
+export interface RunStarted {
+  /**
+   * The run's unique identifier, minted by the agent and adopted onto the
+   * run when its `ai-run-start` is observed. For a continuation this is the
+   * reused runId the send carried.
+   */
+  runId: string;
+  /**
+   * The invocation's unique identifier for the invocation that drove this
+   * run-start, as echoed on the `ai-run-start` (wire `invocation-id`). Empty
+   * string if the wire didn't carry one.
+   */
+  invocationId: string;
+}
+
+/**
  * A handle to an active client-side run, returned by `sendMessage()`,
  * `sendInput()`, `regenerate()`, and `edit()`.
  *
@@ -583,27 +604,35 @@ export type RunLifecycleEvent =
  * consumer-layer concern (e.g. the Vercel ChatTransport builds a stream from
  * the Tree's `output` events). The handle carries only run identity and
  * control, so it is not parameterized by the codec output type.
+ *
+ * Run and invocation identity are agent-minted, so they are not known
+ * synchronously at send time — they arrive via {@link started}. The
+ * synchronously-known {@link key} is the client-owned handle (the triggering
+ * input's codec-message-id, or the reused runId for a continuation) that
+ * identifies the run in the Tree until the agent's runId is adopted.
  */
 export interface ActiveRun {
   /**
-   * Resolves when the agent's `ai-run-start` for this run+invocation is
-   * observed on the channel. `send()` itself resolves as soon as the input
-   * is published, so callers that need to know the agent has picked up the
-   * run `await run.started`. There is no built-in deadline — race it against
-   * your own timeout if you need one. Rejects only if the session is closed
-   * before run-start arrives.
+   * Resolves with the agent-minted {@link RunStarted} identity when the
+   * agent's `ai-run-start` for this run is observed on the channel. `send()`
+   * itself resolves as soon as the input is published, so callers that need
+   * the run's identity (or to know the agent has picked it up) `await
+   * run.started`. There is no built-in deadline — race it against your own
+   * timeout if you need one. Rejects only if the session is closed before
+   * run-start arrives.
    */
-  started: Promise<void>;
-  /** The run's unique identifier. */
-  runId: string;
+  started: Promise<RunStarted>;
   /**
-   * The invocation's unique identifier. Stamped on the published user
-   * message and forwarded in the HTTP POST body so the agent's run
-   * lifecycle events (`ai-run-start`, `ai-run-end`) can echo it back. The
-   * stream router keys on this value to filter output events to the bound
-   * invocation.
+   * The run's stable key in the Tree: the triggering input's codec-message-id
+   * for a fresh run (before the agent's runId is adopted), or the reused
+   * runId for a continuation. This is the client-owned identifier known at
+   * send time; the agent's runId is learned later via {@link started}.
+   * Consumers scope a run's Tree `output` events by matching this key against
+   * `OutputEvent.runId` (the Tree emits the run key on `output`). Run-lifecycle
+   * (`run`) events carry the agent's runId instead, so match those by resolving
+   * the runId back to its node via the Tree.
    */
-  invocationId: string;
+  key: string;
   /**
    * The input event's unique identifier. Stamped on the primary input event
    * published to the channel and forwarded in the HTTP POST body so the

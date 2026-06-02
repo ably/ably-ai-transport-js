@@ -925,8 +925,7 @@ describe('AgentSession integration', () => {
       ]);
 
       const serverRun = createRunFromOpts(session, {
-        runId: activeRun.runId,
-        invocationId: activeRun.invocationId,
+        runId: activeRun.key,
         inputEventId: activeRun.inputEventId,
       });
       await serverRun.start();
@@ -962,10 +961,10 @@ describe('AgentSession integration', () => {
           reject(new Error('timed out collecting run outputs'));
         }, 10_000);
         const unsubOutput = clientSession.tree.on('output', (e) => {
-          if (e.runId === activeRun.runId) events.push(...e.events);
+          if (e.runId === activeRun.key) events.push(...e.events);
         });
         const unsubRun = clientSession.tree.on('run', (e) => {
-          if (e.runId === activeRun.runId && e.type === 'end') {
+          if (e.runId === activeRun.key && e.type === 'end') {
             clearTimeout(timer);
             unsubOutput();
             unsubRun();

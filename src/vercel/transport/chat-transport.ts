@@ -544,7 +544,9 @@ export const createChatTransport = (
     // up a brand-new run. `isContinuation` implies `lastMessage` is defined.
     if (isContinuation) {
       const run = session.view.runOf(lastMessage.id);
-      if (run) sendOpts.runId = run.runId;
+      // A suspended run has always had its runId adopted (it ran before
+      // suspending), so `runId` is defined here; guard anyway.
+      if (run?.runId !== undefined) sendOpts.runId = run.runId;
     }
 
     // Dispatch by mode:
@@ -581,13 +583,16 @@ export const createChatTransport = (
 
     // Build the consumer-facing stream from the Tree's events for this run.
     // Streaming is a useChat concern owned by the Vercel layer; the core
-    // session no longer exposes a per-run stream.
-    const runStream = createRunOutputStream(session, run.runId);
+    // session no longer exposes a per-run stream. Key it by the run's stable
+    // Tree key (the client-owned handle known at send time), which the Tree's
+    // `output` events carry.
+    const runStream = createRunOutputStream(session, run.key);
 
     if (abortSignal) {
-      const runId = run.runId;
       const onAbort = (): void => {
-        void session.cancel(runId);
+        // `run.cancel()` targets this run without the caller needing to know
+        // the agent-minted runId — it resolves to the run the handle owns.
+        void run.cancel();
         // Close the consumer stream immediately so useChat's reader ends
         // without waiting for the agent's run-end round-trip.
         runStream.close();

@@ -62,9 +62,8 @@ const makeEmitter = (): MockEmitter => {
 
 interface MockRun {
   stream: ReadableStream<AI.UIMessageChunk>;
-  started: Promise<void>;
-  runId: string;
-  invocationId: string;
+  started: Promise<{ runId: string; invocationId: string }>;
+  key: string;
   cancel: ReturnType<typeof vi.fn>;
   optimisticCodecMessageIds: string[];
   toInvocation: () => Invocation;
@@ -99,9 +98,8 @@ const createMockSession = (): MockSession => {
       // eslint-disable-next-line @typescript-eslint/no-empty-function -- inert placeholder stream
       start: () => {},
     }),
-    started: Promise.resolve(),
-    runId,
-    invocationId: 'inv-1',
+    started: Promise.resolve({ runId, invocationId: 'inv-1' }),
+    key: runId,
     cancel: vi.fn(),
     optimisticCodecMessageIds: [],
     toInvocation: () => Invocation.fromJSON({ runId, invocationId: 'inv-1', inputEventId: '', sessionName: 'chat-1' }),
@@ -247,8 +245,8 @@ describe('createChatTransport', () => {
       expect(postCalls).toHaveLength(1);
       const body = postBody();
       expect(body).toMatchObject({
-        runId: mockRun.runId,
-        invocationId: mockRun.invocationId,
+        runId: mockRun.key,
+        invocationId: 'inv-1',
         sessionName: 'chat-1',
       });
       expect(body.history).toBeUndefined();
@@ -312,8 +310,8 @@ describe('createChatTransport', () => {
 
       // The regenerate run's invocation is POSTed to wake the agent.
       expect(postBody()).toMatchObject({
-        runId: mockRun.runId,
-        invocationId: mockRun.invocationId,
+        runId: mockRun.key,
+        invocationId: 'inv-1',
         sessionName: 'chat-1',
       });
     });
@@ -530,8 +528,8 @@ describe('createChatTransport', () => {
   });
 
   describe('abort signal', () => {
-    it('wires to session.cancel(runId) for the run just produced', async () => {
-      const { session, cancel, mockRun } = createMockSession();
+    it('cancels the run just produced via run.cancel()', async () => {
+      const { session, mockRun } = createMockSession();
       const chat = createChatTransport(session);
       const abortController = new AbortController();
 
@@ -544,10 +542,11 @@ describe('createChatTransport', () => {
         abortSignal: abortController.signal,
       });
 
-      // Abort — the listener calls `void session.cancel(runId)` which is fire-and-forget
+      // Abort — the listener calls `void run.cancel()`, which targets the run
+      // without the caller needing to know the agent-minted runId.
       abortController.abort();
 
-      expect(cancel).toHaveBeenCalledWith(mockRun.runId);
+      expect(mockRun.cancel).toHaveBeenCalled();
 
       // Clean up
       mockRun.close();
@@ -561,10 +560,10 @@ describe('createChatTransport', () => {
       // the UI immediately. If the user clicks Stop while `sendMessages` is
       // still awaiting `session.view.sendInput(...)` (e.g. waiting for the
       // run-start ack — seconds for a real LLM), useChat fires the abort
-      // *before* the adapter has the runId to attach a listener for. The
-      // adapter must call `session.cancel(runId)` even when the signal is
-      // already aborted by the time it gets a chance to look at it.
-      const { session, cancel, mockRun, view } = createMockSession();
+      // *before* the adapter has the run handle to attach a listener for. The
+      // adapter must call `run.cancel()` even when the signal is already
+      // aborted by the time it gets a chance to look at it.
+      const { session, mockRun, view } = createMockSession();
       const chat = createChatTransport(session);
       const abortController = new AbortController();
 
@@ -586,14 +585,14 @@ describe('createChatTransport', () => {
 
       // Simulate the user clicking Stop while sendInput is still awaiting.
       abortController.abort();
-      expect(cancel).not.toHaveBeenCalled();
+      expect(mockRun.cancel).not.toHaveBeenCalled();
 
-      // sendInput settles after the abort — by the time the adapter sees
-      // run.runId, the signal is already aborted.
+      // sendInput settles after the abort — by the time the adapter has the
+      // run handle, the signal is already aborted.
       resolveSend?.(mockRun);
       const stream = await streamPromise;
 
-      expect(cancel).toHaveBeenCalledWith(mockRun.runId);
+      expect(mockRun.cancel).toHaveBeenCalled();
 
       // Clean up
       mockRun.close();
@@ -645,7 +644,7 @@ describe('createChatTransport', () => {
       expect(send).toHaveBeenCalledOnce();
       const body = postBody();
       expect(body.custom).toBe('body');
-      expect(body.runId).toBe(mockRun.runId);
+      expect(body.runId).toBe(mockRun.key);
       expect(postHeaders()['X-Custom']).toBe('header');
     });
 
@@ -690,7 +689,7 @@ describe('createChatTransport', () => {
       expect(regenerate).toHaveBeenCalledOnce();
       const body = postBody();
       expect(body.customBody).toBe('regen');
-      expect(body.runId).toBe(mockRun.runId);
+      expect(body.runId).toBe(mockRun.key);
       expect(postHeaders()['X-Custom-Regen']).toBe('yes');
     });
   });
@@ -721,8 +720,8 @@ describe('createChatTransport', () => {
       // conversation from the channel, so no history/messages are POSTed.
       const body = postBody();
       expect(body).toEqual({
-        runId: mockRun.runId,
-        invocationId: mockRun.invocationId,
+        runId: mockRun.key,
+        invocationId: 'inv-1',
         inputEventId: mockRun.toInvocation().inputEventId,
         sessionName: 'chat-1',
       });

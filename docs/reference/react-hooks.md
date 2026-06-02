@@ -17,25 +17,21 @@ Create a `ClientSession` and make it available to descendant components. The Rea
   channelName="ai:demo"
   codec={UIMessageCodec}
   clientId={clientId}
-  api="/api/chat"
 >
   <Chat />
 </ClientSessionProvider>
 ```
 
-| Prop          | Type                                                          | Description                                                                  |
-| ------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `channelName` | `string`                                                      | The Ably channel name to subscribe to. Also used as the context registry key |
-| `codec`       | `Codec<TInput, TOutput, TProjection, TMessage>`               | The codec for encoding/decoding                                              |
-| `clientId`    | `string?`                                                     | Client identity, sent to the server in POST body                             |
-| `api`         | `string?`                                                     | Server endpoint URL. Default: `"/api/chat"`                                  |
-| `headers`     | `Record<string, string> \| (() => Record<string, string>)?`   | HTTP POST headers. Function form for dynamic values                          |
-| `body`        | `Record<string, unknown> \| (() => Record<string, unknown>)?` | Additional POST body fields. Function form for dynamic values                |
-| `credentials` | `RequestCredentials?`                                         | Fetch credentials mode                                                       |
-| `fetch`       | `typeof fetch?`                                               | Custom fetch implementation                                                  |
-| `messages`    | `TMessage[]?`                                                 | Initial messages to seed the conversation tree                               |
-| `logger`      | `Logger?`                                                     | Logger instance                                                              |
-| `children`    | `ReactNode?`                                                  | Child components that will have access to this session                       |
+| Prop          | Type                                            | Description                                                                               |
+| ------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `channelName` | `string`                                        | The Ably channel name to subscribe to. Also used as the context registry key              |
+| `codec`       | `Codec<TInput, TOutput, TProjection, TMessage>` | The codec for encoding/decoding                                                           |
+| `clientId`    | `string?`                                       | Client identity, used as the Ably publisher `clientId` stamped on everything it publishes |
+| `messages`    | `TMessage[]?`                                   | Initial messages to seed the conversation tree                                            |
+| `logger`      | `Logger?`                                       | Logger instance                                                                           |
+| `children`    | `ReactNode?`                                    | Child components that will have access to this session                                    |
+
+The session is a pure Ably-channel transport — it never sends HTTP. To wake a serverless agent, POST `run.toInvocation().toJSON()` to your endpoint from the value `view.send`/`sendInput`/`regenerate`/`edit` returns. (For the `useChat` integration, use `ChatTransportProvider`, which issues this POST for you.)
 
 The session subscribes to the Ably channel immediately on creation and `connect()` is called once on mount. The session is closed when the provider truly unmounts; the close is scheduled as a microtask so that React Strict Mode's synchronous remount cycle can cancel it.
 
@@ -47,12 +43,10 @@ For multiple sessions, nest providers with distinct `channelName` values:
 <ClientSessionProvider
   channelName="ai:main"
   codec={UIMessageCodec}
-  api="/api/chat"
 >
   <ClientSessionProvider
     channelName="ai:aux"
     codec={UIMessageCodec}
-    api="/api/chat"
   >
     <App />
   </ClientSessionProvider>
@@ -241,21 +235,19 @@ Create a `ClientSession` and `ChatTransport` and make both available to descenda
 </ChatTransportProvider>
 ```
 
-| Prop          | Type                                                          | Description                                                                  |
-| ------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `channelName` | `string`                                                      | The Ably channel name. Also used as the context registry key                 |
-| `clientId`    | `string?`                                                     | Client identity, sent to the server in POST body                             |
-| `api`         | `string?`                                                     | Server endpoint URL. Default: `"/api/chat"`                                  |
-| `headers`     | `Record<string, string> \| (() => Record<string, string>)?`   | HTTP POST headers. Function form for dynamic values                          |
-| `body`        | `Record<string, unknown> \| (() => Record<string, unknown>)?` | Additional POST body fields. Function form for dynamic values                |
-| `credentials` | `RequestCredentials?`                                         | Fetch credentials mode                                                       |
-| `fetch`       | `typeof fetch?`                                               | Custom fetch implementation                                                  |
-| `messages`    | `UIMessage[]?`                                                | Initial messages to seed the conversation tree                               |
-| `logger`      | `Logger?`                                                     | Logger instance                                                              |
-| `chatOptions` | `ChatTransportOptions?`                                       | Optional hooks for customizing chat request construction                     |
-| `children`    | `ReactNode?`                                                  | Child components that will have access to the chat transport and the session |
+| Prop          | Type                    | Description                                                                                 |
+| ------------- | ----------------------- | ------------------------------------------------------------------------------------------- |
+| `channelName` | `string`                | The Ably channel name. Also used as the context registry key                                |
+| `clientId`    | `string?`               | Client identity, used as the Ably publisher `clientId` stamped on everything it publishes   |
+| `api`         | `string?`               | Endpoint the chat transport POSTs the invocation to, to wake the agent. Default `/api/chat` |
+| `credentials` | `RequestCredentials?`   | Fetch credentials mode for the invocation POST                                              |
+| `fetch`       | `typeof fetch?`         | Custom fetch implementation for the invocation POST                                         |
+| `messages`    | `UIMessage[]?`          | Initial messages to seed the conversation tree                                              |
+| `logger`      | `Logger?`               | Logger instance                                                                             |
+| `chatOptions` | `ChatTransportOptions?` | Optional hooks for customizing the invocation POST (e.g. `prepareSendMessagesRequest`)      |
+| `children`    | `ReactNode?`            | Child components that will have access to the chat transport and the session                |
 
-Inside the subtree, `useChatTransport()` reads the chat transport and the session, and `useClientSession()` reads the underlying `ClientSession`. All generic hooks (`useView`, `useTree`, `useAblyMessages`) work without explicit session arguments.
+Unlike the generic `ClientSessionProvider`, this provider issues the agent-invocation POST for you (that's what `api`/`credentials`/`fetch` configure) — `useChat`'s transport contract is request-driven. Inside the subtree, `useChatTransport()` reads the chat transport and the session, and `useClientSession()` reads the underlying `ClientSession`. All generic hooks (`useView`, `useTree`, `useAblyMessages`) work without explicit session arguments.
 
 For multiple providers, nest them with distinct `channelName` values:
 
@@ -302,7 +294,7 @@ const { chatTransport, session } = useChatTransport({ channelName: 'ai:secondary
 const { chatTransport, session } = useChatTransport({ skip: !userId });
 ```
 
-`ChatTransportOptions.prepareSendMessagesRequest` lets you customize the HTTP POST body and headers. Pass it to `ChatTransportProvider`:
+`ChatTransportOptions.prepareSendMessagesRequest` lets you add body fields and headers to the invocation POST (the run's invocation identifiers always take precedence in the body). Pass it to `ChatTransportProvider`:
 
 ```typescript
 <ChatTransportProvider

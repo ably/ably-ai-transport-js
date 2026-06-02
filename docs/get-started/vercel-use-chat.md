@@ -84,7 +84,7 @@ export function Providers({ clientId, children }: { clientId?: string; children:
 
 ## 3. Create the API route
 
-The server endpoint receives the HTTP POST from the client session, calls the LLM, and streams the response over Ably:
+The server endpoint receives the invocation POST from the chat transport, calls the LLM, and streams the response over Ably:
 
 ```typescript
 // app/api/chat/route.ts
@@ -242,7 +242,7 @@ Open `http://localhost:3000`. Type a message - you'll see tokens stream in real 
 1. `ChatTransportProvider` creates a `ClientSession` (subscribed to the Ably channel before attach — no messages lost) and wraps it in a `ChatTransport`. Both are stored in `ChatTransportContext` for descendants.
 2. `useChatTransport()` reads both from `ChatTransportContext` — no arguments needed for the nearest provider.
 3. `chatTransport` satisfies Vercel's `ChatTransport` interface; `session` is the underlying `ClientSession` used for `useMessageSync` and `useView`.
-4. When you send a message, `useChat()` calls the chat transport's `sendMessages`, which fires an HTTP POST to `/api/chat` and opens a stream on the Ably channel.
+4. When you send a message, `useChat()` calls the chat transport's `sendMessages`, which publishes your message on the Ably channel and POSTs the run's invocation pointer to `/api/chat` to wake the agent.
 5. The server creates a run, publishes user messages, streams the LLM response through the encoder to the channel, and publishes a run-end event.
 6. The client session decodes incoming Ably messages through `UIMessageCodec` and routes them to the stream.
 7. `useMessageSync()` syncs messages from the session (including messages from other clients) into `useChat`'s state.

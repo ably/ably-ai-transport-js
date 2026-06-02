@@ -53,7 +53,18 @@ const run = await view.send(userMessage);
 // run.cancel() - cancel this specific run
 ```
 
-The returned `ActiveRun` gives you a decoded event stream and a cancel handle. `send()` resolves as soon as your input is published to the channel — it does **not** block on the agent. The HTTP POST to your server is fire-and-forget, and the stream is available immediately from the channel subscription, not from the HTTP response.
+The returned `ActiveRun` gives you a decoded event stream and a cancel handle. `send()` resolves as soon as your input is published to the channel — it does **not** send HTTP or block on the agent. To wake a serverless agent, POST the run's invocation pointer to your endpoint yourself:
+
+```typescript
+const run = await view.send(userMessage);
+await fetch('/api/chat', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(run.toInvocation().toJSON()),
+});
+```
+
+`run.toInvocation()` carries only identifiers (`runId`, `invocationId`, `inputEventId`, `sessionName`) — the agent reads the conversation from the channel. The response stream is available immediately from the channel subscription, not from the HTTP response. (With the Vercel `useChat` integration the chat transport issues this POST for you.)
 
 If you need to know when the agent has actually picked up the run, await `run.started`: it resolves when the agent's `ai-run-start` for this run is observed, and rejects only if the session is closed first. There is no built-in deadline — race it against your own timeout if you want to bound the wait:
 

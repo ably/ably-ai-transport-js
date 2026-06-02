@@ -1,17 +1,22 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  EVENT_RUN_END,
+  EVENT_RUN_START,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
   HEADER_INPUT_CODEC_MESSAGE_ID,
+  HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
+  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
+  HEADER_RUN_REASON,
 } from '../../../src/constants.js';
-import { buildTransportHeaders } from '../../../src/core/transport/headers.js';
+import { buildTransportHeaders, parseRunLifecycle } from '../../../src/core/transport/headers.js';
 
 describe('buildTransportHeaders', () => {
   it('includes role, runId, and codecMessageId', () => {
@@ -119,5 +124,102 @@ describe('buildTransportHeaders', () => {
     expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
     expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_ID);
     expect(headers).not.toHaveProperty(HEADER_MSG_REGENERATE);
+  });
+});
+
+describe('parseRunLifecycle', () => {
+  it('parses a minimal run-start', () => {
+    const event = parseRunLifecycle(EVENT_RUN_START, {
+      [HEADER_RUN_ID]: 'run-1',
+    });
+
+    expect(event).toEqual({
+      type: EVENT_RUN_START,
+      runId: 'run-1',
+      clientId: '',
+      invocationId: '',
+    });
+  });
+
+  it('parses a fully-populated run-start', () => {
+    const event = parseRunLifecycle(EVENT_RUN_START, {
+      [HEADER_RUN_ID]: 'run-1',
+      [HEADER_RUN_CLIENT_ID]: 'user-a',
+      [HEADER_INVOCATION_ID]: 'inv-1',
+      [HEADER_PARENT]: 'parent-msg',
+      [HEADER_FORK_OF]: 'fork-msg',
+      [HEADER_MSG_REGENERATE]: 'asst-original',
+      [HEADER_RUN_CONTINUE]: 'true',
+    });
+
+    expect(event).toEqual({
+      type: EVENT_RUN_START,
+      runId: 'run-1',
+      clientId: 'user-a',
+      invocationId: 'inv-1',
+      parent: 'parent-msg',
+      forkOf: 'fork-msg',
+      regenerates: 'asst-original',
+      isContinuation: true,
+    });
+  });
+
+  it('omits optional run-start fields when their headers are absent', () => {
+    const event = parseRunLifecycle(EVENT_RUN_START, {
+      [HEADER_RUN_ID]: 'run-1',
+      [HEADER_RUN_CLIENT_ID]: 'user-a',
+      [HEADER_INVOCATION_ID]: 'inv-1',
+    });
+
+    expect(event).not.toHaveProperty('parent');
+    expect(event).not.toHaveProperty('forkOf');
+    expect(event).not.toHaveProperty('regenerates');
+    expect(event).not.toHaveProperty('isContinuation');
+  });
+
+  it('does not mark isContinuation when run-continue is not "true"', () => {
+    const event = parseRunLifecycle(EVENT_RUN_START, {
+      [HEADER_RUN_ID]: 'run-1',
+      [HEADER_RUN_CONTINUE]: 'false',
+    });
+
+    expect(event).not.toHaveProperty('isContinuation');
+  });
+
+  it('parses a run-end with an explicit reason', () => {
+    const event = parseRunLifecycle(EVENT_RUN_END, {
+      [HEADER_RUN_ID]: 'run-1',
+      [HEADER_RUN_CLIENT_ID]: 'user-a',
+      [HEADER_RUN_REASON]: 'cancelled',
+    });
+
+    expect(event).toEqual({
+      type: EVENT_RUN_END,
+      runId: 'run-1',
+      clientId: 'user-a',
+      reason: 'cancelled',
+    });
+  });
+
+  it('defaults the run-end reason to "complete" when absent', () => {
+    const event = parseRunLifecycle(EVENT_RUN_END, {
+      [HEADER_RUN_ID]: 'run-1',
+    });
+
+    expect(event).toEqual({
+      type: EVENT_RUN_END,
+      runId: 'run-1',
+      clientId: '',
+      reason: 'complete',
+    });
+  });
+
+  it('returns undefined when run-id is missing', () => {
+    expect(parseRunLifecycle(EVENT_RUN_START, {})).toBeUndefined();
+    expect(parseRunLifecycle(EVENT_RUN_END, {})).toBeUndefined();
+  });
+
+  it('returns undefined for a non-lifecycle message name', () => {
+    expect(parseRunLifecycle('ai-output', { [HEADER_RUN_ID]: 'run-1' })).toBeUndefined();
   });
 });

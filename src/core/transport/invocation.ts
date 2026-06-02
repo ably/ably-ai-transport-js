@@ -8,11 +8,13 @@
  *
  * ```ts
  * const data = (await req.json()) as InvocationData;
- * const invocation = Invocation.fromJSON(data);
+ * const invocation = Invocation.fromJSON(data); // mints invocationId if absent
  * const run = session.createRun(invocation, { signal: req.signal });
  * await run.start();
  * await run.loadProjection(); // fetch run projection from the channel
  * const messages = run.messages;
+ * // Return the (possibly minted) invocation id so the caller can correlate.
+ * return Response.json({ invocationId: invocation.invocationId });
  * ```
  *
  * The body carries only what the agent needs out-of-band before the channel

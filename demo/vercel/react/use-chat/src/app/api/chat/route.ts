@@ -66,5 +66,8 @@ export async function POST(req: Request) {
     ably.close();
   });
 
-  return new Response(null, { status: 200 });
+  // Return the invocation id the agent minted (or echoed, when the client
+  // supplied one) so the caller can correlate this run out-of-band. The
+  // response stream itself arrives over Ably, not in this HTTP response.
+  return Response.json({ invocationId: invocation.invocationId });
 }

@@ -1304,7 +1304,7 @@ class DefaultAgentSession<TEvent, TProjection, TMessage> implements AgentSession
             break;
           }
           seen.add(current);
-          chain.unshift(current);
+          if (current !== runId) chain.unshift(current);
           current = runMap.get(current)?.parentRunId;
         }
 

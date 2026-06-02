@@ -36,7 +36,7 @@ const { regenerate } = useView();
 await regenerate(nodeId);
 ```
 
-The session automatically computes `forkOf` (the assistant message being replaced) and `parent` (the message before it). The server receives these in the POST body and passes them to `createRun()`.
+The session automatically computes `forkOf` (the assistant message being replaced) and `parent` (the message before it). These travel on the channel wire headers of the published input, not in the invocation pointer — the agent reads them off the triggering input event during its lookup.
 
 ## Edit
 
@@ -103,7 +103,7 @@ Calling `select` updates the view's active branch and re-renders with the select
 
 ## Server handling
 
-The server receives `forkOf` and `parent` in the POST body. Pass them through to `createRun()`:
+The agent reads `forkOf` and `parent` from the triggering input event's wire headers during its lookup — they are not carried in the invocation pointer. Read the user messages off the channel via the run, then run the LLM:
 
 ```typescript
 import { Invocation } from '@ably/ai-transport';

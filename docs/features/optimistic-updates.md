@@ -6,7 +6,7 @@ Without optimistic insertion, the user would see a gap between pressing "send" a
 
 ## How it works
 
-The client generates a unique message ID (`msg-id`) for each user message and inserts it into the conversation tree with no [serial](../internals/glossary.md#serial-ably) (Ably's server-assigned ordering identifier). The message is visible via `view.flattenNodes()` immediately. The HTTP POST to the server is [fire-and-forget](../internals/glossary.md#fire-and-forget) - `send()` returns without waiting for the server to respond.
+The client generates a unique message ID (`msg-id`) for each user message and inserts it into the conversation tree with no [serial](../internals/glossary.md#serial-ably) (Ably's server-assigned ordering identifier). The message is visible via `view.flattenNodes()` immediately. `send()` returns as soon as the message is published to the channel — the core sends no HTTP and does not wait for the agent.
 
 The server receives the user message and relays it onto the Ably channel, preserving the original `msg-id`. All clients on the channel - including the sender - receive this relay. The sending client recognises its own message by matching the `msg-id` against the set of IDs it optimistically inserted. Instead of creating a duplicate, it updates the existing entry with the server-assigned serial, which moves the message from the end of the list to its correct position in serial order. This process is called [optimistic reconciliation](../internals/glossary.md#optimistic-reconciliation).
 

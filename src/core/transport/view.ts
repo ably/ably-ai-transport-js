@@ -69,11 +69,11 @@ interface ViewEventsMap {
  * convention), or `undefined` for an empty conversation. The session
  * uses it as the auto-parent for fresh user messages.
  */
-export type SendDelegate<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent> = (
+export type SendDelegate<TInput extends CodecInputEvent> = (
   input: TInput[],
   options: SendOptions | undefined,
   parentCodecMessageId: string | undefined,
-) => Promise<ActiveRun<TOutput>>;
+) => Promise<ActiveRun>;
 
 // ---------------------------------------------------------------------------
 // Options
@@ -88,7 +88,7 @@ export interface ViewOptions<TInput extends CodecInputEvent, TOutput extends Cod
   /** The codec for decoding history messages. */
   codec: Codec<TInput, TOutput, TProjection, TMessage>;
   /** Delegate for executing sends through the session. */
-  sendDelegate: SendDelegate<TInput, TOutput>;
+  sendDelegate: SendDelegate<TInput>;
   /** Logger for diagnostic output. */
   logger: Logger;
   /** Called when the view is closed, allowing the owner to clean up references. */
@@ -203,11 +203,11 @@ export class DefaultView<
   TOutput extends CodecOutputEvent,
   TProjection,
   TMessage,
-> implements View<TInput, TOutput, TMessage> {
+> implements View<TInput, TMessage> {
   private readonly _tree: TreeInternal<TInput, TOutput, TProjection>;
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: Codec<TInput, TOutput, TProjection, TMessage>;
-  private readonly _sendDelegate: SendDelegate<TInput, TOutput>;
+  private readonly _sendDelegate: SendDelegate<TInput>;
   private readonly _logger: Logger;
   private readonly _emitter: EventEmitter<ViewEventsMap>;
   private readonly _onClose?: () => void;
@@ -819,7 +819,7 @@ export class DefaultView<
   // Write operations
   // -------------------------------------------------------------------------
 
-  async sendMessage(messages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveRun<TOutput>> {
+  async sendMessage(messages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveRun> {
     this._logger.trace('DefaultView.sendMessage();');
     const list = Array.isArray(messages) ? messages : [messages];
     // Caller-supplied TMessage.id flows through as the wire HEADER_CODEC_MESSAGE_ID so
@@ -842,7 +842,7 @@ export class DefaultView<
   }
 
   // Spec: AIT-CT3, AIT-CT4
-  async sendInput(input: TInput | TInput[], options?: SendOptions): Promise<ActiveRun<TOutput>> {
+  async sendInput(input: TInput | TInput[], options?: SendOptions): Promise<ActiveRun> {
     this._logger.trace('DefaultView.sendInput();');
     if (this._closed) {
       throw new Ably.ErrorInfo('unable to send; view is closed', ErrorCode.InvalidArgument, 400);
@@ -866,7 +866,7 @@ export class DefaultView<
    * @param result - The ActiveRun returned by the delegate.
    * @param options - The SendOptions passed by the caller.
    */
-  private _applyForkAutoSelect(result: ActiveRun<TOutput>, options: SendOptions | undefined): void {
+  private _applyForkAutoSelect(result: ActiveRun, options: SendOptions | undefined): void {
     // Spec: AIT-CT13e
     if (!options?.forkOf) return;
 
@@ -923,7 +923,7 @@ export class DefaultView<
    * @param result - The ActiveRun returned by the delegate (run-id is the new regenerator's).
    * @param anchorCodecMessageId - The codec-message-id of the assistant being regenerated.
    */
-  private _applyRegenerateAutoSelect(result: ActiveRun<TOutput>, anchorCodecMessageId: string): void {
+  private _applyRegenerateAutoSelect(result: ActiveRun, anchorCodecMessageId: string): void {
     this._regenSelections.set(anchorCodecMessageId, { kind: 'pending', runId: result.runId });
     this._logger.debug('DefaultView._applyRegenerateAutoSelect(); deferring regenerate selection', {
       anchorCodecMessageId,
@@ -959,7 +959,7 @@ export class DefaultView<
   }
 
   // Spec: AIT-CT5, AIT-CT13d
-  async regenerate(messageId: string, options?: SendOptions): Promise<ActiveRun<TOutput>> {
+  async regenerate(messageId: string, options?: SendOptions): Promise<ActiveRun> {
     this._logger.trace('DefaultView.regenerate();', { messageId });
 
     if (this._closed) {
@@ -1029,7 +1029,7 @@ export class DefaultView<
   }
 
   // Spec: AIT-CT6
-  async edit(messageId: string, inputs: TInput | TInput[], options?: SendOptions): Promise<ActiveRun<TOutput>> {
+  async edit(messageId: string, inputs: TInput | TInput[], options?: SendOptions): Promise<ActiveRun> {
     this._logger.trace('DefaultView.edit();', { messageId });
 
     if (this._closed) {

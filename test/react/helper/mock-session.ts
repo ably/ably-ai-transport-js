@@ -41,7 +41,7 @@ export interface MockSession {
   /** Fire an event on tree/view (update, ably-message, run, output). */
   emitTree: (event: TreeEventType, ...args: unknown[]) => void;
   tree: Tree<CodecOutputEvent, unknown>;
-  view: View<CodecInputEvent, CodecOutputEvent, string>;
+  view: View<CodecInputEvent, string>;
 }
 
 export const createMockSession = (initialMessages: string[] = []): MockSession => {
@@ -143,7 +143,7 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const edit = vi.fn(() => Promise.resolve(mockRun));
 
-  const view: View<CodecInputEvent, CodecOutputEvent, string> = {
+  const view: View<CodecInputEvent, string> = {
     getMessages: vi.fn(() => initialMessages),
     runs: vi.fn(() => []),
     hasOlder: vi.fn(() => false),

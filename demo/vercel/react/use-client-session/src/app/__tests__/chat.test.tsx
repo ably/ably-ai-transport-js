@@ -28,7 +28,7 @@ const emptyEventStream = (): ReadableStream<VercelOutput> =>
   });
 
 const mockSendMessage = vi.fn(
-  (_messages: AI.UIMessage | AI.UIMessage[], _opts?: SendOptions): Promise<ActiveRun<VercelOutput>> =>
+  (_messages: AI.UIMessage | AI.UIMessage[], _opts?: SendOptions): Promise<ActiveRun> =>
     Promise.resolve({
       stream: emptyEventStream(),
       started: Promise.resolve(),

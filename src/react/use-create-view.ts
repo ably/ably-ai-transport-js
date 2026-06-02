@@ -51,10 +51,10 @@ export const useCreateView = <TInput extends CodecInputEvent, TOutput extends Co
   session,
   limit,
   skip,
-}: UseCreateViewOptions<TInput, TOutput, TProjection, TMessage> = {}): ViewHandle<TInput, TOutput, TMessage> => {
+}: UseCreateViewOptions<TInput, TOutput, TProjection, TMessage> = {}): ViewHandle<TInput, TMessage> => {
   const resolved = useResolvedSession({ session, skip });
 
-  const [view, setView] = useState<View<TInput, TOutput, TMessage> | undefined>();
+  const [view, setView] = useState<View<TInput, TMessage> | undefined>();
 
   useEffect(() => {
     if (!resolved) {

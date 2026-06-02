@@ -566,11 +566,10 @@ export type RunLifecycleEvent =
  *
  * The core no longer exposes a per-run output stream — streaming is a
  * consumer-layer concern (e.g. the Vercel ChatTransport builds a stream from
- * the Tree's `output` events). `TOutput` is retained for generic-arity
- * symmetry with the codec-parameterized session/view that return this handle.
+ * the Tree's `output` events). The handle carries only run identity and
+ * control, so it is not parameterized by the codec output type.
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- TOutput kept for API symmetry; see JSDoc.
-export interface ActiveRun<TOutput extends CodecOutputEvent> {
+export interface ActiveRun {
   /**
    * Resolves when the agent's `ai-run-start` for this run+invocation is
    * observed on the channel. `send()` itself resolves as soon as the input
@@ -965,7 +964,7 @@ export interface BranchSelection<TMessage> {
  * `loadOlder()`. Events are scoped to the visible window — subscribers
  * are only notified when the visible output changes.
  */
-export interface View<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TMessage> {
+export interface View<TInput extends CodecInputEvent, TMessage> {
   /**
    * The visible domain messages along the selected branch. Computed by
    * walking the visible Run chain (newest to root) and concatenating
@@ -1057,7 +1056,7 @@ export interface View<TInput extends CodecInputEvent, TOutput extends CodecOutpu
    * available immediately. If the POST fails, the error is surfaced via
    * the session's `on("error")` and the stream is errored.
    */
-  sendMessage(messages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveRun<TOutput>>;
+  sendMessage(messages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveRun>;
 
   /**
    * Send one or more TInputs on the channel and fire a POST. Each TInput
@@ -1070,7 +1069,7 @@ export interface View<TInput extends CodecInputEvent, TOutput extends CodecOutpu
    * tool-resolution inputs is a continuation — pair with
    * `options.runId` to extend a suspended run.
    */
-  sendInput(events: TInput | TInput[], options?: SendOptions): Promise<ActiveRun<TOutput>>;
+  sendInput(events: TInput | TInput[], options?: SendOptions): Promise<ActiveRun>;
 
   /**
    * Regenerate an assistant message. Creates a new run that forks the
@@ -1078,14 +1077,14 @@ export interface View<TInput extends CodecInputEvent, TOutput extends CodecOutpu
    * `target` (the assistant being regenerated), `parent`, and truncated
    * `history` from this view's branch.
    */
-  regenerate(messageId: string, options?: SendOptions): Promise<ActiveRun<TOutput>>;
+  regenerate(messageId: string, options?: SendOptions): Promise<ActiveRun>;
 
   /**
    * Edit a user message. Creates a new run that forks the target message
    * with replacement content. Automatically computes `forkOf`, `parent`,
    * and `history` from this view's branch.
    */
-  edit(messageId: string, inputs: TInput | TInput[], options?: SendOptions): Promise<ActiveRun<TOutput>>;
+  edit(messageId: string, inputs: TInput | TInput[], options?: SendOptions): Promise<ActiveRun>;
 
   // --- Observation ---
 
@@ -1117,7 +1116,7 @@ export interface ClientSession<
   readonly tree: Tree<TOutput, TProjection>;
 
   /** The default paginated, branch-aware view for rendering — events scoped to visible messages. */
-  readonly view: View<TInput, TOutput, TMessage>;
+  readonly view: View<TInput, TMessage>;
 
   /**
    * Subscribe to the channel and (implicitly) attach. Idempotent —
@@ -1133,7 +1132,7 @@ export interface ClientSession<
    * The caller is responsible for calling `close()` on the returned view
    * when it is no longer needed, or it will be closed when the session closes.
    */
-  createView(): View<TInput, TOutput, TMessage>;
+  createView(): View<TInput, TMessage>;
 
   /** Cancel the specified run. Publishes a cancel message and closes the local stream. */
   cancel(runId: string): Promise<void>;

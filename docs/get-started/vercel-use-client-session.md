@@ -29,7 +29,7 @@ import { useState } from 'react';
 // Wake the agent: the core session never sends HTTP, so the app POSTs the
 // run's invocation pointer to its endpoint. The agent reads the conversation
 // from the channel; the pointer carries only identifiers.
-const wakeAgent = (run: ActiveRun<AI.UIMessageChunk>) =>
+const wakeAgent = (run: ActiveRun) =>
   fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

@@ -458,13 +458,6 @@ export interface ClientSessionOptions<
   /** Initial messages to seed the conversation tree with. Forms a linear chain. */
   messages?: TMessage[];
 
-  /**
-   * How long `sendMessage()` / `sendInput()` will wait for the agent's `ai-run-start` event for
-   * the run+invocation before rejecting with `RunStartDeadlineExceeded`.
-   * Default: 30000 (30 seconds).
-   */
-  runStartDeadlineMs?: number;
-
   /** Logger instance for diagnostic output. */
   logger?: Logger;
 }
@@ -563,6 +556,15 @@ export type RunLifecycleEvent =
 export interface ActiveRun<TOutput extends CodecOutputEvent> {
   /** The decoded output stream for this run. May error if the delivery guarantee is broken (e.g. POST failure, channel continuity loss). */
   stream: ReadableStream<TOutput>;
+  /**
+   * Resolves when the agent's `ai-run-start` for this run+invocation is
+   * observed on the channel. `send()` itself resolves as soon as the input
+   * is published, so callers that need to know the agent has picked up the
+   * run `await run.started`. There is no built-in deadline — race it against
+   * your own timeout if you need one. Rejects only if the session is closed
+   * before run-start arrives.
+   */
+  started: Promise<void>;
   /** The run's unique identifier. */
   runId: string;
   /**

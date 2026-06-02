@@ -113,10 +113,10 @@ class DefaultRunManager implements RunManager {
     if (metadata?.regenerates !== undefined) {
       headers[HEADER_MSG_REGENERATE] = metadata.regenerates;
     }
-    // Stamp the invocation-id on run-start so the client's send() promise
-    // can match it against its pending invocation and resolve. Without it
-    // the client's run-start matcher (keyed by invocation-id) never fires
-    // and send() hangs for the full runStartDeadlineMs.
+    // Stamp the invocation-id on run-start so the client can match it against
+    // its pending invocation and resolve the run's `started` promise. Without
+    // it the client's run-start matcher (keyed by invocation-id) never fires
+    // and `ActiveRun.started` never resolves.
     if (metadata?.invocationId !== undefined) {
       headers[HEADER_INVOCATION_ID] = metadata.invocationId;
     }

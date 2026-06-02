@@ -639,7 +639,14 @@ export interface ActiveRun {
    * agent can locate the exact triggering event.
    */
   inputEventId: string;
-  /** Cancel this specific run. Publishes a cancel message and closes the local stream. */
+  /**
+   * Cancel this specific run by publishing a cancel message for its runId.
+   * When the runId is already known (a continuation, or after {@link started}
+   * has resolved) the cancel publishes immediately; for a fresh run cancelled
+   * before run-start it is deferred until the agent-minted runId is adopted.
+   * If the session closes before run-start, the run never started and the
+   * deferred cancel is dropped.
+   */
   cancel(): Promise<void>;
   /**
    * The codec-message-ids of optimistically inserted user messages, in order.

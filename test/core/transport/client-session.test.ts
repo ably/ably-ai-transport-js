@@ -14,6 +14,7 @@ import * as Ably from 'ably';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  EVENT_CANCEL,
   EVENT_RUN_END,
   EVENT_RUN_START,
   HEADER_CODEC_MESSAGE_ID,
@@ -375,6 +376,24 @@ const ackPendingSend = async (
     }),
   );
   return { runId, invocationId, codecMessageId };
+};
+
+/**
+ * Read the transport headers from the most recent `ai-cancel` publish, or
+ * undefined if none has been published. Flushes microtasks first so a
+ * deferred cancel (armed off `started`) has a chance to publish.
+ * @param channel - Mock channel whose publishCalls to inspect.
+ * @returns The cancel message's transport headers, or undefined.
+ */
+const lastCancelHeaders = async (channel: MockChannel): Promise<Record<string, string> | undefined> => {
+  for (let i = 0; i < 50; i++) {
+    const msg = channel.publishCalls.findLast((m) => m.name === EVENT_CANCEL);
+    if (msg) {
+      return (msg.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
+    }
+    await Promise.resolve();
+  }
+  return undefined;
 };
 
 interface SessionFixture {
@@ -1729,6 +1748,59 @@ describe('ClientSession', () => {
     it('cancel is a no-op after close', async () => {
       await fix.session.close();
       await expect(fix.session.cancel('run-x')).resolves.toBeUndefined();
+    });
+
+    // ActiveRun.cancel(): the client owns a run's id at send time only for a
+    // continuation (the reused runId); a fresh run's id is agent-minted and
+    // learned from run-start, so a fresh-run cancel defers until then.
+    it('ActiveRun.cancel() on a continuation publishes immediately under the reused runId', async () => {
+      await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      const initialWire = publishedRunIdentity(fix.codec, 0);
+      const cont = await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], {
+        runId: initialWire.runId,
+      });
+
+      // The reused runId is known synchronously — cancel fires without waiting
+      // for any run-start.
+      await cont.cancel();
+      const headers = await lastCancelHeaders(fix.channel);
+      expect(headers?.[HEADER_RUN_ID]).toBe(initialWire.runId);
+    });
+
+    it('ActiveRun.cancel() on a fresh run defers until run-start, then publishes under the adopted runId', async () => {
+      const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+
+      // No runId is known yet — cancel must NOT publish.
+      await run.cancel();
+      expect(fix.channel.publishCalls.find((m) => m.name === EVENT_CANCEL)).toBeUndefined();
+
+      // run-start adopts the runId; the deferred cancel now fires under it.
+      const ack = await ackPendingSend(fix.channel, fix.codec);
+      const headers = await lastCancelHeaders(fix.channel);
+      expect(headers?.[HEADER_RUN_ID]).toBe(ack.runId);
+    });
+
+    it('ActiveRun.cancel() on a fresh run after run-start publishes immediately', async () => {
+      const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      const ack = await ackPendingSend(fix.channel, fix.codec);
+      // Let the started resolution propagate so the runId is known.
+      await run.started;
+
+      await run.cancel();
+      const headers = await lastCancelHeaders(fix.channel);
+      expect(headers?.[HEADER_RUN_ID]).toBe(ack.runId);
+    });
+
+    it('a deferred ActiveRun.cancel() never publishes if the session closes before run-start', async () => {
+      const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      await run.cancel(); // deferred — no runId yet
+
+      await fix.session.close(); // rejects `started`; the deferred cancel is dropped
+
+      // Give the rejected-started handler a chance to run, then confirm no cancel.
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(fix.channel.publishCalls.find((m) => m.name === EVENT_CANCEL)).toBeUndefined();
     });
   });
 

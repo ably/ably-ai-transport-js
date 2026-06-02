@@ -692,11 +692,39 @@ class DefaultClientSession<
     // key becomes the triggering codec-message-id.)
     const runKey = runId;
 
+    // Cancel handling. The client owns a run's id at send time only for a
+    // continuation (the reused runId in `sendOptions`); a fresh run's id is
+    // agent-minted and not known until run-start is adopted. So `cancel()`
+    // publishes immediately when the id is already known, and otherwise defers
+    // until run-start resolves `started`. If the session closes before
+    // run-start (started rejects), there is no run to cancel.
+    let knownRunId: string | undefined = sendOptions?.runId;
+    let cancelRequested = false;
+    // Fire-and-forget: arm the deferred cancel. A rejection means the session
+    // closed before run-start, so there is nothing to cancel.
+    void started.then(
+      (s) => {
+        knownRunId = s.runId;
+        if (cancelRequested) void this.cancel(s.runId);
+      },
+      () => {
+        /* session closed before run-start — no run to cancel */
+      },
+    );
+    const cancel = async (): Promise<void> => {
+      if (knownRunId !== undefined) {
+        await this.cancel(knownRunId);
+        return;
+      }
+      // runId not yet known — defer until run-start adoption resolves `started`.
+      cancelRequested = true;
+    };
+
     return {
       started,
       key: runKey,
       inputEventId: triggerInputEventId,
-      cancel: async () => this.cancel(runId),
+      cancel,
       optimisticCodecMessageIds: [...codecMessageIds],
       toInvocation: () =>
         Invocation.fromJSON({

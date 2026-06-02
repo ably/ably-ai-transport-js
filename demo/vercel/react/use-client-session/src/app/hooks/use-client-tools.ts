@@ -83,6 +83,9 @@ export function useClientTools(view: ViewHandle<VercelInput, UIMessage>, clientI
 
         handledRef.current.add(toolPart.toolCallId);
 
+        // The run produced this assistant tool call, so its run-start has been
+        // observed and the agent-minted runId adopted; guard for the type.
+        if (run.runId === undefined) continue;
         executeClientTool(view, api, run.runId, msg.id, toolPart);
       }
     }

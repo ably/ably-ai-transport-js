@@ -26,6 +26,7 @@ import {
   HEADER_ERROR_MESSAGE,
   HEADER_EVENT_ID,
   HEADER_FORK_OF,
+  HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
@@ -128,10 +129,19 @@ class DefaultClientSession<
   private readonly _onChannelStateChange: Ably.channelEventCallback;
 
   /**
-   * Backing settlers for each in-flight run's `ActiveRun.started` promise,
-   * keyed by invocation-id (unique per send). Resolved when the matching
-   * `ai-run-start` is observed; rejected if the session closes first. There
-   * is no deadline — `send()` no longer blocks on run-start.
+   * Backing settlers for each in-flight run's `ActiveRun.started` promise.
+   * Resolved when the matching `ai-run-start` is observed; rejected if the
+   * session closes first. There is no deadline — `send()` no longer blocks on
+   * run-start.
+   *
+   * Keyed by the triggering input's codec-message-id — the handle the client
+   * owns at send time, which the agent echoes back on run-start as
+   * `input-codec-message-id`. This is uniform across fresh sends and
+   * continuations (a continuation is itself an input event — tool-approval or
+   * tool-result — with its own codec-message-id), so reconciliation never
+   * depends on a client-minted run/invocation id. The sole exception is an
+   * empty-input continuation, which publishes no input and so keys by the
+   * reused `runId` instead.
    */
   private readonly _pendingRunStarts = new Map<string, { resolve: () => void; reject: (e: Ably.ErrorInfo) => void }>();
 
@@ -290,12 +300,20 @@ class DefaultClientSession<
             },
             ablyMessage.serial,
           );
-          if (invocationId) {
-            const pending = this._pendingRunStarts.get(invocationId);
-            if (pending) {
-              this._pendingRunStarts.delete(invocationId);
-              pending.resolve();
-            }
+          // Resolve the pending `started` for this run-start. Every send that
+          // carries an input event — fresh OR continuation (a continuation is
+          // itself an input event, e.g. a tool-approval or tool-result, with
+          // its own codec-message-id) — armed the tracker by that triggering
+          // input's codec-message-id, which the agent echoes here as
+          // `input-codec-message-id`. The only input-less send is an
+          // empty-input continuation, whose run-start carries no
+          // `input-codec-message-id`; it falls back to the reused runId
+          // (always present in this block). invocation-id is not a match key.
+          const startedKey = headers[HEADER_INPUT_CODEC_MESSAGE_ID] ?? runId;
+          const pending = this._pendingRunStarts.get(startedKey);
+          if (pending) {
+            this._pendingRunStarts.delete(startedKey);
+            pending.resolve();
           }
         }
         this._tree.emitAblyMessage(ablyMessage);
@@ -627,6 +645,12 @@ class DefaultClientSession<
     // up on the channel via `event-id`. It is surfaced on `ActiveRun` (and via
     // `toInvocation()`) so the application can point an invocation at it.
     const triggerInputEventId = items.at(-1)?.headers[HEADER_EVENT_ID] ?? '';
+    // The triggering input's codec-message-id — the handle a fresh send uses
+    // to correlate its `started` promise against the agent's run-start (which
+    // echoes it as `input-codec-message-id`). Always defined for a fresh send
+    // (which carries at least one input); undefined only for an empty-input
+    // continuation, which keys by runId instead.
+    const triggerCodecMessageId = items.at(-1)?.codecMessageId;
 
     // Stream setup. Fresh send opens a new stream; continuation reuses the
     // existing one. If the suspended stream was torn down (e.g. cancel /
@@ -637,16 +661,36 @@ class DefaultClientSession<
       ? (this._router.getStream(runId) ?? this._router.createStream(runId))
       : this._router.createStream(runId);
 
-    // Arm the run-start tracker keyed by invocationId. It backs the returned
-    // `ActiveRun.started` promise: the run-start handler resolves it when the
-    // agent's `ai-run-start` for this invocation is observed; close() rejects
-    // it if the session is torn down first. There is no deadline — `send()`
-    // resolves on publish, and callers who want to bound the run-start wait
-    // race `started` against their own timeout.
+    // Arm the run-start tracker. It backs the returned `ActiveRun.started`
+    // promise: the run-start handler resolves it when the agent's
+    // `ai-run-start` for this send is observed; close() rejects it if the
+    // session is torn down first. There is no deadline — `send()` resolves on
+    // publish, and callers who want to bound the run-start wait race
+    // `started` against their own timeout.
+    //
+    // Key by the handle the client owns at send time: the triggering input's
+    // codec-message-id, which the agent echoes back on run-start as
+    // `input-codec-message-id`. This is uniform across fresh sends and
+    // continuations — a continuation is itself an input event (tool-approval
+    // or tool-result) carrying its own codec-message-id. The sole exception
+    // is an empty-input continuation, which publishes nothing: it falls back
+    // to the reused runId (known to the caller) and resolves on the
+    // continuation run-start, which carries no `input-codec-message-id`.
+    //
+    // Any send carrying input has `triggerCodecMessageId` defined, so the
+    // `?? runId` fallback engages only for that empty-input continuation. The
+    // arm key (here) and the resolve key (the run-start handler) stay
+    // symmetric because the agent stamps `input-codec-message-id` on run-start
+    // exactly when it consumed the input from the channel — i.e. whenever it
+    // ran its input-event lookup, which is every path that has a remote client
+    // awaiting `started`. The no-lookup agent config
+    // (`inputEventLookupTimeoutMs: 0`, for in-process drivers) does not
+    // consume channel input and so has no remote `started` to satisfy.
     // The executor runs synchronously, so the tracker entry is registered
     // before `new Promise` returns.
+    const startedKey = triggerCodecMessageId ?? runId;
     const started = new Promise<void>((resolve, reject) => {
-      this._pendingRunStarts.set(invocationId, { resolve, reject });
+      this._pendingRunStarts.set(startedKey, { resolve, reject });
     });
     // Suppress unhandled-rejection warnings for callers that never await
     // `started`; the caller still observes the rejection if it does await.
@@ -682,7 +726,7 @@ class DefaultClientSession<
         this._router.errorStream(runId, err);
         // The input never reached the channel — there is no run to wait on.
         // Drop the started tracker so close() doesn't later reject an orphan.
-        this._pendingRunStarts.delete(invocationId);
+        this._pendingRunStarts.delete(startedKey);
         // Continuations didn't insert optimistic nodes, so removeOptimistic
         // is moot for them — only fresh sends need to clear their inserts.
         this._cleanupFailedSend(runId, { removeOptimistic: !isContinuation });

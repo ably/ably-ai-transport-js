@@ -21,10 +21,12 @@ import {
   HEADER_ERROR_MESSAGE,
   HEADER_EVENT_ID,
   HEADER_FORK_OF,
+  HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
+  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
 } from '../../../src/constants.js';
@@ -317,7 +319,9 @@ const ackPendingSend = async (
   channel: MockChannel,
   codec: MockCodec,
 ): Promise<{ runId: string; invocationId: string; codecMessageId: string }> => {
-  // Wait for an encoder.publish() call (the user-message)
+  // Wait for an encoder.publish() call (the user-message). Reads the first
+  // publish, so this helper assumes single-input sends — where the first
+  // publish IS the trigger whose codec-message-id keys `started`.
   let publishedHeaders: Record<string, string> | undefined;
   for (let i = 0; i < 100; i++) {
     const enc = codec.lastEncoder();
@@ -333,12 +337,19 @@ const ackPendingSend = async (
   const runId = publishedHeaders[HEADER_RUN_ID] ?? '';
   const invocationId = publishedHeaders[HEADER_INVOCATION_ID] ?? '';
   const codecMessageId = publishedHeaders[HEADER_CODEC_MESSAGE_ID] ?? '';
+  const runContinue = publishedHeaders[HEADER_RUN_CONTINUE] === 'true';
+  // Mirror the agent: thread the triggering input's codec-message-id back as
+  // `input-codec-message-id` (the handle a fresh send's `started` resolves on)
+  // and mark continuations with `run-continue` (which the client resolves by
+  // the reused runId instead).
   simulateMessage(
     channel,
     ablyMsg(EVENT_RUN_START, {
       [HEADER_RUN_ID]: runId,
       [HEADER_RUN_CLIENT_ID]: 'client-1',
       [HEADER_INVOCATION_ID]: invocationId,
+      [HEADER_INPUT_CODEC_MESSAGE_ID]: codecMessageId,
+      ...(runContinue ? { [HEADER_RUN_CONTINUE]: 'true' } : {}),
     }),
   );
   return { runId, invocationId, codecMessageId };
@@ -917,6 +928,103 @@ describe('ClientSession', () => {
       await ackPendingSend(ch, codec);
       await expect(run.started).resolves.toBeUndefined();
       await s.close();
+    });
+
+    it('fresh send: run.started resolves by the triggering input codec-message-id, not the wire run-id / invocation-id', async () => {
+      // The decoupling guarantee: a fresh send correlates run-start by the
+      // codec-message-id it owned at send time. Here the run-start carries a
+      // run-id and invocation-id that DIVERGE from what the client minted
+      // (simulating an agent-minted runId), but the correct
+      // input-codec-message-id — `started` must still resolve.
+      const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      const triggerCodecMessageId = run.optimisticCodecMessageIds.at(-1);
+      expect(triggerCodecMessageId).toBeDefined();
+
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_START, {
+          [HEADER_RUN_ID]: 'agent-minted-run-id',
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+          [HEADER_INVOCATION_ID]: 'unrelated-invocation-id',
+          [HEADER_INPUT_CODEC_MESSAGE_ID]: triggerCodecMessageId ?? '',
+        }),
+      );
+
+      await expect(run.started).resolves.toBeUndefined();
+    });
+
+    it('continuation: run.started resolves by the triggering input codec-message-id, like a fresh send', async () => {
+      const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      const cont = await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], {
+        runId: initial.runId,
+      });
+      // A continuation is itself an input event with its own codec-message-id,
+      // which the agent echoes back on the continuation run-start. Resolution
+      // is by that id — identical to a fresh send, not the reused runId. The
+      // run-start here carries a DIVERGENT runId to prove the runId is not the
+      // match key for an input-bearing continuation.
+      const triggerCodecMessageId = cont.optimisticCodecMessageIds.at(-1);
+      expect(triggerCodecMessageId).toBeDefined();
+
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_START, {
+          [HEADER_RUN_ID]: 'some-other-run-id',
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+          [HEADER_RUN_CONTINUE]: 'true',
+          [HEADER_INPUT_CODEC_MESSAGE_ID]: triggerCodecMessageId ?? '',
+        }),
+      );
+
+      await expect(cont.started).resolves.toBeUndefined();
+    });
+
+    it('empty-input continuation: run.started resolves on the continuation run-start by the reused run-id', async () => {
+      // An empty-input continuation publishes no input event, so there is no
+      // codec-message-id to key on — it resolves purely by the reused runId.
+      const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      const cont = await fix.session.view.sendInput([], { runId: initial.runId });
+
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_START, {
+          [HEADER_RUN_ID]: initial.runId,
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+          [HEADER_RUN_CONTINUE]: 'true',
+        }),
+      );
+
+      await expect(cont.started).resolves.toBeUndefined();
+    });
+
+    it('does not resolve run.started for a run-start matching neither the trigger codec-message-id nor the runId', async () => {
+      const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+
+      // A run-start belonging to an unrelated send — neither its
+      // input-codec-message-id nor its runId matches this send's tracker — must
+      // leave `started` pending (guards against over-resolution on the shared
+      // tracker keyspace).
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_START, {
+          [HEADER_RUN_ID]: 'unrelated-run-id',
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+          [HEADER_INPUT_CODEC_MESSAGE_ID]: 'unrelated-codec-message-id',
+        }),
+      );
+
+      // simulateMessage is synchronous, so the run-start has already been
+      // processed. Race `started` against an already-resolved sentinel: if
+      // `started` is still pending, the sentinel wins.
+      const pendingSentinel = Symbol('pending');
+      const outcome = await Promise.race([
+        run.started.then(
+          () => 'resolved' as const,
+          () => 'rejected' as const,
+        ),
+        Promise.resolve(pendingSentinel),
+      ]);
+      expect(outcome).toBe(pendingSentinel);
     });
   });
 

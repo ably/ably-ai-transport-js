@@ -25,14 +25,10 @@ import {
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
   HEADER_EVENT_ID,
-  HEADER_FORK_OF,
   HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
-  HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_ROLE,
-  HEADER_RUN_CLIENT_ID,
-  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
 } from '../../constants.js';
@@ -43,7 +39,7 @@ import { LogLevel, makeLogger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import type { CodecInputEvent, CodecOutputEvent, Decoder, Encoder } from '../codec/types.js';
-import { buildTransportHeaders } from './headers.js';
+import { buildTransportHeaders, parseRunLifecycle } from './headers.js';
 import { Invocation } from './invocation.js';
 import type { StreamRouter } from './stream-router.js';
 import { createStreamRouter } from './stream-router.js';
@@ -279,27 +275,9 @@ class DefaultClientSession<
       // --- Run lifecycle events from the agent ---
       if (ablyMessage.name === EVENT_RUN_START) {
         const headers = getTransportHeaders(ablyMessage);
-        const runId = headers[HEADER_RUN_ID];
-        const runCid = headers[HEADER_RUN_CLIENT_ID] ?? '';
-        const invocationId = headers[HEADER_INVOCATION_ID];
-        if (runId) {
-          const parentRaw = headers[HEADER_PARENT];
-          const forkOf = headers[HEADER_FORK_OF];
-          const regenerates = headers[HEADER_MSG_REGENERATE];
-          const isContinuation = headers[HEADER_RUN_CONTINUE] === 'true';
-          this._tree.applyRunLifecycle(
-            {
-              type: EVENT_RUN_START,
-              runId,
-              clientId: runCid,
-              invocationId: invocationId ?? '',
-              ...(parentRaw !== undefined && { parent: parentRaw }),
-              ...(forkOf !== undefined && { forkOf }),
-              ...(regenerates !== undefined && { regenerates }),
-              ...(isContinuation && { isContinuation: true }),
-            },
-            ablyMessage.serial,
-          );
+        const event = parseRunLifecycle(EVENT_RUN_START, headers);
+        if (event) {
+          this._tree.applyRunLifecycle(event, ablyMessage.serial);
           // Resolve the pending `started` for this run-start. Every send that
           // carries an input event — fresh OR continuation (a continuation is
           // itself an input event, e.g. a tool-approval or tool-result, with
@@ -309,7 +287,7 @@ class DefaultClientSession<
           // empty-input continuation, whose run-start carries no
           // `input-codec-message-id`; it falls back to the reused runId
           // (always present in this block). invocation-id is not a match key.
-          const startedKey = headers[HEADER_INPUT_CODEC_MESSAGE_ID] ?? runId;
+          const startedKey = headers[HEADER_INPUT_CODEC_MESSAGE_ID] ?? event.runId;
           const pending = this._pendingRunStarts.get(startedKey);
           if (pending) {
             this._pendingRunStarts.delete(startedKey);
@@ -323,7 +301,6 @@ class DefaultClientSession<
       if (ablyMessage.name === EVENT_RUN_END) {
         const headers = getTransportHeaders(ablyMessage);
         const runId = headers[HEADER_RUN_ID];
-        const runCid = headers[HEADER_RUN_CLIENT_ID] ?? '';
         const invocationId = headers[HEADER_INVOCATION_ID];
         // CAST: agent always writes a valid RunEndReason; default to 'complete' for robustness
         const reason = (headers[HEADER_RUN_REASON] ?? 'complete') as RunEndReason;
@@ -366,7 +343,8 @@ class DefaultClientSession<
             this._router.closeStream(runId);
             this._ownRunIds.delete(runId);
           }
-          this._tree.applyRunLifecycle({ type: EVENT_RUN_END, runId, clientId: runCid, reason }, ablyMessage.serial);
+          const event = parseRunLifecycle(EVENT_RUN_END, headers);
+          if (event) this._tree.applyRunLifecycle(event, ablyMessage.serial);
         }
         this._tree.emitAblyMessage(ablyMessage);
         return;

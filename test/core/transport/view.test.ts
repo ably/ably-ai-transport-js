@@ -267,13 +267,13 @@ describe('DefaultView', () => {
       expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1']);
     });
 
-    it('inserts regenerator content in-place at its anchor when later prompts followed the regenerated message', () => {
+    it('hides follow-up Runs parented at a regen-substituted assistant', () => {
       // P1 was sent (R1 has [u1, a1]), then P2 was sent parented off
       // a1 (R2 has [u2, a2]). Then a1 is regenerated, creating R3
-      // with [a1']. The visible chain must keep PROMPT ORDER:
-      // u1 → a1' (substituted for a1) → u2 → a2. Pre-fix the
-      // chronological sort by `startSerial` placed R3 after R2, so
-      // a1' rendered at the end of the chat as `[u1, u2, a2, a1']`.
+      // with [a1']. The follow-up R2 was conditioned on the original
+      // a1 — its answer doesn't apply to a1', so the visible chain on
+      // the regen branch collapses to [u1, a1']. The follow-up turn
+      // reappears when the user navigates back to the original branch.
       apply(tree, {
         runId: 'R1',
         codecMessageId: 'u1',
@@ -313,7 +313,13 @@ describe('DefaultView', () => {
         serial: 's5',
       });
 
-      expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1p', 'u2', 'a2']);
+      // Regen branch (default — latest): R2 hidden because its parent
+      // message a1 is being substituted by a1p.
+      expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1p']);
+
+      // Original branch: a1 is back in the chain, R2 reappears.
+      view.selectSibling('a1', 0);
+      expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2']);
     });
 
     it('substitutes nested regenerator content recursively at each anchor position', () => {
@@ -943,6 +949,61 @@ describe('DefaultView', () => {
     it('regenerate throws when the target has no predecessor', async () => {
       apply(tree, { runId: 'R1', codecMessageId: 'only', message: { id: 'x', content: 'x' }, serial: 's1' });
       await expect(view.regenerate('only')).rejects.toThrow(/parent user message not found/);
+    });
+
+    it('hides a follow-up turn when its anchor assistant is regenerated mid-conversation', () => {
+      // use-chat scenario: user sends "tell me a fact" (R1), gets a1,
+      // sends a follow-up "not about honey" parented at a1 (R2 with
+      // u2/a2). Then clicks regenerate on a1 — R3 produces a1p.
+      // The follow-up R2 lives on the original a1's timeline; it must
+      // disappear from the regen branch.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'u1',
+        role: 'user',
+        message: { id: 'u1', content: 'tell me a fact' },
+        serial: 's1',
+      });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'a1',
+        role: 'assistant',
+        parent: 'u1',
+        message: { id: 'a1', content: 'honey fact' },
+        serial: 's2',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'u2',
+        role: 'user',
+        parent: 'a1',
+        message: { id: 'u2', content: 'not about honey' },
+        serial: 's3',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'a2',
+        role: 'assistant',
+        parent: 'u2',
+        message: { id: 'a2', content: 'ocean fact' },
+        serial: 's4',
+      });
+      // Before regen: full conversation visible.
+      expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2']);
+
+      apply(tree, {
+        runId: 'R3',
+        codecMessageId: 'a1p',
+        role: 'assistant',
+        parent: 'u1',
+        regenerates: 'a1',
+        message: { id: 'a1p', content: 'honey fact, take 2' },
+        serial: 's5',
+      });
+
+      // After regen (latest selected): R2 chain hidden — the user's
+      // follow-up was conditioned on a1, which is now substituted.
+      expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1p']);
     });
 
     it('hides Runs parented inside a regen-hidden owner when the original branch is reselected', () => {

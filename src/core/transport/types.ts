@@ -682,6 +682,16 @@ export interface RunNode<TProjection> {
    */
   parentRunId: string | undefined;
   /**
+   * The codec-message-id this Run is rooted at — the `parent` header of the
+   * first observed message (or the run-start lifecycle event's `parent`
+   * field). Distinct from {@link parentRunId} because branch filtering
+   * needs the message-level anchor: a follow-up Run parented at a message
+   * that gets regen-substituted out of the visible chain disappears
+   * alongside its anchor even though its `parentRunId` Run is still visible.
+   * `undefined` for the root Run.
+   */
+  parentCodecMessageId: string | undefined;
+  /**
    * The runId of the Run this Run replaces, or `undefined` if this Run is
    * not a fork. Populated when the wire's `fork-of` header points at
    * a codec-message-id that has been observed; the Tree resolves it to a runId via

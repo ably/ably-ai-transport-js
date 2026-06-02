@@ -352,6 +352,20 @@ export class DefaultView<
    */
   private _computeFlatNodes(): RunNode<TProjection>[] {
     const treeNodes = this._tree.runs(this._resolveSelections());
+
+    // Anchor codec-message-ids that a visible regenerator will substitute
+    // out of the chain. A follow-up Run rooted at one of these messages
+    // (e.g. a user prompt that replied to the original assistant before
+    // the user regenerated it) belongs to the now-replaced timeline and
+    // must drop with it. Build the set up front so a single pass can
+    // both apply the regen filter and the anchor-shadow filter together.
+    const substitutedAnchors = new Set<string>();
+    for (const node of treeNodes) {
+      if (node.regeneratesCodecMessageId === undefined) continue;
+      if (this._isRegenHiddenByGroupSelection(node)) continue;
+      substitutedAnchors.add(node.regeneratesCodecMessageId);
+    }
+
     const candidates: RunNode<TProjection>[] = [];
     // `tree.runs()` reachability respects fork-of selections only — it has
     // no view of regen-group selection or pagination withholding. A Run
@@ -364,6 +378,17 @@ export class DefaultView<
       if (this._withheldRunIds.has(node.runId)) continue;
       if (this._isRegenHiddenByGroupSelection(node)) continue;
       if (node.parentRunId !== undefined && !visibleRunIds.has(node.parentRunId)) continue;
+      // Drop follow-up Runs whose parent msg is being regen-substituted.
+      // Regenerators themselves are exempt — their `parentCodecMessageId`
+      // is the same user prompt the substituted msg replied to, not the
+      // substituted msg itself.
+      if (
+        node.regeneratesCodecMessageId === undefined &&
+        node.parentCodecMessageId !== undefined &&
+        substitutedAnchors.has(node.parentCodecMessageId)
+      ) {
+        continue;
+      }
       visibleRunIds.add(node.runId);
       candidates.push(node);
     }

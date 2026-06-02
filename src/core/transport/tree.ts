@@ -572,6 +572,9 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
         // self-parent cycle and the Run drops out of runs() as
         // unreachable. The original run-start already set these fields.
         if (!event.isContinuation) {
+          if (run.node.parentCodecMessageId === undefined && event.parent !== undefined) {
+            run.node.parentCodecMessageId = event.parent;
+          }
           if (run.node.parentRunId === undefined && event.parent !== undefined) {
             const parentRunId = this._codecMessageIdToRunId.get(event.parent);
             if (parentRunId !== undefined && parentRunId !== event.runId) {
@@ -666,6 +669,7 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
     const node: RunNode<TProjection> = {
       runId,
       parentRunId,
+      parentCodecMessageId,
       forkOf,
       regeneratesCodecMessageId,
       clientId: headers[HEADER_RUN_CLIENT_ID] ?? '',
@@ -703,6 +707,7 @@ export class DefaultTree<TEvent, TProjection> implements TreeInternal<TEvent, TP
     const node: RunNode<TProjection> = {
       runId: event.runId,
       parentRunId,
+      parentCodecMessageId,
       forkOf,
       regeneratesCodecMessageId,
       clientId: event.clientId,

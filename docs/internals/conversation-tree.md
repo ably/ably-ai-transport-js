@@ -63,7 +63,7 @@ Handles `ai-run-start` and `ai-run-end` wire events. The event carries its own c
 
 ### Structural version
 
-The tree maintains a `structuralVersion` counter (exposed via `TreeInternal`) that increments on changes affecting `flattenNodes()`'s output structure - Run insertions, deletions, and startSerial promotions (which reorder `_sortedRuns`). **Projection-only updates do not bump the counter**: streaming deltas update an existing Run's projection in place, observable via the `'output'` event instead. The View uses this distinction to skip full tree walks during streaming.
+The tree maintains a `structuralVersion` counter (exposed via `TreeInternal`) that increments on changes affecting `flattenNodes()`'s output structure - Run insertions, deletions, and startSerial promotions (which reorder `_sortedRuns`). **Projection-only updates do not bump the counter**: streaming deltas update an existing Run's projection in place, observable via the `'output'` event instead. The tree uses this distinction to emit `'update'` only on structural change, so streaming deltas never trigger a View tree walk.
 
 ## Sibling groups and fork chains
 

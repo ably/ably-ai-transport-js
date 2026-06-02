@@ -267,9 +267,6 @@ export class DefaultView<
    */
   private _cachedNodes: RunNode<TProjection>[] = [];
 
-  /** Last seen tree structural version - distinguishes content-only from structural updates. */
-  private _lastStructuralVersion = -1;
-
   private _loadingOlder = false;
   private _processingHistory = false;
   private _closed = false;
@@ -286,7 +283,6 @@ export class DefaultView<
 
     // Compute initial cache and snapshot visible state
     this._cachedNodes = this._computeFlatNodes();
-    this._lastStructuralVersion = this._tree.structuralVersion;
     this._updateVisibleSnapshot(this._cachedNodes);
 
     // Subscribe to tree events and re-emit scoped versions
@@ -1281,19 +1277,10 @@ export class DefaultView<
     // withholding is set up.
     if (this._processingHistory) return;
 
-    const currentVersion = this._tree.structuralVersion;
-
-    // Content-only fast path: the tree structure hasn't changed (no new
-    // Runs, deletions, or sort-reorders). Streaming projection updates
-    // come through the 'output' event separately, so 'update' with
-    // no structural change is rare — but possible (e.g. status fill on
-    // run-end). Skip.
-    if (currentVersion === this._lastStructuralVersion) {
-      return;
-    }
-
-    // Structural update: full re-walk required.
-    this._lastStructuralVersion = currentVersion;
+    // The Tree emits `update` only on structural change (new/removed Run,
+    // sort-reorder, startSerial promotion, run-start backfill), so every
+    // update reaching here warrants a full re-walk. Content-only folds flow
+    // through `output` (_onTreeOutput) instead.
 
     // Pin selections for previously-visible Runs that now have siblings.
     // This prevents new forks (from other views' edits/regenerates) from

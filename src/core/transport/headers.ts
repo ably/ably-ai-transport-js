@@ -11,6 +11,7 @@ import {
   HEADER_EVENT_ID,
   HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
+  HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
@@ -40,6 +41,12 @@ import {
  *   own publishes (run lifecycle + outputs). Differs from `runClientId` on
  *   continuation invocations driven by an input from a non-owner.
  * @param opts.inputEventId - Per-event identifier. Set on each client-published user-prompt message; the invocation body's `inputEventIds` lists the ids the agent should look up.
+ * @param opts.inputCodecMessageId - The codec-message-id of the input event that
+ *   triggered the current invocation (the one whose `event-id` matched the
+ *   invocation's `inputEventId`). The agent re-stamps it on every event it
+ *   publishes for the invocation (run lifecycle + outputs), mirroring
+ *   `inputClientId`, so the client can correlate any of those events back to
+ *   the originating input by the id it owned at send time.
  * @param opts.runContinue - When `true`, stamps `run-continue: 'true'` to mark
  *   the message as a continuation user-message (e.g. a tool-resolution publish under
  *   a suspended run), distinguishing it from a fresh user-prompt that opens a new run.
@@ -55,6 +62,7 @@ export const buildTransportHeaders = (opts: {
   regenerates?: string;
   invocationId?: string;
   inputClientId?: string;
+  inputCodecMessageId?: string;
   inputEventId?: string;
   runContinue?: boolean;
 }): Record<string, string> => {
@@ -69,6 +77,7 @@ export const buildTransportHeaders = (opts: {
   if (opts.regenerates) h[HEADER_MSG_REGENERATE] = opts.regenerates;
   if (opts.invocationId) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.inputClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.inputClientId;
+  if (opts.inputCodecMessageId !== undefined) h[HEADER_INPUT_CODEC_MESSAGE_ID] = opts.inputCodecMessageId;
   if (opts.inputEventId) h[HEADER_EVENT_ID] = opts.inputEventId;
   if (opts.runContinue) h[HEADER_RUN_CONTINUE] = 'true';
   return h;

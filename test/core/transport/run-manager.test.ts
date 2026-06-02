@@ -6,6 +6,7 @@ import {
   EVENT_RUN_START,
   HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
+  HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_MSG_REGENERATE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_CONTINUE,
@@ -140,6 +141,22 @@ describe('RunManager', () => {
       expect(headers[HEADER_MSG_REGENERATE]).toBe('orig-asst-msg');
       expect(headers[HEADER_FORK_OF]).toBeUndefined();
     });
+
+    it('stamps input-codec-message-id when metadata.inputCodecMessageId is set', async () => {
+      await manager.startRun('run-1', 'user-a', undefined, { inputCodecMessageId: 'trigger-msg' });
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
+      const headers = headersOf(channel.publishCalls.at(0)!);
+      expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger-msg');
+    });
+
+    it('omits input-codec-message-id when inputCodecMessageId is unset', async () => {
+      await manager.startRun('run-1', 'user-a');
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
+      const headers = headersOf(channel.publishCalls.at(0)!);
+      expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_ID);
+    });
   });
 
   describe('endRun', () => {
@@ -190,6 +207,24 @@ describe('RunManager', () => {
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
       const headers = headersOf(channel.publishCalls.at(1)!);
       expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
+    });
+
+    it('stamps input-codec-message-id when inputCodecMessageId is provided', async () => {
+      await manager.startRun('run-1', 'user-a');
+      await manager.endRun('run-1', 'complete', 'inv-1', 'user-b', 'trigger-msg');
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
+      const headers = headersOf(channel.publishCalls.at(1)!);
+      expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger-msg');
+    });
+
+    it('omits input-codec-message-id when inputCodecMessageId is unset', async () => {
+      await manager.startRun('run-1', 'user-a');
+      await manager.endRun('run-1', 'complete');
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
+      const headers = headersOf(channel.publishCalls.at(1)!);
+      expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_ID);
     });
   });
 

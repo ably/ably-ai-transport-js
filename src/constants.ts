@@ -108,6 +108,18 @@ export const HEADER_RUN_REASON = 'run-reason';
  */
 export const HEADER_RUN_CONTINUE = 'run-continue';
 
+/**
+ * Header: the `codec-message-id` of the input event that triggered the run.
+ * The triggering input is the one whose `event-id` matches the invocation's
+ * `inputEventId` (the last input of the originating send). The agent
+ * re-stamps it on every event it publishes for the invocation (run
+ * lifecycle + assistant outputs), mirroring `input-client-id`. This is the
+ * codec-message-id the client owns at send time, so it lets the client
+ * correlate any of those events back to the originating input without
+ * depending on a client-minted run-id or invocation-id.
+ */
+export const HEADER_INPUT_CODEC_MESSAGE_ID = 'input-codec-message-id';
+
 // ---------------------------------------------------------------------------
 // Run-end error headers (set on `ai-run-end` when `run-reason: error`)
 // ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@ import {
   EVENT_RUN_START,
   HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
+  HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
@@ -41,11 +42,18 @@ export interface RunManager {
       regenerates?: string;
       invocationId?: string;
       inputClientId?: string;
+      inputCodecMessageId?: string;
       continuation?: boolean;
     },
   ): Promise<AbortSignal>;
   /** End a run. Publishes run-end on the channel. Cleans up internal state. */
-  endRun(runId: string, reason: RunEndReason, invocationId?: string, inputClientId?: string): Promise<void>;
+  endRun(
+    runId: string,
+    reason: RunEndReason,
+    invocationId?: string,
+    inputClientId?: string,
+    inputCodecMessageId?: string,
+  ): Promise<void>;
   /** Get the AbortSignal for a run. */
   getSignal(runId: string): AbortSignal | undefined;
   /** Get the clientId that owns a run. */
@@ -91,6 +99,7 @@ class DefaultRunManager implements RunManager {
       regenerates?: string;
       invocationId?: string;
       inputClientId?: string;
+      inputCodecMessageId?: string;
       continuation?: boolean;
     },
   ): Promise<AbortSignal> {
@@ -123,6 +132,12 @@ class DefaultRunManager implements RunManager {
     if (metadata?.inputClientId !== undefined) {
       headers[HEADER_INPUT_CLIENT_ID] = metadata.inputClientId;
     }
+    // Echo the triggering input's codec-message-id so the client can correlate
+    // this run-start against a fresh send using the only id it owns at send
+    // time — without depending on a client-minted run-id or invocation-id.
+    if (metadata?.inputCodecMessageId !== undefined) {
+      headers[HEADER_INPUT_CODEC_MESSAGE_ID] = metadata.inputCodecMessageId;
+    }
     if (metadata?.continuation) {
       headers[HEADER_RUN_CONTINUE] = 'true';
     }
@@ -136,7 +151,13 @@ class DefaultRunManager implements RunManager {
     return controller.signal;
   }
 
-  async endRun(runId: string, reason: RunEndReason, invocationId?: string, inputClientId?: string): Promise<void> {
+  async endRun(
+    runId: string,
+    reason: RunEndReason,
+    invocationId?: string,
+    inputClientId?: string,
+    inputCodecMessageId?: string,
+  ): Promise<void> {
     this._logger?.trace('DefaultRunManager.endRun();', { runId, reason });
 
     const state = this._activeRuns.get(runId);
@@ -155,6 +176,11 @@ class DefaultRunManager implements RunManager {
     }
     if (inputClientId !== undefined) {
       headers[HEADER_INPUT_CLIENT_ID] = inputClientId;
+    }
+    // Mirror startRun: thread the triggering input's codec-message-id through
+    // run-end too, so every event of the invocation carries the same handle.
+    if (inputCodecMessageId !== undefined) {
+      headers[HEADER_INPUT_CODEC_MESSAGE_ID] = inputCodecMessageId;
     }
 
     // Publish before deleting local state so that if publish fails,

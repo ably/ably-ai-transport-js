@@ -166,6 +166,19 @@ export interface ClientSession<
   readonly view: View<TInput, TMessage>;
 
   /**
+   * The Ably presence object for this session's channel.
+   *
+   * Exposed as a convenience so callers can track and publish presence
+   * (`enter`/`leave`/`update`/`get`/`subscribe`) — for example, to detect
+   * whether an agent is online — without obtaining the channel separately.
+   * This is the same `Ably.RealtimePresence` instance the underlying channel
+   * exposes; the session applies no additional semantics. Presence operations
+   * implicitly attach the channel and do not require {@link connect} to have
+   * been called first.
+   */
+  readonly presence: Ably.RealtimePresence;
+
+  /**
    * Subscribe to the channel and (implicitly) attach. Idempotent —
    * subsequent calls return the same promise. The View's write operations
    * (`send()`, `regenerate()`, `edit()`) and this session's `cancel()` throw

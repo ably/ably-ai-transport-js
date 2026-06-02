@@ -97,6 +97,8 @@ interface MockChannel {
   state: Ably.ChannelState;
   listener: ((msg: Ably.InboundMessage) => void) | undefined;
   stateListeners: Set<Ably.channelEventCallback>;
+  /** Sentinel presence object — asserted by identity via `session.presence`. */
+  presence: Ably.RealtimePresence;
 }
 
 const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
@@ -106,6 +108,8 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
     stateListeners,
     state: 'attached',
     publishCalls: [],
+    // CAST: only identity is asserted in tests; presence methods are unused here.
+    presence: { get: vi.fn(), enter: vi.fn(), leave: vi.fn() } as unknown as Ably.RealtimePresence,
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
     publish: vi.fn((message: Ably.Message | Ably.Message[]) => {
       if (Array.isArray(message)) mock.publishCalls.push(...message);
@@ -410,6 +414,26 @@ describe('ClientSession', () => {
 
   afterEach(async () => {
     await fix.session.close();
+  });
+
+  // -------------------------------------------------------------------------
+  // presence pass-through
+  // -------------------------------------------------------------------------
+
+  describe('presence', () => {
+    it("returns the underlying channel's presence object", () => {
+      expect(fix.session.presence).toBe(fix.channel.presence);
+    });
+
+    it('is available before connect() is called', () => {
+      const ch = createMockChannel();
+      const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: createMockCodec(),
+      });
+      expect(s.presence).toBe(ch.presence);
+    });
   });
 
   // -------------------------------------------------------------------------

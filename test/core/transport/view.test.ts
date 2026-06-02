@@ -250,17 +250,15 @@ describe('DefaultView', () => {
         serial: 's2',
       });
 
-      tree.applyRunLifecycle(
-        {
-          type: 'ai-run-start',
-          runId: 'R1',
-          clientId: 'c1',
-          invocationId: 'inv-2',
-          parent: 'a1',
-          isContinuation: true,
-        },
-        's3',
-      );
+      tree.applyRunLifecycle({
+        type: 'ai-run-start',
+        runId: 'R1',
+        clientId: 'c1',
+        invocationId: 'inv-2',
+        parent: 'a1',
+        isContinuation: true,
+        serial: 's3',
+      });
 
       expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1']);
     });
@@ -383,10 +381,14 @@ describe('DefaultView', () => {
         message: { id: 'u1', content: 'q' },
         serial: 's1',
       });
-      tree.applyRunLifecycle(
-        { type: 'ai-run-start', runId: 'R_empty', clientId: '', invocationId: '', parent: 'u1' },
-        's2',
-      );
+      tree.applyRunLifecycle({
+        type: 'ai-run-start',
+        runId: 'R_empty',
+        clientId: '',
+        invocationId: '',
+        parent: 'u1',
+        serial: 's2',
+      });
 
       // Both Runs flatten; only R1 has messages so getMessages reflects
       // R1's content with no gap or undefined entry for R_empty.
@@ -525,16 +527,24 @@ describe('DefaultView', () => {
     });
 
     it('runOf surfaces the terminal RunEndReason on the Run', () => {
-      tree.applyRunLifecycle(
-        { type: 'ai-run-end', runId: 'R1', clientId: 'c', invocationId: '', reason: 'cancelled' },
-        's3',
-      );
+      tree.applyRunLifecycle({
+        type: 'ai-run-end',
+        runId: 'R1',
+        clientId: 'c',
+        invocationId: '',
+        reason: 'cancelled',
+        serial: 's3',
+      });
       expect(view.runOf('m1')?.status).toBe('cancelled');
 
-      tree.applyRunLifecycle(
-        { type: 'ai-run-end', runId: 'R2', clientId: 'c', invocationId: '', reason: 'complete' },
-        's4',
-      );
+      tree.applyRunLifecycle({
+        type: 'ai-run-end',
+        runId: 'R2',
+        clientId: 'c',
+        invocationId: '',
+        reason: 'complete',
+        serial: 's4',
+      });
       expect(view.runOf('m2')?.status).toBe('complete');
     });
   });
@@ -1103,10 +1113,14 @@ describe('DefaultView', () => {
           Invocation.fromJSON({ runId: 'Rregen1', invocationId: 'inv-1', inputEventId: '', sessionName: 'test' }),
       });
       await view.regenerate('a1');
-      tree.applyRunLifecycle(
-        { type: EVENT_RUN_START, runId: 'Rregen1', clientId: 'agent', invocationId: 'inv-1', regenerates: 'a1' },
-        's3-start',
-      );
+      tree.applyRunLifecycle({
+        type: EVENT_RUN_START,
+        runId: 'Rregen1',
+        clientId: 'agent',
+        invocationId: 'inv-1',
+        regenerates: 'a1',
+        serial: 's3-start',
+      });
       apply(tree, {
         runId: 'Rregen1',
         codecMessageId: 'a1_new1',
@@ -1130,10 +1144,14 @@ describe('DefaultView', () => {
       const regenPromise = view.regenerate('a1_new1');
 
       // Agent's lifecycle + output land BEFORE the publish ACK.
-      tree.applyRunLifecycle(
-        { type: EVENT_RUN_START, runId: 'Rregen2', clientId: 'agent', invocationId: 'inv-2', regenerates: 'a1' },
-        's4-start',
-      );
+      tree.applyRunLifecycle({
+        type: EVENT_RUN_START,
+        runId: 'Rregen2',
+        clientId: 'agent',
+        invocationId: 'inv-2',
+        regenerates: 'a1',
+        serial: 's4-start',
+      });
       apply(tree, {
         runId: 'Rregen2',
         codecMessageId: 'a1_new2',
@@ -1201,10 +1219,14 @@ describe('DefaultView', () => {
           Invocation.fromJSON({ runId: 'Rregen1', invocationId: 'inv-1', inputEventId: '', sessionName: 'test' }),
       });
       await view.regenerate('a1');
-      tree.applyRunLifecycle(
-        { type: EVENT_RUN_START, runId: 'Rregen1', clientId: 'agent', invocationId: 'inv-1', regenerates: 'a1' },
-        's3-start',
-      );
+      tree.applyRunLifecycle({
+        type: EVENT_RUN_START,
+        runId: 'Rregen1',
+        clientId: 'agent',
+        invocationId: 'inv-1',
+        regenerates: 'a1',
+        serial: 's3-start',
+      });
       apply(tree, {
         runId: 'Rregen1',
         codecMessageId: 'a1_new1',
@@ -1229,10 +1251,14 @@ describe('DefaultView', () => {
           Invocation.fromJSON({ runId: 'Rregen2', invocationId: 'inv-2', inputEventId: '', sessionName: 'test' }),
       });
       await view.regenerate('a1_new1');
-      tree.applyRunLifecycle(
-        { type: EVENT_RUN_START, runId: 'Rregen2', clientId: 'agent', invocationId: 'inv-2', regenerates: 'a1' },
-        's4-start',
-      );
+      tree.applyRunLifecycle({
+        type: EVENT_RUN_START,
+        runId: 'Rregen2',
+        clientId: 'agent',
+        invocationId: 'inv-2',
+        regenerates: 'a1',
+        serial: 's4-start',
+      });
       apply(tree, {
         runId: 'Rregen2',
         codecMessageId: 'a1_new2',
@@ -1257,10 +1283,14 @@ describe('DefaultView', () => {
           Invocation.fromJSON({ runId: 'Rregen3', invocationId: 'inv-3', inputEventId: '', sessionName: 'test' }),
       });
       await view.regenerate('a1_new2');
-      tree.applyRunLifecycle(
-        { type: EVENT_RUN_START, runId: 'Rregen3', clientId: 'agent', invocationId: 'inv-3', regenerates: 'a1' },
-        's5-start',
-      );
+      tree.applyRunLifecycle({
+        type: EVENT_RUN_START,
+        runId: 'Rregen3',
+        clientId: 'agent',
+        invocationId: 'inv-3',
+        regenerates: 'a1',
+        serial: 's5-start',
+      });
       apply(tree, {
         runId: 'Rregen3',
         codecMessageId: 'a1_new3',
@@ -1376,7 +1406,7 @@ describe('DefaultView', () => {
       apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
       const handler = vi.fn();
       view.on('run', handler);
-      tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'c', invocationId: '' }, 's2');
+      tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'c', invocationId: '', serial: 's2' });
       expect(handler).toHaveBeenCalled();
     });
 
@@ -1391,9 +1421,10 @@ describe('DefaultView', () => {
         clientId: 'c',
         invocationId: '',
         parent: 'm1',
+        serial: 's2',
       };
       // tree.applyRunLifecycle creates R2 with parentRunId resolved from m1 → R1.
-      tree.applyRunLifecycle(evt, 's2');
+      tree.applyRunLifecycle(evt);
       expect(handler).toHaveBeenCalled();
     });
 
@@ -2018,10 +2049,14 @@ describe('DefaultView', () => {
 
       // Server errors out: run-end arrives for the original prompt's runId
       // without a sibling Run being created.
-      tree.applyRunLifecycle(
-        { type: 'ai-run-end', runId: 'R2new', clientId: 'c', invocationId: '', reason: 'error' },
-        's3',
-      );
+      tree.applyRunLifecycle({
+        type: 'ai-run-end',
+        runId: 'R2new',
+        clientId: 'c',
+        invocationId: '',
+        reason: 'error',
+        serial: 's3',
+      });
 
       // Now an external fork appears. With the pending selection NOT cleaned
       // up, pin-on-external-fork would still pin to R2; with cleanup it

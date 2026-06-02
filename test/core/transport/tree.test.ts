@@ -751,10 +751,15 @@ describe('Tree', () => {
         message: { id: 'asst1', content: 'reply' },
         serial: 's1',
       });
-      tree.applyRunLifecycle(
-        { type: 'ai-run-start', runId: 'R2', clientId: 'c1', invocationId: '', parent: 'a1', regenerates: 'a1' },
-        's2',
-      );
+      tree.applyRunLifecycle({
+        type: 'ai-run-start',
+        runId: 'R2',
+        clientId: 'c1',
+        invocationId: '',
+        parent: 'a1',
+        regenerates: 'a1',
+        serial: 's2',
+      });
       expect(tree.getRunNode('R2')?.regeneratesCodecMessageId).toBe('a1');
       expect(tree.getRegenerateGroupByMsgId('a1').map((r) => r.runId)).toEqual(['R1', 'R2']);
     });
@@ -783,10 +788,15 @@ describe('Tree', () => {
       });
       expect(tree.getRunNode('R2')?.regeneratesCodecMessageId).toBeUndefined();
       // run-start arrives later with the canonical metadata.
-      tree.applyRunLifecycle(
-        { type: 'ai-run-start', runId: 'R2', clientId: 'c1', invocationId: '', parent: 'a1', regenerates: 'a1' },
-        's3',
-      );
+      tree.applyRunLifecycle({
+        type: 'ai-run-start',
+        runId: 'R2',
+        clientId: 'c1',
+        invocationId: '',
+        parent: 'a1',
+        regenerates: 'a1',
+        serial: 's3',
+      });
       expect(tree.getRunNode('R2')?.regeneratesCodecMessageId).toBe('a1');
       // The regenerate index now reflects the backfilled anchor too.
       expect(tree.getRegenerateGroupByMsgId('a1').map((r) => r.runId)).toEqual(['R1', 'R2']);
@@ -810,10 +820,14 @@ describe('Tree', () => {
       });
       expect(tree.getRunNode('R2')?.parentRunId).toBeUndefined();
       // run-start carries the parent header pointing at u1.
-      tree.applyRunLifecycle(
-        { type: 'ai-run-start', runId: 'R2', clientId: 'c1', invocationId: '', parent: 'u1' },
-        's3',
-      );
+      tree.applyRunLifecycle({
+        type: 'ai-run-start',
+        runId: 'R2',
+        clientId: 'c1',
+        invocationId: '',
+        parent: 'u1',
+        serial: 's3',
+      });
       expect(tree.getRunNode('R2')?.parentRunId).toBe('R1');
     });
 
@@ -836,10 +850,14 @@ describe('Tree', () => {
       expect(tree.getRunNode('R2')?.parentRunId).toBeUndefined();
       expect(tree.getRunNode('R2')?.forkOf).toBeUndefined();
       // run-start carries the canonical edit metadata.
-      tree.applyRunLifecycle(
-        { type: 'ai-run-start', runId: 'R2', clientId: 'c1', invocationId: '', forkOf: 'u1' },
-        's3',
-      );
+      tree.applyRunLifecycle({
+        type: 'ai-run-start',
+        runId: 'R2',
+        clientId: 'c1',
+        invocationId: '',
+        forkOf: 'u1',
+        serial: 's3',
+      });
       expect(tree.getRunNode('R2')?.forkOf).toBe('R1');
     });
 
@@ -872,17 +890,15 @@ describe('Tree', () => {
       });
       expect(tree.getRunNode('R1')?.parentRunId).toBeUndefined();
 
-      tree.applyRunLifecycle(
-        {
-          type: 'ai-run-start',
-          runId: 'R1',
-          clientId: 'c1',
-          invocationId: 'inv-2',
-          parent: 'a1',
-          isContinuation: true,
-        },
-        's3',
-      );
+      tree.applyRunLifecycle({
+        type: 'ai-run-start',
+        runId: 'R1',
+        clientId: 'c1',
+        invocationId: 'inv-2',
+        parent: 'a1',
+        isContinuation: true,
+        serial: 's3',
+      });
 
       expect(tree.getRunNode('R1')?.parentRunId).toBeUndefined();
       const flat = tree.runs(new Map());
@@ -992,7 +1008,13 @@ describe('Tree', () => {
 
   describe('run lifecycle', () => {
     it('run-start creates a Run with status active when none exists', () => {
-      tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'client-a', invocationId: '' }, 's1');
+      tree.applyRunLifecycle({
+        type: 'ai-run-start',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: '',
+        serial: 's1',
+      });
       const run = tree.getRunNode('R1');
       expect(run?.status).toBe('active');
       expect(run?.startSerial).toBe('s1');
@@ -1013,17 +1035,33 @@ describe('Tree', () => {
       // on Run creation; run-start does not overwrite it.
       expect(tree.getRunNode('R1')?.clientId).toBe('client-a');
 
-      tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'client-a', invocationId: '' }, 's2');
+      tree.applyRunLifecycle({
+        type: 'ai-run-start',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: '',
+        serial: 's2',
+      });
       expect(tree.getRunNode('R1')?.status).toBe('active');
       expect(tree.getRunNode('R1')?.clientId).toBe('client-a');
     });
 
     it('run-end sets RunNode status and endSerial', () => {
-      tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'client-a', invocationId: '' }, 's1');
-      tree.applyRunLifecycle(
-        { type: 'ai-run-end', runId: 'R1', clientId: 'client-a', invocationId: '', reason: 'complete' },
-        's10',
-      );
+      tree.applyRunLifecycle({
+        type: 'ai-run-start',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: '',
+        serial: 's1',
+      });
+      tree.applyRunLifecycle({
+        type: 'ai-run-end',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: '',
+        reason: 'complete',
+        serial: 's10',
+      });
       const run = tree.getRunNode('R1');
       expect(run?.status).toBe('complete');
       expect(run?.endSerial).toBe('s10');
@@ -1032,11 +1070,21 @@ describe('Tree', () => {
     it('emits a run event on both start and end', () => {
       const handler = vi.fn();
       tree.on('run', handler);
-      tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'client-a', invocationId: '' }, 's1');
-      tree.applyRunLifecycle(
-        { type: 'ai-run-end', runId: 'R1', clientId: 'client-a', invocationId: '', reason: 'complete' },
-        's2',
-      );
+      tree.applyRunLifecycle({
+        type: 'ai-run-start',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: '',
+        serial: 's1',
+      });
+      tree.applyRunLifecycle({
+        type: 'ai-run-end',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: '',
+        reason: 'complete',
+        serial: 's2',
+      });
       expect(handler).toHaveBeenCalledTimes(2);
       expect(handler).toHaveBeenNthCalledWith(1, expect.objectContaining({ type: 'ai-run-start', runId: 'R1' }));
       expect(handler).toHaveBeenNthCalledWith(2, expect.objectContaining({ type: 'ai-run-end', runId: 'R1' }));
@@ -1143,11 +1191,15 @@ describe('Tree', () => {
     it('emits update on run-start / run-end', () => {
       const handler = vi.fn();
       tree.on('update', handler);
-      tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'c', invocationId: '' }, 's1');
-      tree.applyRunLifecycle(
-        { type: 'ai-run-end', runId: 'R1', clientId: 'c', invocationId: '', reason: 'complete' },
-        's2',
-      );
+      tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'c', invocationId: '', serial: 's1' });
+      tree.applyRunLifecycle({
+        type: 'ai-run-end',
+        runId: 'R1',
+        clientId: 'c',
+        invocationId: '',
+        reason: 'complete',
+        serial: 's2',
+      });
       expect(handler).toHaveBeenCalledTimes(2);
     });
 

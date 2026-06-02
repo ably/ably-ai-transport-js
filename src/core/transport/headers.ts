@@ -90,17 +90,22 @@ export const buildTransportHeaders = (opts: {
 /**
  * Parse an inbound run-lifecycle Ably message into a {@link RunLifecycleEvent}.
  *
- * Single source of truth for turning the wire run-lifecycle message `name`
- * plus transport headers into the structured lifecycle event the Tree
- * consumes. Used by the client decode loop (live) and the View's history
- * replay so both build the event identically. The Ably channel serial is
- * applied separately by the caller — it is not part of the event payload.
+ * Single source of truth for turning the wire run-lifecycle message `name`,
+ * transport headers, and channel serial into the structured lifecycle event
+ * the Tree consumes. Used by the client decode loop (live) and the View's
+ * history replay so both build the event identically.
  * @param name - The inbound Ably message `name`.
  * @param headers - Transport headers from the inbound Ably message.
+ * @param serial - Ably channel serial of the message, or `undefined` for an
+ *   optimistic local event. Stamped onto the returned event.
  * @returns The lifecycle event, or `undefined` when `name` is not a
  *   run-lifecycle event name or the message carries no `run-id`.
  */
-export const parseRunLifecycle = (name: string, headers: Record<string, string>): RunLifecycleEvent | undefined => {
+export const parseRunLifecycle = (
+  name: string,
+  headers: Record<string, string>,
+  serial: string | undefined,
+): RunLifecycleEvent | undefined => {
   const runId = headers[HEADER_RUN_ID];
   if (!runId) return undefined;
 
@@ -115,6 +120,7 @@ export const parseRunLifecycle = (name: string, headers: Record<string, string>)
       type: EVENT_RUN_START,
       runId,
       clientId,
+      serial,
       invocationId: headers[HEADER_INVOCATION_ID] ?? '',
       ...(parent !== undefined && { parent }),
       ...(forkOf !== undefined && { forkOf }),
@@ -126,7 +132,7 @@ export const parseRunLifecycle = (name: string, headers: Record<string, string>)
   if (name === EVENT_RUN_END) {
     // CAST: agent always writes a valid RunEndReason; default to 'complete' for robustness.
     const reason = (headers[HEADER_RUN_REASON] ?? 'complete') as RunEndReason;
-    return { type: EVENT_RUN_END, runId, clientId, invocationId: headers[HEADER_INVOCATION_ID] ?? '', reason };
+    return { type: EVENT_RUN_END, runId, clientId, serial, invocationId: headers[HEADER_INVOCATION_ID] ?? '', reason };
   }
 
   return undefined;

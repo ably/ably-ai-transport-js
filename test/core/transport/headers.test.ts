@@ -4,6 +4,7 @@ import {
   HEADER_CODEC_MESSAGE_ID,
   HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
+  HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_ROLE,
@@ -83,6 +84,17 @@ describe('buildTransportHeaders', () => {
     expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('');
   });
 
+  it('includes inputCodecMessageId when provided', () => {
+    const headers = buildTransportHeaders({
+      role: 'assistant',
+      runId: 'run-1',
+      codecMessageId: 'msg-1',
+      inputCodecMessageId: 'trigger-msg',
+    });
+
+    expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger-msg');
+  });
+
   it('includes regenerates as msg-regenerate when provided', () => {
     const headers = buildTransportHeaders({
       role: 'user',
@@ -105,6 +117,7 @@ describe('buildTransportHeaders', () => {
     expect(headers).not.toHaveProperty(HEADER_PARENT);
     expect(headers).not.toHaveProperty(HEADER_FORK_OF);
     expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
+    expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_ID);
     expect(headers).not.toHaveProperty(HEADER_MSG_REGENERATE);
   });
 });

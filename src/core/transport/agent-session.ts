@@ -958,6 +958,7 @@ class DefaultAgentSession<
     let resolvedParent: string | undefined;
     let resolvedForkOf: string | undefined;
     let resolvedRegenerates: string | undefined;
+    let resolvedInputCodecMessageId: string | undefined;
     let resolvedContinuation = false;
     let firstLookupHeaders: Record<string, string> | undefined;
     /**
@@ -1074,6 +1075,7 @@ class DefaultAgentSession<
           resolvedParent = sourceHeaders[HEADER_PARENT];
           resolvedForkOf = sourceHeaders[HEADER_FORK_OF];
           resolvedRegenerates = sourceHeaders[HEADER_MSG_REGENERATE];
+          resolvedInputCodecMessageId = sourceHeaders[HEADER_CODEC_MESSAGE_ID];
           resolvedContinuation = sourceHeaders[HEADER_RUN_CONTINUE] === 'true';
         }
 
@@ -1084,6 +1086,7 @@ class DefaultAgentSession<
             regenerates: resolvedRegenerates,
             invocationId,
             inputClientId: resolvedInputClientId,
+            inputCodecMessageId: resolvedInputCodecMessageId,
             continuation: resolvedContinuation,
           });
         } catch (error) {
@@ -1130,6 +1133,7 @@ class DefaultAgentSession<
                 forkOf: node.forkOf,
                 inputEventId,
                 inputClientId: resolvedInputClientId,
+                inputCodecMessageId: resolvedInputCodecMessageId,
               }),
               node.headers,
             );
@@ -1188,6 +1192,7 @@ class DefaultAgentSession<
               codecMessageId: node.codecMessageId,
               runClientId: runOwnerClientId,
               inputClientId: resolvedInputClientId,
+              inputCodecMessageId: resolvedInputCodecMessageId,
             });
 
             const encoder = codec.createEncoder(channel, {
@@ -1403,6 +1408,7 @@ class DefaultAgentSession<
           parent: assistantParent,
           forkOf: assistantForkOf,
           inputClientId: resolvedInputClientId,
+          inputCodecMessageId: resolvedInputCodecMessageId,
           regenerates: assistantRegenerates,
         });
         const encoder = codec.createEncoder(channel, {
@@ -1463,7 +1469,7 @@ class DefaultAgentSession<
         state = RunState.ENDED;
 
         try {
-          await runManager.endRun(runId, reason, invocationId, resolvedInputClientId);
+          await runManager.endRun(runId, reason, invocationId, resolvedInputClientId, resolvedInputCodecMessageId);
         } catch (error) {
           const errInfo = new Ably.ErrorInfo(
             `unable to publish run-end for run ${runId}; ${error instanceof Error ? error.message : String(error)}`,

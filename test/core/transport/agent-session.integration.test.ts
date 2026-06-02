@@ -26,6 +26,7 @@ import {
   EVENT_RUN_START,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_INPUT_CLIENT_ID,
+  HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_PARENT,
   HEADER_ROLE,
@@ -315,6 +316,13 @@ describe('AgentSession integration', () => {
     expect(getHeaders(startA)[HEADER_INPUT_CLIENT_ID]).toBe('user-a');
     expect(getHeaders(startB)[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
 
+    // The triggering input's codec-message-id is threaded through every event
+    // of the invocation (run-start, run-end, assistant outputs), mirroring
+    // input-client-id, so the client can correlate any of them back to the
+    // originating input by the id it owns at send time.
+    expect(getHeaders(startA)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('m-user-a');
+    expect(getHeaders(startB)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('m-user-b');
+
     const endA = endMsgs.find((m) => getHeaders(m)[HEADER_INVOCATION_ID] === 'inv-a');
     const endB = endMsgs.find((m) => getHeaders(m)[HEADER_INVOCATION_ID] === 'inv-b');
     expect(endA).toBeDefined();
@@ -322,6 +330,8 @@ describe('AgentSession integration', () => {
     if (!endA || !endB) return;
     expect(getHeaders(endA)[HEADER_INPUT_CLIENT_ID]).toBe('user-a');
     expect(getHeaders(endB)[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
+    expect(getHeaders(endA)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('m-user-a');
+    expect(getHeaders(endB)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('m-user-b');
 
     // Assistant outputs of each invocation also carry the input event's
     // publisher id. Both invocations share `runId`, so we partition by
@@ -337,6 +347,8 @@ describe('AgentSession integration', () => {
     if (!assistantA || !assistantB) return;
     expect(getHeaders(assistantA)[HEADER_INPUT_CLIENT_ID]).toBe('user-a');
     expect(getHeaders(assistantB)[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
+    expect(getHeaders(assistantA)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('m-user-a');
+    expect(getHeaders(assistantB)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('m-user-b');
   });
 
   it('publishes run-start and run-end events', async () => {

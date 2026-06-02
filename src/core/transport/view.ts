@@ -353,9 +353,18 @@ export class DefaultView<
   private _computeFlatNodes(): RunNode<TProjection>[] {
     const treeNodes = this._tree.runs(this._resolveSelections());
     const candidates: RunNode<TProjection>[] = [];
+    // `tree.runs()` reachability respects fork-of selections only — it has
+    // no view of regen-group selection or pagination withholding. A Run
+    // parented at a message inside a regen-hidden owner (e.g. a follow-up
+    // turn whose user prompt lives in the regenerator's projection) needs
+    // to drop out alongside its parent. Track which Runs the View keeps
+    // and re-check parent reachability against that set.
+    const visibleRunIds = new Set<string>();
     for (const node of treeNodes) {
       if (this._withheldRunIds.has(node.runId)) continue;
       if (this._isRegenHiddenByGroupSelection(node)) continue;
+      if (node.parentRunId !== undefined && !visibleRunIds.has(node.parentRunId)) continue;
+      visibleRunIds.add(node.runId);
       candidates.push(node);
     }
 
@@ -894,6 +903,20 @@ export class DefaultView<
       anchorCodecMessageId,
       runId: result.runId,
     });
+
+    // The agent's ai-run-start may have arrived before the publish ACK
+    // that resolved sendDelegate — in which case `_onTreeUpdate` already
+    // re-walked with the previous selection still authoritative, hiding
+    // the new Run. Promote the pending entry now (if the new Run is
+    // already in the tree) and force a recompute so the visible set
+    // catches up without waiting for the next structural change.
+    this._resolvePendingRegenSelections();
+    const nodes = this._computeFlatNodes();
+    if (this._visibleChanged(nodes)) {
+      this._cachedNodes = nodes;
+      this._updateVisibleSnapshot(nodes);
+      this._emitter.emit('update');
+    }
 
     // Bound pending entry lifetime to the run — clean up on run-end.
     const runUnsub = this._tree.on('run', (evt) => {

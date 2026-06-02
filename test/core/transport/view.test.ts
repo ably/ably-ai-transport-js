@@ -945,6 +945,274 @@ describe('DefaultView', () => {
       await expect(view.regenerate('only')).rejects.toThrow(/parent user message not found/);
     });
 
+    it('hides Runs parented inside a regen-hidden owner when the original branch is reselected', () => {
+      // Tree shape:
+      //   R1 owns [u1, a1].
+      //   R2 regenerates a1, owns [a1p].
+      //   R3 is parented at a1p (lives only on the regen branch) and
+      //     owns [u2, a2].
+      // Default selection picks R2 (newest regen), so the visible chain
+      // is [u1, a1p, u2, a2]. Selecting R1 must collapse the chain to
+      // [u1, a1] — R3 belongs to the regen branch and disappears too.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'u1',
+        role: 'user',
+        message: { id: 'u1', content: 'q1' },
+        serial: 's1',
+      });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'a1',
+        role: 'assistant',
+        parent: 'u1',
+        message: { id: 'a1', content: 'orig' },
+        serial: 's2',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'a1p',
+        role: 'assistant',
+        parent: 'u1',
+        regenerates: 'a1',
+        message: { id: 'a1p', content: 'regen' },
+        serial: 's3',
+      });
+      apply(tree, {
+        runId: 'R3',
+        codecMessageId: 'u2',
+        role: 'user',
+        parent: 'a1p',
+        message: { id: 'u2', content: 'q2' },
+        serial: 's4',
+      });
+      apply(tree, {
+        runId: 'R3',
+        codecMessageId: 'a2',
+        role: 'assistant',
+        parent: 'u2',
+        message: { id: 'a2', content: 'r2' },
+        serial: 's5',
+      });
+
+      // Default selection: latest regen (R2) → R3 chains off it.
+      expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1p', 'u2', 'a2']);
+
+      // Switch to the original (index 0 in the regen group).
+      view.selectSibling('a1', 0);
+      expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1']);
+
+      // Switch back — the regen branch and its follow-up turn reappear.
+      view.selectSibling('a1', 1);
+      expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1p', 'u2', 'a2']);
+    });
+
+    it('updates view.getMessages() when the regenerator Run lands before the publish ACK resolves', async () => {
+      // Race condition repro: agent publishes ai-run-start for the new
+      // regenerator BEFORE the client's publish() ACK returns. Without
+      // forcing a recompute in _applyRegenerateAutoSelect, the view's
+      // visible state stays on the previously-selected regen because
+      // _onTreeUpdate ran with stale _regenSelections.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'u1',
+        role: 'user',
+        message: { id: 'u1', content: 'q' },
+        serial: 's1',
+      });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'a1',
+        role: 'assistant',
+        parent: 'u1',
+        message: { id: 'a1', content: 'orig' },
+        serial: 's2',
+      });
+
+      // First regen completes — promoted to auto.
+      let deferredResolve: ((value: ActiveRun<TestOutput>) => void) | undefined;
+      vi.mocked(sendDelegate).mockResolvedValueOnce({
+        stream: new ReadableStream(),
+        started: Promise.resolve(),
+        runId: 'Rregen1',
+        invocationId: 'inv-1',
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+        cancel: () => Promise.resolve(),
+        optimisticCodecMessageIds: [],
+        inputEventId: '',
+        toInvocation: () =>
+          Invocation.fromJSON({ runId: 'Rregen1', invocationId: 'inv-1', inputEventId: '', sessionName: 'test' }),
+      });
+      await view.regenerate('a1');
+      tree.applyRunLifecycle(
+        { type: EVENT_RUN_START, runId: 'Rregen1', clientId: 'agent', invocationId: 'inv-1', regenerates: 'a1' },
+        's3-start',
+      );
+      apply(tree, {
+        runId: 'Rregen1',
+        codecMessageId: 'a1_new1',
+        role: 'assistant',
+        regenerates: 'a1',
+        message: { id: 'a1_new1', content: 'regen-1' },
+        serial: 's3',
+      });
+      expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1_new1']);
+
+      // Second regen: ai-run-start arrives BEFORE the publish ACK that
+      // resolves sendDelegate, so _applyRegenerateAutoSelect hasn't yet
+      // installed the new pending entry.
+      vi.mocked(sendDelegate).mockImplementationOnce(
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- need to capture the resolver
+        () =>
+          new Promise<ActiveRun<TestOutput>>((resolve) => {
+            deferredResolve = resolve;
+          }),
+      );
+      const regenPromise = view.regenerate('a1_new1');
+
+      // Agent's lifecycle + output land BEFORE the publish ACK.
+      tree.applyRunLifecycle(
+        { type: EVENT_RUN_START, runId: 'Rregen2', clientId: 'agent', invocationId: 'inv-2', regenerates: 'a1' },
+        's4-start',
+      );
+      apply(tree, {
+        runId: 'Rregen2',
+        codecMessageId: 'a1_new2',
+        role: 'assistant',
+        regenerates: 'a1',
+        message: { id: 'a1_new2', content: 'regen-2' },
+        serial: 's4',
+      });
+      // Stale: visible still on regen-1 because the selection hasn't moved.
+      expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1_new1']);
+
+      // Now the publish ACK resolves: _applyRegenerateAutoSelect runs.
+      deferredResolve?.({
+        stream: new ReadableStream(),
+        started: Promise.resolve(),
+        runId: 'Rregen2',
+        invocationId: 'inv-2',
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+        cancel: () => Promise.resolve(),
+        optimisticCodecMessageIds: [],
+        inputEventId: '',
+        toInvocation: () =>
+          Invocation.fromJSON({ runId: 'Rregen2', invocationId: 'inv-2', inputEventId: '', sessionName: 'test' }),
+      });
+      await regenPromise;
+
+      // Visible state must now reflect regen-2 — without the recompute
+      // in _applyRegenerateAutoSelect, this stays stuck on 'a1_new1'.
+      expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1_new2']);
+    });
+
+    it('three consecutive regenerates of the same assistant substitute to the latest in view.getMessages()', async () => {
+      // Mirror the use-chat demo scenario: one Run contains both the user
+      // message and the original assistant. Three sequential regenerates
+      // each mint a new Run that regenerates the canonical anchor.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'u1',
+        role: 'user',
+        message: { id: 'u1', content: 'q' },
+        serial: 's1',
+      });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'a1',
+        role: 'assistant',
+        parent: 'u1',
+        message: { id: 'a1', content: 'orig' },
+        serial: 's2',
+      });
+
+      expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1']);
+
+      // First regenerate.
+      vi.mocked(sendDelegate).mockResolvedValueOnce({
+        stream: new ReadableStream(),
+        started: Promise.resolve(),
+        runId: 'Rregen1',
+        invocationId: 'inv-1',
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+        cancel: () => Promise.resolve(),
+        optimisticCodecMessageIds: [],
+        inputEventId: '',
+        toInvocation: () =>
+          Invocation.fromJSON({ runId: 'Rregen1', invocationId: 'inv-1', inputEventId: '', sessionName: 'test' }),
+      });
+      await view.regenerate('a1');
+      tree.applyRunLifecycle(
+        { type: EVENT_RUN_START, runId: 'Rregen1', clientId: 'agent', invocationId: 'inv-1', regenerates: 'a1' },
+        's3-start',
+      );
+      apply(tree, {
+        runId: 'Rregen1',
+        codecMessageId: 'a1_new1',
+        role: 'assistant',
+        regenerates: 'a1',
+        message: { id: 'a1_new1', content: 'regen-1' },
+        serial: 's3',
+      });
+      expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1_new1']);
+
+      // Second regenerate (clicking the displayed regen-1 message).
+      vi.mocked(sendDelegate).mockResolvedValueOnce({
+        stream: new ReadableStream(),
+        started: Promise.resolve(),
+        runId: 'Rregen2',
+        invocationId: 'inv-2',
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+        cancel: () => Promise.resolve(),
+        optimisticCodecMessageIds: [],
+        inputEventId: '',
+        toInvocation: () =>
+          Invocation.fromJSON({ runId: 'Rregen2', invocationId: 'inv-2', inputEventId: '', sessionName: 'test' }),
+      });
+      await view.regenerate('a1_new1');
+      tree.applyRunLifecycle(
+        { type: EVENT_RUN_START, runId: 'Rregen2', clientId: 'agent', invocationId: 'inv-2', regenerates: 'a1' },
+        's4-start',
+      );
+      apply(tree, {
+        runId: 'Rregen2',
+        codecMessageId: 'a1_new2',
+        role: 'assistant',
+        regenerates: 'a1',
+        message: { id: 'a1_new2', content: 'regen-2' },
+        serial: 's4',
+      });
+      expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1_new2']);
+
+      // Third regenerate.
+      vi.mocked(sendDelegate).mockResolvedValueOnce({
+        stream: new ReadableStream(),
+        started: Promise.resolve(),
+        runId: 'Rregen3',
+        invocationId: 'inv-3',
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+        cancel: () => Promise.resolve(),
+        optimisticCodecMessageIds: [],
+        inputEventId: '',
+        toInvocation: () =>
+          Invocation.fromJSON({ runId: 'Rregen3', invocationId: 'inv-3', inputEventId: '', sessionName: 'test' }),
+      });
+      await view.regenerate('a1_new2');
+      tree.applyRunLifecycle(
+        { type: EVENT_RUN_START, runId: 'Rregen3', clientId: 'agent', invocationId: 'inv-3', regenerates: 'a1' },
+        's5-start',
+      );
+      apply(tree, {
+        runId: 'Rregen3',
+        codecMessageId: 'a1_new3',
+        role: 'assistant',
+        regenerates: 'a1',
+        message: { id: 'a1_new3', content: 'regen-3' },
+        serial: 's5',
+      });
+      expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1_new3']);
+    });
+
     it('edit forwards forkOf and parent for a user-message edit', async () => {
       apply(tree, {
         runId: 'R1',

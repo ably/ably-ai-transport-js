@@ -85,7 +85,7 @@ An event that signals the end of a stream. For the Vercel codec, terminal events
 
 ### Fire-and-forget
 
-An async operation where the caller does not `await` the result. The promise is collected but errors are handled later in batch (or logged and discarded). The [encoder](encoder.md#appendstream) uses fire-and-forget for append operations - each token delta is sent without waiting for acknowledgement, and failures are caught during [flush](encoder.md#recovery-mechanism). The client session's HTTP POST is also fire-and-forget - the stream is available immediately from the channel subscription, not the HTTP response.
+An async operation where the caller does not `await` the result. The promise is collected but errors are handled later in batch (or logged and discarded). The [encoder](encoder.md#appendstream) uses fire-and-forget for append operations - each token delta is sent without waiting for acknowledgement, and failures are caught during [flush](encoder.md#recovery-mechanism). The Vercel [chat transport](chat-transport.md)'s agent-invocation POST is also fire-and-forget - the response stream arrives over the channel subscription, not the HTTP response.
 
 ### Prefix-match
 

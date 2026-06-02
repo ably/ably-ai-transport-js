@@ -2,7 +2,7 @@
 
 The client session (`src/core/transport/client-session.ts`) manages the full client-side conversation lifecycle over a single Ably channel. It composes a [stream router](transport-components.md#streamrouter), [conversation tree](conversation-tree.md), and codec [decoder](decoder.md) to handle receiving streamed responses and managing conversation state. Write operations (`sendMessage`, `sendInput`, `regenerate`, `edit`) live on the View, which delegates to the session's internal send machinery.
 
-The client publishes user messages directly to the channel via the shared codec encoder, and POSTs an HTTP invocation in parallel. The agent correlates the input event by the `invocation-id` header (channel rewind + live subscribe) and publishes [run lifecycle events](wire-protocol.md#lifecycle-events) plus assistant chunks. The channel is the durable session record — agents that weren't running at publish time can resume by reading channel rewind.
+The client publishes user messages directly to the channel via the shared codec encoder. It does **not** send HTTP — the core session is a pure Ably-channel transport. Waking an agent is the application's concern: it POSTs `run.toInvocation().toJSON()` to its own endpoint if and when it wants one woken (the Vercel [chat transport](chat-transport.md) does this automatically for `useChat` parity). The agent correlates the input event by the `invocation-id` header (channel rewind + live subscribe) and publishes [run lifecycle events](wire-protocol.md#lifecycle-events) plus assistant chunks. The channel is the durable session record — agents that weren't running at publish time can resume by reading channel rewind.
 
 ## Composition
 
@@ -29,11 +29,12 @@ All sub-components are created in the constructor and share a single Ably channe
 3. **Optimistic insert** — for each `user-message` event, the session builds transport headers (`role: "user"`, `run-id`, `invocation-id`, `codec-message-id`, parent, `event-id`) and calls `tree.applyMessage([event], headers, undefined)`. The user message itself does not carry `input-client-id` — the wire publisher's Ably `clientId` already conveys that. The Tree creates the Run on first message arrival, folds the event into the Run's projection, and emits `update`. This makes the optimistic state visible to the view before the publish ack lands.
 4. **Create stream** — the [stream router](transport-components.md#streamrouter) creates a `ReadableStream` bound to `(runId, invocationId)`. Events from a different invocation under the same `runId` are dropped.
 5. **Publish on the channel** — the session's shared encoder publishes each event via `encoder.publish(event, ...)`. Capability errors (Ably 401/403) are translated to `MissingPublishCapability` and reject `send()` before exposing the stream.
-6. **POST in parallel** — the HTTP POST is fired in parallel with the publish. The body carries `runId`, `invocationId`, `inputEventIds`, and `history` (the View's pre-computed flat TMessage[]) plus optional `body` extras. Per-message metadata (`clientId`, `parent`, `forkOf`, `isContinuation`) lives on channel headers, not in the POST body.
-7. **Return `ActiveRun`** — `send()` resolves as soon as the channel publish (step 5) completes. It does **not** block on the agent. The caller receives `{ stream, started, runId, invocationId, cancel(), optimisticCodecMessageIds, inputEventIds }`.
-8. **Observe run-start (optional)** — `ActiveRun.started` is a promise that resolves when the agent's `ai-run-start` for the run+invocation is observed, and rejects only if the session is closed first. There is no deadline — callers who want to bound the wait race `started` against their own timeout. Internally, `started` is backed by a pending-run-start tracker keyed by `invocation-id`; the run-start handler resolves it, `close()` rejects it. A publish failure (step 5) drops the tracker; a POST failure leaves it pending (it errors the stream, but `started` settles only on run-start or close).
+6. **Return `ActiveRun`** — `send()` resolves as soon as the channel publish (step 5) completes. The core sends no HTTP. The caller receives `{ stream, started, runId, invocationId, inputEventId, cancel(), optimisticCodecMessageIds, toInvocation() }`.
+7. **Observe run-start (optional)** — `ActiveRun.started` is a promise that resolves when the agent's `ai-run-start` for the run+invocation is observed, and rejects only if the session is closed first. There is no deadline — callers who want to bound the wait race `started` against their own timeout. Internally, `started` is backed by a pending-run-start tracker keyed by `invocation-id`; the run-start handler resolves it, `close()` rejects it. A publish failure (step 5) drops the tracker.
 
-`regenerate()` runs through the same flow as a regular send, with one carve-out: step 3 (optimistic tree-upsert) is skipped because the codec's `ait-regenerate` event decodes to zero TMessages. The wire still publishes — its `msg-regenerate` and `parent` headers carry the routing metadata; the agent's input-event lookup matches it by `event-id`. The POST fires as usual, and `started` resolves when the agent picks up the regenerated run. The Tree creates the new Run when `ai-run-start` arrives under the new runId, populating `regeneratesMsgId` from the lifecycle event's `regenerates` field.
+After `send()` returns, the application decides whether to wake an agent. `ActiveRun.toInvocation()` builds the pointer — `runId`, `invocationId`, `inputEventId`, and the channel name as `sessionName` — and the canonical pattern is `await fetch(endpoint, { body: JSON.stringify(run.toInvocation().toJSON()) })`. The agent rebuilds it with `Invocation.fromJSON` and reads the conversation from the channel; the pointer carries only identifiers. The Vercel [chat transport](chat-transport.md) issues this POST itself so `useChat` stays request-driven.
+
+`regenerate()` runs through the same flow as a regular send, with one carve-out: step 3 (optimistic tree-upsert) is skipped because the codec's `ait-regenerate` event decodes to zero TMessages. The wire still publishes — its `msg-regenerate` and `parent` headers carry the routing metadata; the agent's input-event lookup matches it by `event-id`. The Tree creates the new Run when `ai-run-start` arrives under the new runId, populating `regeneratesMsgId` from the lifecycle event's `regenerates` field.
 
 ### Multi-message chaining
 
@@ -89,13 +90,14 @@ The view paginates at **Run** granularity. `loadOlder(limit)` reveals up to `lim
 
 ## Stream delivery guarantee
 
-With the Vercel AI SDK's default SSE transport, a broken connection surfaces immediately — `useChat` transitions to `status: 'error'` and the application can respond. The Ably transport should provide at least the same guarantee: after `send()`, either all events for the run are received in order through to run-end, or the stream errors so the consumer knows delivery was interrupted.
+With the Vercel AI SDK's default SSE transport, a broken connection surfaces immediately — `useChat` transitions to `status: 'error'` and the application can respond. The Ably transport should provide at least the same guarantee: after the run's stream is being consumed, either all events for the run are received in order through to run-end, or the stream errors so the consumer knows delivery was interrupted.
 
 Cases where the guarantee would be violated and the stream is errored:
 
-- **HTTP POST failure** - the server never received the request, so no events will arrive. The stream is errored with `SessionSendFailed`.
 - **Channel continuity loss** - the channel entered a state where message delivery can no longer be assured (FAILED, SUSPENDED, DETACHED, or re-attached with `resumed: false`). Events may have been lost. The stream is errored with `ChannelContinuityLost`. The transport does not clean up per-run state or emit synthetic run-end events — events may still arrive later.
 - **Unhealthy channel at send time** - `send()` is called when the channel is not ATTACHED or ATTACHING. The send is rejected with `ChannelNotReady`.
+
+A failed agent-invocation POST is **not** handled here — the core never sends HTTP. Whoever issues the invocation owns that failure: the Vercel [chat transport](chat-transport.md) errors the `useChat`-facing stream when its POST fails (with `SessionSendFailed`), while a generic app that POSTs `run.toInvocation()` itself handles the rejected `fetch` directly.
 
 ## Close
 
@@ -110,11 +112,11 @@ After close, all methods that create runs throw `SessionClosed`. Event subscript
 
 ## Events
 
-| Event                    | Payload             | When                                                                                                                                      |
-| ------------------------ | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `update` (on view)       | (none)              | View state changed - call `view.flattenNodes()` for current state                                                                         |
-| `run` (on tree or view)  | `RunLifecycleEvent` | Run started or ended (includes runId, clientId, reason)                                                                                   |
-| `error`                  | `Ably.ErrorInfo`    | Non-fatal error (HTTP POST failure, channel continuity loss, subscription error). POST and channel failures also error active run streams |
-| `ably-message` (on tree) | (none)              | Raw Ably message added - subscribe via `tree.on('ably-message')`                                                                          |
+| Event                    | Payload             | When                                                                                                                        |
+| ------------------------ | ------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `update` (on view)       | (none)              | View state changed - call `view.flattenNodes()` for current state                                                           |
+| `run` (on tree or view)  | `RunLifecycleEvent` | Run started or ended (includes runId, clientId, reason)                                                                     |
+| `error`                  | `Ably.ErrorInfo`    | Non-fatal error (channel publish failure, channel continuity loss, subscription error). These also error active run streams |
+| `ably-message` (on tree) | (none)              | Raw Ably message added - subscribe via `tree.on('ably-message')`                                                            |
 
 See [Sessions concept](../concepts/sessions.md) for the public API perspective. See [Transport components](transport-components.md) for the sub-component internals. See [Message lifecycle](message-lifecycle.md) for the end-to-end message flow.

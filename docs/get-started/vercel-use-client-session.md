@@ -21,9 +21,20 @@ import {
   useClientSession,
   useView,
 } from '@ably/ai-transport/react';
+import type { ActiveRun } from '@ably/ai-transport';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import type * as AI from 'ai';
 import { useState } from 'react';
+
+// Wake the agent: the core session never sends HTTP, so the app POSTs the
+// run's invocation pointer to its endpoint. The agent reads the conversation
+// from the channel; the pointer carries only identifiers.
+const wakeAgent = (run: ActiveRun<AI.UIMessageChunk>) =>
+  fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(run.toInvocation().toJSON()),
+  });
 
 function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) {
   const [input, setInput] = useState('');
@@ -53,7 +64,7 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
   const latestStatus = latest?.status;
   const isStreaming = latestRunId !== undefined && latestStatus !== 'complete' && latestStatus !== 'cancelled';
 
-  const handleSend = () => {
+  const handleSend = async () => {
     const text = input.trim();
     if (!text) return;
     setInput('');
@@ -64,7 +75,10 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
       parts: [{ type: 'text', text }],
       createdAt: new Date(),
     };
-    send([userMsg]);
+    // send() publishes the input on the channel and returns the run; then
+    // POST the invocation to wake the agent.
+    const run = await send([userMsg]);
+    await wakeAgent(run);
   };
 
   return (
@@ -99,7 +113,7 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
 
           {/* Regenerate assistant messages */}
           {m.role === 'assistant' && (
-            <button onClick={() => regenerate(m.id)}>Regenerate</button>
+            <button onClick={async () => wakeAgent(await regenerate(m.id))}>Regenerate</button>
           )}
         </div>
       ))}
@@ -132,14 +146,13 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
 export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
   return (
     // ClientSessionProvider creates the ClientSession (reading the Realtime
-    // client from the surrounding <AblyProvider>) and merges `body` into every
-    // HTTP POST so the server knows which channel to use.
+    // client from the surrounding <AblyProvider>). The session is a pure
+    // channel transport — it never sends HTTP — so the component above POSTs
+    // the invocation to wake the agent.
     <ClientSessionProvider
       channelName={chatId}
       codec={UIMessageCodec}
       clientId={clientId}
-      api="/api/chat"
-      body={() => ({ id: chatId })}
     >
       <ChatInner chatId={chatId} clientId={clientId} />
     </ClientSessionProvider>

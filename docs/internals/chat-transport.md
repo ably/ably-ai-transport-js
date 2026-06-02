@@ -1,6 +1,8 @@
 # Chat transport
 
-The chat transport (`src/vercel/transport/chat-transport.ts`) is a thin adapter that wraps a core [ClientSession](client-session.md) to satisfy the `ChatTransport` interface that Vercel's `useChat()` hook expects. The real logic lives in the core session - this adapter maps Vercel's `sendMessages()` / `reconnectToStream()` contract to the session's default [view](client-session.md)'s `send()` and the session's `cancel()`.
+The chat transport (`src/vercel/transport/chat-transport.ts`) is a thin adapter that wraps a core [ClientSession](client-session.md) to satisfy the `ChatTransport` interface that Vercel's `useChat()` hook expects. It maps Vercel's `sendMessages()` / `reconnectToStream()` contract to the session's default [view](client-session.md)'s `send()` and the session's `cancel()`.
+
+The core session is a pure Ably-channel transport — it never sends HTTP. `useChat`'s contract, however, is request-driven: calling `sendMessages` is expected to trigger the backend. So the chat transport is the one place that issues the agent-invocation POST, keeping `useChat` a drop-in transport while the generic core stays HTTP-free.
 
 ## Why an adapter
 
@@ -8,8 +10,9 @@ Vercel's `useChat()` manages message state internally. When the user submits a m
 
 1. Determine which messages are new vs history
 2. Compute fork metadata for regeneration
-3. Delegate to the core session's `send()`
-4. Return the run stream so `useChat` can drive status and callbacks
+3. Delegate to the core session's `send()` to publish on the channel
+4. POST the run's invocation pointer to wake the agent
+5. Return the run stream so `useChat` can drive status and callbacks
 
 ## sendMessages
 
@@ -22,11 +25,15 @@ The adapter splits the message array based on `trigger`:
 
 For regeneration, the adapter looks up the target message in the [conversation tree](conversation-tree.md) to compute the correct `forkOf` and `parent` values using the tree's `codec-message-id` (not the `UIMessage.id`).
 
+### Waking the agent (the invocation POST)
+
+After `send()` publishes on the channel and returns the `ActiveRun`, the transport POSTs `run.toInvocation().toJSON()` to its configured `api` (default `/api/chat`) to wake the agent. The body is the invocation pointer — `runId`, `invocationId`, `inputEventId`, `sessionName` (the channel name) — so the agent rebuilds it with `Invocation.fromJSON` and reads the conversation from the channel; no history is sent. The POST uses the configured `fetch` and `credentials`.
+
+The POST is fire-and-forget — the response arrives over the Ably channel, not the HTTP response, so awaiting it would needlessly delay the stream return. If the POST fails (non-2xx or network error), the agent never woke, so the transport errors **only** the `useChat`-facing stream with `SessionSendFailed` (which surfaces as `useChat` `status: 'error'`). It does this by aborting the wrapped readable with `preventCancel`, leaving the source run stream and the tree/observers untouched.
+
 ### Request customization
 
-The `prepareSendMessagesRequest` hook (optional) lets the server app customize the POST body and headers. It receives the full context - trigger, history, messages, fork metadata - and returns `{ body, headers }`.
-
-Without the hook, the adapter builds a default body with `history` (including per-message Ably headers), `chatId`, `trigger`, and fork metadata fields.
+The `prepareSendMessagesRequest` hook (optional) lets the app add to the invocation POST. It receives the full context - trigger, history, messages, fork metadata - and returns `{ body, headers }`. The returned `body` is merged into the POST body (the run's invocation identifiers always win) and `headers` are added to the request — use it for auth headers or extra agent metadata. Without the hook, the POST body is just the invocation pointer.
 
 ### Real stream return
 
@@ -50,9 +57,12 @@ Delegates directly to `session.close(options)`.
 
 ## ChatTransportOptions
 
-| Option                       | Type                                                           | Purpose                                                 |
-| ---------------------------- | -------------------------------------------------------------- | ------------------------------------------------------- |
-| `prepareSendMessagesRequest` | `(context: SendMessagesRequestContext) => { body?, headers? }` | Customize the HTTP POST body and headers before sending |
+| Option                       | Type                                                           | Purpose                                                                    |
+| ---------------------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `api`                        | `string?`                                                      | Endpoint the transport POSTs the invocation to. Default `/api/chat`        |
+| `credentials`                | `RequestCredentials?`                                          | Fetch credentials mode for the invocation POST                             |
+| `fetch`                      | `typeof globalThis.fetch?`                                     | Custom fetch implementation for the invocation POST                        |
+| `prepareSendMessagesRequest` | `(context: SendMessagesRequestContext) => { body?, headers? }` | Add body/headers to the invocation POST (invocation identifiers still win) |
 
 The `SendMessagesRequestContext` provides:
 

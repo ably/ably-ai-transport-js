@@ -8,12 +8,16 @@ AI Transport splits the real-time layer into two sessions: an **agent session** 
 sequenceDiagram
     participant U as User
     participant CS as Client Session
+    participant App as Your app
     participant AC as Ably Channel
     participant AS as Agent Session
     participant LLM
 
     U->>CS: type message
-    CS->>AS: HTTP POST (messages)
+    CS->>AC: publish input
+    CS-->>App: ActiveRun
+    App->>AS: POST invocation (wake agent)
+    AS->>AC: read input (rewind)
     AS->>LLM: prompt
     LLM-->>AS: token stream
     AS->>AC: publish chunks
@@ -21,11 +25,12 @@ sequenceDiagram
     CS->>U: render tokens
 ```
 
-1. The user sends a message. The client session fires an HTTP POST to your server endpoint with the message content, conversation history, and run metadata.
-2. Your server endpoint creates a run on the agent session, calls the LLM, and pipes the response stream through the encoder to the Ably channel.
-3. The client session receives messages from the channel subscription, decodes them through the codec, and updates the conversation state.
+1. The user sends a message. The client session publishes the input on the Ably channel — the durable record — and `send()` resolves with an `ActiveRun`. The core never sends HTTP.
+2. Your app wakes the agent by POSTing the run's invocation pointer (`run.toInvocation().toJSON()`) to your server endpoint. (With the Vercel `useChat` integration, the [chat transport](../internals/chat-transport.md) does this for you.)
+3. Your endpoint creates a run on the agent session, which reads the input off the channel (via rewind), calls the LLM, and pipes the response stream through the encoder to the channel.
+4. The client session receives messages from the channel subscription, decodes them through the codec, and updates the conversation state.
 
-The HTTP POST is fire-and-forget from the client's perspective - the response stream is available immediately via the Ably channel subscription, not from the HTTP response body.
+The invocation POST is a cheap, retryable pointer — it carries only identifiers (`runId`, `invocationId`, `inputEventId`, `sessionName`), not the conversation, which the agent reads from the channel. The response stream is available immediately via the channel subscription, not from the HTTP response body.
 
 ## Session lifecycle
 
@@ -72,8 +77,16 @@ const session = createClientSession({ client: ably, channelName, clientId });
 await session.connect();
 const view = session.view;
 
-// Send a message - returns immediately with a run handle
+// Send a message - publishes on the channel and returns immediately with a run handle
 const run = await view.send(userMessage);
+
+// Wake the agent: POST the invocation pointer to your endpoint. The core
+// transport never sends HTTP — the app owns this step.
+await fetch('/api/chat', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(run.toInvocation().toJSON()),
+});
 
 // Subscribe to accumulated messages - updates on every token
 view.on('update', () => {
@@ -85,7 +98,7 @@ view.on('update', () => {
 // (e.g. Vercel's useChat), but most apps use the view instead
 ```
 
-In React, `ClientSessionProvider` creates the session and `useClientSession` reads it from context:
+In React, `ClientSessionProvider` creates the session and `useClientSession` reads it from context (the app still POSTs the invocation itself, as above):
 
 ```typescript
 import { ClientSessionProvider, useClientSession, useView } from '@ably/ai-transport/react';
@@ -93,7 +106,7 @@ import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import type * as AI from 'ai';
 
 // In your layout or page component:
-<ClientSessionProvider channelName="ai:demo" codec={UIMessageCodec} clientId={clientId} api="/api/chat">
+<ClientSessionProvider channelName="ai:demo" codec={UIMessageCodec} clientId={clientId}>
   <Chat />
 </ClientSessionProvider>
 

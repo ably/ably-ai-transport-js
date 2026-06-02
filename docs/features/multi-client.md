@@ -15,12 +15,12 @@ No special API is needed. Connect two clients to the same channel name, and mess
 
 ```tsx
 // Client A — in its own browser tab
-<ClientSessionProvider channelName="ai:demo" codec={UIMessageCodec} clientId="user-a" api="/api/chat">
+<ClientSessionProvider channelName="ai:demo" codec={UIMessageCodec} clientId="user-a">
   <Chat />
 </ClientSessionProvider>
 
 // Client B — in a different browser tab, device, or user session
-<ClientSessionProvider channelName="ai:demo" codec={UIMessageCodec} clientId="user-b" api="/api/chat">
+<ClientSessionProvider channelName="ai:demo" codec={UIMessageCodec} clientId="user-b">
   <Chat />
 </ClientSessionProvider>
 

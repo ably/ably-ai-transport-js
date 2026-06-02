@@ -47,12 +47,23 @@ The client creates runs implicitly when you call `view.send()`, `view.regenerate
 ```typescript
 const run = await view.send(userMessage);
 
-// run.runId - the unique run identifier
+// run.runId  - the unique run identifier
 // run.stream - a ReadableStream of decoded events
+// run.started - resolves when the agent picks up the run (ai-run-start)
 // run.cancel() - cancel this specific run
 ```
 
-The returned `ActiveRun` gives you a decoded event stream and a cancel handle. The HTTP POST to your server is fire-and-forget - the stream is available immediately from the channel subscription, not from the HTTP response.
+The returned `ActiveRun` gives you a decoded event stream and a cancel handle. `send()` resolves as soon as your input is published to the channel — it does **not** block on the agent. The HTTP POST to your server is fire-and-forget, and the stream is available immediately from the channel subscription, not from the HTTP response.
+
+If you need to know when the agent has actually picked up the run, await `run.started`: it resolves when the agent's `ai-run-start` for this run is observed, and rejects only if the session is closed first. There is no built-in deadline — race it against your own timeout if you want to bound the wait:
+
+```typescript
+const run = await view.send(userMessage);
+await Promise.race([
+  run.started,
+  new Promise((_, reject) => setTimeout(() => reject(new Error('agent did not start in time')), 30_000)),
+]);
+```
 
 ## Run lifecycle events
 

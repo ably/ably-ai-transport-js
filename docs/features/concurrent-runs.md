@@ -1,6 +1,6 @@
 # Concurrent runs
 
-Multiple runs can be active simultaneously on the same Ably channel. Each run has its own stream, its own cancel handle, and its own lifecycle - they don't interfere with one other.
+Multiple runs can be active simultaneously on the same Ably channel. Each run has its own cancel handle and its own lifecycle, and its outputs are keyed by `runId` - they don't interfere with one other.
 
 Without concurrent run support, a session must serialize interactions: one request finishes before the next starts. AI Transport allows parallel runs, enabling multi-agent patterns, interruption without cancelling, and multi-user conversations where multiple people interact at once.
 
@@ -13,9 +13,12 @@ Each call to `view.send()`, `view.regenerate()`, or `view.edit()` on the client 
 const runA = await view.send(messageA);
 const runB = await view.send(messageB);
 
-// Each has its own stream
-const readerA = runA.stream.getReader();
-const readerB = runB.stream.getReader();
+// Outputs for each run are keyed by runId on the tree's output event
+session.tree.on('output', (event) => {
+  if (event.runId === runA.runId) {
+    /* run A's chunks */
+  }
+});
 
 // Cancel one without affecting the other
 await runA.cancel();

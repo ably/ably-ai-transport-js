@@ -52,12 +52,12 @@ The [codec interface](codec-interface.md) is the boundary between these layers.
 
 ### Own run vs observer run
 
-When the client session receives messages from the channel, it routes them differently depending on who started the run:
+A distinction by who started the run:
 
-- **Own run** - a run this client initiated (via `view.send()`, `view.regenerate()`, `view.edit()`). Decoded events are routed to **both** the [stream router](transport-components.md#streamrouter) (which enqueues them on a `ReadableStream`) and a per-run [accumulator](codec-interface.md#accumulator) (which builds complete messages for the [conversation tree](conversation-tree.md)). The stream exists primarily as an integration seam for framework adapters (e.g. Vercel's `useChat()`); most application code consumes accumulated messages via the view.
-- **Observer run** - a run started by another client. Decoded events go to the accumulator only - there is no stream because no caller on this client initiated the run.
+- **Own run** - a run this client initiated (via `view.send()`, `view.regenerate()`, `view.edit()`).
+- **Observer run** - a run started by another client.
 
-Both paths use the same accumulation logic. The only difference is that own runs additionally expose a `ReadableStream` for framework integration. See [Message lifecycle](message-lifecycle.md#own-runs-vs-observer-runs) for the full routing picture.
+The client session does **not** route the two differently: every decoded run output, own or observer, folds into the run's projection in the [conversation tree](conversation-tree.md) and surfaces on the tree's `output` event keyed by `runId`. The distinction matters for affordances layered on top — cancel is scoped to a run the caller holds, and a UI may mark its own runs — not for how outputs are delivered. See [Message lifecycle](message-lifecycle.md#how-run-outputs-surface) for the delivery path.
 
 ### Client identity tiers
 
@@ -81,7 +81,7 @@ A run contains one or more messages. A message belongs to exactly one run. See [
 
 ### Terminal event
 
-An event that signals the end of a stream. For the Vercel codec, terminal events are `finish`, `error`, and `abort` chunks (the AI SDK chunk type, kept verbatim on the wire). The [stream router](transport-components.md#terminal-detection) uses the codec's `isTerminal()` predicate to automatically close the `ReadableStream` when a terminal event arrives. The [decoder](decoder.md#append-handling) checks `status` for `"complete"` or `"cancelled"` to detect terminal state on the wire.
+An event that signals the end of a stream. For the Vercel codec, terminal events are `finish`, `error`, and `abort` chunks (the AI SDK chunk type, kept verbatim on the wire). The Vercel [chat transport](chat-transport.md)'s per-run output stream closes the `ReadableStream` when a terminal chunk arrives, so `useChat`'s reader ends. The [decoder](decoder.md#append-handling) checks `status` for `"complete"` or `"cancelled"` to detect terminal state on the wire.
 
 ### Fire-and-forget
 
@@ -113,7 +113,7 @@ When an optimistic message (null serial) receives a server-assigned serial via [
 
 ### TEvent
 
-The streaming fragment type that the generic layer is parameterized by. For the Vercel codec, this is `UIMessageChunk`. Events are the unit of real-time streaming - individually meaningless fragments (a text delta, a finish event) that must be accumulated into a complete message. The [decoder](decoder.md) produces events; the [stream router](transport-components.md) delivers them to own-run consumers; the [accumulator](codec-interface.md#accumulator) assembles them into `TMessage` instances.
+The streaming fragment type that the generic layer is parameterized by. For the Vercel codec, this is `UIMessageChunk`. Events are the unit of real-time streaming - individually meaningless fragments (a text delta, a finish event) that must be accumulated into a complete message. The [decoder](decoder.md) produces events; the [conversation tree](conversation-tree.md) surfaces them on its `output` event; the [accumulator](codec-interface.md#accumulator) assembles them into `TMessage` instances.
 
 ### TMessage
 

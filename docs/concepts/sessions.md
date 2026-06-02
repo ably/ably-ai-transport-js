@@ -94,8 +94,9 @@ view.on('update', () => {
   // the last assistant message grows as tokens stream in
 });
 
-// The run also exposes a ReadableStream<TOutput> for framework adapters
-// (e.g. Vercel's useChat), but most apps use the view instead
+// For raw per-event granularity, subscribe to the tree's `output` event
+// (keyed by runId). Framework adapters like Vercel's useChat build a
+// ReadableStream from it; most apps use the view instead.
 ```
 
 In React, `ClientSessionProvider` creates the session and `useClientSession` reads it from context (the app still POSTs the invocation itself, as above):

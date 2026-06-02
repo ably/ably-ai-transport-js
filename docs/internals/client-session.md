@@ -1,6 +1,6 @@
 # Client session
 
-The client session (`src/core/transport/client-session.ts`) manages the full client-side conversation lifecycle over a single Ably channel. It composes a [stream router](transport-components.md#streamrouter), [conversation tree](conversation-tree.md), and codec [decoder](decoder.md) to handle receiving streamed responses and managing conversation state. Write operations (`sendMessage`, `sendInput`, `regenerate`, `edit`) live on the View, which delegates to the session's internal send machinery.
+The client session (`src/core/transport/client-session.ts`) manages the full client-side conversation lifecycle over a single Ably channel. It composes a [conversation tree](conversation-tree.md) and codec [decoder](decoder.md) to handle receiving streamed responses and managing conversation state. Write operations (`sendMessage`, `sendInput`, `regenerate`, `edit`) live on the View, which delegates to the session's internal send machinery.
 
 The client publishes user messages directly to the channel via the shared codec encoder. It does **not** send HTTP — the core session is a pure Ably-channel transport. Waking an agent is the application's concern: it POSTs `run.toInvocation().toJSON()` to its own endpoint if and when it wants one woken (the Vercel [chat transport](chat-transport.md) does this automatically for `useChat` parity). The agent correlates the input event by the `invocation-id` header (channel rewind + live subscribe) and publishes [run lifecycle events](wire-protocol.md#lifecycle-events) plus assistant chunks. The channel is the durable session record — agents that weren't running at publish time can resume by reading channel rewind.
 
@@ -10,13 +10,12 @@ The client publishes user messages directly to the channel via the shared codec 
 DefaultClientSession
 ├── Tree                   - Run-keyed conversation forest; owns per-Run TProjection via codec.fold
 ├── View                   - wraps tree with pagination, selection, 'update' events, and write ops
-├── StreamRouter           - maps run events to per-run ReadableStreams
 ├── Decoder                - decodes inbound Ably messages to codec events
 ├── EventEmitter           - typed event bus for error events
-└── per-run send state     - _ownRunIds, _ownMsgIds, _runMsgIds (relay detection + cancel routing)
+└── pending run-start trackers - resolve ActiveRun.started on the matching ai-run-start
 ```
 
-The Tree is keyed by `runId` and owns the per-Run codec projection. Inbound events flow directly into `tree.applyMessage()`, which folds them into the Run's projection. The session keeps only the bookkeeping it needs locally: `_ownRunIds`, `_ownMsgIds`, `_runMsgIds`, and pending run-start trackers.
+The Tree is keyed by `runId` and owns the per-Run codec projection. Inbound events flow directly into `tree.applyMessage()`, which folds them into the Run's projection and surfaces decoded outputs on the tree's `output` event. The session keeps only the bookkeeping it needs locally: pending run-start trackers keyed by the triggering input's `codec-message-id`.
 
 All sub-components are created in the constructor and share a single Ably channel. Construction is synchronous and does no channel I/O. Callers must `await session.connect()` before any send or cancel call; otherwise those methods throw `InvalidArgument`. `connect()` subscribes to the channel before attach ([RTL7g](https://sdk.ably.com/builds/ably/specification/main/features/#RTL7g)) to guarantee no messages are missed, and is idempotent - a second call returns the same in-flight promise.
 
@@ -27,10 +26,9 @@ All sub-components are created in the constructor and share a single Ably channe
 1. **Generate identifiers** — a fresh `runId`, a fresh `invocationId`, and per-message `codecMessageId`s and `inputEventId`s (all `crypto.randomUUID()`).
 2. **Auto-compute parent** — the View pre-computes `parentCodecMessageId` from the visible branch's tail message and passes it to the delegate. When neither `options.parent` nor `options.forkOf` is set, the delegate uses `parentCodecMessageId` as the auto-parent.
 3. **Optimistic insert** — for each `user-message` event, the session builds transport headers (`role: "user"`, `run-id`, `invocation-id`, `codec-message-id`, parent, `event-id`) and calls `tree.applyMessage({ inputs: [event], outputs: [] }, headers, undefined)`. The user message itself does not carry `input-client-id` — the wire publisher's Ably `clientId` already conveys that. The Tree creates the Run on first message arrival, folds the event into the Run's projection, and emits `update`. This makes the optimistic state visible to the view before the publish ack lands.
-4. **Create stream** — the [stream router](transport-components.md#streamrouter) creates a `ReadableStream` bound to `(runId, invocationId)`. Events from a different invocation under the same `runId` are dropped.
-5. **Publish on the channel** — the session's shared encoder publishes each event via `encoder.publish(event, ...)`. Capability errors (Ably 401/403) are translated to `MissingPublishCapability` and reject `send()` before exposing the stream.
-6. **Return `ActiveRun`** — `send()` resolves as soon as the channel publish (step 5) completes. The core sends no HTTP. The caller receives `{ stream, started, runId, invocationId, inputEventId, cancel(), optimisticCodecMessageIds, toInvocation() }`.
-7. **Observe run-start (optional)** — `ActiveRun.started` is a promise that resolves when the agent's `ai-run-start` for this send is observed, and rejects only if the session is closed first. There is no deadline — callers who want to bound the wait race `started` against their own timeout. Internally, `started` is backed by a pending-run-start tracker keyed by the triggering input's `codec-message-id` — the agent echoes it back on `run-start` as `input-codec-message-id`, so for any send carrying input the match does not depend on a client-minted `run-id`/`invocation-id`. The lone exception is an empty-input continuation, which publishes no input and so has no such id — it keys by the reused `runId` instead. The run-start handler resolves it, `close()` rejects it. A publish failure (step 5) drops the tracker.
+4. **Publish on the channel** — the session's shared encoder publishes each event via `encoder.publish(event, ...)`. Capability errors (Ably 401/403) are translated to `MissingPublishCapability` and reject `send()`.
+5. **Return `ActiveRun`** — `send()` resolves as soon as the channel publish (step 4) completes. The core sends no HTTP. The caller receives `{ started, runId, invocationId, inputEventId, cancel(), optimisticCodecMessageIds, toInvocation() }`. Decoded run outputs are not returned here — they are observed on the [conversation tree](conversation-tree.md)'s `output` event, keyed by `runId`.
+6. **Observe run-start (optional)** — `ActiveRun.started` is a promise that resolves when the agent's `ai-run-start` for this send is observed, and rejects only if the session is closed first. There is no deadline — callers who want to bound the wait race `started` against their own timeout. Internally, `started` is backed by a pending-run-start tracker keyed by the triggering input's `codec-message-id` — the agent echoes it back on `run-start` as `input-codec-message-id`, so for any send carrying input the match does not depend on a client-minted `run-id`/`invocation-id`. The lone exception is an empty-input continuation, which publishes no input and so has no such id — it keys by the reused `runId` instead. The run-start handler resolves it, `close()` rejects it. A publish failure (step 4) drops the tracker.
 
 After `send()` returns, the application decides whether to wake an agent. `ActiveRun.toInvocation()` builds the pointer — `runId`, `invocationId`, `inputEventId`, and the channel name as `sessionName` — and the canonical pattern is `await fetch(endpoint, { body: JSON.stringify(run.toInvocation().toJSON()) })`. The agent rebuilds it with `Invocation.fromJSON` and reads the conversation from the channel; the pointer carries only identifiers. The Vercel [chat transport](chat-transport.md) issues this POST itself so `useChat` stays request-driven.
 
@@ -53,16 +51,15 @@ The channel subscription handler (`_handleMessage`) processes every inbound Ably
 ### Run lifecycle events
 
 - **`ai-run-start`** — `tree.applyRunLifecycle({type: 'ai-run-start', runId, clientId, invocationId, serial, parent, forkOf, isContinuation?})` creates or activates the Run, registers it as active, emits a `run` event. The channel serial rides on the event (`parseRunLifecycle` stamps it), so there is no separate serial argument.
-- **`ai-run-end`** — close the stream router entry (unless `reason === 'suspended'`), clean up `_ownRunIds`/`_ownMsgIds`/`_runMsgIds`, then `tree.applyRunLifecycle({type: 'ai-run-end', runId, clientId, invocationId, serial, reason})` updates the RunNode's `status` and `endSerial` (from the event's serial), deregisters from active tracking, emits a `run` event.
+- **`ai-run-end`** — `tree.applyRunLifecycle({type: 'ai-run-end', runId, clientId, invocationId, serial, reason})` updates the RunNode's `status` and `endSerial` (from the event's serial), deregisters from active tracking, emits a `run` event. The session keeps no per-run stream state to tear down.
 
 ### Codec-decoded messages
 
 All other messages pass through the codec decoder. The session:
 
 1. Calls `decoder.decode(rawMessage)` to get `{ inputs, outputs }` split by wire direction.
-2. Calls `tree.applyMessage({ inputs, outputs }, headers, serial)` — the Tree folds events into the owning Run's projection and emits an `output` event with the message's outputs.
-3. Per-event, calls `router.route(runId, invocationId, event)` to enqueue to the active stream (if any). The router drops events whose invocation-id doesn't match the stream's bound invocation.
-4. Calls `tree.emitAblyMessage(rawMsg)` so subscribers to `'ably-message'` can observe the raw wire.
+2. Calls `tree.applyMessage({ inputs, outputs }, headers, serial)` — the Tree folds events into the owning Run's projection and emits an `output` event with the message's outputs. This is the single fan-out point for run outputs; consumers (the View, and the Vercel chat transport's per-run stream) subscribe to it.
+3. Calls `tree.emitAblyMessage(rawMsg)` so subscribers to `'ably-message'` can observe the raw wire.
 
 There is no separate observer-state map. The Tree's per-Run projection is the single source of truth for every Run (own or observer); the View extracts messages on demand via `codec.getMessages(run.projection)`.
 
@@ -78,9 +75,9 @@ The conversation tree handles the fork: the new message becomes a sibling of the
 
 ## Cancel
 
-`cancel(runId)` publishes an `ai-cancel` message carrying `run-id` and closes the local stream for that run. See [Transport components: cancel routing](transport-components.md#cancel-routing-agent-session) for how the agent session processes cancel messages.
+`cancel(runId)` publishes an `ai-cancel` message carrying `run-id`. See [Transport components: cancel routing](transport-components.md#cancel-routing-agent-session) for how the agent session processes cancel messages.
 
-Closing the stream router entry does **not** clear the observer state - late server events (e.g. abort status, final metadata) arriving before `run-end` are still accumulated into the conversation tree.
+Publishing the cancel does **not** tear down the Run locally — late server events (e.g. abort status, final metadata) arriving before `run-end` still fold into the conversation tree. A consumer that wants its stream to end immediately on cancel closes its own stream; the Vercel chat transport does this when `useChat` aborts.
 
 ## History
 
@@ -88,16 +85,16 @@ Closing the stream router entry does **not** clear the observer state - late ser
 
 The view paginates at **Run** granularity. `loadOlder(limit)` reveals up to `limit` Runs per call. A single channel page may materialise more than `limit` Runs, so the view applies a **withholding** buffer: the newest `limit` Runs are released immediately, and the rest are held back for subsequent `loadOlder()` calls. This prevents the UI from jumping to show many Runs at once and gives the consumer a predictable Run-unit page size regardless of how channel pages happen to align with Run boundaries.
 
-## Stream delivery guarantee
+## Delivery guarantee
 
-With the Vercel AI SDK's default SSE transport, a broken connection surfaces immediately — `useChat` transitions to `status: 'error'` and the application can respond. The Ably transport should provide at least the same guarantee: after the run's stream is being consumed, either all events for the run are received in order through to run-end, or the stream errors so the consumer knows delivery was interrupted.
+With the Vercel AI SDK's default SSE transport, a broken connection surfaces immediately — `useChat` transitions to `status: 'error'` and the application can respond. The Ably transport should provide at least the same guarantee: either all events for a run are received in order through to run-end, or the consumer is told delivery was interrupted. The core conveys interruption by emitting a session `error` event; the Vercel [chat transport](chat-transport.md)'s per-run stream subscribes to it and errors the `useChat`-facing stream, surfacing as `status: 'error'`.
 
-Cases where the guarantee would be violated and the stream is errored:
+Cases where the guarantee would be violated and the session emits `error`:
 
-- **Channel continuity loss** - the channel entered a state where message delivery can no longer be assured (FAILED, SUSPENDED, DETACHED, or re-attached with `resumed: false`). Events may have been lost. The stream is errored with `ChannelContinuityLost`. The transport does not clean up per-run state or emit synthetic run-end events — events may still arrive later.
+- **Channel continuity loss** - the channel entered a state where message delivery can no longer be assured (FAILED, SUSPENDED, DETACHED, or re-attached with `resumed: false`). Events may have been lost. The session emits `error` with `ChannelContinuityLost`. The transport does not clean up per-run state or emit synthetic run-end events — events may still arrive later.
 - **Unhealthy channel at send time** - `send()` is called when the channel is not ATTACHED or ATTACHING. The send is rejected with `ChannelNotReady`.
 
-A failed agent-invocation POST is **not** handled here — the core never sends HTTP. Whoever issues the invocation owns that failure: the Vercel [chat transport](chat-transport.md) errors the `useChat`-facing stream when its POST fails (with `SessionSendFailed`), while a generic app that POSTs `run.toInvocation()` itself handles the rejected `fetch` directly.
+A failed agent-invocation POST is **not** handled here — the core never sends HTTP. Whoever issues the invocation owns that failure: the Vercel chat transport errors the `useChat`-facing stream when its POST fails (with `SessionSendFailed`), while a generic app that POSTs `run.toInvocation()` itself handles the rejected `fetch` directly.
 
 ## Close
 
@@ -105,19 +102,18 @@ A failed agent-invocation POST is **not** handled here — the core never sends 
 
 1. Optionally publishes a cancel message (if `options.cancel` is set)
 2. Unsubscribes from the channel
-3. Closes all active stream router entries
-4. Clears event handlers, `_ownRunIds`, `_ownMsgIds`, `_runMsgIds`, and pending run-start trackers; closes the encoder
+3. Clears event handlers and pending run-start trackers (rejecting any in-flight `started` promises with `SessionClosed`); closes the encoder
 
 After close, all methods that create runs throw `SessionClosed`. Event subscriptions return no-op unsubscribe functions. The Tree retains its data (so any in-flight observer rendering continues to read the last-known state) — callers that need a fresh Tree must create a new session.
 
 ## Events
 
-| Event                    | Payload                | When                                                                                                                         |
-| ------------------------ | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `update` (on view)       | (none)                 | View state changed - call `view.flattenNodes()` for current state                                                            |
-| `run` (on tree or view)  | `RunLifecycleEvent`    | Run started or ended (includes runId, clientId, invocationId, serial, reason)                                                |
-| `output` (on tree)       | `OutputEvent<TOutput>` | Decoded agent outputs folded into a Run - runId, codecMessageId, serial, and the output events (empty for inputs-only folds) |
-| `error`                  | `Ably.ErrorInfo`       | Non-fatal error (channel publish failure, channel continuity loss, subscription error). These also error active run streams  |
-| `ably-message` (on tree) | (none)                 | Raw Ably message added - subscribe via `tree.on('ably-message')`                                                             |
+| Event                    | Payload                | When                                                                                                                                                                                               |
+| ------------------------ | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `update` (on view)       | (none)                 | View state changed - call `view.flattenNodes()` for current state                                                                                                                                  |
+| `run` (on tree or view)  | `RunLifecycleEvent`    | Run started or ended (includes runId, clientId, invocationId, serial, reason)                                                                                                                      |
+| `output` (on tree)       | `OutputEvent<TOutput>` | Decoded agent outputs folded into a Run - runId, codecMessageId, serial, and the output events (empty for inputs-only folds)                                                                       |
+| `error`                  | `Ably.ErrorInfo`       | Non-fatal error (channel publish failure, channel continuity loss, subscription error). Subscribe via `session.on('error')`; the Vercel chat transport errors its `useChat`-facing stream on these |
+| `ably-message` (on tree) | (none)                 | Raw Ably message added - subscribe via `tree.on('ably-message')`                                                                                                                                   |
 
 See [Sessions concept](../concepts/sessions.md) for the public API perspective. See [Transport components](transport-components.md) for the sub-component internals. See [Message lifecycle](message-lifecycle.md) for the end-to-end message flow.

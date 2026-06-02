@@ -48,12 +48,12 @@ The client creates runs implicitly when you call `view.send()`, `view.regenerate
 const run = await view.send(userMessage);
 
 // run.runId  - the unique run identifier
-// run.stream - a ReadableStream of decoded events
 // run.started - resolves when the agent picks up the run (ai-run-start)
 // run.cancel() - cancel this specific run
+// run.toInvocation() - the pointer to POST to your agent endpoint
 ```
 
-The returned `ActiveRun` gives you a decoded event stream and a cancel handle. `send()` resolves as soon as your input is published to the channel — it does **not** send HTTP or block on the agent. To wake a serverless agent, POST the run's invocation pointer to your endpoint yourself:
+The returned `ActiveRun` gives you the run's identity and a cancel handle. `send()` resolves as soon as your input is published to the channel — it does **not** send HTTP or block on the agent. Decoded outputs are observed on the conversation tree's `output` event (or, more usually, via the view) — see [Token streaming](../features/streaming.md). To wake a serverless agent, POST the run's invocation pointer to your endpoint yourself:
 
 ```typescript
 const run = await view.send(userMessage);
@@ -95,7 +95,7 @@ Use these events to drive your own UI state. The SDK does not summarise channel 
 
 ## Concurrent runs
 
-Multiple runs can be active simultaneously on the same channel. Each run has its own stream, its own cancel handle, and its own lifecycle events. The server creates independent runs:
+Multiple runs can be active simultaneously on the same channel. Each run has its own cancel handle and its own lifecycle events, and its outputs are keyed by `runId` on the tree's `output` event. The server creates independent runs:
 
 ```typescript
 // Two runs can stream at the same time

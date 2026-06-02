@@ -109,9 +109,9 @@ type DecoderOutput<TEvent, TMessage> =
   | { kind: 'message'; message: TMessage };
 ```
 
-- `kind: 'event'` - a streaming event that should be routed to a stream (own run) or accumulated (observer run)
+- `kind: 'event'` - a streaming event that is accumulated into the in-progress message
 - `kind: 'message'` - a complete domain message (e.g. a user message from `decodeDiscrete()`)
 
-The transport layer processes these differently: events go to the [stream router](transport-components.md) or accumulator, messages go directly to the [conversation tree](conversation-tree.md).
+The transport layer folds both into the owning run's projection in the [conversation tree](conversation-tree.md): events accumulate into the in-progress message and surface on the tree's `output` event, while complete messages are upserted directly.
 
 See [Wire protocol](wire-protocol.md) for the message actions and header specification. See [Encoder](encoder.md) for the encoding side, including the recovery mechanism that produces `message.update` actions. See [Codec interface](codec-interface.md) for how domain codecs provide decoder hooks.

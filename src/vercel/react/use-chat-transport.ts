@@ -66,6 +66,9 @@ const SKIPPED_CHAT_TRANSPORT: ChatTransport = {
       400,
     );
   },
+  onInvocation: (): never => {
+    throw new Ably.ErrorInfo('unable to subscribe to invocations; hook is skipped', ErrorCode.InvalidArgument, 400);
+  },
 };
 
 /** Options for {@link useChatTransport}. */

@@ -21,6 +21,13 @@ const makeMessage = (id: string, role: AI.UIMessage['role'] = 'user'): AI.UIMess
   parts: [],
 });
 
+/** Flush a few microtask turns so a fire-and-forget POST response read settles. */
+const flushMicrotasks = async (): Promise<void> => {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+};
+
 const makeAssistantWithToolPart = (id: string, part: AI.DynamicToolUIPart): AI.UIMessage => ({
   id,
   role: 'assistant',
@@ -892,6 +899,55 @@ describe('createChatTransport', () => {
 
       expect(chat.streaming).toBe(true);
       expect(log).toEqual([true]);
+    });
+  });
+
+  describe('onInvocation', () => {
+    it('fires with the agent-minted invocationId read from the POST response body', async () => {
+      vi.stubGlobal(
+        'fetch',
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+        vi.fn(() => Promise.resolve(Response.json({ invocationId: 'agent-inv-xyz' }, { status: 200 }))),
+      );
+      const { session, mockRun } = createMockSession();
+      const chat = createChatTransport(session);
+
+      const seen: string[] = [];
+      chat.onInvocation((id) => seen.push(id));
+
+      await chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: [makeMessage('1')],
+        abortSignal: undefined,
+      });
+      // The POST response read is async (fire-and-forget) — flush microtasks.
+      await flushMicrotasks();
+
+      expect(seen).toEqual(['agent-inv-xyz']);
+      mockRun.close();
+    });
+
+    it('does not fire when the POST response carries no invocationId', async () => {
+      // The default stub returns a bodyless 200 — no parseable invocation id.
+      const { session, mockRun } = createMockSession();
+      const chat = createChatTransport(session);
+
+      const seen: string[] = [];
+      chat.onInvocation((id) => seen.push(id));
+
+      await chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: [makeMessage('1')],
+        abortSignal: undefined,
+      });
+      await flushMicrotasks();
+
+      expect(seen).toEqual([]);
+      mockRun.close();
     });
   });
 

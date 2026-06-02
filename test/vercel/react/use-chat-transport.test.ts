@@ -26,6 +26,7 @@ const createFakeChatTransport = (): ChatTransport => ({
   close: () => Promise.resolve(),
   streaming: false,
   onStreamingChange: () => noop,
+  onInvocation: () => noop,
 });
 
 // Test stub — identity comparison only, methods not exercised.

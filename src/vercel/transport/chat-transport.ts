@@ -160,6 +160,17 @@ export interface ChatTransport {
    * @returns Unsubscribe function.
    */
   onStreamingChange(callback: (streaming: boolean) => void): () => void;
+
+  /**
+   * Subscribe to the agent-minted invocation id returned by the
+   * agent-invocation POST. Fires once per send whose POST responds with an
+   * `invocationId` in its JSON body (the agent's POST handler mints it). The
+   * run's identity also arrives over the channel via `run.started`; this is the
+   * earlier, out-of-band signal for observability and POST↔run correlation.
+   * @param callback - Called with the agent-minted invocation id.
+   * @returns Unsubscribe function.
+   */
+  onInvocation(callback: (invocationId: string) => void): () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -387,6 +398,14 @@ const findPredecessorMsgId = (messages: AI.UIMessage[], codecMessageId: string):
 interface ChatTransportEventsMap {
   /** Fired on every streaming-state transition with the new value. */
   streaming: boolean;
+  /** Fired with the agent-minted invocation id read from the POST response. */
+  invocation: string;
+}
+
+/** Shape of the agent-invocation POST response body the transport reads. */
+interface InvocationResponseBody {
+  /** The agent-minted invocation id, when the handler returns one. */
+  invocationId?: string;
 }
 
 /**
@@ -639,7 +658,7 @@ export const createChatTransport = (
       body: JSON.stringify(postBody),
       ...(credentials ? { credentials } : {}),
     })
-      .then((response) => {
+      .then(async (response) => {
         if (!response.ok) {
           fail(
             new Ably.ErrorInfo(
@@ -648,6 +667,19 @@ export const createChatTransport = (
               response.status,
             ),
           );
+          return;
+        }
+        // Read the agent-minted invocation id from the response body for
+        // observability / POST↔run correlation. Best-effort — a bodyless or
+        // non-JSON response simply yields no id and is not an error (the run's
+        // identity still arrives over the channel via `run.started`).
+        try {
+          // CAST: wire data from the agent endpoint — trust boundary; the
+          // `typeof` guard below validates the field before use.
+          const body = (await response.json()) as InvocationResponseBody;
+          if (typeof body.invocationId === 'string') emitter.emit('invocation', body.invocationId);
+        } catch {
+          /* no parseable invocation id in the response — observability only */
         }
       })
       .catch((error: unknown) => {
@@ -685,6 +717,13 @@ export const createChatTransport = (
       emitter.on('streaming', callback);
       return () => {
         emitter.off('streaming', callback);
+      };
+    },
+
+    onInvocation: (callback: (invocationId: string) => void): (() => void) => {
+      emitter.on('invocation', callback);
+      return () => {
+        emitter.off('invocation', callback);
       };
     },
   };

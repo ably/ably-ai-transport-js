@@ -161,6 +161,17 @@ export class DefaultTree<
   private readonly _codecMessageIdToKey = new Map<string, string>();
 
   /**
+   * Maps an agent-minted `runId` to the {@link RunNode.key} of the Run it was
+   * adopted onto, for Runs whose key differs from their runId — i.e. a
+   * provisional Run (keyed by its triggering input's codec-message-id) that
+   * later adopted the agent's runId on run-start. Wire messages and lifecycle
+   * events that arrive keyed by the runId resolve through this index back to
+   * the Run's key. Runs created with a runId (key === runId) have no entry —
+   * lookups fall through to the runId itself.
+   */
+  private readonly _keyByRunId = new Map<string, string>();
+
+  /**
    * All Runs sorted by startSerial (lexicographic). Null-startSerial Runs
    * (optimistic) sort after all serial-bearing Runs, ordered among themselves
    * by insertion sequence.
@@ -460,13 +471,16 @@ export class DefaultTree<
 
   getRunNode(runId: string): RunNode<TProjection> | undefined {
     this._logger.trace('DefaultTree.getRunNode();', { runId });
-    return this._runIndex.get(runId)?.node;
+    // Accepts a runId or a key: an adopted Run's runId differs from its key,
+    // so resolve through the adoption index first; a key (or an ordinary
+    // runId) falls through unchanged.
+    return this._runIndex.get(this._keyByRunId.get(runId) ?? runId)?.node;
   }
 
   getRunByCodecMessageId(codecMessageId: string): RunNode<TProjection> | undefined {
     this._logger.trace('DefaultTree.getRunByCodecMessageId();', { codecMessageId });
-    const runId = this._codecMessageIdToKey.get(codecMessageId);
-    return runId ? this._runIndex.get(runId)?.node : undefined;
+    const key = this._codecMessageIdToKey.get(codecMessageId);
+    return key ? this._runIndex.get(key)?.node : undefined;
   }
 
   getSiblingRuns(runId: string): RunNode<TProjection>[] {
@@ -496,8 +510,11 @@ export class DefaultTree<
     // codec-message-id. The run-less case is a client input published in the
     // agent-minted world — before any runId exists; the Run holds the input
     // optimistically and the agent's runId is adopted onto it later from
-    // run-start. A message with neither id can't be placed.
-    const key = wireRunId ?? codecMessageId;
+    // run-start. A wire run-id that belongs to an adopted provisional Run
+    // (key !== runId) resolves back to the Run's key. A message with neither
+    // id can't be placed.
+    const keyFromRunId = wireRunId === undefined ? undefined : (this._keyByRunId.get(wireRunId) ?? wireRunId);
+    const key = keyFromRunId ?? codecMessageId;
     if (key === undefined) {
       this._logger.warn('Tree.applyMessage(); message missing run-id and codec-message-id header; skipping');
       return;
@@ -575,15 +592,13 @@ export class DefaultTree<
       }
     }
 
-    // The output event routes streaming deltas to the View, which matches it
-    // against its visible-Run keys. Output-bearing Runs always carry a runId
-    // (the agent published them under one) and a runId-bearing Run's key IS
-    // its runId, so this resolves to the key the View indexes by; the `??`
-    // only covers a run-less input fold, which has no outputs to route. NOTE:
-    // when runId adoption lands (a Run whose key differs from its adopted
-    // runId), this must emit `ownerKey` (the View matches on key), not the
-    // runId — handled by the output-routing commit alongside adoption.
-    this._emitter.emit('output', { runId: run.node.runId ?? ownerKey, codecMessageId, serial, events: events.outputs });
+    // The output event routes streaming deltas to consumers, which match it
+    // against the Run's stable key (the View's visible-key set; the Vercel
+    // run-output stream's key). So carry `ownerKey`, not the runId: for an
+    // adopted provisional Run the two differ, and the key is what consumers
+    // index by. For every Run that has a runId, key === runId, so this is
+    // unchanged for them.
+    this._emitter.emit('output', { runId: ownerKey, codecMessageId, serial, events: events.outputs });
     if (this._structuralVersion !== structuralBefore) this._emitter.emit('update');
   }
 
@@ -595,8 +610,33 @@ export class DefaultTree<
     // existing node — content, not structure — so it emits no `update`.
     const structuralBefore = this._structuralVersion;
     if (event.type === 'start') {
-      let run = this._runIndex.get(event.runId);
+      // Resolve the run-id to its Run: directly when key === runId, or via the
+      // adoption index when an earlier run-start already adopted this runId
+      // onto a provisional Run (a continuation run-start of an adopted run).
+      let run = this._runIndex.get(this._keyByRunId.get(event.runId) ?? event.runId);
+
+      // Adoption: the first run-start for a fresh, agent-minted run. The agent
+      // echoed the triggering input's codec-message-id, which identifies the
+      // provisional Run the client formed from that input before any runId
+      // existed. Adopt the runId onto it — the Run keeps its key (the
+      // codec-message-id), and the runId -> key index lets the run's outputs
+      // and run-end route to it.
+      if (run === undefined && !event.isContinuation && event.inputCodecMessageId !== undefined) {
+        const provKey = this._codecMessageIdToKey.get(event.inputCodecMessageId);
+        const provisional = provKey === undefined ? undefined : this._runIndex.get(provKey);
+        if (provisional && provisional.node.runId === undefined) {
+          provisional.node.runId = event.runId;
+          this._keyByRunId.set(event.runId, provisional.node.key);
+          run = provisional;
+          this._logger.debug('DefaultTree.applyRunLifecycle(); adopted runId onto provisional Run', {
+            runId: event.runId,
+            key: provisional.node.key,
+          });
+        }
+      }
+
       if (run) {
+        const ownerKey = run.node.key;
         if (run.node.status !== 'active') {
           run.node.status = 'active';
         }
@@ -610,7 +650,9 @@ export class DefaultTree<
         // assistant wire that arrived before run-start (history pagination
         // boundary or out-of-order delivery). The lifecycle event is the
         // canonical source for parent/forkOf/regenerates; only fill in
-        // fields the wire didn't already populate.
+        // fields the wire didn't already populate. Index by the Run's key —
+        // which is the runId for an ordinary Run, but the codec-message-id
+        // for an adopted provisional one.
         //
         // Continuation run-starts (`run-continue: 'true'`) are
         // NOT authoritative for structural metadata: the parent / forkOf
@@ -624,24 +666,24 @@ export class DefaultTree<
             run.node.parentCodecMessageId = event.parent;
           }
           if (run.node.parentRunId === undefined && event.parent !== undefined) {
-            const parentRunId = this._codecMessageIdToKey.get(event.parent);
-            if (parentRunId !== undefined && parentRunId !== event.runId) {
-              this._removeFromParentIndex(undefined, event.runId);
-              run.node.parentRunId = parentRunId;
-              this._addToParentIndex(parentRunId, event.runId);
+            const parentKey = this._codecMessageIdToKey.get(event.parent);
+            if (parentKey !== undefined && parentKey !== ownerKey) {
+              this._removeFromParentIndex(undefined, ownerKey);
+              run.node.parentRunId = parentKey;
+              this._addToParentIndex(parentKey, ownerKey);
               this._structuralVersion++;
             }
           }
           if (run.node.forkOf === undefined && event.forkOf !== undefined) {
-            const forkOfRunId = this._codecMessageIdToKey.get(event.forkOf);
-            if (forkOfRunId !== undefined && forkOfRunId !== event.runId) {
-              run.node.forkOf = forkOfRunId;
+            const forkOfKey = this._codecMessageIdToKey.get(event.forkOf);
+            if (forkOfKey !== undefined && forkOfKey !== ownerKey) {
+              run.node.forkOf = forkOfKey;
               this._structuralVersion++;
             }
           }
           if (run.node.regeneratesCodecMessageId === undefined && event.regenerates !== undefined) {
             run.node.regeneratesCodecMessageId = event.regenerates;
-            this._indexRegenerate(event.runId, event.regenerates);
+            this._indexRegenerate(ownerKey, event.regenerates);
             this._structuralVersion++;
           }
         }
@@ -658,7 +700,7 @@ export class DefaultTree<
     }
 
     // run-end (event.type === 'end')
-    const run = this._runIndex.get(event.runId);
+    const run = this._runIndex.get(this._keyByRunId.get(event.runId) ?? event.runId);
     if (run) {
       run.node.status = event.reason;
       run.node.endSerial = event.serial;
@@ -668,22 +710,26 @@ export class DefaultTree<
   }
 
   delete(runId: string): void {
-    const entry = this._runIndex.get(runId);
+    // Accept a runId or a key: an adopted Run is indexed by its key, so resolve
+    // the runId through the adoption index before removing.
+    const key = this._keyByRunId.get(runId) ?? runId;
+    const entry = this._runIndex.get(key);
     if (!entry) return;
 
-    this._logger.debug('Tree.delete();', { runId });
+    this._logger.debug('Tree.delete();', { runId, key });
 
-    this._removeFromParentIndex(entry.node.parentRunId, runId);
+    this._removeFromParentIndex(entry.node.parentRunId, key);
     this._removeSortedRun(entry);
-    this._runIndex.delete(runId);
+    this._runIndex.delete(key);
+    if (entry.node.runId !== undefined) this._keyByRunId.delete(entry.node.runId);
     if (entry.node.regeneratesCodecMessageId !== undefined) {
       const set = this._regenerateByMsgId.get(entry.node.regeneratesCodecMessageId);
       if (set) {
-        set.delete(runId);
+        set.delete(key);
         if (set.size === 0) this._regenerateByMsgId.delete(entry.node.regeneratesCodecMessageId);
       }
     }
-    // codecMessageIdToRunId entries pointing at this run linger but are harmless;
+    // codecMessageIdToKey entries pointing at this run linger but are harmless;
     // they'll be overwritten if the Run is re-created and remain dangling
     // otherwise. Cleanup not worth the index walk.
 

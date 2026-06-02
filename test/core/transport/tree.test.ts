@@ -13,6 +13,7 @@ import {
 import type { Codec, CodecInputEvent } from '../../../src/core/codec/types.js';
 import type { TreeInternal } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
+import type { RunLifecycleEvent } from '../../../src/core/transport/types.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 
 // ---------------------------------------------------------------------------
@@ -123,6 +124,28 @@ const flatRunIds = (
 
 // A client input event carrying a single message.
 const userInput = (id: string): TestInput => ({ kind: 'append-input', message: { id, content: id } });
+
+// A run-start lifecycle event, with the triggering input's
+// codec-message-id the Tree adopts the runId by.
+const runStart = (
+  runId: string,
+  inputCodecMessageId: string | undefined,
+  opts: { isContinuation?: boolean; serial?: string; parent?: string } = {},
+): RunLifecycleEvent => ({
+  type: 'start',
+  runId,
+  clientId: 'c',
+  invocationId: 'inv',
+  serial: opts.serial,
+  ...(inputCodecMessageId !== undefined && { inputCodecMessageId }),
+  ...(opts.parent !== undefined && { parent: opts.parent }),
+  ...(opts.isContinuation && { isContinuation: true }),
+});
+
+// Fold a run-less input keyed by 'cm1' — forms a provisional Run.
+const provisional = (t: TreeInternal<TestInput, TestOutput, TestProjection>): void => {
+  t.applyMessage({ inputs: [userInput('u1')], outputs: [] }, { [HEADER_CODEC_MESSAGE_ID]: 'cm1' }, 's1');
+};
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1303,6 +1326,83 @@ describe('Tree', () => {
       const child = tree.getRunNode('R2');
       expect(child?.parentRunId).toBe('cm1'); // resolved to the provisional Run's key
       expect(tree.runs(NO_SELECTIONS).map((r) => r.key)).toEqual(['cm1', 'R2']);
+    });
+  });
+
+  // The agent mints the runId and echoes the triggering input's
+  // codec-message-id on run-start; the Tree adopts that runId onto the
+  // provisional Run the client formed from the input — the Run keeps its key.
+  describe('runId adoption on run-start', () => {
+    it('adopts the agent runId onto the provisional Run matched by input-codec-message-id', () => {
+      provisional(tree);
+      tree.applyRunLifecycle(runStart('R', 'cm1'));
+
+      const run = tree.getRunByCodecMessageId('cm1');
+      expect(run?.key).toBe('cm1'); // key unchanged
+      expect(run?.runId).toBe('R'); // runId adopted
+      expect(tree.getRunNode('R')).toBe(run); // resolvable by the adopted runId
+      expect(tree.runs(NO_SELECTIONS).map((r) => r.key)).toEqual(['cm1']); // still one Run
+    });
+
+    it('folds agent outputs published under the adopted runId into the same Run', () => {
+      provisional(tree);
+      tree.applyRunLifecycle(runStart('R', 'cm1'));
+      apply(tree, { runId: 'R', codecMessageId: 'a1', message: { id: 'a', content: 'reply' }, serial: 's2' });
+
+      const run = tree.getRunByCodecMessageId('cm1');
+      expect(run && testCodec.getMessages(run.projection)).toEqual([
+        { id: 'u1', content: 'u1' },
+        { id: 'a', content: 'reply' },
+      ]);
+      expect(tree.runs(NO_SELECTIONS)).toHaveLength(1); // no phantom Run keyed by the runId
+    });
+
+    it('routes run-end published under the adopted runId to the Run', () => {
+      provisional(tree);
+      tree.applyRunLifecycle(runStart('R', 'cm1'));
+      tree.applyRunLifecycle({
+        type: 'end',
+        runId: 'R',
+        clientId: 'c',
+        invocationId: 'inv',
+        serial: 's3',
+        reason: 'complete',
+      });
+
+      expect(tree.getRunNode('R')?.status).toBe('complete');
+    });
+
+    it('does not adopt when no provisional Run matches the input-codec-message-id', () => {
+      provisional(tree);
+      tree.applyRunLifecycle(runStart('R', 'cmX')); // unknown trigger id
+
+      expect(tree.getRunByCodecMessageId('cm1')?.runId).toBeUndefined(); // provisional untouched
+      expect(tree.getRunNode('R')?.key).toBe('R'); // run-start created its own ordinary Run
+    });
+
+    it('does not re-adopt: a continuation run-start under the adopted runId resolves to the same Run', () => {
+      provisional(tree);
+      tree.applyRunLifecycle(runStart('R', 'cm1'));
+      tree.applyRunLifecycle(runStart('R', 'cm1', { isContinuation: true }));
+
+      expect(tree.runs(NO_SELECTIONS)).toHaveLength(1);
+      expect(tree.getRunNode('R')?.key).toBe('cm1');
+    });
+
+    it('backfills parent metadata onto an adopted Run, re-indexing it by its key', () => {
+      // The provisional input arrived with no resolvable parent, so run-start
+      // backfills it. The re-parenting must index the adopted Run by its key
+      // ('cm1'), not the agent runId — otherwise it drops out of runs().
+      apply(tree, { runId: 'P', codecMessageId: 'pm', message: { id: 'p', content: 'p' }, serial: 's0' });
+      provisional(tree); // run-less input 'cm1', no parent header → parentRunId undefined
+      tree.applyRunLifecycle(runStart('R', 'cm1', { parent: 'pm' }));
+
+      const run = tree.getRunByCodecMessageId('cm1');
+      expect(run?.runId).toBe('R');
+      expect(run?.parentRunId).toBe('P'); // backfilled to the parent Run's key
+      // Reachable under its parent in the chain (P -> cm1), proving the parent
+      // index was updated under the key, not the runId.
+      expect(tree.runs(NO_SELECTIONS).map((r) => r.key)).toEqual(['P', 'cm1']);
     });
   });
 });

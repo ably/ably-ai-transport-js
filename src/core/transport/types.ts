@@ -541,6 +541,16 @@ export type RunLifecycleEvent =
        * wire header. Absent for the first start of a run.
        */
       isContinuation?: boolean;
+      /**
+       * The codec-message-id of the input event that triggered this run,
+       * echoed by the agent from the `input-codec-message-id` wire header.
+       * The Tree uses it to adopt this run's `runId` onto the provisional Run
+       * the client formed from that input before any runId existed. Absent
+       * when the agent published no input-codec-message-id (e.g. an
+       * empty-input continuation, or an in-process driver that ran no input
+       * lookup).
+       */
+      inputCodecMessageId?: string;
     }
   | {
       type: 'end';
@@ -785,7 +795,12 @@ export interface RunNode<TProjection> {
  * consumer needs to attribute or stream them.
  */
 export interface OutputEvent<TOutput extends CodecOutputEvent> {
-  /** The runId the outputs were folded into. */
+  /**
+   * The stable {@link RunNode.key} of the Run the outputs were folded into —
+   * the identity consumers route on. Equals the runId for a Run that has one;
+   * for an adopted provisional Run it is the Run's key (its triggering input's
+   * codec-message-id), not the agent's runId.
+   */
   runId: string;
   /**
    * The `codec-message-id` the outputs were published under, or `undefined`

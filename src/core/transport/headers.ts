@@ -116,6 +116,7 @@ export const parseRunLifecycle = (
     const forkOf = headers[HEADER_FORK_OF];
     const regenerates = headers[HEADER_MSG_REGENERATE];
     const isContinuation = headers[HEADER_RUN_CONTINUE] === 'true';
+    const inputCodecMessageId = headers[HEADER_INPUT_CODEC_MESSAGE_ID];
     return {
       type: 'start',
       runId,
@@ -126,6 +127,7 @@ export const parseRunLifecycle = (
       ...(forkOf !== undefined && { forkOf }),
       ...(regenerates !== undefined && { regenerates }),
       ...(isContinuation && { isContinuation: true }),
+      ...(inputCodecMessageId !== undefined && { inputCodecMessageId }),
     };
   }
 

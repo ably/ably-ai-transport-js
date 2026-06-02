@@ -26,6 +26,8 @@ import type * as AI from 'ai';
 
 import type { ActiveRun, ClientSession, SendOptions } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
+import { EventEmitter } from '../../event-emitter.js';
+import { LogLevel, makeLogger } from '../../logger.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../codec/index.js';
 import { createRunOutputStream } from './run-output-stream.js';
 
@@ -381,6 +383,12 @@ const findPredecessorMsgId = (messages: AI.UIMessage[], codecMessageId: string):
 // Factory
 // ---------------------------------------------------------------------------
 
+/** Internal EventEmitter events map backing the transport's streaming state. */
+interface ChatTransportEventsMap {
+  /** Fired on every streaming-state transition with the new value. */
+  streaming: boolean;
+}
+
 /**
  * Create a Vercel ChatTransport from a core ClientSession.
  *
@@ -406,20 +414,17 @@ export const createChatTransport = (
   const credentials = chatOptions?.credentials;
 
   // -- Streaming state -------------------------------------------------------
+  // Backed by the shared EventEmitter for listener error isolation (one bad
+  // onStreamingChange handler can't prevent others from firing or block the
+  // state transition) and uniform emitter behaviour across the SDK. The
+  // factory takes no logger, so a silent one is used — listener exceptions are
+  // swallowed exactly as the previous hand-rolled try/catch did.
   let _streaming = false;
-  const streamingCallbacks = new Set<(streaming: boolean) => void>();
+  const emitter = new EventEmitter<ChatTransportEventsMap>(makeLogger({ logLevel: LogLevel.Silent }));
 
   const setStreaming = (value: boolean): void => {
     _streaming = value;
-    for (const cb of streamingCallbacks) {
-      try {
-        cb(value);
-      } catch {
-        // Isolate subscriber errors so one bad handler doesn't prevent
-        // other subscribers from being notified or block the streaming
-        // state transition.
-      }
-    }
+    emitter.emit('streaming', value);
   };
 
   // -- sendMessages implementation -------------------------------------------
@@ -672,9 +677,9 @@ export const createChatTransport = (
     },
 
     onStreamingChange: (callback: (streaming: boolean) => void): (() => void) => {
-      streamingCallbacks.add(callback);
+      emitter.on('streaming', callback);
       return () => {
-        streamingCallbacks.delete(callback);
+        emitter.off('streaming', callback);
       };
     },
   };

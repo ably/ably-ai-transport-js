@@ -863,7 +863,12 @@ export interface Tree<TOutput extends CodecOutputEvent, TProjection> {
 
   // --- Events ---
 
-  /** Subscribe to tree structural changes (Run insert, delete, sort-reorder). */
+  /**
+   * Subscribe to tree structural changes (Run insert, delete, sort-reorder,
+   * startSerial promotion, run-start metadata backfill). Does NOT fire on
+   * content-only folds (streaming chunks) or on run-end status changes —
+   * those flow through `output` and `run` respectively.
+   */
   on(event: 'update', handler: () => void): () => void;
 
   /** Subscribe to raw Ably messages arriving on the channel. */

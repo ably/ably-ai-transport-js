@@ -506,6 +506,13 @@ export class DefaultTree<
       return;
     }
 
+    // `update` is the structural channel: emit it only when this apply
+    // actually changes the tree shape (new Run, startSerial promotion).
+    // Content-only folds (streaming chunks into an existing Run) flow through
+    // `output` instead, so they leave `structuralVersion` untouched and emit
+    // no `update`.
+    const structuralBefore = this._structuralVersion;
+
     let run = this._runIndex.get(wireRunId);
 
     // Reconcile an optimistic insert with its serial-bearing echo by
@@ -562,11 +569,16 @@ export class DefaultTree<
     }
 
     this._emitter.emit('output', { runId: ownerRunId, codecMessageId, serial, events: events.outputs });
-    this._emitter.emit('update');
+    if (this._structuralVersion !== structuralBefore) this._emitter.emit('update');
   }
 
   applyRunLifecycle(event: RunLifecycleEvent): void {
     this._logger.trace('DefaultTree.applyRunLifecycle();', { type: event.type, runId: event.runId });
+    // Structural channel: emit `update` only when the lifecycle event changes
+    // the tree shape (a new Run, startSerial promotion, or structural-metadata
+    // backfill on run-start). A run-end only mutates status/endSerial on an
+    // existing node — content, not structure — so it emits no `update`.
+    const structuralBefore = this._structuralVersion;
     if (event.type === 'ai-run-start') {
       let run = this._runIndex.get(event.runId);
       if (run) {
@@ -626,7 +638,7 @@ export class DefaultTree<
         this._structuralVersion++;
       }
       this._emitter.emit('run', event);
-      this._emitter.emit('update');
+      if (this._structuralVersion !== structuralBefore) this._emitter.emit('update');
       return;
     }
 
@@ -637,7 +649,7 @@ export class DefaultTree<
       run.node.endSerial = event.serial;
     }
     this._emitter.emit('run', event);
-    this._emitter.emit('update');
+    if (this._structuralVersion !== structuralBefore) this._emitter.emit('update');
   }
 
   delete(runId: string): void {

@@ -1187,10 +1187,15 @@ describe('Tree', () => {
       expect(handler).toHaveBeenCalled();
     });
 
-    it('emits update on run-start / run-end', () => {
+    it('emits update on a run-start that creates a Run, but not on the run-end', () => {
+      // `update` is the structural channel: a run-start that creates a Run is
+      // structural; a run-end only mutates status/endSerial on the existing
+      // node (content, not structure) and emits no `update`. Lifecycle
+      // observers use the `run` event for run-end.
       const handler = vi.fn();
       tree.on('update', handler);
       tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'c', invocationId: '', serial: 's1' });
+      expect(handler).toHaveBeenCalledTimes(1);
       tree.applyRunLifecycle({
         type: 'ai-run-end',
         runId: 'R1',
@@ -1199,7 +1204,29 @@ describe('Tree', () => {
         reason: 'complete',
         serial: 's2',
       });
-      expect(handler).toHaveBeenCalledTimes(2);
+      expect(handler).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not emit update on a run-start that only re-activates an existing Run', () => {
+      // A repeat run-start for a Run that already exists with its startSerial
+      // set and no new structural metadata flips status to active at most —
+      // content, not structure — so it emits no `update`.
+      tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'c', invocationId: '', serial: 's1' });
+      const handler = vi.fn();
+      tree.on('update', handler);
+      tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'c', invocationId: '', serial: 's1' });
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('does not emit update on a content-only fold into an existing Run', () => {
+      // The first apply creates the Run (structural → update). A subsequent
+      // fold into the same Run changes only its projection (streaming
+      // content), which flows through `output`, not `update`.
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
+      const handler = vi.fn();
+      tree.on('update', handler);
+      apply(tree, { runId: 'R1', codecMessageId: 'm2', message: { id: 'a', content: 'hi there' }, serial: 's2' });
+      expect(handler).not.toHaveBeenCalled();
     });
 
     it('unsubscribe stops delivery', () => {

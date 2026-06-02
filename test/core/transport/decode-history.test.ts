@@ -241,7 +241,6 @@ const createMockCodec = (): Codec<TestInput, TestOutput, TestProjection, TestMes
       counters.decoderInstances += 1;
       return createMockDecoder();
     }),
-    isTerminal: vi.fn((e: TestOutput) => e.type === 'finish'),
   };
 };
 

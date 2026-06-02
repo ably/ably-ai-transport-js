@@ -951,19 +951,35 @@ describe('AgentSession integration', () => {
       expect(firstText).toBe('First');
       expect(secondText).toBe('Second');
 
+      // Streaming was hoisted out of the core, so the response reaches the
+      // client on the Tree's `output` event rather than an ActiveRun stream.
+      // Collect outputs for this run until its terminal run-end lands.
+      const events: VercelOutput[] = [];
+      const outputsPromise = new Promise<VercelOutput[]>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          unsubOutput();
+          unsubRun();
+          reject(new Error('timed out collecting run outputs'));
+        }, 10_000);
+        const unsubOutput = clientSession.tree.on('output', (e) => {
+          if (e.runId === activeRun.runId) events.push(...e.events);
+        });
+        const unsubRun = clientSession.tree.on('run', (e) => {
+          if (e.runId === activeRun.runId && e.type === EVENT_RUN_END) {
+            clearTimeout(timer);
+            unsubOutput();
+            unsubRun();
+            resolve(events);
+          }
+        });
+      });
+
       const responseStream = textResponseStream('asst-multi-1', 'text-multi-1', 'Got both');
       const result = await serverRun.pipe(responseStream);
       await serverRun.end('complete');
       expect(result.reason).toBe('complete');
 
-      // Drain the client's stream to verify the response reached it.
-      const reader = activeRun.stream.getReader();
-      const events: VercelOutput[] = [];
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        events.push(value);
-      }
+      await outputsPromise;
       expect(events.some((e) => e.type === 'finish')).toBe(true);
     } finally {
       await clientSession.close();

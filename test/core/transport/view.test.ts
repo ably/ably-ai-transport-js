@@ -80,7 +80,6 @@ const makeTestCodec = (): Codec<TestInput, TestOutput, TestProjection, TestMessa
   createRegenerate: (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }),
   // eslint-disable-next-line unicorn/no-useless-undefined -- the Codec contract requires returning undefined when no target is resolved
   resolveToolTarget: () => undefined,
-  isTerminal: () => false,
 });
 
 const silentLogger = makeLogger({ logLevel: LogLevel.Silent });
@@ -102,7 +101,6 @@ const createMockSendDelegate = (): SendDelegate<TestInput, TestOutput> =>
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   vi.fn(() =>
     Promise.resolve({
-      stream: new ReadableStream<TestOutput>(),
       started: Promise.resolve(),
       runId: 'mock-run',
       inputEventId: '',
@@ -1101,7 +1099,6 @@ describe('DefaultView', () => {
       // First regen completes — promoted to auto.
       let deferredResolve: ((value: ActiveRun<TestOutput>) => void) | undefined;
       vi.mocked(sendDelegate).mockResolvedValueOnce({
-        stream: new ReadableStream(),
         started: Promise.resolve(),
         runId: 'Rregen1',
         invocationId: 'inv-1',
@@ -1165,7 +1162,6 @@ describe('DefaultView', () => {
 
       // Now the publish ACK resolves: _applyRegenerateAutoSelect runs.
       deferredResolve?.({
-        stream: new ReadableStream(),
         started: Promise.resolve(),
         runId: 'Rregen2',
         invocationId: 'inv-2',
@@ -1207,7 +1203,6 @@ describe('DefaultView', () => {
 
       // First regenerate.
       vi.mocked(sendDelegate).mockResolvedValueOnce({
-        stream: new ReadableStream(),
         started: Promise.resolve(),
         runId: 'Rregen1',
         invocationId: 'inv-1',
@@ -1239,7 +1234,6 @@ describe('DefaultView', () => {
 
       // Second regenerate (clicking the displayed regen-1 message).
       vi.mocked(sendDelegate).mockResolvedValueOnce({
-        stream: new ReadableStream(),
         started: Promise.resolve(),
         runId: 'Rregen2',
         invocationId: 'inv-2',
@@ -1271,7 +1265,6 @@ describe('DefaultView', () => {
 
       // Third regenerate.
       vi.mocked(sendDelegate).mockResolvedValueOnce({
-        stream: new ReadableStream(),
         started: Promise.resolve(),
         runId: 'Rregen3',
         invocationId: 'inv-3',
@@ -1995,7 +1988,6 @@ describe('DefaultView', () => {
 
     it('regenerate sets a pending regenerate selection that resolves when the new Run arrives', async () => {
       vi.mocked(sendDelegate).mockResolvedValueOnce({
-        stream: new ReadableStream(),
         started: Promise.resolve(),
         runId: 'R2new',
         invocationId: 'inv-new',
@@ -2031,7 +2023,6 @@ describe('DefaultView', () => {
 
     it('pending selection is cleared on run-end when the server never creates the sibling Run', async () => {
       vi.mocked(sendDelegate).mockResolvedValueOnce({
-        stream: new ReadableStream(),
         started: Promise.resolve(),
         runId: 'R2new',
         invocationId: 'inv-new',
@@ -2144,7 +2135,6 @@ describe('DefaultView', () => {
 
     it('edit auto-selects the new sibling Run from optimisticCodecMessageIds', async () => {
       vi.mocked(sendDelegate).mockResolvedValueOnce({
-        stream: new ReadableStream(),
         started: Promise.resolve(),
         runId: 'R2edit',
         invocationId: 'inv-edit',

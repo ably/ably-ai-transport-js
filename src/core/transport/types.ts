@@ -560,10 +560,17 @@ export type RunLifecycleEvent =
 // Active run handle
 // ---------------------------------------------------------------------------
 
-/** A handle to an active client-side run, returned by `sendMessage()`, `sendInput()`, `regenerate()`, and `edit()`. */
+/**
+ * A handle to an active client-side run, returned by `sendMessage()`,
+ * `sendInput()`, `regenerate()`, and `edit()`.
+ *
+ * The core no longer exposes a per-run output stream — streaming is a
+ * consumer-layer concern (e.g. the Vercel ChatTransport builds a stream from
+ * the Tree's `output` events). `TOutput` is retained for generic-arity
+ * symmetry with the codec-parameterized session/view that return this handle.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- TOutput kept for API symmetry; see JSDoc.
 export interface ActiveRun<TOutput extends CodecOutputEvent> {
-  /** The decoded output stream for this run. May error if the delivery guarantee is broken (e.g. POST failure, channel continuity loss). */
-  stream: ReadableStream<TOutput>;
   /**
    * Resolves when the agent's `ai-run-start` for this run+invocation is
    * observed on the channel. `send()` itself resolves as soon as the input
@@ -1093,20 +1100,6 @@ export interface View<TInput extends CodecInputEvent, TOutput extends CodecOutpu
 
   /** Tear down the view — unsubscribe from tree events and clear internal state. */
   close(): void;
-}
-
-// ---------------------------------------------------------------------------
-// Internal sub-component types
-// ---------------------------------------------------------------------------
-
-/** Entry in the StreamRouter's run map. Not part of the public API. */
-export interface RunEntry<TOutput extends CodecOutputEvent> {
-  /** The ReadableStream consumed by the caller — retained so `getStream` can re-expose it across a suspend/resume cycle. */
-  stream: ReadableStream<TOutput>;
-  /** The ReadableStream controller for this run. */
-  controller: ReadableStreamDefaultController<TOutput>;
-  /** The run's unique identifier. */
-  runId: string;
 }
 
 // ---------------------------------------------------------------------------

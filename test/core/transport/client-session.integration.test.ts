@@ -56,16 +56,37 @@ const getHeaders = (msg: Ably.InboundMessage): Record<string, string> => ({
   ...getCodecHeaders(msg),
 });
 
-const drain = async <T>(stream: ReadableStream<T>): Promise<T[]> => {
-  const reader = stream.getReader();
-  const results: T[] = [];
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    results.push(value);
-  }
-  return results;
-};
+/**
+ * Collect a run's decoded output events from the Tree's `output` event,
+ * resolving once the run's terminal run-end is observed. Streaming was
+ * hoisted out of the core, so own-run outputs are now observed on the Tree
+ * rather than drained from an ActiveRun stream. Must be called before the
+ * agent begins streaming so no events are missed.
+ * @param session - The client session to observe.
+ * @param runId - The run whose outputs to collect.
+ * @param timeout - Milliseconds to wait before rejecting.
+ * @returns The accumulated output events in arrival order.
+ */
+const collectRunOutputs = async (session: ClientSessionT, runId: string, timeout = 10_000): Promise<VercelOutput[]> =>
+  new Promise<VercelOutput[]>((resolve, reject) => {
+    const collected: VercelOutput[] = [];
+    const timer = setTimeout(() => {
+      unsubOutput();
+      unsubRun();
+      reject(new Error(`timed out collecting outputs for run ${runId}`));
+    }, timeout);
+    const unsubOutput = session.tree.on('output', (e) => {
+      if (e.runId === runId) collected.push(...e.events);
+    });
+    const unsubRun = session.tree.on('run', (e) => {
+      if (e.runId === runId && e.type === EVENT_RUN_END) {
+        clearTimeout(timer);
+        unsubOutput();
+        unsubRun();
+        resolve(collected);
+      }
+    });
+  });
 
 const waitForMessages = async (ct: ClientSessionT, expected: number, timeout = 10_000): Promise<void> =>
   new Promise<void>((resolve, reject) => {
@@ -379,13 +400,14 @@ describe('ClientSession integration', () => {
     });
     await serverRun.start();
 
-    const clientRun = await sendPromise;
+    await sendPromise;
+    const outputsPromise = collectRunOutputs(clientSession, runId);
 
     const stream = textResponseStream('asst-msg-rt-1', 'text-rt-1', 'Hello, how can I help?');
     await serverRun.pipe(stream);
     await serverRun.end('complete');
 
-    const events = await drain(clientRun.stream);
+    const events = await outputsPromise;
     const types = events.map((e) => e.type);
     expect(types).toContain('finish');
 
@@ -408,7 +430,7 @@ describe('ClientSession integration', () => {
     expect(tree).toBe(clientSession.tree);
   });
 
-  it('routes streamed events to the own-run ReadableStream', async () => {
+  it('surfaces streamed output events on the Tree output event', async () => {
     const channelName = uniqueChannelName('ct-stream');
     const serverClient = ablyRealtimeClient();
     const clientClient = ablyRealtimeClient();
@@ -446,13 +468,14 @@ describe('ClientSession integration', () => {
     });
     await serverRun.start();
 
-    const clientRun = await sendPromise;
+    await sendPromise;
+    const outputsPromise = collectRunOutputs(clientSession, runId);
 
     const stream = textResponseStream('asst-msg-stream-1', 'text-stream-1', 'Server response');
     await serverRun.pipe(stream);
     await serverRun.end('complete');
 
-    const events = await drain(clientRun.stream);
+    const events = await outputsPromise;
     const types = events.map((e) => e.type);
     expect(types).toContain('start');
     expect(types).toContain('text-delta');
@@ -502,7 +525,7 @@ describe('ClientSession integration', () => {
     });
     await run.start();
 
-    const clientRun = await sendPromise;
+    await sendPromise;
     await startPromise;
 
     const stream = textResponseStream('msg-lc-1', 'text-lc-1', 'test');
@@ -510,7 +533,6 @@ describe('ClientSession integration', () => {
     await run.end('complete');
 
     await endPromise;
-    await drain(clientRun.stream);
 
     expect(runEvents.some((e) => e.type === EVENT_RUN_START && e.runId === runId)).toBe(true);
     expect(runEvents.some((e) => e.type === EVENT_RUN_END && e.runId === runId)).toBe(true);
@@ -1141,13 +1163,12 @@ describe('ClientSession integration', () => {
       invocationId,
     });
     await run.start();
-    const clientRun = await sendPromise;
+    await sendPromise;
 
     await run.pipe(textResponseStream('asst-raw-1', 'text-raw-1', 'test'));
     await run.end('complete');
 
     await endPromise;
-    await drain(clientRun.stream);
 
     expect(rawMessages.length).toBeGreaterThan(0);
     const names = rawMessages.map((m) => m.name);
@@ -1191,12 +1212,11 @@ describe('ClientSession integration', () => {
       invocationId,
     });
     await run.start();
-    const clientRun = await sendPromise;
+    await sendPromise;
 
     await run.pipe(textResponseStream('asst-hdr-1', 'text-hdr-1', 'Answer'));
     await run.end('complete');
 
-    await drain(clientRun.stream);
     await waitForMessages(clientSession, 2);
 
     const messages = clientSession.view.getMessages();
@@ -1476,13 +1496,15 @@ describe('ClientSession integration', () => {
     // run-start has now landed — `started` must resolve.
     await expect(activeRun.started).resolves.toBeUndefined();
 
+    const outputsPromise = collectRunOutputs(clientSession, runId);
+
     const responseStream = textResponseStream('asst-rs-happy-1', 'text-rs-happy-1', 'Started');
     await serverRun.pipe(responseStream);
     await serverRun.end('complete');
 
-    // The returned stream carries the assistant response.
+    // The run's outputs surface on the Tree and carry the assistant response.
     expect(activeRun.runId).toBe(runId);
-    const events = await drain(activeRun.stream);
+    const events = await outputsPromise;
     expect(events.some((e) => e.type === 'finish')).toBe(true);
   });
 

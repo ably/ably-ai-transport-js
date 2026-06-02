@@ -538,11 +538,4 @@ export interface Codec<
    * @returns The target message id, or `undefined` to use the default.
    */
   resolveToolTarget(output: TOutput, projection: TProjection): string | undefined;
-  /**
-   * Whether an output signals stream/run completion.
-   * @deprecated Temporary bridge. Removed when wire-level `run-end`
-   * LifecycleEvents land (Tier 1 #3). Until then the SDK reads this to
-   * detect Run completion and clean up observer state.
-   */
-  isTerminal(output: TOutput): boolean;
 }

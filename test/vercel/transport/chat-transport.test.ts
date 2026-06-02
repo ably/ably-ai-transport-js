@@ -1,5 +1,5 @@
 import type * as AI from 'ai';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Invocation } from '../../../src/core/transport/invocation.js';
 import type { ClientSession, SendOptions, Tree, View } from '../../../src/core/transport/types.js';
@@ -146,8 +146,41 @@ const createMockSession = (): MockSession => {
 // ---------------------------------------------------------------------------
 
 describe('createChatTransport', () => {
+  // The transport owns the agent-invocation POST; it defaults to globalThis.fetch.
+  // Stub it so each test can inspect the POST (url, body, headers) and so the
+  // POST succeeds (200) rather than failing against a non-existent server.
+  let postCalls: { url: string; init: RequestInit }[];
+
+  beforeEach(() => {
+    postCalls = [];
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+    const fetchMock = vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+      postCalls.push({ url: urlStr, init: init ?? {} });
+      return Promise.resolve(new Response(undefined, { status: 200 }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // The transport fires the POST synchronously before returning the stream,
+  // so it is recorded by the time `sendMessages` resolves.
+  const postBody = (index = 0): Record<string, unknown> => {
+    const call = postCalls[index];
+    if (!call) throw new Error(`no POST recorded at index ${String(index)}`);
+    return JSON.parse(call.init.body as string) as Record<string, unknown>;
+  };
+  const postHeaders = (index = 0): Record<string, string> => {
+    const call = postCalls[index];
+    if (!call) throw new Error(`no POST recorded at index ${String(index)}`);
+    return (call.init.headers ?? {}) as Record<string, string>;
+  };
+
   describe('sendMessages — submit-message', () => {
-    it('sends the last message and passes history in body', async () => {
+    it('POSTs the run invocation and sends the last message as input', async () => {
       const { session, send, view, mockRun } = createMockSession();
       const chat = createChatTransport(session);
 
@@ -174,18 +207,20 @@ describe('createChatTransport', () => {
       await streamPromise;
 
       expect(send).toHaveBeenCalledOnce();
-      const [events, opts] = send.mock.calls[0] as [VercelInput[], SendOptions];
+      const [events] = send.mock.calls[0] as [VercelInput[], SendOptions];
       expect(events).toEqual([{ kind: 'user-message', message: m3 }]);
-      expect(opts.body).toMatchObject({
+
+      // The transport POSTs the run's invocation pointer to wake the agent.
+      // The agent reads the conversation from the channel, so the body carries
+      // only the invocation identifiers — never history.
+      expect(postCalls).toHaveLength(1);
+      const body = postBody();
+      expect(body).toMatchObject({
+        runId: mockRun.runId,
+        invocationId: mockRun.invocationId,
         sessionName: 'chat-1',
-        trigger: 'submit-message',
       });
-      // The client session is the single source of truth for history: it
-      // builds `history` from the View's projection-folded messages and
-      // adds it to the POST body. The chat-transport's sendOpts.body
-      // intentionally omits history.
-      expect(opts.body).toBeDefined();
-      expect(opts.body?.history).toBeUndefined();
+      expect(body.history).toBeUndefined();
     });
 
     it('throws on empty messages array', async () => {
@@ -241,12 +276,14 @@ describe('createChatTransport', () => {
 
       expect(regenerate).toHaveBeenCalledOnce();
       expect(send).not.toHaveBeenCalled();
-      const [codecMessageId, opts] = regenerate.mock.calls[0] as [string, SendOptions];
+      const [codecMessageId] = regenerate.mock.calls[0] as [string, SendOptions];
       expect(codecMessageId).toBe('m2-id');
-      expect(opts.body).toMatchObject({
+
+      // The regenerate run's invocation is POSTed to wake the agent.
+      expect(postBody()).toMatchObject({
+        runId: mockRun.runId,
+        invocationId: mockRun.invocationId,
         sessionName: 'chat-1',
-        trigger: 'regenerate-message',
-        messageId: 'm2-id',
       });
     });
 
@@ -347,10 +384,10 @@ describe('createChatTransport', () => {
 
       const [events, opts] = send.mock.calls[0] as [VercelInput[], SendOptions];
       expect(events).toEqual([{ kind: 'user-message', message: edited }]);
-      // The forkOf metadata is carried in sendOpts (not in the body); history
-      // is built by the client session, not by the chat-transport adapter.
+      // The forkOf metadata is carried in sendOpts; the agent reads history
+      // from the channel, so the POST never carries it.
       expect(opts.forkOf).toBeDefined();
-      expect(opts.body?.history).toBeUndefined();
+      expect(postBody().history).toBeUndefined();
     });
   });
 
@@ -409,6 +446,58 @@ describe('createChatTransport', () => {
 
       const reader = stream.getReader();
       await expect(reader.read()).rejects.toBe(error);
+    });
+  });
+
+  describe('invocation POST failure', () => {
+    it('errors the useChat stream with SessionSendFailed and leaves the run stream intact when the POST is non-OK', async () => {
+      // Override the default 200 stub with a failing response.
+      vi.stubGlobal(
+        'fetch',
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+        vi.fn(() => Promise.resolve(new Response(undefined, { status: 500, statusText: 'Server Error' }))),
+      );
+      const { session, mockRun } = createMockSession();
+      const chat = createChatTransport(session);
+
+      const stream = await chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: [makeMessage('1')],
+        abortSignal: undefined,
+      });
+
+      // The useChat-facing stream errors with the POST failure.
+      const reader = stream.getReader();
+      await expect(reader.read()).rejects.toBeErrorInfo({ code: ErrorCode.SessionSendFailed });
+
+      // The source run stream is left untouched (preventCancel) — still
+      // enqueuable, so the tree/observers continue to receive events.
+      expect(() => {
+        mockRun.enqueue({ type: 'finish', finishReason: 'stop' });
+      }).not.toThrow();
+    });
+
+    it('errors the useChat stream when the POST rejects (network error)', async () => {
+      vi.stubGlobal(
+        'fetch',
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock rejects directly
+        vi.fn(() => Promise.reject(new Error('network down'))),
+      );
+      const { session } = createMockSession();
+      const chat = createChatTransport(session);
+
+      const stream = await chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: [makeMessage('1')],
+        abortSignal: undefined,
+      });
+
+      const reader = stream.getReader();
+      await expect(reader.read()).rejects.toBeErrorInfo({ code: ErrorCode.SessionSendFailed });
     });
   });
 
@@ -523,10 +612,13 @@ describe('createChatTransport', () => {
         parent: undefined,
       });
 
-      // Verify the custom body/headers were passed to send
-      const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
-      expect(opts.body).toEqual({ custom: 'body' });
-      expect(opts.headers).toEqual({ 'X-Custom': 'header' });
+      // The custom body is merged into the invocation POST (the run's
+      // invocation identifiers always win), and custom headers are added.
+      expect(send).toHaveBeenCalledOnce();
+      const body = postBody();
+      expect(body.custom).toBe('body');
+      expect(body.runId).toBe(mockRun.runId);
+      expect(postHeaders()['X-Custom']).toBe('header');
     });
 
     it('passes regenerate-message context through prepareSendMessagesRequest', async () => {
@@ -566,16 +658,18 @@ describe('createChatTransport', () => {
         parent: undefined,
       });
 
-      // The custom body/headers reach view.regenerate's sendOpts.
-      const [, regenOpts] = regenerate.mock.calls[0] as [string, SendOptions];
-      expect(regenOpts.body).toEqual({ customBody: 'regen' });
-      expect(regenOpts.headers).toEqual({ 'X-Custom-Regen': 'yes' });
+      // The custom body/headers from the hook are applied to the invocation POST.
+      expect(regenerate).toHaveBeenCalledOnce();
+      const body = postBody();
+      expect(body.customBody).toBe('regen');
+      expect(body.runId).toBe(mockRun.runId);
+      expect(postHeaders()['X-Custom-Regen']).toBe('yes');
     });
   });
 
   describe('default body construction', () => {
-    it('does not duplicate history into sendOpts.body (client session builds it)', async () => {
-      const { session, send, view, mockRun } = createMockSession();
+    it('POSTs only the invocation pointer — no history or messages', async () => {
+      const { session, view, mockRun } = createMockSession();
 
       const m1 = makeMessage('1');
       const m2 = makeMessage('2');
@@ -620,14 +714,17 @@ describe('createChatTransport', () => {
       mockRun.close();
       await streamPromise;
 
-      const [, opts] = send.mock.calls[0] as [AI.UIMessage[], SendOptions];
-      // The chat-transport adapter only stamps session metadata; the
-      // session's internal send delegate fills in `history` from
-      // `view.flattenNodes` before the POST goes out. Verify the adapter
-      // does NOT also write it (single source of truth).
-      expect(opts.body?.sessionName).toBe('chat-1');
-      expect(opts.body?.trigger).toBe('submit-message');
-      expect(opts.body?.history).toBeUndefined();
+      // The invocation pointer carries only identifiers — the agent reads the
+      // conversation from the channel, so no history/messages are POSTed.
+      const body = postBody();
+      expect(body).toEqual({
+        runId: mockRun.runId,
+        invocationId: mockRun.invocationId,
+        inputEventId: mockRun.toInvocation().inputEventId,
+        sessionName: 'chat-1',
+      });
+      expect(body.history).toBeUndefined();
+      expect(body.messages).toBeUndefined();
     });
   });
 
@@ -808,9 +905,8 @@ describe('createChatTransport', () => {
       expect(events).toEqual([{ kind: 'user-message', message: user2 }]);
       expect(opts.forkOf).toBe('a1');
       expect(opts.parent).toBe('u1');
-      // History is built by the client session (not the chat-transport
-      // adapter) — the adapter's sendOpts.body intentionally omits it.
-      expect(opts.body?.history).toBeUndefined();
+      // The agent reads history from the channel — the POST never carries it.
+      expect(postBody().history).toBeUndefined();
     });
 
     it('forks when the preceding assistant has input-available (client tool pending)', async () => {

@@ -14,7 +14,7 @@
 
 // Chat transport adapter
 export type { ChatTransport, ChatTransportOptions, SendMessagesRequestContext } from './chat-transport.js';
-export { createChatTransport } from './chat-transport.js';
+export { createChatTransport, DEFAULT_VERCEL_API } from './chat-transport.js';
 
 import type * as AI from 'ai';
 
@@ -31,8 +31,8 @@ import { UIMessageCodec, type VercelInput, type VercelOutput, type VercelProject
 /** Core client session options with Vercel AI SDK types pre-applied. */
 type CoreClientOpts = ClientSessionOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
-/** Options for creating a Vercel client session. Same as core options but without the codec field, and with `api` optional (defaults to `"/api/chat"`). */
-export type VercelClientSessionOptions = Omit<CoreClientOpts, 'codec' | 'api'> & Partial<Pick<CoreClientOpts, 'api'>>;
+/** Options for creating a Vercel client session. Same as core options but without the codec field. */
+export type VercelClientSessionOptions = Omit<CoreClientOpts, 'codec'>;
 
 /** Options for creating a Vercel agent session. Same as core options but without the codec field. */
 export type VercelAgentSessionOptions = Omit<
@@ -40,24 +40,20 @@ export type VercelAgentSessionOptions = Omit<
   'codec'
 >;
 
-export const DEFAULT_VERCEL_API = '/api/chat';
-
 /**
  * Create a client-side session pre-configured with the Vercel AI SDK codec.
  *
  * Equivalent to calling the core `createClientSession` with `codec: UIMessageCodec`.
+ * The core session is a pure Ably-channel transport — it never sends HTTP.
+ * To wake a serverless agent over HTTP, POST `run.toInvocation().toJSON()`
+ * yourself, or use `createChatTransport` (which does it for useChat parity).
  * @param options - Configuration for the client session (codec is provided automatically).
  * @returns A new {@link ClientSession} for Vercel AI SDK UIMessage/UIMessageChunk types.
  */
 export const createClientSession = (
   options: VercelClientSessionOptions,
 ): ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> =>
-  createCoreClientSession({
-    ...options,
-    codec: UIMessageCodec,
-    // Mirrors the Vercel AI SDK's DefaultChatTransport default.
-    api: options.api ?? DEFAULT_VERCEL_API,
-  });
+  createCoreClientSession({ ...options, codec: UIMessageCodec });
 
 /**
  * Create an agent (server-side) session pre-configured with the Vercel AI SDK codec.

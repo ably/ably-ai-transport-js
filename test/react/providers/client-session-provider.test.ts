@@ -51,7 +51,7 @@ vi.mock('../../../src/core/transport/client-session.js', () => ({
 const wrapDefault = ({ children }: { children: ReactNode }): ReactNode =>
   createElement(
     ClientSessionProvider<CodecInputEvent, CodecOutputEvent, unknown, unknown>,
-    { channelName: 'ai:test', codec: {} as never, api: '/test' },
+    { channelName: 'ai:test', codec: {} as never },
     children,
   );
 
@@ -59,7 +59,7 @@ const wrapDefault = ({ children }: { children: ReactNode }): ReactNode =>
 const wrapDemo = ({ children }: { children: ReactNode }): ReactNode =>
   createElement(
     ClientSessionProvider<CodecInputEvent, CodecOutputEvent, unknown, unknown>,
-    { channelName: 'ai:demo', codec: {} as never, api: '/test' },
+    { channelName: 'ai:demo', codec: {} as never },
     children,
   );
 
@@ -67,10 +67,10 @@ const wrapDemo = ({ children }: { children: ReactNode }): ReactNode =>
 const wrapNested = ({ children }: { children: ReactNode }): ReactNode =>
   createElement(
     ClientSessionProvider<CodecInputEvent, CodecOutputEvent, unknown, unknown>,
-    { channelName: 'ai:outer', codec: {} as never, api: '/test' },
+    { channelName: 'ai:outer', codec: {} as never },
     createElement(
       ClientSessionProvider<CodecInputEvent, CodecOutputEvent, unknown, unknown>,
-      { channelName: 'ai:inner', codec: {} as never, api: '/test' },
+      { channelName: 'ai:inner', codec: {} as never },
       children,
     ),
   );
@@ -80,7 +80,6 @@ const renderProviderForChannel = (channelName: string): ReactNode =>
   createElement(ClientSessionProvider<CodecInputEvent, CodecOutputEvent, unknown, unknown>, {
     channelName,
     codec: {} as never,
-    api: '/test',
   });
 
 // ---------------------------------------------------------------------------
@@ -231,15 +230,15 @@ describe('ClientSessionProvider', () => {
     const wrapWithLogger = ({ children }: { children: ReactNode }): ReactNode =>
       createElement(
         ClientSessionProvider<CodecInputEvent, CodecOutputEvent, unknown, unknown>,
-        { channelName: 'ai:test', codec: {} as never, api: '/api/custom', logger },
+        { channelName: 'ai:test', codec: {} as never, clientId: 'client-x', logger },
         children,
       );
 
     renderHook(() => useClientSession({ channelName: 'ai:test' }), { wrapper: wrapWithLogger });
 
     // CAST: accessing vitest mock call args as the known options type
-    const callArgs = createClientSessionMock.mock.calls[0]?.[0] as { api: string; logger: unknown };
-    expect(callArgs.api).toBe('/api/custom');
+    const callArgs = createClientSessionMock.mock.calls[0]?.[0] as { clientId: string; logger: unknown };
+    expect(callArgs.clientId).toBe('client-x');
     expect(callArgs.logger).toBe(logger);
   });
 });

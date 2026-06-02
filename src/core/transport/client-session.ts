@@ -6,11 +6,13 @@
  * The same subscription, decoder, and channel are reused across runs.
  *
  * The client publishes user messages directly to the channel via the shared
- * codec encoder, and POSTs an HTTP invocation in parallel. The agent
- * correlates the input event by the `invocation-id` header and publishes
- * run lifecycle events (run-start, run-end) plus assistant chunks. The
- * channel is the durable session record; agents that weren't running at
- * publish time can resume by reading channel rewind.
+ * codec encoder. It does not send HTTP: waking an agent is the application's
+ * concern — it POSTs `run.toInvocation().toJSON()` to its own endpoint if and
+ * when it wants one woken (the Vercel ChatTransport does this for useChat
+ * parity). The agent correlates the input event by the `invocation-id` header
+ * and publishes run lifecycle events (run-start, run-end) plus assistant
+ * chunks. The channel is the durable session record; agents that weren't
+ * running at publish time can resume by reading channel rewind.
  */
 
 import * as Ably from 'ably';
@@ -87,11 +89,6 @@ class DefaultClientSession<
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: ClientSessionOptions<TInput, TOutput, TProjection, TMessage>['codec'];
   private readonly _clientId: string | undefined;
-  private readonly _api: string;
-  private readonly _credentials: RequestCredentials | undefined;
-  private readonly _headersFn: (() => Record<string, string>) | undefined;
-  private readonly _bodyFn: (() => Record<string, unknown>) | undefined;
-  private readonly _fetchFn: typeof globalThis.fetch;
   private readonly _logger: Logger;
 
   // Typed event emitter — only 'error' remains on the session
@@ -146,23 +143,6 @@ class DefaultClientSession<
     this._channel = options.client.channels.get(options.channelName, channelOptions);
     this._codec = options.codec;
     this._clientId = options.clientId;
-    this._api = options.api;
-    this._credentials = options.credentials;
-    // CAST: TS can't narrow options.headers/body inside a closure because the outer
-    // object is mutable. The truthiness check on the preceding line guarantees non-nullish.
-    this._headersFn =
-      typeof options.headers === 'function'
-        ? options.headers
-        : options.headers
-          ? () => options.headers as Record<string, string>
-          : undefined;
-    this._bodyFn =
-      typeof options.body === 'function'
-        ? options.body
-        : options.body
-          ? () => options.body as Record<string, unknown>
-          : undefined;
-    this._fetchFn = options.fetch ?? globalThis.fetch.bind(globalThis);
     this._logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
       component: 'ClientSession',
     });
@@ -474,15 +454,14 @@ class DefaultClientSession<
   // ---------------------------------------------------------------------------
 
   /**
-   * Tear down local state for a run that failed before run-start could
-   * complete. Idempotent.
+   * Tear down local state for a send whose channel publish failed.
+   * Idempotent.
    * @param runId - The runId of the failed send.
    * @param options - Cleanup options.
    * @param options.removeOptimistic - When true, delete optimistic tree
-   *   nodes for this send that haven't been acked yet (no serial). Set on
-   *   publish-leg failure (channel never received the message); leave
-   *   false on POST-leg failure (channel accepted it — keep local state
-   *   in sync with what observers see).
+   *   nodes for this send that haven't been acked yet (no serial). True for
+   *   a fresh send (the optimistic insert never reached the channel); false
+   *   for a continuation, which inserts no optimistic nodes.
    */
   private _cleanupFailedSend(runId: string, options: { removeOptimistic: boolean }): void {
     if (options.removeOptimistic) {
@@ -645,7 +624,8 @@ class DefaultClientSession<
     }
 
     // The primary trigger event is the last input — the one the agent looks
-    // up on the channel via `event-id` and forwards in the POST body.
+    // up on the channel via `event-id`. It is surfaced on `ActiveRun` (and via
+    // `toInvocation()`) so the application can point an invocation at it.
     const triggerInputEventId = items.at(-1)?.headers[HEADER_EVENT_ID] ?? '';
 
     // Stream setup. Fresh send opens a new stream; continuation reuses the
@@ -710,66 +690,10 @@ class DefaultClientSession<
       }
     })();
 
-    const resolvedHeaders = this._headersFn?.() ?? {};
-    const resolvedBody = this._bodyFn?.() ?? {};
-
-    // Minimal pointer body: the agent locates the triggering input event on the
-    // channel via inputEventId and reads conversation history via loadProjection().
-    const postBody: Record<string, unknown> = {
-      ...resolvedBody,
-      ...sendOptions?.body,
-      runId,
-      invocationId,
-      inputEventId: triggerInputEventId,
-      sessionName: this._channel.name,
-    };
-
-    const postHeaders: Record<string, string> = {
-      ...resolvedHeaders,
-      ...sendOptions?.headers,
-    };
-
-    // Spec: AIT-CT3a, AIT-CT3b
-    this._fetchFn(this._api, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...postHeaders,
-      },
-      body: JSON.stringify(postBody),
-      ...(this._credentials ? { credentials: this._credentials } : {}),
-    })
-      .then((response) => {
-        if (!response.ok) {
-          const err = new Ably.ErrorInfo(
-            `unable to send; HTTP POST to ${this._api} returned ${String(response.status)} ${response.statusText}`,
-            ErrorCode.SessionSendFailed,
-            response.status,
-          );
-          this._emitter.emit('error', err);
-          this._router.errorStream(runId, err);
-          // POST failed AFTER the channel publish completed. Keep optimistic
-          // nodes so the local tree mirrors what observers see; only clear
-          // active-run maps. `started` stays pending — it settles only on
-          // run-start or session close.
-          this._cleanupFailedSend(runId, { removeOptimistic: false });
-        }
-      })
-      .catch((error: unknown) => {
-        const cause = error instanceof Ably.ErrorInfo ? error : undefined;
-        const err = new Ably.ErrorInfo(
-          `unable to send; HTTP POST to ${this._api} failed: ${error instanceof Error ? error.message : String(error)}`,
-          ErrorCode.SessionSendFailed,
-          500,
-          cause,
-        );
-        this._emitter.emit('error', err);
-        this._router.errorStream(runId, err);
-        this._cleanupFailedSend(runId, { removeOptimistic: false });
-      });
-
-    // `send()` resolves once the input is published — it does not block on the
-    // agent's run-start. Callers that need that signal await `run.started`.
+    // `send()` resolves once the input is published. The core never sends
+    // HTTP — waking an agent is the application's concern. Callers POST
+    // `run.toInvocation().toJSON()` to their endpoint if they want one woken,
+    // and await `run.started` if they need to know it was picked up.
     await publishPromise;
 
     return {

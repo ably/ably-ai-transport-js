@@ -19,6 +19,8 @@ import type { DynamicToolUIPart, UIMessage } from 'ai';
 import type { ViewHandle } from '@ably/ai-transport/react';
 import type { VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
 
+import { wakeAgent } from '../helpers';
+
 type ClientToolExecutor = (input: unknown) => Promise<unknown>;
 
 const clientTools: Record<string, ClientToolExecutor> = {
@@ -48,6 +50,7 @@ const clientTools: Record<string, ClientToolExecutor> = {
 export function useClientTools(
   view: ViewHandle<VercelInput, VercelOutput, VercelProjection, UIMessage>,
   clientId: string | undefined,
+  api: string,
 ) {
   // Track which tool calls we've already handled to avoid re-executing
   const handledRef = useRef(new Set<string>());
@@ -84,10 +87,10 @@ export function useClientTools(
 
         handledRef.current.add(toolPart.toolCallId);
 
-        executeClientTool(view, metadata.runId, msg.id, toolPart);
+        executeClientTool(view, api, metadata.runId, msg.id, toolPart);
       }
     }
-  }, [view, view.messages, clientId]);
+  }, [view, view.messages, clientId, api]);
 }
 
 // The tool result targets the suspended assistant message via
@@ -95,6 +98,7 @@ export function useClientTools(
 // agent picks the result up off the channel and resumes generation.
 async function executeClientTool(
   view: ViewHandle<VercelInput, VercelOutput, VercelProjection, UIMessage>,
+  api: string,
   runId: string,
   codecMessageId: string,
   toolPart: DynamicToolUIPart,
@@ -102,30 +106,22 @@ async function executeClientTool(
   const executor = clientTools[toolPart.toolName];
   if (!executor) return;
 
+  // Compute the resolution input first so executor failure produces a
+  // tool-result-error without entangling the publish/wake error handling.
+  let input: VercelInput;
   try {
     const output = await executor(toolPart.input);
-    await view.sendInput(
-      [
-        {
-          kind: 'tool-result',
-          codecMessageId,
-          toolCallId: toolPart.toolCallId,
-          output,
-        },
-      ],
-      { runId },
-    );
+    input = { kind: 'tool-result', codecMessageId, toolCallId: toolPart.toolCallId, output };
   } catch (error) {
-    await view.sendInput(
-      [
-        {
-          kind: 'tool-result-error',
-          codecMessageId,
-          toolCallId: toolPart.toolCallId,
-          message: error instanceof Error ? error.message : 'Client tool execution failed',
-        },
-      ],
-      { runId },
-    );
+    input = {
+      kind: 'tool-result-error',
+      codecMessageId,
+      toolCallId: toolPart.toolCallId,
+      message: error instanceof Error ? error.message : 'Client tool execution failed',
+    };
   }
+
+  // Publish the resolution, then wake the agent so it picks it up and resumes.
+  const run = await view.sendInput([input], { runId });
+  await wakeAgent(api, run);
 }

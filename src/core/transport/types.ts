@@ -437,23 +437,12 @@ export interface ClientSessionOptions<
   /** The codec to use for encoding/decoding. */
   codec: Codec<TInput, TOutput, TProjection, TMessage>;
 
-  /** The client's identity. Sent to the server in the POST body. */
+  /**
+   * The client's identity, used as the Ably publisher `clientId` on
+   * everything this session publishes. Surfaces on the wire as the
+   * run/input client id so other clients can attribute messages.
+   */
   clientId?: string;
-
-  /** Server endpoint URL for the HTTP POST. */
-  api: string;
-
-  /** Headers for the HTTP POST. Function form for dynamic values (e.g. auth tokens). */
-  headers?: Record<string, string> | (() => Record<string, string>);
-
-  /** Additional body fields merged into the HTTP POST. Function form for dynamic values. */
-  body?: Record<string, unknown> | (() => Record<string, unknown>);
-
-  /** Fetch credentials mode for the HTTP POST. */
-  credentials?: RequestCredentials;
-
-  /** Custom fetch implementation. Defaults to `globalThis.fetch`. */
-  fetch?: typeof globalThis.fetch;
 
   /** Initial messages to seed the conversation tree with. Forms a linear chain. */
   messages?: TMessage[];
@@ -466,12 +455,8 @@ export interface ClientSessionOptions<
 // Send options
 // ---------------------------------------------------------------------------
 
-/** Per-send options for customizing the HTTP POST and branching metadata. */
+/** Per-send options for branching metadata and run identity. */
 export interface SendOptions {
-  /** Additional fields merged into the HTTP POST body. */
-  body?: Record<string, unknown>;
-  /** Additional headers for the HTTP POST. */
-  headers?: Record<string, string>;
   /**
    * The codec-message-id of the message this send replaces (fork).
    * Set for regeneration (forkOf an assistant message) or

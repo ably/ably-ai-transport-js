@@ -89,70 +89,23 @@ describe('Vercel createClientSession', () => {
     await session.close();
   });
 
-  it('defaults api to /api/chat when not specified', async () => {
+  it('passes channelName through to the core factory; the session is HTTP-free', async () => {
     const channel = createMockChannel();
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-    const mockFetch = vi.fn(() => Promise.resolve(new Response(undefined, { status: 200 })));
-    const session = createClientSession({
-      client: createMockClient(channel),
-      channelName: 'test-channel',
-      fetch: mockFetch,
-    });
-    await session.connect();
-
-    await session.view.sendInput({ kind: 'user-message', message: { id: '1', role: 'user', parts: [] } });
-
-    await vi.waitFor(() => {
-      expect(mockFetch).toHaveBeenCalledTimes(1);
-    });
-
-    const [url] = mockFetch.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe('/api/chat');
-
-    await session.close();
-  });
-
-  it('passes through all options to the core factory', async () => {
-    const channel = createMockChannel();
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-    const mockFetch = vi.fn(() => Promise.resolve(new Response(undefined, { status: 200 })));
     const session = createClientSession({
       client: createMockClient(channel),
       channelName: 'test-channel',
       clientId: 'user-1',
-      api: '/api/custom',
-      headers: { Authorization: 'Bearer token' },
-      credentials: 'include',
-      fetch: mockFetch,
     });
     await session.connect();
 
-    // send() triggers a POST to the configured api endpoint with the configured fetch
-    const sendPromise = session.view.sendInput({
+    // The core session never sends HTTP — sending only publishes on the
+    // channel. The run's invocation pointer reflects the channel name the
+    // factory wired through, confirming the option plumbing.
+    const run = await session.view.sendInput({
       kind: 'user-message',
       message: { id: '1', role: 'user', parts: [] },
     });
-    const run = await sendPromise;
-
-    // Wait for the fire-and-forget fetch to resolve
-    await vi.waitFor(() => {
-      expect(mockFetch).toHaveBeenCalledTimes(1);
-    });
-
-    // Verify the custom api URL and headers were used
-    // CAST: vi.fn().mock.calls is typed as unknown[][]; we know the shape from the fetch signature.
-    const [url, init] = mockFetch.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe('/api/custom');
-    expect(init.credentials).toBe('include');
-    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer token');
-
-    // Verify the body carries the run identity. Per-message metadata
-    // (clientId/parent/forkOf/isContinuation) has moved off the body and
-    // onto channel headers post-AIT-769 — the agent reads the input event's
-    // publisher `clientId` directly off the wire.
-    const body = JSON.parse(init.body as string) as Record<string, unknown>;
-    expect(body.clientId).toBeUndefined();
-    expect(body.runId).toBe(run.runId);
+    expect(run.toInvocation().sessionName).toBe('test-channel');
 
     await session.close();
   });

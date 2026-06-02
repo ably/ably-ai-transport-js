@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { useEffect, useState, type ReactNode } from 'react';
 import type * as AI from 'ai';
@@ -116,10 +116,26 @@ const assistantTextNode = (text: string): MessageNode<AI.UIMessage> => ({
 describe('<Chat>', () => {
   beforeEach(() => {
     mockSendMessage.mockClear();
+    // The demo wakes the agent by POSTing the invocation after each send.
+    // Stub fetch so that POST succeeds rather than hitting the network.
+    vi.stubGlobal(
+      'fetch',
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+      vi.fn(() => Promise.resolve(new Response(undefined, { status: 200 }))),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('mounts, sends the user input via view.sendMessage, and renders nodes pushed through the view', async () => {
-    render(<Chat chatId="ai:test" />);
+    render(
+      <Chat
+        chatId="ai:test"
+        api="api/chat"
+      />,
+    );
 
     const input = screen.getByPlaceholderText('Type a message...');
     const form = input.closest('form');

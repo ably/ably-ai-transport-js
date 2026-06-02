@@ -78,50 +78,6 @@ interface TestProjection {
 }
 
 // ---------------------------------------------------------------------------
-// Mock fetch
-// ---------------------------------------------------------------------------
-
-interface MockFetch {
-  fn: ReturnType<typeof vi.fn>;
-  calls: { url: string; init: RequestInit }[];
-  /** Wait until n fetch calls have been recorded. */
-  waitForCalls(n: number): Promise<void>;
-  /** Get the parsed JSON body of the nth call (0-based). */
-  body(index: number): Record<string, unknown>;
-}
-
-const createMockFetch = (status = 200): MockFetch => {
-  const calls: { url: string; init: RequestInit }[] = [];
-  let callResolvers: (() => void)[] = [];
-
-  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-  const fn = vi.fn((url: string | URL | Request, init?: RequestInit) => {
-    const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
-    calls.push({ url: urlStr, init: init ?? {} });
-    for (const resolver of callResolvers) resolver();
-    callResolvers = [];
-    return Promise.resolve(new Response(undefined, { status, statusText: status === 200 ? 'OK' : 'Bad Request' }));
-  });
-
-  return {
-    fn: fn,
-    calls,
-    waitForCalls: async (n: number) => {
-      while (calls.length < n) {
-        await new Promise<void>((resolve) => {
-          callResolvers.push(resolve);
-        });
-      }
-    },
-    body: (index: number) => {
-      const call = calls[index];
-      if (!call) throw new Error(`no fetch call at index ${String(index)}`);
-      return JSON.parse(call.init.body as string) as Record<string, unknown>;
-    },
-  };
-};
-
-// ---------------------------------------------------------------------------
 // Mock channel
 // ---------------------------------------------------------------------------
 
@@ -403,41 +359,25 @@ const drain = async <T>(stream: ReadableStream<T>): Promise<T[]> => {
   return results;
 };
 
-const flushMicrotasks = async (): Promise<void> => {
-  for (let i = 0; i < 4; i++) {
-    await new Promise<void>((resolve) => {
-      queueMicrotask(resolve);
-    });
-  }
-};
-
 interface SessionFixture {
   channel: MockChannel & Ably.RealtimeChannel;
   decoder: MockDecoder;
   codec: MockCodec;
-  fetch: MockFetch;
   session: ClientSession<TestInput, TestOutput, TestProjection, TestMessage>;
 }
 
-const createFixture = async (overrides?: {
-  api?: string;
-  clientId?: string;
-  fetchStatus?: number;
-}): Promise<SessionFixture> => {
+const createFixture = async (overrides?: { clientId?: string }): Promise<SessionFixture> => {
   const channel = createMockChannel();
   const decoder = createMockDecoder();
   const codec = createMockCodec(decoder);
-  const fetchMock = createMockFetch(overrides?.fetchStatus ?? 200);
   const session = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
     client: createMockClient(channel),
     channelName: 'test-channel',
     codec,
     clientId: overrides?.clientId ?? 'client-1',
-    api: overrides?.api ?? '/api/chat',
-    fetch: fetchMock.fn as unknown as typeof globalThis.fetch,
   });
   await session.connect();
-  return { channel, decoder, codec, fetch: fetchMock, session };
+  return { channel, decoder, codec, session };
 };
 
 // ---------------------------------------------------------------------------
@@ -466,8 +406,6 @@ describe('ClientSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
-        api: '/api/chat',
-        fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
       });
       const p1 = s.connect();
       const p2 = s.connect();
@@ -488,8 +426,6 @@ describe('ClientSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
-        api: '/api/chat',
-        fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
       });
       await expect(s.view.sendInput({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
         ErrorCode.InvalidArgument,
@@ -503,8 +439,6 @@ describe('ClientSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
-        api: '/api/chat',
-        fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
       });
       await expect(s.cancel('run-x')).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
       await s.close();
@@ -518,8 +452,6 @@ describe('ClientSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
-        api: '/api/chat',
-        fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
       });
       await expect(s.connect()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSubscriptionError);
       await s.close();
@@ -549,12 +481,10 @@ describe('ClientSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
-        api: '/api/chat',
         messages: [
           { id: 'seed-1', content: 'first' },
           { id: 'seed-2', content: 'second' },
         ],
-        fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
       });
       await s.connect();
 
@@ -663,8 +593,8 @@ describe('ClientSession', () => {
       expect(messages[0]?.content).toBe('hello');
     });
 
-    it('mints a distinct event-id per user-message; postBody.inputEventId is the last (primary trigger)', async () => {
-      await fix.session.view.sendInput([
+    it('mints a distinct event-id per user-message; ActiveRun.inputEventId is the last (primary trigger)', async () => {
+      const run = await fix.session.view.sendInput([
         { kind: 'user-message', text: 'first' },
         { kind: 'user-message', text: 'second' },
       ]);
@@ -680,27 +610,9 @@ describe('ClientSession', () => {
       expect(stampedIds[1]).toBeDefined();
       expect(stampedIds[0]).not.toBe(stampedIds[1]);
 
-      await fix.fetch.waitForCalls(1);
-      const body = fix.fetch.body(0);
-      // POST carries only the primary (last) trigger event's id.
-      expect(body.inputEventId).toBe(stampedIds[1]);
-    });
-
-    it('fires HTTP POST with runId, invocationId, sessionName, inputEventId', async () => {
-      const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
-      await fix.fetch.waitForCalls(1);
-
-      expect(fix.fetch.calls[0]?.url).toBe('/api/chat');
-      const body = fix.fetch.body(0);
-      expect(body.runId).toBe(run.runId);
-      expect(body.invocationId).toBe(run.invocationId);
-      // Per-message metadata (clientId/parent/forkOf/isContinuation) is not
-      // in the POST body — those fields live on channel headers and are
-      // resolved by the agent's input-event lookup result. The agent reads the
-      // input event's publisher `clientId` directly off the wire.
-      expect(body.clientId).toBeUndefined();
-      expect(typeof body.inputEventId).toBe('string');
-      expect(body.history).toBeUndefined();
+      // The run's primary trigger event is the last input — the one a caller's
+      // invocation points at.
+      expect(run.inputEventId).toBe(stampedIds[1]);
     });
 
     it('auto-computes parent from the last visible message', async () => {
@@ -709,9 +621,7 @@ describe('ClientSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
-        api: '/api/chat',
         messages: [{ id: 'seed', content: 'first' }],
-        fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
       });
       await seeded.connect();
 
@@ -750,49 +660,13 @@ describe('ClientSession', () => {
       expect(secondParent).toBe(firstMsgId);
     });
 
-    it('merges sendOptions.body and sendOptions.headers into POST', async () => {
-      await fix.session.view.sendInput(
-        { kind: 'user-message', text: 'hi' },
-        { body: { tag: 'v1' }, headers: { 'X-Custom': 'token' } },
-      );
-      await fix.fetch.waitForCalls(1);
-      const body = fix.fetch.body(0);
-      expect(body.tag).toBe('v1');
-      const headers = fix.fetch.calls[0]?.init.headers as Record<string, string>;
-      expect(headers['X-Custom']).toBe('token');
-    });
-
     it('stamps forkOf on the publish headers when set', async () => {
-      // forkOf moved off the POST body and onto the channel headers — the
-      // agent resolves it from the first input-event lookup user-message header.
+      // forkOf rides the channel headers — the agent resolves it from the
+      // first input-event lookup user-message header.
       await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' }, { forkOf: 'msg-original' });
-      await fix.fetch.waitForCalls(1);
-      expect(fix.fetch.body(0).forkOf).toBeUndefined();
       const enc = fix.codec.lastEncoder();
       const headers = enc?.publishCalls.at(-1)?.opts?.extras?.headers;
       expect(headers?.['fork-of']).toBe('msg-original');
-    });
-
-    it('stream is available before POST completes (fire-and-forget)', async () => {
-      const blockingFetch = vi.fn(
-        // eslint-disable-next-line @typescript-eslint/promise-function-async -- never-resolves stub
-        () =>
-          new Promise<Response>(() => {
-            /* never resolves */
-          }),
-      );
-      const ch = createMockChannel();
-      const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
-        client: createMockClient(ch),
-        channelName: 'test-channel',
-        codec: createMockCodec(),
-        api: '/api/chat',
-        fetch: blockingFetch,
-      });
-      await s.connect();
-      const run = await s.view.sendInput({ kind: 'user-message', text: 'hi' });
-      expect(run.stream).toBeInstanceOf(ReadableStream);
-      await s.close();
     });
 
     it('throws when session is closed', async () => {
@@ -872,25 +746,23 @@ describe('ClientSession', () => {
       expect(headers?.amend).toBeUndefined();
     });
 
-    it('posts one inputEventId for the continuation trigger event', async () => {
+    it('surfaces the continuation trigger event id and run identity on the ActiveRun', async () => {
       const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
 
       const cont = await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], {
         runId: initial.runId,
       });
 
-      await fix.fetch.waitForCalls(2);
-      const body = fix.fetch.body(1);
-      expect(typeof body.inputEventId).toBe('string');
-      expect(body.runId).toBe(cont.runId);
-      expect(body.invocationId).toBe(cont.invocationId);
+      expect(typeof cont.inputEventId).toBe('string');
+      expect(cont.runId).toBe(initial.runId);
+      expect(cont.invocationId).not.toBe(initial.invocationId);
     });
 
-    it('stamps the matching event-id on each continuation publish', async () => {
+    it('stamps the continuation event-id on the publish and surfaces it on the ActiveRun', async () => {
       const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
       const before = fix.codec.lastEncoder()?.publishCalls.length ?? 0;
 
-      await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], { runId: initial.runId });
+      const cont = await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], { runId: initial.runId });
 
       const enc = fix.codec.lastEncoder();
       const contPublish = enc?.publishCalls
@@ -898,10 +770,7 @@ describe('ClientSession', () => {
         .find((c) => c.direction === 'input' && 'kind' in c.event && c.event.kind === 'user-message');
       const stampedId = contPublish?.opts?.extras?.headers?.['event-id'];
       expect(stampedId).toBeDefined();
-
-      await fix.fetch.waitForCalls(2);
-      const body = fix.fetch.body(1);
-      expect(body.inputEventId).toBe(stampedId);
+      expect(cont.inputEventId).toBe(stampedId);
     });
 
     it('continuation publishes carry HEADER_RUN_CONTINUE=true while fresh sends do not', async () => {
@@ -937,14 +806,11 @@ describe('ClientSession', () => {
           return enc;
         }),
       };
-      const fetchMock = createMockFetch();
       const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: failingPublishCodec,
         clientId: 'client-1',
-        api: '/api/chat',
-        fetch: fetchMock.fn as unknown as typeof globalThis.fetch,
       });
       await s.connect();
 
@@ -974,8 +840,6 @@ describe('ClientSession', () => {
         channelName: 'test-channel',
         codec: failingPublishCodec,
         clientId: 'client-1',
-        api: '/api/chat',
-        fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
       });
       await s.connect();
       s.on('error', () => {
@@ -1004,8 +868,6 @@ describe('ClientSession', () => {
         channelName: 'test-channel',
         codec: failingPublishCodec,
         clientId: 'client-1',
-        api: '/api/chat',
-        fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
       });
       await s.connect();
       s.on('error', () => {
@@ -1015,51 +877,6 @@ describe('ClientSession', () => {
       await expect(s.view.sendInput({ kind: 'user-message', text: 'hi' })).rejects.toBeDefined();
       // Optimistic node removed since publish failed before any ack
       expect(s.view.flattenNodes()).toHaveLength(0);
-      await s.close();
-    });
-
-    it('fires error event when POST returns non-OK', async () => {
-      const ch = createMockChannel();
-      const fetch = createMockFetch(500);
-      const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
-        client: createMockClient(ch),
-        channelName: 'test-channel',
-        codec: createMockCodec(),
-        clientId: 'client-1',
-        api: '/api/chat',
-        fetch: fetch.fn as unknown as typeof globalThis.fetch,
-      });
-      await s.connect();
-      const errors: Ably.ErrorInfo[] = [];
-      s.on('error', (e) => errors.push(e));
-      await s.view.sendInput({ kind: 'user-message', text: 'hi' });
-      await fetch.waitForCalls(1);
-      await flushMicrotasks();
-      expect(errors).toHaveLength(1);
-      expect(errors[0]?.code).toBe(ErrorCode.SessionSendFailed);
-      await s.close();
-    });
-
-    it('errors the stream when POST throws a network error', async () => {
-      const ch = createMockChannel();
-      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-      const fetchFn = vi.fn(() => Promise.reject(new Error('network down')));
-      const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
-        client: createMockClient(ch),
-        channelName: 'test-channel',
-        codec: createMockCodec(),
-        clientId: 'client-1',
-        api: '/api/chat',
-        fetch: fetchFn,
-      });
-      await s.connect();
-      s.on('error', () => {
-        /* consume */
-      });
-      const run = await s.view.sendInput({ kind: 'user-message', text: 'hi' });
-      await flushMicrotasks();
-      const reader = run.stream.getReader();
-      await expect(reader.read()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSendFailed);
       await s.close();
     });
   });
@@ -1076,8 +893,6 @@ describe('ClientSession', () => {
         channelName: 'test-channel',
         codec: createMockCodec(),
         clientId: 'client-1',
-        api: '/api/chat',
-        fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
       });
       await s.connect();
       // No run-start is ever simulated — send() must still resolve once the
@@ -1095,8 +910,6 @@ describe('ClientSession', () => {
         channelName: 'test-channel',
         codec,
         clientId: 'client-1',
-        api: '/api/chat',
-        fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
       });
       await s.connect();
 
@@ -1275,9 +1088,7 @@ describe('ClientSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: customCodec,
-        api: '/api/chat',
         clientId: 'client-1',
-        fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
       });
       await s.connect();
 
@@ -1369,8 +1180,6 @@ describe('ClientSession', () => {
         channelName: 'test-channel',
         codec,
         clientId: 'client-1',
-        api: '/api/chat',
-        fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
       });
       await s.connect();
 
@@ -1445,8 +1254,6 @@ describe('ClientSession', () => {
         channelName: 'test-channel',
         codec,
         clientId: 'client-1',
-        api: '/api/chat',
-        fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
       });
       await s.connect();
 
@@ -1789,8 +1596,6 @@ describe('ClientSession', () => {
         channelName: 'test-channel',
         codec,
         clientId: 'client-1',
-        api: '/api/chat',
-        fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
       });
       await s.connect();
 
@@ -1849,8 +1654,6 @@ describe('ClientSession', () => {
         channelName: 'test-channel',
         codec,
         clientId: 'client-1',
-        api: '/api/chat',
-        fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
       });
       await s.connect();
       s.on('error', () => {
@@ -1960,8 +1763,6 @@ describe('ClientSession', () => {
         channelName: 'test-channel',
         codec: createMockCodec(),
         clientId: 'client-1',
-        api: '/api/chat',
-        fetch: createMockFetch().fn as unknown as typeof globalThis.fetch,
       });
       await s.connect();
       const errors: Ably.ErrorInfo[] = [];
@@ -2032,23 +1833,21 @@ describe('ClientSession', () => {
       expect(headers?.[HEADER_CODEC_MESSAGE_ID]).toBeDefined();
     });
 
-    it('mints a fresh event-id for the regenerate input and forwards it in postBody.inputEventId', async () => {
-      await fix.session.view.sendInput({
+    it('mints a fresh event-id for the regenerate input and surfaces it on the ActiveRun', async () => {
+      const run = await fix.session.view.sendInput({
         kind: 'regenerate',
         parent: 'u1',
         target: 'asst-1',
       });
 
-      await fix.fetch.waitForCalls(1);
-      const body = fix.fetch.body(0);
-      expect(typeof body.inputEventId).toBe('string');
+      expect(typeof run.inputEventId).toBe('string');
 
       const enc = fix.codec.lastEncoder();
       const regeneratePublish = enc?.publishCalls.find(
         (c) => c.direction === 'input' && 'kind' in c.event && c.event.kind === 'regenerate',
       );
       const inputEventId = regeneratePublish?.opts?.extras?.headers?.[HEADER_EVENT_ID];
-      expect(body.inputEventId).toBe(inputEventId);
+      expect(run.inputEventId).toBe(inputEventId);
     });
   });
 

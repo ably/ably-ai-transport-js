@@ -51,10 +51,10 @@ Run lifecycle events are visible to all clients on the channel:
 
 ```typescript
 session.tree.on('run', (event) => {
-  if (event.type === 'ai-run-start') {
+  if (event.type === 'start') {
     console.log(`${event.clientId} started run ${event.runId}`);
   }
-  if (event.type === 'ai-run-end') {
+  if (event.type === 'end') {
     console.log(`${event.clientId} ended run ${event.runId}: ${event.reason}`);
   }
 });

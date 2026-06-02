@@ -45,7 +45,7 @@ Run lifecycle events fire for every client on the channel and include the origin
 ```typescript
 session.tree.on('run', (event) => {
   // event.clientId tells you who started or ended the run
-  // event.type is 'ai-run-start' or 'ai-run-end'
+  // event.type is 'start' or 'end'
 });
 ```
 

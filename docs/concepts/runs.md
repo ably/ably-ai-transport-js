@@ -82,10 +82,10 @@ All clients on the channel receive run lifecycle events, regardless of who start
 
 ```typescript
 session.tree.on('run', (event) => {
-  if (event.type === 'ai-run-start') {
+  if (event.type === 'start') {
     // A run started: event.runId, event.clientId
   }
-  if (event.type === 'ai-run-end') {
+  if (event.type === 'end') {
     // A run ended: event.runId, event.clientId, event.reason
   }
 });

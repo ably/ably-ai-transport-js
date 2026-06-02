@@ -521,10 +521,16 @@ describe('DefaultView', () => {
     });
 
     it('getMessageMetadata surfaces the terminal RunEndReason on the Run', () => {
-      tree.applyRunLifecycle({ type: 'ai-run-end', runId: 'R1', clientId: 'c', reason: 'cancelled' }, 's3');
+      tree.applyRunLifecycle(
+        { type: 'ai-run-end', runId: 'R1', clientId: 'c', invocationId: '', reason: 'cancelled' },
+        's3',
+      );
       expect(view.getMessageMetadata('m1')?.status).toBe('cancelled');
 
-      tree.applyRunLifecycle({ type: 'ai-run-end', runId: 'R2', clientId: 'c', reason: 'complete' }, 's4');
+      tree.applyRunLifecycle(
+        { type: 'ai-run-end', runId: 'R2', clientId: 'c', invocationId: '', reason: 'complete' },
+        's4',
+      );
       expect(view.getMessageMetadata('m2')?.status).toBe('complete');
     });
   });
@@ -1701,7 +1707,10 @@ describe('DefaultView', () => {
 
       // Server errors out: run-end arrives for the original prompt's runId
       // without a sibling Run being created.
-      tree.applyRunLifecycle({ type: 'ai-run-end', runId: 'R2new', clientId: 'c', reason: 'error' }, 's3');
+      tree.applyRunLifecycle(
+        { type: 'ai-run-end', runId: 'R2new', clientId: 'c', invocationId: '', reason: 'error' },
+        's3',
+      );
 
       // Now an external fork appears. With the pending selection NOT cleaned
       // up, pin-on-external-fork would still pin to R2; with cleanup it

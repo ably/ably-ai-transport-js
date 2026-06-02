@@ -1014,7 +1014,10 @@ describe('Tree', () => {
 
     it('run-end sets RunNode status and endSerial', () => {
       tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'client-a', invocationId: '' }, 's1');
-      tree.applyRunLifecycle({ type: 'ai-run-end', runId: 'R1', clientId: 'client-a', reason: 'complete' }, 's10');
+      tree.applyRunLifecycle(
+        { type: 'ai-run-end', runId: 'R1', clientId: 'client-a', invocationId: '', reason: 'complete' },
+        's10',
+      );
       const run = tree.getRunNode('R1');
       expect(run?.status).toBe('complete');
       expect(run?.endSerial).toBe('s10');
@@ -1024,7 +1027,10 @@ describe('Tree', () => {
       const handler = vi.fn();
       tree.on('run', handler);
       tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'client-a', invocationId: '' }, 's1');
-      tree.applyRunLifecycle({ type: 'ai-run-end', runId: 'R1', clientId: 'client-a', reason: 'complete' }, 's2');
+      tree.applyRunLifecycle(
+        { type: 'ai-run-end', runId: 'R1', clientId: 'client-a', invocationId: '', reason: 'complete' },
+        's2',
+      );
       expect(handler).toHaveBeenCalledTimes(2);
       expect(handler).toHaveBeenNthCalledWith(1, expect.objectContaining({ type: 'ai-run-start', runId: 'R1' }));
       expect(handler).toHaveBeenNthCalledWith(2, expect.objectContaining({ type: 'ai-run-end', runId: 'R1' }));
@@ -1103,7 +1109,10 @@ describe('Tree', () => {
       const handler = vi.fn();
       tree.on('update', handler);
       tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'c', invocationId: '' }, 's1');
-      tree.applyRunLifecycle({ type: 'ai-run-end', runId: 'R1', clientId: 'c', reason: 'complete' }, 's2');
+      tree.applyRunLifecycle(
+        { type: 'ai-run-end', runId: 'R1', clientId: 'c', invocationId: '', reason: 'complete' },
+        's2',
+      );
       expect(handler).toHaveBeenCalledTimes(2);
     });
 

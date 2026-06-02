@@ -751,7 +751,7 @@ describe('Tree', () => {
         serial: 's1',
       });
       tree.applyRunLifecycle({
-        type: 'ai-run-start',
+        type: 'start',
         runId: 'R2',
         clientId: 'c1',
         invocationId: '',
@@ -788,7 +788,7 @@ describe('Tree', () => {
       expect(tree.getRunNode('R2')?.regeneratesCodecMessageId).toBeUndefined();
       // run-start arrives later with the canonical metadata.
       tree.applyRunLifecycle({
-        type: 'ai-run-start',
+        type: 'start',
         runId: 'R2',
         clientId: 'c1',
         invocationId: '',
@@ -820,7 +820,7 @@ describe('Tree', () => {
       expect(tree.getRunNode('R2')?.parentRunId).toBeUndefined();
       // run-start carries the parent header pointing at u1.
       tree.applyRunLifecycle({
-        type: 'ai-run-start',
+        type: 'start',
         runId: 'R2',
         clientId: 'c1',
         invocationId: '',
@@ -850,7 +850,7 @@ describe('Tree', () => {
       expect(tree.getRunNode('R2')?.forkOf).toBeUndefined();
       // run-start carries the canonical edit metadata.
       tree.applyRunLifecycle({
-        type: 'ai-run-start',
+        type: 'start',
         runId: 'R2',
         clientId: 'c1',
         invocationId: '',
@@ -890,7 +890,7 @@ describe('Tree', () => {
       expect(tree.getRunNode('R1')?.parentRunId).toBeUndefined();
 
       tree.applyRunLifecycle({
-        type: 'ai-run-start',
+        type: 'start',
         runId: 'R1',
         clientId: 'c1',
         invocationId: 'inv-2',
@@ -1008,7 +1008,7 @@ describe('Tree', () => {
   describe('run lifecycle', () => {
     it('run-start creates a Run with status active when none exists', () => {
       tree.applyRunLifecycle({
-        type: 'ai-run-start',
+        type: 'start',
         runId: 'R1',
         clientId: 'client-a',
         invocationId: '',
@@ -1035,7 +1035,7 @@ describe('Tree', () => {
       expect(tree.getRunNode('R1')?.clientId).toBe('client-a');
 
       tree.applyRunLifecycle({
-        type: 'ai-run-start',
+        type: 'start',
         runId: 'R1',
         clientId: 'client-a',
         invocationId: '',
@@ -1047,14 +1047,14 @@ describe('Tree', () => {
 
     it('run-end sets RunNode status and endSerial', () => {
       tree.applyRunLifecycle({
-        type: 'ai-run-start',
+        type: 'start',
         runId: 'R1',
         clientId: 'client-a',
         invocationId: '',
         serial: 's1',
       });
       tree.applyRunLifecycle({
-        type: 'ai-run-end',
+        type: 'end',
         runId: 'R1',
         clientId: 'client-a',
         invocationId: '',
@@ -1070,14 +1070,14 @@ describe('Tree', () => {
       const handler = vi.fn();
       tree.on('run', handler);
       tree.applyRunLifecycle({
-        type: 'ai-run-start',
+        type: 'start',
         runId: 'R1',
         clientId: 'client-a',
         invocationId: '',
         serial: 's1',
       });
       tree.applyRunLifecycle({
-        type: 'ai-run-end',
+        type: 'end',
         runId: 'R1',
         clientId: 'client-a',
         invocationId: '',
@@ -1085,8 +1085,8 @@ describe('Tree', () => {
         serial: 's2',
       });
       expect(handler).toHaveBeenCalledTimes(2);
-      expect(handler).toHaveBeenNthCalledWith(1, expect.objectContaining({ type: 'ai-run-start', runId: 'R1' }));
-      expect(handler).toHaveBeenNthCalledWith(2, expect.objectContaining({ type: 'ai-run-end', runId: 'R1' }));
+      expect(handler).toHaveBeenNthCalledWith(1, expect.objectContaining({ type: 'start', runId: 'R1' }));
+      expect(handler).toHaveBeenNthCalledWith(2, expect.objectContaining({ type: 'end', runId: 'R1' }));
     });
   });
 
@@ -1194,10 +1194,10 @@ describe('Tree', () => {
       // observers use the `run` event for run-end.
       const handler = vi.fn();
       tree.on('update', handler);
-      tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'c', invocationId: '', serial: 's1' });
+      tree.applyRunLifecycle({ type: 'start', runId: 'R1', clientId: 'c', invocationId: '', serial: 's1' });
       expect(handler).toHaveBeenCalledTimes(1);
       tree.applyRunLifecycle({
-        type: 'ai-run-end',
+        type: 'end',
         runId: 'R1',
         clientId: 'c',
         invocationId: '',
@@ -1211,10 +1211,10 @@ describe('Tree', () => {
       // A repeat run-start for a Run that already exists with its startSerial
       // set and no new structural metadata flips status to active at most —
       // content, not structure — so it emits no `update`.
-      tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'c', invocationId: '', serial: 's1' });
+      tree.applyRunLifecycle({ type: 'start', runId: 'R1', clientId: 'c', invocationId: '', serial: 's1' });
       const handler = vi.fn();
       tree.on('update', handler);
-      tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'c', invocationId: '', serial: 's1' });
+      tree.applyRunLifecycle({ type: 'start', runId: 'R1', clientId: 'c', invocationId: '', serial: 's1' });
       expect(handler).not.toHaveBeenCalled();
     });
 

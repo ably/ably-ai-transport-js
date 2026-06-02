@@ -202,19 +202,19 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
 
 /**
  * Create a mock RunLifecycleEvent.
- * @param type - The event type ('ai-run-start' or 'ai-run-end').
+ * @param type - The event type ('start' or 'end').
  * @param runId - The run identifier.
  * @param clientId - The client identifier.
  * @param reason - The end reason (only for run-end events).
  * @returns A RunLifecycleEvent.
  */
 export const makeRunEvent = (
-  type: 'ai-run-start' | 'ai-run-end',
+  type: 'start' | 'end',
   runId: string,
   clientId: string,
   reason?: 'complete' | 'cancelled' | 'error',
 ): RunLifecycleEvent => {
-  if (type === 'ai-run-start') {
+  if (type === 'start') {
     return { type, runId, clientId, serial: undefined, invocationId: '' };
   }
   return { type, runId, clientId, serial: undefined, invocationId: '', reason: reason ?? 'complete' };

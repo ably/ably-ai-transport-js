@@ -495,10 +495,15 @@ export interface SendOptions {
 // Run lifecycle events
 // ---------------------------------------------------------------------------
 
-/** A structured event describing a run starting or ending. */
+/**
+ * A structured event describing a run starting or ending. The `type`
+ * discriminator (`start` / `end`) is the in-memory domain vocabulary and is
+ * intentionally distinct from the wire message names (`ai-run-start` /
+ * `ai-run-end`) those events are decoded from.
+ */
 export type RunLifecycleEvent =
   | {
-      type: 'ai-run-start';
+      type: 'start';
       runId: string;
       clientId: string;
       /**
@@ -538,7 +543,7 @@ export type RunLifecycleEvent =
       isContinuation?: boolean;
     }
   | {
-      type: 'ai-run-end';
+      type: 'end';
       runId: string;
       clientId: string;
       /**

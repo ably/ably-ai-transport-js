@@ -249,7 +249,7 @@ describe('DefaultView', () => {
       });
 
       tree.applyRunLifecycle({
-        type: 'ai-run-start',
+        type: 'start',
         runId: 'R1',
         clientId: 'c1',
         invocationId: 'inv-2',
@@ -380,7 +380,7 @@ describe('DefaultView', () => {
         serial: 's1',
       });
       tree.applyRunLifecycle({
-        type: 'ai-run-start',
+        type: 'start',
         runId: 'R_empty',
         clientId: '',
         invocationId: '',
@@ -526,7 +526,7 @@ describe('DefaultView', () => {
 
     it('runOf surfaces the terminal RunEndReason on the Run', () => {
       tree.applyRunLifecycle({
-        type: 'ai-run-end',
+        type: 'end',
         runId: 'R1',
         clientId: 'c',
         invocationId: '',
@@ -536,7 +536,7 @@ describe('DefaultView', () => {
       expect(view.runOf('m1')?.status).toBe('cancelled');
 
       tree.applyRunLifecycle({
-        type: 'ai-run-end',
+        type: 'end',
         runId: 'R2',
         clientId: 'c',
         invocationId: '',
@@ -1111,7 +1111,7 @@ describe('DefaultView', () => {
       });
       await view.regenerate('a1');
       tree.applyRunLifecycle({
-        type: EVENT_RUN_START,
+        type: 'start',
         runId: 'Rregen1',
         clientId: 'agent',
         invocationId: 'inv-1',
@@ -1142,7 +1142,7 @@ describe('DefaultView', () => {
 
       // Agent's lifecycle + output land BEFORE the publish ACK.
       tree.applyRunLifecycle({
-        type: EVENT_RUN_START,
+        type: 'start',
         runId: 'Rregen2',
         clientId: 'agent',
         invocationId: 'inv-2',
@@ -1215,7 +1215,7 @@ describe('DefaultView', () => {
       });
       await view.regenerate('a1');
       tree.applyRunLifecycle({
-        type: EVENT_RUN_START,
+        type: 'start',
         runId: 'Rregen1',
         clientId: 'agent',
         invocationId: 'inv-1',
@@ -1246,7 +1246,7 @@ describe('DefaultView', () => {
       });
       await view.regenerate('a1_new1');
       tree.applyRunLifecycle({
-        type: EVENT_RUN_START,
+        type: 'start',
         runId: 'Rregen2',
         clientId: 'agent',
         invocationId: 'inv-2',
@@ -1277,7 +1277,7 @@ describe('DefaultView', () => {
       });
       await view.regenerate('a1_new2');
       tree.applyRunLifecycle({
-        type: EVENT_RUN_START,
+        type: 'start',
         runId: 'Rregen3',
         clientId: 'agent',
         invocationId: 'inv-3',
@@ -1399,7 +1399,7 @@ describe('DefaultView', () => {
       apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
       const handler = vi.fn();
       view.on('run', handler);
-      tree.applyRunLifecycle({ type: 'ai-run-start', runId: 'R1', clientId: 'c', invocationId: '', serial: 's2' });
+      tree.applyRunLifecycle({ type: 'start', runId: 'R1', clientId: 'c', invocationId: '', serial: 's2' });
       expect(handler).toHaveBeenCalled();
     });
 
@@ -1409,7 +1409,7 @@ describe('DefaultView', () => {
       view.on('run', handler);
       // Run-start for an unknown new run, but parent points at a visible msg.
       const evt: RunLifecycleEvent = {
-        type: 'ai-run-start',
+        type: 'start',
         runId: 'R2',
         clientId: 'c',
         invocationId: '',
@@ -2041,7 +2041,7 @@ describe('DefaultView', () => {
       // Server errors out: run-end arrives for the original prompt's runId
       // without a sibling Run being created.
       tree.applyRunLifecycle({
-        type: 'ai-run-end',
+        type: 'end',
         runId: 'R2new',
         clientId: 'c',
         invocationId: '',

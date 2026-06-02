@@ -127,7 +127,7 @@ const createMockRun = (runId: string, treeEmit: MockEmitter['emit']): MockRun =>
   },
   close: () => {
     treeEmit('run', {
-      type: 'ai-run-end',
+      type: 'end',
       runId,
       clientId: '',
       invocationId: `${runId}-inv`,

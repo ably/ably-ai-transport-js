@@ -965,7 +965,7 @@ describe('AgentSession integration', () => {
           if (e.runId === activeRun.runId) events.push(...e.events);
         });
         const unsubRun = clientSession.tree.on('run', (e) => {
-          if (e.runId === activeRun.runId && e.type === EVENT_RUN_END) {
+          if (e.runId === activeRun.runId && e.type === 'end') {
             clearTimeout(timer);
             unsubOutput();
             unsubRun();

@@ -72,7 +72,7 @@ const createMockSession = (): MockSession => {
     },
     runEnd: (runId, reason) => {
       treeEmitter.emit('run', {
-        type: 'ai-run-end',
+        type: 'end',
         runId,
         clientId: '',
         invocationId: 'inv-1',

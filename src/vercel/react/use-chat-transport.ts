@@ -29,6 +29,9 @@ const SKIPPED_CLIENT_SESSION: ClientSession<VercelInput, VercelOutput, VercelPro
   get view(): View<VercelInput, AI.UIMessage> {
     throw new Ably.ErrorInfo('unable to access view; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
+  get presence(): Ably.RealtimePresence {
+    throw new Ably.ErrorInfo('unable to access presence; hook is skipped', ErrorCode.InvalidArgument, 400);
+  },
   connect: () => {
     throw new Ably.ErrorInfo('unable to connect; hook is skipped', ErrorCode.InvalidArgument, 400);
   },

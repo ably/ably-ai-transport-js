@@ -347,6 +347,19 @@ export interface Run<TOutput extends CodecOutputEvent, TProjection, TMessage> {
 /** Server-side session that manages run lifecycles over an Ably channel. */
 export interface AgentSession<TOutput extends CodecOutputEvent, TProjection, TMessage> {
   /**
+   * The Ably presence object for this session's channel.
+   *
+   * Exposed as a convenience so the agent can track and publish presence
+   * (`enter`/`leave`/`update`/`get`/`subscribe`) — for example, to detect
+   * whether the requesting user is still connected — without obtaining the
+   * channel separately. This is the same `Ably.RealtimePresence` instance the
+   * underlying channel exposes; the session applies no additional semantics.
+   * Presence operations implicitly attach the channel and do not require
+   * {@link connect} to have been called first.
+   */
+  readonly presence: Ably.RealtimePresence;
+
+  /**
    * Subscribe (unfiltered) to the shared channel and (implicitly) attach. The
    * subscribe is deliberately unfiltered so channel-rewind-replayed input
    * events also reach the dispatcher, which routes by name (cancel vs. input

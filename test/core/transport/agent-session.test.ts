@@ -87,6 +87,8 @@ interface MockChannel {
   publishCalls: Ably.Message[];
   listener: ((msg: Ably.InboundMessage) => void) | undefined;
   stateListeners: Set<Ably.channelEventCallback>;
+  /** Sentinel presence object — asserted by identity via `session.presence`. */
+  presence: Ably.RealtimePresence;
 }
 
 const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
@@ -96,6 +98,8 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
     listener: undefined,
     stateListeners,
     state: 'attached',
+    // CAST: only identity is asserted in tests; presence methods are unused here.
+    presence: { get: vi.fn(), enter: vi.fn(), leave: vi.fn() } as unknown as Ably.RealtimePresence,
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
     publish: vi.fn((msg: Ably.Message | Ably.Message[]) => {
       if (Array.isArray(msg)) mock.publishCalls.push(...msg);
@@ -436,6 +440,21 @@ describe('AgentSession', () => {
     it('exposes a createRun factory and close method', () => {
       expect(typeof session.createRun).toBe('function');
       expect(typeof session.close).toBe('function');
+    });
+
+    it("exposes the underlying channel's presence object", () => {
+      expect(session.presence).toBe(channel.presence);
+    });
+
+    it('exposes presence before connect() is called', async () => {
+      const ch = createMockChannel();
+      const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'agent-channel',
+        codec,
+      });
+      expect(s.presence).toBe(ch.presence);
+      await s.close();
     });
 
     it('registers the agent and resolves the channel via client.channels.get', async () => {

@@ -34,6 +34,9 @@ const SKIPPED_SESSION: ClientSession<CodecInputEvent, CodecOutputEvent, unknown,
   get view(): View<CodecInputEvent, unknown> {
     throw new Ably.ErrorInfo('unable to access view; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
+  get presence(): Ably.RealtimePresence {
+    throw new Ably.ErrorInfo('unable to access presence; hook is skipped', ErrorCode.InvalidArgument, 400);
+  },
   connect: () => {
     throw new Ably.ErrorInfo('unable to connect; hook is skipped', ErrorCode.InvalidArgument, 400);
   },

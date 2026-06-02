@@ -5,6 +5,7 @@
 import { vi } from 'vitest';
 
 import type { CodecInputEvent, CodecOutputEvent } from '../../../src/core/codec/types.js';
+import { Invocation } from '../../../src/core/transport/invocation.js';
 import type { ClientSession, RunLifecycleEvent, RunNode, Tree, View } from '../../../src/core/transport/types.js';
 
 type TreeEventType = 'update' | 'ably-message' | 'run' | 'run-projection-updated';
@@ -113,6 +114,8 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     cancel: vi.fn(() => Promise.resolve()),
     optimisticCodecMessageIds: [] as string[],
+    toInvocation: () =>
+      Invocation.fromJSON({ runId: 'run-1', invocationId: 'inv-1', inputEventId: '', sessionName: 'mock-session' }),
   };
 
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly

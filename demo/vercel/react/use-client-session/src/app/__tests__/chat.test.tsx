@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { useEffect, useState, type ReactNode } from 'react';
 import type * as AI from 'ai';
+import { Invocation } from '@ably/ai-transport';
 import type { ActiveRun, ClientSession, MessageNode, SendOptions } from '@ably/ai-transport';
 import type { VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
 
@@ -36,6 +37,8 @@ const mockSendMessage = vi.fn(
       inputEventId: 'ev-1',
       cancel: async () => {},
       optimisticCodecMessageIds: [],
+      toInvocation: () =>
+        Invocation.fromJSON({ runId: 'run-1', invocationId: 'inv-1', inputEventId: 'ev-1', sessionName: 'demo' }),
     }),
 );
 

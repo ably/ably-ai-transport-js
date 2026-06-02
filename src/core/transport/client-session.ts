@@ -41,6 +41,7 @@ import { getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import type { CodecInputEvent, CodecOutputEvent, Decoder, Encoder } from '../codec/types.js';
 import { buildTransportHeaders } from './headers.js';
+import { Invocation } from './invocation.js';
 import type { StreamRouter } from './stream-router.js';
 import { createStreamRouter } from './stream-router.js';
 import type { DefaultTree } from './tree.js';
@@ -779,6 +780,13 @@ class DefaultClientSession<
       invocationId,
       cancel: async () => this.cancel(runId),
       optimisticCodecMessageIds: [...codecMessageIds],
+      toInvocation: () =>
+        Invocation.fromJSON({
+          runId,
+          invocationId,
+          inputEventId: triggerInputEventId,
+          sessionName: this._channel.name,
+        }),
     };
   }
 

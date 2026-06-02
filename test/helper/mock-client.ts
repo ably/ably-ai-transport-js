@@ -12,7 +12,15 @@ import { vi } from 'vitest';
  */
 export const createMockClient = (channel: Ably.RealtimeChannel): Ably.Realtime => {
   const client = {
-    channels: { get: vi.fn(() => channel) },
+    channels: {
+      get: vi.fn((name: string) => {
+        // Mirror real Ably: the channel reports the name it was requested
+        // under, so `channel.name` is meaningful (e.g. for invocation.sessionName).
+        // CAST: `name` is readonly on Ably.RealtimeChannel; the mock is a plain object.
+        (channel as unknown as { name: string }).name = name;
+        return channel;
+      }),
+    },
     options: {} as { agents?: Record<string, string | undefined> },
   };
   // CAST: minimal stub — only `channels.get` and `options.agents` are exercised

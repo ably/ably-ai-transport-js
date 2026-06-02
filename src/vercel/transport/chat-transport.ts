@@ -58,16 +58,28 @@ export interface SendMessagesRequestContext {
   parent?: string;
 }
 
+/** Default agent endpoint the transport POSTs invocations to — mirrors Vercel's DefaultChatTransport. */
+export const DEFAULT_VERCEL_API = '/api/chat';
+
 /** Options for customizing the ChatTransport behavior. */
 export interface ChatTransportOptions {
   /**
-   * Customize the POST body before sending. Called by sendMessages()
-   * with the conversation context. Return the body and headers for
-   * the HTTP POST.
-   *
-   * Default: sends all previous messages as `history` in the body.
+   * Endpoint the transport POSTs the invocation pointer to, to wake the
+   * agent. Mirrors useChat's request-driven contract. Default `/api/chat`.
+   */
+  api?: string;
+  /** Fetch credentials mode for the invocation POST (e.g. `'include'`). */
+  credentials?: RequestCredentials;
+  /** Custom fetch implementation for the invocation POST. Defaults to `globalThis.fetch`. */
+  fetch?: typeof globalThis.fetch;
+  /**
+   * Customize the invocation POST before sending. Called by sendMessages()
+   * with the conversation context; the returned `body` is merged into the
+   * POST body (the run's invocation identifiers always take precedence) and
+   * `headers` are added to the request. Use it for auth headers or extra
+   * agent metadata.
    * @param context - The conversation context for the current request.
-   * @returns The body and headers to use for the HTTP POST.
+   * @returns The body and headers to merge into the invocation POST.
    */
   prepareSendMessagesRequest?: (context: SendMessagesRequestContext) => {
     body?: Record<string, unknown>;
@@ -154,12 +166,17 @@ export interface ChatTransport {
 /**
  * Wrap a ReadableStream in a passthrough TransformStream that resolves a
  * promise when the stream completes or errors. The returned stream passes
- * all chunks through unchanged.
+ * all chunks through unchanged, and `fail(reason)` errors the readable side
+ * useChat consumes without cancelling or otherwise disturbing the source run
+ * stream (used when the agent-invocation POST fails).
  * @param source - The original stream to wrap.
- * @returns The wrapped stream and a `done` promise that resolves when the stream closes.
+ * @returns The wrapped stream, a `done` promise that resolves when the stream
+ *   closes, and a `fail` callback that errors the wrapped stream.
  */
 
-const wrapStreamWithDone = <T>(source: ReadableStream<T>): { stream: ReadableStream<T>; done: Promise<void> } => {
+const wrapStreamWithDone = <T>(
+  source: ReadableStream<T>,
+): { stream: ReadableStream<T>; done: Promise<void>; fail: (reason: Ably.ErrorInfo) => void } => {
   let resolveDone: () => void;
   const done = new Promise<void>((resolve) => {
     resolveDone = resolve;
@@ -171,15 +188,26 @@ const wrapStreamWithDone = <T>(source: ReadableStream<T>): { stream: ReadableStr
     },
   });
 
-  // Pipe in the background. If the source errors or is cancelled, resolve
-  // done so the serialization queue advances.
+  // Aborting this signal errors the destination (the readable useChat reads)
+  // with the abort reason. `preventCancel` keeps the source run stream intact
+  // so the tree/observers are unaffected — only the useChat-facing view fails.
+  const failController = new AbortController();
+
+  // Pipe in the background. If the source errors/cancels, or `fail()` aborts,
+  // resolve done so the serialization queue advances.
   // Fire-and-forget: the pipe runs independently; errors surface through
   // the readable side that useChat consumes.
-  source.pipeTo(passthrough.writable).catch(() => {
+  source.pipeTo(passthrough.writable, { signal: failController.signal, preventCancel: true }).catch(() => {
     resolveDone();
   });
 
-  return { stream: passthrough.readable, done };
+  return {
+    stream: passthrough.readable,
+    done,
+    fail: (reason: Ably.ErrorInfo) => {
+      failController.abort(reason);
+    },
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -371,6 +399,11 @@ export const createChatTransport = (
   session: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
   chatOptions?: ChatTransportOptions,
 ): ChatTransport => {
+  // -- Invocation POST config (the transport owns waking the agent) ----------
+  const api = chatOptions?.api ?? DEFAULT_VERCEL_API;
+  const fetchFn = chatOptions?.fetch ?? globalThis.fetch.bind(globalThis);
+  const credentials = chatOptions?.credentials;
+
   // -- Streaming state -------------------------------------------------------
   let _streaming = false;
   const streamingCallbacks = new Set<(streaming: boolean) => void>();
@@ -493,15 +526,11 @@ export const createChatTransport = (
       sendBody = prepared.body ?? {};
       sendHeaders = prepared.headers;
     } else {
-      sendBody = {
-        sessionName: opts.chatId,
-        trigger,
-        ...(messageId !== undefined && { messageId }),
-      };
+      sendBody = {};
       sendHeaders = undefined;
     }
 
-    const sendOpts: SendOptions = { body: sendBody, headers: sendHeaders };
+    const sendOpts: SendOptions = {};
     if (forkOf !== undefined) sendOpts.forkOf = forkOf;
     if (parent !== undefined) sendOpts.parent = parent;
     // Continuations reuse the suspended assistant's runId so the agent's
@@ -567,13 +596,52 @@ export const createChatTransport = (
     // Wrap the stream to detect completion. The streaming flag gates
     // useMessageSync so that setMessages doesn't interfere with
     // useChat's internal write() during active streams.
-    const { stream, done } = wrapStreamWithDone(run.stream);
+    const { stream, done, fail } = wrapStreamWithDone(run.stream);
     setStreaming(true);
 
     // Fire-and-forget: clear the streaming flag when the stream ends.
     void done.then(() => {
       setStreaming(false);
     });
+
+    // Wake the agent: POST the invocation pointer to the configured endpoint.
+    // useChat's transport contract is request-driven, so the transport owns
+    // this POST (the core session is HTTP-free). Fire-and-forget — `await`
+    // would delay the stream return, and the agent's response arrives over
+    // the Ably channel, not the HTTP response. The run's invocation
+    // identifiers always win over any custom body so the agent can parse it
+    // via Invocation.fromJSON. A failed POST means the agent never woke, so
+    // error the useChat-facing stream; the core run and observers are
+    // untouched.
+    const postBody = { ...sendBody, ...run.toInvocation().toJSON() };
+    fetchFn(api, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...sendHeaders },
+      body: JSON.stringify(postBody),
+      ...(credentials ? { credentials } : {}),
+    })
+      .then((response) => {
+        if (!response.ok) {
+          fail(
+            new Ably.ErrorInfo(
+              `unable to send; HTTP POST to ${api} returned ${String(response.status)} ${response.statusText}`,
+              ErrorCode.SessionSendFailed,
+              response.status,
+            ),
+          );
+        }
+      })
+      .catch((error: unknown) => {
+        const cause = error instanceof Ably.ErrorInfo ? error : undefined;
+        fail(
+          new Ably.ErrorInfo(
+            `unable to send; HTTP POST to ${api} failed: ${error instanceof Error ? error.message : String(error)}`,
+            ErrorCode.SessionSendFailed,
+            500,
+            cause,
+          ),
+        );
+      });
 
     return stream;
   };

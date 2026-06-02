@@ -58,11 +58,12 @@ describe('useChat error propagation', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
-      api: 'http://localhost:1/nonexistent',
     });
     await clientSession.connect();
 
-    chatTransport = createChatTransport(clientSession);
+    // The transport owns the agent-invocation POST — point it at a dead
+    // endpoint so the POST fails and the useChat-facing stream errors.
+    chatTransport = createChatTransport(clientSession, { api: 'http://localhost:1/nonexistent' });
 
     const onError = vi.fn();
 
@@ -113,7 +114,7 @@ describe('useChat error propagation', () => {
     });
     await agentSession.connect();
 
-    // Capture fetch calls so we can extract the runId from the POST body.
+    // Capture the transport's invocation POST so we can extract the runId.
     const fetchCalls: RequestInit[] = [];
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- inline mock returns Promise.resolve directly
     const capturingFetch = ((_url: string | URL | Request, init?: RequestInit) => {
@@ -126,16 +127,12 @@ describe('useChat error propagation', () => {
       channelName,
       codec: UIMessageCodec,
       clientId: clientClient.auth.clientId,
-      api: '/api/chat',
-      fetch: capturingFetch,
-      // Client and server use independent invocation-ids in this test
-      // (createRunFromOpts mints its own), so the client's
-      // run-start-by-invocation matcher won't resolve. Disable the wait so
-      // send() resolves on publish ack and useChat gets the stream.
     });
     await clientSession.connect();
 
-    chatTransport = createChatTransport(clientSession);
+    // The transport POSTs the invocation; capture it to read the runId, and
+    // succeed (status 200) so the run proceeds and we can detach mid-stream.
+    chatTransport = createChatTransport(clientSession, { api: '/api/chat', fetch: capturingFetch });
 
     const onError = vi.fn();
 

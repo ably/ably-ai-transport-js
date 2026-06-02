@@ -121,9 +121,6 @@ const collectUntil = (
 const hasFinish = (outputs: VercelOutput[]): boolean => outputs.some((e) => e.type === 'finish');
 const isRunEnd = (msg: Ably.InboundMessage): boolean => msg.name === EVENT_RUN_END;
 
-// eslint-disable-next-line @typescript-eslint/promise-function-async -- noop fetch
-const noopFetch: typeof globalThis.fetch = () => Promise.resolve(new Response(undefined, { status: 200 }));
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -898,8 +895,6 @@ describe('AgentSession integration', () => {
       // happy-path run-start wait is exercised in client-session integration
       // tests (Commit 2); this test focuses on the lookup itself.
       clientId: clientClient.auth.clientId,
-      fetch: noopFetch,
-      api: '/test',
     });
     await clientSession.connect();
 

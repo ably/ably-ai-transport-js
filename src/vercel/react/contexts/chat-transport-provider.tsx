@@ -23,7 +23,7 @@ import { type PropsWithChildren, type ReactNode, useContext, useMemo } from 'rea
 
 import { type ClientSessionProviderProps, createSessionHooks } from '../../../react/index.js';
 import { UIMessageCodec, type VercelInput, type VercelOutput, type VercelProjection } from '../../codec/index.js';
-import { type ChatTransportOptions, DEFAULT_VERCEL_API } from '../../transport/index.js';
+import type { ChatTransportOptions } from '../../transport/index.js';
 import { createChatTransport } from '../../transport/index.js';
 import type { ChatTransportSlot } from './chat-transport-context.js';
 import { ChatTransportContext } from './chat-transport-context.js';
@@ -33,17 +33,23 @@ export const { ClientSessionProvider, useAblyMessages, useClientSession, useCrea
 
 type CoreClientSessionProviderProps = Omit<
   ClientSessionProviderProps<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
-  'codec' | 'api'
-> &
-  Partial<Pick<ClientSessionProviderProps<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>, 'api'>>;
+  'codec'
+>;
 
 /**
  * Props for {@link ChatTransportProvider}.
  *
  * All {@link ClientSessionProviderProps} for Vercel types except `codec` (baked as UIMessageCodec),
- * plus `chatOptions` for customizing chat request construction.
+ * plus the transport-owned invocation POST options (`api` / `credentials` / `fetch`) and
+ * `chatOptions` for customizing chat request construction.
  */
 export interface ChatTransportProviderProps extends CoreClientSessionProviderProps {
+  /** Endpoint the chat transport POSTs the invocation to, to wake the agent. Default `/api/chat`. */
+  api?: string;
+  /** Fetch credentials mode for the invocation POST. */
+  credentials?: RequestCredentials;
+  /** Custom fetch implementation for the invocation POST. Defaults to `globalThis.fetch`. */
+  fetch?: typeof globalThis.fetch;
   /**
    * Optional hooks for customizing chat request construction (e.g. prepareSendMessagesRequest).
    * Must be stable across renders — wrap in `useMemo` or define outside the component.
@@ -54,16 +60,19 @@ export interface ChatTransportProviderProps extends CoreClientSessionProviderPro
 
 const ChatTransportProviderInner = ({
   channelName,
-  chatOptions,
+  chatTransportOptions,
   children,
 }: {
   channelName: string;
-  chatOptions?: ChatTransportOptions;
+  chatTransportOptions: ChatTransportOptions;
   children: ReactNode;
 }) => {
   const { session, sessionError } = useClientSession();
   const { providers: parentProviders } = useContext(ChatTransportContext);
-  const chatTransport = useMemo(() => createChatTransport(session, chatOptions), [session, chatOptions]);
+  const chatTransport = useMemo(
+    () => createChatTransport(session, chatTransportOptions),
+    [session, chatTransportOptions],
+  );
   const contextValue = useMemo(() => {
     const slot: ChatTransportSlot = { session, sessionError, chatTransport };
     return {
@@ -95,26 +104,46 @@ const ChatTransportProviderInner = ({
  * const { chatTransport, session } = useChatTransport();
  * const { session } = useClientSession(); // also available
  * ```
- * @param props - Provider configuration including `channelName`, optional `chatOptions`, and all other session options.
+ * @param props - Provider configuration including `channelName`, the invocation POST options (`api` / `credentials` / `fetch`), optional `chatOptions`, and all other session options.
+ * @param props.api - Endpoint the chat transport POSTs the invocation to. Default `/api/chat`.
+ * @param props.credentials - Fetch credentials mode for the invocation POST.
+ * @param props.fetch - Custom fetch implementation for the invocation POST.
  * @param props.chatOptions - Optional hooks for customizing chat request construction. Must be stable (memoized) — a new reference recreates the ChatTransport.
  * @param props.children - Descendant components that consume the chat transport via hooks.
  * @returns A React element wrapping children with ClientSessionContext and ChatTransportContext.
  */
 export const ChatTransportProvider = ({
+  api,
+  credentials,
+  fetch,
   chatOptions,
   children,
   ...sessionProps
-}: ChatTransportProviderProps & PropsWithChildren): ReactNode => (
-  <ClientSessionProvider
-    {...sessionProps}
-    api={sessionProps.api ?? DEFAULT_VERCEL_API}
-    codec={UIMessageCodec}
-  >
-    <ChatTransportProviderInner
-      channelName={sessionProps.channelName}
-      chatOptions={chatOptions}
+}: ChatTransportProviderProps & PropsWithChildren): ReactNode => {
+  // Fold the transport-owned POST options into a single ChatTransportOptions.
+  // Memoized so the ChatTransport isn't recreated each render — createChatTransport
+  // is keyed on this object's identity.
+  const chatTransportOptions = useMemo<ChatTransportOptions>(
+    () => ({
+      ...chatOptions,
+      ...(api !== undefined && { api }),
+      ...(credentials !== undefined && { credentials }),
+      ...(fetch !== undefined && { fetch }),
+    }),
+    [api, credentials, fetch, chatOptions],
+  );
+
+  return (
+    <ClientSessionProvider
+      {...sessionProps}
+      codec={UIMessageCodec}
     >
-      {children}
-    </ChatTransportProviderInner>
-  </ClientSessionProvider>
-);
+      <ChatTransportProviderInner
+        channelName={sessionProps.channelName}
+        chatTransportOptions={chatTransportOptions}
+      >
+        {children}
+      </ChatTransportProviderInner>
+    </ClientSessionProvider>
+  );
+};

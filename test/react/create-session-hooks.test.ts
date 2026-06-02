@@ -50,7 +50,7 @@ describe('createSessionHooks', () => {
     >();
 
     const wrapper = ({ children }: { children: ReactNode }): ReactNode =>
-      createElement(ClientSessionProvider, { channelName: 'ai:test', codec: {} as never, api: '/test' }, children);
+      createElement(ClientSessionProvider, { channelName: 'ai:test', codec: {} as never }, children);
 
     const { result } = renderHook(() => useClientSession({ channelName: 'ai:test' }), { wrapper });
     expect(result.current).toBeDefined();

@@ -12,8 +12,9 @@
 
 import type * as AI from 'ai';
 import { AbstractChat } from 'ai';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { Invocation } from '../../../src/core/transport/invocation.js';
 import type { ClientSession, Tree } from '../../../src/core/transport/types.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
 import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
@@ -63,6 +64,8 @@ interface MockRun {
   stream: ReadableStream<AI.UIMessageChunk>;
   runId: string;
   cancel: ReturnType<typeof vi.fn>;
+  /** Build the run's invocation pointer (the transport POSTs this to wake the agent). */
+  toInvocation: () => Invocation;
   /** Enqueue a chunk into the run stream. */
   enqueue: (chunk: AI.UIMessageChunk) => void;
   /** Close the run stream (simulates run end). */
@@ -80,6 +83,8 @@ const createMockRun = (runId = 'run-1'): MockRun => {
     stream,
     runId,
     cancel: vi.fn(),
+    toInvocation: () =>
+      Invocation.fromJSON({ runId, invocationId: `${runId}-inv`, inputEventId: '', sessionName: 'chat-1' }),
     enqueue: (chunk: AI.UIMessageChunk) => {
       controller.enqueue(chunk);
     },
@@ -271,6 +276,19 @@ const simulateApprovalRequestRun = (run: MockRun): void => {
 // ---------------------------------------------------------------------------
 
 describe('ChatTransport useChat integration — features work with the real stream', () => {
+  // The transport POSTs the invocation to wake the agent (defaulting to
+  // globalThis.fetch). Stub it so the POST succeeds (200) and the run stream
+  // is left to flow — otherwise a failed POST would error the useChat stream.
+  beforeEach(() => {
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(undefined, { status: 200 })));
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   describe('status transitions', () => {
     it('transitions through streaming on its way to ready', async () => {
       const { session, mockRun } = createMockSession();

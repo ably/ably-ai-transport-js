@@ -333,10 +333,10 @@ describe('useView', () => {
 
       const input = { kind: 'user-message' as const };
       await act(async () => {
-        await result.current.sendInput([input], { body: { extra: true } });
+        await result.current.sendInput([input], { parent: 'p1' });
       });
 
-      expect(mock.sendInput).toHaveBeenCalledWith([input], { body: { extra: true } });
+      expect(mock.sendInput).toHaveBeenCalledWith([input], { parent: 'p1' });
     });
 
     it('returns a stable reference across rerenders', () => {
@@ -365,10 +365,10 @@ describe('useView', () => {
       const { result } = renderHook(() => useView({ session: mock.session }));
 
       await act(async () => {
-        await result.current.sendMessage('hello', { body: { extra: true } });
+        await result.current.sendMessage('hello', { parent: 'p1' });
       });
 
-      expect(mock.sendMessage).toHaveBeenCalledWith('hello', { body: { extra: true } });
+      expect(mock.sendMessage).toHaveBeenCalledWith('hello', { parent: 'p1' });
     });
   });
 
@@ -378,10 +378,10 @@ describe('useView', () => {
       const { result } = renderHook(() => useView({ session: mock.session }));
 
       await act(async () => {
-        await result.current.regenerate('msg-1', { body: { extra: true } });
+        await result.current.regenerate('msg-1', { parent: 'p1' });
       });
 
-      expect(mock.regenerate).toHaveBeenCalledWith('msg-1', { body: { extra: true } });
+      expect(mock.regenerate).toHaveBeenCalledWith('msg-1', { parent: 'p1' });
     });
 
     it('returns a stable reference across rerenders', () => {
@@ -411,10 +411,10 @@ describe('useView', () => {
 
       const replacement = { kind: 'edit' as const };
       await act(async () => {
-        await result.current.edit('msg-1', [replacement], { body: { extra: true } });
+        await result.current.edit('msg-1', [replacement], { parent: 'p1' });
       });
 
-      expect(mock.edit).toHaveBeenCalledWith('msg-1', [replacement], { body: { extra: true } });
+      expect(mock.edit).toHaveBeenCalledWith('msg-1', [replacement], { parent: 'p1' });
     });
 
     it('delegates to view.edit with a single message', async () => {

@@ -1,6 +1,7 @@
 import type * as AI from 'ai';
 import { describe, expect, it, vi } from 'vitest';
 
+import { Invocation } from '../../../src/core/transport/invocation.js';
 import type { ClientSession, SendOptions, Tree, View } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
@@ -36,6 +37,7 @@ interface MockRun {
   invocationId: string;
   cancel: ReturnType<typeof vi.fn>;
   optimisticCodecMessageIds: string[];
+  toInvocation: () => Invocation;
   /** Enqueue a chunk into the run stream. */
   enqueue: (chunk: AI.UIMessageChunk) => void;
   /** Resolve the stream by closing it. */
@@ -59,6 +61,8 @@ const createMockRun = (): MockRun => {
     invocationId: 'inv-1',
     cancel,
     optimisticCodecMessageIds: [],
+    toInvocation: () =>
+      Invocation.fromJSON({ runId: 'run-1', invocationId: 'inv-1', inputEventId: '', sessionName: 'chat-1' }),
     enqueue: (chunk: AI.UIMessageChunk) => {
       controller.enqueue(chunk);
     },

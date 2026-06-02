@@ -589,6 +589,15 @@ export interface ActiveRun<TOutput extends CodecOutputEvent> {
    * regeneration (no user messages to insert optimistically).
    */
   optimisticCodecMessageIds: string[];
+  /**
+   * Build the {@link Invocation} pointer for this run — `runId`,
+   * `invocationId`, `inputEventId`, and the session's channel name as
+   * `sessionName`. The application POSTs `run.toInvocation().toJSON()` to
+   * its agent endpoint to wake the agent; the agent rebuilds it via
+   * {@link Invocation.fromJSON}. The conversation itself is read from the
+   * channel, so the pointer carries only identifiers.
+   */
+  toInvocation(): Invocation;
 }
 
 // ---------------------------------------------------------------------------

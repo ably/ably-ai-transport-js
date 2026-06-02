@@ -11,7 +11,8 @@ import type { AgentSession, CancelRequest, CodecInputEvent, CodecOutputEvent, Ru
 import { Invocation } from '../../src/index.js';
 
 interface RunOpts<TOutput extends CodecOutputEvent> {
-  runId: string;
+  /** Run id to continue. Omit to exercise a fresh run, where the agent mints the run id. */
+  runId?: string;
   invocationId?: string;
   /** Input-event id the agent uses to locate the primary trigger event on the channel. */
   inputEventId?: string;
@@ -48,7 +49,10 @@ export const createRunFromOpts = <
 ): Run<TInput, TOutput, TProjection, TMessage> => {
   const invocation = Invocation.fromJSON({
     runId: opts.runId,
-    invocationId: opts.invocationId ?? `${opts.runId}-inv`,
+    // Derive a stable invocation id from the runId for tests that pin a
+    // runId; when neither is given (fresh run), leave it for Invocation to
+    // mint.
+    invocationId: opts.invocationId ?? (opts.runId === undefined ? undefined : `${opts.runId}-inv`),
     inputEventId: opts.inputEventId ?? '',
     sessionName: 'test',
   });

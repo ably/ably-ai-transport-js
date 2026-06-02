@@ -31,5 +31,38 @@ describe('Invocation', () => {
       const serialised = JSON.stringify(invocation);
       expect(JSON.parse(serialised)).toEqual(data);
     });
+
+    it('omits runId from the wire shape when the invocation carries none', () => {
+      const invocation = Invocation.fromJSON({ inputEventId: 'ev-1', sessionName: 'chat-session' });
+      expect(invocation.runId).toBeUndefined();
+      expect('runId' in invocation.toJSON()).toBe(false);
+    });
+  });
+
+  describe('identity minting', () => {
+    it('mints an invocationId when the body omits one', () => {
+      const invocation = Invocation.fromJSON({ inputEventId: 'ev-1', sessionName: 'chat-session' });
+      expect(invocation.invocationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    });
+
+    it('mints a distinct invocationId per construction', () => {
+      const a = Invocation.fromJSON({ inputEventId: 'ev-1', sessionName: 'chat-session' });
+      const b = Invocation.fromJSON({ inputEventId: 'ev-1', sessionName: 'chat-session' });
+      expect(a.invocationId).not.toBe(b.invocationId);
+    });
+
+    it('honours a supplied invocationId rather than minting', () => {
+      const invocation = Invocation.fromJSON({
+        invocationId: 'inv-supplied',
+        inputEventId: 'ev-1',
+        sessionName: 'chat-session',
+      });
+      expect(invocation.invocationId).toBe('inv-supplied');
+    });
+
+    it('leaves runId undefined when omitted and honours it when supplied', () => {
+      expect(Invocation.fromJSON({ inputEventId: 'ev-1', sessionName: 's' }).runId).toBeUndefined();
+      expect(Invocation.fromJSON({ runId: 'run-9', inputEventId: 'ev-1', sessionName: 's' }).runId).toBe('run-9');
+    });
   });
 });

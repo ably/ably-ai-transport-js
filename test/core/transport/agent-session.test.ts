@@ -553,6 +553,33 @@ describe('AgentSession', () => {
       expect(headers?.[HEADER_RUN_ID]).toBe('run-1');
     });
 
+    it('mints a runId when the invocation carries none and publishes it on run-start', async () => {
+      const ch = createMockChannel();
+      const c = codecWithFunctionalDecoder();
+      const s = createAgentSession({
+        client: createMockClient(ch),
+        channelName: 'mint-run-id',
+        codec: c,
+        inputEventLookupTimeoutMs: 5000,
+      });
+      await s.connect();
+
+      // Fresh run: the body carries no runId, so the agent mints one. It is
+      // available immediately (cancel registration relies on it) and is the
+      // run id stamped on run-start.
+      const run = createRunFromOpts(s, { inputEventId: 'p-mint' });
+      expect(run.runId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+
+      const startPromise = run.start();
+      deliverInputEvent(ch, { invocationId: 'ignored', codecMessageId: 'm', serial: '01', inputEventId: 'p-mint' });
+      await startPromise;
+
+      const startMsg = ch.publishCalls.find((m) => m.name === 'ai-run-start');
+      const headers = (startMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
+      expect(headers?.[HEADER_RUN_ID]).toBe(run.runId);
+      s.close();
+    });
+
     it('start() stamps run-continue on run-start when the input-event lookup result carries the continuation flag', async () => {
       // Per-run metadata (continuation, clientId, parent, forkOf) is now
       // resolved from the first input-event lookup MessageNode's headers — the

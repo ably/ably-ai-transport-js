@@ -865,7 +865,12 @@ class DefaultAgentSession<
     invocation: Invocation,
     runtime: RunRuntime<TOutput>,
   ): Run<TInput, TOutput, TProjection, TMessage> {
-    const runId = invocation.runId;
+    // Mint the run id when the invocation carries none (a fresh run): run
+    // identity is the agent's to own. A continuation supplies the runId the
+    // client already knows, and it is honoured. Minting here — at run
+    // creation — gives cancel registration (`_registeredRuns`) and run-start
+    // a single stable id.
+    const runId = invocation.runId ?? crypto.randomUUID();
     const invocationId = invocation.invocationId;
     const inputEventLookupTimeoutMs = this._inputEventLookupTimeoutMs;
     const { onMessage, onCancelled, onCancel, onError: runOnError, signal: externalSignal } = runtime;

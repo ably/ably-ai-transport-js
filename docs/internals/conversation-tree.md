@@ -45,9 +45,9 @@ Each `RunNode<TProjection>` stores:
 
 The tree exposes two mutation methods on its internal interface (used by the session, not the UI):
 
-### `applyMessage(events, headers, serial?)`
+### `applyMessage({ inputs, outputs }, headers, serial?)`
 
-The entry point for every inbound channel message. Routes by `run-id`, creates the Run if needed, folds events into the Run's projection, and maintains the `msgId -> runId` index.
+The entry point for every inbound channel message. The decoded events arrive split by wire direction — `inputs` (client-published, `ai-input`) and `outputs` (agent-published, `ai-output`). Routes by `run-id`, creates the Run if needed, folds both sets into the Run's projection (inputs first), and maintains the `msgId -> runId` index. After the fold it emits an `'output'` event carrying the message's `outputs` plus routing metadata (`runId`, `codecMessageId`, `serial`), then `'update'` when the structure changed.
 
 Three message kinds flow through here:
 
@@ -57,13 +57,13 @@ Three message kinds flow through here:
 
 The optimistic send path (client publishing a fresh user-message) calls `applyMessage` with a `undefined` serial. When the server relay arrives, the same Run's startSerial gets promoted from null to a real serial, and the Run re-sorts.
 
-### `applyRunLifecycle(event, serial?)`
+### `applyRunLifecycle(event)`
 
-Handles `ai-run-start` and `ai-run-end` wire events. Run-start sets `status` to `'active'` and tracks the run as active. Run-end sets `status` to the end reason, sets `endSerial`, and untracks the run. Always emits a `'run'` event to subscribers.
+Handles `ai-run-start` and `ai-run-end` wire events. The event carries its own channel `serial`. Run-start sets `status` to `'active'`, promotes `startSerial` from the event's serial, and tracks the run as active. Run-end sets `status` to the end reason, sets `endSerial` from the event's serial, and untracks the run. Always emits a `'run'` event to subscribers.
 
 ### Structural version
 
-The tree maintains a `structuralVersion` counter (exposed via `TreeInternal`) that increments on changes affecting `flattenNodes()`'s output structure - Run insertions, deletions, and startSerial promotions (which reorder `_sortedRuns`). **Projection-only updates do not bump the counter**: streaming deltas update an existing Run's projection in place, observable via the `'run-projection-updated'` event instead. The View uses this distinction to skip full tree walks during streaming.
+The tree maintains a `structuralVersion` counter (exposed via `TreeInternal`) that increments on changes affecting `flattenNodes()`'s output structure - Run insertions, deletions, and startSerial promotions (which reorder `_sortedRuns`). **Projection-only updates do not bump the counter**: streaming deltas update an existing Run's projection in place, observable via the `'output'` event instead. The View uses this distinction to skip full tree walks during streaming.
 
 ## Sibling groups and fork chains
 

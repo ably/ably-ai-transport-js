@@ -125,14 +125,14 @@ The View caches the result of `flattenNodes()` in a `_cachedNodes` field. The pu
 | Trigger                                                       | What refreshes the cache                              |
 | ------------------------------------------------------------- | ----------------------------------------------------- |
 | Tree structural change (new node, deletion, serial promotion) | `_onTreeUpdate()` calls `_computeFlatNodes()`         |
-| Content-only update (streaming token)                         | `_onTreeUpdate()` shallow-copies the cached array     |
+| Content-only update (streaming token)                         | `_onTreeOutput()` recomputes the visible message list |
 | Branch selection change                                       | `select()` calls `_computeFlatNodes()`                |
 | Fork auto-selection after `send()`                            | `send()` auto-select path calls `_computeFlatNodes()` |
 | History page revealed                                         | `_releaseWithheld()` calls `_computeFlatNodes()`      |
 
 ### Content-only fast path
 
-The tree exposes a [`structuralVersion`](conversation-tree.md#structural-version) counter that increments on insert, delete, and serial promotion - but not on content-only message updates. When `_onTreeUpdate()` sees the version unchanged, it skips the full tree walk entirely. The cached node list is still structurally valid because only a message reference changed on an existing `MessageNode`. The View compares each cached node's `.message` against the last-seen snapshot to detect which message changed, creates a new array reference (`[...cache]`) so React sees a state change, and emits `'update'`. This reduces the streaming hot path from O(total_nodes) to O(visible_count).
+The tree exposes a [`structuralVersion`](conversation-tree.md#structural-version) counter that increments on insert, delete, and serial promotion - but not on content-only message updates. Streaming tokens therefore don't flow through the structural `update` event; they arrive on the tree's [`output`](conversation-tree.md) event. `_onTreeOutput()` handles it: when the output's `runId` is on the visible chain it recomputes the visible message list and emits `'update'`. The reducer is free to mutate a message in place, so the View can't short-circuit on reference equality — it re-emits and lets React's state setters dedup by array reference. Meanwhile `_onTreeUpdate()` skips the full tree walk whenever `structuralVersion` is unchanged, so a structural `update` with no real structure change is cheap. Together this keeps the streaming hot path at O(visible_count).
 
 All consumers go through the cached `view.flattenNodes()`:
 

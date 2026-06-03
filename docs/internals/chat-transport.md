@@ -27,7 +27,7 @@ For regeneration, the adapter looks up the target message in the [conversation t
 
 ### Waking the agent (the invocation POST)
 
-After `send()` publishes on the channel and returns the `ActiveRun`, the transport POSTs `run.toInvocation().toJSON()` to its configured `api` (default `/api/chat`) to wake the agent. The body is the invocation pointer — `runId`, `invocationId`, `inputEventId`, `sessionName` (the channel name) — so the agent rebuilds it with `Invocation.fromJSON` and reads the conversation from the channel; no history is sent. The POST uses the configured `fetch` and `credentials`.
+After `send()` publishes on the channel and returns the `ActiveRun`, the transport POSTs `run.toInvocation().toJSON()` to its configured `api` (default `/api/chat`) to wake the agent. The body is the invocation pointer — `runId`, `inputEventId`, `sessionName` (the channel name) — so the agent rebuilds it with `Invocation.fromJSON` and reads the conversation from the channel; no history is sent. The agent mints the `invocationId` (one per request) and returns it on the response, though this transport's POST is fire-and-forget and does not read it back (it routes outputs by `runId` over the channel). The POST uses the configured `fetch` and `credentials`.
 
 The POST is fire-and-forget — the response arrives over the Ably channel, not the HTTP response, so awaiting it would needlessly delay the stream return. If the POST fails (non-2xx or network error), the agent never woke, so the transport errors **only** the `useChat`-facing stream with `SessionSendFailed` (which surfaces as `useChat` `status: 'error'`). It does this by failing the wrapped stream; the core session, conversation tree, and other observers are untouched.
 

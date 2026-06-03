@@ -51,7 +51,8 @@ The channel subscription handler (`_handleMessage`) processes every inbound Ably
 ### Run lifecycle events
 
 - **`ai-run-start`** (wire) — `tree.applyRunLifecycle({type: 'start', runId, clientId, invocationId, serial, parent, forkOf, isContinuation?})` creates or activates the Run, registers it as active, emits a `run` event. The channel serial rides on the event (`parseRunLifecycle` stamps it), so there is no separate serial argument.
-- **`ai-run-end`** (wire) — `tree.applyRunLifecycle({type: 'end', runId, clientId, invocationId, serial, reason})` updates the RunNode's `status` and `endSerial` (from the event's serial), deregisters from active tracking, emits a `run` event. The session keeps no per-run stream state to tear down.
+- **`ai-run-suspend`** (wire) — `tree.applyRunLifecycle({type: 'suspend', runId, clientId, invocationId, serial})` marks the RunNode `'suspended'` and records `endSerial`, but keeps the run live (a continuation reusing the `runId` re-activates it), and emits a `run` event.
+- **`ai-run-end`** (wire) — `tree.applyRunLifecycle({type: 'end', runId, clientId, invocationId, serial, reason})` updates the RunNode's `status` and `endSerial` (from the event's serial), deregisters from active tracking, emits a `run` event. `ai-run-end` is terminal — a run pausing for input arrives as `ai-run-suspend` instead. The session keeps no per-run stream state to tear down.
 
 ### Codec-decoded messages
 

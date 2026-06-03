@@ -85,8 +85,12 @@ session.tree.on('run', (event) => {
   if (event.type === 'start') {
     // A run started: event.runId, event.clientId
   }
+  if (event.type === 'suspend') {
+    // A run paused awaiting input (e.g. a tool result): event.runId. The run
+    // stays live — a continuation reusing the runId resumes it.
+  }
   if (event.type === 'end') {
-    // A run ended: event.runId, event.clientId, event.reason
+    // A run ended (terminal): event.runId, event.clientId, event.reason
   }
 });
 ```

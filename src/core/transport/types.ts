@@ -19,16 +19,14 @@ import type { Invocation } from './invocation.js';
 /**
  * Why a run ended.
  *
+ * A run-end is terminal — a run that merely pauses awaiting input publishes
+ * `ai-run-suspend` instead (see {@link Run.suspend}).
+ *
  * - `complete` — the run finished naturally.
  * - `cancelled` — the run was cancelled by a client.
  * - `error` — the run errored.
- * - `suspended` — the run paused waiting for input (e.g. a client tool
- *   output). The same `runId` can be resumed via a subsequent send that
- *   reuses it; observer state (router stream, tree run-tracking) survives
- *   the suspend signal so the resumed run feeds into the existing
- *   `ReadableStream`.
  */
-export type RunEndReason = 'complete' | 'cancelled' | 'error' | 'suspended';
+export type RunEndReason = 'complete' | 'cancelled' | 'error';
 
 /**
  * Passed to a run's `onCancel` hook for authorization decisions.
@@ -377,7 +375,19 @@ export interface Run<TInput extends CodecInputEvent, TOutput extends CodecOutput
    */
   loadConversation(options?: LoadConversationOptions): Promise<TMessage[]>;
 
-  /** Publish run-end event to the channel and clean up. */
+  /**
+   * Publish a run-suspend event to the channel and clean up, pausing the run
+   * without ending it. Call this instead of {@link Run.end} when the run is
+   * waiting on participant input (e.g. a client-side tool execution or a
+   * server-side tool approval): the run stays live and a later invocation can
+   * resume it under the same `runId`. Like {@link Run.end}, it is terminal for
+   * this Run instance — the resuming invocation builds a fresh Run. Must be
+   * called after {@link Run.start}; a no-op if the run has already ended or
+   * suspended.
+   */
+  suspend(): Promise<void>;
+
+  /** Publish run-end event to the channel and clean up. Terminal. */
   end(reason: RunEndReason): Promise<void>;
 }
 
@@ -762,10 +772,12 @@ export interface RunNode<TProjection> {
   clientId: string;
   /**
    * Run lifecycle status.
-   * - `'active'` — run-start observed, no run-end yet.
+   * - `'active'` — run-start observed, no terminal event yet.
+   * - `'suspended'` — run-suspend observed; the run is paused awaiting input
+   *   and stays live (a continuation re-activates it). Not terminal.
    * - {@link RunEndReason} — terminal state reflecting the run-end reason.
    */
-  status: 'active' | RunEndReason;
+  status: 'active' | 'suspended' | RunEndReason;
   /** Per-Run codec projection. Folded by the Tree from every event published under this run-id. */
   projection: TProjection;
   /**
@@ -934,11 +946,12 @@ export interface RunInfo {
   clientId: string;
   /**
    * Run lifecycle status. `'active'` while the Run is streaming;
-   * otherwise the {@link RunEndReason} the Run terminated with.
-   * Literal lifecycle vocabulary — UIs that want `'streaming'`
+   * `'suspended'` while it is paused awaiting input (still live, a
+   * continuation re-activates it); otherwise the {@link RunEndReason} the Run
+   * terminated with. Literal lifecycle vocabulary — UIs that want `'streaming'`
    * rendering language translate at the component boundary.
    */
-  status: 'active' | RunEndReason;
+  status: 'active' | 'suspended' | RunEndReason;
   /**
    * The first `invocationId` observed for this Run. Stable across the
    * Run's lifecycle. Empty string when the wire didn't carry an

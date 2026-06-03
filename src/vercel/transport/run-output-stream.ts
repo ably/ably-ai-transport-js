@@ -13,8 +13,9 @@
  *   fires even when the run merely *suspends* for a tool call (a tool-calls
  *   `finish` ends the consumer stream while the core run stays alive in the
  *   Tree for the continuation); or
- * - the run reaches a non-suspended `run-end` (safety net for a run that ends
- *   without emitting a terminal chunk).
+ * - the run reaches `run-end`, which is always terminal (safety net for a run
+ *   that ends without emitting a terminal chunk). A `run-suspend` keeps the
+ *   core run alive and does not close the consumer stream.
  *
  * It errors when the session emits a non-fatal `error` (e.g. channel
  * continuity loss, or an agent-reported mid-run error), so the consumer's
@@ -124,7 +125,9 @@ export const createRunOutputStream = (session: VercelSession, runId: string): Ru
       }
     }),
     session.tree.on('run', (event) => {
-      if (event.type === 'end' && event.runId === runId && event.reason !== 'suspended') {
+      // run-end is always terminal now; a run-suspend (event.type === 'suspend')
+      // keeps the core run alive and must not close the consumer stream.
+      if (event.type === 'end' && event.runId === runId) {
         close();
       }
     }),

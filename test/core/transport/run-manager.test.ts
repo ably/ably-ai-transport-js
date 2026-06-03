@@ -4,9 +4,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   EVENT_RUN_END,
   EVENT_RUN_START,
+  EVENT_RUN_SUSPEND,
   HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
   HEADER_INPUT_CODEC_MESSAGE_ID,
+  HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_CONTINUE,
@@ -225,6 +227,70 @@ describe('RunManager', () => {
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
       const headers = headersOf(channel.publishCalls.at(1)!);
       expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_ID);
+    });
+  });
+
+  describe('suspendRun', () => {
+    it('publishes a run-suspend event with run-id, run-client-id, and invocation-id', async () => {
+      await manager.startRun('run-1', 'user-a');
+      await manager.suspendRun('run-1', 'inv-1');
+
+      expect(channel.publishCalls).toHaveLength(2);
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
+      const msg = channel.publishCalls.at(1)!;
+      expect(msg.name).toBe(EVENT_RUN_SUSPEND);
+
+      const headers = headersOf(msg);
+      expect(headers[HEADER_RUN_ID]).toBe('run-1');
+      expect(headers[HEADER_RUN_CLIENT_ID]).toBe('user-a');
+      expect(headers[HEADER_INVOCATION_ID]).toBe('inv-1');
+      // A suspend carries no run-reason — it is not a terminal event.
+      expect(headers).not.toHaveProperty(HEADER_RUN_REASON);
+    });
+
+    it('omits invocation-id when not provided', async () => {
+      await manager.startRun('run-1', 'user-a');
+      await manager.suspendRun('run-1');
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
+      const headers = headersOf(channel.publishCalls.at(1)!);
+      expect(headers).not.toHaveProperty(HEADER_INVOCATION_ID);
+    });
+
+    it('stamps input attribution, mirroring run-end', async () => {
+      await manager.startRun('run-1', 'user-a');
+      await manager.suspendRun('run-1', 'inv-1', 'user-b', 'trigger-msg');
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
+      const headers = headersOf(channel.publishCalls.at(1)!);
+      expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
+      expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger-msg');
+    });
+
+    it('omits input attribution when not provided', async () => {
+      await manager.startRun('run-1', 'user-a');
+      await manager.suspendRun('run-1', 'inv-1');
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
+      const headers = headersOf(channel.publishCalls.at(1)!);
+      expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
+      expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_ID);
+    });
+
+    it('drops the run from the active set so a cancel during suspension is a no-op', async () => {
+      await manager.startRun('run-1', 'user-a');
+      await manager.suspendRun('run-1', 'inv-1');
+
+      expect(manager.getSignal('run-1')).toBeUndefined();
+      expect(manager.getActiveRunIds()).toHaveLength(0);
+    });
+
+    it('defaults run-client-id to empty string for an unknown run', async () => {
+      await manager.suspendRun('unknown');
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
+      const headers = headersOf(channel.publishCalls.at(0)!);
+      expect(headers[HEADER_RUN_CLIENT_ID]).toBe('');
     });
   });
 

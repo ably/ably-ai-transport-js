@@ -70,7 +70,7 @@ interface MockRun {
   toInvocation: () => Invocation;
   /** Emit a chunk as a Tree `output` event for this run (drives the consumer stream). */
   enqueue: (chunk: AI.UIMessageChunk) => void;
-  /** Emit a non-suspended `run-end` for this run (closes the consumer stream). */
+  /** Emit a terminal `run-end` for this run (closes the consumer stream). */
   close: () => void;
   /** Emit a session `error` (errors the consumer stream). */
   error: (reason: unknown) => void;

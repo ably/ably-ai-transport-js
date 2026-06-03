@@ -1399,11 +1399,10 @@ describe('ClientSession', () => {
 
       simulateMessage(
         fix.channel,
-        ablyMsg(EVENT_RUN_END, {
+        ablyMsg(EVENT_RUN_SUSPEND, {
           [HEADER_RUN_ID]: initial.runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
           [HEADER_INVOCATION_ID]: initial.invocationId,
-          [HEADER_RUN_REASON]: 'suspended',
         }),
       );
 
@@ -1452,7 +1451,7 @@ describe('ClientSession', () => {
       // continuation completes, the Run stays at status=active in the
       // live client even though channel-history replay rebuilds it as
       // status=complete. Repro the full sequence: first send →
-      // run-end suspended → continuation send → run-end complete.
+      // run-suspend → continuation send → run-end complete.
       // R1.status must end at the continuation's reason, otherwise the
       // UI stays stuck on "streaming".
       const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
@@ -1460,11 +1459,10 @@ describe('ClientSession', () => {
       // First invocation suspends (e.g. tool call awaiting client output).
       simulateMessage(
         fix.channel,
-        ablyMsg(EVENT_RUN_END, {
+        ablyMsg(EVENT_RUN_SUSPEND, {
           [HEADER_RUN_ID]: initial.runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
           [HEADER_INVOCATION_ID]: initial.invocationId,
-          [HEADER_RUN_REASON]: 'suspended',
         }),
       );
       expect(fix.session.tree.getRunNode(initial.runId)?.status).toBe('suspended');
@@ -1525,11 +1523,10 @@ describe('ClientSession', () => {
       // Original suspends.
       simulateMessage(
         fix.channel,
-        ablyMsg(EVENT_RUN_END, {
+        ablyMsg(EVENT_RUN_SUSPEND, {
           [HEADER_RUN_ID]: 'run-obs',
           [HEADER_RUN_CLIENT_ID]: 'other-client',
           [HEADER_INVOCATION_ID]: inv1,
-          [HEADER_RUN_REASON]: 'suspended',
         }),
       );
       expect(fix.session.tree.getRunNode('run-obs')?.status).toBe('suspended');

@@ -339,18 +339,17 @@ const ackPendingSend = async (
   const invocationId = publishedHeaders[HEADER_INVOCATION_ID] ?? '';
   const codecMessageId = publishedHeaders[HEADER_CODEC_MESSAGE_ID] ?? '';
   const runContinue = publishedHeaders[HEADER_RUN_CONTINUE] === 'true';
-  // Mirror the agent: thread the triggering input's codec-message-id back as
-  // `input-codec-message-id` (the handle a fresh send's `started` resolves on)
-  // and mark continuations with `run-continue` (which the client resolves by
-  // the reused runId instead).
+  // Mirror the agent: a continuation (the input carried `run-continue`) re-enters
+  // the run via ai-run-resume; a fresh send opens it via ai-run-start. Both
+  // thread the triggering input's codec-message-id back as
+  // `input-codec-message-id`, the handle the client's `started` resolves on.
   simulateMessage(
     channel,
-    ablyMsg(EVENT_RUN_START, {
+    ablyMsg(runContinue ? EVENT_RUN_RESUME : EVENT_RUN_START, {
       [HEADER_RUN_ID]: runId,
       [HEADER_RUN_CLIENT_ID]: 'client-1',
       [HEADER_INVOCATION_ID]: invocationId,
       [HEADER_INPUT_CODEC_MESSAGE_ID]: codecMessageId,
-      ...(runContinue ? { [HEADER_RUN_CONTINUE]: 'true' } : {}),
     }),
   );
   return { runId, invocationId, codecMessageId };
@@ -936,50 +935,6 @@ describe('ClientSession', () => {
       await expect(run.started).resolves.toBeUndefined();
     });
 
-    it('continuation: run.started resolves by the triggering input codec-message-id, like a fresh send', async () => {
-      const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
-      const cont = await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], {
-        runId: initial.runId,
-      });
-      // A continuation is itself an input event with its own codec-message-id,
-      // which the agent echoes back on the continuation run-start. Resolution
-      // is by that id — identical to a fresh send, not the reused runId. The
-      // run-start here carries a DIVERGENT runId to prove the runId is not the
-      // match key for an input-bearing continuation.
-      const triggerCodecMessageId = cont.optimisticCodecMessageIds.at(-1);
-      expect(triggerCodecMessageId).toBeDefined();
-
-      simulateMessage(
-        fix.channel,
-        ablyMsg(EVENT_RUN_START, {
-          [HEADER_RUN_ID]: 'some-other-run-id',
-          [HEADER_RUN_CLIENT_ID]: 'client-1',
-          [HEADER_RUN_CONTINUE]: 'true',
-          [HEADER_INPUT_CODEC_MESSAGE_ID]: triggerCodecMessageId ?? '',
-        }),
-      );
-
-      await expect(cont.started).resolves.toBeUndefined();
-    });
-
-    it('empty-input continuation: run.started resolves on the continuation run-start by the reused run-id', async () => {
-      // An empty-input continuation publishes no input event, so there is no
-      // codec-message-id to key on — it resolves purely by the reused runId.
-      const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
-      const cont = await fix.session.view.sendInput([], { runId: initial.runId });
-
-      simulateMessage(
-        fix.channel,
-        ablyMsg(EVENT_RUN_START, {
-          [HEADER_RUN_ID]: initial.runId,
-          [HEADER_RUN_CLIENT_ID]: 'client-1',
-          [HEADER_RUN_CONTINUE]: 'true',
-        }),
-      );
-
-      await expect(cont.started).resolves.toBeUndefined();
-    });
-
     it('continuation: run.started resolves on a run-resume by the triggering input codec-message-id', async () => {
       // Once the agent emits ai-run-resume for a continuation (PR2 producer
       // flip), the continuation's `started` must resolve on the resume — keyed
@@ -1169,34 +1124,6 @@ describe('ClientSession', () => {
 
       expect(lifecycle.at(-1)?.type).toBe('resume');
       expect(fix.session.tree.getRunNode('run-R')?.status).toBe('active');
-    });
-
-    it('surfaces isContinuation on the run-start event when run-continue is set', () => {
-      const lifecycle: RunLifecycleEvent[] = [];
-      fix.session.tree.on('run', (e) => lifecycle.push(e));
-
-      simulateMessage(
-        fix.channel,
-        ablyMsg(EVENT_RUN_START, {
-          [HEADER_RUN_ID]: 'run-cont',
-          [HEADER_RUN_CLIENT_ID]: 'agent',
-          'run-continue': 'true',
-        }),
-      );
-      simulateMessage(
-        fix.channel,
-        ablyMsg(EVENT_RUN_START, {
-          [HEADER_RUN_ID]: 'run-fresh',
-          [HEADER_RUN_CLIENT_ID]: 'agent',
-        }),
-      );
-
-      const [cont, fresh] = lifecycle;
-      expect(cont?.type).toBe('start');
-      if (cont?.type !== 'start') throw new Error('expected run-start');
-      expect(cont.isContinuation).toBe(true);
-      if (fresh?.type !== 'start') throw new Error('expected run-start');
-      expect(fresh.isContinuation).toBeUndefined();
     });
 
     it('surfaces regenerates on the run-start event when msg-regenerate is set', () => {
@@ -1482,11 +1409,10 @@ describe('ClientSession', () => {
 
       simulateMessage(
         fix.channel,
-        ablyMsg(EVENT_RUN_START, {
+        ablyMsg(EVENT_RUN_RESUME, {
           [HEADER_RUN_ID]: initial.runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
           [HEADER_INVOCATION_ID]: continuation.invocationId,
-          'run-continue': 'true',
         }),
       );
 
@@ -1498,7 +1424,6 @@ describe('ClientSession', () => {
           [HEADER_RUN_ID]: initial.runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
           [HEADER_INVOCATION_ID]: continuation.invocationId,
-          'run-continue': 'true',
         }),
       );
 
@@ -1543,14 +1468,13 @@ describe('ClientSession', () => {
       });
       expect(continuation.invocationId).not.toBe(initial.invocationId);
 
-      // Continuation's run-start (from agent) re-activates the run.
+      // Continuation's run-resume (from agent) re-activates the run.
       simulateMessage(
         fix.channel,
-        ablyMsg(EVENT_RUN_START, {
+        ablyMsg(EVENT_RUN_RESUME, {
           [HEADER_RUN_ID]: initial.runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
           [HEADER_INVOCATION_ID]: continuation.invocationId,
-          'run-continue': 'true',
         }),
       );
       expect(fix.session.tree.getRunNode(initial.runId)?.status).toBe('active');
@@ -1601,14 +1525,13 @@ describe('ClientSession', () => {
       );
       expect(fix.session.tree.getRunNode('run-obs')?.status).toBe('suspended');
 
-      // Continuation run-start (inv2) — agent resumes after tool-output.
+      // Continuation run-resume (inv2) — agent resumes after tool-output.
       simulateMessage(
         fix.channel,
-        ablyMsg(EVENT_RUN_START, {
+        ablyMsg(EVENT_RUN_RESUME, {
           [HEADER_RUN_ID]: 'run-obs',
           [HEADER_RUN_CLIENT_ID]: 'other-client',
           [HEADER_INVOCATION_ID]: inv2,
-          'run-continue': 'true',
         }),
       );
       expect(fix.session.tree.getRunNode('run-obs')?.status).toBe('active');

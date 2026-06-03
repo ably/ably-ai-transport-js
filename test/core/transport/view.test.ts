@@ -227,14 +227,14 @@ describe('DefaultView', () => {
       expect(view.getMessages()).toEqual([]);
     });
 
-    it('keeps messages visible after a continuation run-start (no self-parent cycle)', () => {
-      // Repro for the user-reported regression where invoking a
-      // client-side tool (getLocation) or approving an approval-gated
-      // tool made both the user prompt and the assistant bubble vanish
-      // from the visible message list. The continuation run-start
-      // carries `parent` pointing at a message in the same Run; the
-      // pre-fix backfill turned that into a self-parent cycle and
-      // flattenNodes filtered the Run out as unreachable.
+    it('keeps messages visible after a run-resume re-entry (no self-parent cycle)', () => {
+      // Repro for the user-reported regression where invoking a client-side
+      // tool (getLocation) or approving an approval-gated tool made both the
+      // user prompt and the assistant bubble vanish from the visible message
+      // list. The continuation re-enters the run; it now arrives as
+      // ai-run-resume, which carries no `parent`, so the run is not re-parented
+      // into a self-cycle and stays visible. (Previously the continuation
+      // arrived as a run-start carrying parent pointing into the same Run.)
       apply(tree, {
         runId: 'R1',
         codecMessageId: 'u1',
@@ -251,12 +251,10 @@ describe('DefaultView', () => {
       });
 
       tree.applyRunLifecycle({
-        type: 'start',
+        type: 'resume',
         runId: 'R1',
         clientId: 'c1',
         invocationId: 'inv-2',
-        parent: 'a1',
-        isContinuation: true,
         serial: 's3',
       });
 

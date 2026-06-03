@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   EVENT_RUN_END,
+  EVENT_RUN_RESUME,
   EVENT_RUN_START,
   EVENT_RUN_SUSPEND,
   HEADER_FORK_OF,
@@ -10,8 +11,8 @@ import {
   HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
+  HEADER_PARENT,
   HEADER_RUN_CLIENT_ID,
-  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
 } from '../../../src/constants.js';
@@ -92,22 +93,49 @@ describe('RunManager', () => {
       expect(headers[HEADER_RUN_CLIENT_ID]).toBe('');
     });
 
-    it('stamps run-continue:true when continuation metadata is set', async () => {
-      await manager.startRun('run-1', 'user-a', undefined, { continuation: true });
+    it('publishes ai-run-resume (not ai-run-start) when continuation metadata is set', async () => {
+      await manager.startRun('run-1', 'user-a', undefined, {
+        continuation: true,
+        invocationId: 'inv-2',
+        inputClientId: 'user-b',
+        inputCodecMessageId: 'trigger-msg',
+      });
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
+      const msg = channel.publishCalls.at(0)!;
+      expect(msg.name).toBe(EVENT_RUN_RESUME);
+      const headers = headersOf(msg);
+      // A resume carries the per-invocation correlation/attribution...
+      expect(headers[HEADER_RUN_ID]).toBe('run-1');
+      expect(headers[HEADER_INVOCATION_ID]).toBe('inv-2');
+      expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
+      expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger-msg');
+    });
+
+    it('omits structural metadata (parent/forkOf/regenerates) on a resume', async () => {
+      await manager.startRun('run-1', 'user-a', undefined, {
+        continuation: true,
+        parent: 'p',
+        forkOf: 'f',
+        regenerates: 'r',
+      });
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
       const headers = headersOf(channel.publishCalls.at(0)!);
-      expect(headers[HEADER_RUN_CONTINUE]).toBe('true');
+      // ...but not structure — the original run-start owns that.
+      expect(headers).not.toHaveProperty(HEADER_PARENT);
+      expect(headers).not.toHaveProperty(HEADER_FORK_OF);
+      expect(headers).not.toHaveProperty(HEADER_MSG_REGENERATE);
     });
 
-    it('omits run-continue when continuation is false or unset', async () => {
+    it('publishes ai-run-start when continuation is false or unset', async () => {
       await manager.startRun('run-1', 'user-a', undefined, { continuation: false });
       await manager.startRun('run-2', 'user-a');
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
-      expect(headersOf(channel.publishCalls.at(0)!)[HEADER_RUN_CONTINUE]).toBeUndefined();
+      expect(channel.publishCalls.at(0)!.name).toBe(EVENT_RUN_START);
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
-      expect(headersOf(channel.publishCalls.at(1)!)[HEADER_RUN_CONTINUE]).toBeUndefined();
+      expect(channel.publishCalls.at(1)!.name).toBe(EVENT_RUN_START);
     });
 
     it('stamps input-client-id when inputClientId is set', async () => {

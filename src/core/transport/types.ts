@@ -545,13 +545,6 @@ export type RunLifecycleEvent =
        * realises the replacement when materialising messages.
        */
       regenerates?: string;
-      /**
-       * True when the agent published this `run-start` as a continuation
-       * of an already-started run (e.g. a tool-result follow-up invocation
-       * under the same runId). Surfaced from the `run-continue`
-       * wire header. Absent for the first start of a run.
-       */
-      isContinuation?: boolean;
     }
   | {
       type: 'suspend';

@@ -11,6 +11,7 @@ import type * as Ably from 'ably';
 
 import {
   EVENT_RUN_END,
+  EVENT_RUN_RESUME,
   EVENT_RUN_START,
   EVENT_RUN_SUSPEND,
   HEADER_FORK_OF,
@@ -20,7 +21,6 @@ import {
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_RUN_CLIENT_ID,
-  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
 } from '../../constants.js';
@@ -33,7 +33,13 @@ import type { RunEndReason } from './types.js';
 
 /** Manages active runs and publishes run lifecycle events on the channel. */
 export interface RunManager {
-  /** Register a new run. Publishes run-start on the channel. Returns AbortSignal. */
+  /**
+   * Register a run and publish its opening lifecycle event. Publishes
+   * `ai-run-start` for a fresh run, or `ai-run-resume` when `metadata.continuation`
+   * is set (a subsequent invocation re-entering an existing run). A resume omits
+   * the structural `parent` / `forkOf` / `regenerates` headers — the original
+   * run-start owns the run's structure. Returns the run's AbortSignal.
+   */
   startRun(
     runId: string,
     clientId?: string,
@@ -121,23 +127,33 @@ class DefaultRunManager implements RunManager {
     const resolvedClientId = clientId ?? '';
     this._activeRuns.set(runId, { controller, clientId: resolvedClientId });
 
+    // A continuation re-enters an already-started run: publish `ai-run-resume`
+    // rather than `ai-run-start`. Resume is a pure re-entry signal — the
+    // original run-start already established the run's structure, so the
+    // parent / forkOf / regenerates metadata is NOT re-stamped here (doing so
+    // would point the run at content within itself). The agent learned this is
+    // a continuation from the triggering input's `run-continue` marker; the
+    // re-entry is conveyed to clients by the event name, not a header echo.
+    const continuation = metadata?.continuation === true;
+
     const headers: Record<string, string> = {
       [HEADER_RUN_ID]: runId,
       [HEADER_RUN_CLIENT_ID]: resolvedClientId,
     };
-    if (metadata?.parent !== undefined) {
-      headers[HEADER_PARENT] = metadata.parent;
+    if (!continuation) {
+      if (metadata?.parent !== undefined) {
+        headers[HEADER_PARENT] = metadata.parent;
+      }
+      if (metadata?.forkOf !== undefined) {
+        headers[HEADER_FORK_OF] = metadata.forkOf;
+      }
+      if (metadata?.regenerates !== undefined) {
+        headers[HEADER_MSG_REGENERATE] = metadata.regenerates;
+      }
     }
-    if (metadata?.forkOf !== undefined) {
-      headers[HEADER_FORK_OF] = metadata.forkOf;
-    }
-    if (metadata?.regenerates !== undefined) {
-      headers[HEADER_MSG_REGENERATE] = metadata.regenerates;
-    }
-    // Stamp the invocation-id on run-start so the client can match it against
-    // its pending invocation and resolve the run's `started` promise. Without
-    // it the client's run-start matcher (keyed by invocation-id) never fires
-    // and `ActiveRun.started` never resolves.
+    // Stamp the invocation-id so the client can match it against its pending
+    // invocation and resolve the run's `started` promise. Carried on both
+    // run-start and run-resume.
     if (metadata?.invocationId !== undefined) {
       headers[HEADER_INVOCATION_ID] = metadata.invocationId;
     }
@@ -145,17 +161,14 @@ class DefaultRunManager implements RunManager {
       headers[HEADER_INPUT_CLIENT_ID] = metadata.inputClientId;
     }
     // Echo the triggering input's codec-message-id so the client can correlate
-    // this run-start against a fresh send using the only id it owns at send
+    // this lifecycle event against a send using the only id it owns at send
     // time — without depending on a client-minted run-id or invocation-id.
     if (metadata?.inputCodecMessageId !== undefined) {
       headers[HEADER_INPUT_CODEC_MESSAGE_ID] = metadata.inputCodecMessageId;
     }
-    if (metadata?.continuation) {
-      headers[HEADER_RUN_CONTINUE] = 'true';
-    }
 
     await this._channel.publish({
-      name: EVENT_RUN_START,
+      name: continuation ? EVENT_RUN_RESUME : EVENT_RUN_START,
       extras: { ai: { transport: headers } },
     });
 

@@ -80,5 +80,7 @@ export async function POST(req: Request) {
     ably.close();
   });
 
-  return new Response(null, { status: 200 });
+  // Return the agent-minted invocation-id on the HTTP response. The agent owns
+  // it (one per request); the client reads it back from here.
+  return Response.json({ invocationId: run.invocationId });
 }

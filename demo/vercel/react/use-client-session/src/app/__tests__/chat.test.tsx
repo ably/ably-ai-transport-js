@@ -33,12 +33,10 @@ const mockSendMessage = vi.fn(
       stream: emptyEventStream(),
       started: Promise.resolve(),
       runId: 'run-1',
-      invocationId: 'inv-1',
       inputEventId: 'ev-1',
       cancel: async () => {},
       optimisticCodecMessageIds: [],
-      toInvocation: () =>
-        Invocation.fromJSON({ runId: 'run-1', invocationId: 'inv-1', inputEventId: 'ev-1', sessionName: 'demo' }),
+      toInvocation: () => Invocation.fromJSON({ runId: 'run-1', inputEventId: 'ev-1', sessionName: 'demo' }),
     }),
 );
 
@@ -112,11 +110,12 @@ describe('<Chat>', () => {
   beforeEach(() => {
     mockSendMessage.mockClear();
     // The demo wakes the agent by POSTing the invocation after each send.
-    // Stub fetch so that POST succeeds rather than hitting the network.
+    // Stub fetch so that POST succeeds rather than hitting the network; the
+    // agent route returns the minted invocation-id, which wakeAgent reads.
     vi.stubGlobal(
       'fetch',
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-      vi.fn(() => Promise.resolve(new Response(undefined, { status: 200 }))),
+      vi.fn(() => Promise.resolve(Response.json({ invocationId: 'inv-1' }))),
     );
   });
 

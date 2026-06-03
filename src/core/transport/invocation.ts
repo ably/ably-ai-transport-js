@@ -16,12 +16,15 @@
  * ```
  *
  * The body carries only what the agent needs out-of-band before the channel
- * is observable: identifiers (`runId`, `invocationId`), the session/channel
- * name, the `inputEventId` that triggered the invocation. Per-message metadata — `clientId`, `parent`, `forkOf`,
- * continuation flag — lives on the channel and is resolved by the agent from
- * the triggering input event, not from the body. The `inputClientId` the
- * agent re-stamps on its own publishes comes from the publisher's Ably
- * `clientId` on the matched input event, not from a body field.
+ * is observable: the `runId`, the session/channel name, and the
+ * `inputEventId` that triggered the invocation. The agent mints the
+ * `invocationId` itself (one per HTTP request) and returns it on the HTTP
+ * response, so it is not a body field. Per-message metadata — `clientId`,
+ * `parent`, `forkOf`, continuation flag — lives on the channel and is resolved
+ * by the agent from the triggering input event, not from the body. The
+ * `inputClientId` the agent re-stamps on its own publishes comes from the
+ * publisher's Ably `clientId` on the matched input event, not from a body
+ * field.
  */
 
 // ---------------------------------------------------------------------------
@@ -35,8 +38,6 @@
 export interface InvocationData {
   /** Identifier for the run this invocation creates or continues. */
   runId: string;
-  /** Identifier for this specific invocation under the run. The agent correlates client-published events on the channel by this id. */
-  invocationId: string;
   /**
    * Identifier for the specific input event on the channel that triggered
    * this invocation. The agent locates the event via the `event-id`
@@ -60,8 +61,6 @@ export interface InvocationData {
 export class Invocation {
   /** Identifier for the run this invocation creates. */
   readonly runId: string;
-  /** Identifier for this specific invocation under the run. */
-  readonly invocationId: string;
   /**
    * Identifier for the specific input event on the channel that triggered
    * this invocation.
@@ -72,7 +71,6 @@ export class Invocation {
 
   private constructor(data: InvocationData) {
     this.runId = data.runId;
-    this.invocationId = data.invocationId;
     this.inputEventId = data.inputEventId;
     this.sessionName = data.sessionName;
   }
@@ -95,7 +93,6 @@ export class Invocation {
   toJSON(): InvocationData {
     return {
       runId: this.runId,
-      invocationId: this.invocationId,
       inputEventId: this.inputEventId,
       sessionName: this.sessionName,
     };

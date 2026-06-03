@@ -460,7 +460,7 @@ const lookupInputEvents = async <
 
 interface RegisteredRun {
   runId: string;
-  /** Invocation-id this run is associated with, sourced from the invocation's `invocationId`. */
+  /** Invocation-id this run is associated with, minted by the agent at `createRun` (or the `runtime.invocationId` override). */
   invocationId: string;
   controller: AbortController;
   /** Composite signal that fires when either the internal controller or the external signal aborts. */
@@ -875,7 +875,10 @@ class DefaultAgentSession<
     runtime: RunRuntime<TOutput>,
   ): Run<TInput, TOutput, TProjection, TMessage> {
     const runId = invocation.runId;
-    const invocationId = invocation.invocationId;
+    // The agent mints the invocation id — one per HTTP request that invokes
+    // it. A per-run override (runtime.invocationId) supports deterministic ids
+    // in tests and in-process drivers.
+    const invocationId = runtime.invocationId ?? crypto.randomUUID();
     const inputEventLookupTimeoutMs = this._inputEventLookupTimeoutMs;
     const { onMessage, onCancelled, onCancel, onError: runOnError, signal: externalSignal } = runtime;
 
@@ -958,6 +961,9 @@ class DefaultAgentSession<
     const run: Run<TInput, TOutput, TProjection, TMessage> = {
       get runId() {
         return runId;
+      },
+      get invocationId() {
+        return invocationId;
       },
       get abortSignal() {
         return signal;

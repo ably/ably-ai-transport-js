@@ -389,14 +389,11 @@ describe('ClientSession integration', () => {
     const tree = clientSession.tree;
     const optimisticNode = clientSession.view.runs()[0];
     const runId = optimisticNode?.runId;
-    const invocationId = optimisticNode?.invocationId;
     expect(runId).toBeDefined();
-    expect(invocationId).toBeDefined();
-    if (!runId || !invocationId) throw new Error('expected run/invocation ids');
+    if (!runId) throw new Error('expected run id');
 
     const serverRun = createRunFromOpts(agentSession, {
       runId,
-      invocationId,
     });
     await serverRun.start();
 
@@ -459,12 +456,10 @@ describe('ClientSession integration', () => {
     await new Promise((r) => setTimeout(r, 50));
     const optimisticNode = clientSession.view.runs()[0];
     const runId = optimisticNode?.runId;
-    const invocationId = optimisticNode?.invocationId;
-    if (!runId || !invocationId) throw new Error('expected ids');
+    if (!runId) throw new Error('expected run id');
 
     const serverRun = createRunFromOpts(agentSession, {
       runId,
-      invocationId,
     });
     await serverRun.start();
 
@@ -513,15 +508,13 @@ describe('ClientSession integration', () => {
     await new Promise((r) => setTimeout(r, 50));
     const optimisticNode = clientSession.view.runs()[0];
     const runId = optimisticNode?.runId;
-    const invocationId = optimisticNode?.invocationId;
-    if (!runId || !invocationId) throw new Error('expected ids');
+    if (!runId) throw new Error('expected run id');
 
     const startPromise = waitForRunEvent(clientSession, runId, 'start');
     const endPromise = waitForRunEvent(clientSession, runId, 'end');
 
     const run = createRunFromOpts(agentSession, {
       runId,
-      invocationId,
     });
     await run.start();
 
@@ -566,12 +559,10 @@ describe('ClientSession integration', () => {
     await new Promise((r) => setTimeout(r, 50));
     const optimisticNode = clientSession.view.runs()[0];
     const runId = optimisticNode?.runId;
-    const invocationId = optimisticNode?.invocationId;
-    if (!runId || !invocationId) throw new Error('expected ids');
+    if (!runId) throw new Error('expected run id');
 
     const serverRun = createRunFromOpts(agentSession, {
       runId,
-      invocationId,
     });
     await serverRun.start();
     const clientRun = await sendPromise;
@@ -895,7 +886,6 @@ describe('ClientSession integration', () => {
       if (!aOptimistic) throw new Error('expected A optimistic node');
       const serverRun = createRunFromOpts(agentSession, {
         runId: aOptimistic.runId,
-        invocationId: aOptimistic.invocationId,
       });
       await serverRun.start();
       await serverRun.pipe(textResponseStream('a-concurrent-1', 'text-concurrent-1', 'hi from agent'));
@@ -1058,8 +1048,7 @@ describe('ClientSession integration', () => {
     await new Promise((r) => setTimeout(r, 50));
     const optimisticNode = clientSession.view.runs()[0];
     const runId = optimisticNode?.runId;
-    const invocationId = optimisticNode?.invocationId;
-    if (!runId || !invocationId) throw new Error('expected ids');
+    if (!runId) throw new Error('expected run id');
 
     // Watch for the View to surface a dynamic-tool part with state
     // `input-available`. If the View suppresses streaming updates (the
@@ -1089,7 +1078,7 @@ describe('ClientSession integration', () => {
       });
     });
 
-    const serverRun = createRunFromOpts(agentSession, { runId, invocationId });
+    const serverRun = createRunFromOpts(agentSession, { runId });
     await serverRun.start();
 
     const toolCallId = 'tool-call-stream-1';
@@ -1153,14 +1142,12 @@ describe('ClientSession integration', () => {
     await new Promise((r) => setTimeout(r, 50));
     const optimisticNode = clientSession.view.runs()[0];
     const runId = optimisticNode?.runId;
-    const invocationId = optimisticNode?.invocationId;
-    if (!runId || !invocationId) throw new Error('expected ids');
+    if (!runId) throw new Error('expected run id');
 
     const endPromise = waitForRunEvent(clientSession, runId, 'end');
 
     const run = createRunFromOpts(agentSession, {
       runId,
-      invocationId,
     });
     await run.start();
     await sendPromise;
@@ -1204,12 +1191,10 @@ describe('ClientSession integration', () => {
     await new Promise((r) => setTimeout(r, 50));
     const optimisticNode = clientSession.view.runs()[0];
     const runId = optimisticNode?.runId;
-    const invocationId = optimisticNode?.invocationId;
-    if (!runId || !invocationId) throw new Error('expected ids');
+    if (!runId) throw new Error('expected run id');
 
     const run = createRunFromOpts(agentSession, {
       runId,
-      invocationId,
     });
     await run.start();
     await sendPromise;
@@ -1245,7 +1230,8 @@ describe('ClientSession integration', () => {
   /**
    * The user message lands on the channel even when no agent is running at
    * publish time. A late-attaching subscriber can locate it via channel
-   * history keyed by invocation-id.
+   * history keyed by run-id. The input carries no invocation-id — the agent
+   * mints that per HTTP request when it later wakes.
    */
   it('user message lands on the channel even when no agent is running at publish time', async () => {
     const channelName = uniqueChannelName('ct-late-agent');
@@ -1282,7 +1268,8 @@ describe('ClientSession integration', () => {
     expect(found).toBeDefined();
 
     const foundHeaders = found ? getHeaders(found) : {};
-    expect(foundHeaders['invocation-id']).toBeDefined();
+    // The client no longer mints an invocation-id; the input wire carries none.
+    expect(foundHeaders['invocation-id']).toBeUndefined();
   });
 
   // -------------------------------------------------------------------------
@@ -1482,13 +1469,12 @@ describe('ClientSession integration', () => {
       role: 'user',
       parts: [{ type: 'text', text: 'Need a run-start' }],
     });
-    const { runId, invocationId, inputEventId } = activeRun;
+    const { runId, inputEventId } = activeRun;
 
     // Stand up the server-side run; its `start()` triggers the real
     // lookup (which finds the user message) and publishes run-start.
     const serverRun = createRunFromOpts(agentSession, {
       runId,
-      invocationId,
       inputEventId,
     });
     await serverRun.start();

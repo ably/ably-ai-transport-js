@@ -627,6 +627,15 @@ export class DefaultTree<
           this._indexRegenerate(event.runId, event.regenerates);
           this._structuralVersion++;
         }
+        // Adopt the agent-minted invocation-id onto the optimistic node. The
+        // client no longer mints it, so a node created from an optimistic
+        // insert (or an assistant wire that arrived before run-start) carries
+        // an empty id until the agent's run-start delivers it. Metadata, not
+        // structure — consumers re-read it on the `run` emit below, so no
+        // structural-version bump.
+        if (run.node.invocationId === '' && event.invocationId !== '') {
+          run.node.invocationId = event.invocationId;
+        }
       } else {
         run = this._createRunFromLifecycle(event);
         this._runIndex.set(event.runId, run);

@@ -40,7 +40,7 @@ import type { RunEndReason, RunLifecycleEvent } from './types.js';
  *   `msg-regenerate`. Distinct from `forkOf`: regenerate is a
  *   continuation of the prior run (no Run-level fork), with the message
  *   replacement resolved at projection extraction time.
- * @param opts.invocationId - Invocation correlation ID. Set on the user-prompt message so the agent can locate the prompt by invocation.
+ * @param opts.invocationId - Agent-minted invocation id. Stamped by the agent on every event it publishes for the invocation (run lifecycle + outputs) so the client can observe it; not set by the client on the input.
  * @param opts.inputClientId - ClientId of the input event (the `ai-input`) that
  *   drove the current invocation. The agent reads it from the publisher's
  *   Ably-level `clientId` on the matched input event and re-stamps it on its

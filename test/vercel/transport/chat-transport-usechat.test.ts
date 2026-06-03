@@ -120,8 +120,7 @@ const createMockRun = (runId: string, treeEmit: MockEmitter['emit']): MockRun =>
   stream: new ReadableStream<AI.UIMessageChunk>({ start: () => {} }),
   runId,
   cancel: vi.fn(),
-  toInvocation: () =>
-    Invocation.fromJSON({ runId, invocationId: `${runId}-inv`, inputEventId: '', sessionName: 'chat-1' }),
+  toInvocation: () => Invocation.fromJSON({ runId, inputEventId: '', sessionName: 'chat-1' }),
   enqueue: (chunk: AI.UIMessageChunk) => {
     treeEmit('output', { runId, codecMessageId: 'm-1', serial: 's-1', events: [chunk] });
   },

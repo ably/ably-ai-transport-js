@@ -5,7 +5,6 @@ import { Invocation, type InvocationData } from '../../../src/core/transport/inv
 describe('Invocation', () => {
   const data: InvocationData = {
     runId: 'run-1',
-    invocationId: 'inv-1',
     inputEventId: 'ev-1',
     sessionName: 'chat-session',
   };
@@ -19,7 +18,6 @@ describe('Invocation', () => {
     it('round-trips through fromJSON', () => {
       const roundTripped = Invocation.fromJSON(Invocation.fromJSON(data).toJSON());
       expect(roundTripped.runId).toBe(data.runId);
-      expect(roundTripped.invocationId).toBe(data.invocationId);
       expect(roundTripped.inputEventId).toBe(data.inputEventId);
       expect(roundTripped.sessionName).toBe(data.sessionName);
     });

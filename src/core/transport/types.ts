@@ -195,6 +195,15 @@ export interface StreamResult {
 /** Per-run runtime hooks, signal, and overrides supplied at `createRun()` time. */
 export interface RunRuntime<TOutput extends CodecOutputEvent> {
   /**
+   * Override the invocation id for this run. When omitted, the agent mints a
+   * fresh `crypto.randomUUID()` — the normal path (one per HTTP request).
+   * Supply a non-empty fixed value for deterministic ids in tests or
+   * in-process drivers; the empty string is not a valid override (it is the
+   * "unset" sentinel and does not fall through to minting).
+   */
+  invocationId?: string;
+
+  /**
    * An external AbortSignal (typically the HTTP request's `req.signal`) that,
    * when fired, cancels this run. This allows platform-level cancellation —
    * request cancellation, serverless function timeout — to stop LLM generation
@@ -289,6 +298,15 @@ export interface LoadConversationOptions {
 export interface Run<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage> {
   /** The run's unique identifier. */
   readonly runId: string;
+
+  /**
+   * The invocation's unique identifier, minted by the agent when the run is
+   * created (one per HTTP request that invokes the agent). Readable
+   * synchronously — the application returns it on the HTTP response so the
+   * caller can observe it. The agent stamps it on every event it publishes
+   * for this invocation (run lifecycle + outputs).
+   */
+  readonly invocationId: string;
 
   /** AbortSignal scoped to this run. Fires when a cancel event arrives for this runId. */
   readonly abortSignal: AbortSignal;
@@ -483,17 +501,10 @@ export interface SendOptions {
    * Reuse an existing `runId` (e.g. resume a suspended run). When set,
    * the send is treated as a continuation: the run's existing observer
    * state (router stream, tree run-tracking) is reused; no fresh
-   * `crypto.randomUUID()` is minted. Pair with a fresh `invocationId`
-   * (or rely on the auto-generated one) so each continuation POST has
-   * a distinct invocation key.
+   * `crypto.randomUUID()` is minted. Each continuation POST is woken by the
+   * agent, which mints a distinct `invocationId` per HTTP request.
    */
   runId?: string;
-  /**
-   * Reuse or override the `invocationId` for this send. Useful for
-   * deterministic identification (tests) or for pairing with a reused
-   * `runId`. Defaults to `crypto.randomUUID()`.
-   */
-  invocationId?: string;
   /**
    * Override the `inputEventId` for this send. Useful for deterministic
    * identification (tests). Defaults to `crypto.randomUUID()`.
@@ -626,14 +637,6 @@ export interface ActiveRun {
   /** The run's unique identifier. */
   runId: string;
   /**
-   * The invocation's unique identifier. Stamped on the published user
-   * message and forwarded in the HTTP POST body so the agent's run
-   * lifecycle events (`ai-run-start`, `ai-run-end`) can echo it back. The
-   * stream router keys on this value to filter output events to the bound
-   * invocation.
-   */
-  invocationId: string;
-  /**
    * The input event's unique identifier. Stamped on the primary input event
    * published to the channel and forwarded in the HTTP POST body so the
    * agent can locate the exact triggering event.
@@ -649,10 +652,10 @@ export interface ActiveRun {
   optimisticCodecMessageIds: string[];
   /**
    * Build the {@link Invocation} pointer for this run — `runId`,
-   * `invocationId`, `inputEventId`, and the session's channel name as
-   * `sessionName`. The application POSTs `run.toInvocation().toJSON()` to
-   * its agent endpoint to wake the agent; the agent rebuilds it via
-   * {@link Invocation.fromJSON}. The conversation itself is read from the
+   * `inputEventId`, and the session's channel name as `sessionName`. The
+   * application POSTs `run.toInvocation().toJSON()` to its agent endpoint to
+   * wake the agent; the agent rebuilds it via {@link Invocation.fromJSON} and
+   * mints the `invocationId` itself. The conversation itself is read from the
    * channel, so the pointer carries only identifiers.
    */
   toInvocation(): Invocation;
@@ -791,10 +794,12 @@ export interface RunNode<TProjection> {
   /** Per-Run codec projection. Folded by the Tree from every event published under this run-id. */
   projection: TProjection;
   /**
-   * The invocationId observed for this Run (wire `invocation-id`). Set once at
-   * Run creation from the optimistic insert's or first wire's headers and never
-   * reassigned, so consumers can read it synchronously.
-   * Empty string if the wire didn't carry an invocation-id.
+   * The agent-minted invocationId observed for this Run (wire `invocation-id`).
+   * The client no longer mints it, so an optimistic Run starts with an empty
+   * id; it is adopted from the agent's `ai-run-start` (or set at creation when
+   * the Run is first seen from a wire event carrying one) and never reassigned
+   * thereafter. Empty string until run-start arrives, or if the wire didn't
+   * carry an invocation-id.
    */
   invocationId: string;
   /** Ably serial of the first observed message tagged with this run-id. Absent for optimistic Runs. */
@@ -963,8 +968,10 @@ export interface RunInfo {
    */
   status: 'active' | 'suspended' | RunEndReason;
   /**
-   * The first `invocationId` observed for this Run. Stable across the
-   * Run's lifecycle. Empty string when the wire didn't carry an
+   * The agent-minted `invocationId` observed for this Run, adopted from the
+   * wire `ai-run-start`. Stable across the Run's lifecycle once observed.
+   * Empty string until run-start arrives (the client no longer mints it, so an
+   * optimistic Run carries none) or when the wire didn't carry an
    * invocation-id.
    */
   invocationId: string;

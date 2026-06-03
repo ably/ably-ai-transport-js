@@ -9,10 +9,11 @@
  * codec encoder. It does not send HTTP: waking an agent is the application's
  * concern — it POSTs `run.toInvocation().toJSON()` to its own endpoint if and
  * when it wants one woken (the Vercel ChatTransport does this for useChat
- * parity). The agent correlates the input event by the `invocation-id` header
- * and publishes run lifecycle events (run-start, run-end) plus assistant
- * chunks. The channel is the durable session record; agents that weren't
- * running at publish time can resume by reading channel rewind.
+ * parity). The agent locates the triggering input event by its `event-id`
+ * header and publishes run lifecycle events (run-start, run-end) plus assistant
+ * chunks, minting and stamping the invocation-id itself. The channel is the
+ * durable session record; agents that weren't running at publish time can
+ * resume by reading channel rewind.
  */
 
 import * as Ably from 'ably';
@@ -519,7 +520,6 @@ class DefaultClientSession<
     }
 
     const runId = sendOptions?.runId ?? crypto.randomUUID();
-    const invocationId = crypto.randomUUID();
 
     // Spec: AIT-CT3d
     // Auto-compute parent from the visible branch tail when not explicitly
@@ -583,7 +583,6 @@ class DefaultClientSession<
         ...(parent !== undefined && { parent }),
         ...(forkOf !== undefined && { forkOf }),
         ...(regenerates !== undefined && { regenerates }),
-        invocationId,
         inputEventId,
         runContinue: isContinuation,
       });
@@ -695,13 +694,11 @@ class DefaultClientSession<
       started,
       runId,
       inputEventId: triggerInputEventId,
-      invocationId,
       cancel: async () => this.cancel(runId),
       optimisticCodecMessageIds: [...codecMessageIds],
       toInvocation: () =>
         Invocation.fromJSON({
           runId,
-          invocationId,
           inputEventId: triggerInputEventId,
           sessionName: this._channel.name,
         }),

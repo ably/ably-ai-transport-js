@@ -64,7 +64,6 @@ interface MockRun {
   stream: ReadableStream<AI.UIMessageChunk>;
   started: Promise<void>;
   runId: string;
-  invocationId: string;
   cancel: ReturnType<typeof vi.fn>;
   optimisticCodecMessageIds: string[];
   toInvocation: () => Invocation;
@@ -101,10 +100,9 @@ const createMockSession = (): MockSession => {
     }),
     started: Promise.resolve(),
     runId,
-    invocationId: 'inv-1',
     cancel: vi.fn(),
     optimisticCodecMessageIds: [],
-    toInvocation: () => Invocation.fromJSON({ runId, invocationId: 'inv-1', inputEventId: '', sessionName: 'chat-1' }),
+    toInvocation: () => Invocation.fromJSON({ runId, inputEventId: '', sessionName: 'chat-1' }),
     enqueue: (chunk: AI.UIMessageChunk) => {
       treeEmitter.emit('output', { runId, codecMessageId: 'm-1', serial: 's-1', events: [chunk] });
     },
@@ -248,7 +246,6 @@ describe('createChatTransport', () => {
       const body = postBody();
       expect(body).toMatchObject({
         runId: mockRun.runId,
-        invocationId: mockRun.invocationId,
         sessionName: 'chat-1',
       });
       expect(body.history).toBeUndefined();
@@ -313,7 +310,6 @@ describe('createChatTransport', () => {
       // The regenerate run's invocation is POSTed to wake the agent.
       expect(postBody()).toMatchObject({
         runId: mockRun.runId,
-        invocationId: mockRun.invocationId,
         sessionName: 'chat-1',
       });
     });
@@ -722,7 +718,6 @@ describe('createChatTransport', () => {
       const body = postBody();
       expect(body).toEqual({
         runId: mockRun.runId,
-        invocationId: mockRun.invocationId,
         inputEventId: mockRun.toInvocation().inputEventId,
         sessionName: 'chat-1',
       });

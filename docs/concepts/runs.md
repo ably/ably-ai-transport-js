@@ -64,7 +64,7 @@ await fetch('/api/chat', {
 });
 ```
 
-`run.toInvocation()` carries only identifiers (`runId`, `invocationId`, `inputEventId`, `sessionName`) — the agent reads the conversation from the channel. The response stream is available immediately from the channel subscription, not from the HTTP response. (With the Vercel `useChat` integration the chat transport issues this POST for you.)
+`run.toInvocation()` carries only identifiers (`runId`, `inputEventId`, `sessionName`) — the agent reads the conversation from the channel and mints the `invocationId` itself, returning it on the response. The streamed output is available immediately from the channel subscription, not from the HTTP response. (With the Vercel `useChat` integration the chat transport issues this POST for you.)
 
 If you need to know when the agent has actually picked up the run, await `run.started`: it resolves when the agent's `ai-run-start` for this run is observed, and rejects only if the session is closed first. There is no built-in deadline — race it against your own timeout if you want to bound the wait:
 

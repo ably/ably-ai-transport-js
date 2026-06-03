@@ -98,7 +98,6 @@ import { createAgentSession } from '@ably/ai-transport/vercel';
 
 interface ChatRequestBody {
   runId: string;
-  invocationId: string;
   inputEventIds: string[];
   history?: UIMessage[];
   chatId: string;
@@ -137,7 +136,8 @@ export async function POST(req: Request) {
     session.close();
   });
 
-  return new Response(null, { status: 200 });
+  // The agent mints the invocation-id; return it on the response.
+  return Response.json({ invocationId: run.invocationId });
 }
 ```
 

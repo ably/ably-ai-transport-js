@@ -487,8 +487,10 @@ describe('ClientSession', () => {
 
     it('rejects connect when subscribe fails', async () => {
       const ch = createMockChannel();
+      // CAST: assign through MockChannel's loose mock type — RealtimeChannel.subscribe's
+      // overloads reject vi.fn's inferred signature under ably >= 2.22.
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.reject directly
-      ch.subscribe = vi.fn(() => Promise.reject(new Ably.ErrorInfo('subscribe failed', 40000, 400)));
+      (ch as MockChannel).subscribe = vi.fn(() => Promise.reject(new Ably.ErrorInfo('subscribe failed', 40000, 400)));
       const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
         client: createMockClient(ch),
         channelName: 'test-channel',

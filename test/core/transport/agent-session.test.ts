@@ -546,8 +546,10 @@ describe('AgentSession', () => {
 
     it('rejects connect when subscribe fails', async () => {
       const ch = createMockChannel();
+      // CAST: assign through MockChannel's loose mock type — RealtimeChannel.subscribe's
+      // overloads reject vi.fn's inferred signature under ably >= 2.22.
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.reject directly
-      ch.subscribe = vi.fn(() => Promise.reject(new Error('subscribe down')));
+      (ch as MockChannel).subscribe = vi.fn(() => Promise.reject(new Error('subscribe down')));
       const onError = vi.fn();
       const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
         client: createMockClient(ch),

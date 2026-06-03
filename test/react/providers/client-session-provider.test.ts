@@ -30,9 +30,16 @@ import { createMockSession } from '../helper/mock-session.js';
 // so the shape only needs to satisfy TypeScript.
 const fakeAblyClient = { options: {} } as unknown as Ably.Realtime;
 
-vi.mock('ably/react', () => ({
-  useAbly: () => fakeAblyClient,
-}));
+// ClientSessionProvider wraps children in ably-js's <ChannelProvider>. No
+// <AblyProvider> is rendered in these tests, so stub it as a passthrough that
+// just renders children.
+vi.mock('ably/react', async () => {
+  const { createElement, Fragment } = await import('react');
+  return {
+    useAbly: () => fakeAblyClient,
+    ChannelProvider: ({ children }: { children?: ReactNode }) => createElement(Fragment, undefined, children),
+  };
+});
 
 // Typed with explicit parameter signature so mock.calls[0] is [unknown], enabling assertions
 const createClientSessionMock =

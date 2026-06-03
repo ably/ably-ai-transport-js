@@ -359,6 +359,12 @@ describe('AgentSession integration', () => {
     expect(getHeaders(assistantB)[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
     expect(getHeaders(assistantA)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('m-user-a');
     expect(getHeaders(assistantB)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('m-user-b');
+    // ...and the continuing invocation's invocation-id: outputs published after
+    // the run-resume carry inv-b, not the run-opening inv-a. The agent stamps
+    // invocation-id from the per-invocation createRun, so a resume threads the
+    // continuing invocation's id through its outputs just as run-resume / run-end do.
+    expect(getHeaders(assistantA)[HEADER_INVOCATION_ID]).toBe('inv-a');
+    expect(getHeaders(assistantB)[HEADER_INVOCATION_ID]).toBe('inv-b');
   });
 
   it('publishes run-start and run-end events', async () => {

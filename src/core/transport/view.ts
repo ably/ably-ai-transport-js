@@ -19,7 +19,13 @@
 
 import * as Ably from 'ably';
 
-import { EVENT_RUN_END, EVENT_RUN_START, HEADER_CODEC_MESSAGE_ID, HEADER_RUN_ID } from '../../constants.js';
+import {
+  EVENT_RUN_END,
+  EVENT_RUN_START,
+  EVENT_RUN_SUSPEND,
+  HEADER_CODEC_MESSAGE_ID,
+  HEADER_RUN_ID,
+} from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
@@ -1196,7 +1202,7 @@ export class DefaultView<
         const headers = getTransportHeaders(rawMsg);
         const serial = rawMsg.serial;
 
-        if (rawMsg.name === EVENT_RUN_START || rawMsg.name === EVENT_RUN_END) {
+        if (rawMsg.name === EVENT_RUN_START || rawMsg.name === EVENT_RUN_SUSPEND || rawMsg.name === EVENT_RUN_END) {
           const event = parseRunLifecycle(rawMsg.name, headers, serial);
           if (event) this._tree.applyRunLifecycle(event);
           continue;

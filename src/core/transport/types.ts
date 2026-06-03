@@ -496,10 +496,11 @@ export interface SendOptions {
 // ---------------------------------------------------------------------------
 
 /**
- * A structured event describing a run starting or ending. The `type`
- * discriminator (`start` / `end`) is the in-memory domain vocabulary and is
- * intentionally distinct from the wire message names (`ai-run-start` /
- * `ai-run-end`) those events are decoded from.
+ * A structured event describing a run starting, suspending, or ending. The
+ * `type` discriminator (`start` / `suspend` / `end`) is the in-memory domain
+ * vocabulary and is intentionally distinct from the wire message names
+ * (`ai-run-start` / `ai-run-suspend` / `ai-run-end`) those events are decoded
+ * from.
  */
 export type RunLifecycleEvent =
   | {
@@ -541,6 +542,24 @@ export type RunLifecycleEvent =
        * wire header. Absent for the first start of a run.
        */
       isContinuation?: boolean;
+    }
+  | {
+      type: 'suspend';
+      runId: string;
+      clientId: string;
+      /**
+       * Ably channel serial of the run-suspend message, or `undefined` for an
+       * optimistic local event. The Tree reads it to set the Run's endSerial
+       * (a suspended run carries the serial at which it paused).
+       */
+      serial: string | undefined;
+      /**
+       * The invocation-id this run-suspend was published under (wire
+       * `invocation-id`), mirroring the run-start. Lets consumers correlate a
+       * run's suspension back to the invocation that drove it. Empty string if
+       * the wire didn't carry an invocation-id.
+       */
+      invocationId: string;
     }
   | {
       type: 'end';

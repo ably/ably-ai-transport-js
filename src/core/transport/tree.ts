@@ -106,6 +106,9 @@ export interface TreeInternal<
    *
    * - `start`: creates the Run (if missing) or sets status to 'active'.
    *   Tracks the run as active.
+   * - `suspend`: sets RunNode.status to 'suspended' and records `endSerial`.
+   *   The run stays live so a resume under the same `runId` picks up where it
+   *   left off.
    * - `end`: sets RunNode.status to the end reason and `endSerial`.
    *   Untracks the run from active.
    *
@@ -639,6 +642,20 @@ export class DefaultTree<
       }
       this._emitter.emit('run', event);
       if (this._structuralVersion !== structuralBefore) this._emitter.emit('update');
+      return;
+    }
+
+    if (event.type === 'suspend') {
+      // A suspend pauses the run without ending it: mark the node 'suspended'
+      // and record the serial it paused at, but keep the Run live so a resume
+      // under the same runId resumes it. Status/endSerial are content, not
+      // structure, so no 'update' is emitted (mirrors run-end).
+      const run = this._runIndex.get(event.runId);
+      if (run) {
+        run.node.status = 'suspended';
+        run.node.endSerial = event.serial;
+      }
+      this._emitter.emit('run', event);
       return;
     }
 

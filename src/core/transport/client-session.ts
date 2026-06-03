@@ -21,6 +21,7 @@ import {
   EVENT_CANCEL,
   EVENT_RUN_END,
   EVENT_RUN_START,
+  EVENT_RUN_SUSPEND,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
@@ -283,6 +284,22 @@ class DefaultClientSession<
             this._pendingRunStarts.delete(startedKey);
             pending.resolve();
           }
+        }
+        this._tree.emitAblyMessage(ablyMessage);
+        return;
+      }
+
+      if (ablyMessage.name === EVENT_RUN_SUSPEND) {
+        const headers = getTransportHeaders(ablyMessage);
+        const runId = headers[HEADER_RUN_ID];
+        if (runId) {
+          // A suspend keeps the run live in the Tree (status 'suspended') so a
+          // continuation that reuses the runId picks up where it left off. The
+          // `run` event fires so consumers can react. No pending-run-start
+          // tracker is outstanding here — the agent only suspends after it has
+          // published run-start.
+          const event = parseRunLifecycle(EVENT_RUN_SUSPEND, headers, ablyMessage.serial);
+          if (event) this._tree.applyRunLifecycle(event);
         }
         this._tree.emitAblyMessage(ablyMessage);
         return;

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   EVENT_RUN_START,
+  EVENT_RUN_SUSPEND,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_FORK_OF,
   HEADER_INVOCATION_ID,
@@ -1894,6 +1895,29 @@ describe('DefaultView', () => {
       const nodes = view.runs();
       expect(nodes.map((n) => n.runId)).toEqual(['R-empty']);
       expect(view.getMessages()).toEqual([]);
+    });
+
+    it('reconstructs a suspended run from history (run-suspend marks the run suspended)', async () => {
+      // A run that suspended in the past appears in history as a run-start
+      // followed by an ai-run-suspend (no run-end). History replay must
+      // rebuild the Run and mark it suspended — not active, not ended.
+      const runStartMsg = {
+        name: EVENT_RUN_START,
+        serial: 's01',
+        extras: { ai: { transport: { [HEADER_RUN_ID]: 'R-susp', 'run-client-id': '' } } },
+      } as unknown as Ably.InboundMessage;
+      const runSuspendMsg = {
+        name: EVENT_RUN_SUSPEND,
+        serial: 's02',
+        extras: { ai: { transport: { [HEADER_RUN_ID]: 'R-susp', 'run-client-id': '' } } },
+      } as unknown as Ably.InboundMessage;
+
+      vi.mocked(decodeHistory).mockResolvedValueOnce(makePage([], [runStartMsg, runSuspendMsg]));
+
+      await view.loadOlder(1);
+
+      const node = view.runs().find((n) => n.runId === 'R-susp');
+      expect(node?.status).toBe('suspended');
     });
   });
 

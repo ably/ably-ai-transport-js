@@ -22,12 +22,19 @@
  * Multiple ClientSessionProviders can be nested using distinct channelNames.
  * Each provider merges its slot into the parent record so descendants
  * can access all registered sessions via useClientSession(channelName).
+ *
+ * The provider also wraps its children in ably-js's `<ChannelProvider>` for the
+ * session's channel, so descendants can use ably-js channel hooks
+ * (`usePresence`, `useChannel`, etc.) against it without adding their own. It
+ * seeds the ChannelProvider's `options` with this SDK's channel agent so the
+ * hooks' agent is appended rather than overwriting it (ably-js >= 2.22).
  */
 
 import * as Ably from 'ably';
-import { useAbly } from 'ably/react';
+import { ChannelProvider, useAbly } from 'ably/react';
 import { type PropsWithChildren, type ReactNode, useContext, useEffect, useMemo, useRef } from 'react';
 
+import { channelAgent } from '../../core/agent.js';
 import type { CodecInputEvent, CodecOutputEvent } from '../../core/codec/types.js';
 import { createClientSession } from '../../core/transport/client-session.js';
 import type { ClientSession, ClientSessionOptions } from '../../core/transport/types.js';
@@ -101,6 +108,14 @@ export const ClientSessionProvider = <
 }: ClientSessionProviderProps<TInput, TOutput, TProjection, TMessage>): ReactNode => {
   const client = useAbly();
   const { channelName } = sessionOptions;
+
+  // Seed the ChannelProvider with this SDK's channel agent so ably-js's React
+  // hooks append their agent (`channelOptionsForReactHooks`) rather than
+  // overwriting it. Memoised on the codec, which determines the agent string.
+  const channelOptions = useMemo<Ably.ChannelOptions>(
+    () => ({ params: { agent: channelAgent(sessionOptions.codec) } }),
+    [sessionOptions.codec],
+  );
   const sessionRef = useRef<ClientSession<TInput, TOutput, TProjection, TMessage> | undefined>(undefined);
   const sessionChannelRef = useRef<string>(channelName);
   const sessionsToDisposeRef = useRef<ClientSession<CodecInputEvent, CodecOutputEvent, unknown, unknown>[]>([]);
@@ -182,5 +197,14 @@ export const ClientSessionProvider = <
     };
   }, []);
 
-  return <ClientSessionContext.Provider value={contextValue}>{children}</ClientSessionContext.Provider>;
+  return (
+    <ClientSessionContext.Provider value={contextValue}>
+      <ChannelProvider
+        channelName={channelName}
+        options={channelOptions}
+      >
+        {children}
+      </ChannelProvider>
+    </ClientSessionContext.Provider>
+  );
 };

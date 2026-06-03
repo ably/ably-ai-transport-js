@@ -15,9 +15,15 @@ import { createMockSession } from './helper/mock-session.js';
 
 // Stand-in Realtime client returned by the mocked `useAbly()`. Only its
 // shape needs to satisfy TypeScript; createClientSession is also mocked.
-vi.mock('ably/react', () => ({
-  useAbly: () => ({ options: {} }),
-}));
+// ClientSessionProvider wraps children in ably-js's <ChannelProvider>; stub it
+// as a passthrough since no <AblyProvider> is rendered here.
+vi.mock('ably/react', async () => {
+  const { createElement, Fragment } = await import('react');
+  return {
+    useAbly: () => ({ options: {} }),
+    ChannelProvider: ({ children }: { children?: ReactNode }) => createElement(Fragment, undefined, children),
+  };
+});
 
 // Typed with explicit parameter signature so mock.calls[0] is [unknown], enabling assertions
 const createClientSessionMock =

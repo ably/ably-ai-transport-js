@@ -26,7 +26,6 @@ import {
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_RUN_CLIENT_ID,
-  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
 } from '../../constants.js';
 import { EventEmitter } from '../../event-emitter.js';
@@ -497,7 +496,6 @@ export class DefaultTree<
     }
 
     const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
-    const isContinuation = headers[HEADER_RUN_CONTINUE] === 'true';
 
     // Fold inputs first, then outputs, preserving wire order.
     const all: (TInput | TOutput)[] = [...events.inputs, ...events.outputs];
@@ -547,7 +545,7 @@ export class DefaultTree<
       this._addToParentIndex(run.node.parentRunId, wireRunId);
       this._insertSortedRun(run);
       this._structuralVersion++;
-      this._logger.debug('Tree.applyMessage(); created new Run', { runId: wireRunId, isContinuation });
+      this._logger.debug('Tree.applyMessage(); created new Run', { runId: wireRunId });
     } else if (serial && !run.node.startSerial) {
       // Promote optimistic startSerial when the relay/echo arrives.
       this._logger.debug('Tree.applyMessage(); promoting startSerial', { runId: run.node.runId, serial });

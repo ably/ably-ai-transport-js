@@ -140,6 +140,14 @@ export const EVENT_CANCEL = 'ai-cancel';
 /** Message name: server publishes this to signal a run has started. */
 export const EVENT_RUN_START = 'ai-run-start';
 
+/**
+ * Message name: server publishes this to signal a run has suspended — paused
+ * awaiting participant input (e.g. a client tool result or approval) without
+ * ending. The run stays live and may be resumed under the same `runId`.
+ * Distinct from `ai-run-end`, which is terminal.
+ */
+export const EVENT_RUN_SUSPEND = 'ai-run-suspend';
+
 /** Message name: server publishes this to signal a run has ended. */
 export const EVENT_RUN_END = 'ai-run-end';
 

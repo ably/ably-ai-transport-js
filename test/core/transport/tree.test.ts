@@ -1088,6 +1088,75 @@ describe('Tree', () => {
       expect(handler).toHaveBeenNthCalledWith(1, expect.objectContaining({ type: 'start', runId: 'R1' }));
       expect(handler).toHaveBeenNthCalledWith(2, expect.objectContaining({ type: 'end', runId: 'R1' }));
     });
+
+    it('run-suspend sets RunNode status to "suspended" and records endSerial', () => {
+      tree.applyRunLifecycle({
+        type: 'start',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: '',
+        serial: 's1',
+      });
+      tree.applyRunLifecycle({
+        type: 'suspend',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: 'inv-1',
+        serial: 's5',
+      });
+      const run = tree.getRunNode('R1');
+      expect(run?.status).toBe('suspended');
+      expect(run?.endSerial).toBe('s5');
+    });
+
+    it('run-suspend keeps the run live so a subsequent run-start re-activates it', () => {
+      // A suspended run must remain resumable: the continuation re-entry (a
+      // following run-start under the same runId) flips it back to active.
+      tree.applyRunLifecycle({
+        type: 'start',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: '',
+        serial: 's1',
+      });
+      tree.applyRunLifecycle({
+        type: 'suspend',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: 'inv-1',
+        serial: 's5',
+      });
+      expect(tree.getRunNode('R1')?.status).toBe('suspended');
+      tree.applyRunLifecycle({
+        type: 'start',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: 'inv-2',
+        serial: 's1',
+      });
+      expect(tree.getRunNode('R1')?.status).toBe('active');
+    });
+
+    it('emits a run event on suspend', () => {
+      const handler = vi.fn();
+      tree.on('run', handler);
+      tree.applyRunLifecycle({
+        type: 'start',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: '',
+        serial: 's1',
+      });
+      tree.applyRunLifecycle({
+        type: 'suspend',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: 'inv-1',
+        serial: 's5',
+      });
+      expect(handler).toHaveBeenCalledTimes(2);
+      expect(handler).toHaveBeenNthCalledWith(2, expect.objectContaining({ type: 'suspend', runId: 'R1' }));
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -1205,6 +1274,16 @@ describe('Tree', () => {
         serial: 's2',
       });
       expect(handler).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not emit update on a run-suspend', () => {
+      // Like run-end, a suspend only mutates status/endSerial on the existing
+      // node (content, not structure), so it emits no `update`.
+      tree.applyRunLifecycle({ type: 'start', runId: 'R1', clientId: 'c', invocationId: '', serial: 's1' });
+      const handler = vi.fn();
+      tree.on('update', handler);
+      tree.applyRunLifecycle({ type: 'suspend', runId: 'R1', clientId: 'c', invocationId: '', serial: 's2' });
+      expect(handler).not.toHaveBeenCalled();
     });
 
     it('does not emit update on a run-start that only re-activates an existing Run', () => {

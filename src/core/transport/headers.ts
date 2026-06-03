@@ -9,6 +9,7 @@
 import {
   EVENT_RUN_END,
   EVENT_RUN_START,
+  EVENT_RUN_SUSPEND,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
   HEADER_FORK_OF,
@@ -127,6 +128,10 @@ export const parseRunLifecycle = (
       ...(regenerates !== undefined && { regenerates }),
       ...(isContinuation && { isContinuation: true }),
     };
+  }
+
+  if (name === EVENT_RUN_SUSPEND) {
+    return { type: 'suspend', runId, clientId, serial, invocationId: headers[HEADER_INVOCATION_ID] ?? '' };
   }
 
   if (name === EVENT_RUN_END) {

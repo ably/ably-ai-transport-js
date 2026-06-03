@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   EVENT_RUN_END,
   EVENT_RUN_START,
+  EVENT_RUN_SUSPEND,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
@@ -1071,6 +1072,33 @@ describe('ClientSession', () => {
       expect(lifecycle).toHaveLength(2);
       expect(lifecycle[0]?.type).toBe('start');
       expect(lifecycle[1]?.type).toBe('end');
+    });
+
+    it('emits a suspend lifecycle event and keeps the run live on run-suspend', () => {
+      const lifecycle: RunLifecycleEvent[] = [];
+      fix.session.tree.on('run', (e) => lifecycle.push(e));
+
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_START, {
+          [HEADER_RUN_ID]: 'run-S',
+          [HEADER_RUN_CLIENT_ID]: 'agent',
+        }),
+      );
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_SUSPEND, {
+          [HEADER_RUN_ID]: 'run-S',
+          [HEADER_RUN_CLIENT_ID]: 'agent',
+          [HEADER_INVOCATION_ID]: 'inv-1',
+        }),
+      );
+
+      expect(lifecycle).toHaveLength(2);
+      expect(lifecycle[1]?.type).toBe('suspend');
+      // The run stays in the tree, marked suspended — a continuation that
+      // reuses the runId resumes it.
+      expect(fix.session.tree.getRunNode('run-S')?.status).toBe('suspended');
     });
 
     it('surfaces isContinuation on the run-start event when run-continue is set', () => {

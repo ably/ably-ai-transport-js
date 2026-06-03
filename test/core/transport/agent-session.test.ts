@@ -1942,6 +1942,42 @@ describe('Run.messages', () => {
     session.close();
   });
 
+  it('folds a run-less fresh input into the loaded projection via the looked-up codec-message-id', async () => {
+    // Agent-minted run: the agent owns the runId; the client's fresh input
+    // carries no run-id. loadProjection must still fold that input — matched by
+    // the codec-message-id the agent looked up — alongside run-id-stamped
+    // agent outputs, even though it differs from the run's id.
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'agent-minted',
+      codec,
+      inputEventLookupTimeoutMs: 5000,
+    });
+    await session.connect();
+    const run = createRunFromOpts(session, {
+      runId: 'agent-run-1',
+      invocationId: 'inv-1',
+      inputEventId: 'p1',
+    });
+    const startPromise = run.start();
+    // Run-less input (no runId) — the agent looked it up by event-id.
+    deliverInputEvent(ch, {
+      invocationId: 'inv-1',
+      codecMessageId: 'C1',
+      serial: 's1',
+      inputEventId: 'p1',
+    });
+    await startPromise;
+
+    await run.loadProjection();
+    // Without the run-less fold, the projection would be empty (the input
+    // carries no run-id matching 'agent-run-1').
+    expect(run.messages).toEqual([{ id: 'C1', content: 'C1' }]);
+    session.close();
+  });
+
   it('returns view messages after start() resolves on continuation (no history overlay)', async () => {
     const ch = createMockChannel();
     const codec = codecWithFunctionalDecoder();

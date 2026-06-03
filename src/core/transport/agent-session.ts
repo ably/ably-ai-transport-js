@@ -95,6 +95,22 @@ const withLiveMessages = (
 };
 
 /**
+ * Collect the `codec-message-id`s of the agent's looked-up input messages so
+ * {@link foldRunMessages} can fold them as the run's inputs even though a fresh
+ * client input carries no `run-id`.
+ * @param liveMessages - Raw input messages the agent observed via its lookup.
+ * @returns The set of their codec-message-ids.
+ */
+const liveInputCodecMessageIds = (liveMessages?: readonly Ably.InboundMessage[]): ReadonlySet<string> => {
+  const ids = new Set<string>();
+  for (const m of liveMessages ?? []) {
+    const id = getTransportHeaders(m)[HEADER_CODEC_MESSAGE_ID];
+    if (id !== undefined) ids.add(id);
+  }
+  return ids;
+};
+
+/**
  * Fold a pre-sorted array of wire messages for a single run into a projection.
  *
  * Skips lifecycle events (`ai-run-start`, `ai-run-end`) and stops before the
@@ -103,8 +119,13 @@ const withLiveMessages = (
  * and `loadConversation` (ancestor truncation for regenerate / fork).
  * @param codec - Codec used to decode and fold events.
  * @param sortedMessages - Chronologically ordered wire messages (all runs).
- * @param runId - Only messages stamped with this run-id are folded.
+ * @param runId - Messages stamped with this run-id are folded.
  * @param truncateAt - Stop before this codec-message-id; omit to fold all messages.
+ * @param includeCodecMessageIds - Additional run-less messages to fold by their
+ *   `codec-message-id`, even though they carry no `run-id`. In the agent-minted
+ *   model a fresh client input is run-less; the agent looks it up by `event-id`
+ *   and passes its codec-message-id here so it is folded as the run's input
+ *   alongside the run-id-stamped agent outputs.
  * @returns The projection and the count of messages that were folded.
  */
 const foldRunMessages = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>(
@@ -112,20 +133,25 @@ const foldRunMessages = <TInput extends CodecInputEvent, TOutput extends CodecOu
   sortedMessages: readonly Ably.InboundMessage[],
   runId: string,
   truncateAt?: string,
+  includeCodecMessageIds?: ReadonlySet<string>,
 ): { projection: TProjection; folded: number } => {
   const decoder = codec.createDecoder();
   let projection = codec.init();
   let folded = 0;
   for (const msg of sortedMessages) {
     const h = getTransportHeaders(msg);
-    if (h[HEADER_RUN_ID] !== runId) continue;
+    const msgCodecId = h[HEADER_CODEC_MESSAGE_ID];
+    // Fold a message that carries this run-id, or a run-less input the agent
+    // looked up for this run (matched by codec-message-id).
+    const belongsToRun =
+      h[HEADER_RUN_ID] === runId || (msgCodecId !== undefined && includeCodecMessageIds?.has(msgCodecId) === true);
+    if (!belongsToRun) continue;
     // Lifecycle events carry no codec content — skip them.
     if (msg.name === EVENT_RUN_START || msg.name === EVENT_RUN_END) continue;
-    const codecMsgId = h[HEADER_CODEC_MESSAGE_ID];
-    if (truncateAt !== undefined && codecMsgId === truncateAt) break;
+    if (truncateAt !== undefined && msgCodecId === truncateAt) break;
     const { inputs, outputs } = decoder.decode(msg);
     const events: (TInput | TOutput)[] = [...inputs, ...outputs];
-    const routingCodecMessageId = codecMsgId ?? '';
+    const routingCodecMessageId = msgCodecId ?? '';
     for (const event of events) {
       projection = codec.fold(projection, event, { serial: msg.serial ?? '', messageId: routingCodecMessageId });
     }
@@ -210,7 +236,11 @@ const loadRunProjection = async <
   }
 
   const sorted = withLiveMessages(collected, liveMessages);
-  const { projection, folded } = foldRunMessages(codec, sorted, runId);
+  // The agent's looked-up input events (passed as live messages) belong to
+  // this run even though a fresh client input carries no run-id — fold them by
+  // their codec-message-id alongside the run-id-stamped agent outputs.
+  const liveCodecIds = liveInputCodecMessageIds(liveMessages);
+  const { projection, folded } = foldRunMessages(codec, sorted, runId, undefined, liveCodecIds);
 
   logger?.debug('loadRunProjection(); folded run events', { runId, folded });
   return projection;
@@ -1313,8 +1343,15 @@ class DefaultAgentSession<
         }
 
         // Current run — fold from the same sorted messages (live messages already
-        // merged in by withLiveMessages above).
-        const { projection: currentProjection, folded } = foldRunMessages(codec, sortedMessages, runId);
+        // merged in by withLiveMessages above). Include the looked-up run-less
+        // input events by codec-message-id so the fresh client prompt folds in.
+        const { projection: currentProjection, folded } = foldRunMessages(
+          codec,
+          sortedMessages,
+          runId,
+          undefined,
+          liveInputCodecMessageIds(liveLookupMessages),
+        );
         cachedProjection = currentProjection;
         allMessages.push(...codec.getMessages(currentProjection));
 

@@ -83,7 +83,7 @@ Each client is identified by a `clientId` passed to the session. The session sta
 - **`runClientId`** — the client that owns the run (the one whose initiating `ai-input` started it). Constant for the run's lifetime.
 - **`inputClientId`** — the clientId of the input event currently driving the agent. The agent reads it from the publisher's Ably `clientId` on the triggering `ai-input` and re-stamps it on its own publishes. May differ from `runClientId` when a continuation invocation is triggered by an input from a non-owner (e.g. another client publishes a tool result for someone else's run).
 
-For a fresh run the two are equal. They diverge on a continuation: imagine Client A starts a run; Client B then publishes a tool-result `ai-input` against that run and POSTs the continuation. The agent's continuation `ai-run-start` carries `runClientId: A` (still A's run) and `inputClientId: B` (B published the input that drove this invocation). Every assistant output published during B's invocation carries the same pair.
+For a fresh run the two are equal. They diverge on a continuation: imagine Client A starts a run; Client B then publishes a tool-result `ai-input` against that run and POSTs the continuation. The agent's continuation `ai-run-resume` carries `runClientId: A` (still A's run) and `inputClientId: B` (B published the input that drove this invocation). Every assistant output published during B's invocation carries the same pair.
 
 UIs that need to attribute work per-invocation can read `input-client-id` from message headers; UIs that just need "whose run is this" read `run-client-id`. See [Wire protocol: client identity](../internals/wire-protocol.md#client-identity) for the full definition.
 

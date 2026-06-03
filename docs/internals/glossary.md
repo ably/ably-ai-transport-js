@@ -64,7 +64,7 @@ The client session does **not** route the two differently: every decoded run out
 The protocol attributes each event to a client at two concentric scopes:
 
 - **`runClientId`** (`run-client-id`) — the client that **owns** the run, the one whose initiating `ai-input` started it. Constant for the lifetime of the run, even when later inputs come from other clients.
-- **`inputClientId`** (`input-client-id`) — the clientId of the input event (the `ai-input`) that drove the current invocation. The agent reads it from the publisher's Ably-level `clientId` on the triggering wire message and re-stamps it on its own published events for that invocation. Updates on a continuation `ai-run-start` if the triggering input came from a different client (e.g. a tool-result publish from a non-owner).
+- **`inputClientId`** (`input-client-id`) — the clientId of the input event (the `ai-input`) that drove the current invocation. The agent reads it from the publisher's Ably-level `clientId` on the triggering wire message and re-stamps it on its own published events for that invocation. Updates on a continuation `ai-run-resume` if the triggering input came from a different client (e.g. a tool-result publish from a non-owner).
 
 For a fresh run the two are equal. They diverge on continuation invocations triggered by an input event from someone other than the run owner. The Ably channel-level `clientId` on each message is a third, orthogonal identity field — the publisher of that particular event. See [Wire protocol: client identity](wire-protocol.md#client-identity).
 

@@ -59,7 +59,7 @@ Each run gets its own `AbortController`. If `opts.signal` is provided (typically
 
 ### start
 
-Publishes `ai-run-start` to the channel via the [RunManager](transport-components.md#runmanager). Must be called before `addMessages()` or `pipe()`.
+Publishes the run's opening lifecycle event to the channel via the [RunManager](transport-components.md#runmanager): `ai-run-start` for a fresh run, or `ai-run-resume` when the triggering input is marked a continuation (the agent reads the `run-continue` marker off the input wire during the input-event lookup). The public `start()` call is the same either way — the choice is internal. Must be called before `addMessages()` or `pipe()`.
 
 The lifecycle event carries `input-client-id` — the Ably-level publisher `clientId` of the input event that triggered this invocation, read from the wire by the input-event lookup. On a fresh run this typically matches `run-client-id` (the run owner). On a continuation invocation triggered by an input from a non-owner (e.g. a tool-result publish from a different client), the new `input-client-id` reflects whoever published that input while `run-client-id` stays put. See [Client identity](wire-protocol.md#client-identity).
 

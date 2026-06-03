@@ -81,9 +81,12 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
       let summary: string;
       if (event.type === 'start') {
         type = 'runStart';
-        summary = `${head}${event.isContinuation ? ', continuation' : ''}`;
+        summary = head;
       } else if (event.type === 'suspend') {
         type = 'runSuspend';
+        summary = head;
+      } else if (event.type === 'resume') {
+        type = 'runResume';
         summary = head;
       } else {
         type = 'runEnd';

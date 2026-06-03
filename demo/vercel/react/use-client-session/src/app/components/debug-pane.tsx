@@ -6,7 +6,7 @@ import type * as Ably from 'ably';
 
 export interface CallbackLogEntry {
   time: number;
-  type: 'runStart' | 'runSuspend' | 'runEnd' | 'error';
+  type: 'runStart' | 'runSuspend' | 'runResume' | 'runEnd' | 'error';
   summary: string;
 }
 
@@ -132,6 +132,7 @@ function UIMessagesTab({ messages, status }: { messages: UIMessage[]; status: st
 const callbackTypeColors: Record<string, string> = {
   runStart: 'text-blue-400',
   runSuspend: 'text-amber-400',
+  runResume: 'text-cyan-400',
   runEnd: 'text-emerald-400',
   error: 'text-red-400',
 };

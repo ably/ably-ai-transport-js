@@ -10,12 +10,20 @@
  * the tree asynchronously via the channel echo and the codec's reducer.
  * A synchronous optimistic fold path on the ChatTransport adapter is
  * tracked separately under AIT-776.
+ *
+ * Each execution is reported via the optional `onExecute` callback — once with
+ * status `executing` when the tool fires here (after the targeting gate), then
+ * again with status `done` and the output once the executor resolves. This is
+ * driven by the actual execution path, so it reflects which client truly ran
+ * the tool (unlike useChat's `onToolCall`, which fires only on the sender that
+ * consumes the response stream).
  */
 
 import { useEffect, useRef } from 'react';
 import type { ChatAddToolOutputFunction, DynamicToolUIPart, UIMessage } from 'ai';
 import type { ClientSession, CodecMessage, RunInfo } from '@ably/ai-transport';
 import type { VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
+import type { ClientToolLogEntry } from '../components/debug-pane';
 
 type ClientToolExecutor = (input: unknown) => Promise<unknown>;
 
@@ -49,6 +57,7 @@ export function useClientTools(
   addToolResult: ChatAddToolOutputFunction<UIMessage>,
   runOf: (codecMessageId: string) => RunInfo | undefined,
   clientId: string | undefined,
+  onExecute?: (entry: ClientToolLogEntry) => void,
 ) {
   const handledRef = useRef(new Set<string>());
 
@@ -80,11 +89,28 @@ export function useClientTools(
 
         handledRef.current.add(toolPart.toolCallId);
 
+        const startedAt = Date.now();
+        onExecute?.({
+          time: startedAt,
+          toolName: toolPart.toolName,
+          toolCallId: toolPart.toolCallId,
+          input: toolPart.input,
+          status: 'executing',
+        });
+
         // The tool output reaches the tree via the channel echo (the
         // continuation wire that addToolResult publishes is folded by
         // the codec's reducer). See AIT-776 for a synchronous adapter
         // path that would skip the echo round-trip.
         void clientTools[toolPart.toolName](toolPart.input).then((output) => {
+          onExecute?.({
+            time: startedAt,
+            toolName: toolPart.toolName,
+            toolCallId: toolPart.toolCallId,
+            input: toolPart.input,
+            status: 'done',
+            output,
+          });
           addToolResult({
             tool: toolPart.toolName,
             toolCallId: toolPart.toolCallId,
@@ -93,5 +119,5 @@ export function useClientTools(
         });
       }
     }
-  }, [session, messages, addToolResult, runOf, clientId]);
+  }, [session, messages, addToolResult, runOf, clientId, onExecute]);
 }

@@ -5,7 +5,7 @@ import { lastAssistantMessageIsCompleteWithApprovalResponses, lastAssistantMessa
 import { useAblyMessages, useChatTransport, useMessageSync, useView } from '@ably/ai-transport/vercel/react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { MessageList } from './components/message-list';
-import type { CallbackLogEntry } from './components/debug-pane';
+import type { CallbackLogEntry, ClientToolLogEntry } from './components/debug-pane';
 import { DebugPane } from './components/debug-pane';
 import { SuggestionChips } from './components/suggestion-chips';
 import { useClientTools } from './hooks/use-client-tools';
@@ -23,9 +23,24 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
   // -- Callback & status logging for debug pane ----------------------------
   const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);
   const [statusLog, setStatusLog] = useState<{ time: number; status: string }[]>([]);
+  const [clientToolLog, setClientToolLog] = useState<ClientToolLogEntry[]>([]);
   const clearLogs = useCallback(() => {
     setCallbackLog([]);
     setStatusLog([]);
+    setClientToolLog([]);
+  }, []);
+
+  // Record client-side tool executions, keyed by toolCallId. Each onExecute
+  // call carries a complete entry, so the `done` entry replaces the earlier
+  // `executing` one in place.
+  const recordClientTool = useCallback((entry: ClientToolLogEntry) => {
+    setClientToolLog((prev) => {
+      const idx = prev.findIndex((e) => e.toolCallId === entry.toolCallId);
+      if (idx === -1) return [...prev, entry];
+      const next = [...prev];
+      next[idx] = entry;
+      return next;
+    });
   }, []);
 
   const { setMessages, sendMessage, stop, status, regenerate, addToolResult, addToolApprovalResponse } = useChat({
@@ -75,7 +90,7 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
     limit: historyLimit ?? 30,
   });
 
-  useClientTools(session, messages, addToolResult, runOf, clientId);
+  useClientTools(session, messages, addToolResult, runOf, clientId, recordClientTool);
 
   const ablyMessages = useAblyMessages();
 
@@ -130,6 +145,7 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
         status={status}
         callbackLog={callbackLog}
         statusLog={statusLog}
+        clientToolLog={clientToolLog}
         onClearLogs={clearLogs}
       />
     </div>

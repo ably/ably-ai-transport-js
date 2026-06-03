@@ -12,6 +12,12 @@
  * Skips tool calls that already have a follow-up assistant message - those
  * were resolved in a previous session and don't need re-execution.
  * Only executes for runs initiated by this client (matches owningRun.clientId).
+ *
+ * Each execution is reported via the optional `onExecute` callback — once with
+ * status `executing` when the tool fires here (after the targeting gate), then
+ * again with status `done` (and output) or `error` once the executor settles.
+ * This is driven by the actual execution path, so it reflects which client
+ * truly ran the tool — something a multi-client channel cannot otherwise show.
  */
 
 import { useEffect, useRef } from 'react';
@@ -20,6 +26,7 @@ import type { ViewHandle } from '@ably/ai-transport/react';
 import { UIMessageCodec, type VercelInput } from '@ably/ai-transport/vercel';
 
 import { wakeAgent } from '../helpers';
+import type { ClientToolLogEntry } from '../components/debug-pane';
 
 type ClientToolExecutor = (input: unknown) => Promise<unknown>;
 
@@ -47,7 +54,12 @@ const clientTools: Record<string, ClientToolExecutor> = {
   },
 };
 
-export function useClientTools(view: ViewHandle<VercelInput, UIMessage>, clientId: string | undefined, api: string) {
+export function useClientTools(
+  view: ViewHandle<VercelInput, UIMessage>,
+  clientId: string | undefined,
+  api: string,
+  onExecute?: (entry: ClientToolLogEntry) => void,
+) {
   // Track which tool calls we've already handled to avoid re-executing
   const handledRef = useRef(new Set<string>());
 
@@ -86,10 +98,19 @@ export function useClientTools(view: ViewHandle<VercelInput, UIMessage>, clientI
 
         handledRef.current.add(toolPart.toolCallId);
 
-        executeClientTool(view, api, run.runId, codecMessageId, toolPart);
+        const startedAt = Date.now();
+        onExecute?.({
+          time: startedAt,
+          toolName: toolPart.toolName,
+          toolCallId: toolPart.toolCallId,
+          input: toolPart.input,
+          status: 'executing',
+        });
+
+        executeClientTool(view, api, run.runId, codecMessageId, toolPart, { onExecute, startedAt });
       }
     }
-  }, [view, view.messages, clientId, api]);
+  }, [view, view.messages, clientId, api, onExecute]);
 }
 
 // The tool result targets the suspended assistant message via
@@ -101,6 +122,10 @@ async function executeClientTool(
   runId: string,
   codecMessageId: string,
   toolPart: DynamicToolUIPart,
+  log?: {
+    onExecute?: (entry: ClientToolLogEntry) => void;
+    startedAt: number;
+  },
 ): Promise<void> {
   const executor = clientTools[toolPart.toolName];
   if (!executor) return;
@@ -111,11 +136,32 @@ async function executeClientTool(
   try {
     const output = await executor(toolPart.input);
     input = UIMessageCodec.createToolResult(codecMessageId, { toolCallId: toolPart.toolCallId, output });
+    if (log?.onExecute) {
+      log.onExecute({
+        time: log.startedAt,
+        toolName: toolPart.toolName,
+        toolCallId: toolPart.toolCallId,
+        input: toolPart.input,
+        status: 'done',
+        output,
+      });
+    }
   } catch (error) {
+    const message = error instanceof Error ? error.message : 'Client tool execution failed';
     input = UIMessageCodec.createToolResultError(codecMessageId, {
       toolCallId: toolPart.toolCallId,
-      message: error instanceof Error ? error.message : 'Client tool execution failed',
+      message,
     });
+    if (log?.onExecute) {
+      log.onExecute({
+        time: log.startedAt,
+        toolName: toolPart.toolName,
+        toolCallId: toolPart.toolCallId,
+        input: toolPart.input,
+        status: 'error',
+        error: message,
+      });
+    }
   }
 
   // Publish the resolution, then wake the agent so it picks it up and resumes.

@@ -11,6 +11,45 @@ export interface CallbackLogEntry {
   summary: string;
 }
 
+/** Fields common to every {@link ClientToolLogEntry} variant. */
+interface ClientToolLogEntryBase {
+  /** When execution started (ms since epoch). */
+  time: number;
+  /** Tool name, e.g. `getLocation`. */
+  toolName: string;
+  /** AI SDK tool-call id; the upsert key, also shown for cross-referencing the Ably Messages tab. */
+  toolCallId: string;
+  /** The tool input the model produced. */
+  input: unknown;
+}
+
+/**
+ * One client-side tool execution observed on THIS client since page load.
+ * Recorded locally by `useClientTools` at the moment the tool runs here, so it
+ * attributes execution to this running instance — which the replicated
+ * conversation state can't, since that looks identical in every participant.
+ *
+ * Discriminated on `status`: `output` exists only when `done`, `error` only
+ * when `error`.
+ */
+export type ClientToolLogEntry =
+  | (ClientToolLogEntryBase & {
+      /** Execution has started; the executor has not yet settled. */
+      status: 'executing';
+    })
+  | (ClientToolLogEntryBase & {
+      /** Execution succeeded. */
+      status: 'done';
+      /** The executor's output. */
+      output: unknown;
+    })
+  | (ClientToolLogEntryBase & {
+      /** Execution threw. */
+      status: 'error';
+      /** The failure message. */
+      error: string;
+    });
+
 interface DebugPaneProps {
   // The visible messages paired with their codec-message-ids; the pane renders
   // the raw `message` halves as JSON.
@@ -19,6 +58,7 @@ interface DebugPaneProps {
   status: string;
   callbackLog: CallbackLogEntry[];
   statusLog: { time: number; status: string }[];
+  clientToolLog: ClientToolLogEntry[];
   onClearLogs: () => void;
 }
 
@@ -148,10 +188,12 @@ const statusColors: Record<string, string> = {
 function LifecycleTab({
   callbackLog,
   statusLog,
+  clientToolLog,
   onClear,
 }: {
   callbackLog: CallbackLogEntry[];
   statusLog: { time: number; status: string }[];
+  clientToolLog: ClientToolLogEntry[];
   onClear: () => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -160,7 +202,7 @@ function LifecycleTab({
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [callbackLog, statusLog]);
+  }, [callbackLog, statusLog, clientToolLog]);
 
   return (
     <div
@@ -213,11 +255,60 @@ function LifecycleTab({
           </div>
         ))
       )}
+
+      <div className="mt-4 mb-2">
+        <span className="text-[10px] text-zinc-400 uppercase tracking-wider">Client-side tool calls</span>
+      </div>
+
+      {clientToolLog.length === 0 ? (
+        <p className="text-xs text-zinc-500 text-center">
+          Tools this client executes (e.g. getLocation) will appear here.
+        </p>
+      ) : (
+        clientToolLog.map((entry) => (
+          <div
+            key={entry.toolCallId}
+            className="rounded border border-zinc-800 bg-zinc-900/50 p-2 text-[11px] font-mono"
+          >
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-zinc-400">{new Date(entry.time).toLocaleTimeString()}</span>
+              <span className="text-blue-400">{entry.toolName}</span>
+              <span
+                className={
+                  entry.status === 'done'
+                    ? 'text-emerald-400'
+                    : entry.status === 'error'
+                      ? 'text-red-400'
+                      : 'text-amber-400'
+                }
+              >
+                {entry.status}
+              </span>
+            </div>
+            <div className="text-zinc-600 break-all">id: {entry.toolCallId}</div>
+            <div className="text-zinc-500 break-all whitespace-pre-wrap">in: {JSON.stringify(entry.input)}</div>
+            {entry.status === 'done' && (
+              <div className="text-indigo-300 break-all whitespace-pre-wrap">out: {JSON.stringify(entry.output)}</div>
+            )}
+            {entry.status === 'error' && (
+              <div className="text-red-300 break-all whitespace-pre-wrap">err: {entry.error}</div>
+            )}
+          </div>
+        ))
+      )}
     </div>
   );
 }
 
-export function DebugPane({ messages, ablyMessages, status, callbackLog, statusLog, onClearLogs }: DebugPaneProps) {
+export function DebugPane({
+  messages,
+  ablyMessages,
+  status,
+  callbackLog,
+  statusLog,
+  clientToolLog,
+  onClearLogs,
+}: DebugPaneProps) {
   const [isOpen, setIsOpen] = useState(true);
   const [tab, setTab] = useState<Tab>('ably');
 
@@ -265,7 +356,7 @@ export function DebugPane({ messages, ablyMessages, status, callbackLog, statusL
                 }`}
               >
                 Lifecycle
-                <span className="ml-1 text-zinc-600">{callbackLog.length}</span>
+                <span className="ml-1 text-zinc-600">{callbackLog.length + clientToolLog.length}</span>
               </button>
             </div>
             <button
@@ -286,6 +377,7 @@ export function DebugPane({ messages, ablyMessages, status, callbackLog, statusL
             <LifecycleTab
               callbackLog={callbackLog}
               statusLog={statusLog}
+              clientToolLog={clientToolLog}
               onClear={onClearLogs}
             />
           )}

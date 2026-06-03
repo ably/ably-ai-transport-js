@@ -9,7 +9,7 @@ import { useClientTools } from '../hooks/use-client-tools';
 import { useDemoProgress } from '../hooks/use-demo-progress';
 import { MessageList } from './message-list';
 import { SuggestionChips } from './suggestion-chips';
-import type { CallbackLogEntry } from './debug-pane';
+import type { CallbackLogEntry, ClientToolLogEntry } from './debug-pane';
 import { DebugPane } from './debug-pane';
 import { SessionHooks } from '../providers';
 import { clientColor } from '../lib/client-color';
@@ -29,15 +29,30 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
 
   const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);
   const [statusLog, setStatusLog] = useState<{ time: number; status: string }[]>([]);
+  const [clientToolLog, setClientToolLog] = useState<ClientToolLogEntry[]>([]);
   const clearLogs = useCallback(() => {
     setCallbackLog([]);
     setStatusLog([]);
+    setClientToolLog([]);
+  }, []);
+
+  // Record client-side tool executions, keyed by toolCallId. Each onExecute
+  // call carries a complete entry, so the `done`/`error` entry replaces the
+  // earlier `executing` one in place.
+  const recordClientTool = useCallback((entry: ClientToolLogEntry) => {
+    setClientToolLog((prev) => {
+      const idx = prev.findIndex((e) => e.toolCallId === entry.toolCallId);
+      if (idx === -1) return [...prev, entry];
+      const next = [...prev];
+      next[idx] = entry;
+      return next;
+    });
   }, []);
 
   const view = useView({ limit: historyLimit ?? 30 });
   const { messages, hasOlder, loading, loadOlder, branchSelection, selectSibling, runOf } = view;
 
-  useClientTools(view, clientId, api);
+  useClientTools(view, clientId, api, recordClientTool);
 
   // Wake the agent for a freshly-sent run by POSTing its invocation pointer.
   // The core session never sends HTTP — the app owns the trigger. Send sites
@@ -200,6 +215,7 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
         status={status}
         callbackLog={callbackLog}
         statusLog={statusLog}
+        clientToolLog={clientToolLog}
         onClearLogs={clearLogs}
       />
     </div>

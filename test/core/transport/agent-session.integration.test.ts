@@ -879,13 +879,18 @@ describe('AgentSession integration', () => {
    * `run.view.messages` ordered by publish order, then the agent can pipe
    * an assistant response that the client receives.
    *
-   * This is the regression test for PR #90: previously the lookup settled
-   * on the first matching arrival and dropped subsequent messages.
+   * In the agent-minted model the client's fresh input is run-less and the
+   * invocation conveys the trigger `inputEventId`. The agent looks the input
+   * up by event-id and folds it into the run's projection by codec-message-id
+   * (it carries no run-id), so `run.messages` reflects the user prompt before
+   * the agent streams its reply. (Conveying multiple inputs of one send to the
+   * agent awaits the run-less-node redesign; the invocation carries a single
+   * trigger inputEventId.)
    */
-  it('collects all messages in a multi-message send before run.start() resolves', async () => {
+  it('folds a fresh run-less input into the run projection via the agent lookup', async () => {
     // Lazy-import to keep the existing test imports above stable.
     const { createClientSession } = await import('../../../src/core/transport/client-session.js');
-    const channelName = uniqueChannelName('st-multi-msg');
+    const channelName = uniqueChannelName('st-fresh-input');
     const serverClient = ablyRealtimeClient();
     const clientClient = ablyRealtimeClient();
 
@@ -901,54 +906,42 @@ describe('AgentSession integration', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      // `send()` would otherwise block awaiting `ai-run-start` — but
-      // the agent only publishes that AFTER its lookup resolves, which
-      // requires `send()` to publish the user messages first. The
-      // happy-path run-start wait is exercised in client-session integration
-      // tests (Commit 2); this test focuses on the lookup itself.
       clientId: clientClient.auth.clientId,
     });
     await clientSession.connect();
 
     try {
-      const activeRun = await clientSession.view.sendMessage([
-        {
-          id: 'user-multi-1',
-          role: 'user',
-          parts: [{ type: 'text', text: 'First' }],
-        },
-        {
-          id: 'user-multi-2',
-          role: 'user',
-          parts: [{ type: 'text', text: 'Second' }],
-        },
-      ]);
+      const activeRun = await clientSession.view.sendMessage({
+        id: 'user-fresh-1',
+        role: 'user',
+        parts: [{ type: 'text', text: 'First' }],
+      });
 
+      // The client minted no run-id — pin the agent run to the run's key so the
+      // looked-up run-less input and the agent's outputs share one identifier.
       const serverRun = createRunFromOpts(session, {
         runId: activeRun.key,
         inputEventId: activeRun.inputEventId,
       });
       await serverRun.start();
-      // start() only collects the primary trigger event (the last message of
-      // the send). The non-trigger messages are read by loadProjection() from
-      // channel.history(), which is eventually consistent — so retry until
-      // both have been indexed rather than asserting after a single read.
+      // loadProjection() reads the run-less input from channel.history(), which
+      // is eventually consistent — retry until the input has been indexed and
+      // folded (matched by its codec-message-id) rather than asserting after a
+      // single read.
       let messages = serverRun.messages;
       await vi.waitFor(
         async () => {
           await serverRun.loadProjection();
           messages = serverRun.messages;
-          expect(messages).toHaveLength(2);
+          expect(messages).toHaveLength(1);
         },
         { timeout: 10_000 },
       );
 
       const ids = messages.map((m) => m.id);
-      expect(ids).toEqual(['user-multi-1', 'user-multi-2']);
+      expect(ids).toEqual(['user-fresh-1']);
       const firstText = messages[0]?.parts.find((p): p is AI.TextUIPart => p.type === 'text')?.text;
-      const secondText = messages[1]?.parts.find((p): p is AI.TextUIPart => p.type === 'text')?.text;
       expect(firstText).toBe('First');
-      expect(secondText).toBe('Second');
 
       // Streaming was hoisted out of the core, so the response reaches the
       // client on the Tree's `output` event rather than an ActiveRun stream.
@@ -973,7 +966,7 @@ describe('AgentSession integration', () => {
         });
       });
 
-      const responseStream = textResponseStream('asst-multi-1', 'text-multi-1', 'Got both');
+      const responseStream = textResponseStream('asst-fresh-1', 'text-fresh-1', 'Got it');
       const result = await serverRun.pipe(responseStream);
       await serverRun.end('complete');
       expect(result.reason).toBe('complete');

@@ -23,6 +23,7 @@ import {
   EVENT_CANCEL,
   EVENT_RUN_END,
   EVENT_RUN_START,
+  HEADER_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
@@ -375,33 +376,25 @@ describe('ClientSession integration', () => {
     });
     await clientSession.connect();
 
-    const sendPromise = clientSession.view.sendMessage({
+    // send() resolves on publish. The client mints no run-id — the run is
+    // provisional, keyed by the triggering input's codec-message-id.
+    const activeRun = await clientSession.view.sendMessage({
       id: 'user-msg-rt-1',
       role: 'user',
       parts: [{ type: 'text', text: 'Hello!' }],
     });
 
-    // Wait briefly so the client's user-message publish has time to land
-    await new Promise((r) => setTimeout(r, 50));
-
-    // The send promise hasn't resolved yet — we need an agent run-start. Get
-    // runId from the optimistic tree node.
-    const tree = clientSession.tree;
-    const optimisticNode = clientSession.view.runs()[0];
-    const runId = optimisticNode?.runId;
-    const invocationId = optimisticNode?.invocationId;
-    expect(runId).toBeDefined();
-    expect(invocationId).toBeDefined();
-    if (!runId || !invocationId) throw new Error('expected run/invocation ids');
-
+    // The agent owns run identity. Pin the server run to the run's key (the
+    // client-owned handle) and pass the trigger inputEventId so the agent's
+    // lookup finds the run-less input and folds it into the run's projection.
     const serverRun = createRunFromOpts(agentSession, {
-      runId,
-      invocationId,
+      runId: activeRun.key,
+      inputEventId: activeRun.inputEventId,
     });
     await serverRun.start();
-
-    await sendPromise;
-    const outputsPromise = collectRunOutputs(clientSession, runId);
+    // run-start has landed — the client adopts the run id.
+    await activeRun.started;
+    const outputsPromise = collectRunOutputs(clientSession, activeRun.key);
 
     const stream = textResponseStream('asst-msg-rt-1', 'text-rt-1', 'Hello, how can I help?');
     await serverRun.pipe(stream);
@@ -424,10 +417,6 @@ describe('ClientSession integration', () => {
     expect(asstMsg).toBeDefined();
     const asstTextPart = asstMsg?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
     expect(asstTextPart?.text).toBe('Hello, how can I help?');
-
-    // Keep `tree` referenced to satisfy unused-locals when typecheck runs in
-    // strict mode.
-    expect(tree).toBe(clientSession.tree);
   });
 
   it('surfaces streamed output events on the Tree output event', async () => {
@@ -450,26 +439,19 @@ describe('ClientSession integration', () => {
     });
     await clientSession.connect();
 
-    const sendPromise = clientSession.view.sendMessage({
+    const activeRun = await clientSession.view.sendMessage({
       id: 'user-msg-stream-1',
       role: 'user',
       parts: [{ type: 'text', text: 'Test' }],
     });
 
-    await new Promise((r) => setTimeout(r, 50));
-    const optimisticNode = clientSession.view.runs()[0];
-    const runId = optimisticNode?.runId;
-    const invocationId = optimisticNode?.invocationId;
-    if (!runId || !invocationId) throw new Error('expected ids');
-
     const serverRun = createRunFromOpts(agentSession, {
-      runId,
-      invocationId,
+      runId: activeRun.key,
+      inputEventId: activeRun.inputEventId,
     });
     await serverRun.start();
-
-    await sendPromise;
-    const outputsPromise = collectRunOutputs(clientSession, runId);
+    await activeRun.started;
+    const outputsPromise = collectRunOutputs(clientSession, activeRun.key);
 
     const stream = textResponseStream('asst-msg-stream-1', 'text-stream-1', 'Server response');
     await serverRun.pipe(stream);
@@ -505,27 +487,23 @@ describe('ClientSession integration', () => {
     const runEvents: RunLifecycleEvent[] = [];
     clientSession.tree.on('run', (e) => runEvents.push(e));
 
-    const sendPromise = clientSession.view.sendMessage({
+    const activeRun = await clientSession.view.sendMessage({
       id: 'user-lc-1',
       role: 'user',
       parts: [{ type: 'text', text: 'test' }],
     });
-    await new Promise((r) => setTimeout(r, 50));
-    const optimisticNode = clientSession.view.runs()[0];
-    const runId = optimisticNode?.runId;
-    const invocationId = optimisticNode?.invocationId;
-    if (!runId || !invocationId) throw new Error('expected ids');
 
-    const startPromise = waitForRunEvent(clientSession, runId, 'start');
-    const endPromise = waitForRunEvent(clientSession, runId, 'end');
+    // The agent's run-start/run-end carry the run id; pinned to the run key.
+    const startPromise = waitForRunEvent(clientSession, activeRun.key, 'start');
+    const endPromise = waitForRunEvent(clientSession, activeRun.key, 'end');
 
     const run = createRunFromOpts(agentSession, {
-      runId,
-      invocationId,
+      runId: activeRun.key,
+      inputEventId: activeRun.inputEventId,
     });
     await run.start();
 
-    await sendPromise;
+    await activeRun.started;
     await startPromise;
 
     const stream = textResponseStream('msg-lc-1', 'text-lc-1', 'test');
@@ -534,8 +512,8 @@ describe('ClientSession integration', () => {
 
     await endPromise;
 
-    expect(runEvents.some((e) => e.type === 'start' && e.runId === runId)).toBe(true);
-    expect(runEvents.some((e) => e.type === 'end' && e.runId === runId)).toBe(true);
+    expect(runEvents.some((e) => e.type === 'start' && e.runId === activeRun.key)).toBe(true);
+    expect(runEvents.some((e) => e.type === 'end' && e.runId === activeRun.key)).toBe(true);
   });
 
   it('client cancel aborts the server stream', async () => {
@@ -558,25 +536,20 @@ describe('ClientSession integration', () => {
     });
     await clientSession.connect();
 
-    const sendPromise = clientSession.view.sendMessage({
+    const clientRun = await clientSession.view.sendMessage({
       id: 'user-msg-cancel-1',
       role: 'user',
       parts: [{ type: 'text', text: 'Long request' }],
     });
-    await new Promise((r) => setTimeout(r, 50));
-    const optimisticNode = clientSession.view.runs()[0];
-    const runId = optimisticNode?.runId;
-    const invocationId = optimisticNode?.invocationId;
-    if (!runId || !invocationId) throw new Error('expected ids');
 
     const serverRun = createRunFromOpts(agentSession, {
-      runId,
-      invocationId,
+      runId: clientRun.key,
+      inputEventId: clientRun.inputEventId,
     });
     await serverRun.start();
-    const clientRun = await sendPromise;
+    await clientRun.started;
 
-    await clientSession.cancel(runId);
+    await clientSession.cancel(clientRun.key);
     await new Promise((r) => setTimeout(r, 100));
     expect(serverRun.abortSignal.aborted).toBe(true);
     await clientRun.cancel();
@@ -882,25 +855,21 @@ describe('ClientSession integration', () => {
     await observer.connect();
 
     try {
-      const sendPromise = clientSession.view.sendMessage({
+      const aRun = await clientSession.view.sendMessage({
         id: 'u-concurrent-1',
         role: 'user',
         parts: [{ type: 'text', text: 'hi from A' }],
       });
 
-      // Wait for A's optimistic Run to appear, then drive the agent so the
-      // send resolves.
-      await new Promise((r) => setTimeout(r, 100));
-      const aOptimistic = clientSession.view.runs()[0];
-      if (!aOptimistic) throw new Error('expected A optimistic node');
+      // The agent mints the run id; both the sender and the observer adopt it
+      // onto the run they keyed by the triggering codec-message-id.
       const serverRun = createRunFromOpts(agentSession, {
-        runId: aOptimistic.runId,
-        invocationId: aOptimistic.invocationId,
+        inputEventId: aRun.inputEventId,
       });
       await serverRun.start();
       await serverRun.pipe(textResponseStream('a-concurrent-1', 'text-concurrent-1', 'hi from agent'));
       await serverRun.end('complete');
-      await sendPromise;
+      await aRun.started;
 
       // Both views should now see the same conversation.
       await waitForMessages(clientSession, 2);
@@ -1049,17 +1018,11 @@ describe('ClientSession integration', () => {
     });
     await clientSession.connect();
 
-    const sendPromise = clientSession.view.sendMessage({
+    const activeRun = await clientSession.view.sendMessage({
       id: 'u-tool-1',
       role: 'user',
       parts: [{ type: 'text', text: "what's the weather like?" }],
     });
-
-    await new Promise((r) => setTimeout(r, 50));
-    const optimisticNode = clientSession.view.runs()[0];
-    const runId = optimisticNode?.runId;
-    const invocationId = optimisticNode?.invocationId;
-    if (!runId || !invocationId) throw new Error('expected ids');
 
     // Watch for the View to surface a dynamic-tool part with state
     // `input-available`. If the View suppresses streaming updates (the
@@ -1089,8 +1052,12 @@ describe('ClientSession integration', () => {
       });
     });
 
-    const serverRun = createRunFromOpts(agentSession, { runId, invocationId });
+    const serverRun = createRunFromOpts(agentSession, {
+      runId: activeRun.key,
+      inputEventId: activeRun.inputEventId,
+    });
     await serverRun.start();
+    await activeRun.started;
 
     const toolCallId = 'tool-call-stream-1';
     const stream = new ReadableStream<AI.UIMessageChunk>({
@@ -1112,7 +1079,6 @@ describe('ClientSession integration', () => {
     });
     await serverRun.pipe(stream);
     await serverRun.end('complete');
-    await sendPromise;
 
     const toolPart = await toolPartAvailable;
     expect(toolPart.toolName).toBe('getLocation');
@@ -1145,25 +1111,20 @@ describe('ClientSession integration', () => {
     const rawMessages: Ably.InboundMessage[] = [];
     clientSession.tree.on('ably-message', (msg) => rawMessages.push(msg));
 
-    const sendPromise = clientSession.view.sendMessage({
+    const activeRun = await clientSession.view.sendMessage({
       id: 'user-raw-1',
       role: 'user',
       parts: [{ type: 'text', text: 'test' }],
     });
-    await new Promise((r) => setTimeout(r, 50));
-    const optimisticNode = clientSession.view.runs()[0];
-    const runId = optimisticNode?.runId;
-    const invocationId = optimisticNode?.invocationId;
-    if (!runId || !invocationId) throw new Error('expected ids');
 
-    const endPromise = waitForRunEvent(clientSession, runId, 'end');
+    const endPromise = waitForRunEvent(clientSession, activeRun.key, 'end');
 
     const run = createRunFromOpts(agentSession, {
-      runId,
-      invocationId,
+      runId: activeRun.key,
+      inputEventId: activeRun.inputEventId,
     });
     await run.start();
-    await sendPromise;
+    await activeRun.started;
 
     await run.pipe(textResponseStream('asst-raw-1', 'text-raw-1', 'test'));
     await run.end('complete');
@@ -1196,23 +1157,18 @@ describe('ClientSession integration', () => {
     });
     await clientSession.connect();
 
-    const sendPromise = clientSession.view.sendMessage({
+    const activeRun = await clientSession.view.sendMessage({
       id: 'user-hdr-1',
       role: 'user',
       parts: [{ type: 'text', text: 'Question' }],
     });
-    await new Promise((r) => setTimeout(r, 50));
-    const optimisticNode = clientSession.view.runs()[0];
-    const runId = optimisticNode?.runId;
-    const invocationId = optimisticNode?.invocationId;
-    if (!runId || !invocationId) throw new Error('expected ids');
 
+    // The agent mints the run id; the client adopts it from run-start.
     const run = createRunFromOpts(agentSession, {
-      runId,
-      invocationId,
+      inputEventId: activeRun.inputEventId,
     });
     await run.start();
-    await sendPromise;
+    const { runId } = await activeRun.started;
 
     await run.pipe(textResponseStream('asst-hdr-1', 'text-hdr-1', 'Answer'));
     await run.end('complete');
@@ -1226,15 +1182,17 @@ describe('ClientSession integration', () => {
     expect(userMsg).toBeDefined();
     expect(asstMsg).toBeDefined();
 
+    // Both the user message and the assistant reply belong to one Run that
+    // adopted the agent-minted runId.
     if (userMsg) {
       expect(userMsg.id).toBeDefined();
-      const run = clientSession.view.runOf(userMsg.id);
-      expect(run?.runId).toBe(runId);
+      const found = clientSession.view.runOf(userMsg.id);
+      expect(found?.runId).toBe(runId);
     }
     if (asstMsg) {
       expect(asstMsg.id).toBeDefined();
-      const run = clientSession.view.runOf(asstMsg.id);
-      expect(run?.runId).toBe(runId);
+      const found = clientSession.view.runOf(asstMsg.id);
+      expect(found?.runId).toBe(runId);
     }
   });
 
@@ -1269,6 +1227,8 @@ describe('ClientSession integration', () => {
 
     // Allow the publish ack to land in channel history. Real Ably history
     // has slight propagation lag — poll for up to a few seconds.
+    // A fresh send carries no run-id — it is run-less on the wire, keyed by
+    // its codec-message-id (the run's key). Find it by that.
     const channel = clientClient.channels.get(channelName);
     let found: Ably.InboundMessage | undefined;
     for (let i = 0; i < 30 && !found; i++) {
@@ -1276,13 +1236,16 @@ describe('ClientSession integration', () => {
       const page = await channel.history({ limit: 10, direction: 'backwards' });
       found = page.items.find((m) => {
         const headers = getHeaders(m);
-        return headers[HEADER_ROLE] === 'user' && headers[HEADER_RUN_ID] === clientRun.key;
+        return headers[HEADER_ROLE] === 'user' && headers[HEADER_CODEC_MESSAGE_ID] === clientRun.key;
       });
     }
     expect(found).toBeDefined();
 
+    // The agent mints run/invocation identity, so the client's input carries
+    // neither a run-id nor an invocation-id on the wire.
     const foundHeaders = found ? getHeaders(found) : {};
-    expect(foundHeaders['invocation-id']).toBeDefined();
+    expect(foundHeaders[HEADER_RUN_ID]).toBeUndefined();
+    expect(foundHeaders['invocation-id']).toBeUndefined();
   });
 
   // -------------------------------------------------------------------------
@@ -1475,8 +1438,8 @@ describe('ClientSession integration', () => {
     });
     await clientSession.connect();
 
-    // send() resolves on publish and carries the run's identity directly —
-    // no need to snoop the channel for the published ids.
+    // send() resolves on publish; the client mints no run-id, so the run is
+    // keyed by the triggering input's codec-message-id (activeRun.key).
     const activeRun = await clientSession.view.sendMessage({
       id: 'user-rs-happy-1',
       role: 'user',
@@ -1484,9 +1447,9 @@ describe('ClientSession integration', () => {
     });
 
     // Stand up the server-side run; its `start()` triggers the real lookup
-    // (which finds the user message) and publishes run-start. The agent owns
-    // run identity; pin the server run to the run's key (the client-owned
-    // handle) so it correlates while the client still mints.
+    // (which finds the run-less user message) and publishes run-start. Pin the
+    // run to its key so the looked-up input and the agent's outputs share one
+    // identifier on this channel.
     const serverRun = createRunFromOpts(agentSession, {
       runId: activeRun.key,
       inputEventId: activeRun.inputEventId,

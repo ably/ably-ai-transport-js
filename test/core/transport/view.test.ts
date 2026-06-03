@@ -3,6 +3,7 @@ import type { Mock } from 'vitest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  EVENT_RUN_RESUME,
   EVENT_RUN_START,
   EVENT_RUN_SUSPEND,
   HEADER_CODEC_MESSAGE_ID,
@@ -1918,6 +1919,27 @@ describe('DefaultView', () => {
 
       const node = view.runs().find((n) => n.runId === 'R-susp');
       expect(node?.status).toBe('suspended');
+    });
+
+    it('reconstructs a resumed run from history (run-resume re-activates it)', async () => {
+      // A run that suspended and then resumed in the past appears in history as
+      // run-start → ai-run-suspend → ai-run-resume. History replay must rebuild
+      // the Run and leave it active after the resume.
+      const transport = { [HEADER_RUN_ID]: 'R-resumed', 'run-client-id': '' };
+      const lifecycle = (name: string, serial: string): Ably.InboundMessage =>
+        ({ name, serial, extras: { ai: { transport } } }) as unknown as Ably.InboundMessage;
+
+      vi.mocked(decodeHistory).mockResolvedValueOnce(
+        makePage(
+          [],
+          [lifecycle(EVENT_RUN_START, 's01'), lifecycle(EVENT_RUN_SUSPEND, 's02'), lifecycle(EVENT_RUN_RESUME, 's03')],
+        ),
+      );
+
+      await view.loadOlder(1);
+
+      const node = view.runs().find((n) => n.runId === 'R-resumed');
+      expect(node?.status).toBe('active');
     });
   });
 

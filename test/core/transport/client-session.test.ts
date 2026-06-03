@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   EVENT_RUN_END,
+  EVENT_RUN_RESUME,
   EVENT_RUN_START,
   EVENT_RUN_SUSPEND,
   HEADER_CODEC_MESSAGE_ID,
@@ -979,6 +980,44 @@ describe('ClientSession', () => {
       await expect(cont.started).resolves.toBeUndefined();
     });
 
+    it('continuation: run.started resolves on a run-resume by the triggering input codec-message-id', async () => {
+      // Once the agent emits ai-run-resume for a continuation (PR2 producer
+      // flip), the continuation's `started` must resolve on the resume — keyed
+      // by the same triggering input codec-message-id as a run-start would be.
+      const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      const cont = await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], {
+        runId: initial.runId,
+      });
+      const triggerCodecMessageId = cont.optimisticCodecMessageIds.at(-1);
+      expect(triggerCodecMessageId).toBeDefined();
+
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_RESUME, {
+          [HEADER_RUN_ID]: initial.runId,
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+          [HEADER_INPUT_CODEC_MESSAGE_ID]: triggerCodecMessageId ?? '',
+        }),
+      );
+
+      await expect(cont.started).resolves.toBeUndefined();
+    });
+
+    it('empty-input continuation: run.started resolves on a run-resume by the reused run-id', async () => {
+      const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      const cont = await fix.session.view.sendInput([], { runId: initial.runId });
+
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_RESUME, {
+          [HEADER_RUN_ID]: initial.runId,
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+        }),
+      );
+
+      await expect(cont.started).resolves.toBeUndefined();
+    });
+
     it('does not resolve run.started for a run-start matching neither the trigger codec-message-id nor the runId', async () => {
       const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
 
@@ -1099,6 +1138,37 @@ describe('ClientSession', () => {
       // The run stays in the tree, marked suspended — a continuation that
       // reuses the runId resumes it.
       expect(fix.session.tree.getRunNode('run-S')?.status).toBe('suspended');
+    });
+
+    it('re-activates a suspended run on run-resume', () => {
+      const lifecycle: RunLifecycleEvent[] = [];
+      fix.session.tree.on('run', (e) => lifecycle.push(e));
+
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_START, { [HEADER_RUN_ID]: 'run-R', [HEADER_RUN_CLIENT_ID]: 'agent' }),
+      );
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_SUSPEND, {
+          [HEADER_RUN_ID]: 'run-R',
+          [HEADER_RUN_CLIENT_ID]: 'agent',
+          [HEADER_INVOCATION_ID]: 'inv-1',
+        }),
+      );
+      expect(fix.session.tree.getRunNode('run-R')?.status).toBe('suspended');
+
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_RESUME, {
+          [HEADER_RUN_ID]: 'run-R',
+          [HEADER_RUN_CLIENT_ID]: 'agent',
+          [HEADER_INVOCATION_ID]: 'inv-2',
+        }),
+      );
+
+      expect(lifecycle.at(-1)?.type).toBe('resume');
+      expect(fix.session.tree.getRunNode('run-R')?.status).toBe('active');
     });
 
     it('surfaces isContinuation on the run-start event when run-continue is set', () => {

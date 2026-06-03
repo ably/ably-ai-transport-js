@@ -109,6 +109,9 @@ export interface TreeInternal<
    * - `suspend`: sets RunNode.status to 'suspended' and records `endSerial`.
    *   The run stays live so a resume under the same `runId` picks up where it
    *   left off.
+   * - `resume`: re-activates an existing suspended Run (status back to
+   *   'active') without touching its structure or serials — a pure re-entry
+   *   signal. A no-op if the Run is not yet known.
    * - `end`: sets RunNode.status to the end reason and `endSerial`.
    *   Untracks the run from active.
    *
@@ -654,6 +657,24 @@ export class DefaultTree<
       if (run) {
         run.node.status = 'suspended';
         run.node.endSerial = event.serial;
+      }
+      this._emitter.emit('run', event);
+      return;
+    }
+
+    if (event.type === 'resume') {
+      // A resume re-enters an already-started run: flip a suspended run back
+      // to 'active'. Pure re-entry — it carries no parent/forkOf and does not
+      // promote startSerial (the original run-start owns the run's structure).
+      // Only a suspended run resumes: a no-op when the run isn't known (e.g. a
+      // resume replayed from a newer history page before its run-start) and a
+      // no-op for an already-active or terminal (complete/cancelled/error) run —
+      // a stray resume must never resurrect a run that has ended. Status is
+      // content, not structure, so no 'update' is emitted (mirrors
+      // run-end / run-suspend).
+      const run = this._runIndex.get(event.runId);
+      if (run?.node.status === 'suspended') {
+        run.node.status = 'active';
       }
       this._emitter.emit('run', event);
       return;

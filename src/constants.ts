@@ -148,6 +148,14 @@ export const EVENT_RUN_START = 'ai-run-start';
  */
 export const EVENT_RUN_SUSPEND = 'ai-run-suspend';
 
+/**
+ * Message name: server publishes this when a subsequent invocation re-enters an
+ * already-started run (e.g. a tool-result follow-up under the same `runId`).
+ * A pure re-entry signal: unlike `ai-run-start` it carries no `parent` / `fork-of`
+ * (the original `ai-run-start` already established the run's structure).
+ */
+export const EVENT_RUN_RESUME = 'ai-run-resume';
+
 /** Message name: server publishes this to signal a run has ended. */
 export const EVENT_RUN_END = 'ai-run-end';
 

@@ -1157,6 +1157,103 @@ describe('Tree', () => {
       expect(handler).toHaveBeenCalledTimes(2);
       expect(handler).toHaveBeenNthCalledWith(2, expect.objectContaining({ type: 'suspend', runId: 'R1' }));
     });
+
+    it('run-resume re-activates a suspended run without changing its startSerial', () => {
+      tree.applyRunLifecycle({
+        type: 'start',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: 'inv-1',
+        serial: 's1',
+      });
+      tree.applyRunLifecycle({
+        type: 'suspend',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: 'inv-1',
+        serial: 's5',
+      });
+      expect(tree.getRunNode('R1')?.status).toBe('suspended');
+
+      tree.applyRunLifecycle({
+        type: 'resume',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: 'inv-2',
+        serial: 's6',
+      });
+      const run = tree.getRunNode('R1');
+      expect(run?.status).toBe('active');
+      // Re-entry is not the start — the original startSerial is preserved.
+      expect(run?.startSerial).toBe('s1');
+    });
+
+    it('run-resume for an unknown run is a no-op', () => {
+      const handler = vi.fn();
+      tree.on('run', handler);
+      tree.applyRunLifecycle({
+        type: 'resume',
+        runId: 'R-unknown',
+        clientId: 'client-a',
+        invocationId: 'inv-2',
+        serial: 's6',
+      });
+      // No Run is created; the event still fires for observers.
+      expect(tree.getRunNode('R-unknown')).toBeUndefined();
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(handler).toHaveBeenNthCalledWith(1, expect.objectContaining({ type: 'resume', runId: 'R-unknown' }));
+    });
+
+    it('run-resume for a terminal run does not resurrect it', () => {
+      tree.applyRunLifecycle({
+        type: 'start',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: 'inv-1',
+        serial: 's1',
+      });
+      tree.applyRunLifecycle({
+        type: 'end',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: 'inv-1',
+        serial: 's5',
+        reason: 'complete',
+      });
+      expect(tree.getRunNode('R1')?.status).toBe('complete');
+
+      // A stray resume targeting an already-ended run must never flip it back
+      // to active — only suspended runs resume.
+      tree.applyRunLifecycle({
+        type: 'resume',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: 'inv-2',
+        serial: 's6',
+      });
+      expect(tree.getRunNode('R1')?.status).toBe('complete');
+    });
+
+    it('emits a run event on resume', () => {
+      const handler = vi.fn();
+      tree.applyRunLifecycle({
+        type: 'start',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: '',
+        serial: 's1',
+      });
+      tree.on('run', handler);
+      tree.applyRunLifecycle({
+        type: 'resume',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: 'inv-2',
+        serial: 's6',
+      });
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(handler).toHaveBeenNthCalledWith(1, expect.objectContaining({ type: 'resume', runId: 'R1' }));
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -1283,6 +1380,17 @@ describe('Tree', () => {
       const handler = vi.fn();
       tree.on('update', handler);
       tree.applyRunLifecycle({ type: 'suspend', runId: 'R1', clientId: 'c', invocationId: '', serial: 's2' });
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('does not emit update on a run-resume', () => {
+      // A resume only flips status back to 'active' (content, not structure),
+      // so it emits no `update`.
+      tree.applyRunLifecycle({ type: 'start', runId: 'R1', clientId: 'c', invocationId: '', serial: 's1' });
+      tree.applyRunLifecycle({ type: 'suspend', runId: 'R1', clientId: 'c', invocationId: '', serial: 's2' });
+      const handler = vi.fn();
+      tree.on('update', handler);
+      tree.applyRunLifecycle({ type: 'resume', runId: 'R1', clientId: 'c', invocationId: '', serial: 's3' });
       expect(handler).not.toHaveBeenCalled();
     });
 

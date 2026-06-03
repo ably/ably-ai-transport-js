@@ -860,19 +860,15 @@ describe('Tree', () => {
       expect(tree.getRunNode('R2')?.forkOf).toBe('R1');
     });
 
-    it('continuation run-starts do not backfill parent into a self-cycle when the parent msg-id belongs to the same Run', () => {
-      // Repro for the user-reported regression where a client-side tool
-      // resolution (or approval) made both the user prompt and the
-      // assistant bubble disappear:
+    it('a run-resume re-entry leaves an existing run a reachable root (no self-parent cycle)', () => {
+      // Regression guard for the disappearing user prompt / assistant bubble:
       //   1. User sends u1 -> R1 created, R1.parentRunId = undefined (root run).
       //   2. Agent streams a1 inside R1.
-      //   3. Client publishes a tool-resolution continuation wire stamped
-      //      with msg-id=a1, parent=a1, run-continue=true.
-      //   4. Agent's continuation run-start arrives carrying parent=a1
-      //      (read from the matched continuation wire's headers).
-      //   5. Pre-fix the backfill resolved msgIdToRunId[a1] = R1 and set
-      //      R1.parentRunId = R1 — a self-parent cycle — so runs()
-      //      filtered R1 out as unreachable and the View showed nothing.
+      //   3. A client-side tool resolution / approval re-enters R1.
+      // Continuations now arrive as ai-run-resume, which carries no parent, so
+      // there is nothing to backfill — R1 stays a reachable root. (Previously
+      // the continuation arrived as a run-start carrying parent=a1, which the
+      // backfill turned into a self-parent cycle that filtered R1 out.)
       apply(tree, {
         runId: 'R1',
         codecMessageId: 'u1',
@@ -890,12 +886,10 @@ describe('Tree', () => {
       expect(tree.getRunNode('R1')?.parentRunId).toBeUndefined();
 
       tree.applyRunLifecycle({
-        type: 'start',
+        type: 'resume',
         runId: 'R1',
         clientId: 'c1',
         invocationId: 'inv-2',
-        parent: 'a1',
-        isContinuation: true,
         serial: 's3',
       });
 

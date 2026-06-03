@@ -117,7 +117,6 @@ export const parseRunLifecycle = (
     const parent = headers[HEADER_PARENT];
     const forkOf = headers[HEADER_FORK_OF];
     const regenerates = headers[HEADER_MSG_REGENERATE];
-    const isContinuation = headers[HEADER_RUN_CONTINUE] === 'true';
     return {
       type: 'start',
       runId,
@@ -127,7 +126,6 @@ export const parseRunLifecycle = (
       ...(parent !== undefined && { parent }),
       ...(forkOf !== undefined && { forkOf }),
       ...(regenerates !== undefined && { regenerates }),
-      ...(isContinuation && { isContinuation: true }),
     };
   }
 

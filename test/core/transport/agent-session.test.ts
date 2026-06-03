@@ -553,10 +553,11 @@ describe('AgentSession', () => {
       expect(headers?.[HEADER_RUN_ID]).toBe('run-1');
     });
 
-    it('start() stamps run-continue on run-start when the input-event lookup result carries the continuation flag', async () => {
-      // Per-run metadata (continuation, clientId, parent, forkOf) is now
-      // resolved from the first input-event lookup MessageNode's headers — the
-      // agent reads `run-continue` off the channel, not the body.
+    it('start() publishes ai-run-resume (not ai-run-start) when the input-event lookup result carries the continuation flag', async () => {
+      // Per-run metadata (continuation, clientId, parent, forkOf) is resolved
+      // from the first input-event lookup MessageNode's headers — the agent
+      // reads `run-continue` off the channel, not the body. A continuation
+      // re-enters the run via ai-run-resume.
       const ch = createMockChannel();
       const c = codecWithFunctionalDecoder();
       const s = createAgentSession({
@@ -582,19 +583,17 @@ describe('AgentSession', () => {
       });
       await startPromise;
 
-      const startMsg = ch.publishCalls.find((m) => m.name === 'ai-run-start');
-      const headers = (startMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
-      expect(headers?.['run-continue']).toBe('true');
+      expect(ch.publishCalls.find((m) => m.name === 'ai-run-resume')).toBeDefined();
+      expect(ch.publishCalls.find((m) => m.name === 'ai-run-start')).toBeUndefined();
       s.close();
     });
 
-    it('start() omits run-continue on run-start when no continuation header is present', async () => {
+    it('start() publishes ai-run-start (not ai-run-resume) when no continuation header is present', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
 
-      const startMsg = channel.publishCalls.find((m) => m.name === 'ai-run-start');
-      const headers = (startMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
-      expect(headers?.['run-continue']).toBeUndefined();
+      expect(channel.publishCalls.find((m) => m.name === 'ai-run-start')).toBeDefined();
+      expect(channel.publishCalls.find((m) => m.name === 'ai-run-resume')).toBeUndefined();
     });
 
     it('start() stamps msg-regenerate on run-start when the input-event lookup result carries the regenerate anchor', async () => {
@@ -2078,10 +2077,11 @@ describe('Run.messages', () => {
     });
     await startPromise;
 
-    const runStart = ch.publishCalls.find((m) => m.name === 'ai-run-start');
-    const startHeaders = (runStart?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai
-      ?.transport;
-    expect(startHeaders?.['run-continue']).toBe('true');
+    // The continuation flag (read from the tool-resolution wire's headers via
+    // the firstHeaders fallback) makes the agent re-enter the run with
+    // ai-run-resume rather than open a new ai-run-start.
+    expect(ch.publishCalls.find((m) => m.name === 'ai-run-resume')).toBeDefined();
+    expect(ch.publishCalls.find((m) => m.name === 'ai-run-start')).toBeUndefined();
     session.close();
   });
 

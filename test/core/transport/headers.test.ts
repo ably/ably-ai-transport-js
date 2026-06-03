@@ -14,7 +14,6 @@ import {
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
-  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
 } from '../../../src/constants.js';
@@ -152,7 +151,6 @@ describe('parseRunLifecycle', () => {
         [HEADER_PARENT]: 'parent-msg',
         [HEADER_FORK_OF]: 'fork-msg',
         [HEADER_MSG_REGENERATE]: 'asst-original',
-        [HEADER_RUN_CONTINUE]: 'true',
       },
       's2',
     );
@@ -166,7 +164,6 @@ describe('parseRunLifecycle', () => {
       parent: 'parent-msg',
       forkOf: 'fork-msg',
       regenerates: 'asst-original',
-      isContinuation: true,
     });
   });
 
@@ -184,17 +181,6 @@ describe('parseRunLifecycle', () => {
     expect(event).not.toHaveProperty('parent');
     expect(event).not.toHaveProperty('forkOf');
     expect(event).not.toHaveProperty('regenerates');
-    expect(event).not.toHaveProperty('isContinuation');
-  });
-
-  it('does not mark isContinuation when run-continue is not "true"', () => {
-    const event = parseRunLifecycle(
-      EVENT_RUN_START,
-      { [HEADER_RUN_ID]: 'run-1', [HEADER_RUN_CONTINUE]: 'false' },
-      's1',
-    );
-
-    expect(event).not.toHaveProperty('isContinuation');
   });
 
   it('parses a run-end with an explicit reason', () => {

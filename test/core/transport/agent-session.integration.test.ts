@@ -23,6 +23,7 @@ import {
   EVENT_AI_OUTPUT,
   EVENT_CANCEL,
   EVENT_RUN_END,
+  EVENT_RUN_RESUME,
   EVENT_RUN_START,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_INPUT_CLIENT_ID,
@@ -189,10 +190,9 @@ describe('AgentSession integration', () => {
     // as `input-client-id` on every event it publishes for that
     // invocation. A second invocation triggered by an input from a
     // different publisher stamps the new value while `runClientId` (the
-    // run owner) stays the same. Today the continuation is materialised
-    // as a second `ai-run-start` with `run-continue: 'true'`; PR 8
-    // reframes this as `ai-run-resume` — the assertions track today's
-    // wire shape.
+    // run owner) stays the same. The continuation is materialised as an
+    // `ai-run-resume` (the triggering input carried `run-continue: 'true'`),
+    // not a second `ai-run-start`.
     const channelName = uniqueChannelName('st-input-client-id');
     const serverClient = ablyRealtimeClient();
     const publisherA = ablyRealtimeClient({ clientId: 'user-a' });
@@ -216,7 +216,7 @@ describe('AgentSession integration', () => {
     });
 
     await subChannel.subscribe((msg) => {
-      if (msg.name === EVENT_RUN_START || msg.name === EVENT_RUN_END) {
+      if (msg.name === EVENT_RUN_START || msg.name === EVENT_RUN_RESUME || msg.name === EVENT_RUN_END) {
         lifecycleMessages.push(msg);
         if (msg.name === EVENT_RUN_END) {
           runEndCount++;
@@ -243,6 +243,8 @@ describe('AgentSession integration', () => {
      * @param opts.invocationId - Invocation identifier the agent uses.
      * @param opts.codecMessageId - `codec-message-id` for the published input.
      * @param opts.streamArgs - Forwarded to `textResponseStream` for the agent's reply.
+     * @param opts.continuation - When true, marks the input `run-continue` so the
+     *   agent re-enters the run and publishes `ai-run-resume` rather than `ai-run-start`.
      */
     const runWithInput = async (opts: {
       publisher: Ably.Realtime;
@@ -250,6 +252,7 @@ describe('AgentSession integration', () => {
       invocationId: string;
       codecMessageId: string;
       streamArgs: [string, string, string];
+      continuation?: boolean;
     }): Promise<void> => {
       const inputEventId = crypto.randomUUID();
       const publisherChannel = opts.publisher.channels.get(channelName);
@@ -259,6 +262,7 @@ describe('AgentSession integration', () => {
         codecMessageId: opts.codecMessageId,
         invocationId: opts.invocationId,
         inputEventId,
+        ...(opts.continuation ? { runContinue: true } : {}),
       });
       const encoder = UIMessageCodec.createEncoder(publisherChannel, { extras: { headers } });
       const userInput = UIMessageCodec.createUserMessage({
@@ -299,29 +303,35 @@ describe('AgentSession integration', () => {
       invocationId: 'inv-b',
       codecMessageId: 'm-user-b',
       streamArgs: ['msg-b', 'text-b', 'second reply'],
+      continuation: true,
     });
 
     await twoEnds;
 
+    // The fresh first invocation opens the run with ai-run-start; the
+    // continuation (inv-b, input marked run-continue) re-enters it with
+    // ai-run-resume.
     const startMsgs = lifecycleMessages.filter((m) => m.name === EVENT_RUN_START);
+    const resumeMsgs = lifecycleMessages.filter((m) => m.name === EVENT_RUN_RESUME);
     const endMsgs = lifecycleMessages.filter((m) => m.name === EVENT_RUN_END);
-    expect(startMsgs).toHaveLength(2);
+    expect(startMsgs).toHaveLength(1);
+    expect(resumeMsgs).toHaveLength(1);
     expect(endMsgs).toHaveLength(2);
 
     const startA = startMsgs.find((m) => getHeaders(m)[HEADER_INVOCATION_ID] === 'inv-a');
-    const startB = startMsgs.find((m) => getHeaders(m)[HEADER_INVOCATION_ID] === 'inv-b');
+    const resumeB = resumeMsgs.find((m) => getHeaders(m)[HEADER_INVOCATION_ID] === 'inv-b');
     expect(startA).toBeDefined();
-    expect(startB).toBeDefined();
-    if (!startA || !startB) return;
+    expect(resumeB).toBeDefined();
+    if (!startA || !resumeB) return;
     expect(getHeaders(startA)[HEADER_INPUT_CLIENT_ID]).toBe('user-a');
-    expect(getHeaders(startB)[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
+    expect(getHeaders(resumeB)[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
 
     // The triggering input's codec-message-id is threaded through every event
-    // of the invocation (run-start, run-end, assistant outputs), mirroring
-    // input-client-id, so the client can correlate any of them back to the
-    // originating input by the id it owns at send time.
+    // of the invocation (run-start / run-resume, run-end, assistant outputs),
+    // mirroring input-client-id, so the client can correlate any of them back
+    // to the originating input by the id it owns at send time.
     expect(getHeaders(startA)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('m-user-a');
-    expect(getHeaders(startB)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('m-user-b');
+    expect(getHeaders(resumeB)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('m-user-b');
 
     const endA = endMsgs.find((m) => getHeaders(m)[HEADER_INVOCATION_ID] === 'inv-a');
     const endB = endMsgs.find((m) => getHeaders(m)[HEADER_INVOCATION_ID] === 'inv-b');
@@ -335,9 +345,9 @@ describe('AgentSession integration', () => {
 
     // Assistant outputs of each invocation also carry the input event's
     // publisher id. Both invocations share `runId`, so we partition by
-    // serial: messages before the second run-start belong to inv-a, the
-    // rest to inv-b. Serials are lexicographically ordered across the channel.
-    const cutoffSerial = startB.serial;
+    // serial: messages before the continuation's run-resume belong to inv-a,
+    // the rest to inv-b. Serials are lexicographically ordered across the channel.
+    const cutoffSerial = resumeB.serial;
     expect(cutoffSerial).toBeDefined();
     if (cutoffSerial === undefined) return;
     const assistantA = assistantMessages.find((m) => (m.serial ?? '') < cutoffSerial);

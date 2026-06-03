@@ -15,6 +15,7 @@ import * as Ably from 'ably';
 import {
   EVENT_CANCEL,
   EVENT_RUN_END,
+  EVENT_RUN_RESUME,
   EVENT_RUN_START,
   EVENT_RUN_SUSPEND,
   HEADER_CODEC_MESSAGE_ID,
@@ -98,7 +99,8 @@ const withLiveMessages = (
 /**
  * Fold a pre-sorted array of wire messages for a single run into a projection.
  *
- * Skips lifecycle events (`ai-run-start`, `ai-run-end`) and stops before the
+ * Skips lifecycle events (`ai-run-start` / `ai-run-suspend` / `ai-run-resume` /
+ * `ai-run-end`) and stops before the
  * message whose `codec-message-id` equals `truncateAt` (exclusive —
  * that message is not folded). Used by both `loadRunProjection` (no truncation)
  * and `loadConversation` (ancestor truncation for regenerate / fork).
@@ -121,7 +123,13 @@ const foldRunMessages = <TInput extends CodecInputEvent, TOutput extends CodecOu
     const h = getTransportHeaders(msg);
     if (h[HEADER_RUN_ID] !== runId) continue;
     // Lifecycle events carry no codec content — skip them.
-    if (msg.name === EVENT_RUN_START || msg.name === EVENT_RUN_SUSPEND || msg.name === EVENT_RUN_END) continue;
+    if (
+      msg.name === EVENT_RUN_START ||
+      msg.name === EVENT_RUN_SUSPEND ||
+      msg.name === EVENT_RUN_RESUME ||
+      msg.name === EVENT_RUN_END
+    )
+      continue;
     const codecMsgId = h[HEADER_CODEC_MESSAGE_ID];
     if (truncateAt !== undefined && codecMsgId === truncateAt) break;
     const { inputs, outputs } = decoder.decode(msg);
@@ -1234,7 +1242,13 @@ class DefaultAgentSession<
         // invocation body.
         const codecMsgToRunId = new Map<string, string>();
         for (const msg of sortedMessages) {
-          if (msg.name === EVENT_RUN_START || msg.name === EVENT_RUN_SUSPEND || msg.name === EVENT_RUN_END) continue;
+          if (
+            msg.name === EVENT_RUN_START ||
+            msg.name === EVENT_RUN_SUSPEND ||
+            msg.name === EVENT_RUN_RESUME ||
+            msg.name === EVENT_RUN_END
+          )
+            continue;
           const h = getTransportHeaders(msg);
           const msgRunId = h[HEADER_RUN_ID];
           const msgCodecId = h[HEADER_CODEC_MESSAGE_ID];

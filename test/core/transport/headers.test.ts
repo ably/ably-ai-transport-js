@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   EVENT_RUN_END,
+  EVENT_RUN_RESUME,
   EVENT_RUN_START,
   EVENT_RUN_SUSPEND,
   HEADER_CODEC_MESSAGE_ID,
@@ -265,9 +266,30 @@ describe('parseRunLifecycle', () => {
     });
   });
 
+  it('parses a run-resume into a resume event carrying runId, clientId, serial, and invocationId', () => {
+    const event = parseRunLifecycle(
+      EVENT_RUN_RESUME,
+      {
+        [HEADER_RUN_ID]: 'run-1',
+        [HEADER_RUN_CLIENT_ID]: 'user-a',
+        [HEADER_INVOCATION_ID]: 'inv-2',
+      },
+      's6',
+    );
+
+    expect(event).toEqual({
+      type: 'resume',
+      runId: 'run-1',
+      clientId: 'user-a',
+      serial: 's6',
+      invocationId: 'inv-2',
+    });
+  });
+
   it('returns undefined when run-id is missing', () => {
     expect(parseRunLifecycle(EVENT_RUN_START, {}, 's1')).toBeUndefined();
     expect(parseRunLifecycle(EVENT_RUN_SUSPEND, {}, 's1')).toBeUndefined();
+    expect(parseRunLifecycle(EVENT_RUN_RESUME, {}, 's1')).toBeUndefined();
     expect(parseRunLifecycle(EVENT_RUN_END, {}, 's1')).toBeUndefined();
   });
 

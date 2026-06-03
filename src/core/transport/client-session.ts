@@ -20,6 +20,7 @@ import * as Ably from 'ably';
 import {
   EVENT_CANCEL,
   EVENT_RUN_END,
+  EVENT_RUN_RESUME,
   EVENT_RUN_START,
   EVENT_RUN_SUSPEND,
   HEADER_CODEC_MESSAGE_ID,
@@ -264,20 +265,22 @@ class DefaultClientSession<
     try {
       // Spec: AIT-CT16a
       // --- Run lifecycle events from the agent ---
-      if (ablyMessage.name === EVENT_RUN_START) {
+      if (ablyMessage.name === EVENT_RUN_START || ablyMessage.name === EVENT_RUN_RESUME) {
         const headers = getTransportHeaders(ablyMessage);
-        const event = parseRunLifecycle(EVENT_RUN_START, headers, ablyMessage.serial);
+        const event = parseRunLifecycle(ablyMessage.name, headers, ablyMessage.serial);
         if (event) {
           this._tree.applyRunLifecycle(event);
-          // Resolve the pending `started` for this run-start. Every send that
-          // carries an input event — fresh OR continuation (a continuation is
-          // itself an input event, e.g. a tool-approval or tool-result, with
-          // its own codec-message-id) — armed the tracker by that triggering
-          // input's codec-message-id, which the agent echoes here as
-          // `input-codec-message-id`. The only input-less send is an
-          // empty-input continuation, whose run-start carries no
-          // `input-codec-message-id`; it falls back to the reused runId
-          // (always present in this block). invocation-id is not a match key.
+          // Resolve the pending `started` for this run-start (a fresh start) or
+          // run-resume (a continuation re-entering an existing run). Every send
+          // that carries an input event — the fresh input of a start, or the
+          // tool-approval / tool-result that triggers a resume — armed the
+          // tracker by that triggering input's codec-message-id, which the agent
+          // echoes here as `input-codec-message-id`. The only input-less send is
+          // an empty-input continuation, whose resume carries no
+          // `input-codec-message-id`; it falls back to the reused runId (always
+          // present in this block). A resume fires only after the agent consumed
+          // the continuation input, so it is the event that run's `started`
+          // waits on. invocation-id is not a match key.
           const startedKey = headers[HEADER_INPUT_CODEC_MESSAGE_ID] ?? event.runId;
           const pending = this._pendingRunStarts.get(startedKey);
           if (pending) {

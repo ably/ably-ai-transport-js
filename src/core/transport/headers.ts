@@ -8,6 +8,7 @@
 
 import {
   EVENT_RUN_END,
+  EVENT_RUN_RESUME,
   EVENT_RUN_START,
   EVENT_RUN_SUSPEND,
   HEADER_CODEC_MESSAGE_ID,
@@ -132,6 +133,10 @@ export const parseRunLifecycle = (
 
   if (name === EVENT_RUN_SUSPEND) {
     return { type: 'suspend', runId, clientId, serial, invocationId: headers[HEADER_INVOCATION_ID] ?? '' };
+  }
+
+  if (name === EVENT_RUN_RESUME) {
+    return { type: 'resume', runId, clientId, serial, invocationId: headers[HEADER_INVOCATION_ID] ?? '' };
   }
 
   if (name === EVENT_RUN_END) {

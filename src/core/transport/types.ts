@@ -506,11 +506,11 @@ export interface SendOptions {
 // ---------------------------------------------------------------------------
 
 /**
- * A structured event describing a run starting, suspending, or ending. The
- * `type` discriminator (`start` / `suspend` / `end`) is the in-memory domain
- * vocabulary and is intentionally distinct from the wire message names
- * (`ai-run-start` / `ai-run-suspend` / `ai-run-end`) those events are decoded
- * from.
+ * A structured event describing a run starting, suspending, resuming, or
+ * ending. The `type` discriminator (`start` / `suspend` / `resume` / `end`) is
+ * the in-memory domain vocabulary and is intentionally distinct from the wire
+ * message names (`ai-run-start` / `ai-run-suspend` / `ai-run-resume` /
+ * `ai-run-end`) those events are decoded from.
  */
 export type RunLifecycleEvent =
   | {
@@ -568,6 +568,23 @@ export type RunLifecycleEvent =
        * `invocation-id`), mirroring the run-start. Lets consumers correlate a
        * run's suspension back to the invocation that drove it. Empty string if
        * the wire didn't carry an invocation-id.
+       */
+      invocationId: string;
+    }
+  | {
+      type: 'resume';
+      runId: string;
+      clientId: string;
+      /**
+       * Ably channel serial of the run-resume message, or `undefined` for an
+       * optimistic local event. A resume re-enters an existing run; it does not
+       * promote the Run's startSerial (the original run-start owns that).
+       */
+      serial: string | undefined;
+      /**
+       * The invocation-id of the resuming invocation (wire `invocation-id`).
+       * Lets consumers correlate the resumed work back to the invocation that
+       * drove it. Empty string if the wire didn't carry an invocation-id.
        */
       invocationId: string;
     }

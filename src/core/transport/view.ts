@@ -21,6 +21,7 @@ import * as Ably from 'ably';
 
 import {
   EVENT_RUN_END,
+  EVENT_RUN_RESUME,
   EVENT_RUN_START,
   EVENT_RUN_SUSPEND,
   HEADER_CODEC_MESSAGE_ID,
@@ -1202,7 +1203,12 @@ export class DefaultView<
         const headers = getTransportHeaders(rawMsg);
         const serial = rawMsg.serial;
 
-        if (rawMsg.name === EVENT_RUN_START || rawMsg.name === EVENT_RUN_SUSPEND || rawMsg.name === EVENT_RUN_END) {
+        if (
+          rawMsg.name === EVENT_RUN_START ||
+          rawMsg.name === EVENT_RUN_SUSPEND ||
+          rawMsg.name === EVENT_RUN_RESUME ||
+          rawMsg.name === EVENT_RUN_END
+        ) {
           const event = parseRunLifecycle(rawMsg.name, headers, serial);
           if (event) this._tree.applyRunLifecycle(event);
           continue;

@@ -59,7 +59,7 @@ The optimistic send path (client publishing a fresh user-message) calls `applyMe
 
 ### `applyRunLifecycle(event)`
 
-Handles `ai-run-start` and `ai-run-end` wire events. The event carries its own channel `serial`. Run-start sets `status` to `'active'`, promotes `startSerial` from the event's serial, and tracks the run as active. Run-end sets `status` to the end reason, sets `endSerial` from the event's serial, and untracks the run. Always emits a `'run'` event to subscribers.
+Handles `ai-run-start`, `ai-run-suspend`, and `ai-run-end` wire events. The event carries its own channel `serial`. Run-start sets `status` to `'active'`, promotes `startSerial` from the event's serial, and tracks the run as active. Run-suspend sets `status` to `'suspended'` and records `endSerial`, but keeps the run live so a continuation under the same `runId` re-activates it. Run-end sets `status` to the end reason, sets `endSerial` from the event's serial, and untracks the run. Always emits a `'run'` event to subscribers.
 
 ### Structural version
 

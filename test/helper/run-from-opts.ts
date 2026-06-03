@@ -48,11 +48,14 @@ export const createRunFromOpts = <
 ): Run<TInput, TOutput, TProjection, TMessage> => {
   const invocation = Invocation.fromJSON({
     runId: opts.runId,
-    invocationId: opts.invocationId ?? `${opts.runId}-inv`,
     inputEventId: opts.inputEventId ?? '',
     sessionName: 'test',
   });
+  // The agent mints the invocation id; tests pin it deterministically via the
+  // runtime override (defaulting to the historic `${runId}-inv` shape so
+  // assertions on the stamped invocation-id stay stable).
   return session.createRun(invocation, {
+    invocationId: opts.invocationId ?? `${opts.runId}-inv`,
     signal: opts.signal,
     onMessage: opts.onMessage,
     onCancelled: opts.onCancelled,

@@ -126,12 +126,10 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
     started: Promise.resolve(),
     runId: 'run-1',
     inputEventId: '',
-    invocationId: 'inv-1',
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     cancel: vi.fn(() => Promise.resolve()),
     optimisticCodecMessageIds: [] as string[],
-    toInvocation: () =>
-      Invocation.fromJSON({ runId: 'run-1', invocationId: 'inv-1', inputEventId: '', sessionName: 'mock-session' }),
+    toInvocation: () => Invocation.fromJSON({ runId: 'run-1', inputEventId: '', sessionName: 'mock-session' }),
   };
 
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly

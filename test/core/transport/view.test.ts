@@ -110,8 +110,7 @@ const createMockSendDelegate = (): SendDelegate<TestInput> =>
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
       cancel: () => Promise.resolve(),
       optimisticCodecMessageIds: [],
-      toInvocation: () =>
-        Invocation.fromJSON({ runId: 'mock-run', invocationId: 'mock-inv', inputEventId: '', sessionName: 'test' }),
+      toInvocation: () => Invocation.fromJSON({ runId: 'mock-run', inputEventId: '', sessionName: 'test' }),
     }),
   );
 
@@ -1101,13 +1100,11 @@ describe('DefaultView', () => {
       vi.mocked(sendDelegate).mockResolvedValueOnce({
         started: Promise.resolve(),
         runId: 'Rregen1',
-        invocationId: 'inv-1',
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
         inputEventId: '',
-        toInvocation: () =>
-          Invocation.fromJSON({ runId: 'Rregen1', invocationId: 'inv-1', inputEventId: '', sessionName: 'test' }),
+        toInvocation: () => Invocation.fromJSON({ runId: 'Rregen1', inputEventId: '', sessionName: 'test' }),
       });
       await view.regenerate('a1');
       tree.applyRunLifecycle({
@@ -1164,13 +1161,11 @@ describe('DefaultView', () => {
       deferredResolve?.({
         started: Promise.resolve(),
         runId: 'Rregen2',
-        invocationId: 'inv-2',
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
         inputEventId: '',
-        toInvocation: () =>
-          Invocation.fromJSON({ runId: 'Rregen2', invocationId: 'inv-2', inputEventId: '', sessionName: 'test' }),
+        toInvocation: () => Invocation.fromJSON({ runId: 'Rregen2', inputEventId: '', sessionName: 'test' }),
       });
       await regenPromise;
 
@@ -1205,13 +1200,11 @@ describe('DefaultView', () => {
       vi.mocked(sendDelegate).mockResolvedValueOnce({
         started: Promise.resolve(),
         runId: 'Rregen1',
-        invocationId: 'inv-1',
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
         inputEventId: '',
-        toInvocation: () =>
-          Invocation.fromJSON({ runId: 'Rregen1', invocationId: 'inv-1', inputEventId: '', sessionName: 'test' }),
+        toInvocation: () => Invocation.fromJSON({ runId: 'Rregen1', inputEventId: '', sessionName: 'test' }),
       });
       await view.regenerate('a1');
       tree.applyRunLifecycle({
@@ -1236,13 +1229,11 @@ describe('DefaultView', () => {
       vi.mocked(sendDelegate).mockResolvedValueOnce({
         started: Promise.resolve(),
         runId: 'Rregen2',
-        invocationId: 'inv-2',
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
         inputEventId: '',
-        toInvocation: () =>
-          Invocation.fromJSON({ runId: 'Rregen2', invocationId: 'inv-2', inputEventId: '', sessionName: 'test' }),
+        toInvocation: () => Invocation.fromJSON({ runId: 'Rregen2', inputEventId: '', sessionName: 'test' }),
       });
       await view.regenerate('a1_new1');
       tree.applyRunLifecycle({
@@ -1267,13 +1258,11 @@ describe('DefaultView', () => {
       vi.mocked(sendDelegate).mockResolvedValueOnce({
         started: Promise.resolve(),
         runId: 'Rregen3',
-        invocationId: 'inv-3',
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
         inputEventId: '',
-        toInvocation: () =>
-          Invocation.fromJSON({ runId: 'Rregen3', invocationId: 'inv-3', inputEventId: '', sessionName: 'test' }),
+        toInvocation: () => Invocation.fromJSON({ runId: 'Rregen3', inputEventId: '', sessionName: 'test' }),
       });
       await view.regenerate('a1_new2');
       tree.applyRunLifecycle({
@@ -2034,13 +2023,11 @@ describe('DefaultView', () => {
       vi.mocked(sendDelegate).mockResolvedValueOnce({
         started: Promise.resolve(),
         runId: 'R2new',
-        invocationId: 'inv-new',
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
         inputEventId: '',
-        toInvocation: () =>
-          Invocation.fromJSON({ runId: 'R2new', invocationId: 'inv-new', inputEventId: '', sessionName: 'test' }),
+        toInvocation: () => Invocation.fromJSON({ runId: 'R2new', inputEventId: '', sessionName: 'test' }),
       });
 
       await view.regenerate('a1');
@@ -2069,13 +2056,11 @@ describe('DefaultView', () => {
       vi.mocked(sendDelegate).mockResolvedValueOnce({
         started: Promise.resolve(),
         runId: 'R2new',
-        invocationId: 'inv-new',
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
         inputEventId: '',
-        toInvocation: () =>
-          Invocation.fromJSON({ runId: 'R2new', invocationId: 'inv-new', inputEventId: '', sessionName: 'test' }),
+        toInvocation: () => Invocation.fromJSON({ runId: 'R2new', inputEventId: '', sessionName: 'test' }),
       });
 
       await view.regenerate('a1');
@@ -2181,13 +2166,11 @@ describe('DefaultView', () => {
       vi.mocked(sendDelegate).mockResolvedValueOnce({
         started: Promise.resolve(),
         runId: 'R2edit',
-        invocationId: 'inv-edit',
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: ['u-new'],
         inputEventId: '',
-        toInvocation: () =>
-          Invocation.fromJSON({ runId: 'R2edit', invocationId: 'inv-edit', inputEventId: '', sessionName: 'test' }),
+        toInvocation: () => Invocation.fromJSON({ runId: 'R2edit', inputEventId: '', sessionName: 'test' }),
       });
       // For the auto-select to land, the new Run needs to exist in the tree.
       // role omitted so the new user-content wire routes at wire-runId.

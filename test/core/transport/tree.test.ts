@@ -801,6 +801,35 @@ describe('Tree', () => {
       expect(tree.getRegenerateGroupByMsgId('a1').map((r) => r.runId)).toEqual(['R1', 'R2']);
     });
 
+    it('adopts the agent-minted invocation-id from run-start onto the optimistic node', () => {
+      // The client no longer mints the invocation-id, so the optimistic
+      // insert carries none — the Run starts with an empty invocationId. The
+      // agent mints it and stamps it on run-start; applyRunLifecycle must
+      // adopt it onto the existing node, otherwise the client-side
+      // RunNode.invocationId would stay empty forever.
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'optimistic' } });
+      expect(tree.getRunNode('R1')?.invocationId).toBe('');
+
+      tree.applyRunLifecycle({
+        type: 'start',
+        runId: 'R1',
+        clientId: 'c1',
+        invocationId: 'agent-inv-1',
+        serial: 's1',
+      });
+      expect(tree.getRunNode('R1')?.invocationId).toBe('agent-inv-1');
+
+      // A later lifecycle event under the same run does not reassign it.
+      tree.applyRunLifecycle({
+        type: 'start',
+        runId: 'R1',
+        clientId: 'c1',
+        invocationId: 'agent-inv-2',
+        serial: 's1',
+      });
+      expect(tree.getRunNode('R1')?.invocationId).toBe('agent-inv-1');
+    });
+
     it('backfills parentRunId from run-start when the assistant wire raced ahead of run-start', () => {
       apply(tree, {
         runId: 'R1',

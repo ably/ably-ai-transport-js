@@ -260,7 +260,6 @@ describe('AgentSession integration', () => {
         role: 'user',
         runId: opts.runId,
         codecMessageId: opts.codecMessageId,
-        invocationId: opts.invocationId,
         inputEventId,
         ...(opts.continuation ? { runContinue: true } : {}),
       });
@@ -823,10 +822,10 @@ describe('AgentSession integration', () => {
    * tests in this file cover). The lookup must pick the message up as
    * it arrives live and resolve `run.start()`.
    *
-   * Pre-allocating the runId / invocationId is what makes this
+   * Pre-allocating the runId / inputEventId is what makes this
    * orderable: the agent can stand up its run with known identifiers
    * and call `start()` first, then the publisher publishes a message
-   * tagged with the same invocation-id.
+   * tagged with the same inputEventId.
    */
   it('collects an input event that arrives live after the lookup is registered', async () => {
     const channelName = uniqueChannelName('st-live-lookup');
@@ -843,14 +842,12 @@ describe('AgentSession integration', () => {
     await session.connect();
 
     const runId = crypto.randomUUID();
-    const invocationId = crypto.randomUUID();
     const codecMessageId = crypto.randomUUID();
     const text = 'Live arrival';
 
     const inputEventId = crypto.randomUUID();
     const serverRun = createRunFromOpts(session, {
       runId,
-      invocationId,
       inputEventId: inputEventId,
     });
 
@@ -866,7 +863,7 @@ describe('AgentSession integration', () => {
     // a few hundred ms is safe.
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
     const publisherChannel = publisherClient.channels.get(channelName);
-    const headers = buildTransportHeaders({ role: 'user', runId, codecMessageId, invocationId, inputEventId });
+    const headers = buildTransportHeaders({ role: 'user', runId, codecMessageId, inputEventId });
     const encoder = UIMessageCodec.createEncoder(publisherChannel, { extras: { headers } });
     const userInput = UIMessageCodec.createUserMessage({
       id: codecMessageId,
@@ -880,7 +877,6 @@ describe('AgentSession integration', () => {
     expect(serverRun.view.messages).toHaveLength(1);
     const found = serverRun.view.messages[0];
     expect(found?.codecMessageId).toBe(codecMessageId);
-    expect(found?.headers[HEADER_INVOCATION_ID]).toBe(invocationId);
     expect(found?.message.parts[0]).toEqual({ type: 'text', text });
 
     await serverRun.end('complete');
@@ -942,7 +938,6 @@ describe('AgentSession integration', () => {
 
       const serverRun = createRunFromOpts(session, {
         runId: activeRun.runId,
-        invocationId: activeRun.invocationId,
         inputEventId: activeRun.inputEventId,
       });
       await serverRun.start();

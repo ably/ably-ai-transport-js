@@ -336,9 +336,13 @@ const ackPendingSend = async (
   if (!publishedHeaders) throw new Error('no user-message publish observed');
 
   const runId = publishedHeaders[HEADER_RUN_ID] ?? '';
-  const invocationId = publishedHeaders[HEADER_INVOCATION_ID] ?? '';
   const codecMessageId = publishedHeaders[HEADER_CODEC_MESSAGE_ID] ?? '';
   const runContinue = publishedHeaders[HEADER_RUN_CONTINUE] === 'true';
+  // The agent mints the invocation-id per request — the input carries none.
+  // Mint a distinct one here (keyed by the triggering codec-message-id) so
+  // sequential acks under the same runId produce different invocation-ids,
+  // mirroring the agent.
+  const invocationId = `inv-${codecMessageId}`;
   // Mirror the agent: a continuation (the input carried `run-continue`) re-enters
   // the run via ai-run-resume; a fresh send opens it via ai-run-start. Both
   // thread the triggering input's codec-message-id back as
@@ -499,10 +503,9 @@ describe('ClientSession', () => {
   // -------------------------------------------------------------------------
 
   describe('send', () => {
-    it('returns an ActiveRun with runId, invocationId, cancel', async () => {
+    it('returns an ActiveRun with runId, cancel', async () => {
       const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
       expect(typeof run.runId).toBe('string');
-      expect(typeof run.invocationId).toBe('string');
       expect(typeof run.cancel).toBe('function');
     });
 
@@ -527,7 +530,9 @@ describe('ClientSession', () => {
       const opts = call?.opts;
       expect(opts?.messageId).toBeDefined();
       expect(opts?.extras?.headers?.[HEADER_RUN_ID]).toBeDefined();
-      expect(opts?.extras?.headers?.[HEADER_INVOCATION_ID]).toBeDefined();
+      // `ai-input` events do not carry `invocation-id` — the agent mints it
+      // per HTTP request, not the client at send time.
+      expect(opts?.extras?.headers?.[HEADER_INVOCATION_ID]).toBeUndefined();
       expect(opts?.extras?.headers?.[HEADER_ROLE]).toBe('user');
       expect(opts?.extras?.headers?.['event-id']).toBeDefined();
       // `ai-input` events do not carry `input-client-id` — the wire
@@ -580,7 +585,9 @@ describe('ClientSession', () => {
       const nodes = fix.session.tree.runs();
       expect(nodes).toHaveLength(1);
       expect(nodes[0]?.runId).toBeDefined();
-      expect(nodes[0]?.invocationId).toBeDefined();
+      // The optimistic Run carries no invocation-id — the client no longer
+      // mints one; it is adopted from the agent's run-start.
+      expect(nodes[0]?.invocationId).toBe('');
 
       const messages = fix.session.view.getMessages();
       expect(messages).toHaveLength(1);
@@ -702,7 +709,7 @@ describe('ClientSession', () => {
   // -------------------------------------------------------------------------
 
   describe('send — continuation', () => {
-    it('reuses the runId and mints a fresh invocationId', async () => {
+    it('reuses the runId for a continuation', async () => {
       const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
 
       const cont = await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], {
@@ -710,7 +717,6 @@ describe('ClientSession', () => {
       });
 
       expect(cont.runId).toBe(initial.runId);
-      expect(cont.invocationId).not.toBe(initial.invocationId);
     });
 
     it('publishes the continuation user-message with HEADER_RUN_ID and HEADER_RUN_CONTINUE', async () => {
@@ -728,9 +734,9 @@ describe('ClientSession', () => {
       expect(call?.event && 'kind' in call.event ? call.event.kind : undefined).toBe('user-message');
       const headers = call?.opts?.extras?.headers;
       expect(headers?.[HEADER_RUN_ID]).toBe(initial.runId);
-      // A fresh invocation-id is minted for the continuation.
-      expect(headers?.[HEADER_INVOCATION_ID]).toBeDefined();
-      expect(headers?.[HEADER_INVOCATION_ID]).not.toBe(initial.invocationId);
+      // The continuation input carries no invocation-id — the agent mints one
+      // per HTTP request when it wakes for the continuation.
+      expect(headers?.[HEADER_INVOCATION_ID]).toBeUndefined();
       // Continuation publishes carry HEADER_RUN_CONTINUE='true' on the wire.
       expect(headers?.['run-continue']).toBe('true');
       // Continuation user-messages publish as role:'user'.
@@ -748,7 +754,6 @@ describe('ClientSession', () => {
 
       expect(typeof cont.inputEventId).toBe('string');
       expect(cont.runId).toBe(initial.runId);
-      expect(cont.invocationId).not.toBe(initial.invocationId);
     });
 
     it('stamps the continuation event-id on the publish and surfaces it on the ActiveRun', async () => {
@@ -1013,7 +1018,6 @@ describe('ClientSession', () => {
       const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
       const invocation = run.toInvocation();
       expect(invocation.runId).toBe(run.runId);
-      expect(invocation.invocationId).toBe(run.invocationId);
       expect(invocation.inputEventId).toBe(run.inputEventId);
       // The fixture's session is bound to the 'test-channel' channel.
       expect(invocation.sessionName).toBe('test-channel');
@@ -1023,7 +1027,6 @@ describe('ClientSession', () => {
       const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
       expect(run.toInvocation().toJSON()).toEqual({
         runId: run.runId,
-        invocationId: run.invocationId,
         inputEventId: run.inputEventId,
         sessionName: 'test-channel',
       });
@@ -1394,16 +1397,17 @@ describe('ClientSession', () => {
       // the Run stays at status=active and the UI sticks on "streaming".
       const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
 
+      // Agent mints distinct invocation-ids per HTTP request.
       simulateMessage(
         fix.channel,
         ablyMsg(EVENT_RUN_SUSPEND, {
           [HEADER_RUN_ID]: initial.runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
-          [HEADER_INVOCATION_ID]: initial.invocationId,
+          [HEADER_INVOCATION_ID]: 'inv-1',
         }),
       );
 
-      const continuation = await fix.session.view.sendInput([{ kind: 'user-message', text: 'continue' }], {
+      await fix.session.view.sendInput([{ kind: 'user-message', text: 'continue' }], {
         runId: initial.runId,
       });
 
@@ -1412,7 +1416,7 @@ describe('ClientSession', () => {
         ablyMsg(EVENT_RUN_RESUME, {
           [HEADER_RUN_ID]: initial.runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
-          [HEADER_INVOCATION_ID]: continuation.invocationId,
+          [HEADER_INVOCATION_ID]: 'inv-2',
         }),
       );
 
@@ -1423,7 +1427,7 @@ describe('ClientSession', () => {
         ablyMsg('finish', {
           [HEADER_RUN_ID]: initial.runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
-          [HEADER_INVOCATION_ID]: continuation.invocationId,
+          [HEADER_INVOCATION_ID]: 'inv-2',
         }),
       );
 
@@ -1432,7 +1436,7 @@ describe('ClientSession', () => {
         ablyMsg(EVENT_RUN_END, {
           [HEADER_RUN_ID]: initial.runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
-          [HEADER_INVOCATION_ID]: continuation.invocationId,
+          [HEADER_INVOCATION_ID]: 'inv-2',
           [HEADER_RUN_REASON]: 'complete',
         }),
       );
@@ -1457,16 +1461,16 @@ describe('ClientSession', () => {
         ablyMsg(EVENT_RUN_SUSPEND, {
           [HEADER_RUN_ID]: initial.runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
-          [HEADER_INVOCATION_ID]: initial.invocationId,
+          [HEADER_INVOCATION_ID]: 'inv-1',
         }),
       );
       expect(fix.session.tree.getRunNode(initial.runId)?.status).toBe('suspended');
 
-      // Continuation send under the same runId with a fresh invocation.
-      const continuation = await fix.session.view.sendInput([{ kind: 'user-message', text: 'continue' }], {
+      // Continuation send under the same runId; the agent mints a fresh
+      // invocation-id when it wakes for the continuation.
+      await fix.session.view.sendInput([{ kind: 'user-message', text: 'continue' }], {
         runId: initial.runId,
       });
-      expect(continuation.invocationId).not.toBe(initial.invocationId);
 
       // Continuation's run-resume (from agent) re-activates the run.
       simulateMessage(
@@ -1474,7 +1478,7 @@ describe('ClientSession', () => {
         ablyMsg(EVENT_RUN_RESUME, {
           [HEADER_RUN_ID]: initial.runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
-          [HEADER_INVOCATION_ID]: continuation.invocationId,
+          [HEADER_INVOCATION_ID]: 'inv-2',
         }),
       );
       expect(fix.session.tree.getRunNode(initial.runId)?.status).toBe('active');
@@ -1485,7 +1489,7 @@ describe('ClientSession', () => {
         ablyMsg(EVENT_RUN_END, {
           [HEADER_RUN_ID]: initial.runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
-          [HEADER_INVOCATION_ID]: continuation.invocationId,
+          [HEADER_INVOCATION_ID]: 'inv-2',
           [HEADER_RUN_REASON]: 'complete',
         }),
       );
@@ -1556,22 +1560,22 @@ describe('ClientSession', () => {
       // A continuation reuses the runId under a fresh invocation. The
       // continuation's run-end is applied and the run cleans up.
       const initial = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
-      const continuation = await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], {
+      await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], {
         runId: initial.runId,
       });
-      expect(continuation.invocationId).not.toBe(initial.invocationId);
 
       const runEnds: RunLifecycleEvent[] = [];
       fix.session.tree.on('run', (e) => {
         if (e.type === 'end') runEnds.push(e);
       });
 
+      // The continuation's run-end carries the agent-minted invocation-id.
       simulateMessage(
         fix.channel,
         ablyMsg(EVENT_RUN_END, {
           [HEADER_RUN_ID]: initial.runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
-          [HEADER_INVOCATION_ID]: continuation.invocationId,
+          [HEADER_INVOCATION_ID]: 'inv-continuation',
           [HEADER_RUN_REASON]: 'complete',
         }),
       );

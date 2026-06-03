@@ -133,7 +133,7 @@ await view.sendInput(
 
 When the LLM requests a client-executed tool (or an approval) the agent has no result to stream, so it **suspends** the run — publishing `ai-run-suspend` rather than the terminal `ai-run-end` — and the run stays live in the conversation tree awaiting the result.
 
-Client tool resolutions are `tool-result` (or `tool-result-error`) inputs - they ride the `ai-input` wire, the same direction as user messages, so the publisher matches the wire (client to input, agent to output). The continuation reuses the run's `runId` so the agent picks the result up off the channel and resumes `streamText()` with the tool result in history. The reducer folds the result onto the assistant addressed by `codecMessageId`, and all clients see the tool part transition from `input-available` to `output-available`. On failure, send a `tool-result-error` input with a `message` field instead of `output`.
+Client tool resolutions are `tool-result` (or `tool-result-error`) inputs - they ride the `ai-input` wire, the same direction as user messages, so the publisher matches the wire (client to input, agent to output). The continuation reuses the run's `runId` so the agent picks the result up off the channel and resumes `streamText()` with the tool result in history; it re-enters the run with an `ai-run-resume` lifecycle event (not a fresh `ai-run-start`). The reducer folds the result onto the assistant addressed by `codecMessageId`, and all clients see the tool part transition from `input-available` to `output-available`. On failure, send a `tool-result-error` input with a `message` field instead of `output`.
 
 ## Multi-client tool execution
 

@@ -89,6 +89,9 @@ session.tree.on('run', (event) => {
     // A run paused awaiting input (e.g. a tool result): event.runId. The run
     // stays live — a continuation reusing the runId resumes it.
   }
+  if (event.type === 'resume') {
+    // A subsequent invocation re-entered the run (a continuation): event.runId.
+  }
   if (event.type === 'end') {
     // A run ended (terminal): event.runId, event.clientId, event.reason
   }

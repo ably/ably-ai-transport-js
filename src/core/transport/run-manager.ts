@@ -2,8 +2,9 @@
  * Server-side run state management and lifecycle event publishing.
  *
  * Owns the authoritative run lifecycle. Tracks active runs with their
- * AbortControllers and clientIds. Publishes run-start and run-end events
- * on the Ably channel so all clients can react to run state changes.
+ * AbortControllers and clientIds. Publishes run-start, run-suspend, and
+ * run-end events on the Ably channel so all clients can react to run state
+ * changes.
  */
 
 import type * as Ably from 'ably';
@@ -11,6 +12,7 @@ import type * as Ably from 'ably';
 import {
   EVENT_RUN_END,
   EVENT_RUN_START,
+  EVENT_RUN_SUSPEND,
   HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
   HEADER_INPUT_CODEC_MESSAGE_ID,
@@ -46,6 +48,16 @@ export interface RunManager {
       continuation?: boolean;
     },
   ): Promise<AbortSignal>;
+  /**
+   * Suspend a run. Publishes run-suspend on the channel and drops the run's
+   * active-run entry — the agent process terminates on suspend, so there is no
+   * live AbortController to retain. A cancel arriving during suspension is a
+   * no-op; the resuming invocation re-registers the run via {@link startRun}.
+   * Carries the same per-invocation attribution as {@link endRun}
+   * (`inputClientId`, `inputCodecMessageId`), since a suspend is the terminal
+   * event of the suspending invocation just as run-end is of an ending one.
+   */
+  suspendRun(runId: string, invocationId?: string, inputClientId?: string, inputCodecMessageId?: string): Promise<void>;
   /** End a run. Publishes run-end on the channel. Cleans up internal state. */
   endRun(
     runId: string,
@@ -149,6 +161,49 @@ class DefaultRunManager implements RunManager {
 
     this._logger?.debug('DefaultRunManager.startRun(); run started', { runId });
     return controller.signal;
+  }
+
+  async suspendRun(
+    runId: string,
+    invocationId?: string,
+    inputClientId?: string,
+    inputCodecMessageId?: string,
+  ): Promise<void> {
+    this._logger?.trace('DefaultRunManager.suspendRun();', { runId });
+
+    const state = this._activeRuns.get(runId);
+    const resolvedClientId = state?.clientId ?? '';
+
+    const headers: Record<string, string> = {
+      [HEADER_RUN_ID]: runId,
+      [HEADER_RUN_CLIENT_ID]: resolvedClientId,
+    };
+    // Mirror endRun: a suspend is the terminal event of the suspending
+    // invocation, so it carries the same per-invocation correlation
+    // (invocation-id) and input attribution (input-client-id,
+    // input-codec-message-id) as run-start / run-end and the invocation's
+    // output events.
+    if (invocationId !== undefined) {
+      headers[HEADER_INVOCATION_ID] = invocationId;
+    }
+    if (inputClientId !== undefined) {
+      headers[HEADER_INPUT_CLIENT_ID] = inputClientId;
+    }
+    if (inputCodecMessageId !== undefined) {
+      headers[HEADER_INPUT_CODEC_MESSAGE_ID] = inputCodecMessageId;
+    }
+
+    // Publish before dropping local state so a publish failure leaves the run
+    // in the active set.
+    await this._channel.publish({
+      name: EVENT_RUN_SUSPEND,
+      extras: { ai: { transport: headers } },
+    });
+
+    // Drop the registry entry: the process terminates on suspend, so the
+    // AbortController is gone. The resuming invocation re-registers the run.
+    this._activeRuns.delete(runId);
+    this._logger?.debug('DefaultRunManager.suspendRun(); run suspended', { runId });
   }
 
   async endRun(

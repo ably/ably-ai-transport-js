@@ -51,6 +51,8 @@ interface MockSession {
   output: (runId: string, events: VercelOutput[]) => void;
   /** Emit a Tree `run` run-end event with the given reason. */
   runEnd: (runId: string, reason: string) => void;
+  /** Emit a Tree `run` run-suspend event. */
+  runSuspend: (runId: string) => void;
   /** Emit a session `error`. */
   error: (reason: Ably.ErrorInfo) => void;
 }
@@ -78,6 +80,15 @@ const createMockSession = (): MockSession => {
         invocationId: 'inv-1',
         serial: 's-1',
         reason,
+      });
+    },
+    runSuspend: (runId) => {
+      treeEmitter.emit('run', {
+        type: 'suspend',
+        runId,
+        clientId: '',
+        invocationId: 'inv-1',
+        serial: 's-1',
       });
     },
     error: (reason) => {
@@ -127,16 +138,16 @@ describe('createRunOutputStream', () => {
     expect(events.map((e) => e.type)).toEqual(['finish']);
   });
 
-  it('does not close on a suspended run-end but closes on a non-suspended one', async () => {
+  it('does not close on a run-suspend but closes on a terminal run-end', async () => {
     const mock = createMockSession();
     const { stream } = createRunOutputStream(mock.session, 'run-1');
 
     mock.output('run-1', [textDelta('partial')]);
-    // A suspended run-end (e.g. awaiting a tool result) must NOT close the
-    // consumer stream — the run continues.
-    mock.runEnd('run-1', 'suspended');
+    // A run-suspend (e.g. awaiting a tool result) must NOT close the consumer
+    // stream — the run continues.
+    mock.runSuspend('run-1');
     mock.output('run-1', [textDelta('more')]);
-    // A non-suspended run-end closes the stream as a safety net.
+    // A terminal run-end closes the stream as a safety net.
     mock.runEnd('run-1', 'complete');
 
     const events = await drain(stream);

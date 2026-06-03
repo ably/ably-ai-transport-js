@@ -337,13 +337,13 @@ class DefaultClientSession<
         if (runId) {
           // Every run-end is applied unconditionally. Concurrent work always
           // runs under distinct run-ids, and a resume/continuation is
-          // sequential (the prior invocation's run-end is seen before the
-          // next invocation starts), so there is never a competing run-end
+          // sequential (the prior invocation's terminal event is seen before
+          // the next invocation starts), so there is never a competing run-end
           // for the same run-id that we'd need to disambiguate by invocation.
           //
-          // `suspended` keeps the run live in the Tree so a continuation that
-          // reuses the runId picks up where it left off. The `run` event fires
-          // either way so consumers can react to the suspend or end.
+          // run-end is terminal (complete / cancelled / error); a run that
+          // merely pauses awaiting input arrives as a separate ai-run-suspend
+          // and keeps the run live in the Tree.
           const event = parseRunLifecycle(EVENT_RUN_END, headers, ablyMessage.serial);
           if (event) this._tree.applyRunLifecycle(event);
         }

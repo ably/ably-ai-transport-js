@@ -16,6 +16,7 @@ import {
   EVENT_CANCEL,
   EVENT_RUN_END,
   EVENT_RUN_START,
+  EVENT_RUN_SUSPEND,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
   HEADER_FORK_OF,
@@ -120,7 +121,7 @@ const foldRunMessages = <TInput extends CodecInputEvent, TOutput extends CodecOu
     const h = getTransportHeaders(msg);
     if (h[HEADER_RUN_ID] !== runId) continue;
     // Lifecycle events carry no codec content — skip them.
-    if (msg.name === EVENT_RUN_START || msg.name === EVENT_RUN_END) continue;
+    if (msg.name === EVENT_RUN_START || msg.name === EVENT_RUN_SUSPEND || msg.name === EVENT_RUN_END) continue;
     const codecMsgId = h[HEADER_CODEC_MESSAGE_ID];
     if (truncateAt !== undefined && codecMsgId === truncateAt) break;
     const { inputs, outputs } = decoder.decode(msg);
@@ -1233,7 +1234,7 @@ class DefaultAgentSession<
         // invocation body.
         const codecMsgToRunId = new Map<string, string>();
         for (const msg of sortedMessages) {
-          if (msg.name === EVENT_RUN_START || msg.name === EVENT_RUN_END) continue;
+          if (msg.name === EVENT_RUN_START || msg.name === EVENT_RUN_SUSPEND || msg.name === EVENT_RUN_END) continue;
           const h = getTransportHeaders(msg);
           const msgRunId = h[HEADER_RUN_ID];
           const msgCodecId = h[HEADER_CODEC_MESSAGE_ID];
@@ -1415,6 +1416,41 @@ class DefaultAgentSession<
 
         logger?.debug('Run.pipe(); stream finished', { runId, reason: result.reason });
         return result;
+      },
+
+      suspend: async (): Promise<void> => {
+        logger?.trace('Run.suspend();', { runId });
+
+        await requireConnected('suspend');
+
+        if (state === RunState.INITIALIZED) {
+          throw new Ably.ErrorInfo(
+            `unable to suspend run; start() must be called before suspend() (run ${runId})`,
+            ErrorCode.InvalidArgument,
+            400,
+          );
+        }
+        // ENDED is the terminal state for either an end or a suspend on this
+        // Run instance; a second terminal call is a no-op.
+        if (state === RunState.ENDED) return;
+        state = RunState.ENDED;
+
+        try {
+          await runManager.suspendRun(runId, invocationId, resolvedInputClientId, resolvedInputCodecMessageId);
+        } catch (error) {
+          const errInfo = new Ably.ErrorInfo(
+            `unable to publish run-suspend for run ${runId}; ${error instanceof Error ? error.message : String(error)}`,
+            ErrorCode.RunLifecycleError,
+            500,
+            error instanceof Ably.ErrorInfo ? error : undefined,
+          );
+          logger?.error('Run.suspend(); failed to publish run-suspend', { runId });
+          throw errInfo;
+        } finally {
+          registeredRuns.delete(runId);
+        }
+
+        logger?.debug('Run.suspend(); run suspended', { runId });
       },
 
       // Spec: AIT-ST7, AIT-ST7a, AIT-ST7b

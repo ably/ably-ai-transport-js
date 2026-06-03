@@ -1,7 +1,7 @@
 import type * as AI from 'ai';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { vercelRunEndReason } from '../../src/vercel/run-end-reason.js';
+import { vercelRunOutcome } from '../../src/vercel/run-end-reason.js';
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -20,32 +20,32 @@ const createDeferred = <T>(): Deferred<T> => {
   return { promise, resolve, reject };
 };
 
-describe('vercelRunEndReason', () => {
+describe('vercelRunOutcome', () => {
   it('returns cancelled when pipe was cancelled without using finishReason value', async () => {
-    const result = await vercelRunEndReason({ reason: 'cancelled' }, Promise.resolve<AI.FinishReason>('stop'));
+    const result = await vercelRunOutcome({ reason: 'cancelled' }, Promise.resolve<AI.FinishReason>('stop'));
     expect(result).toBe('cancelled');
   });
 
   it('returns error when pipe errored without using finishReason value', async () => {
-    const result = await vercelRunEndReason(
+    const result = await vercelRunOutcome(
       { reason: 'error', error: new Error('boom') },
       Promise.resolve<AI.FinishReason>('stop'),
     );
     expect(result).toBe('error');
   });
 
-  it('returns suspended when pipe completed and finishReason is tool-calls', async () => {
-    const result = await vercelRunEndReason({ reason: 'complete' }, Promise.resolve('tool-calls'));
-    expect(result).toBe('suspended');
+  it('returns suspend when pipe completed and finishReason is tool-calls', async () => {
+    const result = await vercelRunOutcome({ reason: 'complete' }, Promise.resolve('tool-calls'));
+    expect(result).toBe('suspend');
   });
 
   it('returns complete when pipe completed and finishReason is stop', async () => {
-    const result = await vercelRunEndReason({ reason: 'complete' }, Promise.resolve('stop'));
+    const result = await vercelRunOutcome({ reason: 'complete' }, Promise.resolve('stop'));
     expect(result).toBe('complete');
   });
 
   it('returns complete when pipe completed and finishReason is length', async () => {
-    const result = await vercelRunEndReason({ reason: 'complete' }, Promise.resolve('length'));
+    const result = await vercelRunOutcome({ reason: 'complete' }, Promise.resolve('length'));
     expect(result).toBe('complete');
   });
 
@@ -54,7 +54,7 @@ describe('vercelRunEndReason', () => {
     // abort signal's reason (a DOMException whose name is "AbortError")
     // when the stream is aborted before any step completes.
     const abortError = new DOMException('aborted', 'AbortError');
-    const result = await vercelRunEndReason({ reason: 'complete' }, Promise.reject(abortError));
+    const result = await vercelRunOutcome({ reason: 'complete' }, Promise.reject(abortError));
     expect(result).toBe('cancelled');
   });
 
@@ -62,7 +62,7 @@ describe('vercelRunEndReason', () => {
     // Some runtimes surface aborts as a plain Error with name === 'AbortError'
     // rather than a DOMException. The mapping should still treat it as cancel.
     const abortError = Object.assign(new Error('aborted'), { name: 'AbortError' });
-    const result = await vercelRunEndReason({ reason: 'complete' }, Promise.reject(abortError));
+    const result = await vercelRunOutcome({ reason: 'complete' }, Promise.reject(abortError));
     expect(result).toBe('cancelled');
   });
 
@@ -70,14 +70,14 @@ describe('vercelRunEndReason', () => {
     // E.g. Vercel's NoOutputGeneratedError when the stream produced no
     // steps for a reason other than abort. The mapping should surface
     // this as an error-terminated run so the developer sees the failure.
-    const result = await vercelRunEndReason({ reason: 'complete' }, Promise.reject(new Error('no output')));
+    const result = await vercelRunOutcome({ reason: 'complete' }, Promise.reject(new Error('no output')));
     expect(result).toBe('error');
   });
 
   describe('unhandled rejection regression', () => {
     // Repro for the Next.js dev-mode crash: Vercel's `result.finishReason`
     // getter creates the underlying Promise eagerly, before our route
-    // handler hands it to `vercelRunEndReason`. When the pipe ended in a
+    // handler hands it to `vercelRunOutcome`. When the pipe ended in a
     // non-`'complete'` state (the cancel path) we used to return without
     // ever attaching a handler to that promise. If Vercel rejected it
     // later (which it does when `streamText` aborts before any step),
@@ -99,13 +99,13 @@ describe('vercelRunEndReason', () => {
 
     it('does not leak an unhandled rejection when pipe was cancelled and finishReason later rejects', async () => {
       // Simulate Vercel's lazy rejection: the promise is pending when
-      // vercelRunEndReason is called, then rejects asynchronously.
+      // vercelRunOutcome is called, then rejects asynchronously.
       const deferred = createDeferred<AI.FinishReason>();
 
-      const result = await vercelRunEndReason({ reason: 'cancelled' }, deferred.promise);
+      const result = await vercelRunOutcome({ reason: 'cancelled' }, deferred.promise);
       expect(result).toBe('cancelled');
 
-      // Now reject after vercelRunEndReason has returned. A naive
+      // Now reject after vercelRunOutcome has returned. A naive
       // implementation that returned early without attaching a handler
       // would surface this as an unhandled rejection.
       deferred.reject(new DOMException('aborted', 'AbortError'));
@@ -121,7 +121,7 @@ describe('vercelRunEndReason', () => {
     it('does not leak an unhandled rejection when pipe errored and finishReason later rejects', async () => {
       const deferred = createDeferred<AI.FinishReason>();
 
-      const result = await vercelRunEndReason({ reason: 'error', error: new Error('boom') }, deferred.promise);
+      const result = await vercelRunOutcome({ reason: 'error', error: new Error('boom') }, deferred.promise);
       expect(result).toBe('error');
 
       deferred.reject(new DOMException('aborted', 'AbortError'));

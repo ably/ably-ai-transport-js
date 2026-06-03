@@ -722,6 +722,59 @@ describe('AgentSession', () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await expect(run.end('complete')).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
+
+    it('suspend() publishes run-suspend (not run-end)', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+      await run.suspend();
+
+      expect(channel.publishCalls.find((m) => m.name === 'ai-run-suspend')).toBeDefined();
+      expect(channel.publishCalls.find((m) => m.name === 'ai-run-end')).toBeUndefined();
+    });
+
+    it('suspend() stamps input attribution from the triggering input event', async () => {
+      // A suspend is the terminal event of the suspending invocation, so it
+      // carries the same per-invocation attribution as run-end: the input
+      // client-id and the triggering input's codec-message-id.
+      const runId = 'run-icid-suspend';
+      const invocationId = 'inv-icid-suspend';
+      const inputEventId = 'p-icid-suspend';
+      const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
+      const startPromise = run.start();
+      deliverInputEvent(channel, {
+        invocationId,
+        runId,
+        codecMessageId: 'm-icid-suspend',
+        serial: 's-icid-suspend',
+        inputEventId,
+        publisherClientId: 'user-b',
+      });
+      await startPromise;
+      await run.suspend();
+
+      const suspendMsg = channel.publishCalls.find((m) => m.name === 'ai-run-suspend');
+      const headers = (suspendMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai
+        ?.transport;
+      expect(headers?.['invocation-id']).toBe(invocationId);
+      expect(headers?.['input-client-id']).toBe('user-b');
+      expect(headers?.['input-codec-message-id']).toBe('m-icid-suspend');
+    });
+
+    it('suspend() throws if run not started', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await expect(run.suspend()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+    });
+
+    it('suspend() is terminal for the run instance: a following end() is a no-op', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+      await run.suspend();
+      await run.end('complete');
+
+      // The run was suspended, not ended — no run-end is published.
+      expect(channel.publishCalls.filter((m) => m.name === 'ai-run-suspend')).toHaveLength(1);
+      expect(channel.publishCalls.find((m) => m.name === 'ai-run-end')).toBeUndefined();
+    });
   });
 
   // -------------------------------------------------------------------------

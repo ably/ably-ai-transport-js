@@ -23,7 +23,7 @@
 import { after } from 'next/server';
 import { streamText, convertToModelMessages, stepCountIs } from 'ai';
 import Ably from 'ably';
-import { createAgentSession, vercelRunEndReason } from '@ably/ai-transport/vercel';
+import { createAgentSession, vercelRunOutcome } from '@ably/ai-transport/vercel';
 import type { InvocationData } from '@ably/ai-transport';
 import { Invocation } from '@ably/ai-transport';
 import { createModel } from './model';
@@ -70,8 +70,12 @@ export async function POST(req: Request) {
 
   after(async () => {
     const pipeResult = await run.pipe(result.toUIMessageStream());
-    const endReason = await vercelRunEndReason(pipeResult, result.finishReason);
-    await run.end(endReason);
+    const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
+    if (outcome === 'suspend') {
+      await run.suspend();
+    } else {
+      await run.end(outcome);
+    }
     session.close();
     ably.close();
   });

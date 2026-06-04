@@ -136,7 +136,7 @@ class DefaultClientSession<
     // Spec: AIT-CT1a, AIT-CT1a2 — register this SDK on both the connection
     // (options.agents) and channel-attach (params.agent) paths. Idempotent
     // across sessions sharing one client.
-    const channelOptions = registerAgent(options.client);
+    const channelOptions = registerAgent(options.client, options.codec);
     this._channel = options.client.channels.get(options.channelName, channelOptions);
     this._codec = options.codec;
     this._clientId = options.clientId;

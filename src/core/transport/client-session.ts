@@ -275,15 +275,10 @@ class DefaultClientSession<
           this._tree.applyRunLifecycle(event);
           // Resolve the pending `started` for this run-start (a fresh start) or
           // run-resume (a continuation re-entering an existing run). Every send
-          // that carries an input event — the fresh input of a start, or the
-          // tool-approval / tool-result that triggers a resume — armed the
-          // tracker by that triggering input's codec-message-id, which the agent
-          // echoes here as `input-codec-message-id`. The only input-less send is
-          // an empty-input continuation, whose resume carries no
-          // `input-codec-message-id`; it falls back to the reused runId (always
-          // present in this block). A resume fires only after the agent consumed
-          // the continuation input, so it is the event that run's `started`
-          // waits on. invocation-id is not a match key.
+          // Resolve key — mirror of the arming key on `_pendingRunStarts` (see
+          // that field's JSDoc for the full keying invariant): the echoed
+          // `input-codec-message-id`, or the runId for an empty-input
+          // continuation that carried no input.
           const startedKey = headers[HEADER_INPUT_CODEC_MESSAGE_ID] ?? event.runId;
           const pending = this._pendingRunStarts.get(startedKey);
           if (pending) {
@@ -616,37 +611,15 @@ class DefaultClientSession<
     // continuation, which keys by runId instead.
     const triggerCodecMessageId = items.at(-1)?.codecMessageId;
 
-    // Arm the run-start tracker. It backs the returned `ActiveRun.runId`
-    // promise: the run-start handler resolves it with the agent-minted run-id
-    // when the agent's `ai-run-start` for this send is observed; close()
-    // rejects it if the session is torn down first. There is no deadline —
-    // `send()` resolves on publish, and callers who want to bound the
-    // run-start wait race `run.runId` against their own timeout.
+    // Arm the run-start tracker backing the returned `ActiveRun.runId` promise.
+    // The run-start handler resolves it with the agent-minted run-id when this
+    // send's `ai-run-start` is observed; close() rejects it on teardown. No
+    // deadline — `send()` resolves on publish; callers bound the wait by racing
+    // `run.runId` against their own timeout.
     //
-    // Key by the handle the client owns at send time: the triggering input's
-    // codec-message-id, which the agent echoes back on run-start as
-    // `input-codec-message-id`. This is uniform across fresh sends and
-    // continuations — a continuation is itself an input event (tool-approval
-    // or tool-result) carrying its own codec-message-id. The sole exception
-    // is an empty-input continuation, which publishes nothing: it falls back
-    // to the reused runId (known to the caller) and resolves on the
-    // continuation run-start, which carries no `input-codec-message-id`.
-    //
-    // Any send carrying input has `triggerCodecMessageId` defined, so the
-    // `?? runId` fallback engages only for that empty-input continuation. The
-    // arm key (here) and the resolve key (the run-start handler) stay
-    // symmetric because the agent stamps `input-codec-message-id` on run-start
-    // exactly when it consumed the input from the channel — i.e. whenever it
-    // ran its input-event lookup, which is every path that has a remote client
-    // awaiting `started`. The no-lookup agent config
-    // (`inputEventLookupTimeoutMs: 0`, for in-process drivers) does not
-    // consume channel input and so has no remote `started` to satisfy.
-    // The executor runs synchronously, so the tracker entry is registered
-    // before `new Promise` returns.
-    // `startedKey` is always defined: a send carries either an input
-    // (triggerCodecMessageId) or, for an empty-input continuation, a reused
-    // runId (guaranteed by the empty-input check above). The narrow satisfies
-    // the type system.
+    // Key on the arming side mirrors the resolve side — see `_pendingRunStarts`
+    // for the full keying invariant. The executor runs synchronously, so the
+    // tracker entry is registered before `new Promise` returns.
     const startedKey = triggerCodecMessageId ?? runId;
     if (startedKey === undefined) {
       throw new Ably.ErrorInfo(

@@ -499,7 +499,7 @@ export class DefaultView<
         return;
       }
 
-      await this._loadAndReveal(nextPage, limit);
+      await this._revealFromPage(nextPage, limit);
     } catch (error) {
       this._logger.error('DefaultView.loadOlder(); failed', { error });
       throw error;
@@ -996,27 +996,28 @@ export class DefaultView<
   // -------------------------------------------------------------------------
 
   private async _loadFirstPage(limit: number): Promise<void> {
-    // Snapshot before loading: every Run already in the tree stays visible.
-    const beforeRunIds = new Set(this._treeVisibleNodes().map((n) => nodeKey(n)));
-
     // decodeHistory's limit counts complete domain messages per page (not
     // Runs); see `_RUN_TO_MESSAGE_FETCH_FACTOR` for the scaling rationale.
     const messageLimit = limit * _RUN_TO_MESSAGE_FETCH_FACTOR;
     const firstPage = await decodeHistory(this._channel, this._codec, { limit: messageLimit }, this._logger);
     if (this._closed) return;
-    const { newVisible, lastPage } = await this._loadUntilVisible(firstPage, limit, beforeRunIds);
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- close() may be called during await
-    if (this._closed) return;
-
-    this._lastHistoryPage = lastPage;
-    this._hasMoreHistory = lastPage.hasNext();
-    this._splitReveal(newVisible, limit);
+    await this._revealFromPage(firstPage, limit);
   }
 
-  private async _loadAndReveal(page: HistoryPage<TMessage>, limit: number): Promise<void> {
-    const alreadyKnown = new Set(this._treeVisibleNodes().map((n) => nodeKey(n)));
+  /**
+   * Walk channel history from `page` until at least `limit` new Runs are
+   * observed (or the channel is exhausted), then reveal the newest batch and
+   * withhold the rest. Snapshots the already-visible nodes up front so only
+   * newly-observed Runs count toward `limit`. No-op if the view closed during
+   * the page walk.
+   * @param page - The decoded history page to start from.
+   * @param limit - Max Runs to reveal in this batch.
+   */
+  private async _revealFromPage(page: HistoryPage<TMessage>, limit: number): Promise<void> {
+    // Snapshot before loading: every node already in the tree stays visible.
+    const beforeRunIds = new Set(this._treeVisibleNodes().map((n) => nodeKey(n)));
 
-    const { newVisible, lastPage } = await this._loadUntilVisible(page, limit, alreadyKnown);
+    const { newVisible, lastPage } = await this._loadUntilVisible(page, limit, beforeRunIds);
     if (this._closed) return;
     this._lastHistoryPage = lastPage;
     this._hasMoreHistory = lastPage.hasNext();
@@ -1025,9 +1026,8 @@ export class DefaultView<
 
   /**
    * Reveal the newest `limit` Runs from `newVisible` and withhold the rest
-   * so subsequent `loadOlder` calls can drain them. Shared between
-   * {@link _loadFirstPage} and {@link _loadAndReveal} so both follow the
-   * same Run-unit pagination contract.
+   * so subsequent `loadOlder` calls can drain them. Called by
+   * {@link _revealFromPage} to enforce the Run-unit pagination contract.
    * @param newVisible - Newly observed Runs from the history fetch.
    * @param limit - Max Runs to reveal in this batch.
    */

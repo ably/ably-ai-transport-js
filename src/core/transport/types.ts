@@ -491,6 +491,24 @@ export interface SendOptions {
 // ---------------------------------------------------------------------------
 
 /**
+ * Fields common to every {@link RunLifecycleEvent} arm.
+ */
+interface RunLifecycleBase {
+  /** The run-id this lifecycle event concerns. */
+  runId: string;
+  /** The owning client's identity (Ably publisher `clientId`). */
+  clientId: string;
+  /**
+   * The invocation-id this lifecycle event was published under (wire
+   * `invocation-id`). Lets consumers correlate the run's lifecycle back to the
+   * invocation that drove it; on a run-start the Tree records it on the RunNode
+   * at first creation so an optimistic Run exposes the invocation synchronously.
+   * Empty string if the wire didn't carry an invocation-id.
+   */
+  invocationId: string;
+}
+
+/**
  * A structured event describing a run starting, suspending, resuming, or
  * ending. The `type` discriminator (`start` / `suspend` / `resume` / `end`) is
  * the in-memory domain vocabulary and is intentionally distinct from the wire
@@ -498,23 +516,14 @@ export interface SendOptions {
  * `ai-run-end`) those events are decoded from.
  */
 export type RunLifecycleEvent =
-  | {
+  | (RunLifecycleBase & {
       type: 'start';
-      runId: string;
-      clientId: string;
       /**
        * Ably channel serial of the run-start message, or `undefined` for an
        * optimistic local event (no serial assigned yet). The Tree reads it to
        * promote the Run's startSerial.
        */
       serial: string | undefined;
-      /**
-       * The invocation-id this run-start was published under (wire
-       * `invocation-id`). The Tree records it on the RunNode on
-       * first creation so the optimistic Run exposes the invocation
-       * synchronously, without waiting for a serial-bearing echo.
-       */
-      invocationId: string;
       /** The codec-message-id of the parent message, if known. Omitted for root runs. */
       parent?: string;
       /**
@@ -530,60 +539,34 @@ export type RunLifecycleEvent =
        * realises the replacement when materialising messages.
        */
       regenerates?: string;
-    }
-  | {
+    })
+  | (RunLifecycleBase & {
       type: 'suspend';
-      runId: string;
-      clientId: string;
       /**
        * Ably channel serial of the run-suspend message, or `undefined` for an
        * optimistic local event. The Tree reads it to set the Run's endSerial
        * (a suspended run carries the serial at which it paused).
        */
       serial: string | undefined;
-      /**
-       * The invocation-id this run-suspend was published under (wire
-       * `invocation-id`), mirroring the run-start. Lets consumers correlate a
-       * run's suspension back to the invocation that drove it. Empty string if
-       * the wire didn't carry an invocation-id.
-       */
-      invocationId: string;
-    }
-  | {
+    })
+  | (RunLifecycleBase & {
       type: 'resume';
-      runId: string;
-      clientId: string;
       /**
        * Ably channel serial of the run-resume message, or `undefined` for an
        * optimistic local event. A resume re-enters an existing run; it does not
        * promote the Run's startSerial (the original run-start owns that).
        */
       serial: string | undefined;
-      /**
-       * The invocation-id of the resuming invocation (wire `invocation-id`).
-       * Lets consumers correlate the resumed work back to the invocation that
-       * drove it. Empty string if the wire didn't carry an invocation-id.
-       */
-      invocationId: string;
-    }
-  | {
+    })
+  | (RunLifecycleBase & {
       type: 'end';
-      runId: string;
-      clientId: string;
       /**
        * Ably channel serial of the run-end message, or `undefined` for an
        * optimistic local event. The Tree reads it to set the Run's endSerial.
        */
       serial: string | undefined;
-      /**
-       * The invocation-id this run-end was published under (wire
-       * `invocation-id`), mirroring the run-start. Lets consumers correlate
-       * a run's termination back to the invocation that drove it. Empty
-       * string if the wire didn't carry an invocation-id.
-       */
-      invocationId: string;
       reason: RunEndReason;
-    };
+    });
 
 // ---------------------------------------------------------------------------
 // Active run handle

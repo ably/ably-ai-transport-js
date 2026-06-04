@@ -131,6 +131,26 @@ const waitForRunEvent = async (
   });
 
 /**
+ * Concatenate the `text-delta` deltas from a run's collected output events.
+ * Used to assert that a run's stream carried only its own assistant text.
+ * @param events - The collected output events for one run.
+ * @returns The joined text-delta content.
+ */
+const textDeltaOf = (events: VercelOutput[]): string =>
+  events
+    .filter((e): e is Extract<VercelOutput, { type: 'text-delta' }> => e.type === 'text-delta')
+    .map((e) => e.delta)
+    .join('');
+
+/**
+ * Extract the concatenated `text` part content from a UIMessage.
+ * @param message - The message to read.
+ * @returns The first text part's content, or undefined when absent.
+ */
+const textOfMessage = (message: AI.UIMessage): string | undefined =>
+  message.parts.find((p): p is AI.TextUIPart => p.type === 'text')?.text;
+
+/**
  * Publish a run-start lifecycle event with the invocation-id header attached
  * so the client's run-end gate can match the invocation bound to the run.
  * The optional `parent` is the codec-message-id of the user input node this
@@ -1570,5 +1590,207 @@ describe('ClientSession integration', () => {
     expect(outputMessages.some((m) => getHeaders(m).type === 'tool-output-available')).toBe(true);
     // The agent must NOT publish tool outputs on the input wire.
     expect(inputMessages.some((m) => getHeaders(m).type === 'tool-output-available')).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // Cancel before run-start (AIT-831 PR-3 deferred-cancel path)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Scenario: the client cancels a fresh send BEFORE the agent has minted the
+   * reply run-id and published run-start. In the two-node model a fresh run has
+   * no run-id at send time, so the client keys the cancel by the triggering
+   * input's codec-message-id (the `ActiveRun.key`). The agent must buffer that
+   * early cancel and honour it once its input-event lookup resolves the input
+   * to a run — aborting the run as `start()` completes, not dropping the cancel.
+   *
+   * Ordering is the crux: `activeRun.cancel()` publishes the cancel first (while
+   * the agent has not yet created its run); only then does the agent run
+   * `start()`, whose real input-event lookup resolves the input-codec-message-id
+   * and pulls the buffered cancel. The default `inputEventLookupTimeoutMs` is
+   * used so the real lookup (and therefore the deferred-cancel pull) runs.
+   */
+  it('honours a cancel published before the agent mints the run-id and sends run-start', async () => {
+    const channelName = uniqueChannelName('ct-cancel-before-start');
+    const serverClient = ablyRealtimeClient();
+    const clientClient = ablyRealtimeClient();
+
+    agentSession = createAgentSession({
+      client: serverClient,
+      channelName,
+      codec: UIMessageCodec,
+      // Default inputEventLookupTimeoutMs so the real lookup runs and the
+      // deferred-cancel pull fires at start().
+    });
+    await agentSession.connect();
+
+    clientSession = createClientSession({
+      client: clientClient,
+      channelName,
+      codec: UIMessageCodec,
+      clientId: clientClient.auth.clientId,
+    });
+    await clientSession.connect();
+
+    // Fresh send — the agent has not minted a run-id yet, so the only handle
+    // the client can cancel by is the triggering input's codec-message-id.
+    const activeRun = await clientSession.view.sendMessage({
+      id: 'user-cancel-before-start-1',
+      role: 'user',
+      parts: [{ type: 'text', text: 'cancel me before you even start' }],
+    });
+    expect(activeRun.key).toBe('user-cancel-before-start-1');
+
+    // Cancel BEFORE the agent creates its run. The wire cancel is keyed by the
+    // input codec-message-id (no run-id exists yet), so the agent buffers it.
+    await activeRun.cancel();
+
+    // The agent now wakes, mints the reply run-id, and starts. Its real lookup
+    // resolves the triggering input and pulls the buffered cancel — aborting
+    // the run by the time start() completes.
+    const mintedRunId = crypto.randomUUID();
+    const serverRun = createRunFromOpts(agentSession, {
+      runId: mintedRunId,
+      inputEventId: activeRun.inputEventId,
+    });
+    await serverRun.start();
+
+    expect(serverRun.abortSignal.aborted).toBe(true);
+
+    // run-start landed (the abort took the controller, not the publish), so the
+    // client's run-id resolves to the agent-minted id.
+    await expect(activeRun.runId).resolves.toBe(mintedRunId);
+
+    // Arm the run-end listener BEFORE the agent ends the run so the terminal
+    // event can't be missed between publish and subscribe.
+    const endPromise = waitForRunEvent(clientSession, mintedRunId, 'end');
+
+    // The agent ends the run as cancelled, mirroring how a real handler reacts
+    // to the aborted signal.
+    await serverRun.end('cancelled');
+
+    const endEvent = await endPromise;
+    expect(endEvent.type).toBe('end');
+    if (endEvent.type === 'end') {
+      expect(endEvent.reason).toBe('cancelled');
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Concurrent runs route by input id (no cross-talk)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Scenario: two fresh sends are in flight on the same channel at once. Each
+   * gets its own agent-minted reply run-id, and each agent run drives off its
+   * own triggering input event. The client must route each run's streamed
+   * outputs to the correct run by the triggering input id — no cross-talk
+   * between the two concurrent streams. Verified by collecting each run's
+   * outputs independently and asserting each carries only its own assistant
+   * text, and that the View reconstructs both turns with the right text under
+   * the right user prompt.
+   */
+  it('routes concurrent runs to the correct stream by input id with no cross-talk', async () => {
+    const channelName = uniqueChannelName('ct-concurrent-runs');
+    const serverClient = ablyRealtimeClient();
+    const clientClient = ablyRealtimeClient();
+
+    agentSession = createAgentSession({
+      client: serverClient,
+      channelName,
+      codec: UIMessageCodec,
+    });
+    await agentSession.connect();
+
+    clientSession = createClientSession({
+      client: clientClient,
+      channelName,
+      codec: UIMessageCodec,
+      clientId: clientClient.auth.clientId,
+    });
+    await clientSession.connect();
+
+    // Two independent fresh sends, both before either agent run starts.
+    const runA = await clientSession.view.sendMessage({
+      id: 'user-conc-a',
+      role: 'user',
+      parts: [{ type: 'text', text: 'question A' }],
+    });
+    const runB = await clientSession.view.sendMessage({
+      id: 'user-conc-b',
+      role: 'user',
+      parts: [{ type: 'text', text: 'question B' }],
+    });
+
+    // Distinct input ids — the client routes outputs by these.
+    expect(runA.key).toBe('user-conc-a');
+    expect(runB.key).toBe('user-conc-b');
+    expect(runA.inputEventId).not.toBe(runB.inputEventId);
+
+    // Each agent run mints its own run-id and drives off its own input event.
+    const mintedA = crypto.randomUUID();
+    const mintedB = crypto.randomUUID();
+    const serverRunA = createRunFromOpts(agentSession, {
+      runId: mintedA,
+      inputEventId: runA.inputEventId,
+    });
+    const serverRunB = createRunFromOpts(agentSession, {
+      runId: mintedB,
+      inputEventId: runB.inputEventId,
+    });
+    await Promise.all([serverRunA.start(), serverRunB.start()]);
+
+    const [runIdA, runIdB] = await Promise.all([runA.runId, runB.runId]);
+    expect(runIdA).toBe(mintedA);
+    expect(runIdB).toBe(mintedB);
+    // The two runs are distinct — no collapse onto a single run-id.
+    expect(runIdA).not.toBe(runIdB);
+
+    // Collect each run's outputs independently before streaming begins.
+    const outputsA = collectRunOutputs(clientSession, runIdA);
+    const outputsB = collectRunOutputs(clientSession, runIdB);
+
+    // Stream both concurrently with distinct assistant content.
+    await Promise.all([
+      serverRunA.pipe(textResponseStream('asst-conc-a', 'text-conc-a', 'answer A')),
+      serverRunB.pipe(textResponseStream('asst-conc-b', 'text-conc-b', 'answer B')),
+    ]);
+    await Promise.all([serverRunA.end('complete'), serverRunB.end('complete')]);
+
+    const [eventsA, eventsB] = await Promise.all([outputsA, outputsB]);
+
+    // Each run's collected outputs carry only its own assistant text — proof
+    // the client keyed each output to the correct run by input id.
+    expect(textDeltaOf(eventsA)).toBe('answer A');
+    expect(textDeltaOf(eventsB)).toBe('answer B');
+
+    // The View reconstructs both turns. The user prompt ids are client-owned
+    // and stable; the assistant message ids are agent-minted codec-message-ids
+    // (not the stream's chunk messageId), so associate each assistant reply
+    // with its run via `runOf` rather than by a guessed id.
+    await waitForMessages(clientSession, 4);
+    const messages = clientSession.view.getMessages();
+
+    const userA = messages.find((m) => m.id === 'user-conc-a');
+    const userB = messages.find((m) => m.id === 'user-conc-b');
+    expect(userA).toBeDefined();
+    expect(userB).toBeDefined();
+    if (userA) expect(textOfMessage(userA)).toBe('question A');
+    if (userB) expect(textOfMessage(userB)).toBe('question B');
+
+    // Each assistant reply belongs to its own run — proof the View threaded
+    // each reply run under its own input node with no cross-talk.
+    const asstMsgs = messages.filter((m) => m.role === 'assistant');
+    expect(asstMsgs).toHaveLength(2);
+    const asstTextByRunId = new Map(
+      asstMsgs.map((m) => [clientSession?.view.runOf(m.id)?.runId, textOfMessage(m)]),
+    );
+    expect(asstTextByRunId.get(runIdA)).toBe('answer A');
+    expect(asstTextByRunId.get(runIdB)).toBe('answer B');
+
+    // Both agent-minted runs are present and distinct in the tree.
+    const treeRunIds = clientSession.view.runs().map((n) => n.runId);
+    expect(treeRunIds).toContain(runIdA);
+    expect(treeRunIds).toContain(runIdB);
   });
 });

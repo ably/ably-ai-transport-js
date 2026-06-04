@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ActiveRun } from '@ably/ai-transport';
+import { UIMessageCodec } from '@ably/ai-transport/vercel';
 
-import { userMessage, userMessageEvent, wakeAgent } from '../helpers';
+import { userMessage, wakeAgent } from '../helpers';
 import { useClientTools } from '../hooks/use-client-tools';
 import { useDemoProgress } from '../hooks/use-demo-progress';
 import { MessageList } from './message-list';
@@ -126,7 +127,7 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
       const run = view.runOf(codecMessageId);
       if (!run) return;
       wake(
-        view.sendInput([{ kind: 'tool-approval-response', codecMessageId, toolCallId, approved: true }], {
+        view.send([UIMessageCodec.createToolApprovalResponse(codecMessageId, { toolCallId, approved: true })], {
           runId: run.runId,
         }),
       );
@@ -139,8 +140,14 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
       const run = view.runOf(codecMessageId);
       if (!run) return;
       wake(
-        view.sendInput(
-          [{ kind: 'tool-approval-response', codecMessageId, toolCallId, approved: false, reason: 'User denied' }],
+        view.send(
+          [
+            UIMessageCodec.createToolApprovalResponse(codecMessageId, {
+              toolCallId,
+              approved: false,
+              reason: 'User denied',
+            }),
+          ],
           { runId: run.runId },
         ),
       );
@@ -163,7 +170,9 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
           }}
           onLoadOlder={() => void loadOlder()}
           onRegenerate={(codecMessageId) => wake(view.regenerate(codecMessageId))}
-          onEdit={(codecMessageId, text) => wake(view.edit(codecMessageId, [userMessageEvent(text)]))}
+          onEdit={(codecMessageId, text) =>
+            wake(view.edit(codecMessageId, [UIMessageCodec.createUserMessage(userMessage(text))]))
+          }
           onToolApprove={handleToolApprove}
           onToolDeny={handleToolDeny}
         />
@@ -176,7 +185,7 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
             value={input}
             onChange={setInput}
             inputRef={inputRef}
-            onSend={(text) => wake(view.sendMessage(userMessage(text)))}
+            onSend={(text) => wake(view.send(UIMessageCodec.createUserMessage(userMessage(text))))}
             onStop={() => {
               if (!latestRunId) return;
               void session.cancel(latestRunId);

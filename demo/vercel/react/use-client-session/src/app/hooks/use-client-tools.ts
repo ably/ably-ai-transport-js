@@ -5,7 +5,7 @@
  * Watches the view's message list for tool parts in `input-available` state
  * that match a registered client tool. Executes the tool, then publishes a
  * `tool-result` (or `tool-result-error`) TInput on the channel via
- * `view.sendInput`. The codec's reducer folds the result onto the
+ * `view.send`. The codec's reducer folds the result onto the
  * assistant message addressed by `codecMessageId` (matched by `toolCallId`
  * within that message).
  *
@@ -17,7 +17,7 @@
 import { useEffect, useRef } from 'react';
 import type { DynamicToolUIPart, UIMessage } from 'ai';
 import type { ViewHandle } from '@ably/ai-transport/react';
-import type { VercelInput } from '@ably/ai-transport/vercel';
+import { UIMessageCodec, type VercelInput } from '@ably/ai-transport/vercel';
 
 import { wakeAgent } from '../helpers';
 
@@ -107,17 +107,15 @@ async function executeClientTool(
   let input: VercelInput;
   try {
     const output = await executor(toolPart.input);
-    input = { kind: 'tool-result', codecMessageId, toolCallId: toolPart.toolCallId, output };
+    input = UIMessageCodec.createToolResult(codecMessageId, { toolCallId: toolPart.toolCallId, output });
   } catch (error) {
-    input = {
-      kind: 'tool-result-error',
-      codecMessageId,
+    input = UIMessageCodec.createToolResultError(codecMessageId, {
       toolCallId: toolPart.toolCallId,
       message: error instanceof Error ? error.message : 'Client tool execution failed',
-    };
+    });
   }
 
   // Publish the resolution, then wake the agent so it picks it up and resumes.
-  const run = await view.sendInput([input], { runId });
+  const run = await view.send([input], { runId });
   await wakeAgent(api, run);
 }

@@ -605,16 +605,24 @@ export type RunLifecycleEvent =
  */
 export interface ActiveRun {
   /**
-   * Resolves when the agent's `ai-run-start` for this run+invocation is
-   * observed on the channel. `send()` itself resolves as soon as the input
-   * is published, so callers that need to know the agent has picked up the
-   * run `await run.started`. There is no built-in deadline — race it against
-   * your own timeout if you need one. Rejects only if the session is closed
-   * before run-start arrives.
+   * The synchronous routing handle for this send: the triggering input's
+   * codec-message-id, which the client owns the moment it publishes and the
+   * agent echoes back as `input-codec-message-id`. Stream routing and cancel
+   * key on this — it is known immediately, unlike {@link runId}, which the
+   * agent now mints. For an empty-input continuation (which publishes no new
+   * input) this falls back to the continued run's id.
    */
-  started: Promise<void>;
-  /** The run's unique identifier. */
-  runId: string;
+  key: string;
+  /**
+   * The run's unique identifier, resolved when the agent's `ai-run-start` for
+   * this send is observed on the channel. The agent mints the run-id now (the
+   * client no longer does), so it is not known synchronously: `await run.runId`
+   * to learn it (this also tells you the agent has picked up the run). There is
+   * no built-in deadline — race it against your own timeout if you need one.
+   * Rejects only if the session is closed before run-start arrives. A
+   * continuation resolves immediately with the run-id the client already knows.
+   */
+  runId: Promise<string>;
   /**
    * The input event's unique identifier. Stamped on the primary input event
    * published to the channel and forwarded in the HTTP POST body so the
@@ -630,12 +638,13 @@ export interface ActiveRun {
    */
   optimisticCodecMessageIds: string[];
   /**
-   * Build the {@link Invocation} pointer for this run — `runId`,
-   * `inputEventId`, and the session's channel name as `sessionName`. The
+   * Build the {@link Invocation} pointer for this run — `inputEventId`, the
+   * session's channel name as `sessionName`, and `runId` only for a
+   * continuation (a fresh run omits it, leaving the agent to mint it). The
    * application POSTs `run.toInvocation().toJSON()` to its agent endpoint to
    * wake the agent; the agent rebuilds it via {@link Invocation.fromJSON} and
-   * mints the `invocationId` itself. The conversation itself is read from the
-   * channel, so the pointer carries only identifiers.
+   * mints the `invocationId` (and a fresh `runId`) itself. The conversation
+   * itself is read from the channel, so the pointer carries only identifiers.
    */
   toInvocation(): Invocation;
 }
@@ -838,8 +847,13 @@ export type ConversationNode<TProjection> = InputNode<TProjection> | RunNode<TPr
  * consumer needs to attribute or stream them.
  */
 export interface OutputEvent<TOutput extends CodecOutputEvent> {
-  /** The runId the outputs were folded into. */
-  runId: string;
+  /**
+   * The runId the outputs were folded into, or `undefined` when the fold was
+   * into a user input node (which carries no run-id — the agent mints run-ids).
+   * An input fold always has empty {@link events}; consumers route by
+   * {@link inputCodecMessageId}, not this.
+   */
+  runId: string | undefined;
   /**
    * The codec-message-id of the input event that triggered this run — the
    * agent's `input-codec-message-id` header. This is the stable key the client

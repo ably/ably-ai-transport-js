@@ -52,22 +52,26 @@ export interface RunOutputStream {
 }
 
 /**
- * Create a consumer-facing output stream for `runId`, sourced from the
- * session Tree's events. See the module docs for close/error semantics. The
- * returned `close`/`error` let the caller settle the stream for conditions the
- * Tree doesn't surface (local cancel, POST failure).
+ * Create a consumer-facing output stream for a send, sourced from the session
+ * Tree's events. See the module docs for close/error semantics. The returned
+ * `close`/`error` let the caller settle the stream for conditions the Tree
+ * doesn't surface (local cancel, POST failure).
+ *
+ * Outputs route PURELY by the triggering input's codec-message-id — the key the
+ * client owns from send time, before the agent mints the runId. The agent's
+ * minted runId is supplied as a promise so the run-end safety-net can still
+ * close the stream once it resolves.
  * @param session - The Vercel client session whose Tree to observe.
- * @param runId - The run whose outputs to project.
- * @param inputCodecMessageId - The triggering input's codec-message-id, when
- *   known at open time. An output routes to this stream if it carries this id,
- *   independently of the runId — the key the client owns before the agent
- *   mints the runId. Omit to route by runId alone.
+ * @param runId - The agent-minted runId, resolved when run-start is observed.
+ *   Used only by the run-end safety-net; routing keys on `inputCodecMessageId`.
+ * @param inputCodecMessageId - The triggering input's codec-message-id. An
+ *   output routes to this stream when it carries this id.
  * @returns The stream and its external settle handles.
  */
 export const createRunOutputStream = (
   session: VercelSession,
-  runId: string,
-  inputCodecMessageId?: string,
+  runId: Promise<string>,
+  inputCodecMessageId: string,
 ): RunOutputStream => {
   const holder: { controller?: ReadableStreamDefaultController<VercelOutput> } = {};
   // ReadableStream's start() runs synchronously, so the controller is captured
@@ -90,14 +94,26 @@ export const createRunOutputStream = (
     );
   }
 
-  // Route an output to this stream when it carries the run's runId, or — the
-  // arm that outlives the runId once the agent mints it — when it carries the
-  // triggering input's codec-message-id this stream was opened for. Today the
-  // runId arm resolves every output (the client mints the runId), so the input
-  // arm only ever co-fires; the flip drops the runId arm, leaving input-id
-  // routing alone.
+  // Route an output to this stream when it carries the triggering input's
+  // codec-message-id — the key the client owns from send time, before the agent
+  // mints the runId.
   const matchesOutput = (event: OutputEvent<VercelOutput>): boolean =>
-    event.runId === runId || (inputCodecMessageId !== undefined && event.inputCodecMessageId === inputCodecMessageId);
+    event.inputCodecMessageId === inputCodecMessageId;
+
+  // The agent mints the runId; learn it (for the run-end safety-net) when the
+  // promise resolves. Fire-and-forget: the stream opens on the input key, so a
+  // never-resolving runId only forgoes the safety-net, not normal close.
+  let resolvedRunId: string | undefined;
+  // Best-effort: failure only disables the run-end safety-net; normal close is
+  // the terminal chunk. `void` discards the promise (no await needed here).
+  void runId.then(
+    (id) => {
+      resolvedRunId = id;
+    },
+    () => {
+      /* session closed before run-start; safety-net stays disarmed */
+    },
+  );
 
   let settled = false;
   const teardown = (): void => {
@@ -143,8 +159,9 @@ export const createRunOutputStream = (
     }),
     session.tree.on('run', (event) => {
       // run-end is always terminal now; a run-suspend (event.type === 'suspend')
-      // keeps the core run alive and must not close the consumer stream.
-      if (event.type === 'end' && event.runId === runId) {
+      // keeps the core run alive and must not close the consumer stream. Match
+      // against the resolved runId once the agent has minted it.
+      if (event.type === 'end' && resolvedRunId !== undefined && event.runId === resolvedRunId) {
         close();
       }
     }),

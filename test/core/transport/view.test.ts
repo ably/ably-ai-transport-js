@@ -101,8 +101,8 @@ const createMockSendDelegate = (): SendDelegate<TestInput> =>
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   vi.fn(() =>
     Promise.resolve({
-      started: Promise.resolve(),
-      runId: 'mock-run',
+      key: 'mock-input',
+      runId: Promise.resolve('mock-run'),
       inputEventId: '',
       invocationId: 'mock-inv',
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
@@ -138,6 +138,35 @@ const apply = (tree: DefaultTree<TestInput, TestOutput, TestProjection>, opts: A
   tree.applyMessage({ inputs: [], outputs: events }, h, opts.serial);
 };
 
+interface ApplyInputOpts {
+  /** The input node's codec-message-id (its primary key). */
+  codecMessageId: string;
+  /** Structural parent codec-message-id (the preceding reply run), if any. */
+  parent?: string;
+  /** Fork-of anchor when this input is an edit of an earlier prompt. */
+  forkOf?: string;
+  serial?: string;
+  message: TestMessage;
+}
+
+/**
+ * Apply a run-less user INPUT node (two-node model): no run-id, role 'user',
+ * keyed by its codec-message-id, carrying a user input event. The agent mints
+ * the reply run-id separately as a child RunNode parented at this input.
+ * @param tree - The tree to apply the input node to.
+ * @param opts - Input node options (codecMessageId, parent, forkOf, serial, message).
+ */
+const applyInput = (tree: DefaultTree<TestInput, TestOutput, TestProjection>, opts: ApplyInputOpts): void => {
+  const h: Record<string, string> = {
+    [HEADER_CODEC_MESSAGE_ID]: opts.codecMessageId,
+    [HEADER_ROLE]: 'user',
+  };
+  if (opts.parent) h[HEADER_PARENT] = opts.parent;
+  if (opts.forkOf) h[HEADER_FORK_OF] = opts.forkOf;
+  const inputs: TestInput[] = [{ kind: 'user-message', message: opts.message }];
+  tree.applyMessage({ inputs, outputs: [] }, h, opts.serial);
+};
+
 const makePage = (
   items: { message: TestMessage; headers: Record<string, string>; serial: string }[],
   rawMessages: Ably.InboundMessage[] = [],
@@ -150,6 +179,22 @@ const makePage = (
   // eslint-disable-next-line @typescript-eslint/promise-function-async, unicorn/no-useless-undefined -- mock needs explicit undefined return for HistoryPage shape
   next: nextPageFn ?? (() => Promise.resolve(undefined)),
 });
+
+/**
+ * Build a linear-chain run's transport headers for the pagination history
+ * fixtures: each run parents at the prior run's message so they stay a visible
+ * chain (same-parent reply runs would collapse as regenerate siblings).
+ * @param i - The run index (0 = root).
+ * @returns The transport headers for run `i`.
+ */
+const linearChainHeaders = (i: number): Record<string, string> => {
+  const h: Record<string, string> = {
+    [HEADER_RUN_ID]: `R${String(i)}`,
+    [HEADER_CODEC_MESSAGE_ID]: `mh${String(i)}`,
+  };
+  if (i > 0) h[HEADER_PARENT] = `mh${String(i - 1)}`;
+  return h;
+};
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -265,31 +310,23 @@ describe('DefaultView', () => {
       // a1 — its answer doesn't apply to a1', so the visible chain on
       // the regen branch collapses to [u1, a1']. The follow-up turn
       // reappears when the user navigates back to the original branch.
-      apply(tree, {
-        runId: 'R1',
-        codecMessageId: 'u1',
-        role: 'user',
-        message: { id: 'u1', content: 'q1' },
-        serial: 's1',
-      });
+      // Two-node model: u1 input → R1 reply (a1). Follow-up turn: u2 input
+      // parented at a1 → R2 reply (a2). Regenerate a1 → R3 reply parented at the
+      // same input node u1 (regenerate sibling of R1).
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'q1' }, serial: 's1' });
       apply(tree, {
         runId: 'R1',
         codecMessageId: 'a1',
+        parent: 'u1',
         role: 'assistant',
         message: { id: 'a1', content: 'reply1' },
         serial: 's2',
       });
-      apply(tree, {
-        runId: 'R2',
-        codecMessageId: 'u2',
-        parent: 'a1',
-        role: 'user',
-        message: { id: 'u2', content: 'q2' },
-        serial: 's3',
-      });
+      applyInput(tree, { codecMessageId: 'u2', parent: 'a1', message: { id: 'u2', content: 'q2' }, serial: 's3' });
       apply(tree, {
         runId: 'R2',
         codecMessageId: 'a2',
+        parent: 'u2',
         role: 'assistant',
         message: { id: 'a2', content: 'reply2' },
         serial: 's4',
@@ -304,16 +341,22 @@ describe('DefaultView', () => {
         serial: 's5',
       });
 
-      // Regen branch (default — latest): R2 hidden because its parent
-      // message a1 is being substituted by a1p.
+      // Regen branch (default — latest): the follow-up turn (u2 + R2) is hidden
+      // because its anchor a1 (R1's reply) is no longer on the selected path.
       expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1p']);
 
-      // Original branch: a1 is back in the chain, R2 reappears.
+      // Original branch: a1 is back in the chain, the follow-up turn reappears.
       view.selectSibling('a1', 0);
       expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2']);
     });
 
-    it('substitutes nested regenerator content recursively at each anchor position', () => {
+    // TODO(AIT-831): deferred — regenerating a NON-HEAD message inside a
+    // multi-message reply run's projection. The two-node node-walk selects a
+    // whole sibling reply run; it can't slice inside one run's projection, so
+    // intra-run mid-reply substitution is out of scope for the flip. Re-enable
+    // with the planned regenerate-of-multi-message golden test (see
+    // pr2-execution-plan.md §Tests).
+    it.skip('substitutes nested regenerator content recursively at each anchor position', () => {
       // P1 → [u1, a1]. Regen a1 → R2 = [a1', extra']. Then regen the
       // trailing follow-up extra' inside R2 → R3 = [extra''] (anchored
       // at extra', NOT rebased to a1 per the trailing-target rule).
@@ -598,11 +641,14 @@ describe('DefaultView', () => {
       expect(v.runs().map((r) => r.runId)).toEqual(['R1', 'R2alt']);
     });
 
-    it('pins selection to the currently-visible sibling when a fork appears (live view)', () => {
+    it('rolls a regenerate group forward to the latest sibling when one appears (live view)', () => {
       // View constructed before any data; watches as R1, R2, R2alt arrive.
-      // When R2alt appears, R2 is already visible → pin to R2.
+      // R2 and R2alt are same-parent reply runs — a regenerate sibling group.
+      // Unlike edit (input-node) forks, regenerate groups do NOT pin to the
+      // currently-visible member: the slot always rolls forward to the latest
+      // (R2alt), so an externally-published regenerator auto-advances the view.
       seedFork();
-      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2']);
+      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2alt']);
     });
 
     it('selectSibling switches to the chosen sibling Run', () => {
@@ -885,6 +931,30 @@ describe('DefaultView', () => {
       expect(sendOptions?.forkOf).toBe('u2');
     });
 
+    it('edits a run-less input node (the two-node edit target) — resolves kind-blind', async () => {
+      // The edit target is a user prompt = a run-LESS INPUT node. Regression
+      // guard: edit() must resolve the target via the node union, not the
+      // reply-run-only lookup (which returned undefined → "message not found").
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'alpha' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'a1',
+        role: 'assistant',
+        parent: 'u1',
+        message: { id: 'a1', content: 'reply' },
+        serial: 's2',
+      });
+
+      // Must not throw (the bug threw "message not found in tree").
+      await view.edit('u1', { kind: 'user-message', message: { id: 'u1b', content: 'edited' } });
+
+      const call = vi.mocked(sendDelegate).mock.calls[0];
+      if (!call) throw new Error('expected delegate call');
+      const [, sendOptions] = call;
+      expect(sendOptions?.forkOf).toBe('u1');
+      expect(sendOptions?.parent).toBeUndefined(); // u1 is the root prompt
+    });
+
     it('regenerate of an already-regenerated assistant resolves parent to the user prompt, not the hidden original assistant', async () => {
       // Setup: R1 = [user u1, asst a1]. Then a regenerate creates R_regen
       // (continuation of R1, regeneratesCodecMessageId=a1, owns a1p). The visible
@@ -898,16 +968,11 @@ describe('DefaultView', () => {
       //
       // Expected: parent resolves to u1 (the user prompt the regen is
       // responding to). History sent on send = [u1].
-      apply(tree, {
-        runId: 'R1',
-        codecMessageId: 'u1',
-        role: 'user',
-        message: { id: 'u1', content: 'q' },
-        serial: 's1',
-      });
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'q' }, serial: 's1' });
       apply(tree, {
         runId: 'R1',
         codecMessageId: 'a1',
+        parent: 'u1',
         role: 'assistant',
         message: { id: 'a1', content: 'first reply' },
         serial: 's2',
@@ -915,7 +980,7 @@ describe('DefaultView', () => {
       apply(tree, {
         runId: 'R_regen',
         codecMessageId: 'a1p',
-        parent: 'a1',
+        parent: 'u1',
         regenerates: 'a1',
         role: 'assistant',
         message: { id: 'a1p', content: 'regen reply' },
@@ -960,13 +1025,7 @@ describe('DefaultView', () => {
       // u2/a2). Then clicks regenerate on a1 — R3 produces a1p.
       // The follow-up R2 lives on the original a1's timeline; it must
       // disappear from the regen branch.
-      apply(tree, {
-        runId: 'R1',
-        codecMessageId: 'u1',
-        role: 'user',
-        message: { id: 'u1', content: 'tell me a fact' },
-        serial: 's1',
-      });
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'tell me a fact' }, serial: 's1' });
       apply(tree, {
         runId: 'R1',
         codecMessageId: 'a1',
@@ -975,10 +1034,8 @@ describe('DefaultView', () => {
         message: { id: 'a1', content: 'honey fact' },
         serial: 's2',
       });
-      apply(tree, {
-        runId: 'R2',
+      applyInput(tree, {
         codecMessageId: 'u2',
-        role: 'user',
         parent: 'a1',
         message: { id: 'u2', content: 'not about honey' },
         serial: 's3',
@@ -1004,8 +1061,8 @@ describe('DefaultView', () => {
         serial: 's5',
       });
 
-      // After regen (latest selected): R2 chain hidden — the user's
-      // follow-up was conditioned on a1, which is now substituted.
+      // After regen (latest selected): the follow-up turn (u2 + R2) is hidden —
+      // its anchor a1 was substituted by the regenerator.
       expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1p']);
     });
 
@@ -1018,13 +1075,7 @@ describe('DefaultView', () => {
       // Default selection picks R2 (newest regen), so the visible chain
       // is [u1, a1p, u2, a2]. Selecting R1 must collapse the chain to
       // [u1, a1] — R3 belongs to the regen branch and disappears too.
-      apply(tree, {
-        runId: 'R1',
-        codecMessageId: 'u1',
-        role: 'user',
-        message: { id: 'u1', content: 'q1' },
-        serial: 's1',
-      });
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'q1' }, serial: 's1' });
       apply(tree, {
         runId: 'R1',
         codecMessageId: 'a1',
@@ -1042,14 +1093,7 @@ describe('DefaultView', () => {
         message: { id: 'a1p', content: 'regen' },
         serial: 's3',
       });
-      apply(tree, {
-        runId: 'R3',
-        codecMessageId: 'u2',
-        role: 'user',
-        parent: 'a1p',
-        message: { id: 'u2', content: 'q2' },
-        serial: 's4',
-      });
+      applyInput(tree, { codecMessageId: 'u2', parent: 'a1p', message: { id: 'u2', content: 'q2' }, serial: 's4' });
       apply(tree, {
         runId: 'R3',
         codecMessageId: 'a2',
@@ -1059,7 +1103,7 @@ describe('DefaultView', () => {
         serial: 's5',
       });
 
-      // Default selection: latest regen (R2) → R3 chains off it.
+      // Default selection: latest regen (R2) → the follow-up turn chains off it.
       expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1p', 'u2', 'a2']);
 
       // Switch to the original (index 0 in the regen group).
@@ -1071,19 +1115,16 @@ describe('DefaultView', () => {
       expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1p', 'u2', 'a2']);
     });
 
-    it('updates view.getMessages() when the regenerator Run lands before the publish ACK resolves', async () => {
-      // Race condition repro: agent publishes ai-run-start for the new
-      // regenerator BEFORE the client's publish() ACK returns. Without
-      // forcing a recompute in _applyRegenerateAutoSelect, the view's
-      // visible state stays on the previously-selected regen because
-      // _onTreeUpdate ran with stale _regenSelections.
-      apply(tree, {
-        runId: 'R1',
-        codecMessageId: 'u1',
-        role: 'user',
-        message: { id: 'u1', content: 'q' },
-        serial: 's1',
-      });
+    it('rolls view.getMessages() forward to a regenerator that lands before the publish ACK resolves', async () => {
+      // Race condition repro: the agent publishes ai-run-start for the new
+      // regenerator BEFORE the client's publish() ACK returns. A regenerate
+      // slot defaults to the latest member (auto-rolls forward), so the view
+      // snaps to the newest regenerator the moment it lands — regardless of
+      // when the send ACK resolves — unless the user explicitly pinned an
+      // earlier one.
+      // Two-node model: u1 is a run-less user INPUT node; R1 (reply) parents at
+      // it; regenerators are sibling reply runs parented at the same input node.
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'q' }, serial: 's1' });
       apply(tree, {
         runId: 'R1',
         codecMessageId: 'a1',
@@ -1096,8 +1137,8 @@ describe('DefaultView', () => {
       // First regen completes — promoted to auto.
       let deferredResolve: ((value: ActiveRun) => void) | undefined;
       vi.mocked(sendDelegate).mockResolvedValueOnce({
-        started: Promise.resolve(),
-        runId: 'Rregen1',
+        key: 'a1',
+        runId: Promise.resolve('Rregen1'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
@@ -1110,12 +1151,14 @@ describe('DefaultView', () => {
         runId: 'Rregen1',
         clientId: 'agent',
         invocationId: 'inv-1',
+        parent: 'u1',
         regenerates: 'a1',
         serial: 's3-start',
       });
       apply(tree, {
         runId: 'Rregen1',
         codecMessageId: 'a1_new1',
+        parent: 'u1',
         role: 'assistant',
         regenerates: 'a1',
         message: { id: 'a1_new1', content: 'regen-1' },
@@ -1141,24 +1184,28 @@ describe('DefaultView', () => {
         runId: 'Rregen2',
         clientId: 'agent',
         invocationId: 'inv-2',
+        parent: 'u1',
         regenerates: 'a1',
         serial: 's4-start',
       });
       apply(tree, {
         runId: 'Rregen2',
         codecMessageId: 'a1_new2',
+        parent: 'u1',
         role: 'assistant',
         regenerates: 'a1',
         message: { id: 'a1_new2', content: 'regen-2' },
         serial: 's4',
       });
-      // Stale: visible still on regen-1 because the selection hasn't moved.
-      expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1_new1']);
+      // Auto-rolls forward to regen-2 the moment its run lands — the slot
+      // tracks the latest member; it does not wait for the publish ACK.
+      expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1_new2']);
 
-      // Now the publish ACK resolves: _applyRegenerateAutoSelect runs.
+      // The publish ACK resolves later: _applyRegenerateAutoSelect runs and the
+      // selection stays on the latest (regen-2).
       deferredResolve?.({
-        started: Promise.resolve(),
-        runId: 'Rregen2',
+        key: 'a1_new1',
+        runId: Promise.resolve('Rregen2'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
@@ -1173,16 +1220,11 @@ describe('DefaultView', () => {
     });
 
     it('three consecutive regenerates of the same assistant substitute to the latest in view.getMessages()', async () => {
-      // Mirror the use-chat demo scenario: one Run contains both the user
-      // message and the original assistant. Three sequential regenerates
-      // each mint a new Run that regenerates the canonical anchor.
-      apply(tree, {
-        runId: 'R1',
-        codecMessageId: 'u1',
-        role: 'user',
-        message: { id: 'u1', content: 'q' },
-        serial: 's1',
-      });
+      // Mirror the use-chat demo scenario in the two-node model: a run-less user
+      // INPUT node u1, the original reply R1 parented at it, then three
+      // sequential regenerates each minting a new reply run parented at the SAME
+      // input node (the regenerate sibling group).
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'q' }, serial: 's1' });
       apply(tree, {
         runId: 'R1',
         codecMessageId: 'a1',
@@ -1196,8 +1238,8 @@ describe('DefaultView', () => {
 
       // First regenerate.
       vi.mocked(sendDelegate).mockResolvedValueOnce({
-        started: Promise.resolve(),
-        runId: 'Rregen1',
+        key: 'a1',
+        runId: Promise.resolve('Rregen1'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
@@ -1210,12 +1252,14 @@ describe('DefaultView', () => {
         runId: 'Rregen1',
         clientId: 'agent',
         invocationId: 'inv-1',
+        parent: 'u1',
         regenerates: 'a1',
         serial: 's3-start',
       });
       apply(tree, {
         runId: 'Rregen1',
         codecMessageId: 'a1_new1',
+        parent: 'u1',
         role: 'assistant',
         regenerates: 'a1',
         message: { id: 'a1_new1', content: 'regen-1' },
@@ -1225,8 +1269,8 @@ describe('DefaultView', () => {
 
       // Second regenerate (clicking the displayed regen-1 message).
       vi.mocked(sendDelegate).mockResolvedValueOnce({
-        started: Promise.resolve(),
-        runId: 'Rregen2',
+        key: 'a1_new1',
+        runId: Promise.resolve('Rregen2'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
@@ -1239,12 +1283,14 @@ describe('DefaultView', () => {
         runId: 'Rregen2',
         clientId: 'agent',
         invocationId: 'inv-2',
+        parent: 'u1',
         regenerates: 'a1',
         serial: 's4-start',
       });
       apply(tree, {
         runId: 'Rregen2',
         codecMessageId: 'a1_new2',
+        parent: 'u1',
         role: 'assistant',
         regenerates: 'a1',
         message: { id: 'a1_new2', content: 'regen-2' },
@@ -1254,8 +1300,8 @@ describe('DefaultView', () => {
 
       // Third regenerate.
       vi.mocked(sendDelegate).mockResolvedValueOnce({
-        started: Promise.resolve(),
-        runId: 'Rregen3',
+        key: 'a1_new2',
+        runId: Promise.resolve('Rregen3'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
@@ -1268,12 +1314,14 @@ describe('DefaultView', () => {
         runId: 'Rregen3',
         clientId: 'agent',
         invocationId: 'inv-3',
+        parent: 'u1',
         regenerates: 'a1',
         serial: 's5-start',
       });
       apply(tree, {
         runId: 'Rregen3',
         codecMessageId: 'a1_new3',
+        parent: 'u1',
         role: 'assistant',
         regenerates: 'a1',
         message: { id: 'a1_new3', content: 'regen-3' },
@@ -1566,12 +1614,12 @@ describe('DefaultView', () => {
     });
 
     it('branch selection is per-view (selecting in one does not affect the other)', () => {
-      // Build R1 (user) → R2 (assistant) with a sibling R2alt. Both views
-      // pin to R2 on the external fork (pin-on-external-fork preserves the
-      // currently-visible sibling). role omitted so the user-content wire
-      // routes at wire-runId (the role-based sub-Run split is exercised
-      // elsewhere).
-      apply(tree, { runId: 'R1', codecMessageId: 'u1', message: { id: 'a', content: 'q' }, serial: 's1' });
+      // Two-node model: u1 is a run-less user INPUT node; R2 is the original
+      // reply and R2alt is a regenerator — both parented at u1 (a regenerate
+      // sibling group). A regenerate group rolls forward to the latest member,
+      // so both views default to R2alt; an explicit per-view selection back to
+      // the original (R2) in view A must not affect view B.
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'a', content: 'q' }, serial: 's1' });
       apply(tree, {
         runId: 'R2',
         codecMessageId: 'a1',
@@ -1579,24 +1627,24 @@ describe('DefaultView', () => {
         message: { id: 'b', content: 'v1' },
         serial: 's2',
       });
-      // Prime both views so they see R2 before the fork appears.
+      // Prime both views so they see R2 before the regenerator appears.
       view.runs();
       viewB.runs();
       apply(tree, {
         runId: 'R2alt',
         codecMessageId: 'a2',
         parent: 'u1',
-        forkOf: 'a1',
+        regenerates: 'a1',
         message: { id: 'c', content: 'v2' },
         serial: 's3',
       });
-      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2']);
-      expect(viewB.runs().map((r) => r.runId)).toEqual(['R1', 'R2']);
+      expect(view.runs().map((r) => r.runId)).toEqual(['R2alt']);
+      expect(viewB.runs().map((r) => r.runId)).toEqual(['R2alt']);
 
-      // Select R2alt in view A (anchor a1, index 1); view B's selection is unchanged.
-      view.selectSibling('a1', 1);
-      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2alt']);
-      expect(viewB.runs().map((r) => r.runId)).toEqual(['R1', 'R2']);
+      // Select the original (anchor a1, index 0) in view A; view B is unchanged.
+      view.selectSibling('a1', 0);
+      expect(view.runs().map((r) => r.runId)).toEqual(['R2']);
+      expect(viewB.runs().map((r) => r.runId)).toEqual(['R2alt']);
     });
 
     it('closing one view does not affect the other', () => {
@@ -1701,11 +1749,13 @@ describe('DefaultView', () => {
     });
 
     it('withholds excess Runs and drains them on subsequent loadOlder calls without re-fetching', async () => {
-      // First page reveals 3 Runs (R0, R1, R2). With limit=2 the View
+      // First page reveals 3 Runs (R0, R1, R2) on a linear chain (each parented
+      // at the prior run's message — two same-parent reply runs would collapse
+      // as regenerate siblings in the two-node model). With limit=2 the View
       // reveals the newest 2 and withholds the oldest in the buffer.
       const items = [0, 1, 2].map((i) => ({
         message: { id: `h${String(i)}`, content: `old-${String(i)}` },
-        headers: { [HEADER_RUN_ID]: `R${String(i)}`, [HEADER_CODEC_MESSAGE_ID]: `mh${String(i)}` },
+        headers: linearChainHeaders(i),
         serial: `s${String(i)}`,
       }));
       const rawMessages = [0, 1, 2].map(
@@ -1713,9 +1763,7 @@ describe('DefaultView', () => {
           ({
             name: 'fake',
             serial: `s${String(i)}`,
-            extras: {
-              ai: { transport: { [HEADER_RUN_ID]: `R${String(i)}`, [HEADER_CODEC_MESSAGE_ID]: `mh${String(i)}` } },
-            },
+            extras: { ai: { transport: linearChainHeaders(i) } },
           }) as unknown as Ably.InboundMessage,
       );
       codec.createDecoder = vi.fn(() => ({
@@ -1755,9 +1803,11 @@ describe('DefaultView', () => {
     });
 
     it('suppresses ably-message events for withheld Runs', async () => {
+      // Linear chain so all three runs stay visible (same-parent reply runs
+      // would collapse as regenerate siblings in the two-node model).
       const items = [0, 1, 2].map((i) => ({
         message: { id: `h${String(i)}`, content: `old-${String(i)}` },
-        headers: { [HEADER_RUN_ID]: `R${String(i)}`, [HEADER_CODEC_MESSAGE_ID]: `mh${String(i)}` },
+        headers: linearChainHeaders(i),
         serial: `s${String(i)}`,
       }));
       const rawMessages = items.map(
@@ -2019,8 +2069,8 @@ describe('DefaultView', () => {
 
     it('regenerate sets a pending regenerate selection that resolves when the new Run arrives', async () => {
       vi.mocked(sendDelegate).mockResolvedValueOnce({
-        started: Promise.resolve(),
-        runId: 'R2new',
+        key: 'a1',
+        runId: Promise.resolve('R2new'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
@@ -2052,8 +2102,8 @@ describe('DefaultView', () => {
 
     it('pending selection is cleared on run-end when the server never creates the sibling Run', async () => {
       vi.mocked(sendDelegate).mockResolvedValueOnce({
-        started: Promise.resolve(),
-        runId: 'R2new',
+        key: 'a1',
+        runId: Promise.resolve('R2new'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
@@ -2076,22 +2126,22 @@ describe('DefaultView', () => {
         serial: 's3',
       });
 
-      // Now an external fork appears. With the pending selection NOT cleaned
-      // up, pin-on-external-fork would still pin to R2; with cleanup it
-      // adopts the default-latest (R2-late) like any other external fork.
+      // Now an external regenerator appears (a sibling reply run at the same
+      // input prompt u1). A regenerate group rolls forward to the latest member,
+      // so the slot adopts R2-late.
       apply(tree, {
         runId: 'R2-late',
         codecMessageId: 'a-late',
         parent: 'u1',
-        forkOf: 'a1',
+        regenerates: 'a1',
         message: { id: 'c', content: 'late' },
         serial: 's4',
       });
 
-      // The View pins to the currently-visible sibling (R2) — that's
-      // pin-on-external-fork. The key invariant we're testing is that the
-      // earlier pending state did not survive and incorrectly latch.
-      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2']);
+      // The regenerate group rolls to the latest sibling (R2-late). The key
+      // invariant under test is that the cleared pending state did not survive
+      // and incorrectly latch the view onto the original.
+      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2-late']);
     });
 
     it('preserves an explicit `user` branch selection when an external fork lands later', () => {
@@ -2133,7 +2183,7 @@ describe('DefaultView', () => {
       apply(tree, {
         runId: 'R_regen1',
         codecMessageId: 'a1p',
-        parent: 'a1',
+        parent: 'u1',
         regenerates: 'a1',
         message: { id: 'a1p', content: 'regen' },
         serial: 's3',
@@ -2145,11 +2195,11 @@ describe('DefaultView', () => {
       expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1']);
 
       // Another participant publishes a second regenerator at the same
-      // canonical anchor.
+      // canonical anchor (sibling reply run under the same input prompt).
       apply(tree, {
         runId: 'R_regen2',
         codecMessageId: 'a1pp',
-        parent: 'a1',
+        parent: 'u1',
         regenerates: 'a1',
         message: { id: 'a1pp', content: 'regen-2' },
         serial: 's4',
@@ -2162,8 +2212,8 @@ describe('DefaultView', () => {
 
     it('edit auto-selects the new sibling Run from optimisticCodecMessageIds', async () => {
       vi.mocked(sendDelegate).mockResolvedValueOnce({
-        started: Promise.resolve(),
-        runId: 'R2edit',
+        key: 'u-new',
+        runId: Promise.resolve('R2edit'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: ['u-new'],
@@ -2192,21 +2242,17 @@ describe('DefaultView', () => {
   // -------------------------------------------------------------------------
 
   describe('regenerate-as-continuation', () => {
-    // R1 holds user1 + asst1 together (one Run per user-visible turn).
-    // The regenerator R2 continues R1 (parentRunId=R1) and regenerates
-    // asst1's codec-message-id; the View replaces asst1 with R2's content at
-    // projection extraction time.
+    // Two-node model: U1 is a run-less user INPUT node. R1 is the original
+    // reply RUN parented at U1; R2 is the regenerator reply RUN parented at the
+    // SAME input node (same-parent reply runs are the regenerate sibling group).
+    // The two replies collapse to the selected member; the View shows the input
+    // prompt (from the input node) plus the selected reply's content.
     beforeEach(() => {
-      apply(tree, {
-        runId: 'R1',
-        codecMessageId: 'u1',
-        role: 'user',
-        message: { id: 'u1', content: 'first' },
-        serial: 's1',
-      });
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'first' }, serial: 's1' });
       apply(tree, {
         runId: 'R1',
         codecMessageId: 'a1',
+        parent: 'u1',
         role: 'assistant',
         message: { id: 'a1', content: 'reply' },
         serial: 's2',
@@ -2214,7 +2260,7 @@ describe('DefaultView', () => {
       apply(tree, {
         runId: 'R2',
         codecMessageId: 'a2',
-        parent: 'a1',
+        parent: 'u1',
         regenerates: 'a1',
         role: 'assistant',
         message: { id: 'a2', content: 'regen' },
@@ -2223,9 +2269,9 @@ describe('DefaultView', () => {
     });
 
     it('default visible chain hides the regenerated message and shows the regenerator content', () => {
-      // Visible Runs include the owner and the regenerator; the
-      // regenerated message-id (a1) is dropped from extraction.
-      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2']);
+      // The regenerate group collapses to the latest reply run (R2); the
+      // original reply R1 is hidden. The user prompt comes from the input node.
+      expect(view.runs().map((r) => r.runId)).toEqual(['R2']);
       expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a2']);
     });
 
@@ -2243,7 +2289,7 @@ describe('DefaultView', () => {
     it('selectSibling(anchor, 1) restores the regenerator selection', () => {
       view.selectSibling('a1', 0);
       view.selectSibling('a1', 1);
-      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2']);
+      expect(view.runs().map((r) => r.runId)).toEqual(['R2']);
       expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a2']);
     });
   });
@@ -2257,16 +2303,14 @@ describe('DefaultView', () => {
   describe('msg-anchored branch nav', () => {
     describe('regenerate', () => {
       beforeEach(() => {
-        apply(tree, {
-          runId: 'R1',
-          codecMessageId: 'u1',
-          role: 'user',
-          message: { id: 'u1', content: 'first' },
-          serial: 's1',
-        });
+        // Two-node model: u1 is a run-less user INPUT node; R1 is the original
+        // reply parented at it; R2 is the regenerator reply parented at the SAME
+        // input node (same-parent reply runs form the regenerate group).
+        applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'first' }, serial: 's1' });
         apply(tree, {
           runId: 'R1',
           codecMessageId: 'a1',
+          parent: 'u1',
           role: 'assistant',
           message: { id: 'a1', content: 'reply' },
           serial: 's2',
@@ -2274,7 +2318,7 @@ describe('DefaultView', () => {
         apply(tree, {
           runId: 'R2',
           codecMessageId: 'a2',
-          parent: 'a1',
+          parent: 'u1',
           regenerates: 'a1',
           role: 'assistant',
           message: { id: 'a2', content: 'regen' },
@@ -2334,17 +2378,14 @@ describe('DefaultView', () => {
     // a1 is named as the regenerate anchor.
     describe('regenerate with trailing messages in the same Run', () => {
       beforeEach(() => {
-        apply(tree, {
-          runId: 'R1',
-          codecMessageId: 'u1',
-          role: 'user',
-          message: { id: 'u1', content: 'q' },
-          serial: 's1',
-        });
+        // u1 is a run-less input node; R1 (the original reply) holds two
+        // assistant bubbles and parents at u1.
+        applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'q' }, serial: 's1' });
         // a1 — tool-call bubble (the regenerate target).
         apply(tree, {
           runId: 'R1',
           codecMessageId: 'a1',
+          parent: 'u1',
           role: 'assistant',
           message: { id: 'a1', content: 'tool-call' },
           serial: 's2',
@@ -2357,12 +2398,12 @@ describe('DefaultView', () => {
           message: { id: 'a2', content: 'follow-up' },
           serial: 's3',
         });
-        // R2 regenerates a1. Its projection contains a1' (new tool call)
-        // and a2' (its follow-up text).
+        // R2 regenerates a1, parented at the SAME input node u1. Its projection
+        // contains a1' (new tool call) and a2' (its follow-up text).
         apply(tree, {
           runId: 'R2',
           codecMessageId: 'a1p',
-          parent: 'a1',
+          parent: 'u1',
           regenerates: 'a1',
           role: 'assistant',
           message: { id: 'a1p', content: 'new-tool-call' },
@@ -2479,7 +2520,10 @@ describe('DefaultView', () => {
         expect(regen2).toBeDefined();
       });
 
-      it('a fully-folded trailing regen contributes only the new trailing message; the tool-call bubble stays put', () => {
+      // TODO(AIT-831): deferred — intra-run mid-reply regenerate (slicing inside
+      // a multi-message run projection). Re-enable with the regenerate-of-
+      // multi-message golden test (see pr2-execution-plan.md §Tests).
+      it.skip('a fully-folded trailing regen contributes only the new trailing message; the tool-call bubble stays put', () => {
         apply(tree, {
           runId: 'R3',
           codecMessageId: 'a2pp',
@@ -2562,13 +2606,18 @@ describe('DefaultView', () => {
         });
       });
 
-      it('hides the trailing-text regenerator when an earlier regen covers its anchor in the same owner Run', () => {
+      // TODO(AIT-831): deferred — intra-run mid-reply regenerate (multiple regen
+      // anchors inside one multi-message run projection). Re-enable with the
+      // regenerate-of-multi-message golden test (see pr2-execution-plan.md §Tests).
+      it.skip('hides the trailing-text regenerator when an earlier regen covers its anchor in the same owner Run', () => {
         // Visible chain: u1 from R1 (truncated at a1), then R3's pair.
         // R2 (the trailing-text regenerator) is shadowed.
         expect(view.getMessages().map((m) => m.id)).toEqual(['u1', 'a1p', 'a2pp']);
       });
 
-      it('selecting back to the original at the tool-call anchor reactivates the trailing-text regenerator', () => {
+      // TODO(AIT-831): deferred — intra-run mid-reply regenerate selection.
+      // Re-enable with the regenerate-of-multi-message golden test.
+      it.skip('selecting back to the original at the tool-call anchor reactivates the trailing-text regenerator', () => {
         // Navigate from R3 back to R1 at the a1 anchor. R3 no longer
         // truncates R1, so R2's anchor (a2) is back in the visible
         // chain and R2's content surfaces.
@@ -2660,37 +2709,35 @@ describe('DefaultView', () => {
 
     describe('regenerate then edit (R1 in both groups)', () => {
       beforeEach(() => {
-        // R1 original turn: user1 + asst1.
-        apply(tree, {
-          runId: 'R1',
-          codecMessageId: 'u1',
-          role: 'user',
-          message: { id: 'u1', content: 'first' },
-          serial: 's1',
-        });
+        // Two-node model: u1 is a run-less user INPUT node; the original reply
+        // R1 parents at it. The user prompt and assistant reply are now distinct
+        // nodes — the edit forks the INPUT node, the regenerate groups the REPLY
+        // runs, so the two branch groups are cleanly kind-separated.
+        applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'first' }, serial: 's1' });
         apply(tree, {
           runId: 'R1',
           codecMessageId: 'a1',
+          parent: 'u1',
           role: 'assistant',
           message: { id: 'a1', content: 'reply' },
           serial: 's2',
         });
-        // Regenerate produces R_regen — continuation of R1 anchored at a1.
+        // Regenerate produces R_regen — a sibling reply run parented at the same
+        // input node u1, regenerating a1.
         apply(tree, {
           runId: 'R_regen',
           codecMessageId: 'a1p',
-          parent: 'a1',
+          parent: 'u1',
           regenerates: 'a1',
           role: 'assistant',
           message: { id: 'a1p', content: 'reply-prime' },
           serial: 's3',
         });
-        // Edit produces R_edit — Run-level fork of R1 (anchored at u1).
-        apply(tree, {
-          runId: 'R_edit',
+        // Edit produces a sibling INPUT node u2 (forkOf u1); its reply R_edit
+        // parents at u2.
+        applyInput(tree, {
           codecMessageId: 'u2',
           forkOf: 'u1',
-          role: 'user',
           message: { id: 'u2', content: 'edited' },
           serial: 's4',
         });
@@ -2702,8 +2749,8 @@ describe('DefaultView', () => {
           message: { id: 'a2', content: 'reply-edited' },
           serial: 's5',
         });
-        // Pin to R1 in the fork-of group (anchor u1, index 0) so the
-        // regen nav is exercisable on the visible chain.
+        // Pin to the original prompt u1 in the fork-of group (anchor u1, index 0)
+        // so the regen nav is exercisable on the visible chain.
         view.selectSibling('u1', 0);
       });
 

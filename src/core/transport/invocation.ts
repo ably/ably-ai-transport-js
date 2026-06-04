@@ -36,8 +36,14 @@
  * transport's HTTP POST to the agent endpoint.
  */
 export interface InvocationData {
-  /** Identifier for the run this invocation creates or continues. */
-  runId: string;
+  /**
+   * Identifier for the run this invocation continues, or `undefined` for a
+   * fresh run. The client no longer mints run-ids: a fresh send omits this and
+   * the agent mints the run-id itself (mirroring how it mints the
+   * `invocationId`). A continuation (tool-resolution, resume) carries the
+   * existing run-id the client already knows.
+   */
+  runId?: string;
   /**
    * Identifier for the specific input event on the channel that triggered
    * this invocation. The agent locates the event via the `event-id`
@@ -59,8 +65,8 @@ export interface InvocationData {
  */
 // Spec: AIT-ST13
 export class Invocation {
-  /** Identifier for the run this invocation creates. */
-  readonly runId: string;
+  /** Identifier for the run this invocation continues, or `undefined` for a fresh run (the agent mints it). */
+  readonly runId: string | undefined;
   /**
    * Identifier for the specific input event on the channel that triggered
    * this invocation.
@@ -92,7 +98,8 @@ export class Invocation {
    */
   toJSON(): InvocationData {
     return {
-      runId: this.runId,
+      // Omit runId for a fresh run — the agent mints it. Continuations carry it.
+      ...(this.runId !== undefined && { runId: this.runId }),
       inputEventId: this.inputEventId,
       sessionName: this.sessionName,
     };

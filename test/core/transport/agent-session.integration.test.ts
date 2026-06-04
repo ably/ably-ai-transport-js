@@ -816,16 +816,18 @@ describe('AgentSession integration', () => {
   /**
    * Scenario: multi-message `send([m1, m2])` round-trip.
    *
-   * The client publishes two user messages on the channel under a single
-   * invocation-id (each as its own Ably message). The agent's
-   * `lookupInputEvents` must collect both before resolving, surface them in
-   * `run.view.messages` ordered by publish order, then the agent can pipe
-   * an assistant response that the client receives.
+   * In the two-node model the client publishes each user message as its own
+   * run-less input node (chained by `parent`). The agent's `start()` lookup
+   * collects the primary trigger (the last message); the full prompt chain is
+   * reconstructed via `loadConversation()`, which walks the input nodes'
+   * structural parent chain and folds each, surfacing both messages in publish
+   * order on `run.messages`. The agent then pipes an assistant response that
+   * the client receives.
    *
    * This is the regression test for PR #90: previously the lookup settled
    * on the first matching arrival and dropped subsequent messages.
    */
-  it('collects all messages in a multi-message send before run.start() resolves', async () => {
+  it('reconstructs all messages of a multi-message send via loadConversation', async () => {
     // Lazy-import to keep the existing test imports above stable.
     const { createClientSession } = await import('../../../src/core/transport/client-session.js');
     const channelName = uniqueChannelName('st-multi-msg');
@@ -867,19 +869,26 @@ describe('AgentSession integration', () => {
         },
       ]);
 
+      // The agent is the run-id authority: it mints the reply run-id and
+      // drives off the client's input event. The client's `run.runId` resolves
+      // to this minted id once run-start lands.
+      const mintedRunId = crypto.randomUUID();
       const serverRun = createRunFromOpts(session, {
-        runId: activeRun.runId,
+        runId: mintedRunId,
         inputEventId: activeRun.inputEventId,
       });
       await serverRun.start();
+      const runId = await activeRun.runId;
+      expect(runId).toBe(mintedRunId);
       // start() only collects the primary trigger event (the last message of
-      // the send). The non-trigger messages are read by loadProjection() from
-      // channel.history(), which is eventually consistent — so retry until
-      // both have been indexed rather than asserting after a single read.
+      // the send). The full prompt chain — both run-less input nodes — is
+      // reconstructed by loadConversation(), which reads channel.history()
+      // (eventually consistent) and walks the input nodes' parent chain. Retry
+      // until both have been indexed rather than asserting after a single read.
       let messages = serverRun.messages;
       await vi.waitFor(
         async () => {
-          await serverRun.loadProjection();
+          await serverRun.loadConversation();
           messages = serverRun.messages;
           expect(messages).toHaveLength(2);
         },
@@ -904,10 +913,10 @@ describe('AgentSession integration', () => {
           reject(new Error('timed out collecting run outputs'));
         }, 10_000);
         const unsubOutput = clientSession.tree.on('output', (e) => {
-          if (e.runId === activeRun.runId) events.push(...e.events);
+          if (e.runId === runId) events.push(...e.events);
         });
         const unsubRun = clientSession.tree.on('run', (e) => {
-          if (e.runId === activeRun.runId && e.type === 'end') {
+          if (e.runId === runId && e.type === 'end') {
             clearTimeout(timer);
             unsubOutput();
             unsubRun();

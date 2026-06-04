@@ -104,7 +104,10 @@ const makeEmitter = (): MockEmitter => {
 
 interface MockRun {
   stream: ReadableStream<AI.UIMessageChunk>;
-  runId: string;
+  /** The triggering input's codec-message-id — the synchronous stream routing key. */
+  key: string;
+  runId: Promise<string>;
+  inputEventId: string;
   cancel: ReturnType<typeof vi.fn>;
   /** The optimistic input codec-message-ids the stream may key on (empty in these mocks). */
   optimisticCodecMessageIds: string[];
@@ -116,31 +119,35 @@ interface MockRun {
   close: () => void;
 }
 
-const createMockRun = (runId: string, treeEmit: MockEmitter['emit']): MockRun => ({
-  // Inert placeholder — the transport builds its own stream from Tree events.
-  // eslint-disable-next-line @typescript-eslint/no-empty-function -- inert placeholder stream
-  stream: new ReadableStream<AI.UIMessageChunk>({ start: () => {} }),
-  runId,
-  cancel: vi.fn(),
-  // No optimistic inputs in these mock runs, so the stream keys purely on runId
-  // (the agent-minted `input-codec-message-id` routing is exercised in the
-  // run-output-stream unit tests).
-  optimisticCodecMessageIds: [],
-  toInvocation: () => Invocation.fromJSON({ runId, inputEventId: '', sessionName: 'chat-1' }),
-  enqueue: (chunk: AI.UIMessageChunk) => {
-    treeEmit('output', { runId, codecMessageId: 'm-1', serial: 's-1', events: [chunk] });
-  },
-  close: () => {
-    treeEmit('run', {
-      type: 'end',
-      runId,
-      clientId: '',
-      invocationId: `${runId}-inv`,
-      serial: 's-1',
-      reason: 'complete',
-    });
-  },
-});
+const createMockRun = (runId: string, treeEmit: MockEmitter['emit']): MockRun => {
+  // The consumer stream routes purely by the triggering input's codec-message-id
+  // (the agent mints the run-id separately); key it per run.
+  const key = `${runId}-input`;
+  return {
+    // Inert placeholder — the transport builds its own stream from Tree events.
+    // eslint-disable-next-line @typescript-eslint/no-empty-function -- inert placeholder stream
+    stream: new ReadableStream<AI.UIMessageChunk>({ start: () => {} }),
+    key,
+    runId: Promise.resolve(runId),
+    inputEventId: '',
+    cancel: vi.fn(),
+    optimisticCodecMessageIds: [],
+    toInvocation: () => Invocation.fromJSON({ runId, inputEventId: '', sessionName: 'chat-1' }),
+    enqueue: (chunk: AI.UIMessageChunk) => {
+      treeEmit('output', { runId, inputCodecMessageId: key, codecMessageId: 'm-1', serial: 's-1', events: [chunk] });
+    },
+    close: () => {
+      treeEmit('run', {
+        type: 'end',
+        runId,
+        clientId: '',
+        invocationId: `${runId}-inv`,
+        serial: 's-1',
+        reason: 'complete',
+      });
+    },
+  };
+};
 
 const createMockTree = (treeEmitter: MockEmitter) =>
   ({

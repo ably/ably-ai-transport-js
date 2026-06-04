@@ -136,7 +136,18 @@ export const HEADER_ERROR_MESSAGE = 'error-message';
 // Message / event names
 // ---------------------------------------------------------------------------
 
-/** Message name: client->agent cancel intent. Targets a specific run via the `run-id` header. */
+/**
+ * Message name: client->agent cancel intent. Targets a run by `run-id` (a
+ * continuation, whose run-id the client already knows) and/or by
+ * `input-codec-message-id` (a fresh send, whose run-id the agent mints at
+ * run-start — so the client can only key the cancel by the triggering input's
+ * codec-message-id it owns at send time). The agent resolves whichever is
+ * present to the registered run; a cancel that arrives before the run is known
+ * (the input-event lookup hasn't resolved the input id to a run yet) is
+ * buffered by `input-codec-message-id` and honoured when the run resolves it.
+ * Also carries an `event-id` so channel rewind redelivers it to a per-request /
+ * serverless agent that attaches after the cancel was published.
+ */
 export const EVENT_CANCEL = 'ai-cancel';
 
 /** Message name: server publishes this to signal a run has started. */

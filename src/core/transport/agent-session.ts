@@ -21,6 +21,7 @@ import {
   HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
   HEADER_FORK_OF,
+  HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_RUN_CLIENT_ID,
@@ -530,6 +531,27 @@ class DefaultAgentSession<
   private readonly _runManager: RunManager;
   private readonly _registeredRuns = new Map<string, RegisteredRun>();
   /**
+   * Reverse index from a run's triggering input codec-message-id to its
+   * run-id, populated once `Run.start()`'s input-event lookup resolves the
+   * triggering input. Lets `_handleCancelMessage` route a cancel keyed by the
+   * input codec-message-id (a fresh send whose run-id the client doesn't know)
+   * to the registered run. Entries are removed when the run ends / suspends /
+   * the session closes, alongside `_registeredRuns`.
+   */
+  private readonly _runIdByInputCodecMessageId = new Map<string, string>();
+  /**
+   * Cancels buffered by triggering input codec-message-id when they arrived
+   * before the run was known — i.e. before `Run.start()`'s input-event lookup
+   * resolved that input to a run. A fresh run has no run-id at the client's
+   * send time (the agent mints it at run-start), so an early cancel can only be
+   * keyed by the input codec-message-id, and the `inputCodecMessageId → run`
+   * linkage doesn't exist until the lookup completes. `Run.start()` consults
+   * this buffer as a PULL once it resolves its `resolvedInputCodecMessageId`,
+   * honouring any cancel that arrived first. Mirrors `_inputEventBuffer`: FIFO
+   * eviction at `_inputEventBufferLimit` entries, cleared on `close()`.
+   */
+  private readonly _deferredCancels = new Map<string, Ably.InboundMessage>();
+  /**
    * Active input-event lookups keyed by `event-id`. The channel listener
    * dispatches each input event to the lookup that registered for its
    * `event-id`, so that messages replayed via channel rewind (and live
@@ -701,6 +723,8 @@ class DefaultAgentSession<
       reg.controller.abort();
     }
     this._registeredRuns.clear();
+    this._runIdByInputCodecMessageId.clear();
+    this._deferredCancels.clear();
     this._pendingInputEventLookups.clear();
     this._inputEventBuffer.clear();
     this._runManager.close();
@@ -714,20 +738,103 @@ class DefaultAgentSession<
   private async _handleCancelMessage(msg: Ably.InboundMessage): Promise<void> {
     const headers = getTransportHeaders(msg);
     const runId = headers[HEADER_RUN_ID];
+    const inputCodecMessageId = headers[HEADER_INPUT_CODEC_MESSAGE_ID];
 
-    // Malformed cancel: drop with warn. The protocol requires a single
-    // `run-id` header identifying the target run.
-    if (!runId) {
-      this._logger?.warn('DefaultAgentSession._handleCancelMessage(); missing run-id header', {
+    // Malformed cancel: drop with warn. A cancel must identify its target by
+    // `run-id` (a continuation, whose run-id the client knows) and/or by
+    // `input-codec-message-id` (a fresh send, before the agent minted the
+    // run-id). Neither present means there is nothing to route to.
+    if (!runId && !inputCodecMessageId) {
+      this._logger?.warn('DefaultAgentSession._handleCancelMessage(); missing run-id and input-codec-message-id', {
         serial: msg.serial,
       });
       return;
     }
 
-    const reg = this._registeredRuns.get(runId);
-    if (!reg) return;
+    // Primary path — match by run-id (continuations, whose run-id the client
+    // already knows). Resolve the input-codec-message-id to a run-id when the
+    // run-id wasn't supplied (a fresh-send cancel that arrived after the run's
+    // input-event lookup resolved, so the linkage already exists).
+    const resolvedRunId =
+      runId ?? (inputCodecMessageId ? this._runIdByInputCodecMessageId.get(inputCodecMessageId) : undefined);
+    const reg = resolvedRunId ? this._registeredRuns.get(resolvedRunId) : undefined;
 
-    this._logger?.debug('DefaultAgentSession._handleCancelMessage(); matched run', { runId });
+    if (!reg) {
+      // The run isn't known yet. A fresh-send cancel can race ahead of the
+      // run's input-event lookup (which is what establishes the
+      // input-codec-message-id → run linkage). Buffer it by
+      // input-codec-message-id so `Run.start()` can pull and honour it once it
+      // resolves the triggering input. A bare run-id cancel for an unknown run
+      // is a no-op (the run never existed here, or already ended).
+      if (inputCodecMessageId !== undefined) {
+        this._bufferDeferredCancel(inputCodecMessageId, msg);
+      }
+      return;
+    }
+
+    await this._cancelRegistration(reg, msg);
+  }
+
+  /**
+   * Buffer a cancel that arrived before its target run was known, keyed by the
+   * triggering input's codec-message-id. FIFO-evicts the oldest entry at
+   * `_inputEventBufferLimit` (mirroring `_inputEventBuffer`). A later cancel
+   * for the same input replaces the earlier one — the intent is identical.
+   * @param inputCodecMessageId - The triggering input's codec-message-id.
+   * @param msg - The raw cancel message (passed to `onCancel`).
+   */
+  private _bufferDeferredCancel(inputCodecMessageId: string, msg: Ably.InboundMessage): void {
+    if (!this._deferredCancels.has(inputCodecMessageId) && this._deferredCancels.size >= this._inputEventBufferLimit) {
+      const oldestKey = this._deferredCancels.keys().next().value;
+      if (oldestKey !== undefined) {
+        this._deferredCancels.delete(oldestKey);
+        this._logger?.warn(
+          'DefaultAgentSession._bufferDeferredCancel(); deferred-cancel buffer full, dropping oldest',
+          {
+            evictedInputCodecMessageId: oldestKey,
+            limit: this._inputEventBufferLimit,
+          },
+        );
+      }
+    }
+    this._deferredCancels.set(inputCodecMessageId, msg);
+    this._logger?.debug('DefaultAgentSession._bufferDeferredCancel(); buffered early cancel', {
+      inputCodecMessageId,
+      serial: msg.serial,
+    });
+  }
+
+  /**
+   * Pull and honour a cancel buffered before this run was known. Called from
+   * `Run.start()` once the input-event lookup resolves the run's triggering
+   * input codec-message-id — the point at which the
+   * `input-codec-message-id → run` linkage first exists. No-op when no cancel
+   * was buffered for that input.
+   * @param reg - The now-known run registration.
+   * @param inputCodecMessageId - The run's resolved triggering input codec-message-id.
+   */
+  private async _pullDeferredCancel(reg: RegisteredRun, inputCodecMessageId: string): Promise<void> {
+    const buffered = this._deferredCancels.get(inputCodecMessageId);
+    if (buffered === undefined) return;
+    this._deferredCancels.delete(inputCodecMessageId);
+    this._logger?.debug('DefaultAgentSession._pullDeferredCancel(); honouring buffered cancel', {
+      runId: reg.runId,
+      inputCodecMessageId,
+    });
+    await this._cancelRegistration(reg, buffered);
+  }
+
+  /**
+   * Fire a cancel against a known run: consult its `onCancel` authorization
+   * hook (if any), then abort the run's controller. Shared by the run-id match,
+   * the input-codec-message-id match, and the buffered-cancel pull so all three
+   * honour `onCancel` and surface handler errors identically.
+   * @param reg - The target run registration.
+   * @param msg - The raw cancel message (passed to `onCancel`).
+   */
+  private async _cancelRegistration(reg: RegisteredRun, msg: Ably.InboundMessage): Promise<void> {
+    const { runId } = reg;
+    this._logger?.debug('DefaultAgentSession._cancelRegistration(); matched run', { runId });
 
     const request: CancelRequest = { message: msg, runId };
 
@@ -735,14 +842,14 @@ class DefaultAgentSession<
       if (reg.onCancel) {
         const allowed = await reg.onCancel(request);
         if (!allowed) {
-          this._logger?.debug('DefaultAgentSession._handleCancelMessage(); cancel rejected by onCancel', {
+          this._logger?.debug('DefaultAgentSession._cancelRegistration(); cancel rejected by onCancel', {
             runId,
           });
           return;
         }
       }
       reg.controller.abort();
-      this._logger?.debug('DefaultAgentSession._handleCancelMessage(); run cancelled', { runId });
+      this._logger?.debug('DefaultAgentSession._cancelRegistration(); run cancelled', { runId });
     } catch (error) {
       const errInfo = new Ably.ErrorInfo(
         `unable to process cancel for run ${runId}; onCancel handler threw: ${error instanceof Error ? error.message : String(error)}`,
@@ -750,7 +857,7 @@ class DefaultAgentSession<
         500,
         error instanceof Ably.ErrorInfo ? error : undefined,
       );
-      this._logger?.error('DefaultAgentSession._handleCancelMessage(); onCancel threw', { runId });
+      this._logger?.error('DefaultAgentSession._cancelRegistration(); onCancel threw', { runId });
       (reg.onError ?? this._onError)?.(errInfo);
     }
   }
@@ -939,8 +1046,11 @@ class DefaultAgentSession<
     const codec = this._codec;
     const channel = this._channel;
     const registeredRuns = this._registeredRuns;
+    const runIdByInputCodecMessageId = this._runIdByInputCodecMessageId;
+    const deferredCancels = this._deferredCancels;
     const requireConnected = this._requireConnected.bind(this);
     const registerInputEventListener = this._registerInputEventListener.bind(this);
+    const pullDeferredCancel = this._pullDeferredCancel.bind(this);
     const inputEventId = invocation.inputEventId;
 
     // `viewMessages` starts empty. `Run.start()` populates it via the
@@ -984,6 +1094,21 @@ class DefaultAgentSession<
      * lookup ran or no messages matched.
      */
     let liveLookupMessages: readonly Ably.InboundMessage[] | undefined;
+
+    /**
+     * Remove this run from the session's routing maps. Drops the
+     * `_registeredRuns` entry plus the `input-codec-message-id → run-id`
+     * reverse index (and any stale deferred cancel still buffered for that
+     * input), keeping the cancel-routing state consistent when the run ends,
+     * suspends, or its start fails.
+     */
+    const deregisterRun = (): void => {
+      registeredRuns.delete(runId);
+      if (resolvedInputCodecMessageId !== undefined) {
+        runIdByInputCodecMessageId.delete(resolvedInputCodecMessageId);
+        deferredCancels.delete(resolvedInputCodecMessageId);
+      }
+    };
 
     // Most recently loaded projection for this run only, cached by
     // `Run.loadProjection()` and `Run.loadConversation()` so the `messages`
@@ -1072,7 +1197,7 @@ class DefaultAgentSession<
             // the signal the client sees. No channel publish: an
             // `ai-run-end` without a preceding `ai-run-start` would break
             // the lifecycle invariant for other channel observers.
-            registeredRuns.delete(runId);
+            deregisterRun();
             logger?.error('Run.start(); input-event lookup failed', { runId, invocationId });
             throw errInfo;
           }
@@ -1102,6 +1227,18 @@ class DefaultAgentSession<
         // MessageNodes — the input wire's own `parent`. `Run.pipe()` consumes
         // this for every assistant publish.
         assistantParentFallback = viewMessages.at(-1)?.codecMessageId ?? resolvedParent;
+
+        // The triggering input's codec-message-id is now resolved, so the
+        // `input-codec-message-id → run` linkage exists: index it for live
+        // cancels and pull any cancel that arrived before the run was known
+        // (a fresh-send cancel published before the agent minted this run-id).
+        // Honouring it here may abort the controller before run-start; that is
+        // fine — the abort propagates through the same signal a normal cancel
+        // would use.
+        if (resolvedInputCodecMessageId !== undefined) {
+          runIdByInputCodecMessageId.set(resolvedInputCodecMessageId, runId);
+          await pullDeferredCancel(registration, resolvedInputCodecMessageId);
+        }
 
         try {
           await runManager.startRun(runId, resolvedClientId, controller, {
@@ -1424,7 +1561,7 @@ class DefaultAgentSession<
           logger?.error('Run.suspend(); failed to publish run-suspend', { runId });
           throw errInfo;
         } finally {
-          registeredRuns.delete(runId);
+          deregisterRun();
         }
 
         logger?.debug('Run.suspend(); run suspended', { runId });
@@ -1458,7 +1595,7 @@ class DefaultAgentSession<
           logger?.error('Run.end(); failed to publish run-end', { runId });
           throw errInfo;
         } finally {
-          registeredRuns.delete(runId);
+          deregisterRun();
         }
 
         logger?.debug('Run.end(); run ended', { runId, reason });

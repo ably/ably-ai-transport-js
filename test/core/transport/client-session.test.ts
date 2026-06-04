@@ -382,6 +382,17 @@ const createFixture = async (overrides?: { clientId?: string }): Promise<Session
   return { channel, decoder, codec, session };
 };
 
+/**
+ * Read the transport headers off the first `ai-cancel` message a mock channel
+ * recorded, or undefined if none was published.
+ * @param channel - The mock channel that captured publishes.
+ * @returns The cancel message's transport headers, or undefined.
+ */
+const cancelHeadersOf = (channel: MockChannel): Record<string, string> | undefined => {
+  const cancelMsg = channel.publishCalls.find((m) => m.name === 'ai-cancel');
+  return (cancelMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
+};
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1716,10 +1727,35 @@ describe('ClientSession', () => {
   describe('cancel', () => {
     it('publishes a cancel message carrying run-id', async () => {
       await fix.session.cancel('run-1');
-      const cancelMsg = fix.channel.publishCalls.find((m) => m.name === 'ai-cancel');
-      expect(cancelMsg).toBeDefined();
-      const headers = (cancelMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
+      const headers = cancelHeadersOf(fix.channel);
       expect(headers?.[HEADER_RUN_ID]).toBe('run-1');
+    });
+
+    it('stamps an event-id on the cancel so rewind can redeliver it to a late agent', async () => {
+      await fix.session.cancel('run-1');
+      const headers = cancelHeadersOf(fix.channel);
+      expect(headers?.[HEADER_EVENT_ID]).toBeDefined();
+    });
+
+    it('run.cancel() on a fresh send publishes synchronously by the input codec-message-id (no run-id yet)', async () => {
+      // A fresh send has no run-id until the agent mints it on run-start, so
+      // run.cancel() keys the cancel by the triggering input's
+      // codec-message-id (= run.key) without awaiting run.runId.
+      const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      await run.cancel();
+      const headers = cancelHeadersOf(fix.channel);
+      expect(headers?.[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe(run.key);
+      // No run-id was ever minted client-side for a fresh send.
+      expect(headers?.[HEADER_RUN_ID]).toBeUndefined();
+      expect(headers?.[HEADER_EVENT_ID]).toBeDefined();
+    });
+
+    it('run.cancel() on a continuation carries both the run-id and the input codec-message-id', async () => {
+      const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'cont' }, { runId: 'run-cont' });
+      await run.cancel();
+      const headers = cancelHeadersOf(fix.channel);
+      expect(headers?.[HEADER_RUN_ID]).toBe('run-cont');
+      expect(headers?.[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe(run.key);
     });
 
     it('cancel is a no-op after close', async () => {

@@ -18,6 +18,7 @@ import {
   HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
   HEADER_FORK_OF,
+  HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
@@ -382,6 +383,26 @@ const deliverInputEvent = (ch: MockChannel, opts: DeliverInputEventOpts): void =
     extras: { ai: { transport: headers } },
   } as unknown as Ably.InboundMessage;
   if (ch.listener) ch.listener(msg);
+};
+
+/**
+ * Stand up a session whose runs go through a real input-event lookup so a
+ * fresh run resolves its triggering input codec-message-id at start() — the
+ * point at which the deferred-cancel buffer is pulled.
+ * @returns The session and its mock channel.
+ */
+const lookupSession = (): {
+  session: ReturnType<typeof createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>>;
+  ch: MockChannel & Ably.RealtimeChannel;
+} => {
+  const ch = createMockChannel();
+  const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+    client: createMockClient(ch),
+    channelName: 'cancel-before-start',
+    codec: codecWithFunctionalDecoder(),
+    inputEventLookupTimeoutMs: 5000,
+  });
+  return { session, ch };
 };
 
 // ---------------------------------------------------------------------------
@@ -1097,7 +1118,7 @@ describe('AgentSession', () => {
       expect(run.abortSignal.aborted).toBe(false);
     });
 
-    it('drops a malformed cancel missing run-id with a warn-level log', async () => {
+    it('drops a malformed cancel missing both run-id and input-codec-message-id with a warn-level log', async () => {
       const ch = createMockChannel();
       const { logger, warn } = captureWarnLogger();
       const s = createAgentSession({
@@ -1115,9 +1136,238 @@ describe('AgentSession', () => {
 
       expect(run.abortSignal.aborted).toBe(false);
       const warnCalls = warn.mock.calls.filter(
-        (call) => typeof call[0] === 'string' && call[0].includes('missing run-id'),
+        (call) => typeof call[0] === 'string' && call[0].includes('missing run-id and input-codec-message-id'),
       );
       expect(warnCalls.length).toBe(1);
+      s.close();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // cancel before run-start (deferred-cancel buffer)
+  // -------------------------------------------------------------------------
+
+  describe('cancel before run-start', () => {
+    it('honours a cancel keyed by the input codec-message-id that arrived before run-start', async () => {
+      const { session: s, ch } = lookupSession();
+      await s.connect();
+
+      const inputEventId = 'p-early';
+      const inputCodecMessageId = 'm-early';
+      const run = createRunFromOpts(s, { runId: 'run-early', invocationId: 'inv-early', inputEventId });
+
+      // Cancel arrives BEFORE the run is known (its input-event lookup hasn't
+      // resolved the input → run linkage yet). It is buffered by the input
+      // codec-message-id. Cancel handling is dispatched fire-and-forget, so
+      // flush microtasks to guarantee it lands in the buffer before start().
+      simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: inputCodecMessageId });
+      await new Promise((r) => setTimeout(r, 5));
+
+      // start() runs the lookup; delivering the input resolves the linkage and
+      // pulls the buffered cancel.
+      const startPromise = run.start();
+      deliverInputEvent(ch, {
+        invocationId: 'inv-early',
+        codecMessageId: inputCodecMessageId,
+        serial: 's-early',
+        inputEventId,
+      });
+      await startPromise;
+
+      expect(run.abortSignal.aborted).toBe(true);
+      s.close();
+    });
+
+    it('a buffered cancel is honoured by onCancel exactly as a live cancel', async () => {
+      const { session: s, ch } = lookupSession();
+      await s.connect();
+
+      const inputEventId = 'p-onc';
+      const inputCodecMessageId = 'm-onc';
+      // eslint-disable-next-line @typescript-eslint/require-await -- mock
+      const onCancel = vi.fn(async () => true);
+      const run = createRunFromOpts(s, {
+        runId: 'run-onc',
+        invocationId: 'inv-onc',
+        inputEventId,
+        onCancel,
+      });
+
+      simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: inputCodecMessageId });
+      await new Promise((r) => setTimeout(r, 5));
+
+      const startPromise = run.start();
+      deliverInputEvent(ch, {
+        invocationId: 'inv-onc',
+        codecMessageId: inputCodecMessageId,
+        serial: 's-onc',
+        inputEventId,
+      });
+      await startPromise;
+
+      expect(onCancel).toHaveBeenCalledTimes(1);
+      expect(run.abortSignal.aborted).toBe(true);
+      s.close();
+    });
+
+    it('a buffered cancel whose onCancel returns false does not abort the run', async () => {
+      const { session: s, ch } = lookupSession();
+      await s.connect();
+
+      const inputEventId = 'p-deny';
+      const inputCodecMessageId = 'm-deny';
+      const run = createRunFromOpts(s, {
+        runId: 'run-deny',
+        invocationId: 'inv-deny',
+        inputEventId,
+        // eslint-disable-next-line @typescript-eslint/require-await -- mock
+        onCancel: async () => false,
+      });
+
+      simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: inputCodecMessageId });
+      await new Promise((r) => setTimeout(r, 5));
+
+      const startPromise = run.start();
+      deliverInputEvent(ch, {
+        invocationId: 'inv-deny',
+        codecMessageId: inputCodecMessageId,
+        serial: 's-deny',
+        inputEventId,
+      });
+      await startPromise;
+
+      expect(run.abortSignal.aborted).toBe(false);
+      s.close();
+    });
+
+    it('routes a live cancel by input codec-message-id once the run has resolved it', async () => {
+      const { session: s, ch } = lookupSession();
+      await s.connect();
+
+      const inputEventId = 'p-live';
+      const inputCodecMessageId = 'm-live';
+      const run = createRunFromOpts(s, { runId: 'run-live', invocationId: 'inv-live', inputEventId });
+
+      const startPromise = run.start();
+      deliverInputEvent(ch, {
+        invocationId: 'inv-live',
+        codecMessageId: inputCodecMessageId,
+        serial: 's-live',
+        inputEventId,
+      });
+      await startPromise;
+
+      // Cancel arrives AFTER start() resolved the input → run linkage; it
+      // matches via the reverse index without any run-id.
+      simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: inputCodecMessageId });
+      await new Promise((r) => setTimeout(r, 5));
+
+      expect(run.abortSignal.aborted).toBe(true);
+      s.close();
+    });
+
+    it('FIFO-evicts the oldest deferred cancel beyond the buffer limit', async () => {
+      const ch = createMockChannel();
+      const { logger, warn } = captureWarnLogger();
+      const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'cancel-evict',
+        codec: codecWithFunctionalDecoder(),
+        logger,
+        inputEventLookupTimeoutMs: 5000,
+        inputEventBufferLimit: 1,
+      });
+      await s.connect();
+
+      // Two early cancels for different inputs; the buffer holds one, so the
+      // first is evicted.
+      simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: 'm-old' });
+      simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: 'm-new' });
+      // Cancel handling is dispatched fire-and-forget; let the microtasks run.
+      await new Promise((r) => setTimeout(r, 5));
+
+      const evictWarns = warn.mock.calls.filter(
+        (call) => typeof call[0] === 'string' && call[0].includes('deferred-cancel buffer full'),
+      );
+      expect(evictWarns.length).toBe(1);
+
+      // The evicted cancel ('m-old') no longer fires; the retained one does.
+      const evicted = createRunFromOpts(s, { runId: 'run-old', invocationId: 'inv-old', inputEventId: 'p-old' });
+      const evictedStart = evicted.start();
+      deliverInputEvent(ch, {
+        invocationId: 'inv-old',
+        codecMessageId: 'm-old',
+        serial: 's-old',
+        inputEventId: 'p-old',
+      });
+      await evictedStart;
+      expect(evicted.abortSignal.aborted).toBe(false);
+
+      const retained = createRunFromOpts(s, { runId: 'run-new', invocationId: 'inv-new', inputEventId: 'p-new' });
+      const retainedStart = retained.start();
+      deliverInputEvent(ch, {
+        invocationId: 'inv-new',
+        codecMessageId: 'm-new',
+        serial: 's-new',
+        inputEventId: 'p-new',
+      });
+      await retainedStart;
+      expect(retained.abortSignal.aborted).toBe(true);
+
+      s.close();
+    });
+
+    it('clears deferred cancels on close so they are not honoured by a later run', async () => {
+      const { session: s, ch } = lookupSession();
+      await s.connect();
+
+      simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: 'm-stale' });
+      await new Promise((r) => setTimeout(r, 5));
+      s.close();
+
+      // A fresh session reusing the same input id sees no buffered cancel.
+      const s2 = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'cancel-before-start',
+        codec: codecWithFunctionalDecoder(),
+        inputEventLookupTimeoutMs: 5000,
+      });
+      await s2.connect();
+      const run = createRunFromOpts(s2, { runId: 'run-fresh', invocationId: 'inv-fresh', inputEventId: 'p-fresh' });
+      const startPromise = run.start();
+      deliverInputEvent(ch, {
+        invocationId: 'inv-fresh',
+        codecMessageId: 'm-stale',
+        serial: 's-fresh',
+        inputEventId: 'p-fresh',
+      });
+      await startPromise;
+      expect(run.abortSignal.aborted).toBe(false);
+      s2.close();
+    });
+
+    it('a run-end clears the input → run linkage so a late cancel by input id is a no-op', async () => {
+      const { session: s, ch } = lookupSession();
+      await s.connect();
+
+      const inputEventId = 'p-ended';
+      const inputCodecMessageId = 'm-ended';
+      const run = createRunFromOpts(s, { runId: 'run-ended', invocationId: 'inv-ended', inputEventId });
+      const startPromise = run.start();
+      deliverInputEvent(ch, {
+        invocationId: 'inv-ended',
+        codecMessageId: inputCodecMessageId,
+        serial: 's-ended',
+        inputEventId,
+      });
+      await startPromise;
+      await run.end('complete');
+
+      simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: inputCodecMessageId });
+      await new Promise((r) => setTimeout(r, 5));
+
+      // No throw, no abort attempt against a non-existent registration.
+      expect(run.abortSignal.aborted).toBe(false);
       s.close();
     });
   });

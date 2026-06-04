@@ -70,8 +70,9 @@ export async function POST(req: Request) {
     ably.close();
   });
 
-  // Return the agent-minted invocation-id on the HTTP response. The agent owns
-  // it (one per request); the useChat ChatTransport's POST ignores the body
-  // (it routes by run-id over the channel), but the contract is honoured here.
-  return Response.json({ invocationId: run.invocationId });
+  // Return the agent-minted ids on the HTTP response. The agent now mints both
+  // the run-id (when the invocation omits it for a fresh run) and the
+  // invocation-id; the useChat ChatTransport's POST ignores the body (it routes
+  // by run-id over the channel), but the contract is honoured here.
+  return Response.json({ runId: run.runId, invocationId: run.invocationId });
 }

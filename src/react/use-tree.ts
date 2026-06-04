@@ -13,7 +13,7 @@
 import { useCallback } from 'react';
 
 import type { CodecInputEvent, CodecOutputEvent } from '../core/codec/types.js';
-import type { RunNode } from '../core/transport/types.js';
+import type { ConversationNode, RunNode } from '../core/transport/types.js';
 import type { BaseSessionOption } from './internal/use-resolved-session.js';
 import { useResolvedSession } from './internal/use-resolved-session.js';
 
@@ -21,8 +21,13 @@ import { useResolvedSession } from './internal/use-resolved-session.js';
 export interface TreeHandle<TProjection> {
   /** Get a Run by runId, or undefined if not found. */
   getRunNode: (runId: string) => RunNode<TProjection> | undefined;
-  /** Get the Run that owns a given codec-message-id, or undefined if not observed. */
-  getRunByCodecMessageId: (codecMessageId: string) => RunNode<TProjection> | undefined;
+  /**
+   * Get the node that owns a given codec-message-id, or undefined if not
+   * observed. Returns a {@link ConversationNode} union — narrow on `kind`
+   * before reading kind-specific fields. (Every node is a reply Run today;
+   * user input nodes arrive with the two-node model.)
+   */
+  getNodeByCodecMessageId: (codecMessageId: string) => ConversationNode<TProjection> | undefined;
   /** Get all sibling Runs at a fork point, ordered chronologically by startSerial. */
   getSiblingRuns: (runId: string) => RunNode<TProjection>[];
   /** Whether a Run has sibling alternatives (i.e., show navigation arrows). */
@@ -54,8 +59,9 @@ export const useTree = <TInput extends CodecInputEvent, TOutput extends CodecOut
     [resolved],
   );
 
-  const getRunByCodecMessageId = useCallback(
-    (codecMessageId: string): RunNode<TProjection> | undefined => resolved?.tree.getRunByCodecMessageId(codecMessageId),
+  const getNodeByCodecMessageId = useCallback(
+    (codecMessageId: string): ConversationNode<TProjection> | undefined =>
+      resolved?.tree.getNodeByCodecMessageId(codecMessageId),
     [resolved],
   );
 
@@ -68,7 +74,7 @@ export const useTree = <TInput extends CodecInputEvent, TOutput extends CodecOut
 
   return {
     getRunNode,
-    getRunByCodecMessageId,
+    getNodeByCodecMessageId,
     getSiblingRuns,
     hasSiblingRuns,
   };

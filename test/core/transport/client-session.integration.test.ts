@@ -1782,9 +1782,7 @@ describe('ClientSession integration', () => {
     // each reply run under its own input node with no cross-talk.
     const asstMsgs = messages.filter((m) => m.role === 'assistant');
     expect(asstMsgs).toHaveLength(2);
-    const asstTextByRunId = new Map(
-      asstMsgs.map((m) => [clientSession?.view.runOf(m.id)?.runId, textOfMessage(m)]),
-    );
+    const asstTextByRunId = new Map(asstMsgs.map((m) => [clientSession?.view.runOf(m.id)?.runId, textOfMessage(m)]));
     expect(asstTextByRunId.get(runIdA)).toBe('answer A');
     expect(asstTextByRunId.get(runIdB)).toBe('answer B');
 

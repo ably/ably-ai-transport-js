@@ -156,7 +156,7 @@ view.flattenNodes()  → [R1, R2, R3]
 view.getMessages()   → ["hi", "hello", "what's weather", "sunny", "tomorrow?", "rainy"]
 ```
 
-This is the shape every fresh `view.sendMessage()` produces: each new turn opens a Run whose `parentRunId` is the tail Run of the visible branch.
+This is the shape every fresh `view.send()` produces: each new turn opens a Run whose `parentRunId` is the tail Run of the visible branch.
 
 ### Edit-then-regenerate
 

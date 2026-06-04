@@ -97,15 +97,22 @@ Watch for tool parts in the `input-available` state, execute the browser API, th
 ```typescript
 import type { EventsNode } from '@ably/ai-transport';
 
-// 1. Find the pending tool call in the assistant message (walk the flat TMessage[])
-const assistant = view.messages.find(
-  (m) =>
-    m.role === 'assistant' &&
-    m.parts.some((p) => p.type === 'dynamic-tool' && p.toolName === 'getLocation' && p.state === 'input-available'),
-);
+// 1. Find the pending tool call in the assistant message. Walk the flat
+//    list paired with codec-message-ids so we can address the result back to
+//    the transport — the assistant's domain `message.id` is independent of the
+//    codec-message-id and is never used for correlation.
+const assistant = view
+  .getMessagesWithIds()
+  .find(
+    ({ message }) =>
+      message.role === 'assistant' &&
+      message.parts.some(
+        (p) => p.type === 'dynamic-tool' && p.toolName === 'getLocation' && p.state === 'input-available',
+      ),
+  );
 
 // 2. Resolve the owning Run so the continuation reuses its runId
-const metadata = view.getMessageMetadata(assistant.id);
+const metadata = view.getMessageMetadata(assistant.codecMessageId);
 const runId = metadata?.runId;
 
 // 3. Execute the browser API
@@ -113,20 +120,17 @@ const position = await new Promise((resolve, reject) => navigator.geolocation.ge
 
 // 4. Send a continuation `tool-result` input under the existing runId.
 //    `codecMessageId` addresses the assistant message holding the tool call,
-//    so the reducer folds the result onto it. Routing lives on the input
-//    itself - no wrapper object.
-await view.sendInput(
-  [
-    {
-      kind: 'tool-result',
-      codecMessageId: assistant.id,
-      toolCallId: toolPart.toolCallId,
-      output: {
-        latitude: position.coords.latitude,
-        longitude: position.coords.longitude,
-      },
+//    so the reducer folds the result onto it. The codec-supplied payload
+//    carries the domain-specific fields (`toolCallId`, `output`). Routing
+//    lives on the input itself - no wrapper object.
+await view.send(
+  codec.createToolResult(assistant.codecMessageId, {
+    toolCallId: toolPart.toolCallId,
+    output: {
+      latitude: position.coords.latitude,
+      longitude: position.coords.longitude,
     },
-  ],
+  }),
   { runId },
 );
 ```

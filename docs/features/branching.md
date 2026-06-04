@@ -44,6 +44,7 @@ Editing forks a user message - the user provides replacement content, and the se
 
 ```typescript
 import { useView } from '@ably/ai-transport/react';
+import { UIMessageCodec } from '@ably/ai-transport/vercel';
 
 const { edit } = useView();
 
@@ -54,9 +55,10 @@ const newMessage = {
   createdAt: new Date(),
 };
 
-// Fork the user message with new content.
+// Fork the user message with new content. edit() takes codec inputs, so
+// compose the replacement user message into one.
 // nodeId is the msg-id (see treeMsgId helper in the quickstart).
-await edit(nodeId, [newMessage]);
+await edit(nodeId, UIMessageCodec.createUserMessage(newMessage));
 ```
 
 ## Branch navigation

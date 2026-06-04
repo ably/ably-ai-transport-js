@@ -307,7 +307,7 @@ Two mechanisms cover different failure modes:
 await session.cancel('run-abc');
 
 // Or via the ActiveRun returned by send / regenerate / edit
-const run = await view.sendMessage(userMsg);
+const run = await view.send(codec.createUserMessage(userMsg));
 await run.cancel();
 
 // Agent: the run's abortSignal fires automatically

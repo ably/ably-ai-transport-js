@@ -218,7 +218,7 @@ const createMockCodec = (overrides?: { encoderFactory?: () => MockEncoder }): Mo
     init: vi.fn((): TestProjection => ({ messages: [] })),
     // eslint-disable-next-line @typescript-eslint/no-unused-vars -- reducer signature; event/meta unused by this stub
     fold: vi.fn((state: TestProjection, _event: TestInput | TestOutput, _meta: ReducerMeta) => state),
-    getMessages: vi.fn((p: TestProjection) => p.messages),
+    getMessages: vi.fn((p: TestProjection) => p.messages.map((m) => ({ codecMessageId: m.id, message: m }))),
     createUserMessage: vi.fn((m: TestMessage) => ({ kind: 'user-message' as const, message: m })),
     createRegenerate: vi.fn(
       (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }) as const,
@@ -293,7 +293,7 @@ const codecWithFunctionalDecoder = (): Codec<TestInput, TestOutput, TestProjecti
     }
     return state;
   },
-  getMessages: (p: TestProjection) => p.messages,
+  getMessages: (p: TestProjection) => p.messages.map((m) => ({ codecMessageId: m.id, message: m })),
   createUserMessage: (m: TestMessage) => ({ kind: 'user-message' as const, message: m }),
   createRegenerate: (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }),
   createEncoder: vi.fn(() => createMockEncoder()),
@@ -1803,7 +1803,7 @@ describe('AgentSession', () => {
       const codec: Codec<TestInput, TestOutput, TestProjection, TestMessage> = {
         init: (): TestProjection => ({ messages: [] }),
         fold: (state: TestProjection): TestProjection => state,
-        getMessages: (p: TestProjection) => p.messages,
+        getMessages: (p: TestProjection) => p.messages.map((m) => ({ codecMessageId: m.id, message: m })),
         createUserMessage: (m: TestMessage) => ({ kind: 'user-message' as const, message: m }),
         createRegenerate: (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }),
         createEncoder: vi.fn(() => createMockEncoder()),
@@ -2126,7 +2126,7 @@ describe('Run.messages', () => {
     const codec: Codec<TestInput, TestOutput, TestProjection, TestMessage> = {
       init: () => ({ messages: [] }),
       fold: (state) => state,
-      getMessages: (p) => p.messages,
+      getMessages: (p) => p.messages.map((m) => ({ codecMessageId: m.id, message: m })),
       createUserMessage: (m: TestMessage) => ({ kind: 'user-message' as const, message: m }),
       createRegenerate: (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }),
       createEncoder: vi.fn(() => createMockEncoder()),

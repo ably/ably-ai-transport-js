@@ -27,7 +27,13 @@
 
 import type * as AI from 'ai';
 
-import type { ReducerMeta, ToolApprovalResponse, ToolResult, ToolResultError } from '../../core/codec/types.js';
+import type {
+  CodecMessage,
+  ReducerMeta,
+  ToolApprovalResponse,
+  ToolResult,
+  ToolResultError,
+} from '../../core/codec/types.js';
 import { stripUndefined } from '../../utils.js';
 import type { VercelInput, VercelOutput } from './events.js';
 import { toolBase, transitionToolPart } from './tool-transitions.js';
@@ -72,8 +78,14 @@ interface MessageTrackers {
  * carry from fold to fold (it has no instance state).
  */
 export interface VercelProjection {
-  /** UIMessages produced or modified in this Run, in publication order. */
-  messages: AI.UIMessage[];
+  /**
+   * UIMessages produced or modified in this Run, in publication order,
+   * each paired with its codec-message-id. The reducer correlates strictly
+   * on `codecMessageId`; `message.id` is preserved verbatim from the source
+   * (the AI SDK stream's `start.messageId` for assistants, the caller's id
+   * for user messages) and is never used as an identity key.
+   */
+  messages: CodecMessage<AI.UIMessage>[];
   /**
    * Per-conflict-key high-water-marks. Maps a codec-derived conflict key
    * (see `_conflictKeyOf`) to the highest `meta.serial` already folded for
@@ -229,7 +241,11 @@ const _conflictKeyOf = (event: VercelInput | VercelOutput, meta: ReducerMeta): s
   if (_isInput(event)) {
     switch (event.kind) {
       case 'user-message': {
-        return `user-msg:${event.message.id}`;
+        // Dedup re-publishes of the same user message by its wire
+        // codec-message-id, never by the domain `message.id`. Without a
+        // codec-message-id there is nothing to correlate on, so the fold
+        // is left unconditional.
+        return meta.messageId === undefined ? undefined : `user-msg:${meta.messageId}`;
       }
       case 'tool-approval-response': {
         return `tool-approval:${event.toolCallId}`;
@@ -298,19 +314,20 @@ const _conflictKeyOf = (event: VercelInput | VercelOutput, meta: ReducerMeta): s
 // ---------------------------------------------------------------------------
 
 const _foldUserMessage = (state: VercelProjection, message: AI.UIMessage, meta: ReducerMeta): VercelProjection => {
-  // Align the projection's UIMessage.id with the wire `codec-message-id`
-  // (= meta.messageId) so the Tree's _codecMessageIdToRunId index is reachable from
-  // any consumer holding the UIMessage. Without this, useChat-supplied
-  // domain ids leak through, and downstream lookups (view.regenerate /
-  // view.edit / tree.getNodeByCodecMessageId) silently miss because the tree only
-  // indexes wire codec-message-ids.
-  const targetId = meta.messageId ?? message.id;
-  const aligned = message.id === targetId ? message : { ...message, id: targetId };
-  const existingIdx = state.messages.findIndex((m) => m.id === targetId);
+  // Correlate the projection entry on the wire codec-message-id; the
+  // caller-supplied `message.id` is preserved verbatim and surfaced to the
+  // application unchanged. Without a codec-message-id the message has no
+  // identity to key on, so it is appended as a fresh entry.
+  const codecMessageId = meta.messageId;
+  if (codecMessageId === undefined) {
+    state.messages.push({ codecMessageId: message.id, message });
+    return state;
+  }
+  const existingIdx = state.messages.findIndex((e) => e.codecMessageId === codecMessageId);
   if (existingIdx === -1) {
-    state.messages.push(aligned);
+    state.messages.push({ codecMessageId, message });
   } else {
-    state.messages[existingIdx] = aligned;
+    state.messages[existingIdx] = { codecMessageId, message };
   }
   return state;
 };
@@ -418,12 +435,12 @@ interface OwnerLookup {
 }
 
 const _findOwner = (state: VercelProjection, codecMessageId: string, toolCallId: string): OwnerLookup | undefined => {
-  const message = state.messages.find((m) => m.id === codecMessageId);
-  if (!message) return undefined;
+  const entry = state.messages.find((e) => e.codecMessageId === codecMessageId);
+  if (!entry) return undefined;
   const trackers = _ensureTrackers(state, codecMessageId);
-  const found = _getToolPart(message, trackers, toolCallId);
+  const found = _getToolPart(entry.message, trackers, toolCallId);
   if (!found) return undefined;
-  return { message, tracker: found.tracker, part: found.part };
+  return { message: entry.message, tracker: found.tracker, part: found.part };
 };
 
 /**
@@ -438,11 +455,11 @@ const _findOwner = (state: VercelProjection, codecMessageId: string, toolCallId:
  * @returns The owning message, tracker, and part, or `undefined` if absent.
  */
 const _findToolPartOwner = (state: VercelProjection, toolCallId: string): OwnerLookup | undefined => {
-  for (const message of state.messages) {
-    const trackers = state.trackers.get(message.id);
+  for (const entry of state.messages) {
+    const trackers = state.trackers.get(entry.codecMessageId);
     if (!trackers) continue;
-    const found = _getToolPart(message, trackers, toolCallId);
-    if (found) return { message, tracker: found.tracker, part: found.part };
+    const found = _getToolPart(entry.message, trackers, toolCallId);
+    if (found) return { message: entry.message, tracker: found.tracker, part: found.part };
   }
   return undefined;
 };
@@ -594,13 +611,16 @@ const _foldChunk = (state: VercelProjection, chunk: VercelOutput, meta: ReducerM
 // Message + tracker helpers
 // ---------------------------------------------------------------------------
 
-const _ensureMessage = (state: VercelProjection, messageId: string): AI.UIMessage => {
-  let message = state.messages.find((m) => m.id === messageId);
-  if (!message) {
-    message = { id: messageId, role: 'assistant', parts: [] };
-    state.messages.push(message);
+const _ensureMessage = (state: VercelProjection, codecMessageId: string): AI.UIMessage => {
+  let entry = state.messages.find((e) => e.codecMessageId === codecMessageId);
+  if (!entry) {
+    // No source id seen yet — seed the domain `message.id` with the
+    // codec-message-id as a fallback. The `start` chunk overwrites it with
+    // the stream's `messageId` when the stream provides one.
+    entry = { codecMessageId, message: { id: codecMessageId, role: 'assistant', parts: [] } };
+    state.messages.push(entry);
   }
-  return message;
+  return entry.message;
 };
 
 const _ensureTrackers = (state: VercelProjection, messageId: string): MessageTrackers => {
@@ -638,15 +658,15 @@ const _foldLifecycle = (
 ): VercelProjection => {
   switch (chunk.type) {
     case 'start': {
-      // The wire HEADER_CODEC_MESSAGE_ID (carried via `meta.messageId`) is the
-      // canonical identity for the message inside the projection — every
-      // subsequent chunk for this message keys on it. The Vercel `start`
-      // chunk also carries an LLM-provided `messageId`, but rewriting
-      // `message.id` to it would orphan all later chunks (which still key
-      // on the wire id), producing a second, empty message. Keep the wire
-      // id authoritative; the LLM id is exposed via the wire header for
-      // anyone who needs it.
+      // The projection entry is keyed on the wire codec-message-id
+      // (`messageId`); every subsequent chunk for this message correlates on
+      // that, independent of `message.id`. So we faithfully reproduce the
+      // stream's own `messageId` on the reconstructed `UIMessage.id` (the
+      // value surfaced to the application) without risk of orphaning later
+      // chunks. When the stream omits it, the codec-message-id seeded by
+      // `_ensureMessage` stands as the fallback id.
       const message = _ensureMessage(state, messageId);
+      if (chunk.messageId !== undefined) message.id = chunk.messageId;
       if (chunk.messageMetadata !== undefined) message.metadata = chunk.messageMetadata;
       return state;
     }
@@ -666,7 +686,7 @@ const _foldLifecycle = (
       return state;
     }
     case 'finish': {
-      const message = state.messages.find((m) => m.id === messageId);
+      const message = state.messages.find((e) => e.codecMessageId === messageId)?.message;
       if (message && chunk.messageMetadata !== undefined) {
         message.metadata = chunk.messageMetadata;
       }
@@ -680,7 +700,7 @@ const _foldLifecycle = (
       return state;
     }
     case 'message-metadata': {
-      const message = state.messages.find((m) => m.id === messageId);
+      const message = state.messages.find((e) => e.codecMessageId === messageId)?.message;
       if (message && chunk.messageMetadata !== undefined) {
         message.metadata = chunk.messageMetadata;
       }
@@ -932,11 +952,12 @@ const _foldDataPart = (
 // ---------------------------------------------------------------------------
 
 /**
- * Extract the UIMessage list from a projection for Tree population.
- * Client-published tool resolutions amend existing assistants in place
- * via `kind: 'tool-result'` etc. — they never materialise as their own
- * UIMessage in the projection, so no filtering is needed here.
+ * Extract the UIMessage list from a projection, each paired with its
+ * codec-message-id. Client-published tool resolutions amend existing
+ * assistants in place via `kind: 'tool-result'` etc. — they never
+ * materialise as their own UIMessage in the projection, so no filtering is
+ * needed here.
  * @param projection - Projection produced by `init` + repeated `fold` calls.
- * @returns The visible UIMessages, in publication order.
+ * @returns The visible messages with their codec-message-ids, in publication order.
  */
-export const getMessages = (projection: VercelProjection): AI.UIMessage[] => projection.messages;
+export const getMessages = (projection: VercelProjection): CodecMessage<AI.UIMessage>[] => projection.messages;

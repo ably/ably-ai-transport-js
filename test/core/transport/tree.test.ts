@@ -52,7 +52,7 @@ const testCodec: Codec<TestInput, TestOutput, TestProjection, TestMessage> = {
     // is sufficient; the fold appends the carried message to the projection.
     return { messages: [...state.messages, event.message] };
   },
-  getMessages: (projection: TestProjection) => projection.messages,
+  getMessages: (projection: TestProjection) => projection.messages.map((m) => ({ codecMessageId: m.id, message: m })),
   createEncoder: () => {
     throw new Error('not used in tree tests');
   },
@@ -107,7 +107,7 @@ const apply = (tree: TreeInternal<TestInput, TestOutput, TestProjection>, opts: 
 
 const messagesOf = (tree: TreeInternal<TestInput, TestOutput, TestProjection>, runId: string): TestMessage[] => {
   const run = tree.getRunNode(runId);
-  return run ? testCodec.getMessages(run.projection) : [];
+  return run ? testCodec.getMessages(run.projection).map((cm) => cm.message) : [];
 };
 
 // Apply a run-LESS user input wire (an input node keyed by its codec-message-id).
@@ -137,7 +137,8 @@ const replyRuns = (
 const flatMessages = (
   tree: TreeInternal<TestInput, TestOutput, TestProjection>,
   selections: Map<string, string> = NO_SELECTIONS,
-): TestMessage[] => replyRuns(tree, selections).flatMap((r) => testCodec.getMessages(r.projection));
+): TestMessage[] =>
+  replyRuns(tree, selections).flatMap((r) => testCodec.getMessages(r.projection).map((cm) => cm.message));
 
 const flatRunIds = (
   tree: TreeInternal<TestInput, TestOutput, TestProjection>,
@@ -222,7 +223,7 @@ describe('Tree', () => {
       expect(run?.runId).toBe('R1');
       const projection = run?.projection;
       if (!projection) throw new Error('expected projection');
-      expect(testCodec.getMessages(projection)).toEqual([{ id: 'a', content: 'hi' }]);
+      expect(testCodec.getMessages(projection)).toEqual([{ codecMessageId: 'a', message: { id: 'a', content: 'hi' } }]);
     });
 
     it('returns undefined for an unknown runId', () => {
@@ -1502,7 +1503,7 @@ describe('Tree', () => {
         tree
           .visibleNodes(NO_SELECTIONS)
           .flatMap((n) => testCodec.getMessages(n.projection))
-          .map((m) => m.id),
+          .map((m) => m.message.id),
       ).toEqual(['u1', 'u2', 'u3', 'a1']);
       // The reply run resolves its input-node parent via the reverse edge.
       expect(tree.getReplyRuns('u3').map((r) => r.runId)).toEqual(['R1']);

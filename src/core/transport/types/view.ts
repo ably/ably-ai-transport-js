@@ -2,7 +2,7 @@
 
 import type * as Ably from 'ably';
 
-import type { CodecInputEvent } from '../../codec/types.js';
+import type { CodecInputEvent, CodecMessage } from '../../codec/types.js';
 import type { ActiveRun, SendOptions } from './client.js';
 import type { RunEndReason } from './shared.js';
 import type { RunLifecycleEvent } from './tree.js';
@@ -119,6 +119,16 @@ export interface View<TInput extends CodecInputEvent, TMessage> {
    * each Run's `codec.getMessages(projection)` in chronological order.
    */
   getMessages(): TMessage[];
+
+  /**
+   * The same visible messages as {@link getMessages}, in the same order,
+   * but each paired with its codec-message-id (see {@link CodecMessage}).
+   * Use this when correlating a rendered message back to the transport —
+   * e.g. routing a continuation input or resolving a regenerate/edit
+   * target — so correlation keys on the SDK's codec-message-id rather than
+   * the domain `message.id`, which the SDK never treats as an identity.
+   */
+  getMessagesWithIds(): CodecMessage<TMessage>[];
 
   /**
    * Snapshot of the visible Runs along the selected branch, in

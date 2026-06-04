@@ -1173,25 +1173,25 @@ describe('ClientSession integration', () => {
 
     await waitForMessages(clientSession, 2);
 
-    const messages = clientSession.view.getMessages();
-    const userMsg = messages.find((m) => m.role === 'user');
-    const asstMsg = messages.find((m) => m.role === 'assistant');
+    // runOf keys on the codec-message-id, which is independent of the domain
+    // message.id after the decoupling, so look the run up via the
+    // codec-message-id paired with each message by getMessagesWithIds().
+    const pairs = clientSession.view.getMessagesWithIds();
+    const userPair = pairs.find((p) => p.message.role === 'user');
+    const asstPair = pairs.find((p) => p.message.role === 'assistant');
 
-    expect(userMsg).toBeDefined();
-    expect(asstMsg).toBeDefined();
+    expect(userPair).toBeDefined();
+    expect(asstPair).toBeDefined();
 
-    // The user prompt is a run-less input node now; runOf() resolves it to its
-    // selected reply run — the same agent-minted run that owns the assistant
-    // message.
-    if (userMsg) {
-      expect(userMsg.id).toBeDefined();
-      const userRun = clientSession.view.runOf(userMsg.id);
-      expect(userRun?.runId).toBe(runId);
+    if (userPair) {
+      expect(userPair.codecMessageId).toBeDefined();
+      const run = clientSession.view.runOf(userPair.codecMessageId);
+      expect(run?.runId).toBe(runId);
     }
-    if (asstMsg) {
-      expect(asstMsg.id).toBeDefined();
-      const asstRun = clientSession.view.runOf(asstMsg.id);
-      expect(asstRun?.runId).toBe(runId);
+    if (asstPair) {
+      expect(asstPair.codecMessageId).toBeDefined();
+      const run = clientSession.view.runOf(asstPair.codecMessageId);
+      expect(run?.runId).toBe(runId);
     }
   });
 

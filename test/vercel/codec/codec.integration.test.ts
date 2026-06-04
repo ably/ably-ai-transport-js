@@ -149,7 +149,7 @@ describe('Vercel UIMessageCodec integration', () => {
     expect(types).toContain('text-end');
     expect(types).toContain('finish');
 
-    const messages = UIMessageCodec.getMessages(projection);
+    const messages = UIMessageCodec.getMessages(projection).map((m) => m.message);
     expect(messages).toHaveLength(1);
     const [msg] = messages;
     expect(msg).toBeDefined();
@@ -230,7 +230,7 @@ describe('Vercel UIMessageCodec integration', () => {
     expect(types).toContain('tool-output-available');
     expect(types).toContain('finish');
 
-    const messages = UIMessageCodec.getMessages(projection);
+    const messages = UIMessageCodec.getMessages(projection).map((m) => m.message);
     expect(messages).toHaveLength(1);
     const [msg] = messages;
 
@@ -307,7 +307,7 @@ describe('Vercel UIMessageCodec integration', () => {
     expect(types).toContain('tool-input-available');
     expect(types).toContain('tool-output-available');
 
-    const messages = UIMessageCodec.getMessages(projection);
+    const messages = UIMessageCodec.getMessages(projection).map((m) => m.message);
     expect(messages).toHaveLength(1);
     const [msg] = messages;
     const toolPart = msg?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
@@ -372,7 +372,7 @@ describe('Vercel UIMessageCodec integration', () => {
     expect(types).toContain('text-delta');
     expect(types).toContain('abort');
 
-    const messages = UIMessageCodec.getMessages(projection);
+    const messages = UIMessageCodec.getMessages(projection).map((m) => m.message);
     expect(messages).toHaveLength(1);
   });
 
@@ -421,7 +421,7 @@ describe('Vercel UIMessageCodec integration', () => {
       projection = foldDecoded(projection, decoded, msg);
     }
 
-    const messages = UIMessageCodec.getMessages(projection);
+    const messages = UIMessageCodec.getMessages(projection).map((m) => m.message);
     expect(messages.length).toBeGreaterThanOrEqual(1);
 
     const textMsg = messages.find((m) => m.parts.some((p) => p.type === 'text' && p.text.includes('History test.')));
@@ -485,8 +485,8 @@ describe('Vercel UIMessageCodec integration', () => {
 
     await Promise.all([finished1, finished2]);
 
-    const messages1 = UIMessageCodec.getMessages(projection1);
-    const messages2 = UIMessageCodec.getMessages(projection2);
+    const messages1 = UIMessageCodec.getMessages(projection1).map((m) => m.message);
+    const messages2 = UIMessageCodec.getMessages(projection2).map((m) => m.message);
     expect(messages1).toHaveLength(1);
     expect(messages2).toHaveLength(1);
 
@@ -551,7 +551,7 @@ describe('Vercel UIMessageCodec integration', () => {
     expect(types).toContain('text-start');
     expect(types).toContain('text-end');
 
-    const messages = UIMessageCodec.getMessages(projection);
+    const messages = UIMessageCodec.getMessages(projection).map((m) => m.message);
     expect(messages).toHaveLength(1);
     const [msg] = messages;
 

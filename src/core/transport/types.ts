@@ -714,6 +714,8 @@ export type TreeNode<TMessage> = MessageNode<TMessage>;
  * (runId, codecMessageId) being forked.
  */
 export interface RunNode<TProjection> {
+  /** Discriminator — identifies this as a reply-run node within {@link ConversationNode}. */
+  kind: 'run';
   /** The run-id of this Run — primary key in the tree. */
   runId: string;
   /**
@@ -786,6 +788,49 @@ export interface RunNode<TProjection> {
   /** Ably serial of the run-end lifecycle event, if observed. */
   endSerial: string | undefined;
 }
+
+/**
+ * A node in the conversation tree, representing a single user input (prompt).
+ *
+ * An input node owns the user's prompt for one turn. It is keyed by the
+ * client-owned `codec-message-id` and never carries a run-id — the agent mints
+ * the run-id for the reply, which becomes a separate {@link RunNode} parented to
+ * this input node. An edit of a prompt is a sibling input node (via `forkOf`).
+ *
+ * Like a {@link RunNode}, it carries its own per-input codec {@link TProjection}
+ * folded from the input event(s) published under its codec-message-id; the SDK
+ * extracts the per-message list via {@link Codec.getMessages} when rendering.
+ */
+export interface InputNode<TProjection> {
+  /** Discriminator — identifies this as an input node within {@link ConversationNode}. */
+  kind: 'input';
+  /** The codec-message-id of this input — primary key in the tree. */
+  codecMessageId: string;
+  /**
+   * The codec-message-id of the node this input hangs off (its structural
+   * parent — the immediately preceding reply run on this chain), or `undefined`
+   * for the first input in a conversation. Used for kind-blind tree
+   * reachability alongside {@link RunNode.parentCodecMessageId}.
+   */
+  parentCodecMessageId: string | undefined;
+  /**
+   * The codec-message-id this input forks from when it is an edit of an earlier
+   * prompt, or `undefined` if it is the first version. Sibling input nodes
+   * (alternate prompts) share the same `forkOf` anchor.
+   */
+  forkOf: string | undefined;
+  /** Per-input codec projection. Folded by the Tree from every input event published under this codec-message-id. */
+  projection: TProjection;
+  /** Ably serial of the first observed message for this input. Absent for optimistic (locally-created) inputs. */
+  serial: string | undefined;
+}
+
+/**
+ * A node in the conversation tree: either a user {@link InputNode} or an agent
+ * {@link RunNode}. Narrow on `kind` (`'input'` vs `'run'`) before reading
+ * kind-specific fields.
+ */
+export type ConversationNode<TProjection> = InputNode<TProjection> | RunNode<TProjection>;
 
 /**
  * Payload of the Tree's `output` event: the decoded agent outputs folded

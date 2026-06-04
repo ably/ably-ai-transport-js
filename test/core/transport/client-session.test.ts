@@ -826,7 +826,7 @@ describe('ClientSession', () => {
       expect(contHeaders?.['run-continue']).toBe('true');
     });
 
-    it('rejects an empty send with no runId and no forkOf', async () => {
+    it('rejects an empty send (no inputs to publish)', async () => {
       await expect(fix.session.view.sendInput([])).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
   });
@@ -1006,20 +1006,13 @@ describe('ClientSession', () => {
       await expect(cont.runId).resolves.toBe(runId);
     });
 
-    it('empty-input continuation: run.runId resolves on a run-resume by the reused run-id', async () => {
+    it('rejects an empty-input continuation — only new input continues a run', async () => {
+      // A continuation reuses an existing run-id but must still carry a new
+      // input event (a tool-result or approval). An empty input array is
+      // rejected even when a run-id is supplied.
       await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
       const { runId } = await ackPendingSend(fix.channel, fix.codec);
-      const cont = await fix.session.view.sendInput([], { runId });
-
-      simulateMessage(
-        fix.channel,
-        ablyMsg(EVENT_RUN_RESUME, {
-          [HEADER_RUN_ID]: runId,
-          [HEADER_RUN_CLIENT_ID]: 'client-1',
-        }),
-      );
-
-      await expect(cont.runId).resolves.toBe(runId);
+      await expect(fix.session.view.sendInput([], { runId })).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
 
     it('does not resolve run.runId for a run-start matching neither the trigger codec-message-id nor the runId', async () => {

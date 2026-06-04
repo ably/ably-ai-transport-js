@@ -6,7 +6,7 @@ Without multi-client support, sharing a conversation across browser tabs, device
 
 ## How it works
 
-All clients subscribe to the same Ably channel and handle every run identically: each inbound message is decoded, accumulated via the codec, and folded into the run's projection in the conversation tree. Whether this client started the run (via `send()`, `regenerate()`, or `edit()`) or is merely observing another client's run changes nothing about delivery — the [own vs observer](../internals/glossary.md#own-run-vs-observer-run) distinction only scopes cancellation and UI affordances. Every run's outputs surface on the tree's `output` event keyed by `runId`.
+All clients subscribe to the same Ably channel and handle every run identically: each inbound message is decoded, accumulated via the codec, and folded into the run's projection in the conversation tree. Whether this client started the run (via `send()`, `regenerate()`, or `edit()`) or is merely observing another client's run changes nothing about delivery — the [own vs observer](../internals/glossary.md#own-run-vs-observer-run) distinction only scopes cancellation and UI affordances. Every run's outputs surface on the tree's `output` event, routed by `inputCodecMessageId` (the triggering input's `codec-message-id`).
 
 No special API is needed. Connect two clients to the same channel name, and messages sync automatically:
 

@@ -1,8 +1,8 @@
 # Runs
 
-A run is one request-response cycle: the user sends a message, the server streams a response. Every interaction flows through a run, and every message on the channel belongs to exactly one run.
+A run is the agent's reply to a user prompt: the user sends a message, the agent streams a response. Each turn is two nodes in the conversation tree — a client-owned **input node** (the user prompt, keyed by its `codec-message-id`, with no run id) and an agent-owned **reply run** (the streamed response, keyed by an agent-minted `runId`, parented to the input node).
 
-Runs are the unit of cancellation, lifecycle tracking, and concurrent interaction. Each run has a unique `runId`, an owning `clientId`, and a lifecycle that progresses from start to end.
+Runs are the unit of cancellation, lifecycle tracking, and concurrent interaction. Each reply run has a unique `runId` minted by the agent, an owning `clientId`, and a lifecycle that progresses from start to end. The client no longer mints the run id — it owns the input node's `codec-message-id` at send time and learns the agent-minted `runId` once the agent's `ai-run-start` arrives on the channel.
 
 ## Run lifecycle
 
@@ -47,13 +47,15 @@ The client creates runs implicitly when you call `view.send()`, `view.regenerate
 ```typescript
 const run = await view.send(userMessage);
 
-// run.runId  - the unique run identifier
-// run.started - resolves when the agent picks up the run (ai-run-start)
+// run.key    - the triggering input's codec-message-id; the synchronous routing
+//              handle the client owns the moment it publishes
+// run.runId  - a promise; resolves to the agent-minted run id once ai-run-start
+//              is observed on the channel
 // run.cancel() - cancel this specific run
 // run.toInvocation() - the pointer to POST to your agent endpoint
 ```
 
-The returned `ActiveRun` gives you the run's identity and a cancel handle. `send()` resolves as soon as your input is published to the channel — it does **not** send HTTP or block on the agent. Decoded outputs are observed on the conversation tree's `output` event (or, more usually, via the view) — see [Token streaming](../features/streaming.md). To wake a serverless agent, POST the run's invocation pointer to your endpoint yourself:
+The returned `ActiveRun` gives you the run's identity and a cancel handle. The agent mints the run id now, so it is not known synchronously: `run.runId` is a promise that resolves once the agent's `ai-run-start` is observed. The synchronous handle is `run.key` — the triggering input's `codec-message-id`, which the client owns the instant it publishes and which keys stream routing and cancellation. `send()` resolves as soon as your input is published to the channel — it does **not** send HTTP or block on the agent. Decoded outputs are observed on the conversation tree's `output` event (or, more usually, via the view) — see [Token streaming](../features/streaming.md). To wake a serverless agent, POST the run's invocation pointer to your endpoint yourself:
 
 ```typescript
 const run = await view.send(userMessage);
@@ -64,15 +66,15 @@ await fetch('/api/chat', {
 });
 ```
 
-`run.toInvocation()` carries only identifiers (`runId`, `inputEventId`, `sessionName`) — the agent reads the conversation from the channel and mints the `invocationId` itself, returning it on the response. The streamed output is available immediately from the channel subscription, not from the HTTP response. (With the Vercel `useChat` integration the chat transport issues this POST for you.)
+`run.toInvocation()` carries only identifiers (`inputEventId`, `sessionName`, and `runId` only for a continuation) — a fresh run omits `runId`, leaving the agent to mint it. The agent reads the conversation from the channel and mints both the `runId` (for a fresh run) and the `invocationId`, returning them on the response. The streamed output is available immediately from the channel subscription, not from the HTTP response. (With the Vercel `useChat` integration the chat transport issues this POST for you.)
 
-If you need to know when the agent has actually picked up the run, await `run.started`: it resolves when the agent's `ai-run-start` for this run is observed, and rejects only if the session is closed first. There is no built-in deadline — race it against your own timeout if you want to bound the wait:
+If you need the agent-minted run id, or to know when the agent has actually picked up the run, await `run.runId`: it resolves to the run id when the agent's `ai-run-start` for this send is observed, and rejects only if the session is closed first. There is no built-in deadline — race it against your own timeout if you want to bound the wait:
 
 ```typescript
 const run = await view.send(userMessage);
-await Promise.race([
-  run.started,
-  new Promise((_, reject) => setTimeout(() => reject(new Error('agent did not start in time')), 30_000)),
+const runId = await Promise.race([
+  run.runId,
+  new Promise<string>((_, reject) => setTimeout(() => reject(new Error('agent did not start in time')), 30_000)),
 ]);
 ```
 
@@ -102,7 +104,7 @@ Use these events to drive your own UI state. The SDK does not summarise channel 
 
 ## Concurrent runs
 
-Multiple runs can be active simultaneously on the same channel. Each run has its own cancel handle and its own lifecycle events, and its outputs are keyed by `runId` on the tree's `output` event. The server creates independent runs:
+Multiple runs can be active simultaneously on the same channel. Each run has its own cancel handle and its own lifecycle events, and its outputs are routed by `inputCodecMessageId` on the tree's `output` event (the triggering input's `codec-message-id`, which the client owns from send time before the agent mints the `runId`). The server creates independent runs:
 
 ```typescript
 // Two runs can stream at the same time

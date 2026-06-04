@@ -711,20 +711,17 @@ class DefaultClientSession<
       runId: runIdPromise,
       inputEventId: triggerInputEventId,
       // The agent mints the run-id, so a fresh run has none until run-start.
-      // Cancel by run-id once known; a cancel issued before run-start is
-      // deferred until the run exists (best-effort) — PR-3 adds an event-id so
-      // an early cancel is honoured synchronously. If the run never starts
-      // (e.g. the session closed), there is nothing to cancel.
+      // Cancel synchronously by the triggering input's codec-message-id (the
+      // handle the client owns at send time, = `key`): the agent resolves it
+      // to the run once its input-event lookup completes, and buffers a cancel
+      // that arrives before then so an early cancel is honoured rather than
+      // dropped. A continuation additionally carries its known run-id so the
+      // agent can match the run directly.
       cancel: async () => {
-        let id = runId;
-        if (id === undefined) {
-          try {
-            id = await runIdPromise;
-          } catch {
-            return; // run never started (session closed / never woke) — nothing to cancel
-          }
-        }
-        await this.cancel(id);
+        await this._publishCancel({
+          inputCodecMessageId: startedKey,
+          ...(runId !== undefined && { runId }),
+        });
       },
       optimisticCodecMessageIds: [...codecMessageIds],
       toInvocation: () =>
@@ -739,22 +736,58 @@ class DefaultClientSession<
 
   // Spec: AIT-CT7, AIT-CT7a
   async cancel(runId: string): Promise<void> {
+    return this._publishCancel({ runId });
+  }
+
+  /**
+   * Publish an `ai-cancel` signal. The agent resolves the target run by
+   * whichever identifier is present:
+   *
+   * - `runId` — a continuation, whose run-id the caller already knows.
+   * - `inputCodecMessageId` — a fresh send, whose run-id the agent mints at
+   *   run-start. The client can only key the cancel by the triggering input's
+   *   codec-message-id (the `ActiveRun.key`) it owns at send time; the agent
+   *   resolves it to the run once its input-event lookup completes, buffering
+   *   a cancel that arrives before then.
+   *
+   * Both may be present (a continuation knows its run-id AND published an
+   * input). An `event-id` is always stamped so channel rewind redelivers the
+   * cancel to a per-request / serverless agent that attaches after it was
+   * published.
+   *
+   * Publishing the cancel signal is all the core does. The consumer-facing
+   * stream (if any) lives in the layer that built it — e.g. the Vercel
+   * ChatTransport closes its stream on cancel — and the Tree's RunNode is left
+   * intact so late agent events (a cancel append, a trailing
+   * `status: cancelled`) still fold into the Run's projection.
+   * @param target - The run identifier(s) to cancel. At least one of `runId` /
+   *   `inputCodecMessageId` must be set.
+   * @param target.runId - The run-id to cancel (continuations).
+   * @param target.inputCodecMessageId - The triggering input's
+   *   codec-message-id to cancel (fresh sends, before run-start).
+   */
+  private async _publishCancel(target: { runId?: string; inputCodecMessageId?: string }): Promise<void> {
     if (this._state === ClientSessionState.CLOSED) return;
     await this._requireConnected('cancel');
     // CAST: re-check after await — close() may have been called while waiting for connect.
     if ((this._state as ClientSessionState) === ClientSessionState.CLOSED) return;
-    this._logger.debug('ClientSession.cancel();', { runId });
+    this._logger.debug('ClientSession._publishCancel();', {
+      runId: target.runId,
+      inputCodecMessageId: target.inputCodecMessageId,
+    });
+
+    const headers: Record<string, string> = {
+      // Stamp a per-cancel event-id so channel rewind redelivers this cancel
+      // to an agent that attaches after it was published.
+      [HEADER_EVENT_ID]: crypto.randomUUID(),
+    };
+    if (target.runId !== undefined) headers[HEADER_RUN_ID] = target.runId;
+    if (target.inputCodecMessageId !== undefined) headers[HEADER_INPUT_CODEC_MESSAGE_ID] = target.inputCodecMessageId;
 
     await this._channel.publish({
       name: EVENT_CANCEL,
-      extras: { ai: { transport: { [HEADER_RUN_ID]: runId } } },
+      extras: { ai: { transport: headers } },
     });
-
-    // Publishing the cancel signal is all the core does. The consumer-facing
-    // stream (if any) lives in the layer that built it — e.g. the Vercel
-    // ChatTransport closes its stream on cancel — and the Tree's RunNode is
-    // left intact so late agent events (a cancel append, a trailing
-    // `status: cancelled`) still fold into the Run's projection.
   }
 
   // Spec: AIT-CT8, AIT-CT8c, AIT-CT8d

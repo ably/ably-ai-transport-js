@@ -535,7 +535,7 @@ class DefaultAgentSession<
   TOutput extends CodecOutputEvent,
   TProjection,
   TMessage,
-> implements AgentSession<TInput, TOutput, TProjection, TMessage> {
+> implements AgentSession<TOutput, TProjection, TMessage> {
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: AgentSessionOptions<TInput, TOutput, TProjection, TMessage>['codec'];
   private readonly _logger: Logger | undefined;
@@ -717,7 +717,7 @@ class DefaultAgentSession<
   }
 
   // Spec: AIT-ST3
-  createRun(invocation: Invocation, runtime?: RunRuntime<TOutput>): Run<TInput, TOutput, TProjection, TMessage> {
+  createRun(invocation: Invocation, runtime?: RunRuntime<TOutput>): Run<TOutput, TProjection, TMessage> {
     this._logger?.trace('DefaultAgentSession.createRun();', { runId: invocation.runId });
     return this._createRun(invocation, runtime ?? {});
   }
@@ -1020,7 +1020,7 @@ class DefaultAgentSession<
   private _createRun(
     invocation: Invocation,
     runtime: RunRuntime<TOutput>,
-  ): Run<TInput, TOutput, TProjection, TMessage> {
+  ): Run<TOutput, TProjection, TMessage> {
     // The agent mints the run-id for a fresh run (the client no longer mints
     // it); a continuation carries the existing run-id in the invocation body.
     // Mirrors the invocationId mint below.
@@ -1134,7 +1134,7 @@ class DefaultAgentSession<
     // messages instead of the current run alone.
     let cachedConversation: TMessage[] | undefined;
 
-    const run: Run<TInput, TOutput, TProjection, TMessage> = {
+    const run: Run<TOutput, TProjection, TMessage> = {
       get runId() {
         return runId;
       },
@@ -1628,4 +1628,4 @@ export const createAgentSession = <
   TMessage,
 >(
   options: AgentSessionOptions<TInput, TOutput, TProjection, TMessage>,
-): AgentSession<TInput, TOutput, TProjection, TMessage> => new DefaultAgentSession(options);
+): AgentSession<TOutput, TProjection, TMessage> => new DefaultAgentSession(options);

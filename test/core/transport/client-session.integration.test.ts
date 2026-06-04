@@ -47,7 +47,7 @@ import { textResponseStream } from '../../integration/helpers.js';
 // ---------------------------------------------------------------------------
 
 type ClientSessionT = ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
-type AgentSessionT = AgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+type AgentSessionT = AgentSession<VercelOutput, VercelProjection, AI.UIMessage>;
 
 // Merged view of the transport and codec header tiers. The two tiers carry
 // disjoint keys, so merging is unambiguous and lets assertions read either

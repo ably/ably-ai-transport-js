@@ -412,7 +412,7 @@ const lookupSession = (): {
 describe('AgentSession', () => {
   let channel: MockChannel & Ably.RealtimeChannel;
   let codec: MockCodec;
-  let session: AgentSession<TestInput, TestOutput, TestProjection, TestMessage>;
+  let session: AgentSession<TestOutput, TestProjection, TestMessage>;
 
   beforeEach(async () => {
     channel = createMockChannel();

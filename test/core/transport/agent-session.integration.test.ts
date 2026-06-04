@@ -53,7 +53,7 @@ const getHeaders = (msg: Ably.InboundMessage): Record<string, string> => ({
   ...getCodecHeaders(msg),
 });
 
-type AgentSessionT = AgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+type AgentSessionT = AgentSession<VercelOutput, VercelProjection, AI.UIMessage>;
 
 // ---------------------------------------------------------------------------
 // Helpers

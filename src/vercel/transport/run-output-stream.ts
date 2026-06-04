@@ -114,25 +114,27 @@ export const createRunOutputStream = (
     for (const unsub of unsubscribe) unsub();
     unsubscribe.length = 0;
   };
-  const close = (): void => {
+  // Settle the stream at most once: run the controller action (close/error),
+  // swallow the throw if the consumer already cancelled, then tear down.
+  const settle = (action: () => void): void => {
     if (settled) return;
     settled = true;
     try {
-      controller.close();
+      action();
     } catch {
       /* consumer already cancelled the stream */
     }
     teardown();
   };
+  const close = (): void => {
+    settle(() => {
+      controller.close();
+    });
+  };
   const error = (reason: Ably.ErrorInfo): void => {
-    if (settled) return;
-    settled = true;
-    try {
+    settle(() => {
       controller.error(reason);
-    } catch {
-      /* consumer already cancelled the stream */
-    }
-    teardown();
+    });
   };
 
   unsubscribe.push(

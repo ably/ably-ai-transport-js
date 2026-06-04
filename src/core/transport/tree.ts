@@ -418,6 +418,28 @@ export class DefaultTree<
    * @param key - The node key ({@link nodeKey}) to look up the group for.
    * @returns The ordered list of sibling nodes.
    */
+  /**
+   * Walk an input node's `forkOf` chain to the group root — the earliest edit
+   * version sharing the same structural parent. Stops at a missing target, a
+   * non-input target, a parent mismatch, or a cycle.
+   * @param node - The input node to walk from.
+   * @returns The group-root input node (the node itself when it is the root).
+   */
+  private _inputGroupRoot(node: InputNode<TProjection>): InputNode<TProjection> {
+    let current = node;
+    const visited = new Set<string>([nodeKey(current)]);
+    while (current.forkOf !== undefined) {
+      if (visited.has(current.forkOf)) break;
+      const forkTarget = this._nodeIndex.get(current.forkOf);
+      if (forkTarget?.node.kind !== 'input' || forkTarget.node.parentCodecMessageId !== current.parentCodecMessageId) {
+        break;
+      }
+      current = forkTarget.node;
+      visited.add(nodeKey(current));
+    }
+    return current;
+  }
+
   // Spec: AIT-CT13b
   private _getSiblingGroup(key: string): InternalNode<TProjection>[] {
     if (this._siblingCacheVersion !== this._structuralVersion) {
@@ -435,18 +457,7 @@ export class DefaultTree<
     // reply run the node itself anchors (all same-parent runs are siblings).
     let original = entry.node;
     if (original.kind === 'input') {
-      let input = original;
-      const visitedGroup = new Set<string>([nodeKey(input)]);
-      while (input.forkOf !== undefined) {
-        if (visitedGroup.has(input.forkOf)) break;
-        const forkTarget = this._nodeIndex.get(input.forkOf);
-        if (forkTarget?.node.kind !== 'input' || forkTarget.node.parentCodecMessageId !== input.parentCodecMessageId) {
-          break;
-        }
-        input = forkTarget.node;
-        visitedGroup.add(nodeKey(input));
-      }
-      original = input;
+      original = this._inputGroupRoot(original);
     }
 
     // `_parentIndex` is keyed by the raw structural `parentCodecMessageId` (not
@@ -519,21 +530,7 @@ export class DefaultTree<
     if (!entry) return key;
 
     if (entry.node.kind === 'input') {
-      let current = entry.node;
-      const visited = new Set<string>([nodeKey(current)]);
-      while (current.forkOf !== undefined) {
-        if (visited.has(current.forkOf)) break;
-        const forkTarget = this._nodeIndex.get(current.forkOf);
-        if (
-          forkTarget?.node.kind !== 'input' ||
-          forkTarget.node.parentCodecMessageId !== current.parentCodecMessageId
-        ) {
-          break;
-        }
-        current = forkTarget.node;
-        visited.add(nodeKey(current));
-      }
-      return nodeKey(current);
+      return nodeKey(this._inputGroupRoot(entry.node));
     }
 
     // Reply run: the oldest same-parent run is the original reply.

@@ -385,6 +385,32 @@ export class DefaultView<
   }
 
   /**
+   * Recompute the visible node chain, refresh the cache + snapshot, and emit
+   * `update` unconditionally. Use after a mutation that always changes the
+   * visible output (e.g. an explicit selection or a withheld-batch reveal).
+   */
+  private _recomputeAndEmit(): void {
+    this._cachedNodes = this._computeFlatNodes();
+    this._updateVisibleSnapshot(this._cachedNodes);
+    this._emitter.emit('update');
+  }
+
+  /**
+   * Recompute the visible node chain and, only if it differs from the current
+   * snapshot, refresh the cache + snapshot and emit `update`. Use after a
+   * mutation that may or may not move the visible window (e.g. a structural
+   * tree update, or a deferred regenerate promotion that may already match).
+   */
+  private _recomputeAndEmitIfChanged(): void {
+    const nodes = this._computeFlatNodes();
+    if (this._visibleChanged(nodes)) {
+      this._cachedNodes = nodes;
+      this._updateVisibleSnapshot(nodes);
+      this._emitter.emit('update');
+    }
+  }
+
+  /**
    * Resolve the reply Run that owns a codec-message-id, narrowing the Tree's
    * node union to a {@link RunNode}. A user-input codec-message-id resolves to
    * an input node and yields `undefined` here — callers that must handle input
@@ -606,9 +632,7 @@ export class DefaultView<
         groupRoot: branch.groupRoot,
       });
     }
-    this._cachedNodes = this._computeFlatNodes();
-    this._updateVisibleSnapshot(this._cachedNodes);
-    this._emitter.emit('update');
+    this._recomputeAndEmit();
   }
 
   /**
@@ -746,9 +770,7 @@ export class DefaultView<
     const groupRoot = this._tree.getGroupRoot(editedInputKey);
 
     this._branchSelections.set(groupRoot, { kind: 'auto', selectedKey: editedInputKey });
-    this._cachedNodes = this._computeFlatNodes();
-    this._updateVisibleSnapshot(this._cachedNodes);
-    this._emitter.emit('update');
+    this._recomputeAndEmit();
   }
 
   /**
@@ -785,12 +807,7 @@ export class DefaultView<
     // sendDelegate resolution). Promote now and recompute so the visible set
     // catches up without waiting for the next structural change.
     this._resolvePendingRegenSelections();
-    const nodes = this._computeFlatNodes();
-    if (this._visibleChanged(nodes)) {
-      this._cachedNodes = nodes;
-      this._updateVisibleSnapshot(nodes);
-      this._emitter.emit('update');
-    }
+    this._recomputeAndEmitIfChanged();
   }
 
   // Spec: AIT-CT5, AIT-CT13d
@@ -1116,9 +1133,7 @@ export class DefaultView<
       this._withheldRunIds.delete(nodeKey(n));
     }
     if (nodes.length > 0) {
-      this._cachedNodes = this._computeFlatNodes();
-      this._updateVisibleSnapshot(this._cachedNodes);
-      this._emitter.emit('update');
+      this._recomputeAndEmit();
     }
   }
 
@@ -1157,12 +1172,7 @@ export class DefaultView<
     this._pinBranchSelections();
     this._resolvePendingRegenSelections();
 
-    const nodes = this._computeFlatNodes();
-    if (this._visibleChanged(nodes)) {
-      this._cachedNodes = nodes;
-      this._updateVisibleSnapshot(nodes);
-      this._emitter.emit('update');
-    }
+    this._recomputeAndEmitIfChanged();
   }
 
   /**

@@ -282,7 +282,7 @@ const createMockCodec = (decoder?: MockDecoder): MockCodec => {
       }
       return state;
     }),
-    getMessages: vi.fn((p: TestProjection) => p.messages),
+    getMessages: vi.fn((p: TestProjection) => p.messages.map((m) => ({ codecMessageId: m.id, message: m }))),
     createUserMessage: vi.fn((m: TestMessage) => ({ kind: 'user-message' as const, message: m })),
     createRegenerate: vi.fn(
       (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }) as const,
@@ -1286,8 +1286,8 @@ describe('ClientSession', () => {
       if (!owningRun) throw new Error('expected owning run');
       const messages = customCodec.getMessages(owningRun.projection);
       expect(messages).toHaveLength(1);
-      expect(messages[0]?.id).toBe('domain-hi');
-      expect(messages[0]?.content).toBe('hi');
+      expect(messages[0]?.message.id).toBe('domain-hi');
+      expect(messages[0]?.message.content).toBe('hi');
       await s.close();
     });
 
@@ -1322,7 +1322,7 @@ describe('ClientSession', () => {
       expect(owningRun).toBeDefined();
       if (!owningRun) throw new Error('expected owning run');
       const messages = fix.codec.getMessages(owningRun.projection);
-      const node = messages.find((m) => m.id === 'm-1');
+      const node = messages.find((m) => m.codecMessageId === 'm-1')?.message;
       expect(node?.content).toBe('hi');
     });
 

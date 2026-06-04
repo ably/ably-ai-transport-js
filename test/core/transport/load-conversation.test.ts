@@ -35,7 +35,7 @@ interface TestProjection {
 const testCodec: Codec<TestInput, TestOutput, TestProjection, TestMessage> = {
   init: () => ({ ids: [] }),
   fold: (state, _event, meta) => ({ ids: [...state.ids, meta.messageId ?? ''] }),
-  getMessages: (state) => state.ids.map((id) => ({ id })),
+  getMessages: (state) => state.ids.map((id) => ({ codecMessageId: id, message: { id } })),
   createDecoder: (): Decoder<TestInput, TestOutput> => ({ decode: () => ({ inputs: [], outputs: [{ type: 'out' }] }) }),
   createEncoder: () => {
     throw new Error('not used');
@@ -85,7 +85,7 @@ describe('foldRunMessages', () => {
     ];
     const { projection, folded } = foldRunMessages(testCodec, sorted, 'R1');
     expect(folded).toBe(2);
-    expect(testCodec.getMessages(projection).map((m) => m.id)).toEqual(['a', 'c']);
+    expect(testCodec.getMessages(projection).map((m) => m.message.id)).toEqual(['a', 'c']);
   });
 
   it('skips run-lifecycle events even when stamped with the run-id', () => {
@@ -96,7 +96,7 @@ describe('foldRunMessages', () => {
     ];
     const { projection, folded } = foldRunMessages(testCodec, sorted, 'R1');
     expect(folded).toBe(1);
-    expect(testCodec.getMessages(projection).map((m) => m.id)).toEqual(['a']);
+    expect(testCodec.getMessages(projection).map((m) => m.message.id)).toEqual(['a']);
   });
 
   it('stops before the truncateAt codec-message-id (exclusive)', () => {
@@ -107,7 +107,7 @@ describe('foldRunMessages', () => {
     ];
     const { projection, folded } = foldRunMessages(testCodec, sorted, 'R1', 'b');
     expect(folded).toBe(1);
-    expect(testCodec.getMessages(projection).map((m) => m.id)).toEqual(['a']);
+    expect(testCodec.getMessages(projection).map((m) => m.message.id)).toEqual(['a']);
   });
 });
 
@@ -123,6 +123,6 @@ describe('foldInputMessages', () => {
       msg({ headers: { [HEADER_CODEC_MESSAGE_ID]: 'u1' }, serial: 's4' }),
     ];
     const projection = foldInputMessages(testCodec, sorted, 'u1');
-    expect(testCodec.getMessages(projection).map((m) => m.id)).toEqual(['u1', 'u1']);
+    expect(testCodec.getMessages(projection).map((m) => m.message.id)).toEqual(['u1', 'u1']);
   });
 });

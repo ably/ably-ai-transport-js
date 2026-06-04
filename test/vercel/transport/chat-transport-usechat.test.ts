@@ -172,6 +172,7 @@ const createMockSession = () => {
   const view = {
     flattenNodes: vi.fn(() => []),
     getMessages: vi.fn(() => []),
+    getMessagesWithIds: vi.fn(() => []),
     getNodeByCodecMessageId: vi.fn(),
     sendInput: send,
     regenerate: vi.fn(),
@@ -192,6 +193,7 @@ const createMockSession = () => {
     edit: vi.fn(),
     on: vi.fn(sessionEmitter.on),
     getMessages: vi.fn(() => []),
+    getMessagesWithIds: vi.fn(() => []),
     getAblyMessages: vi.fn(() => []),
     history: vi.fn(),
   } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
@@ -210,6 +212,7 @@ const createMultiRunMockSession = () => {
   const view = {
     flattenNodes: vi.fn(() => []),
     getMessages: vi.fn(() => []),
+    getMessagesWithIds: vi.fn(() => []),
     getNodeByCodecMessageId: vi.fn(),
     sendInput: send,
     regenerate: vi.fn(),
@@ -230,6 +233,7 @@ const createMultiRunMockSession = () => {
     edit: vi.fn(),
     on: vi.fn(sessionEmitter.on),
     getMessages: vi.fn(() => []),
+    getMessagesWithIds: vi.fn(() => []),
     getAblyMessages: vi.fn(() => []),
     history: vi.fn(),
   } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;

@@ -463,6 +463,30 @@ export interface CodecOutputEvent {
 }
 
 // ---------------------------------------------------------------------------
+// Codec message — a per-message domain object paired with its identity
+// ---------------------------------------------------------------------------
+
+/**
+ * A single domain message paired with the codec-message-id that identifies
+ * it on the wire. Returned from {@link Codec.getMessages}.
+ *
+ * The two fields are deliberately separate: `message` is reconstructed to
+ * faithfully reproduce the values the source produced (e.g. the id the AI
+ * SDK stream assigned) and is surfaced to the application as-is; the SDK
+ * never inspects `message` for identity. All internal correlation —
+ * Tree indexing, parent/fork/regenerate routing, branch grouping — keys on
+ * `codecMessageId`, the SDK's own client-minted identifier. The two need
+ * not be equal.
+ * @template TMessage - The codec's per-message domain type.
+ */
+export interface CodecMessage<TMessage> {
+  /** The SDK's codec-message-id for this message — the correlation key. */
+  codecMessageId: string;
+  /** The domain message, reconstructed verbatim from the source values. */
+  message: TMessage;
+}
+
+// ---------------------------------------------------------------------------
 // Codec — full contract for the transport
 // ---------------------------------------------------------------------------
 
@@ -491,10 +515,13 @@ export interface Codec<
   /** Create a stateful decoder for converting Ably inbound messages into typed inputs and outputs. */
   createDecoder(): Decoder<TInput, TOutput>;
   /**
-   * Extract the per-message list from a projection. The SDK uses the result
-   * to upsert per-codecMessageId nodes into the conversation Tree.
+   * Extract the per-message list from a projection, each message paired
+   * with its codec-message-id (see {@link CodecMessage}). The SDK uses the
+   * `codecMessageId` to correlate messages — it never reads identity from
+   * the message itself — and surfaces `message` to the application
+   * unchanged.
    */
-  getMessages(projection: TProjection): TMessage[];
+  getMessages(projection: TProjection): CodecMessage<TMessage>[];
   /**
    * Wrap a TMessage as the codec's well-known {@link UserMessage} variant
    * suitable for publishing on the `ai-input` wire. Used by the client session's

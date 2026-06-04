@@ -167,7 +167,7 @@ describe('AgentSession integration', () => {
     expect(types).toContain('text-delta');
     expect(types).toContain('finish');
 
-    const messages = UIMessageCodec.getMessages(collector.projection);
+    const messages = UIMessageCodec.getMessages(collector.projection).map((m) => m.message);
     expect(messages).toHaveLength(1);
     const [msg] = messages;
     const textPart = msg?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
@@ -637,8 +637,8 @@ describe('AgentSession integration', () => {
 
     await Promise.all([c1.done, c2.done]);
 
-    const m1 = UIMessageCodec.getMessages(c1.projection);
-    const m2 = UIMessageCodec.getMessages(c2.projection);
+    const m1 = UIMessageCodec.getMessages(c1.projection).map((m) => m.message);
+    const m2 = UIMessageCodec.getMessages(c2.projection).map((m) => m.message);
     expect(m1).toHaveLength(1);
     expect(m2).toHaveLength(1);
 

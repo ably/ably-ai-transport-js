@@ -160,7 +160,7 @@ const lookupInputEvents = async <
     for (const event of events) {
       projection = codec.fold(projection, event, { serial: m.serial ?? '', messageId: codecMessageId });
     }
-    return codec.getMessages(projection).map((message) => ({
+    return codec.getMessages(projection).map(({ message }) => ({
       kind: 'message' as const,
       message,
       codecMessageId,
@@ -932,7 +932,7 @@ class DefaultAgentSession<
           return [...cachedConversation];
         }
         if (cachedProjection !== undefined) {
-          return codec.getMessages(cachedProjection);
+          return codec.getMessages(cachedProjection).map((m) => m.message);
         }
         return viewMessages.map((n) => n.message);
       },

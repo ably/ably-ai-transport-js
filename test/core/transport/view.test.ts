@@ -72,7 +72,7 @@ const makeTestCodec = (): Codec<TestInput, TestOutput, TestProjection, TestMessa
     }
     return state;
   },
-  getMessages: (projection: TestProjection) => projection.messages,
+  getMessages: (projection: TestProjection) => projection.messages.map((m) => ({ codecMessageId: m.id, message: m })),
   createEncoder: () => {
     throw new Error('not used in view tests');
   },
@@ -728,14 +728,14 @@ describe('DefaultView', () => {
       if (!call) throw new Error('expected delegate call');
       const events = call[0];
       expect(events).toHaveLength(1);
-      // The View pulls the caller TMessage.id through onto the input's
-      // `codecMessageId` so the wire `codec-message-id` matches the
-      // local id; the wrapped UserMessage carries the original message.
+      // sendMessage wraps the TMessage as a user-message input without
+      // threading any codec-message-id — the session mints one at send time.
+      // The wrapped UserMessage carries the original message verbatim.
       expect(events[0]).toMatchObject({
         kind: 'user-message',
         message: { id: 'a', content: 'hello' },
-        codecMessageId: 'a',
       });
+      expect(events[0]).not.toHaveProperty('codecMessageId');
     });
 
     it('sendMessage forwards parentCodecMessageId', async () => {
@@ -1544,7 +1544,7 @@ describe('DefaultView', () => {
       const sharedProjection = { messages: sharedMessages };
       noopCodec.fold = (state) => state;
       noopCodec.init = () => sharedProjection;
-      noopCodec.getMessages = (p) => p.messages;
+      noopCodec.getMessages = (p) => p.messages.map((m) => ({ codecMessageId: m.id, message: m }));
 
       const noopTree = createTree<TestInput, TestOutput, TestProjection>(noopCodec, silentLogger);
       const noopView = new DefaultView({

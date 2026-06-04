@@ -339,14 +339,14 @@ export const loadConversation = async <
         meta?.runId === undefined
           ? foldInputMessages(codec, sortedMessages, cid)
           : foldRunMessages(codec, sortedMessages, meta.runId).projection;
-      messages.push(...codec.getMessages(projection));
+      messages.push(...codec.getMessages(projection).map((m) => m.message));
     }
   }
 
   // Current run — folded from the same sorted messages, appended at the chain
   // tail (the chain ended at this run's input node).
   const { projection, folded } = foldRunMessages(codec, sortedMessages, runId);
-  messages.push(...codec.getMessages(projection));
+  messages.push(...codec.getMessages(projection).map((m) => m.message));
 
   logger?.debug('loadConversation(); built', { runId, chainLength, totalMessages: messages.length, folded });
   return { messages, projection };

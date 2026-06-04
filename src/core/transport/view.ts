@@ -25,7 +25,7 @@ import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
-import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
+import type { Codec, CodecInputEvent, CodecMessage, CodecOutputEvent } from '../codec/types.js';
 import { applyWireMessage } from './decode-fold.js';
 import { loadHistory } from './load-history.js';
 import { nodeKey, type TreeInternal } from './tree.js';
@@ -178,23 +178,6 @@ const _normaliseSendInput = <TInput extends CodecInputEvent>(input: TInput | TIn
  */
 const _RUN_TO_MESSAGE_FETCH_FACTOR = 3;
 
-// ---------------------------------------------------------------------------
-// Helper: extract a TMessage's id via codec convention
-// ---------------------------------------------------------------------------
-
-/**
- * Codec convention: each TMessage's `id` field carries the wire `codec-message-id`.
- * Used by the View to resolve a domain codec-message-id from a projection-extracted
- * message. This violates the rule that the core treats TMessage as opaque
- * — see AIT-801 alongside the existing peek sites in client-session
- * and agent-session.
- * @param message - A TMessage from `codec.getMessages(projection)`.
- * @returns The codec-message-id if the codec convention holds, otherwise undefined.
- */
-const _readMessageId = (message: unknown): string | undefined =>
-  // CAST: codec convention; see JSDoc above and AIT-801.
-  (message as { id?: string }).id;
-
 /**
  * Project a Tree `RunNode` down to the View-facing `RunInfo` shape:
  * drop the codec projection and the structural fields that callers
@@ -255,6 +238,13 @@ export class DefaultView<
    * projection updates (streaming). One entry per visible Run.
    */
   private _lastVisibleProjections: TProjection[] = [];
+
+  /**
+   * Snapshot of the visible flat message chain with codec-message-ids —
+   * the internal correlation source for parent/branch routing. The public
+   * `getMessages()` exposes only the `message` halves.
+   */
+  private _lastVisibleMessagePairs: CodecMessage<TMessage>[] = [];
 
   /** Snapshot of visible flat messages — exposed via getMessages(). */
   private _lastVisibleMessages: TMessage[] = [];
@@ -343,7 +333,8 @@ export class DefaultView<
     // boundary already dedup by array reference, so a redundant emit is a
     // no-op for unchanged hook consumers.
     this._lastVisibleProjections = this._cachedNodes.map((n) => n.projection);
-    this._lastVisibleMessages = this._extractMessages(this._cachedNodes);
+    this._lastVisibleMessagePairs = this._extractMessages(this._cachedNodes);
+    this._lastVisibleMessages = this._lastVisibleMessagePairs.map((p) => p.message);
     this._emitter.emit('update');
   }
 
@@ -353,6 +344,10 @@ export class DefaultView<
 
   getMessages(): TMessage[] {
     return this._lastVisibleMessages;
+  }
+
+  getMessagesWithIds(): CodecMessage<TMessage>[] {
+    return this._lastVisibleMessagePairs;
   }
 
   runs(): RunInfo[] {
@@ -430,10 +425,10 @@ export class DefaultView<
    * this model and is not handled here (see the `regenerate-of-multi-message`
    * golden test).
    * @param nodes - The visible nodes (inputs + reply runs) in chronological order.
-   * @returns The flat message list.
+   * @returns The flat message list, each message paired with its codec-message-id.
    */
-  private _extractMessages(nodes: ConversationNode<TProjection>[]): TMessage[] {
-    const messages: TMessage[] = [];
+  private _extractMessages(nodes: ConversationNode<TProjection>[]): CodecMessage<TMessage>[] {
+    const messages: CodecMessage<TMessage>[] = [];
     for (const node of nodes) {
       for (const m of this._codec.getMessages(node.projection)) {
         messages.push(m);
@@ -563,7 +558,7 @@ export class DefaultView<
       // group it is the variant's first (anchor-equivalent) message.
       const siblings = branch.siblings.flatMap((s) => {
         const first = this._codec.getMessages(s.projection).at(0);
-        return first ? [first] : [];
+        return first ? [first.message] : [];
       });
 
       if (siblings.length > 0) {
@@ -587,9 +582,9 @@ export class DefaultView<
     // node, an assistant message lives in a reply run; both carry a projection.
     const owner = this._tree.getNodeByCodecMessageId(codecMessageId);
     if (owner) {
-      const message = this._codec.getMessages(owner.projection).find((m) => _readMessageId(m) === codecMessageId);
-      if (message !== undefined) {
-        return { hasSiblings: false, siblings: [message], index: 0, selected: message };
+      const found = this._codec.getMessages(owner.projection).find((m) => m.codecMessageId === codecMessageId);
+      if (found !== undefined) {
+        return { hasSiblings: false, siblings: [found.message], index: 0, selected: found.message };
       }
     }
 
@@ -691,7 +686,7 @@ export class DefaultView<
     const siblings = this._tree.getSiblingNodes(node.runId);
     if (siblings.length > 1) {
       const firstMsg = this._codec.getMessages(node.projection).at(0);
-      if (firstMsg && _readMessageId(firstMsg) === codecMessageId) {
+      if (firstMsg?.codecMessageId === codecMessageId) {
         return { kind: 'regen', groupRoot: this._tree.getGroupRoot(node.runId), siblings };
       }
     }
@@ -706,22 +701,16 @@ export class DefaultView<
   async sendMessage(messages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveRun> {
     this._logger.trace('DefaultView.sendMessage();');
     const list = Array.isArray(messages) ? messages : [messages];
-    // Caller-supplied TMessage.id flows through as the wire HEADER_CODEC_MESSAGE_ID so
-    // the codec convention `TMessage.id == wire codec-message-id` holds end-to-end
-    // (decoded UIMessage.id matches the original, agent-side projection
-    // doesn't get rebound to a fresh UUID).
-    const items: TInput[] = list.map((m) => {
-      const codecMessageId = _readMessageId(m);
-      const base = this._codec.createUserMessage(m);
-      // CAST: UserMessage<TMessage> is the well-known input variant
-      // produced by `codec.createUserMessage`; TInput is the codec's full
-      // input union, of which UserMessage<TMessage> is one member.
-      // The cast through `unknown` is needed because TS can't see the
-      // membership through the generic boundary.
-      return codecMessageId !== undefined && codecMessageId !== ''
-        ? ({ ...base, codecMessageId } as unknown as TInput)
-        : (base as unknown as TInput);
-    });
+    // Wrap each TMessage as the codec's well-known user-message input. The
+    // session mints a fresh codec-message-id per input; the caller's
+    // `message.id` is preserved on the reconstructed message but is never
+    // used for correlation.
+    // CAST: UserMessage<TMessage> is the well-known input variant produced
+    // by `codec.createUserMessage`; TInput is the codec's full input union,
+    // of which UserMessage<TMessage> is one member. The cast through
+    // `unknown` is needed because TS can't see the membership through the
+    // generic boundary.
+    const items: TInput[] = list.map((m) => this._codec.createUserMessage(m) as unknown as TInput);
     return this.sendInput(items, options);
   }
 
@@ -734,11 +723,9 @@ export class DefaultView<
 
     const normalised = _normaliseSendInput<TInput>(input);
 
-    // Pre-compute the visible branch's flat message list and the codec-message-id of
-    // its tail. The delegate uses both: history for the HTTP POST body,
-    // parentCodecMessageId for auto-parent routing on fresh user messages.
-    const history = this.getMessages();
-    const parentCodecMessageId = history.length > 0 ? _readMessageId(history.at(-1)) : undefined;
+    // The codec-message-id of the visible branch tail — the delegate uses it
+    // for auto-parent routing on fresh user messages.
+    const parentCodecMessageId = this._lastVisibleMessagePairs.at(-1)?.codecMessageId;
 
     const result = await this._sendDelegate(normalised, options, parentCodecMessageId);
     this._applyForkAutoSelect(result, options);
@@ -852,7 +839,7 @@ export class DefaultView<
     let regenAnchorMsgId = messageId;
     if (targetRun.regeneratesCodecMessageId !== undefined) {
       const firstMsg = this._codec.getMessages(targetRun.projection).at(0);
-      if (firstMsg && _readMessageId(firstMsg) === messageId) {
+      if (firstMsg?.codecMessageId === messageId) {
         regenAnchorMsgId = targetRun.regeneratesCodecMessageId;
       }
     }
@@ -920,29 +907,24 @@ export class DefaultView<
    * @returns The parent codec-message-id, or undefined if no predecessor exists.
    */
   private _findParentMsgId(targetNode: ConversationNode<TProjection>, targetMsgId: string): string | undefined {
-    const visible = this.getMessages();
-    const visIdx = visible.findIndex((m) => _readMessageId(m) === targetMsgId);
+    const visible = this._lastVisibleMessagePairs;
+    const visIdx = visible.findIndex((m) => m.codecMessageId === targetMsgId);
     if (visIdx > 0) {
-      const prev = visible[visIdx - 1];
-      const id = prev ? _readMessageId(prev) : undefined;
-      if (id !== undefined) return id;
+      return visible[visIdx - 1]?.codecMessageId;
     }
     if (visIdx === 0) return undefined;
 
     const messages = this._codec.getMessages(targetNode.projection);
-    const idx = messages.findIndex((m) => _readMessageId(m) === targetMsgId);
+    const idx = messages.findIndex((m) => m.codecMessageId === targetMsgId);
     if (idx > 0) {
-      const prev = messages[idx - 1];
-      return prev ? _readMessageId(prev) : undefined;
+      return messages[idx - 1]?.codecMessageId;
     }
     if (idx === 0 && targetNode.parentCodecMessageId !== undefined) {
       // The structural predecessor is the node owning parentCodecMessageId
       // (an input node, or a prior reply run). Its tail message is the parent.
       const parentNode = this._tree.getNodeByCodecMessageId(targetNode.parentCodecMessageId);
       if (parentNode) {
-        const parentMessages = this._codec.getMessages(parentNode.projection);
-        const tail = parentMessages.at(-1);
-        return tail ? _readMessageId(tail) : undefined;
+        return this._codec.getMessages(parentNode.projection).at(-1)?.codecMessageId;
       }
     }
     return undefined;
@@ -1128,7 +1110,8 @@ export class DefaultView<
     this._lastVisibleNodeKeys = resolved.map((n) => nodeKey(n));
     this._lastVisibleNodeKeySet = new Set(this._lastVisibleNodeKeys);
     this._lastVisibleProjections = resolved.map((n) => n.projection);
-    this._lastVisibleMessages = this._extractMessages(resolved);
+    this._lastVisibleMessagePairs = this._extractMessages(resolved);
+    this._lastVisibleMessages = this._lastVisibleMessagePairs.map((p) => p.message);
   }
 
   private _onTreeUpdate(): void {

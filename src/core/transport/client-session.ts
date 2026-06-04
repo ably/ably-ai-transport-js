@@ -488,12 +488,13 @@ class DefaultClientSession<
       // materialise on this side (regenerate) or the target already exists
       // and will be amended when the wire echoes back.
       //
-      // A fresh `user-message` is never wire-only, even when it carries a
-      // `codecMessageId`: View.sendMessage threads a caller-supplied
-      // TMessage.id through that field so TMessage.id == the wire
-      // codec-message-id, but the message is still new content that must
-      // fold into the local projection immediately. Excluding it here keeps
-      // the optimistic user bubble from depending on the channel round-trip.
+      // A fresh `user-message` is never wire-only, even on the rare path
+      // where it carries an explicit `codecMessageId`: it is new content that
+      // must fold into the local projection immediately. Excluding it here
+      // keeps the optimistic user bubble from depending on the channel
+      // round-trip. (The session mints the codec-message-id for fresh user
+      // messages; the caller's `message.id` is preserved but never used as
+      // the correlation key.)
       const isWireOnly =
         entry.kind !== 'user-message' && (entry.kind === 'regenerate' || entry.codecMessageId !== undefined);
 

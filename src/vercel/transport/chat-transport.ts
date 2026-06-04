@@ -24,6 +24,7 @@
 import * as Ably from 'ably';
 import type * as AI from 'ai';
 
+import type { CodecMessage } from '../../core/codec/types.js';
 import type { ActiveRun, ClientSession, SendOptions } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
@@ -283,22 +284,24 @@ const UNRESOLVED_TOOL_STATES = new Set(['input-streaming', 'input-available', 'a
  *   `tool-approval-response` (approved = false)
  * - `output-available` overlay vs unresolved tree → `tool-result`
  * - `output-error` overlay vs unresolved tree → `tool-result-error`
- * @param session - The client session (used to read the current tree).
+ * @param pairs - The visible tree messages paired with their codec-message-ids.
  * @param messages - useChat's local overlay messages.
  * @returns The continuation inputs to publish, in tree order. Each input
  *   carries its own `codecMessageId` targeting the prior assistant it folds
  *   onto.
  */
-const deriveContinuationInputs = (
-  session: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
-  messages: AI.UIMessage[],
-): VercelInput[] => {
-  const allMessages = session.view.getMessages();
+const deriveContinuationInputs = (pairs: CodecMessage<AI.UIMessage>[], messages: AI.UIMessage[]): VercelInput[] => {
   const inputs: VercelInput[] = [];
   for (const overlay of messages) {
     if (overlay.role !== 'assistant') continue;
-    const treeMessage = allMessages.find((m: AI.UIMessage) => m.id === overlay.id);
-    if (!treeMessage) continue;
+    // Match the overlay to its tree message by domain id (both sides
+    // reconstruct the same stream id), but address the emitted inputs by
+    // the tree message's codec-message-id — the agent folds tool
+    // resolutions onto the assistant by codec-message-id, never by the
+    // domain `message.id`.
+    const treeEntry = pairs.find((p) => p.message.id === overlay.id);
+    if (!treeEntry) continue;
+    const { codecMessageId, message: treeMessage } = treeEntry;
 
     for (const overlayPart of overlay.parts) {
       if (!_isToolPart(overlayPart)) continue;
@@ -320,7 +323,7 @@ const deriveContinuationInputs = (
       if (overlayPart.state === 'approval-responded' && (!treePart || treePart.state === 'approval-requested')) {
         inputs.push({
           kind: 'tool-approval-response',
-          codecMessageId: treeMessage.id,
+          codecMessageId,
           toolCallId: overlayPart.toolCallId,
           approved: true,
           ...(overlayPart.approval.reason === undefined ? {} : { reason: overlayPart.approval.reason }),
@@ -330,7 +333,7 @@ const deriveContinuationInputs = (
       if (overlayPart.state === 'output-denied' && (!treePart || treePart.state === 'approval-requested')) {
         inputs.push({
           kind: 'tool-approval-response',
-          codecMessageId: treeMessage.id,
+          codecMessageId,
           toolCallId: overlayPart.toolCallId,
           approved: false,
         });
@@ -349,14 +352,14 @@ const deriveContinuationInputs = (
       if (overlayPart.state === 'output-available') {
         inputs.push({
           kind: 'tool-result',
-          codecMessageId: treeMessage.id,
+          codecMessageId,
           toolCallId: overlayPart.toolCallId,
           output: overlayPart.output,
         });
       } else {
         inputs.push({
           kind: 'tool-result-error',
-          codecMessageId: treeMessage.id,
+          codecMessageId,
           toolCallId: overlayPart.toolCallId,
           message: overlayPart.errorText,
         });
@@ -367,16 +370,19 @@ const deriveContinuationInputs = (
 };
 
 /**
- * Find the codec-message-id immediately preceding `codecMessageId` in the flat conversation.
- * Returns undefined if `codecMessageId` is the first message or not found.
- * @param messages - Flat conversation messages from `view.getMessages()`.
- * @param codecMessageId - The target message id.
- * @returns The preceding message's id, or undefined.
+ * Find the codec-message-id immediately preceding the message identified by
+ * domain id `domainId` in the flat visible conversation. The target is
+ * located by its domain `message.id` (the id useChat references), but the
+ * returned value is the predecessor's codec-message-id — never a domain id.
+ * Returns undefined if the target is the first message or not found.
+ * @param pairs - Visible messages paired with their codec-message-ids.
+ * @param domainId - The domain id of the target message.
+ * @returns The predecessor's codec-message-id, or undefined.
  */
-const findPredecessorMsgId = (messages: AI.UIMessage[], codecMessageId: string): string | undefined => {
-  const idx = messages.findIndex((m) => m.id === codecMessageId);
+const findPredecessorCodecId = (pairs: CodecMessage<AI.UIMessage>[], domainId: string): string | undefined => {
+  const idx = pairs.findIndex((p) => p.message.id === domainId);
   if (idx <= 0) return undefined;
-  return messages[idx - 1]?.id;
+  return pairs[idx - 1]?.codecMessageId;
 };
 
 // ---------------------------------------------------------------------------
@@ -432,7 +438,14 @@ export const createChatTransport = (
   const sendMessages: ChatTransport['sendMessages'] = async (opts) => {
     const { messages, abortSignal, trigger, messageId } = opts;
 
-    const allMessages: AI.UIMessage[] = session.view.getMessages();
+    // The visible messages paired with their codec-message-ids. useChat
+    // references messages by their domain `message.id`; we match on that to
+    // locate a message in the tree, then route every transport operation by
+    // the message's codec-message-id (the SDK never correlates on the domain
+    // id, which may differ from the codec-message-id).
+    const pairs = session.view.getMessagesWithIds();
+    const codecIdByDomainId = new Map(pairs.map((p) => [p.message.id, p.codecMessageId]));
+    const codecIdOf = (domainId: string): string | undefined => codecIdByDomainId.get(domainId);
 
     // useChat calls sendMessages in three distinct modes. We disambiguate
     // by (trigger, last-message role) so each mode dispatches correctly:
@@ -450,8 +463,8 @@ export const createChatTransport = (
     // treat messageId as a fork target — useChat v6's sendAutomaticallyWhen
     // path always sets messageId to the last message id regardless.
     const lastMessage = messages.at(-1);
-    const lastMessageInTree = lastMessage ? allMessages.find((m: AI.UIMessage) => m.id === lastMessage.id) : undefined;
-    const isContinuation = trigger === 'submit-message' && lastMessage?.role === 'assistant' && !!lastMessageInTree;
+    const lastMessageInTree = !!lastMessage && codecIdByDomainId.has(lastMessage.id);
+    const isContinuation = trigger === 'submit-message' && lastMessage?.role === 'assistant' && lastMessageInTree;
 
     // Fork-on-unresolved-tool: user sent a new message while the preceding
     // assistant has an unresolved tool call (approval-requested, input-*).
@@ -467,9 +480,11 @@ export const createChatTransport = (
     // we need to inspect for the unresolved-tool gate below.
     const precedingMessage =
       trigger === 'submit-message' && !messageId && lastMessage?.role === 'user' ? messages.at(-2) : undefined;
-    const forkSourceMsgId =
-      precedingMessage && hasUnresolvedToolCall(precedingMessage)
-        ? allMessages.find((m: AI.UIMessage) => m.id === precedingMessage.id)?.id
+    // The domain id of the preceding assistant when it carries an unresolved
+    // tool call and is present in the tree — the new user message forks off it.
+    const forkSourceDomainId =
+      precedingMessage && hasUnresolvedToolCall(precedingMessage) && codecIdByDomainId.has(precedingMessage.id)
+        ? precedingMessage.id
         : undefined;
 
     // Determine the history/messages split based on mode.
@@ -493,7 +508,7 @@ export const createChatTransport = (
       // When forking off an unresolved tool call, drop the unresolved
       // assistant from history too — it belongs on the sibling branch, not
       // the ancestor chain of the new message.
-      history = forkSourceMsgId ? messages.slice(0, -2) : messages.slice(0, -1);
+      history = forkSourceDomainId ? messages.slice(0, -2) : messages.slice(0, -1);
     }
 
     // Compute fork metadata for edit (submit-message with messageId) and
@@ -504,16 +519,16 @@ export const createChatTransport = (
     let parent: string | undefined;
 
     if (trigger === 'submit-message' && messageId && !isContinuation) {
-      // Edit: messageId identifies the user message being replaced. forkOf =
-      // its codec-message-id, parent = the immediately-preceding codec-message-id in the flat
-      // conversation.
-      forkOf = messageId;
-      parent = findPredecessorMsgId(allMessages, messageId);
-    } else if (forkSourceMsgId) {
+      // Edit: messageId is the domain id of the user message being replaced.
+      // forkOf = its codec-message-id, parent = the immediately-preceding
+      // codec-message-id in the flat conversation.
+      forkOf = codecIdOf(messageId);
+      parent = findPredecessorCodecId(pairs, messageId);
+    } else if (forkSourceDomainId) {
       // Fork off the preceding assistant — the new user message becomes a
       // sibling of the unresolved tool call assistant, rooted at its parent.
-      forkOf = forkSourceMsgId;
-      parent = findPredecessorMsgId(allMessages, forkSourceMsgId);
+      forkOf = codecIdOf(forkSourceDomainId);
+      parent = findPredecessorCodecId(pairs, forkSourceDomainId);
     }
 
     let sendBody: Record<string, unknown>;
@@ -543,7 +558,10 @@ export const createChatTransport = (
     // existing run resumes under a fresh invocation rather than spinning
     // up a brand-new run. `isContinuation` implies `lastMessage` is defined.
     if (isContinuation) {
-      const run = session.view.runOf(lastMessage.id);
+      // `isContinuation` implies `lastMessage` is defined (it gates on
+      // `lastMessage?.role`). Route the runId lookup by codec-message-id.
+      const codecId = codecIdOf(lastMessage.id);
+      const run = codecId === undefined ? undefined : session.view.runOf(codecId);
       if (run) sendOpts.runId = run.runId;
     }
 
@@ -563,7 +581,7 @@ export const createChatTransport = (
     //   `view.sendInput`.
     let run: ActiveRun;
     if (isContinuation) {
-      const sendInput = deriveContinuationInputs(session, messages);
+      const sendInput = deriveContinuationInputs(pairs, messages);
       run = await session.view.sendInput(sendInput, sendOpts);
     } else if (trigger === 'regenerate-message') {
       if (messageId === undefined) {
@@ -573,7 +591,16 @@ export const createChatTransport = (
           400,
         );
       }
-      run = await session.view.regenerate(messageId, sendOpts);
+      // useChat passes the assistant's domain id; route by its codec-message-id.
+      const regenCodecId = codecIdOf(messageId);
+      if (regenCodecId === undefined) {
+        throw new Ably.ErrorInfo(
+          `unable to regenerate; message not visible: ${messageId}`,
+          ErrorCode.InvalidArgument,
+          400,
+        );
+      }
+      run = await session.view.regenerate(regenCodecId, sendOpts);
     } else {
       const sendInput = newMessages.map((m): VercelInput => ({ kind: 'user-message', message: m }));
       run = await session.view.sendInput(sendInput, sendOpts);

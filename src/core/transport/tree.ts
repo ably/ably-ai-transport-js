@@ -636,10 +636,6 @@ export class DefaultTree<
   ): void {
     const wireRunId = headers[HEADER_RUN_ID];
     const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
-    // The triggering input's codec-message-id, echoed by the agent on its
-    // outputs. Surfaced on the `output` event as the stream's causal routing
-    // key. Absent on optimistic local folds (no wire echo yet).
-    const inputCodecMessageId = headers[HEADER_INPUT_CODEC_MESSAGE_ID];
 
     // Classify: with NO run-id, a user message carrying a codec-message-id and
     // at least one input event forms an INPUT node keyed by that
@@ -681,7 +677,7 @@ export class DefaultTree<
     if (inputNodeCodecMessageId !== undefined) {
       this._applyInputMessage(inputNodeCodecMessageId, headers, serial, all);
     } else if (wireRunId !== undefined) {
-      this._applyRunMessage(wireRunId, codecMessageId, headers, serial, all, inputCodecMessageId, events.outputs);
+      this._applyRunMessage(wireRunId, events, headers, serial);
     }
 
     if (this._structuralVersion !== structuralBefore) this._emitter.emit('update');
@@ -748,24 +744,30 @@ export class DefaultTree<
    * Apply a reply-run wire (assistant output, continuation tool-resolution, or
    * a fresh run keyed by the agent-minted run-id): create or reconcile the run
    * node, fold its events, maintain the codec-message-id and reply→input
-   * indices, and emit the `output` event.
+   * indices, and emit the `output` event. Derives the codec-message-id,
+   * triggering-input id, fold list, and outputs from `events`/`headers`,
+   * mirroring `applyMessage`.
    * @param wireRunId - The run-id from the inbound wire (the node's primary key).
-   * @param codecMessageId - The wire's codec-message-id, or undefined.
+   * @param events - The decoded inputs and outputs from the wire.
+   * @param events.inputs - Client-published events (`ai-input` wire).
+   * @param events.outputs - Agent-published events (`ai-output` wire).
    * @param headers - Transport headers from the inbound Ably message.
    * @param serial - Ably channel serial; undefined for an optimistic insert.
-   * @param all - The decoded events to fold (inputs then outputs), in wire order.
-   * @param inputCodecMessageId - The triggering input's codec-message-id (the agent's echo), for the `output` event.
-   * @param outputs - The decoded agent outputs, surfaced on the `output` event.
    */
   private _applyRunMessage(
     wireRunId: string,
-    codecMessageId: string | undefined,
+    events: { inputs: TInput[]; outputs: TOutput[] },
     headers: Record<string, string>,
     serial: string | undefined,
-    all: (TInput | TOutput)[],
-    inputCodecMessageId: string | undefined,
-    outputs: TOutput[],
   ): void {
+    const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
+    // The triggering input's codec-message-id (the agent's echo), surfaced on
+    // the `output` event as the stream's causal routing key.
+    const inputCodecMessageId = headers[HEADER_INPUT_CODEC_MESSAGE_ID];
+    // Fold inputs first, then outputs, preserving wire order.
+    const all: (TInput | TOutput)[] = [...events.inputs, ...events.outputs];
+    const outputs = events.outputs;
+
     let run = this._nodeIndex.get(wireRunId);
 
     // Reconcile an optimistic insert with its serial-bearing echo by
@@ -833,64 +835,7 @@ export class DefaultTree<
     // existing node — content, not structure — so it emits no `update`.
     const structuralBefore = this._structuralVersion;
     if (event.type === 'start') {
-      const existing = this._nodeIndex.get(event.runId);
-      if (existing?.node.kind === 'run') {
-        const node = existing.node;
-        if (node.status !== 'active') {
-          node.status = 'active';
-        }
-        if (event.serial && !node.startSerial) {
-          node.startSerial = event.serial;
-          this._removeSortedRun(existing);
-          this._insertSortedRun(existing);
-          this._structuralVersion++;
-        }
-        // Backfill structural metadata if the Run was created from an
-        // assistant wire that arrived before run-start (history pagination
-        // boundary or out-of-order delivery). The run-start lifecycle event is
-        // the canonical source for parent/forkOf/regenerates; only fill in
-        // fields the wire didn't already populate. A run-start is always a
-        // first start now (continuations re-enter via `ai-run-resume`, which
-        // carries no structural metadata), so it is unconditionally
-        // authoritative here. `parent` is the run's STRUCTURAL parent (its
-        // input node) — reachability and the reply→input edge read it; the
-        // run→run `parentRunId` derivation is gone (it was order-dependent).
-        if (node.parentCodecMessageId === undefined && event.parent !== undefined) {
-          node.parentCodecMessageId = event.parent;
-          this._removeFromParentIndex(undefined, event.runId);
-          this._addToParentIndex(node.parentCodecMessageId, event.runId);
-          this._indexReplyRun(node, event.runId);
-          this._structuralVersion++;
-        }
-        if (node.forkOf === undefined && event.forkOf !== undefined) {
-          const forkOfKey = this._codecMessageIdToNodeKey.get(event.forkOf);
-          if (forkOfKey !== undefined && forkOfKey !== event.runId) {
-            node.forkOf = forkOfKey;
-            this._structuralVersion++;
-          }
-        }
-        if (node.regeneratesCodecMessageId === undefined && event.regenerates !== undefined) {
-          node.regeneratesCodecMessageId = event.regenerates;
-          this._indexRegenerate(event.runId, event.regenerates);
-          this._structuralVersion++;
-        }
-        // Adopt the agent-minted invocation-id onto the optimistic node. The
-        // client no longer mints it, so a node created from an optimistic
-        // insert (or an assistant wire that arrived before run-start) carries
-        // an empty id until the agent's run-start delivers it. Metadata, not
-        // structure — consumers re-read it on the `run` emit below, so no
-        // structural-version bump.
-        if (node.invocationId === '' && event.invocationId !== '') {
-          node.invocationId = event.invocationId;
-        }
-      } else if (!existing) {
-        const run = this._createRunFromLifecycle(event);
-        this._nodeIndex.set(event.runId, run);
-        this._addToParentIndex(run.node.parentCodecMessageId, event.runId);
-        this._indexReplyRun(run.node, event.runId);
-        this._insertSortedRun(run);
-        this._structuralVersion++;
-      }
+      this._applyRunStart(event);
       this._emitter.emit('run', event);
       if (this._structuralVersion !== structuralBefore) this._emitter.emit('update');
       return;
@@ -936,6 +881,75 @@ export class DefaultTree<
     }
     this._emitter.emit('run', event);
     if (this._structuralVersion !== structuralBefore) this._emitter.emit('update');
+  }
+
+  /**
+   * Apply a run-start lifecycle event's structural effect: create the reply
+   * run if it doesn't exist yet, or backfill an optimistic / wire-created
+   * node's structure and metadata from the canonical run-start. Mutates
+   * `_structuralVersion` when the tree shape changes; the caller owns the
+   * `run`/`update` emits.
+   * @param event - The run-start lifecycle event.
+   */
+  private _applyRunStart(event: RunLifecycleEvent & { type: 'start' }): void {
+    const existing = this._nodeIndex.get(event.runId);
+    if (existing?.node.kind === 'run') {
+      const node = existing.node;
+      if (node.status !== 'active') {
+        node.status = 'active';
+      }
+      if (event.serial && !node.startSerial) {
+        node.startSerial = event.serial;
+        this._removeSortedRun(existing);
+        this._insertSortedRun(existing);
+        this._structuralVersion++;
+      }
+      // Backfill structural metadata if the Run was created from an
+      // assistant wire that arrived before run-start (history pagination
+      // boundary or out-of-order delivery). The run-start lifecycle event is
+      // the canonical source for parent/forkOf/regenerates; only fill in
+      // fields the wire didn't already populate. A run-start is always a
+      // first start now (continuations re-enter via `ai-run-resume`, which
+      // carries no structural metadata), so it is unconditionally
+      // authoritative here. `parent` is the run's STRUCTURAL parent (its
+      // input node) — reachability and the reply→input edge read it; the
+      // run→run `parentRunId` derivation is gone (it was order-dependent).
+      if (node.parentCodecMessageId === undefined && event.parent !== undefined) {
+        node.parentCodecMessageId = event.parent;
+        this._removeFromParentIndex(undefined, event.runId);
+        this._addToParentIndex(node.parentCodecMessageId, event.runId);
+        this._indexReplyRun(node, event.runId);
+        this._structuralVersion++;
+      }
+      if (node.forkOf === undefined && event.forkOf !== undefined) {
+        const forkOfKey = this._codecMessageIdToNodeKey.get(event.forkOf);
+        if (forkOfKey !== undefined && forkOfKey !== event.runId) {
+          node.forkOf = forkOfKey;
+          this._structuralVersion++;
+        }
+      }
+      if (node.regeneratesCodecMessageId === undefined && event.regenerates !== undefined) {
+        node.regeneratesCodecMessageId = event.regenerates;
+        this._indexRegenerate(event.runId, event.regenerates);
+        this._structuralVersion++;
+      }
+      // Adopt the agent-minted invocation-id onto the optimistic node. The
+      // client no longer mints it, so a node created from an optimistic
+      // insert (or an assistant wire that arrived before run-start) carries
+      // an empty id until the agent's run-start delivers it. Metadata, not
+      // structure — consumers re-read it on the `run` emit, so no
+      // structural-version bump.
+      if (node.invocationId === '' && event.invocationId !== '') {
+        node.invocationId = event.invocationId;
+      }
+    } else if (!existing) {
+      const run = this._createRunFromLifecycle(event);
+      this._nodeIndex.set(event.runId, run);
+      this._addToParentIndex(run.node.parentCodecMessageId, event.runId);
+      this._indexReplyRun(run.node, event.runId);
+      this._insertSortedRun(run);
+      this._structuralVersion++;
+    }
   }
 
   deleteByCodecMessageId(codecMessageId: string): void {

@@ -1099,36 +1099,24 @@ export class DefaultTree<
    *   (it has the lowest serial), regenerators after.
    */
   getRegenerateGroupByMsgId(codecMessageId: string): RunNode<TProjection>[] {
-    const result: RunNode<TProjection>[] = [];
+    const members: InternalNode<TProjection>[] = [];
 
     const ownerRunId = this._codecMessageIdToNodeKey.get(codecMessageId);
     if (ownerRunId) {
       const owner = this._nodeIndex.get(ownerRunId);
-      if (owner?.node.kind === 'run') result.push(owner.node);
+      if (owner?.node.kind === 'run') members.push(owner);
     }
 
     const regenIds = this._regenerateByMsgId.get(codecMessageId);
     if (regenIds) {
       for (const id of regenIds) {
         const entry = this._nodeIndex.get(id);
-        if (entry?.node.kind === 'run') result.push(entry.node);
+        if (entry?.node.kind === 'run') members.push(entry);
       }
     }
 
-    result.sort((a, b) => {
-      const ai = this._nodeIndex.get(a.runId)?.insertSeq ?? 0;
-      const bi = this._nodeIndex.get(b.runId)?.insertSeq ?? 0;
-      const sa = a.startSerial;
-      const sb = b.startSerial;
-      if (sa === undefined && sb === undefined) return ai - bi;
-      if (sa === undefined) return 1;
-      if (sb === undefined) return -1;
-      if (sa < sb) return -1;
-      if (sa > sb) return 1;
-      return ai - bi;
-    });
-
-    return result;
+    members.sort((a, b) => this._compareRuns(a, b));
+    return members.map((m) => m.node).filter((node): node is RunNode<TProjection> => node.kind === 'run');
   }
 
   /**

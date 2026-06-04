@@ -497,8 +497,8 @@ export interface Codec<
   getMessages(projection: TProjection): TMessage[];
   /**
    * Wrap a TMessage as the codec's well-known {@link UserMessage} variant
-   * suitable for publishing on the `ai-input` wire. Used by the agent session's
-   * `addMessages` and `ClientSessionProvider`'s seed-message path to translate
+   * suitable for publishing on the `ai-input` wire. Used by the client session's
+   * send path and `ClientSessionProvider`'s seed-message path to translate
    * caller-provided TMessages into well-typed inputs.
    * @param message - The user's message in the codec's domain representation.
    * @returns A {@link UserMessage} that fits the codec's `TInput` union.

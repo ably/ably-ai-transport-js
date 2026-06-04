@@ -124,18 +124,6 @@ export interface AgentSessionOptions<
 // Run options
 // ---------------------------------------------------------------------------
 
-/** Options for addMessages — per-operation overrides for attribution. */
-export interface AddMessageOptions {
-  /** The user's clientId for attribution. */
-  clientId?: string;
-}
-
-/** Result of publishing user messages via addMessages. */
-export interface AddMessagesResult {
-  /** The `codec-message-id` of each published message, in order. */
-  codecMessageIds: string[];
-}
-
 /**
  * A batch of events targeting an existing message.
  * Each node specifies the target message and the events to apply to it.
@@ -239,7 +227,7 @@ export interface RunRuntime<TOutput extends CodecOutputEvent> {
    *   `Ably.ErrorInfo` (code `StreamError`) for standardized observability.
    * - Failures in the `onCancel` handler.
    *
-   * Publish failures in `start`, `addMessages`, `addEvents`, and `end`
+   * Publish failures in `start`, `addEvents`, and `end`
    * are not delivered here — those methods reject their returned promise
    * with an `Ably.ErrorInfo`, and the caller should handle it at the await
    * site. Run errors never render the session unusable, but the run may
@@ -330,17 +318,8 @@ export interface Run<TInput extends CodecInputEvent, TOutput extends CodecOutput
    */
   readonly messages: TMessage[];
 
-  /** Publish run-start event to the channel. Must be called before addMessages or pipe. */
+  /** Publish run-start event to the channel. Must be called before pipe. */
   start(): Promise<void>;
-
-  /**
-   * Publish user messages to the channel, scoped to this run.
-   * Each node's `codecMessageId`, `parentId`, and `forkOf` are used for message identity
-   * and branching. The node's `headers` override session-generated defaults
-   * (e.g. for optimistic reconciliation with the client's inserts).
-   * @returns The codec-message-ids of all published messages, in order.
-   */
-  addMessages(messages: MessageNode<TMessage>[], options?: AddMessageOptions): Promise<AddMessagesResult>;
 
   /**
    * Pipe a ReadableStream through the encoder to the channel.
@@ -418,7 +397,7 @@ export interface AgentSession<TInput extends CodecInputEvent, TOutput extends Co
   /**
    * Subscribe to the cancel channel and (implicitly) attach. Idempotent —
    * subsequent calls return the same promise. All run methods (`start`,
-   * `addMessages`, `addEvents`, `pipe`, `end`) throw `InvalidArgument`
+   * `addEvents`, `pipe`, `end`) throw `InvalidArgument`
    * until `connect()` resolves.
    */
   connect(): Promise<void>;

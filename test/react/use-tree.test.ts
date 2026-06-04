@@ -12,7 +12,6 @@ import { createMockSession } from './helper/mock-session.js';
 const makeFakeRun = (runId: string): RunNode<unknown> => ({
   kind: 'run',
   runId,
-  parentRunId: undefined,
   parentCodecMessageId: undefined,
   forkOf: undefined,
   regeneratesCodecMessageId: undefined,

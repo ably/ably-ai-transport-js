@@ -737,14 +737,6 @@ export interface RunNode<TProjection> {
   /** The run-id of this Run — primary key in the tree. */
   runId: string;
   /**
-   * Retired in the two-node model: always `undefined`. Reachability and
-   * sibling grouping run entirely off {@link parentCodecMessageId} (a reply
-   * run's structural parent is its input node, not a prior run), so the
-   * run→run parent derivation no longer exists. The field is kept only to
-   * avoid churning every reader; nothing populates it.
-   */
-  parentRunId: string | undefined;
-  /**
    * The codec-message-id this Run is rooted at — the `parent` header of the
    * first observed message (or the run-start lifecycle event's `parent`
    * field). This is the run's input node's codec-message-id: the user prompt

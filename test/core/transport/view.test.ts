@@ -439,7 +439,7 @@ describe('DefaultView', () => {
       // + tool call + tool result + continuation assistant text). The
       // codec folds them in publish order; the View must concatenate
       // each Run's messages in that order, then concatenate across
-      // Runs by parentRunId chain.
+      // Runs by the structural parent chain.
       apply(tree, { runId: 'R1', codecMessageId: 'a', message: { id: 'a', content: 'a-1' }, serial: 's1' });
       apply(tree, { runId: 'R1', codecMessageId: 'b', message: { id: 'b', content: 'a-2' }, serial: 's2' });
       apply(tree, { runId: 'R1', codecMessageId: 'c', message: { id: 'c', content: 'a-3' }, serial: 's3' });
@@ -1451,7 +1451,7 @@ describe('DefaultView', () => {
         parent: 'm1',
         serial: 's2',
       };
-      // tree.applyRunLifecycle creates R2 with parentRunId resolved from m1 → R1.
+      // tree.applyRunLifecycle creates R2 with parentCodecMessageId = m1.
       tree.applyRunLifecycle(evt);
       expect(handler).toHaveBeenCalled();
     });

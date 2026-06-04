@@ -223,22 +223,6 @@ describe('Vercel reducer', () => {
     });
   });
 
-  // -- edit -----------------------------------------------------------------
-
-  describe('edit', () => {
-    it('folds the replacement message keyed on the codec-message-id (like a user message)', () => {
-      let state = init();
-      const message: AI.UIMessage = { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'edited' }] };
-
-      // An edit carries the replacement content; the fork routing lives on
-      // the wire headers, so the reducer just folds the message under the
-      // minted codec-message-id.
-      state = fold(state, { kind: 'edit', target: 'cm-orig', parent: 'cm-prev', message }, meta('s1', 'cm-edit'));
-
-      expect(state.messages).toEqual([{ codecMessageId: 'cm-edit', message }]);
-    });
-  });
-
   // -- tool-approval-response -----------------------------------------------
 
   describe('tool-approval-response', () => {

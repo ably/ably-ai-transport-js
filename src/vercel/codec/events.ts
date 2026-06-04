@@ -15,7 +15,6 @@
 import type * as AI from 'ai';
 
 import type {
-  Edit,
   Regenerate,
   ToolApprovalResponse,
   ToolResult,
@@ -70,7 +69,6 @@ export interface VercelToolApprovalResponsePayload {
 export type VercelInput =
   | UserMessage<AI.UIMessage>
   | Regenerate
-  | Edit<AI.UIMessage>
   | ToolResult<VercelToolResultPayload>
   | ToolResultError<VercelToolResultErrorPayload>
   | ToolApprovalResponse<VercelToolApprovalResponsePayload>;

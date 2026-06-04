@@ -51,12 +51,6 @@ const uiMessageCodecImpl = {
     target,
     parent,
   }),
-  createEdit: (target: string, parent: string, message: AI.UIMessage): VercelInput => ({
-    kind: 'edit',
-    target,
-    parent,
-    message,
-  }),
   createToolResult: (codecMessageId: string, payload: VercelToolResultPayload): VercelInput => ({
     kind: 'tool-result',
     codecMessageId,

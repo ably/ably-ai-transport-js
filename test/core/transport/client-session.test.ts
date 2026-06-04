@@ -52,14 +52,14 @@ import { createMockClient } from '../../helper/mock-client.js';
 
 /**
  * Inputs published by the client. The `user-message` variant is the codec's
- * well-known {@link UserMessage} shape; `regenerate-input` carries a
- * `target` so the session reads it as the `msg-regenerate` anchor;
- * `edit-input` carries a `target` that becomes the `fork-of` anchor.
+ * well-known {@link UserMessage} shape; `regenerate` carries a `target` so
+ * the session reads it as the `msg-regenerate` anchor. Edits are not a
+ * distinct input — they are a `user-message` published with the `forkOf`
+ * send option.
  */
 type TestInput =
   | ({ kind: 'user-message'; text?: string; message?: TestMessage } & CodecInputEvent)
-  | ({ kind: 'regenerate'; target: string; parent: string } & CodecInputEvent)
-  | ({ kind: 'edit'; target: string; parent: string; text?: string; message?: TestMessage } & CodecInputEvent);
+  | ({ kind: 'regenerate'; target: string; parent: string } & CodecInputEvent);
 
 /** Outputs published by the agent and surfaced on the consumer's stream. */
 interface TestOutput {

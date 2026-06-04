@@ -40,7 +40,6 @@ export type {
   DecoderCore,
   DecoderCoreHooks,
   DecoderCoreOptions,
-  Edit,
   Encoder,
   EncoderCore,
   EncoderCoreOptions,

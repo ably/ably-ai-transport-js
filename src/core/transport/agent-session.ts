@@ -531,10 +531,11 @@ class DefaultAgentSession<
   private readonly _onChannelStateChange: Ably.channelEventCallback;
 
   constructor(options: AgentSessionOptions<TInput, TOutput, TProjection, TMessage>) {
+    this._codec = options.codec;
     // Spec: AIT-ST1a, AIT-ST1a2 — register this SDK on both the connection
     // (options.agents) and channel-attach (params.agent) paths. Idempotent
     // across sessions sharing one client.
-    const registerOptions = registerAgent(options.client);
+    const registerOptions = registerAgent(options.client, options.codec);
     // Attach with a rewind window (default 2m) so a freshly-constructed
     // agent session can locate an input event that was published before it
     // attached (closes the lookup race when a per-request agent is spun
@@ -544,7 +545,6 @@ class DefaultAgentSession<
       params: { ...registerOptions.params, rewind: options.rewindWindow ?? '2m' },
     };
     this._channel = options.client.channels.get(options.channelName, channelOptions);
-    this._codec = options.codec;
     this._logger = options.logger?.withContext({ component: 'AgentSession' });
     this._onError = options.onError;
     this._runManager = createRunManager(this._channel, this._logger);

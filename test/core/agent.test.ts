@@ -54,4 +54,51 @@ describe('registerAgent', () => {
     const channelOptions = registerAgent(client);
     expect(channelOptions).toEqual({ params: { agent: `ai-transport-js/${VERSION}` } });
   });
+
+  describe('with a codec carrying adapterTag', () => {
+    const vercelCodec = { adapterTag: 'vercel-ai-sdk-ui-message' };
+
+    it('registers the codec entry alongside the core entry', () => {
+      const client = fakeClient();
+      registerAgent(client, vercelCodec);
+      expect(agentsOf(client)).toEqual({
+        'ai-transport-js': VERSION,
+        'vercel-ai-sdk-ui-message': VERSION,
+      });
+    });
+
+    it('returns params.agent with both tokens space-separated', () => {
+      const client = fakeClient();
+      const channelOptions = registerAgent(client, vercelCodec);
+      expect(channelOptions).toEqual({
+        params: { agent: `ai-transport-js/${VERSION} vercel-ai-sdk-ui-message/${VERSION}` },
+      });
+    });
+
+    it('is idempotent when called repeatedly with the same codec', () => {
+      const client = fakeClient();
+      registerAgent(client, vercelCodec);
+      registerAgent(client, vercelCodec);
+      expect(agentsOf(client)).toEqual({
+        'ai-transport-js': VERSION,
+        'vercel-ai-sdk-ui-message': VERSION,
+      });
+    });
+
+    it('preserves existing agents when registering with a codec', () => {
+      const client = fakeClient({ 'some-other-sdk': '1.2.3' });
+      registerAgent(client, vercelCodec);
+      expect(agentsOf(client)).toEqual({
+        'some-other-sdk': '1.2.3',
+        'ai-transport-js': VERSION,
+        'vercel-ai-sdk-ui-message': VERSION,
+      });
+    });
+
+    it('ignores a codec with no agentTag', () => {
+      const client = fakeClient();
+      registerAgent(client, {});
+      expect(agentsOf(client)).toEqual({ 'ai-transport-js': VERSION });
+    });
+  });
 });

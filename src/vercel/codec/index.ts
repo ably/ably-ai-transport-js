@@ -31,7 +31,9 @@ import { fold, getMessages, init, type VercelProjection } from './reducer.js';
  * carrying `UIMessage[]`. Encoder and decoder factories handle the wire
  * mapping for both directions.
  */
-export const UIMessageCodec: Codec<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> = {
+const uiMessageCodecImpl = {
+  // Internal field - picked up by registerAgent via AdapterTagHolder cast. Spec: AIT-CT1a3, AIT-ST1a3.
+  adapterTag: 'vercel-ai-sdk-ui-message' as const,
   init,
   fold,
   createEncoder,
@@ -62,6 +64,8 @@ export const UIMessageCodec: Codec<VercelInput, VercelOutput, VercelProjection, 
     return undefined;
   },
 };
+
+export const UIMessageCodec: Codec<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> = uiMessageCodecImpl;
 
 export type { VercelInput, VercelOutput } from './events.js';
 export { type VercelProjection } from './reducer.js';

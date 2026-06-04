@@ -587,8 +587,7 @@ export interface ActiveRun {
    * codec-message-id, which the client owns the moment it publishes and the
    * agent echoes back as `input-codec-message-id`. Stream routing and cancel
    * key on this — it is known immediately, unlike {@link runId}, which the
-   * agent now mints. For an empty-input continuation (which publishes no new
-   * input) this falls back to the continued run's id.
+   * agent now mints.
    */
   key: string;
   /**

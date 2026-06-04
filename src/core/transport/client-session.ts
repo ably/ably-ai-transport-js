@@ -127,9 +127,7 @@ class DefaultClientSession<
    * `input-codec-message-id`. This is uniform across fresh sends and
    * continuations (a continuation is itself an input event — tool-approval or
    * tool-result — with its own codec-message-id), so reconciliation never
-   * depends on a client-minted run/invocation id. The sole exception is an
-   * empty-input continuation, which publishes no input and so keys by the
-   * reused `runId` instead.
+   * depends on a client-minted run/invocation id.
    */
   private readonly _pendingRunStarts = new Map<
     string,
@@ -273,18 +271,19 @@ class DefaultClientSession<
         const event = parseRunLifecycle(ablyMessage.name, headers, ablyMessage.serial);
         if (event) {
           this._tree.applyRunLifecycle(event);
-          // Resolve the pending `started` for this run-start (a fresh start) or
-          // run-resume (a continuation re-entering an existing run). Every send
-          // Resolve key — mirror of the arming key on `_pendingRunStarts` (see
-          // that field's JSDoc for the full keying invariant): the echoed
-          // `input-codec-message-id`, or the runId for an empty-input
-          // continuation that carried no input.
-          const startedKey = headers[HEADER_INPUT_CODEC_MESSAGE_ID] ?? event.runId;
-          const pending = this._pendingRunStarts.get(startedKey);
-          if (pending) {
-            this._pendingRunStarts.delete(startedKey);
-            // Resolve the run handle's `runId` promise with the agent-minted id.
-            pending.resolve(event.runId);
+          // Resolve the pending `runId` promise for this run-start (a fresh
+          // start) or run-resume (a continuation re-entering an existing run).
+          // Key by the echoed `input-codec-message-id` — the mirror of the
+          // arming key on `_pendingRunStarts` (see that field's JSDoc). Every
+          // send carries at least one input, so the agent always echoes it.
+          const startedKey = headers[HEADER_INPUT_CODEC_MESSAGE_ID];
+          if (startedKey !== undefined) {
+            const pending = this._pendingRunStarts.get(startedKey);
+            if (pending) {
+              this._pendingRunStarts.delete(startedKey);
+              // Resolve the run handle's `runId` promise with the agent-minted id.
+              pending.resolve(event.runId);
+            }
           }
         }
         this._tree.emitAblyMessage(ablyMessage);
@@ -503,18 +502,6 @@ class DefaultClientSession<
 
     const isContinuation = sendOptions?.runId !== undefined;
 
-    // Every send must carry at least one input. The only exception is a
-    // continuation under an existing runId that carries no new inputs
-    // (rare, but allowed — the run's existing input events are already on
-    // the channel).
-    if (input.length === 0 && !isContinuation) {
-      throw new Ably.ErrorInfo(
-        'unable to send; inputs array is empty (pass options.runId for continuation, or include at least one input)',
-        ErrorCode.InvalidArgument,
-        400,
-      );
-    }
-
     // The client no longer mints run-ids. A fresh send carries no run-id (the
     // agent mints it and echoes it on run-start); only a continuation reuses
     // the existing run-id the caller passed.
@@ -533,6 +520,7 @@ class DefaultClientSession<
     interface ItemState {
       input: TInput;
       codecMessageId: string;
+      inputEventId: string;
       headers: Record<string, string>;
       /** Inputs that reference an existing codec-message without contributing fresh local content (regenerate, tool resolutions) are wire-only — no optimistic projection fold. Fresh user-messages always fold, even when they pin their own codecMessageId. */
       isWireOnly: boolean;
@@ -591,7 +579,7 @@ class DefaultClientSession<
         this._tree.applyMessage({ inputs: [entry], outputs: [] }, headers);
       }
 
-      items.push({ input: entry, codecMessageId, headers, isWireOnly });
+      items.push({ input: entry, codecMessageId, inputEventId, headers, isWireOnly });
 
       // Spec: AIT-CT3e — chain subsequent inputs off the previous one when
       // auto-parenting is in effect.
@@ -600,16 +588,24 @@ class DefaultClientSession<
       }
     }
 
-    // The primary trigger event is the last input — the one the agent looks
-    // up on the channel via `event-id`. It is surfaced on `ActiveRun` (and via
-    // `toInvocation()`) so the application can point an invocation at it.
-    const triggerInputEventId = items.at(-1)?.headers[HEADER_EVENT_ID] ?? '';
-    // The triggering input's codec-message-id — the handle a fresh send uses
-    // to correlate its `started` promise against the agent's run-start (which
-    // echoes it as `input-codec-message-id`). Always defined for a fresh send
-    // (which carries at least one input); undefined only for an empty-input
-    // continuation, which keys by runId instead.
-    const triggerCodecMessageId = items.at(-1)?.codecMessageId;
+    // The trigger event is the last input — the one the agent looks up on the
+    // channel via `event-id`, surfaced on `ActiveRun` (and via `toInvocation()`)
+    // so the application can point an invocation at it. Its codec-message-id is
+    // the handle the client owns at send time; the agent echoes it back on
+    // run-start as `input-codec-message-id`, and it keys the run-start tracker.
+    const triggerItem = items.at(-1);
+    if (triggerItem === undefined) {
+      // Every send must carry at least one input — only new input starts or
+      // continues a run. The loop above produced no items, so nothing was
+      // published or folded optimistically.
+      throw new Ably.ErrorInfo(
+        'unable to send; inputs array is empty (include at least one input)',
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+    const triggerInputEventId = triggerItem.inputEventId;
+    const startedKey = triggerItem.codecMessageId;
 
     // Arm the run-start tracker backing the returned `ActiveRun.runId` promise.
     // The run-start handler resolves it with the agent-minted run-id when this
@@ -620,14 +616,6 @@ class DefaultClientSession<
     // Key on the arming side mirrors the resolve side — see `_pendingRunStarts`
     // for the full keying invariant. The executor runs synchronously, so the
     // tracker entry is registered before `new Promise` returns.
-    const startedKey = triggerCodecMessageId ?? runId;
-    if (startedKey === undefined) {
-      throw new Ably.ErrorInfo(
-        'unable to send; inputs array is empty (pass options.runId for continuation, or include at least one input)',
-        ErrorCode.InvalidArgument,
-        400,
-      );
-    }
     const runIdPromise = new Promise<string>((resolve, reject) => {
       this._pendingRunStarts.set(startedKey, { resolve, reject });
     });

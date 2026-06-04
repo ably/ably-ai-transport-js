@@ -609,9 +609,7 @@ describe('Vercel encoder', () => {
         {
           kind: 'tool-approval-response',
           codecMessageId: 'msg-1',
-          toolCallId: 'tc-1',
-          approved: true,
-          reason: 'looks good',
+          payload: { toolCallId: 'tc-1', approved: true, reason: 'looks good' },
         },
         { messageId: 'continuation-codec-message-id' },
       );
@@ -688,8 +686,7 @@ describe('Vercel encoder', () => {
         {
           kind: 'tool-result',
           codecMessageId: 'msg-1',
-          toolCallId: 'tc-1',
-          output: { latitude: 51.5, longitude: -0.1 },
+          payload: { toolCallId: 'tc-1', output: { latitude: 51.5, longitude: -0.1 } },
         },
         { messageId: 'continuation-codec-message-id' },
       );
@@ -712,8 +709,7 @@ describe('Vercel encoder', () => {
         {
           kind: 'tool-result-error',
           codecMessageId: 'msg-1',
-          toolCallId: 'tc-1',
-          message: 'geolocation denied',
+          payload: { toolCallId: 'tc-1', message: 'geolocation denied' },
         },
         { messageId: 'continuation-codec-message-id' },
       );
@@ -796,20 +792,17 @@ describe('Vercel encoder', () => {
       await encoder.publishInput({
         kind: 'tool-approval-response',
         codecMessageId: 'msg-1',
-        toolCallId: 'tc-1',
-        approved: true,
+        payload: { toolCallId: 'tc-1', approved: true },
       });
       await encoder.publishInput({
         kind: 'tool-result',
         codecMessageId: 'msg-1',
-        toolCallId: 'tc-1',
-        output: { v: 1 },
+        payload: { toolCallId: 'tc-1', output: { v: 1 } },
       });
       await encoder.publishInput({
         kind: 'tool-result-error',
         codecMessageId: 'msg-1',
-        toolCallId: 'tc-1',
-        message: 'x',
+        payload: { toolCallId: 'tc-1', message: 'x' },
       });
       await encoder.publishInput({
         kind: 'regenerate',

@@ -26,6 +26,7 @@ import type { EncoderCore, EncoderCoreOptions } from '../../core/codec/encoder.j
 import { createEncoderCore } from '../../core/codec/encoder.js';
 import type {
   ChannelWriter,
+  Edit,
   Encoder,
   MessagePayload,
   ToolApprovalResponse,
@@ -36,7 +37,13 @@ import type {
 } from '../../core/codec/types.js';
 import { ErrorCode, errorInfoIs } from '../../errors.js';
 import { headerWriter } from '../../utils.js';
-import type { VercelInput, VercelOutput } from './events.js';
+import type {
+  VercelInput,
+  VercelOutput,
+  VercelToolApprovalResponsePayload,
+  VercelToolResultErrorPayload,
+  VercelToolResultPayload,
+} from './events.js';
 
 // ---------------------------------------------------------------------------
 // Default implementation
@@ -55,6 +62,13 @@ class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
   async publishInput(input: VercelInput, options?: WriteOptions): Promise<void> {
     switch (input.kind) {
       case 'user-message': {
+        await this._publishUserMessage(input, options);
+        return;
+      }
+      case 'edit': {
+        // An edit publishes its replacement message identically to a fresh
+        // user message; the fork routing (target -> fork-of) is stamped on
+        // the transport headers by the client-session.
         await this._publishUserMessage(input, options);
         return;
       }
@@ -348,7 +362,10 @@ class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
    * @param input - The user-message input carrying the UIMessage to encode.
    * @param perWrite - Optional per-write overrides.
    */
-  private async _publishUserMessage(input: UserMessage<AI.UIMessage>, perWrite?: WriteOptions): Promise<void> {
+  private async _publishUserMessage(
+    input: UserMessage<AI.UIMessage> | Edit<AI.UIMessage>,
+    perWrite?: WriteOptions,
+  ): Promise<void> {
     const payloads = encodeMessagePayloads(input.message);
     // Stamp role (a transport header) on every payload so the decoder can
     // reconstruct a `role: 'user'` UIMessage.
@@ -379,10 +396,10 @@ class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
    * @param input - The tool-output input.
    * @param perWrite - Per-write overrides carrying the wire codecMessageId.
    */
-  private async _publishToolResult(input: ToolResult, perWrite?: WriteOptions): Promise<void> {
-    const h = headerWriter().str('type', 'tool-result').str('toolCallId', input.toolCallId).build();
+  private async _publishToolResult(input: ToolResult<VercelToolResultPayload>, perWrite?: WriteOptions): Promise<void> {
+    const h = headerWriter().str('type', 'tool-result').str('toolCallId', input.payload.toolCallId).build();
     await this._core.publishDiscrete(
-      { name: EVENT_AI_INPUT, data: { output: input.output }, codecHeaders: h },
+      { name: EVENT_AI_INPUT, data: { output: input.payload.output }, codecHeaders: h },
       perWrite,
     );
   }
@@ -393,10 +410,13 @@ class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
    * @param input - The tool-result-error input.
    * @param perWrite - Per-write overrides.
    */
-  private async _publishToolResultError(input: ToolResultError, perWrite?: WriteOptions): Promise<void> {
-    const h = headerWriter().str('type', 'tool-result-error').str('toolCallId', input.toolCallId).build();
+  private async _publishToolResultError(
+    input: ToolResultError<VercelToolResultErrorPayload>,
+    perWrite?: WriteOptions,
+  ): Promise<void> {
+    const h = headerWriter().str('type', 'tool-result-error').str('toolCallId', input.payload.toolCallId).build();
     await this._core.publishDiscrete(
-      { name: EVENT_AI_INPUT, data: { message: input.message }, codecHeaders: h },
+      { name: EVENT_AI_INPUT, data: { message: input.payload.message }, codecHeaders: h },
       perWrite,
     );
   }
@@ -407,12 +427,15 @@ class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
    * @param input - The approval-response input.
    * @param perWrite - Per-write overrides.
    */
-  private async _publishToolApprovalResponse(input: ToolApprovalResponse, perWrite?: WriteOptions): Promise<void> {
+  private async _publishToolApprovalResponse(
+    input: ToolApprovalResponse<VercelToolApprovalResponsePayload>,
+    perWrite?: WriteOptions,
+  ): Promise<void> {
     const h = headerWriter()
       .str('type', 'tool-approval-response')
-      .str('toolCallId', input.toolCallId)
-      .bool('approved', input.approved)
-      .str('reason', input.reason)
+      .str('toolCallId', input.payload.toolCallId)
+      .bool('approved', input.payload.approved)
+      .str('reason', input.payload.reason)
       .build();
     await this._core.publishDiscrete({ name: EVENT_AI_INPUT, data: '', codecHeaders: h }, perWrite);
   }

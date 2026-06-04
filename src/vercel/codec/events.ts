@@ -15,6 +15,7 @@
 import type * as AI from 'ai';
 
 import type {
+  Edit,
   Regenerate,
   ToolApprovalResponse,
   ToolResult,
@@ -23,15 +24,56 @@ import type {
 } from '../../core/codec/types.js';
 
 // ---------------------------------------------------------------------------
+// Domain payloads
+//
+// The core well-known tool variants are domain-independent: the Vercel
+// layer supplies the concrete payload shapes. Tool outputs are inherently
+// tool-defined, so `output` stays `unknown` — but confined here, never in
+// the core.
+// ---------------------------------------------------------------------------
+
+/** Vercel domain payload for a {@link ToolResult}. */
+export interface VercelToolResultPayload {
+  /** The tool call this result corresponds to. */
+  toolCallId: string;
+  /** The tool's output value. Tool-defined shape. */
+  output: unknown;
+}
+
+/** Vercel domain payload for a {@link ToolResultError}. */
+export interface VercelToolResultErrorPayload {
+  /** The tool call this error corresponds to. */
+  toolCallId: string;
+  /** Human-readable description of the failure. */
+  message: string;
+}
+
+/** Vercel domain payload for a {@link ToolApprovalResponse}. */
+export interface VercelToolApprovalResponsePayload {
+  /** The tool call this approval responds to. */
+  toolCallId: string;
+  /** Whether the user approved the tool execution. */
+  approved: boolean;
+  /** Optional human-readable reason (typically used on denial). */
+  reason?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Unions
 // ---------------------------------------------------------------------------
 
 /**
  * The Vercel codec's `TInput` — every record-shape a client publishes on
- * the `ai-input` wire. Composed entirely from the SDK's well-known input
- * shapes; the codec layers no Vercel-specific input variants.
+ * the `ai-input` wire. Composed from the SDK's well-known input shapes,
+ * with the tool variants parameterized by the Vercel domain payloads above.
  */
-export type VercelInput = UserMessage<AI.UIMessage> | Regenerate | ToolResult | ToolResultError | ToolApprovalResponse;
+export type VercelInput =
+  | UserMessage<AI.UIMessage>
+  | Regenerate
+  | Edit<AI.UIMessage>
+  | ToolResult<VercelToolResultPayload>
+  | ToolResultError<VercelToolResultErrorPayload>
+  | ToolApprovalResponse<VercelToolApprovalResponsePayload>;
 
 /**
  * The Vercel codec's `TOutput` — every record-shape the agent publishes

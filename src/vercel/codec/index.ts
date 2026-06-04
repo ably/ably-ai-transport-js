@@ -20,7 +20,13 @@ import type * as AI from 'ai';
 import type { Codec } from '../../core/codec/types.js';
 import { createDecoder } from './decoder.js';
 import { createEncoder } from './encoder.js';
-import type { VercelInput, VercelOutput } from './events.js';
+import type {
+  VercelInput,
+  VercelOutput,
+  VercelToolApprovalResponsePayload,
+  VercelToolResultErrorPayload,
+  VercelToolResultPayload,
+} from './events.js';
 import { fold, getMessages, init, type VercelProjection } from './reducer.js';
 
 /**
@@ -45,9 +51,38 @@ const uiMessageCodecImpl = {
     target,
     parent,
   }),
+  createEdit: (target: string, parent: string, message: AI.UIMessage): VercelInput => ({
+    kind: 'edit',
+    target,
+    parent,
+    message,
+  }),
+  createToolResult: (codecMessageId: string, payload: VercelToolResultPayload): VercelInput => ({
+    kind: 'tool-result',
+    codecMessageId,
+    payload,
+  }),
+  createToolResultError: (codecMessageId: string, payload: VercelToolResultErrorPayload): VercelInput => ({
+    kind: 'tool-result-error',
+    codecMessageId,
+    payload,
+  }),
+  createToolApprovalResponse: (codecMessageId: string, payload: VercelToolApprovalResponsePayload): VercelInput => ({
+    kind: 'tool-approval-response',
+    codecMessageId,
+    payload,
+  }),
 };
 
-export const UIMessageCodec: Codec<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> = uiMessageCodecImpl;
+// Validate Codec conformance via `satisfies` on the variable (no excess-property
+// check, so the internal `adapterTag` is permitted) while keeping the concrete
+// type so the codec-specific factories (createToolResult, etc.) stay callable.
+export const UIMessageCodec = uiMessageCodecImpl satisfies Codec<
+  VercelInput,
+  VercelOutput,
+  VercelProjection,
+  AI.UIMessage
+>;
 
 export type { VercelInput, VercelOutput } from './events.js';
 export { type VercelProjection } from './reducer.js';

@@ -322,22 +322,22 @@ const deriveContinuationInputs = (pairs: CodecMessage<AI.UIMessage>[], messages:
       // a `tool-approval-response` TInput so the agent's projection sees
       // the decision.
       if (overlayPart.state === 'approval-responded' && (!treePart || treePart.state === 'approval-requested')) {
-        inputs.push({
-          kind: 'tool-approval-response',
-          codecMessageId,
-          toolCallId: overlayPart.toolCallId,
-          approved: true,
-          ...(overlayPart.approval.reason === undefined ? {} : { reason: overlayPart.approval.reason }),
-        });
+        inputs.push(
+          UIMessageCodec.createToolApprovalResponse(codecMessageId, {
+            toolCallId: overlayPart.toolCallId,
+            approved: true,
+            ...(overlayPart.approval.reason === undefined ? {} : { reason: overlayPart.approval.reason }),
+          }),
+        );
         continue;
       }
       if (overlayPart.state === 'output-denied' && (!treePart || treePart.state === 'approval-requested')) {
-        inputs.push({
-          kind: 'tool-approval-response',
-          codecMessageId,
-          toolCallId: overlayPart.toolCallId,
-          approved: false,
-        });
+        inputs.push(
+          UIMessageCodec.createToolApprovalResponse(codecMessageId, {
+            toolCallId: overlayPart.toolCallId,
+            approved: false,
+          }),
+        );
         continue;
       }
 
@@ -351,19 +351,19 @@ const deriveContinuationInputs = (pairs: CodecMessage<AI.UIMessage>[], messages:
       if (treePart && !UNRESOLVED_TOOL_STATES.has(treePart.state)) continue;
 
       if (overlayPart.state === 'output-available') {
-        inputs.push({
-          kind: 'tool-result',
-          codecMessageId,
-          toolCallId: overlayPart.toolCallId,
-          output: overlayPart.output,
-        });
+        inputs.push(
+          UIMessageCodec.createToolResult(codecMessageId, {
+            toolCallId: overlayPart.toolCallId,
+            output: overlayPart.output,
+          }),
+        );
       } else {
-        inputs.push({
-          kind: 'tool-result-error',
-          codecMessageId,
-          toolCallId: overlayPart.toolCallId,
-          message: overlayPart.errorText,
-        });
+        inputs.push(
+          UIMessageCodec.createToolResultError(codecMessageId, {
+            toolCallId: overlayPart.toolCallId,
+            message: overlayPart.errorText,
+          }),
+        );
       }
     }
   }

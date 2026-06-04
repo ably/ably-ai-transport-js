@@ -936,6 +936,15 @@ class DefaultAgentSession<
     let resolvedContinuation = false;
     let firstLookupHeaders: Record<string, string> | undefined;
     /**
+     * The reply run's structural-parent fallback, computed once in
+     * `Run.start()` (after the input-event lookup has populated `viewMessages`)
+     * and consumed by every `Run.pipe()` publish. A per-stream
+     * `streamOpts.parent` still overrides it. Storing it here keeps it stable
+     * across pipes and decouples the assistant's structural parent from the
+     * run-start wire's own `parent`.
+     */
+    let assistantParentFallback: string | undefined;
+    /**
      * Raw Ably messages observed live by the input-event lookup. Passed to
      * `loadRunProjection` so the just-published client wires don't need
      * to wait on Ably's channel history indexing window. Empty when no
@@ -1053,6 +1062,13 @@ class DefaultAgentSession<
           resolvedInputCodecMessageId = sourceHeaders[HEADER_CODEC_MESSAGE_ID];
           resolvedContinuation = sourceHeaders[HEADER_RUN_CONTINUE] === 'true';
         }
+
+        // Compute the reply run's structural-parent fallback now that the
+        // lookup has populated `viewMessages`: the triggering user message,
+        // or — for regenerate wires that match by inputEventId but produce no
+        // MessageNodes — the input wire's own `parent`. `Run.pipe()` consumes
+        // this for every assistant publish.
+        assistantParentFallback = viewMessages.at(-1)?.codecMessageId ?? resolvedParent;
 
         try {
           await runManager.startRun(runId, resolvedClientId, controller, {
@@ -1292,21 +1308,16 @@ class DefaultAgentSession<
 
         const runOwnerClientId = runManager.getClientId(runId);
 
-        // Resolve the assistant message's parent. Priority (highest first):
-        //   1. Explicit `streamOpts.parent` from the caller.
-        //   2. The most recently looked-up input event for this run — so the
-        //      assistant threads under the user msg that triggered it.
-        //   3. `resolvedParent` from the input-event lookup's `firstLookupHeaders`.
-        //      For regenerate wires the lookup matches the event (by
-        //      inputEventId) but produces no MessageNodes, so `viewMessages` is
-        //      empty — the regenerate event's `parent` header carries
-        //      the parent codec-message-id we need to thread under.
-        // Owning the default here means agent routes don't have to remember
-        // to pass `{ parent: lastUserCodecMessageId }` to keep tree threading correct;
-        // edit-then-regenerate sibling resolution relies on the user→assistant
-        // chain being explicit.
-        const lastViewCodecMessageId = viewMessages.at(-1)?.codecMessageId;
-        const assistantParent = streamOpts?.parent ?? lastViewCodecMessageId ?? resolvedParent;
+        // The assistant message's parent: an explicit per-stream
+        // `streamOpts.parent` from the caller, else the reply run's
+        // structural-parent fallback computed once at run-start
+        // (`assistantParentFallback` — the triggering user message, or the
+        // input wire's own parent for regenerate wires that produced no
+        // MessageNodes). Owning the default here means agent routes don't have
+        // to pass `{ parent: lastUserCodecMessageId }` to keep tree threading
+        // correct; edit-then-regenerate sibling resolution relies on the
+        // user→assistant chain being explicit.
+        const assistantParent = streamOpts?.parent ?? assistantParentFallback;
         const assistantForkOf = streamOpts?.forkOf ?? resolvedForkOf;
         // Echo `msg-regenerate` on the assistant wire so that a
         // client receiving the assistant chunk before `ai-run-start`

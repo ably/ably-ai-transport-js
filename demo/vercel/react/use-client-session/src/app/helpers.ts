@@ -18,6 +18,8 @@ export function userMessageEvent(text: string): VercelInput {
 
 /** Shape of the agent endpoint's JSON response. */
 interface WakeAgentResult {
+  /** The agent-minted run-id for this request (the agent mints it for a fresh run). */
+  runId: string;
   /** The agent-minted invocation-id for this request. */
   invocationId: string;
 }
@@ -27,19 +29,20 @@ interface WakeAgentResult {
  * endpoint. The core ClientSession is a pure Ably transport — it never sends
  * HTTP — so the application owns this step. The agent rebuilds the pointer
  * with `Invocation.fromJSON`, reads the conversation from the channel, mints
- * the invocation-id, and returns it on the HTTP response.
+ * the run-id (for a fresh run) and the invocation-id, and returns them on the
+ * HTTP response. The same ids also arrive on the channel as `ai-run-start`,
+ * which is how the client resolves `run.runId` without reading this response.
  * @param api - The agent endpoint URL.
  * @param run - The run returned by `view.sendMessage` / `sendInput` / `regenerate` / `edit`.
- * @returns The agent-minted invocation-id read back from the response.
+ * @returns The agent-minted run-id and invocation-id read back from the response.
  * @throws If the endpoint responds with a non-JSON body (e.g. an error page).
  */
-export async function wakeAgent(api: string, run: ActiveRun): Promise<string> {
+export async function wakeAgent(api: string, run: ActiveRun): Promise<WakeAgentResult> {
   const response = await fetch(api, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(run.toInvocation().toJSON()),
   });
   // CAST: trust boundary — the agent route returns this shape.
-  const { invocationId } = (await response.json()) as WakeAgentResult;
-  return invocationId;
+  return (await response.json()) as WakeAgentResult;
 }

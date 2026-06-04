@@ -80,7 +80,8 @@ export async function POST(req: Request) {
     ably.close();
   });
 
-  // Return the agent-minted invocation-id on the HTTP response. The agent owns
-  // it (one per request); the client reads it back from here.
-  return Response.json({ invocationId: run.invocationId });
+  // Return the agent-minted ids on the HTTP response. The agent now mints both
+  // the run-id (when the invocation omits it for a fresh run) and the
+  // invocation-id; the client reads them back from here.
+  return Response.json({ runId: run.runId, invocationId: run.invocationId });
 }

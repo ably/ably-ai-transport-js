@@ -2244,6 +2244,22 @@ const makeContentMsg = (runId: string, codecMsgId: string, serial?: string): Abl
   }) as unknown as Ably.InboundMessage;
 
 /**
+ * Stamp an additional transport header onto a synthetic wire message built by
+ * one of the `make*Msg` helpers (which don't expose every header as a
+ * parameter). Mutates and returns the message for chaining.
+ * @param item - The synthetic inbound message to mutate.
+ * @param key - The transport header key to set under extras.ai.transport.
+ * @param value - The header value.
+ * @returns The same message, for chaining.
+ */
+const stampHeader = (item: Ably.InboundMessage, key: string, value: string): Ably.InboundMessage => {
+  // CAST: synthetic wires built by the make*Msg helpers expose the transport
+  // headers under extras.ai.transport.
+  (item as unknown as { extras: { ai: { transport: Record<string, string> } } }).extras.ai.transport[key] = value;
+  return item;
+};
+
+/**
  * Build a synthetic run-less user INPUT-node wire message (the two-node model:
  * the user prompt the client published before the agent minted a run-id). It
  * carries a codec-message-id and an optional structural `parent` but NO run-id,
@@ -2648,6 +2664,92 @@ describe('Run.loadConversation', () => {
       { id: 'msg-2', content: 'msg-2' },
       { id: 'msg-3', content: 'msg-3' },
     ]);
+    expect(run.messages).toEqual(history);
+    session.close();
+  });
+
+  it('folds the current run exactly once on a continuation whose live input parents off a message INSIDE the run', async () => {
+    // Regression: a tool-call approval / tool-result continuation reuses the
+    // run-id (run-continue: true) and its triggering input parents INSIDE the
+    // current run (parent = the tool-call assistant message a1). The live
+    // input-event lookup therefore makes assistantParentFallback resolve to a
+    // codec-message-id that belongs to the CURRENT run (tr1, a run-1 node).
+    // buildBranchChain walks tr1 → a1 → u1 (root-first u1, a1, tr1), so the
+    // chain-fold loop visits two run-1 nodes (a1 and tr1). Without the
+    // `if (meta?.runId === runId) continue;` guard, the loop folds run-1
+    // wholesale for each of those, and then run-1 is folded AGAIN at the tail —
+    // duplicating a1 (the tool_use carrier) and tr1, which downstream surfaces
+    // as Anthropic's "tool_use ids must be unique" 400. The current run must be
+    // folded ONCE, at the tail.
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
+    ch.history.mockImplementation(() => {
+      // Newest-first (Ably history order); serials ascending for the internal
+      // chronological sort. Turn 1: run-less input u1 → reply run-1 emits the
+      // tool-call assistant message a1. Continuation: tr1 reuses run-1 and
+      // parents off a1 (INSIDE run-1).
+      // makeContentMsg doesn't stamp parent/run-continue, so add them here:
+      // a1 (the tool-call assistant) is structurally parented at the input
+      // node u1; tr1 (the continuation input) is parented INSIDE the run at a1
+      // and carries the run-continue flag.
+      const a1 = stampHeader(makeContentMsg('run-1', 'a1', 's-04'), HEADER_PARENT, 'u1'); // tool-call assistant
+      const tr1 = stampHeader(
+        stampHeader(makeContentMsg('run-1', 'tr1', 's-06'), HEADER_PARENT, 'a1'),
+        'run-continue',
+        'true',
+      ); // continuation input (tool-result), parents off a1, run-1
+      const items = [
+        tr1, // continuation input
+        makeRunStartMsg('run-1', 'a1', { serial: 's-05' }), // continuation run-start — parents off a1 (inside run-1)
+        a1, // tool-call assistant message
+        makeRunStartMsg('run-1', 'u1', { serial: 's-03' }), // initial run-start — parents off the input node u1
+        makeInputMsg('u1', 's-02'), // run-less user input node
+      ];
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
+      const page = { items, hasNext: () => false, next: () => Promise.resolve(page) };
+      return Promise.resolve(page);
+    });
+
+    const runId = 'run-1';
+    const invocationId = 'inv-cont';
+    const inputEventId = 'p-tr1';
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'test-channel',
+      codec,
+      inputEventLookupTimeoutMs: 5000,
+    });
+    await session.connect();
+    const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
+    const startPromise = run.start();
+    // Deliver the continuation input live: reuses run-1, parents off a1 (inside
+    // the run), run-continue. This drives assistantParentFallback to tr1 (a
+    // run-1 node), reproducing the double-fold trigger.
+    deliverInputEvent(ch, {
+      invocationId,
+      runId,
+      codecMessageId: 'tr1',
+      serial: 's-06',
+      inputEventId,
+      parent: 'a1',
+      runContinue: true,
+    });
+    await startPromise;
+
+    const history = await run.loadConversation();
+
+    // The conversation is u1 (input node) + the current run folded once. The
+    // current run's content (a1, tr1) appears EXACTLY ONCE — no duplication.
+    expect(history).toEqual([
+      { id: 'u1', content: 'u1' },
+      { id: 'a1', content: 'a1' },
+      { id: 'tr1', content: 'tr1' },
+    ]);
+    // Pin "current run folded once": each run-1 codec-message-id occurs once.
+    const ids = history.map((m) => m.id);
+    expect(ids.filter((id) => id === 'a1')).toHaveLength(1);
+    expect(ids.filter((id) => id === 'tr1')).toHaveLength(1);
     expect(run.messages).toEqual(history);
     session.close();
   });

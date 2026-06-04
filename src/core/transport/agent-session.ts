@@ -1436,6 +1436,13 @@ class DefaultAgentSession<
           chainLength = chain.length;
           for (const cid of chain) {
             const meta = nodeMeta.get(cid);
+            // Skip any chain node belonging to the CURRENT run — it is folded
+            // once, wholesale, at the tail below. For a continuation the run-id
+            // is reused and `assistantParentFallback` points at a message INSIDE
+            // the current run (e.g. the tool-call assistant message a
+            // tool-approval continues), so the run would otherwise be folded
+            // twice and emit duplicate tool_use ids.
+            if (meta?.runId === runId) continue;
             const projection =
               meta?.runId === undefined
                 ? foldInputMessages(codec, sortedMessages, cid)

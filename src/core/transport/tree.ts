@@ -67,6 +67,34 @@ export const nodeKey = <TProjection>(node: ConversationNode<TProjection>): strin
 const sortSerial = <TProjection>(node: ConversationNode<TProjection>): string | undefined =>
   node.kind === 'run' ? node.startSerial : node.serial;
 
+/**
+ * Add a value to a `Map<K, Set<V>>`, creating the bucket Set on first use.
+ * @param map - The Map to mutate.
+ * @param key - The bucket key.
+ * @param value - The value to add.
+ */
+const addToSetMap = <K, V>(map: Map<K, Set<V>>, key: K, value: V): void => {
+  let set = map.get(key);
+  if (!set) {
+    set = new Set();
+    map.set(key, set);
+  }
+  set.add(value);
+};
+
+/**
+ * Remove a value from a `Map<K, Set<V>>`, dropping the bucket when it empties.
+ * @param map - The Map to mutate.
+ * @param key - The bucket key.
+ * @param value - The value to remove.
+ */
+const deleteFromSetMap = <K, V>(map: Map<K, Set<V>>, key: K, value: V): void => {
+  const set = map.get(key);
+  if (!set) return;
+  set.delete(value);
+  if (set.size === 0) map.delete(key);
+};
+
 // ---------------------------------------------------------------------------
 // Internal interface — extended surface consumed by View / ClientSession
 // ---------------------------------------------------------------------------
@@ -350,20 +378,11 @@ export class DefaultTree<
   // -------------------------------------------------------------------------
 
   private _addToParentIndex(parentNodeKey: string | undefined, childKey: string): void {
-    let set = this._parentIndex.get(parentNodeKey);
-    if (!set) {
-      set = new Set();
-      this._parentIndex.set(parentNodeKey, set);
-    }
-    set.add(childKey);
+    addToSetMap(this._parentIndex, parentNodeKey, childKey);
   }
 
   private _removeFromParentIndex(parentNodeKey: string | undefined, childKey: string): void {
-    const set = this._parentIndex.get(parentNodeKey);
-    if (set) {
-      set.delete(childKey);
-      if (set.size === 0) this._parentIndex.delete(parentNodeKey);
-    }
+    deleteFromSetMap(this._parentIndex, parentNodeKey, childKey);
   }
 
   /**
@@ -806,12 +825,7 @@ export class DefaultTree<
    */
   private _indexReplyRun(node: ConversationNode<TProjection>, runId: string): void {
     if (node.parentCodecMessageId === undefined) return;
-    let set = this._replyRunsByInput.get(node.parentCodecMessageId);
-    if (!set) {
-      set = new Set();
-      this._replyRunsByInput.set(node.parentCodecMessageId, set);
-    }
-    set.add(runId);
+    addToSetMap(this._replyRunsByInput, node.parentCodecMessageId, runId);
   }
 
   applyRunLifecycle(event: RunLifecycleEvent): void {
@@ -944,18 +958,10 @@ export class DefaultTree<
     if (entry.node.kind === 'run') {
       // Drop the reply→input reverse edge.
       if (entry.node.parentCodecMessageId !== undefined) {
-        const replies = this._replyRunsByInput.get(entry.node.parentCodecMessageId);
-        if (replies) {
-          replies.delete(key);
-          if (replies.size === 0) this._replyRunsByInput.delete(entry.node.parentCodecMessageId);
-        }
+        deleteFromSetMap(this._replyRunsByInput, entry.node.parentCodecMessageId, key);
       }
       if (entry.node.regeneratesCodecMessageId !== undefined) {
-        const set = this._regenerateByMsgId.get(entry.node.regeneratesCodecMessageId);
-        if (set) {
-          set.delete(key);
-          if (set.size === 0) this._regenerateByMsgId.delete(entry.node.regeneratesCodecMessageId);
-        }
+        deleteFromSetMap(this._regenerateByMsgId, entry.node.regeneratesCodecMessageId, key);
       }
     }
     // codecMessageIdToRunId entries pointing at this run linger but are harmless;
@@ -1084,12 +1090,7 @@ export class DefaultTree<
    * @param regeneratesCodecMessageId - The codec-message-id the Run regenerates.
    */
   private _indexRegenerate(runId: string, regeneratesCodecMessageId: string): void {
-    let set = this._regenerateByMsgId.get(regeneratesCodecMessageId);
-    if (!set) {
-      set = new Set();
-      this._regenerateByMsgId.set(regeneratesCodecMessageId, set);
-    }
-    set.add(runId);
+    addToSetMap(this._regenerateByMsgId, regeneratesCodecMessageId, runId);
   }
 
   /**

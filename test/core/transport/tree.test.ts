@@ -123,6 +123,10 @@ const flatRunIds = (
   selections: Map<string, string> = NO_SELECTIONS,
 ): string[] => tree.runs(selections).map((r) => r.runId);
 
+// Narrow a node union to its runId, or undefined for a non-run / absent node.
+const runIdOf = (node: ConversationNode<TestProjection> | undefined): string | undefined =>
+  node?.kind === 'run' ? node.runId : undefined;
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -219,10 +223,10 @@ describe('Tree', () => {
       expect(keyOf(input)).toBe('m1');
     });
 
-    it('returns owning Run via getRunByCodecMessageId', () => {
+    it('returns owning node via getNodeByCodecMessageId', () => {
       apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
-      expect(tree.getRunByCodecMessageId('m1')?.runId).toBe('R1');
-      expect(tree.getRunByCodecMessageId('m-unknown')).toBeUndefined();
+      expect(runIdOf(tree.getNodeByCodecMessageId('m1'))).toBe('R1');
+      expect(tree.getNodeByCodecMessageId('m-unknown')).toBeUndefined();
     });
 
     it('drops messages without an run-id header', () => {
@@ -342,7 +346,7 @@ describe('Tree', () => {
       expect(tree.getRunNode('R1')?.startSerial).toBe('s10');
       expect(tree.getRunNode('R2-divergent')).toBeUndefined();
       // The codec-message-id stays indexed against the owning (reconciled) Run.
-      expect(tree.getRunByCodecMessageId('m1')?.runId).toBe('R1');
+      expect(runIdOf(tree.getNodeByCodecMessageId('m1'))).toBe('R1');
       // The echo's events fold into the reconciled Run, not a phantom one.
       expect(messagesOf(tree, 'R1').map((m) => m.id)).toContain('a');
       expect(messagesOf(tree, 'R2-divergent')).toHaveLength(0);
@@ -978,14 +982,14 @@ describe('Tree', () => {
       expect(tree.getRunNode('R1')).toBeUndefined();
     });
 
-    it('lingering codecMessageIdToRunId after delete returns undefined via getRunByCodecMessageId', () => {
+    it('lingering codecMessageIdToRunId after delete returns undefined via getNodeByCodecMessageId', () => {
       apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
-      expect(tree.getRunByCodecMessageId('m1')?.runId).toBe('R1');
+      expect(runIdOf(tree.getNodeByCodecMessageId('m1'))).toBe('R1');
       tree.delete('R1');
       // The codecMessageIdToRunId entry intentionally lingers (cheap to overwrite on
       // re-creation, harmless otherwise) but the lookup must return
       // undefined now that the owning Run is gone.
-      expect(tree.getRunByCodecMessageId('m1')).toBeUndefined();
+      expect(tree.getNodeByCodecMessageId('m1')).toBeUndefined();
     });
 
     it('descendants become unreachable after parent Run delete', () => {

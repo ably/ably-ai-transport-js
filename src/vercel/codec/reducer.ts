@@ -302,7 +302,7 @@ const _foldUserMessage = (state: VercelProjection, message: AI.UIMessage, meta: 
   // (= meta.messageId) so the Tree's _codecMessageIdToRunId index is reachable from
   // any consumer holding the UIMessage. Without this, useChat-supplied
   // domain ids leak through, and downstream lookups (view.regenerate /
-  // view.edit / view.getRunByCodecMessageId) silently miss because the tree only
+  // view.edit / tree.getNodeByCodecMessageId) silently miss because the tree only
   // indexes wire codec-message-ids.
   const targetId = meta.messageId ?? message.id;
   const aligned = message.id === targetId ? message : { ...message, id: targetId };

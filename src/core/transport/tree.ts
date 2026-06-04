@@ -32,7 +32,7 @@ import {
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import type { CodecInputEvent, CodecOutputEvent, Reducer } from '../codec/types.js';
-import type { OutputEvent, RunLifecycleEvent, RunNode, Tree } from './types.js';
+import type { ConversationNode, OutputEvent, RunLifecycleEvent, RunNode, Tree } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Internal node type
@@ -466,8 +466,8 @@ export class DefaultTree<
     return this._runIndex.get(runId)?.node;
   }
 
-  getRunByCodecMessageId(codecMessageId: string): RunNode<TProjection> | undefined {
-    this._logger.trace('DefaultTree.getRunByCodecMessageId();', { codecMessageId });
+  getNodeByCodecMessageId(codecMessageId: string): ConversationNode<TProjection> | undefined {
+    this._logger.trace('DefaultTree.getNodeByCodecMessageId();', { codecMessageId });
     const runId = this._codecMessageIdToRunId.get(codecMessageId);
     return runId ? this._runIndex.get(runId)?.node : undefined;
   }

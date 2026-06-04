@@ -435,13 +435,26 @@ export class DefaultView<
   }
 
   /**
+   * Resolve the reply Run that owns a codec-message-id, narrowing the Tree's
+   * node union to a {@link RunNode}. Until the two-node model lands every node
+   * is a reply Run, so this never discards a real result; afterwards a
+   * user-input id resolves to an input node and yields `undefined` here.
+   * @param codecMessageId - The codec-message-id to resolve.
+   * @returns The owning RunNode, or undefined if absent or not a reply Run.
+   */
+  private _runByCodecMessageId(codecMessageId: string): RunNode<TProjection> | undefined {
+    const node = this._tree.getNodeByCodecMessageId(codecMessageId);
+    return node?.kind === 'run' ? node : undefined;
+  }
+
+  /**
    * Locate `anchorMsgId` inside its owning Run's projection.
    * @param anchorMsgId - The msg-id to look up.
    * @returns The owner runId and the message's index in that Run's
    *   projection, or `undefined` when the msg-id has no owner.
    */
   private _anchorIndexInOwner(anchorMsgId: string): { ownerRunId: string; index: number } | undefined {
-    const ownerRun = this._tree.getRunByCodecMessageId(anchorMsgId);
+    const ownerRun = this._runByCodecMessageId(anchorMsgId);
     if (!ownerRun) return undefined;
     const messages = this._codec.getMessages(ownerRun.projection);
     const index = messages.findIndex((m) => _readMessageId(m) === anchorMsgId);
@@ -623,7 +636,7 @@ export class DefaultView<
 
   runOf(codecMessageId: string): RunInfo | undefined {
     this._logger.trace('DefaultView.runOf();', { codecMessageId });
-    const run = this._tree.getRunByCodecMessageId(codecMessageId);
+    const run = this._runByCodecMessageId(codecMessageId);
     return run ? _toRunInfo(run) : undefined;
   }
 
@@ -677,7 +690,7 @@ export class DefaultView<
     // `siblings` contains the rendered message itself for any known
     // codec-message-id, so plain bubbles get `siblings.length === 1`
     // (not `0`) and the indexing space matches between read and write.
-    const owner = this._tree.getRunByCodecMessageId(codecMessageId);
+    const owner = this._runByCodecMessageId(codecMessageId);
     if (owner) {
       const message = this._codec.getMessages(owner.projection).find((m) => _readMessageId(m) === codecMessageId);
       if (message !== undefined) {
@@ -770,7 +783,7 @@ export class DefaultView<
     | { kind: 'fork-of'; groupRoot: string; siblings: RunNode<TProjection>[] }
     | { kind: 'regen'; anchorCodecMessageId: string; siblings: RunNode<TProjection>[] }
     | undefined {
-    const run = this._tree.getRunByCodecMessageId(codecMessageId);
+    const run = this._runByCodecMessageId(codecMessageId);
     if (!run) return undefined;
 
     // Fork-of branch point: the first message of an edit Run is the
@@ -875,7 +888,7 @@ export class DefaultView<
 
     // Resolve the fork-target codec-message-id to its owning runId; pin/auto-select
     // operates at Run granularity.
-    const forkTargetRun = this._tree.getRunByCodecMessageId(options.forkOf);
+    const forkTargetRun = this._runByCodecMessageId(options.forkOf);
     if (!forkTargetRun) return;
     const groupRoot = this._tree.getGroupRoot(forkTargetRun.runId);
 
@@ -976,7 +989,7 @@ export class DefaultView<
     // user prompt so the new assistant's wire `parent` is correct,
     // and we send the truncated history (through the parent inclusive)
     // so the LLM re-answers the right message.
-    const targetRun = this._tree.getRunByCodecMessageId(messageId);
+    const targetRun = this._runByCodecMessageId(messageId);
     if (!targetRun) {
       throw new Ably.ErrorInfo(
         `unable to regenerate; message not found in tree: ${messageId}`,
@@ -1039,7 +1052,7 @@ export class DefaultView<
       throw new Ably.ErrorInfo('unable to edit; view is closed', ErrorCode.InvalidArgument, 400);
     }
 
-    const targetRun = this._tree.getRunByCodecMessageId(messageId);
+    const targetRun = this._runByCodecMessageId(messageId);
     if (!targetRun) {
       throw new Ably.ErrorInfo(
         `unable to edit; message not found in tree: ${messageId}`,
@@ -1450,7 +1463,7 @@ export class DefaultView<
 
     // The wire `parent` is a codec-message-id (the prior message). Resolve to its
     // owning runId, then check visibility.
-    const parentRun = this._tree.getRunByCodecMessageId(parent);
+    const parentRun = this._runByCodecMessageId(parent);
     if (!parentRun) return true; // unknown parent: forward conservatively
     return this._lastVisibleRunIdSet.has(parentRun.runId);
   }

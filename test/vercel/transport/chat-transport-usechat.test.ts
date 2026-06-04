@@ -150,7 +150,7 @@ const createMockTree = (treeEmitter: MockEmitter) =>
     getSelectedIndex: vi.fn(() => 0),
     select: vi.fn(),
     getRunNode: vi.fn(),
-    getRunByCodecMessageId: vi.fn(),
+    getNodeByCodecMessageId: vi.fn(),
     on: vi.fn(treeEmitter.on),
   }) as unknown as Tree<VercelOutput, VercelProjection>;
 
@@ -166,7 +166,7 @@ const createMockSession = () => {
   const view = {
     flattenNodes: vi.fn(() => []),
     getMessages: vi.fn(() => []),
-    getRunByCodecMessageId: vi.fn(),
+    getNodeByCodecMessageId: vi.fn(),
     sendInput: send,
     regenerate: vi.fn(),
     edit: vi.fn(),
@@ -204,7 +204,7 @@ const createMultiRunMockSession = () => {
   const view = {
     flattenNodes: vi.fn(() => []),
     getMessages: vi.fn(() => []),
-    getRunByCodecMessageId: vi.fn(),
+    getNodeByCodecMessageId: vi.fn(),
     sendInput: send,
     regenerate: vi.fn(),
     edit: vi.fn(),

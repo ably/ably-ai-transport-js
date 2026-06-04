@@ -900,11 +900,13 @@ export interface Tree<TOutput extends CodecOutputEvent, TProjection> {
   getRunNode(runId: string): RunNode<TProjection> | undefined;
 
   /**
-   * Get the Run that owns a given codec-message-id (via the Tree's
-   * codecMessageId -> runId index), or undefined if the codec-message-id
-   * hasn't been observed.
+   * Get the node that owns a given codec-message-id (via the Tree's
+   * codecMessageId index), or undefined if the codec-message-id hasn't been
+   * observed. The result is a {@link ConversationNode} union: narrow on `kind`
+   * before reading kind-specific fields. (Every node is a reply {@link RunNode}
+   * today; user input nodes arrive with the two-node model.)
    */
-  getRunByCodecMessageId(codecMessageId: string): RunNode<TProjection> | undefined;
+  getNodeByCodecMessageId(codecMessageId: string): ConversationNode<TProjection> | undefined;
 
   /**
    * Get all Runs that are siblings (alternatives) at a given fork point.

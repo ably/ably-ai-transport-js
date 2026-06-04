@@ -1238,7 +1238,7 @@ describe('ClientSession', () => {
       // converged with the echo. The Run's projection holds a single
       // domain message keyed by the codec's domain-id convention.
       expect(s.tree.runs()).toHaveLength(1);
-      const owningRun = s.tree.getRunByCodecMessageId(optimisticMsgId);
+      const owningRun = s.tree.getNodeByCodecMessageId(optimisticMsgId);
       expect(owningRun).toBeDefined();
       // customCodec.fold uses `domain-${text}` as the id (not the wire codecMessageId);
       // the projection has one entry under `domain-hi` for both the optimistic
@@ -1278,7 +1278,7 @@ describe('ClientSession', () => {
 
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock check
       expect(fix.codec.fold).toHaveBeenCalled();
-      const owningRun = fix.session.tree.getRunByCodecMessageId('m-1');
+      const owningRun = fix.session.tree.getNodeByCodecMessageId('m-1');
       expect(owningRun).toBeDefined();
       if (!owningRun) throw new Error('expected owning run');
       const messages = fix.codec.getMessages(owningRun.projection);

@@ -124,7 +124,7 @@ const createMockSession = (): MockSession => {
   const tree = {
     runs: vi.fn(() => []),
     getRunNode: vi.fn(),
-    getRunByCodecMessageId: vi.fn(),
+    getNodeByCodecMessageId: vi.fn(),
     getSiblingRuns: vi.fn(() => []),
     hasSiblingRuns: vi.fn(() => false),
     // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires explicit undefined return for the contract

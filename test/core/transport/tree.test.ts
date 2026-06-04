@@ -14,7 +14,7 @@ import {
 import type { Codec, CodecInputEvent } from '../../../src/core/codec/types.js';
 import type { TreeInternal } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
-import type { ConversationNode, InputNode } from '../../../src/core/transport/types.js';
+import type { ConversationNode, InputNode, RunNode } from '../../../src/core/transport/types.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 
 // ---------------------------------------------------------------------------
@@ -130,15 +130,28 @@ const visibleKeys = (
   selections: Map<string, string> = NO_SELECTIONS,
 ): string[] => tree.visibleNodes(selections).map((n) => (n.kind === 'run' ? n.runId : n.codecMessageId));
 
+// The visible reply runs along the selected branches (input nodes filtered out).
+const replyRuns = (
+  tree: TreeInternal<TestInput, TestOutput, TestProjection>,
+  selections: Map<string, string> = NO_SELECTIONS,
+): RunNode<TestProjection>[] =>
+  tree.visibleNodes(selections).filter((n): n is RunNode<TestProjection> => n.kind === 'run');
+
 const flatMessages = (
   tree: TreeInternal<TestInput, TestOutput, TestProjection>,
   selections: Map<string, string> = NO_SELECTIONS,
-): TestMessage[] => tree.runs(selections).flatMap((r) => testCodec.getMessages(r.projection));
+): TestMessage[] => replyRuns(tree, selections).flatMap((r) => testCodec.getMessages(r.projection));
 
 const flatRunIds = (
   tree: TreeInternal<TestInput, TestOutput, TestProjection>,
   selections: Map<string, string> = NO_SELECTIONS,
-): string[] => tree.runs(selections).map((r) => r.runId);
+): string[] => replyRuns(tree, selections).map((r) => r.runId);
+
+// The visible reply runs that are siblings of the node keyed by `key`.
+const siblingRuns = (
+  tree: TreeInternal<TestInput, TestOutput, TestProjection>,
+  key: string,
+): RunNode<TestProjection>[] => tree.getSiblingNodes(key).filter((n): n is RunNode<TestProjection> => n.kind === 'run');
 
 // Narrow a node union to its runId, or undefined for a non-run / absent node.
 const runIdOf = (node: ConversationNode<TestProjection> | undefined): string | undefined =>
@@ -255,7 +268,7 @@ describe('Tree', () => {
         {},
         's1',
       );
-      expect(tree.runs(NO_SELECTIONS)).toEqual([]);
+      expect(replyRuns(tree, NO_SELECTIONS)).toEqual([]);
     });
   });
 
@@ -470,8 +483,8 @@ describe('Tree', () => {
       });
     });
 
-    it('forkOf creates a sibling Run group sharing parentRunId', () => {
-      // Edit: new Run R2' with forkOf pointing at R2's user msg, same parentRunId.
+    it('forkOf creates a sibling Run group sharing the input-node parent', () => {
+      // Edit: new Run R2' with forkOf pointing at R2's user msg, same parentCodecMessageId.
       apply(tree, {
         runId: 'R2alt',
         codecMessageId: 'a2',
@@ -481,10 +494,10 @@ describe('Tree', () => {
         serial: 's3',
       });
 
-      expect(tree.hasSiblingRuns('R2')).toBe(true);
-      expect(tree.hasSiblingRuns('R2alt')).toBe(true);
+      expect(siblingRuns(tree, 'R2').length > 1).toBe(true);
+      expect(siblingRuns(tree, 'R2alt').length > 1).toBe(true);
 
-      const siblings = tree.getSiblingRuns('R2');
+      const siblings = siblingRuns(tree, 'R2');
       expect(siblings).toHaveLength(2);
       expect(siblings.map((s) => s.runId)).toEqual(['R2', 'R2alt']);
     });
@@ -551,7 +564,7 @@ describe('Tree', () => {
         serial: 's4',
       });
 
-      const siblings = tree.getSiblingRuns('R2');
+      const siblings = siblingRuns(tree, 'R2');
       expect(siblings.map((s) => s.runId)).toEqual(['R2', 'R2alt', 'R2alt2']);
     });
 
@@ -581,7 +594,7 @@ describe('Tree', () => {
       expect(tree.getRunNode('R2alt')?.forkOf).toBe('R2');
       expect(tree.getRunNode('R2alt2')?.forkOf).toBe('R2alt');
       expect(tree.getGroupRoot('R2alt2')).toBe('R2');
-      expect(tree.getSiblingRuns('R2alt2').map((s) => s.runId)).toEqual(['R2', 'R2alt', 'R2alt2']);
+      expect(siblingRuns(tree, 'R2alt2').map((s) => s.runId)).toEqual(['R2', 'R2alt', 'R2alt2']);
     });
 
     it('cycle in forkOf chain is detected and does not infinite-loop', () => {
@@ -606,7 +619,7 @@ describe('Tree', () => {
 
       // Both calls return without hanging; the exact membership depends on
       // walk-order, but the call terminates and includes both.
-      const siblings = tree.getSiblingRuns('Ra').map((s) => s.runId);
+      const siblings = siblingRuns(tree, 'Ra').map((s) => s.runId);
       expect(siblings).toContain('Ra');
       expect(siblings.length).toBeGreaterThan(0);
     });
@@ -663,12 +676,12 @@ describe('Tree', () => {
       expect(tree.getGroupRoot('R1')).toBe('R1');
     });
 
-    it('getSiblingRuns returns empty for an unknown runId', () => {
-      expect(tree.getSiblingRuns('R-unknown')).toEqual([]);
+    it('getSiblingNodes returns empty for an unknown runId', () => {
+      expect(siblingRuns(tree, 'R-unknown')).toEqual([]);
     });
 
-    it('hasSiblingRuns is false for a Run with no forks', () => {
-      expect(tree.hasSiblingRuns('R1')).toBe(false);
+    it('a Run with no forks has no sibling runs', () => {
+      expect(siblingRuns(tree, 'R1').length > 1).toBe(false);
     });
   });
 
@@ -987,7 +1000,7 @@ describe('Tree', () => {
       });
 
       expect(tree.getRunNode('R1')?.parentRunId).toBeUndefined();
-      const flat = tree.runs(new Map());
+      const flat = replyRuns(tree, new Map());
       expect(flat.map((n) => n.runId)).toEqual(['R1']);
     });
   });
@@ -1081,10 +1094,10 @@ describe('Tree', () => {
         serial: 's3',
       });
 
-      expect(tree.getSiblingRuns('R2')).toHaveLength(2);
+      expect(siblingRuns(tree, 'R2')).toHaveLength(2);
       tree.delete('R2alt');
-      expect(tree.getSiblingRuns('R2')).toHaveLength(1);
-      expect(tree.hasSiblingRuns('R2')).toBe(false);
+      expect(siblingRuns(tree, 'R2')).toHaveLength(1);
+      expect(siblingRuns(tree, 'R2').length > 1).toBe(false);
     });
   });
 

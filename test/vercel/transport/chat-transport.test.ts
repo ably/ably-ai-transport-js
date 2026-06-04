@@ -134,11 +134,9 @@ const createMockSession = (): MockSession => {
   };
 
   const tree = {
-    runs: vi.fn(() => []),
     getRunNode: vi.fn(),
     getNodeByCodecMessageId: vi.fn(),
-    getSiblingRuns: vi.fn(() => []),
-    hasSiblingRuns: vi.fn(() => false),
+    getSiblingNodes: vi.fn(() => []),
     // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires explicit undefined return for the contract
     getRegenerateGroup: vi.fn(() => undefined),
     on: vi.fn(treeEmitter.on),

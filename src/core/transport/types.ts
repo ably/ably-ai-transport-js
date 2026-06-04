@@ -713,14 +713,15 @@ export type TreeNode<TMessage> = MessageNode<TMessage>;
 /**
  * A node in the conversation tree, representing a single Run.
  *
- * The Tree is keyed by `runId`. Each RunNode owns a per-Run codec
- * {@link TProjection} folded from every event published under that run-id;
- * the SDK extracts the per-message list via {@link Codec.getMessages} when it
- * needs to render messages for that Run.
+ * A RunNode is keyed by its agent-minted `runId`. Each RunNode owns a per-Run
+ * codec {@link TProjection} folded from every event published under that
+ * run-id; the SDK extracts the per-message list via {@link Codec.getMessages}
+ * when it needs to render messages for that Run.
  *
- * Sibling structure (edits / regenerates) is derived from `forkOf`:
- * a regenerate or edit publishes a new Run whose `forkOf` points at the
- * (runId, codecMessageId) being forked.
+ * A regenerate is a sibling reply run: it shares its input-node parent
+ * ({@link parentCodecMessageId}) with the original reply, so same-parent reply
+ * runs form the regenerate group with no `forkOf` involved. (Editing a prompt
+ * instead produces a sibling {@link InputNode} via that node's `forkOf`.)
  */
 export interface RunNode<TProjection> {
   /** Discriminator — identifies this as a reply-run node within {@link ConversationNode}. */
@@ -728,41 +729,40 @@ export interface RunNode<TProjection> {
   /** The run-id of this Run — primary key in the tree. */
   runId: string;
   /**
-   * The runId of the immediately preceding Run on this conversation chain,
-   * or undefined for the root Run. Resolved by the Tree from the first
-   * observed message's `parent` header via the codecMessageId -> runId index.
-   * May be `undefined` transiently if the parent's first message hasn't
-   * been observed yet.
+   * Retired in the two-node model: always `undefined`. Reachability and
+   * sibling grouping run entirely off {@link parentCodecMessageId} (a reply
+   * run's structural parent is its input node, not a prior run), so the
+   * run→run parent derivation no longer exists. The field is kept only to
+   * avoid churning every reader; nothing populates it.
    */
   parentRunId: string | undefined;
   /**
    * The codec-message-id this Run is rooted at — the `parent` header of the
    * first observed message (or the run-start lifecycle event's `parent`
-   * field). Distinct from {@link parentRunId} because branch filtering
-   * needs the message-level anchor: a follow-up Run parented at a message
-   * that gets regen-substituted out of the visible chain disappears
-   * alongside its anchor even though its `parentRunId` Run is still visible.
-   * `undefined` for the root Run.
+   * field). This is the run's input node's codec-message-id: the user prompt
+   * the agent replied to. The Tree uses it for kind-blind reachability and to
+   * build the input→reply edge. `undefined` for the root Run.
    */
   parentCodecMessageId: string | undefined;
   /**
-   * The runId of the Run this Run replaces, or `undefined` if this Run is
-   * not a fork. Populated when the wire's `fork-of` header points at
-   * a codec-message-id that has been observed; the Tree resolves it to a runId via
-   * the codecMessageId -> runId index.
+   * The node key of the node this Run replaces, or `undefined` if this Run is
+   * not a fork. Populated when the wire's `fork-of` header points at a
+   * codec-message-id that has been observed; the Tree resolves it through the
+   * codec-message-id → node-key index. Reply-run regenerate siblings do not
+   * use this (they group by shared parent) — it carries an explicit fork link
+   * when the wire stamps one.
    */
   forkOf: string | undefined;
   /**
    * The codec-message-id this Run regenerates, or `undefined` for non-regenerate
-   * Runs. Populated from the wire's `msg-regenerate` header (and
-   * the lifecycle event's `regenerates` field) verbatim — the Tree does
-   * not resolve it to a runId because the anchor is a message position,
-   * not a Run.
+   * Runs. Populated from the wire's `msg-regenerate` header (and the lifecycle
+   * event's `regenerates` field) verbatim — the Tree does not resolve it to a
+   * node key because the anchor is a message position, not a node.
    *
-   * Regenerate Runs are conversation-history continuations: their
-   * `parentRunId` points at the prior Run in the chain, and the message
-   * named by `regeneratesCodecMessageId` is replaced by this Run's content when
-   * the View materialises the chain into messages (Spec: AIT-CT13d).
+   * A regenerate run parents at the SAME input node as the reply it
+   * regenerates, so it joins that input's reply runs as a same-parent sibling;
+   * the message named by `regeneratesCodecMessageId` is replaced by this Run's
+   * content when the View materialises the chain into messages (Spec: AIT-CT13d).
    */
   regeneratesCodecMessageId: string | undefined;
   /**
@@ -885,31 +885,16 @@ export interface OutputEvent<TOutput extends CodecOutputEvent> {
 
 /**
  * Materializes a branching conversation tree from a flat oplog of Ably
- * messages, keyed by `run-id`.
+ * messages. Each turn is two nodes: a user {@link InputNode} keyed by its
+ * client-owned codec-message-id and an agent {@link RunNode} keyed by the
+ * agent-minted run-id, parented to the input node.
  *
- * The Tree owns the complete conversation state across every observed Run.
- * Each RunNode holds a per-Run codec {@link TProjection} which the Tree folds
+ * The Tree owns the complete conversation state across every observed node.
+ * Each node holds a per-node codec {@link TProjection} which the Tree folds
  * from inbound events. The View walks the parent chain to extract a flat
  * message list for rendering.
  */
 export interface Tree<TOutput extends CodecOutputEvent, TProjection> {
-  /**
-   * Return the visible Run list along the selected branches, in
-   * chronological order. The `selections` map provides the selected
-   * sibling's runId at each fork point, keyed by group-root runId.
-   * Fork points not present in the map default to the latest sibling
-   * (newest by startSerial); a `selectedRunId` not found in its
-   * sibling group is treated the same.
-   *
-   * Pass an empty map (or omit the argument) to get the "latest at
-   * every fork" snapshot — useful for tests and for consumers that
-   * don't track their own selection state.
-   * @param selections - Per-fork-point sibling selection, keyed by
-   *   group-root runId. Defaults to an empty map.
-   * @returns The Runs along the selected branches in chronological order.
-   */
-  runs(selections?: Map<string, string>): RunNode<TProjection>[];
-
   /** Get a Run by runId, or undefined if not found. */
   getRunNode(runId: string): RunNode<TProjection> | undefined;
 
@@ -917,29 +902,21 @@ export interface Tree<TOutput extends CodecOutputEvent, TProjection> {
    * Get the node that owns a given codec-message-id (via the Tree's
    * codecMessageId index), or undefined if the codec-message-id hasn't been
    * observed. The result is a {@link ConversationNode} union: narrow on `kind`
-   * before reading kind-specific fields. (Every node is a reply {@link RunNode}
-   * today; user input nodes arrive with the two-node model.)
+   * (`'input'` vs `'run'`) before reading kind-specific fields.
    */
   getNodeByCodecMessageId(codecMessageId: string): ConversationNode<TProjection> | undefined;
 
   /**
-   * Get all Runs that are siblings (alternatives) at a given fork point.
-   * Returns an array ordered chronologically by startSerial; the Run
-   * identified by `runId` is always included.
-   *
-   * Two kinds of sibling groups surface through this API:
-   * - **Edit forks** — Runs sharing a `parentRunId` and chained via
-   *   `forkOf` (the original Run + its edits).
-   * - **Regenerate groups** — the Run that owns a regenerated codec-message-id +
-   *   every Run whose `regeneratesCodecMessageId` points at that codec-message-id.
-   *
-   * A Run is in at most one group; if neither applies the returned array
-   * is `[runId]`.
+   * Get the sibling group (both kinds) the node keyed by `key` belongs to:
+   * edit versions for an input node (forkOf-linked, same parent), regenerate
+   * runs for a reply run (same input-node parent). Ordered oldest-first by
+   * serial; a single-element array when the node has no siblings. Empty when
+   * `key` is unknown. Narrow each node on `kind` before reading kind-specific
+   * fields.
+   * @param key - The node key ({@link RunNode.runId} or {@link InputNode.codecMessageId}).
+   * @returns The ordered sibling nodes.
    */
-  getSiblingRuns(runId: string): RunNode<TProjection>[];
-
-  /** Whether a Run has sibling alternatives (i.e., show navigation arrows). */
-  hasSiblingRuns(runId: string): boolean;
+  getSiblingNodes(key: string): ConversationNode<TProjection>[];
 
   /**
    * Resolve the regenerate sibling group containing `runId`, if any.

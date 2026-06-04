@@ -24,14 +24,17 @@ export interface TreeHandle<TProjection> {
   /**
    * Get the node that owns a given codec-message-id, or undefined if not
    * observed. Returns a {@link ConversationNode} union — narrow on `kind`
-   * before reading kind-specific fields. (Every node is a reply Run today;
-   * user input nodes arrive with the two-node model.)
+   * (`'input'` vs `'run'`) before reading kind-specific fields.
    */
   getNodeByCodecMessageId: (codecMessageId: string) => ConversationNode<TProjection> | undefined;
-  /** Get all sibling Runs at a fork point, ordered chronologically by startSerial. */
-  getSiblingRuns: (runId: string) => RunNode<TProjection>[];
-  /** Whether a Run has sibling alternatives (i.e., show navigation arrows). */
-  hasSiblingRuns: (runId: string) => boolean;
+  /**
+   * Get the sibling group (both kinds) the node keyed by `key` belongs to —
+   * edit versions for an input node, regenerate runs for a reply run — ordered
+   * oldest-first. A single-element array when the node has no siblings; empty
+   * when `key` is unknown. `key` is a {@link RunNode.runId} or an
+   * {@link InputNode.codecMessageId}.
+   */
+  getSiblingNodes: (key: string) => ConversationNode<TProjection>[];
 }
 
 /** Options for {@link useTree}. */
@@ -65,17 +68,14 @@ export const useTree = <TInput extends CodecInputEvent, TOutput extends CodecOut
     [resolved],
   );
 
-  const getSiblingRuns = useCallback(
-    (runId: string): RunNode<TProjection>[] => resolved?.tree.getSiblingRuns(runId) ?? [],
+  const getSiblingNodes = useCallback(
+    (key: string): ConversationNode<TProjection>[] => resolved?.tree.getSiblingNodes(key) ?? [],
     [resolved],
   );
-
-  const hasSiblingRuns = useCallback((runId: string) => resolved?.tree.hasSiblingRuns(runId) ?? false, [resolved]);
 
   return {
     getRunNode,
     getNodeByCodecMessageId,
-    getSiblingRuns,
-    hasSiblingRuns,
+    getSiblingNodes,
   };
 };

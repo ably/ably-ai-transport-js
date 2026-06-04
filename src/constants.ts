@@ -83,11 +83,11 @@ export const HEADER_FORK_OF = 'fork-of';
  * Header: the msg-id of the assistant message this run regenerates.
  *
  * Stamped on the regenerate wire (and echoed on `run-start`) when the
- * client requested a regeneration. The Tree treats regenerates as
- * continuations of the prior run (parentRunId chain), not as forks; the
- * View consults this header to resolve the message-level sibling group
- * and to drop the regenerated message from earlier Runs in the visible
- * chain (Spec: AIT-CT13d).
+ * client requested a regeneration. A regenerate run parents at the SAME input
+ * node as the reply it regenerates, so it joins that input's reply runs as a
+ * same-parent sibling (no fork-of). The View consults this header to resolve
+ * the message-level sibling group and to drop the regenerated message from
+ * earlier Runs in the visible chain (Spec: AIT-CT13d).
  */
 export const HEADER_MSG_REGENERATE = 'msg-regenerate';
 

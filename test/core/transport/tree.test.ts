@@ -13,6 +13,7 @@ import {
 import type { Codec, CodecInputEvent } from '../../../src/core/codec/types.js';
 import type { TreeInternal } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
+import type { ConversationNode, InputNode } from '../../../src/core/transport/types.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 
 // ---------------------------------------------------------------------------
@@ -182,6 +183,7 @@ describe('Tree', () => {
       apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
       const run = tree.getRunNode('R1');
       expect(run).toBeDefined();
+      expect(run?.kind).toBe('run');
       expect(run?.runId).toBe('R1');
       const projection = run?.projection;
       if (!projection) throw new Error('expected projection');
@@ -190,6 +192,28 @@ describe('Tree', () => {
 
     it('returns undefined for an unknown runId', () => {
       expect(tree.getRunNode('R-unknown')).toBeUndefined();
+    });
+
+    it('narrows a ConversationNode union on its kind discriminator', () => {
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
+      const run = tree.getRunNode('R1');
+      if (!run) throw new Error('expected run');
+
+      const input: InputNode<TestProjection> = {
+        kind: 'input',
+        codecMessageId: 'm1',
+        parentCodecMessageId: undefined,
+        forkOf: undefined,
+        projection: { messages: [{ id: 'u', content: 'prompt' }] },
+        serial: 's0',
+      };
+
+      // The union narrows on `kind`; each arm exposes only its own key.
+      const keyOf = (node: ConversationNode<TestProjection>): string =>
+        node.kind === 'run' ? node.runId : node.codecMessageId;
+
+      expect(keyOf(run)).toBe('R1');
+      expect(keyOf(input)).toBe('m1');
     });
 
     it('returns owning Run via getRunByCodecMessageId', () => {

@@ -738,6 +738,7 @@ export class DefaultTree<
     const regeneratesCodecMessageId = headers[HEADER_MSG_REGENERATE];
 
     const node: RunNode<TProjection> = {
+      kind: 'run',
       runId,
       parentRunId,
       parentCodecMessageId,
@@ -773,6 +774,7 @@ export class DefaultTree<
     const regeneratesCodecMessageId = event.regenerates;
 
     const node: RunNode<TProjection> = {
+      kind: 'run',
       runId: event.runId,
       parentRunId,
       parentCodecMessageId,

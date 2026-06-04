@@ -25,7 +25,7 @@
 import * as Ably from 'ably';
 import type * as AI from 'ai';
 
-import type { ClientSession, OutputEvent } from '../../core/transport/types.js';
+import type { ClientSession } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../codec/index.js';
 
@@ -94,12 +94,6 @@ export const createRunOutputStream = (
     );
   }
 
-  // Route an output to this stream when it carries the triggering input's
-  // codec-message-id — the key the client owns from send time, before the agent
-  // mints the runId.
-  const matchesOutput = (event: OutputEvent<VercelOutput>): boolean =>
-    event.inputCodecMessageId === inputCodecMessageId;
-
   // The agent mints the runId; learn it (for the run-end safety-net) when the
   // promise resolves. Fire-and-forget: the stream opens on the input key, so a
   // never-resolving runId only forgoes the safety-net, not normal close.
@@ -143,7 +137,7 @@ export const createRunOutputStream = (
 
   unsubscribe.push(
     session.tree.on('output', (event) => {
-      if (!matchesOutput(event)) return;
+      if (event.inputCodecMessageId !== inputCodecMessageId) return;
       for (const output of event.events) {
         try {
           controller.enqueue(output);

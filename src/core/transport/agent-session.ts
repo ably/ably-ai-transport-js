@@ -32,6 +32,7 @@ import type { Logger } from '../../logger.js';
 import { compareBySerial, getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
+import { buildBranchChain } from './branch-chain.js';
 import { buildTransportHeaders } from './headers.js';
 import { Invocation } from './invocation.js';
 import { pipeStream } from './pipe-stream.js';
@@ -139,6 +140,35 @@ const foldRunMessages = <TInput extends CodecInputEvent, TOutput extends CodecOu
     folded++;
   }
   return { projection, folded };
+};
+
+/**
+ * Fold a single run-less INPUT node's events into a fresh projection: every
+ * wire stamped with `codecMessageId` and NO run-id (the user prompt the client
+ * published before the agent minted a run-id). The two-node analogue of
+ * {@link foldRunMessages} for the user-input side of the conversation chain.
+ * @param codec - Codec used to decode and fold events.
+ * @param sortedMessages - Chronologically ordered wire messages (all runs).
+ * @param codecMessageId - The input node's codec-message-id.
+ * @returns The folded projection for that input node.
+ */
+const foldInputMessages = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>(
+  codec: Codec<TInput, TOutput, TProjection, TMessage>,
+  sortedMessages: readonly Ably.InboundMessage[],
+  codecMessageId: string,
+): TProjection => {
+  const decoder = codec.createDecoder();
+  let projection = codec.init();
+  for (const msg of sortedMessages) {
+    const h = getTransportHeaders(msg);
+    if (h[HEADER_RUN_ID] !== undefined) continue;
+    if (h[HEADER_CODEC_MESSAGE_ID] !== codecMessageId) continue;
+    const { inputs, outputs } = decoder.decode(msg);
+    for (const event of [...inputs, ...outputs]) {
+      projection = codec.fold(projection, event, { serial: msg.serial ?? '', messageId: codecMessageId });
+    }
+  }
+  return projection;
 };
 
 // ---------------------------------------------------------------------------
@@ -872,7 +902,10 @@ class DefaultAgentSession<
     invocation: Invocation,
     runtime: RunRuntime<TOutput>,
   ): Run<TInput, TOutput, TProjection, TMessage> {
-    const runId = invocation.runId;
+    // The agent mints the run-id for a fresh run (the client no longer mints
+    // it); a continuation carries the existing run-id in the invocation body.
+    // Mirrors the invocationId mint below.
+    const runId = invocation.runId ?? crypto.randomUUID();
     // The agent mints the invocation id — one per HTTP request that invokes
     // it. A per-run override (runtime.invocationId) supports deterministic ids
     // in tests and in-process drivers.
@@ -1072,7 +1105,12 @@ class DefaultAgentSession<
 
         try {
           await runManager.startRun(runId, resolvedClientId, controller, {
-            parent: resolvedParent,
+            // Stamp the reply run's STRUCTURAL parent (its input node, M_user) —
+            // the same value the output path stamps — not the input wire's own
+            // parent. Makes `parent` structural on every wire so the Tree's two
+            // creation paths agree regardless of arrival order. Valid only now
+            // that M_user is a separate input node (the two-node flip).
+            parent: assistantParentFallback,
             forkOf: resolvedForkOf,
             regenerates: resolvedRegenerates,
             invocationId,
@@ -1190,101 +1228,95 @@ class DefaultAgentSession<
         }
         const sortedMessages = withLiveMessages(collected, liveLookupMessages);
 
-        // Pass 1 — build a codec-message-id → runId index from every non-lifecycle
-        // message. Used to resolve the HEADER_PARENT codec-message-id on ai-run-start
-        // events into the parent runId, without any out-of-band metadata from the
-        // invocation body.
-        const codecMsgToRunId = new Map<string, string>();
+        // Index pass — build node metadata per codec-message-id from the
+        // serial-sorted history, with sticky identity (the first wire for a
+        // codec-message-id wins for parent/forkOf/regenerates; a later amend
+        // can't poison it). Run-bearing wires record their runId; run-less user
+        // inputs are input nodes (runId undefined). The entries satisfy
+        // BranchChainNode (they carry `parentCodecMessageId`).
+        interface NodeMeta {
+          runId: string | undefined;
+          parentCodecMessageId: string | undefined;
+          forkOf: string | undefined;
+          regenerates: string | undefined;
+        }
+        const nodeMeta = new Map<string, NodeMeta>();
+        const runIdToCodecMessageId = new Map<string, string>();
         for (const msg of sortedMessages) {
           if (
             msg.name === EVENT_RUN_START ||
             msg.name === EVENT_RUN_SUSPEND ||
             msg.name === EVENT_RUN_RESUME ||
             msg.name === EVENT_RUN_END
-          )
+          ) {
             continue;
-          const h = getTransportHeaders(msg);
-          const msgRunId = h[HEADER_RUN_ID];
-          const msgCodecId = h[HEADER_CODEC_MESSAGE_ID];
-          if (msgRunId && msgCodecId) codecMsgToRunId.set(msgCodecId, msgRunId);
-        }
-
-        // Pass 2 — build runMap from ai-run-start events. Each entry records the
-        // run's parentRunId (resolved from HEADER_PARENT via the index above) and
-        // what it replaced (regenerates / forkOf), used to derive the truncation
-        // point for each ancestor during the fold.
-        const runMap = new Map<
-          string,
-          {
-            parentRunId: string | undefined;
-            regenerates: string | undefined;
-            forkOf: string | undefined;
           }
-        >();
+          const h = getTransportHeaders(msg);
+          const cid = h[HEADER_CODEC_MESSAGE_ID];
+          if (cid === undefined) continue;
+          const msgRunId = h[HEADER_RUN_ID];
+          if (msgRunId !== undefined) runIdToCodecMessageId.set(msgRunId, cid);
+          if (!nodeMeta.has(cid)) {
+            nodeMeta.set(cid, {
+              runId: msgRunId,
+              parentCodecMessageId: h[HEADER_PARENT],
+              forkOf: h[HEADER_FORK_OF],
+              regenerates: h[HEADER_MSG_REGENERATE],
+            });
+          }
+        }
+        // Backfill a reply run's structural metadata from ai-run-start when its
+        // output wire wasn't indexed (rare history lag). Keyed by runId → the
+        // run's codec-message-id.
         for (const msg of sortedMessages) {
           if (msg.name !== EVENT_RUN_START) continue;
           const h = getTransportHeaders(msg);
           const msgRunId = h[HEADER_RUN_ID];
-          if (!msgRunId) continue;
-          const parentCodecMsgId = h[HEADER_PARENT];
-          runMap.set(msgRunId, {
-            parentRunId: parentCodecMsgId ? codecMsgToRunId.get(parentCodecMsgId) : undefined,
-            regenerates: h[HEADER_MSG_REGENERATE],
-            forkOf: h[HEADER_FORK_OF],
-          });
+          if (msgRunId === undefined) continue;
+          const cid = runIdToCodecMessageId.get(msgRunId);
+          if (cid === undefined) continue;
+          const meta = nodeMeta.get(cid);
+          if (!meta) continue;
+          if (meta.parentCodecMessageId === undefined) meta.parentCodecMessageId = h[HEADER_PARENT];
+          if (meta.forkOf === undefined) meta.forkOf = h[HEADER_FORK_OF];
+          if (meta.regenerates === undefined) meta.regenerates = h[HEADER_MSG_REGENERATE];
         }
 
-        // Seed the ancestor chain from the current run's parentRunId resolved from
-        // channel history. If the current run's ai-run-start hasn't been indexed yet
-        // (rare Ably history lag), fall back to resolvedParent from the input-event lookup
-        // (a codec-message-id) resolved through the same index.
-        // A cycle guard (seen Set) prevents an infinite loop on self-referential data.
-        const lagFallback = resolvedParent ? codecMsgToRunId.get(resolvedParent) : undefined;
-        const seedParentRunId = runMap.get(runId)?.parentRunId ?? lagFallback;
-        const chain: string[] = [];
-        const seen = new Set<string>();
-        let current = seedParentRunId;
-        while (current !== undefined) {
-          if (seen.has(current)) {
-            logger?.warn('Run.loadConversation(); cycle detected in ancestor chain, breaking', {
-              runId: current,
-            });
-            break;
-          }
-          seen.add(current);
-          if (current !== runId) chain.unshift(current);
-          current = runMap.get(current)?.parentRunId;
-        }
-
-        // Fold each run's projection from the shared sorted message list —
-        // no extra channel.history() calls. For each ancestor, truncate at the
-        // codec-message-id that the next run in the chain replaced (via
-        // regenerates or forkOf).
+        // Walk the structural parent chain from the current run's input node
+        // (M_user = `assistantParentFallback`, computed at run-start the same way
+        // the output path does) up to the conversation root, then fold each node
+        // in chain order. Seed from the STRUCTURAL parent, not the triggering
+        // input id: for a regenerate the trigger is the regenerate carrier
+        // (≠ M_user). The upward walk naturally excludes un-taken branch siblings
+        // (an edit's alternate prompt, a regenerate's superseded reply), so no
+        // per-ancestor truncation is needed. (Open caveat, deferred with a golden
+        // test: regenerating a non-trailing message of a multi-message reply —
+        // the node walk can't slice inside one run's projection.)
         const allMessages: TMessage[] = [];
-        for (const [i, ancestorRunId] of chain.entries()) {
-          const childRunId = chain[i + 1];
-          // For the last ancestor (no child in the chain array), truncate at the
-          // codec-message-id the current run regenerated or forked. Prefer the
-          // value resolved from channel history (runMap.get(runId)); fall back to
-          // the input-event lookup values in case the current run's ai-run-start hasn't
-          // been indexed yet.
-          const truncateAt =
-            childRunId === undefined
-              ? (runMap.get(runId)?.regenerates ?? resolvedRegenerates ?? runMap.get(runId)?.forkOf ?? resolvedForkOf)
-              : (runMap.get(childRunId)?.regenerates ?? runMap.get(childRunId)?.forkOf);
-          const { projection } = foldRunMessages(codec, sortedMessages, ancestorRunId, truncateAt);
-          allMessages.push(...codec.getMessages(projection));
+        let chainLength = 0;
+        if (assistantParentFallback !== undefined) {
+          const chain = buildBranchChain(nodeMeta, assistantParentFallback);
+          chainLength = chain.length;
+          for (const cid of chain) {
+            const meta = nodeMeta.get(cid);
+            const projection =
+              meta?.runId === undefined
+                ? foldInputMessages(codec, sortedMessages, cid)
+                : foldRunMessages(codec, sortedMessages, meta.runId).projection;
+            allMessages.push(...codec.getMessages(projection));
+          }
         }
 
         // Current run — fold from the same sorted messages (live messages already
-        // merged in by withLiveMessages above).
+        // merged in by withLiveMessages above). Appended at the chain tail: the
+        // chain ended at this run's input node (M_user).
         const { projection: currentProjection, folded } = foldRunMessages(codec, sortedMessages, runId);
         cachedProjection = currentProjection;
         allMessages.push(...codec.getMessages(currentProjection));
 
         logger?.debug('Run.loadConversation(); built', {
           runId,
-          ancestorCount: chain.length,
+          chainLength,
           totalMessages: allMessages.length,
           folded,
         });

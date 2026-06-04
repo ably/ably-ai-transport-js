@@ -288,8 +288,6 @@ const createMockCodec = (decoder?: MockDecoder): MockCodec => {
     createRegenerate: vi.fn(
       (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }) as const,
     ),
-    // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires an explicit return matching the codec contract
-    resolveToolTarget: vi.fn(() => undefined),
     // eslint-disable-next-line @typescript-eslint/no-unused-vars -- writer/options unused by stub
     createEncoder: vi.fn((_writer: ChannelWriter, _opts?: EncoderOptions) => {
       const enc = createMockEncoder();

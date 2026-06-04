@@ -31,7 +31,7 @@ import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import { compareBySerial, getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
-import type { Codec, CodecInputEvent, CodecOutputEvent, WriteOptions } from '../codec/types.js';
+import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
 import { buildTransportHeaders } from './headers.js';
 import { Invocation } from './invocation.js';
 import { pipeStream } from './pipe-stream.js';
@@ -943,11 +943,10 @@ class DefaultAgentSession<
      */
     let liveLookupMessages: readonly Ably.InboundMessage[] | undefined;
 
-    // Most recently loaded projection for this run only. `Run.loadProjection()`
-    // and `Run.loadConversation()` both cache it so `Run.pipe()` can consult
-    // `codec.resolveToolTarget` for cross-message attribution (e.g. approved-tool
-    // second-pass tool outputs redirect to the original assistant). `undefined`
-    // before any load call; pipe falls back to natural messageId behaviour then.
+    // Most recently loaded projection for this run only, cached by
+    // `Run.loadProjection()` and `Run.loadConversation()` so the `messages`
+    // getter can return the run's folded messages. `undefined` before any
+    // load call; the getter then falls back to the live `viewMessages`.
     let cachedProjection: TProjection | undefined;
 
     // Full multi-turn conversation, set by `Run.loadConversation()`. When set,
@@ -1336,25 +1335,7 @@ class DefaultAgentSession<
           messageId: codecMessageId,
         });
 
-        // Compose caller-supplied resolveWriteOptions with codec-driven
-        // tool-output attribution. After a `loadProjection` call, the
-        // codec's `resolveToolTarget` returns the original message id for
-        // tool-output chunks whose toolCallId matches an awaiting tool
-        // call in the projection — letting the reducer fold them onto the
-        // original message via the standard messageId routing path. The
-        // caller's `messageId` (if any) wins over the codec's suggestion.
-        const composed = (event: TOutput): WriteOptions | undefined => {
-          const callerResolved = streamOpts?.resolveWriteOptions?.(event);
-          if (cachedProjection === undefined) return callerResolved;
-          const target = codec.resolveToolTarget(event, cachedProjection);
-          if (target === undefined) return callerResolved;
-          return {
-            ...callerResolved,
-            messageId: callerResolved?.messageId ?? target,
-          };
-        };
-
-        const result = await pipeStream(stream, encoder, signal, onCancelled, composed, logger);
+        const result = await pipeStream(stream, encoder, signal, onCancelled, streamOpts?.resolveWriteOptions, logger);
 
         if (result.error) {
           const errInfo = new Ably.ErrorInfo(

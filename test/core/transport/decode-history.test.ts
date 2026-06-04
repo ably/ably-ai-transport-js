@@ -234,8 +234,6 @@ const createMockCodec = (): Codec<TestInput, TestOutput, TestProjection, TestMes
     getMessages: vi.fn((p: TestProjection) => p.order.map((id) => p.byId.get(id)).filter((m): m is TestMessage => !!m)),
     createUserMessage: vi.fn((m: TestMessage) => ({ kind: 'user-message' as const, message: m })),
     createRegenerate: vi.fn((target: string, parent: string) => ({ kind: 'regenerate', target, parent }) as const),
-    // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires an explicit return matching the codec contract
-    resolveToolTarget: vi.fn(() => undefined),
     createEncoder: vi.fn(() => noopEncoderFactory()),
     createDecoder: vi.fn(() => {
       counters.decoderInstances += 1;

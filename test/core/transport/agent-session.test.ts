@@ -216,8 +216,6 @@ const createMockCodec = (overrides?: { encoderFactory?: () => MockEncoder }): Mo
     createRegenerate: vi.fn(
       (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }) as const,
     ),
-    // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires an explicit return matching the codec contract
-    resolveToolTarget: vi.fn(() => undefined),
     createEncoder: vi.fn((writer: ChannelWriter, opts?: EncoderOptions) => {
       encoderCalls.push({ writer, opts });
       const enc = overrides?.encoderFactory ? overrides.encoderFactory() : createMockEncoder();
@@ -291,8 +289,6 @@ const codecWithFunctionalDecoder = (): Codec<TestInput, TestOutput, TestProjecti
   getMessages: (p: TestProjection) => p.messages,
   createUserMessage: (m: TestMessage) => ({ kind: 'user-message' as const, message: m }),
   createRegenerate: (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }),
-  // eslint-disable-next-line unicorn/no-useless-undefined -- codec contract returns string | undefined
-  resolveToolTarget: () => undefined,
   createEncoder: vi.fn(() => createMockEncoder()),
   createDecoder: vi.fn(() => ({
     decode: (m: Ably.InboundMessage) => {
@@ -1048,82 +1044,6 @@ describe('AgentSession', () => {
       expect(enc?.publishCalls[0]?.opts).toBeUndefined();
       expect(enc?.publishCalls[1]?.opts).toEqual({ messageId: 'override-b' });
     });
-
-    it('uses codec.resolveToolTarget to override messageId after loadProjection', async () => {
-      const targetCodec = createMockCodec();
-      // Mock codec.resolveToolTarget: for events tagged with text === 'tool-output',
-      // return msg-X. Other events return undefined.
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked accessor
-      vi.mocked(targetCodec.resolveToolTarget).mockImplementation((event: TestOutput) =>
-        event.text === 'tool-output' ? 'msg-X' : undefined,
-      );
-      const targetSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
-        client: createMockClient(channel),
-        channelName: 'test',
-        codec: targetCodec,
-      });
-      await targetSession.connect();
-      const run = createRunFromOpts(targetSession, { runId: 'run-1' });
-      await run.start();
-      await run.loadProjection();
-
-      await run.pipe(streamOf({ type: 'text', text: 'tool-output' }, { type: 'text', text: 'plain' }));
-
-      const enc = targetCodec.lastEncoder();
-      expect(enc?.publishCalls).toHaveLength(2);
-      // First event: tool-output → messageId overridden to msg-X.
-      expect(enc?.publishCalls[0]?.opts?.messageId).toBe('msg-X');
-      // Second event: plain → no override, no messageId in per-write opts.
-      expect(enc?.publishCalls[1]?.opts?.messageId).toBeUndefined();
-      targetSession.close();
-    });
-
-    it('caller-supplied messageId wins over codec.resolveToolTarget', async () => {
-      const targetCodec = createMockCodec();
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked accessor
-      vi.mocked(targetCodec.resolveToolTarget).mockImplementation(() => 'codec-target');
-      const targetSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
-        client: createMockClient(channel),
-        channelName: 'test',
-        codec: targetCodec,
-      });
-      await targetSession.connect();
-      const run = createRunFromOpts(targetSession, { runId: 'run-1' });
-      await run.start();
-      await run.loadProjection();
-
-      await run.pipe(streamOf({ type: 'text', text: 'a' }), {
-        resolveWriteOptions: () => ({ messageId: 'caller-target' }),
-      });
-
-      const enc = targetCodec.lastEncoder();
-      expect(enc?.publishCalls[0]?.opts?.messageId).toBe('caller-target');
-      targetSession.close();
-    });
-
-    it('skips codec.resolveToolTarget when loadProjection has not been called', async () => {
-      const targetCodec = createMockCodec();
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked accessor
-      vi.mocked(targetCodec.resolveToolTarget).mockImplementation(() => 'codec-target');
-      const targetSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
-        client: createMockClient(channel),
-        channelName: 'test',
-        codec: targetCodec,
-      });
-      await targetSession.connect();
-      const run = createRunFromOpts(targetSession, { runId: 'run-1' });
-      await run.start();
-      // No loadProjection() call — pipe should NOT consult resolveToolTarget.
-
-      await run.pipe(streamOf({ type: 'text', text: 'a' }));
-
-      const enc = targetCodec.lastEncoder();
-      // No override fired; opts is undefined (the default).
-      expect(enc?.publishCalls[0]?.opts).toBeUndefined();
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked accessor
-      expect(vi.mocked(targetCodec.resolveToolTarget)).not.toHaveBeenCalled();
-      targetSession.close();
-    });
   });
 
   // -------------------------------------------------------------------------
@@ -1581,8 +1501,6 @@ describe('AgentSession', () => {
         getMessages: (p: TestProjection) => p.messages,
         createUserMessage: (m: TestMessage) => ({ kind: 'user-message' as const, message: m }),
         createRegenerate: (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }),
-        // eslint-disable-next-line unicorn/no-useless-undefined -- codec contract returns string | undefined
-        resolveToolTarget: () => undefined,
         createEncoder: vi.fn(() => createMockEncoder()),
         createDecoder: vi.fn(() => ({
           decode: () => {
@@ -1908,8 +1826,6 @@ describe('Run.messages', () => {
       getMessages: (p) => p.messages,
       createUserMessage: (m: TestMessage) => ({ kind: 'user-message' as const, message: m }),
       createRegenerate: (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }),
-      // eslint-disable-next-line unicorn/no-useless-undefined -- codec contract
-      resolveToolTarget: () => undefined,
       createEncoder: vi.fn(() => createMockEncoder()),
       createDecoder: vi.fn(() => ({ decode: () => ({ inputs: [], outputs: [] }) })),
     };

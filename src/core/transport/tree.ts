@@ -22,6 +22,7 @@ import type * as Ably from 'ably';
 import {
   HEADER_CODEC_MESSAGE_ID,
   HEADER_FORK_OF,
+  HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
@@ -496,6 +497,10 @@ export class DefaultTree<
     }
 
     const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
+    // The triggering input's codec-message-id, echoed by the agent on its
+    // outputs. Surfaced on the `output` event as the stream's causal routing
+    // key. Absent on optimistic local folds (no wire echo yet).
+    const inputCodecMessageId = headers[HEADER_INPUT_CODEC_MESSAGE_ID];
 
     // Fold inputs first, then outputs, preserving wire order.
     const all: (TInput | TOutput)[] = [...events.inputs, ...events.outputs];
@@ -572,7 +577,13 @@ export class DefaultTree<
       }
     }
 
-    this._emitter.emit('output', { runId: ownerRunId, codecMessageId, serial, events: events.outputs });
+    this._emitter.emit('output', {
+      runId: ownerRunId,
+      inputCodecMessageId,
+      codecMessageId,
+      serial,
+      events: events.outputs,
+    });
     if (this._structuralVersion !== structuralBefore) this._emitter.emit('update');
   }
 

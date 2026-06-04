@@ -47,8 +47,8 @@ const makeEmitter = (): {
 
 interface MockSession {
   session: VercelSession;
-  /** Emit a Tree `output` event. */
-  output: (runId: string, events: VercelOutput[]) => void;
+  /** Emit a Tree `output` event, optionally carrying a triggering input-codec-message-id. */
+  output: (runId: string, events: VercelOutput[], inputCodecMessageId?: string) => void;
   /** Emit a Tree `run` run-end event with the given reason. */
   runEnd: (runId: string, reason: string) => void;
   /** Emit a Tree `run` run-suspend event. */
@@ -69,8 +69,8 @@ const createMockSession = (): MockSession => {
 
   return {
     session,
-    output: (runId, events) => {
-      treeEmitter.emit('output', { runId, codecMessageId: 'm-1', serial: 's-1', events });
+    output: (runId, events, inputCodecMessageId) => {
+      treeEmitter.emit('output', { runId, inputCodecMessageId, codecMessageId: 'm-1', serial: 's-1', events });
     },
     runEnd: (runId, reason) => {
       treeEmitter.emit('run', {
@@ -136,6 +136,35 @@ describe('createRunOutputStream', () => {
 
     const events = await drain(stream);
     expect(events.map((e) => e.type)).toEqual(['finish']);
+  });
+
+  it('routes by input-codec-message-id independently of the runId', async () => {
+    const mock = createMockSession();
+    // Open the stream keyed by the triggering input id, with a placeholder
+    // runId the agent will not use (it mints its own).
+    const { stream } = createRunOutputStream(mock.session, 'run-placeholder', 'u-1');
+
+    // An output under a different (agent-minted) runId still routes here
+    // because it carries the matching input-codec-message-id.
+    mock.output('run-agent', [textDelta('hi')], 'u-1');
+    // An output for a different input is ignored even though no runId matches.
+    mock.output('run-agent', [textDelta('nope')], 'u-2');
+    mock.output('run-agent', [finish()], 'u-1');
+
+    const events = await drain(stream);
+    expect(events.map((e) => e.type)).toEqual(['text-delta', 'finish']);
+  });
+
+  it('still routes by runId when an output carries no input-codec-message-id', async () => {
+    const mock = createMockSession();
+    const { stream } = createRunOutputStream(mock.session, 'run-1', 'u-1');
+
+    // Optimistic local folds carry no input id; runId routing covers them.
+    mock.output('run-1', [textDelta('hi')]);
+    mock.output('run-1', [finish()]);
+
+    const events = await drain(stream);
+    expect(events.map((e) => e.type)).toEqual(['text-delta', 'finish']);
   });
 
   it('does not close on a run-suspend but closes on a terminal run-end', async () => {

@@ -106,6 +106,8 @@ interface MockRun {
   stream: ReadableStream<AI.UIMessageChunk>;
   runId: string;
   cancel: ReturnType<typeof vi.fn>;
+  /** The optimistic input codec-message-ids the stream may key on (empty in these mocks). */
+  optimisticCodecMessageIds: string[];
   /** Build the run's invocation pointer (the transport POSTs this to wake the agent). */
   toInvocation: () => Invocation;
   /** Emit a chunk as a Tree `output` event for this run (drives the consumer stream). */
@@ -120,6 +122,10 @@ const createMockRun = (runId: string, treeEmit: MockEmitter['emit']): MockRun =>
   stream: new ReadableStream<AI.UIMessageChunk>({ start: () => {} }),
   runId,
   cancel: vi.fn(),
+  // No optimistic inputs in these mock runs, so the stream keys purely on runId
+  // (the agent-minted `input-codec-message-id` routing is exercised in the
+  // run-output-stream unit tests).
+  optimisticCodecMessageIds: [],
   toInvocation: () => Invocation.fromJSON({ runId, inputEventId: '', sessionName: 'chat-1' }),
   enqueue: (chunk: AI.UIMessageChunk) => {
     treeEmit('output', { runId, codecMessageId: 'm-1', serial: 's-1', events: [chunk] });

@@ -581,8 +581,12 @@ export const createChatTransport = (
 
     // Build the consumer-facing stream from the Tree's events for this run.
     // Streaming is a useChat concern owned by the Vercel layer; the core
-    // session no longer exposes a per-run stream.
-    const runStream = createRunOutputStream(session, run.runId);
+    // session no longer exposes a per-run stream. Key it on the triggering
+    // input's codec-message-id (the last optimistic input — the one the agent
+    // echoes as `input-codec-message-id`) as well as the runId, so routing
+    // survives the agent minting the runId. Undefined for a regenerate (no
+    // optimistic input), which routes by runId.
+    const runStream = createRunOutputStream(session, run.runId, run.optimisticCodecMessageIds.at(-1));
 
     if (abortSignal) {
       const runId = run.runId;

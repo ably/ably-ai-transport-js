@@ -912,8 +912,7 @@ export class DefaultTree<
       // first start now (continuations re-enter via `ai-run-resume`, which
       // carries no structural metadata), so it is unconditionally
       // authoritative here. `parent` is the run's STRUCTURAL parent (its
-      // input node) — reachability and the reply→input edge read it; the
-      // run→run `parentRunId` derivation is gone (it was order-dependent).
+      // input node) — reachability and the reply→input edge read it.
       if (node.parentCodecMessageId === undefined && event.parent !== undefined) {
         node.parentCodecMessageId = event.parent;
         this._removeFromParentIndex(undefined, event.runId);
@@ -1040,9 +1039,6 @@ export class DefaultTree<
     const node: RunNode<TProjection> = {
       kind: 'run',
       runId: params.runId,
-      // Reachability uses parentCodecMessageId (structural); the run→run
-      // parentRunId derivation is retired in the two-node model.
-      parentRunId: undefined,
       parentCodecMessageId: params.parentCodecMessageId,
       forkOf: params.forkOf,
       regeneratesCodecMessageId: params.regeneratesCodecMessageId,

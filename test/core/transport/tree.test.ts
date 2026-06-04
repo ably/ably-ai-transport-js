@@ -58,8 +58,6 @@ const testCodec: Codec<TestInput, TestOutput, TestProjection, TestMessage> = {
   createDecoder: () => ({ decode: () => ({ inputs: [], outputs: [] }) }),
   createUserMessage: (message: TestMessage) => ({ kind: 'user-message', message }),
   createRegenerate: (target: string, parent: string) => ({ kind: 'regenerate', target, parent }),
-  // eslint-disable-next-line unicorn/no-useless-undefined -- the Codec contract requires returning undefined when no target is resolved
-  resolveToolTarget: () => undefined,
 };
 
 const silentLogger = makeLogger({ logLevel: LogLevel.Silent });

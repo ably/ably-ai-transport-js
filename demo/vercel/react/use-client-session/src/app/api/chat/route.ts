@@ -15,9 +15,9 @@
  * - Approval-required tools (getWeatherForecast): client publishes a
  *   `tool-approval-response` TEvent on Approve. The SDK overlays the
  *   `approval-responded` state. The tool's `needsApproval` returns false
- *   on the second pass, so streamText executes without re-pausing.
- *   `Run.pipe`'s `resolveToolTarget` hook redirects the resulting tool
- *   output back to the original assistant.
+ *   on the second pass, so streamText executes without re-pausing. The
+ *   codec reducer folds the resulting tool output onto the original
+ *   assistant by matching its `toolCallId`.
  */
 
 import { after } from 'next/server';

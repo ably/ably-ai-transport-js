@@ -14,9 +14,9 @@
  *   `run.messages` reflects the approval. The tool's `needsApproval`
  *   returns `false` once the matching `toolCallId` has an
  *   `approval-responded` part in the messages, so `streamText` executes
- *   it without re-pausing. `run.pipe`'s internal `resolveToolTarget`
- *   redirects the resulting tool-output wire message back to the original
- *   assistant message via `HEADER_CODEC_MESSAGE_ID`.
+ *   it without re-pausing. The codec reducer folds the resulting tool
+ *   output onto the original assistant message by matching its
+ *   `toolCallId`.
  */
 
 import { after } from 'next/server';

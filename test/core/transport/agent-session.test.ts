@@ -2599,8 +2599,8 @@ describe('Run.loadConversation', () => {
 
   it('terminates without hanging when a cycle is detected in the ancestor chain', async () => {
     // run-1's ai-run-start has HEADER_PARENT='msg-1', which is also owned by run-1
-    // (makeContentMsg('run-1','msg-1')). This makes codecMsgToRunId.get('msg-1') = 'run-1',
-    // so runMap.get('run-1').parentRunId = 'run-1' — a self-referential cycle.
+    // (makeContentMsg('run-1','msg-1')). The parent codec-message-id resolves back
+    // to run-1's own node — a self-referential cycle in the parent chain.
     const ch = createMockChannel();
     const codec = codecWithFunctionalDecoder();
     // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly

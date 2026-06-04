@@ -204,7 +204,7 @@ describe('Tree', () => {
       ]);
     });
 
-    it('records the structural parentCodecMessageId from the parent header (parentRunId is retired)', () => {
+    it('records the structural parentCodecMessageId from the parent header', () => {
       apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'q' }, serial: 's1' });
       apply(tree, {
         runId: 'R2',
@@ -213,10 +213,8 @@ describe('Tree', () => {
         message: { id: 'b', content: 'a' },
         serial: 's2',
       });
-      // Reachability now keys on the structural parent codec-message-id, not a
-      // run→run parentRunId derivation (always undefined in the two-node model).
+      // Reachability keys on the structural parent codec-message-id.
       expect(tree.getRunNode('R2')?.parentCodecMessageId).toBe('m1');
-      expect(tree.getRunNode('R2')?.parentRunId).toBeUndefined();
     });
 
     it('returns RunNode via getRunNode', () => {
@@ -434,15 +432,13 @@ describe('Tree', () => {
         serial: 's2',
       });
 
-      // R3 arrived first with parent=m2, but m2 (R2) hadn't been observed yet,
-      // so R3.parentRunId was undefined at create time. The tree resolves
-      // parentRunId at creation, not lazily. This is documented behaviour —
-      // out-of-order inserts may produce disconnected Run forests when
-      // parents arrive late. The fix for that is decode-history's
-      // re-ingestion pass; for live channels parents always arrive first.
-      // For this test we assert the flatten still includes every Run in
-      // startSerial order; reachability is derived from whatever
-      // parentRunIds were resolved.
+      // R3 arrived first with parent=m2, but m2 (R2) hadn't been observed yet.
+      // Reachability keys on the structural parentCodecMessageId, recorded at
+      // create time. This is documented behaviour — out-of-order inserts may
+      // produce disconnected Run forests when parents arrive late. The fix for
+      // that is decode-history's re-ingestion pass; for live channels parents
+      // always arrive first. For this test we assert the flatten still includes
+      // every Run in startSerial order.
       expect(flatRunIds(tree)).toContain('R1');
       expect(flatRunIds(tree)).toContain('R2');
       expect(flatRunIds(tree)).toContain('R3');
@@ -930,10 +926,9 @@ describe('Tree', () => {
         parent: 'u1',
         serial: 's3',
       });
-      // The two-node model backfills the structural parent codec-message-id
-      // (reachability keys on it); the run→run parentRunId derivation is retired.
+      // The two-node model backfills the structural parent codec-message-id;
+      // reachability keys on it.
       expect(tree.getRunNode('R2')?.parentCodecMessageId).toBe('u1');
-      expect(tree.getRunNode('R2')?.parentRunId).toBeUndefined();
     });
 
     it('backfills parent and forkOf the same way for edit runs that raced ahead of run-start', () => {
@@ -952,7 +947,7 @@ describe('Tree', () => {
         message: { id: 'user2', content: 'q-edit' },
         serial: 's2',
       });
-      expect(tree.getRunNode('R2')?.parentRunId).toBeUndefined();
+      expect(tree.getRunNode('R2')?.parentCodecMessageId).toBeUndefined();
       expect(tree.getRunNode('R2')?.forkOf).toBeUndefined();
       // run-start carries the canonical edit metadata.
       tree.applyRunLifecycle({
@@ -968,7 +963,7 @@ describe('Tree', () => {
 
     it('a run-resume re-entry leaves an existing run a reachable root (no self-parent cycle)', () => {
       // Regression guard for the disappearing user prompt / assistant bubble:
-      //   1. User sends u1 -> R1 created, R1.parentRunId = undefined (root run).
+      //   1. User sends u1 -> R1 created as a reachable root run.
       //   2. Agent streams a1 inside R1.
       //   3. A client-side tool resolution / approval re-enters R1.
       // Continuations now arrive as ai-run-resume, which carries no parent, so
@@ -989,7 +984,7 @@ describe('Tree', () => {
         message: { id: 'a1', content: 'calling tool' },
         serial: 's2',
       });
-      expect(tree.getRunNode('R1')?.parentRunId).toBeUndefined();
+      expect(tree.getRunNode('R1')?.parentCodecMessageId).toBeUndefined();
 
       tree.applyRunLifecycle({
         type: 'resume',
@@ -999,7 +994,7 @@ describe('Tree', () => {
         serial: 's3',
       });
 
-      expect(tree.getRunNode('R1')?.parentRunId).toBeUndefined();
+      expect(tree.getRunNode('R1')?.parentCodecMessageId).toBeUndefined();
       const flat = replyRuns(tree, new Map());
       expect(flat.map((n) => n.runId)).toEqual(['R1']);
     });

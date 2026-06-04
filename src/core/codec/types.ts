@@ -523,18 +523,21 @@ export interface Codec<
    */
   getMessages(projection: TProjection): CodecMessage<TMessage>[];
   /**
-   * Wrap a TMessage as the codec's well-known {@link UserMessage} variant
-   * suitable for publishing on the `ai-input` wire. Used by the client session's
-   * send path and `ClientSessionProvider`'s seed-message path to translate
-   * caller-provided TMessages into well-typed inputs.
+   * Wrap a TMessage as the codec's well-known {@link UserMessage} variant,
+   * returned as a `TInput` ready to publish on the `ai-input` wire. This is
+   * the public way to turn a caller-provided TMessage into an input for
+   * `View.send`; the client session's seed-message path uses it too. The
+   * returned value is a `UserMessage<TMessage>` member of the codec's
+   * `TInput` union — typed as `TInput` so callers need no cast.
    * @param message - The user's message in the codec's domain representation.
-   * @returns A {@link UserMessage} that fits the codec's `TInput` union.
+   * @returns A `TInput` (the codec's {@link UserMessage} variant).
    */
-  createUserMessage(message: TMessage): UserMessage<TMessage>;
+  createUserMessage(message: TMessage): TInput;
   /**
-   * Build a {@link Regenerate} for the codec. The View calls this from
-   * `regenerate(messageId)`; the input event is a signal (not itself a
-   * fork) that targets the assistant codec-message to be regenerated.
+   * Build a {@link Regenerate} for the codec, returned as a `TInput`. The
+   * View calls this from `regenerate(messageId)`; the input event is a
+   * signal (not itself a fork) that targets the assistant codec-message to
+   * be regenerated.
    *
    * The new Run is a CONTINUATION of the regenerated message's Run, not a
    * fork at the Run level. The message-level replacement (the new
@@ -542,7 +545,7 @@ export interface Codec<
    * projection-extraction step (Spec: AIT-CT13d).
    * @param target - The codec-message-id of the assistant being regenerated.
    * @param parent - The codec-message-id of the parent user message the new assistant threads under.
-   * @returns A {@link Regenerate} that fits the codec's `TInput` union.
+   * @returns A `TInput` (the codec's {@link Regenerate} variant).
    */
-  createRegenerate(target: string, parent: string): Regenerate;
+  createRegenerate(target: string, parent: string): TInput;
 }

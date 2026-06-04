@@ -10,7 +10,7 @@ import {
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
 } from '../../../src/constants.js';
-import type { Codec, CodecInputEvent } from '../../../src/core/codec/types.js';
+import type { Codec, CodecInputEvent, Regenerate, UserMessage } from '../../../src/core/codec/types.js';
 import type { TreeInternal } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
 import type { ConversationNode, InputNode, RunNode } from '../../../src/core/transport/types.js';
@@ -25,10 +25,10 @@ interface TestMessage {
   content: string;
 }
 
-interface TestInput extends CodecInputEvent {
-  kind: 'append-input';
-  message: TestMessage;
-}
+type TestInput =
+  | ({ kind: 'append-input'; message: TestMessage } & CodecInputEvent)
+  | UserMessage<TestMessage>
+  | Regenerate;
 
 type TestOutput = { type: 'append-message'; message: TestMessage } | { type: 'noop' } | { type: 'throw' };
 
@@ -48,8 +48,9 @@ const testCodec: Codec<TestInput, TestOutput, TestProjection, TestMessage> = {
       }
       return state;
     }
-    // TestInput has a single variant — `append-input` — so the narrow check
-    // is sufficient; the fold appends the carried message to the projection.
+    // Inputs: `append-input` / `user-message` carry a message; `regenerate`
+    // is a wire-only signal with nothing to fold.
+    if (event.kind === 'regenerate') return state;
     return { messages: [...state.messages, event.message] };
   },
   getMessages: (projection: TestProjection) => projection.messages.map((m) => ({ codecMessageId: m.id, message: m })),

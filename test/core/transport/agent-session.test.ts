@@ -28,11 +28,12 @@ import {
 import type {
   ChannelWriter,
   Codec,
-  CodecInputEvent,
   Decoder,
   Encoder,
   EncoderOptions,
   ReducerMeta,
+  Regenerate,
+  UserMessage,
   WriteOptions,
 } from '../../../src/core/codec/types.js';
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
@@ -53,10 +54,7 @@ import { createRunFromOpts } from '../../helper/run-from-opts.js';
 // ---------------------------------------------------------------------------
 
 /** Client-published input variants. */
-interface TestInput extends CodecInputEvent {
-  kind: 'user-message';
-  message: TestMessage;
-}
+type TestInput = UserMessage<TestMessage> | Regenerate;
 
 /** Agent-published output variants. */
 interface TestOutput {
@@ -286,9 +284,10 @@ const captureWarnLogger = (): {
 const codecWithFunctionalDecoder = (): Codec<TestInput, TestOutput, TestProjection, TestMessage> => ({
   init: (): TestProjection => ({ messages: [] }),
   fold: (state: TestProjection, event: TestInput | TestOutput): TestProjection => {
-    // TestInput has only the user-message variant; outputs (TestOutput) pass
-    // through unchanged.
+    // Inputs: `user-message` carries a message; `regenerate` is a wire-only
+    // signal. Outputs (TestOutput) pass through unchanged.
     if ('kind' in event) {
+      if (event.kind === 'regenerate') return state;
       return { messages: [...state.messages, { id: event.message.id, content: event.message.content }] };
     }
     return state;

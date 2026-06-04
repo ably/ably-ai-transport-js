@@ -182,14 +182,7 @@ class DefaultClientSession<
           [HEADER_ROLE]: 'user',
         };
         if (prevMsgId) seedHeaders[HEADER_PARENT] = prevMsgId;
-        // CAST: UserMessage<TMessage> is the well-known input variant
-        // produced by `codec.createUserMessage`; TInput is the codec's full
-        // input union, of which UserMessage<TMessage> is one member.
-        // TypeScript can't see the membership through the generic boundary.
-        this._tree.applyMessage(
-          { inputs: [this._codec.createUserMessage(msg) as unknown as TInput], outputs: [] },
-          seedHeaders,
-        );
+        this._tree.applyMessage({ inputs: [this._codec.createUserMessage(msg)], outputs: [] }, seedHeaders);
         prevMsgId = codecMessageId;
       }
     }

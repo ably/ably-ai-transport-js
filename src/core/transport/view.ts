@@ -705,12 +705,7 @@ export class DefaultView<
     // session mints a fresh codec-message-id per input; the caller's
     // `message.id` is preserved on the reconstructed message but is never
     // used for correlation.
-    // CAST: UserMessage<TMessage> is the well-known input variant produced
-    // by `codec.createUserMessage`; TInput is the codec's full input union,
-    // of which UserMessage<TMessage> is one member. The cast through
-    // `unknown` is needed because TS can't see the membership through the
-    // generic boundary.
-    const items: TInput[] = list.map((m) => this._codec.createUserMessage(m) as unknown as TInput);
+    const items: TInput[] = list.map((m) => this._codec.createUserMessage(m));
     return this.sendInput(items, options);
   }
 
@@ -856,9 +851,7 @@ export class DefaultView<
     // `parent`). The agent's input-event lookup catches the wire signal;
     // no tree-upsert / projection fold runs locally.
     const regenerate = this._codec.createRegenerate(regenAnchorMsgId, parentCodecMessageId);
-    // CAST: Regenerate is a well-known variant of TInput, but TS can't
-    // verify membership through the generic boundary without help.
-    const result = await this._sendDelegate([regenerate as unknown as TInput], sendOptions, parentCodecMessageId);
+    const result = await this._sendDelegate([regenerate], sendOptions, parentCodecMessageId);
     this._applyRegenerateAutoSelect(result, regenAnchorMsgId);
     return result;
   }

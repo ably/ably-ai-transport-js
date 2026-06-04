@@ -1,8 +1,6 @@
 // Core transport
 export type {
   ActiveRun,
-  AddMessageOptions,
-  AddMessagesResult,
   AgentSession,
   AgentSessionOptions,
   BranchSelection,

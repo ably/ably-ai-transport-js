@@ -29,7 +29,6 @@ import {
   HEADER_INPUT_CLIENT_ID,
   HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
-  HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
@@ -645,74 +644,6 @@ describe('AgentSession integration', () => {
     const text2 = m2[0]?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
     expect(text1?.text).toBe('Shared response');
     expect(text2?.text).toBe('Shared response');
-  });
-
-  it('addMessages returns codec-message-ids and explicit parent links assistant', async () => {
-    const channelName = uniqueChannelName('st-add-msgs');
-    const serverClient = ablyRealtimeClient();
-    const subClient = ablyRealtimeClient();
-    const subChannel = subClient.channels.get(channelName);
-
-    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
-      client: serverClient,
-      channelName,
-      codec: UIMessageCodec,
-    });
-    await session.connect();
-
-    const rawMessages: Ably.InboundMessage[] = [];
-    let resolveFinish: () => void;
-    const gotFinish = new Promise<void>((r) => {
-      resolveFinish = r;
-    });
-
-    const decoder = UIMessageCodec.createDecoder();
-    await subChannel.subscribe((msg) => {
-      rawMessages.push(msg);
-      const { outputs } = decoder.decode(msg);
-      if (outputs.some((e) => e.type === 'finish')) resolveFinish();
-    });
-
-    const run = createRunFromOpts(session, { runId: 'run-add-1' });
-    await run.start();
-
-    const userMessage: AI.UIMessage = {
-      id: 'user-msg-1',
-      role: 'user',
-      parts: [{ type: 'text', text: 'What is the weather?' }],
-    };
-    const { codecMessageIds } = await run.addMessages([
-      {
-        kind: 'message',
-        message: userMessage,
-        codecMessageId: crypto.randomUUID(),
-        parentId: undefined,
-        forkOf: undefined,
-        headers: {},
-        serial: undefined,
-      },
-    ]);
-
-    await run.pipe(textResponseStream('msg-reply-1', 'text-reply-1', 'Sunny!'), {
-      parent: codecMessageIds.at(-1),
-    });
-    await run.end('complete');
-
-    await gotFinish;
-
-    const userRoleMsg = rawMessages.find((m) => getHeaders(m)[HEADER_ROLE] === 'user');
-    expect(userRoleMsg).toBeDefined();
-    if (!userRoleMsg) return;
-    const userHeaders = getHeaders(userRoleMsg);
-    expect(userHeaders[HEADER_RUN_ID]).toBe('run-add-1');
-    const userCodecMessageId = userHeaders[HEADER_CODEC_MESSAGE_ID];
-    expect(userCodecMessageId).toBeDefined();
-
-    const assistantMsg = rawMessages.find((m) => getHeaders(m)[HEADER_ROLE] === 'assistant');
-    expect(assistantMsg).toBeDefined();
-    if (!assistantMsg) return;
-    const assistantHeaders = getHeaders(assistantMsg);
-    expect(assistantHeaders[HEADER_PARENT]).toBe(userCodecMessageId);
   });
 
   it('invokes onError with ChannelContinuityLost when the channel detaches', async () => {

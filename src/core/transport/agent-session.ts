@@ -6,8 +6,8 @@
  * single channel subscription — no separate cancel manager needed.
  *
  * The session exposes a single factory method — `createRun()` — which returns
- * a Run object with explicit lifecycle methods: start(), addMessages(),
- * pipe(), and end().
+ * a Run object with explicit lifecycle methods: start(), pipe(), addEvents(),
+ * and end().
  */
 
 import * as Ably from 'ably';
@@ -29,7 +29,7 @@ import {
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
-import { compareBySerial, getTransportHeaders, mergeHeaders } from '../../utils.js';
+import { compareBySerial, getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent, WriteOptions } from '../codec/types.js';
 import { buildTransportHeaders } from './headers.js';
@@ -38,8 +38,6 @@ import { pipeStream } from './pipe-stream.js';
 import type { RunManager } from './run-manager.js';
 import { createRunManager } from './run-manager.js';
 import type {
-  AddMessageOptions,
-  AddMessagesResult,
   AgentSession,
   AgentSessionOptions,
   CancelRequest,
@@ -1079,71 +1077,6 @@ class DefaultAgentSession<
         }
 
         logger?.debug('Run.start(); run started', { runId, inputEventId });
-      },
-
-      // Spec: AIT-ST5, AIT-ST5a, AIT-ST5b, AIT-ST5c
-      addMessages: async (nodes: MessageNode<TMessage>[], opts?: AddMessageOptions): Promise<AddMessagesResult> => {
-        logger?.trace('Run.addMessages();', { runId, count: nodes.length });
-
-        await requireConnected('addMessages');
-
-        if (state === RunState.INITIALIZED) {
-          throw new Ably.ErrorInfo(
-            `unable to add messages; start() must be called before addMessages() (run ${runId})`,
-            ErrorCode.InvalidArgument,
-            400,
-          );
-        }
-
-        const codecMessageIds: string[] = [];
-
-        try {
-          for (const node of nodes) {
-            // Build transport headers from the node's typed fields, then merge
-            // any extra headers from the node (e.g. domain-specific headers).
-            const headers = mergeHeaders(
-              buildTransportHeaders({
-                role: 'user',
-                runId,
-                codecMessageId: node.codecMessageId,
-                runClientId: opts?.clientId,
-                parent: node.parentId,
-                forkOf: node.forkOf,
-                inputEventId,
-                inputClientId: resolvedInputClientId,
-                inputCodecMessageId: resolvedInputCodecMessageId,
-              }),
-              node.headers,
-            );
-
-            const encoder = codec.createEncoder(channel, {
-              extras: { headers },
-              onMessage,
-            });
-
-            // CAST: UserMessage<TMessage> is the well-known input variant
-            // produced by `codec.createUserMessage`; TInput is the codec's
-            // full input union, of which UserMessage<TMessage> is one
-            // member. TypeScript can't see the membership through the
-            // generic boundary.
-            const userInput = codec.createUserMessage(node.message) as unknown as TInput;
-            await encoder.publishInput(userInput, opts?.clientId ? { clientId: opts.clientId } : undefined);
-
-            codecMessageIds.push(node.codecMessageId);
-          }
-        } catch (error) {
-          const errInfo = new Ably.ErrorInfo(
-            `unable to publish messages for run ${runId}; ${error instanceof Error ? error.message : String(error)}`,
-            ErrorCode.RunLifecycleError,
-            500,
-            error instanceof Ably.ErrorInfo ? error : undefined,
-          );
-          logger?.error('Run.addMessages(); publish failed', { runId });
-          throw errInfo;
-        }
-
-        logger?.debug('Run.addMessages(); messages published', { runId, count: nodes.length });
-        return { codecMessageIds };
       },
 
       // Spec: AIT-ST5c

@@ -1,8 +1,6 @@
 // Shared types
 export type {
   ActiveRun,
-  AddMessageOptions,
-  AddMessagesResult,
   AgentSession,
   AgentSessionOptions,
   BranchSelection,

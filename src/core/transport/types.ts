@@ -841,6 +841,16 @@ export interface OutputEvent<TOutput extends CodecOutputEvent> {
   /** The runId the outputs were folded into. */
   runId: string;
   /**
+   * The codec-message-id of the input event that triggered this run — the
+   * agent's `input-codec-message-id` header. This is the stable key the client
+   * owns from send time (before the agent mints the runId), so the output
+   * stream can attribute outputs to the request that produced them. Distinct
+   * from {@link runId}: causal (which input produced these outputs) rather than
+   * the run's own identity. `undefined` when the carrying message had no such
+   * header — e.g. a purely-optimistic local fold with no wire echo yet.
+   */
+  inputCodecMessageId: string | undefined;
+  /**
    * The `codec-message-id` the outputs were published under, or `undefined`
    * when the message carried none.
    */

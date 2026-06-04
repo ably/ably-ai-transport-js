@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   HEADER_CODEC_MESSAGE_ID,
   HEADER_FORK_OF,
+  HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_PARENT,
   HEADER_ROLE,
@@ -80,6 +81,7 @@ interface ApplyOpts {
   invocationId?: string;
   clientId?: string;
   runContinue?: boolean;
+  inputCodecMessageId?: string;
   serial?: string;
   message?: TestMessage;
   /** Override events entirely. When set, `message` is ignored. */
@@ -98,6 +100,7 @@ const apply = (tree: TreeInternal<TestInput, TestOutput, TestProjection>, opts: 
   if (opts.invocationId) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.clientId) h[HEADER_RUN_CLIENT_ID] = opts.clientId;
   if (opts.runContinue) h[HEADER_RUN_CONTINUE] = 'true';
+  if (opts.inputCodecMessageId) h[HEADER_INPUT_CODEC_MESSAGE_ID] = opts.inputCodecMessageId;
 
   const events: TreeEvent[] = opts.events ?? (opts.message ? [{ type: 'append-message', message: opts.message }] : []);
   const inputs = events.filter((e): e is TestInput => 'kind' in e);
@@ -1360,6 +1363,26 @@ describe('Tree', () => {
       apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
       expect(handler).toHaveBeenCalledWith({
         runId: 'R1',
+        inputCodecMessageId: undefined,
+        codecMessageId: 'm1',
+        serial: 's1',
+        events: [{ type: 'append-message', message: { id: 'a', content: 'hi' } }],
+      });
+    });
+
+    it('emits output carrying the triggering input-codec-message-id from the wire', () => {
+      const handler = vi.fn();
+      tree.on('output', handler);
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm1',
+        inputCodecMessageId: 'u1',
+        message: { id: 'a', content: 'hi' },
+        serial: 's1',
+      });
+      expect(handler).toHaveBeenCalledWith({
+        runId: 'R1',
+        inputCodecMessageId: 'u1',
         codecMessageId: 'm1',
         serial: 's1',
         events: [{ type: 'append-message', message: { id: 'a', content: 'hi' } }],
@@ -1375,7 +1398,13 @@ describe('Tree', () => {
         events: [{ kind: 'append-input', message: { id: 'a', content: 'hi' } }],
         serial: 's1',
       });
-      expect(handler).toHaveBeenCalledWith({ runId: 'R1', codecMessageId: 'm1', serial: 's1', events: [] });
+      expect(handler).toHaveBeenCalledWith({
+        runId: 'R1',
+        inputCodecMessageId: undefined,
+        codecMessageId: 'm1',
+        serial: 's1',
+        events: [],
+      });
     });
 
     it('emits output with undefined serial for an optimistic fold', () => {
@@ -1384,6 +1413,7 @@ describe('Tree', () => {
       apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' } });
       expect(handler).toHaveBeenCalledWith({
         runId: 'R1',
+        inputCodecMessageId: undefined,
         codecMessageId: 'm1',
         serial: undefined,
         events: [{ type: 'append-message', message: { id: 'a', content: 'hi' } }],

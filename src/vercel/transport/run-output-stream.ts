@@ -25,7 +25,7 @@
 import * as Ably from 'ably';
 import type * as AI from 'ai';
 
-import type { ClientSession } from '../../core/transport/types.js';
+import type { ClientSession, OutputEvent } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../codec/index.js';
 
@@ -58,9 +58,17 @@ export interface RunOutputStream {
  * Tree doesn't surface (local cancel, POST failure).
  * @param session - The Vercel client session whose Tree to observe.
  * @param runId - The run whose outputs to project.
+ * @param inputCodecMessageId - The triggering input's codec-message-id, when
+ *   known at open time. An output routes to this stream if it carries this id,
+ *   independently of the runId — the key the client owns before the agent
+ *   mints the runId. Omit to route by runId alone.
  * @returns The stream and its external settle handles.
  */
-export const createRunOutputStream = (session: VercelSession, runId: string): RunOutputStream => {
+export const createRunOutputStream = (
+  session: VercelSession,
+  runId: string,
+  inputCodecMessageId?: string,
+): RunOutputStream => {
   const holder: { controller?: ReadableStreamDefaultController<VercelOutput> } = {};
   // ReadableStream's start() runs synchronously, so the controller is captured
   // before the constructor returns.
@@ -81,6 +89,15 @@ export const createRunOutputStream = (session: VercelSession, runId: string): Ru
       500,
     );
   }
+
+  // Route an output to this stream when it carries the run's runId, or — the
+  // arm that outlives the runId once the agent mints it — when it carries the
+  // triggering input's codec-message-id this stream was opened for. Today the
+  // runId arm resolves every output (the client mints the runId), so the input
+  // arm only ever co-fires; the flip drops the runId arm, leaving input-id
+  // routing alone.
+  const matchesOutput = (event: OutputEvent<VercelOutput>): boolean =>
+    event.runId === runId || (inputCodecMessageId !== undefined && event.inputCodecMessageId === inputCodecMessageId);
 
   let settled = false;
   const teardown = (): void => {
@@ -110,7 +127,7 @@ export const createRunOutputStream = (session: VercelSession, runId: string): Ru
 
   unsubscribe.push(
     session.tree.on('output', (event) => {
-      if (event.runId !== runId) return;
+      if (!matchesOutput(event)) return;
       for (const output of event.events) {
         try {
           controller.enqueue(output);

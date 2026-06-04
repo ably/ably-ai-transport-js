@@ -20,8 +20,8 @@ Element.prototype.scrollIntoView = () => {};
 
 let setMockViewMessages: ((messages: AI.UIMessage[]) => void) | null = null;
 
-const mockSendMessage = vi.fn(
-  (_messages: AI.UIMessage | AI.UIMessage[], _opts?: SendOptions): Promise<ActiveRun> =>
+const mockSend = vi.fn(
+  (_input: VercelInput | VercelInput[], _opts?: SendOptions): Promise<ActiveRun> =>
     Promise.resolve({
       // The triggering input's codec-message-id — the synchronous routing
       // handle the client owns the moment it publishes.
@@ -73,8 +73,7 @@ vi.mock('../providers', () => ({
         selectSibling: () => {},
         runOf: () => undefined,
         run: () => undefined,
-        sendMessage: mockSendMessage,
-        sendInput: vi.fn(),
+        send: mockSend,
         regenerate: vi.fn(),
         edit: vi.fn(),
         on: () => () => {},
@@ -105,7 +104,7 @@ const assistantText = (text: string): AI.UIMessage => ({
 
 describe('<Chat>', () => {
   beforeEach(() => {
-    mockSendMessage.mockClear();
+    mockSend.mockClear();
     // The demo wakes the agent by POSTing the invocation after each send.
     // Stub fetch so that POST succeeds rather than hitting the network; the
     // agent route returns the minted invocation-id, which wakeAgent reads.
@@ -120,7 +119,7 @@ describe('<Chat>', () => {
     vi.unstubAllGlobals();
   });
 
-  it('mounts, sends the user input via view.sendMessage, and renders messages pushed through the view', async () => {
+  it('mounts, sends the user input via view.send, and renders messages pushed through the view', async () => {
     render(
       <Chat
         chatId="ai:test"
@@ -136,12 +135,14 @@ describe('<Chat>', () => {
     fireEvent.submit(form);
 
     await waitFor(() => {
-      expect(mockSendMessage).toHaveBeenCalledTimes(1);
+      expect(mockSend).toHaveBeenCalledTimes(1);
     });
-    const sent = mockSendMessage.mock.calls[0][0];
-    const sentMessages = Array.isArray(sent) ? sent : [sent];
-    const sentText = sentMessages.flatMap((m) =>
-      m.parts.filter((p): p is AI.TextUIPart => p.type === 'text').map((p) => p.text),
+    const sent = mockSend.mock.calls[0][0];
+    const sentInputs = Array.isArray(sent) ? sent : [sent];
+    const sentText = sentInputs.flatMap((i) =>
+      i.kind === 'user-message'
+        ? i.message.parts.filter((p): p is AI.TextUIPart => p.type === 'text').map((p) => p.text)
+        : [],
     );
     expect(sentText).toContain('hello');
 

@@ -1,19 +1,16 @@
 import type { ActiveRun } from '@ably/ai-transport';
-import type { VercelInput } from '@ably/ai-transport/vercel';
 import type { UIMessage } from 'ai';
 
-/** Construct a user UIMessage from a text string. */
+/**
+ * Construct a user UIMessage from a text string. Callers wrap it for the
+ * wire at the call site, e.g. `view.send(UIMessageCodec.createUserMessage(userMessage(text)))`.
+ */
 export function userMessage(text: string): UIMessage {
   return {
     id: crypto.randomUUID(),
     role: 'user',
     parts: [{ type: 'text', text }],
   };
-}
-
-/** Construct a UserMessage TInput ready for view.sendInput. */
-export function userMessageEvent(text: string): VercelInput {
-  return { kind: 'user-message', message: userMessage(text) };
 }
 
 /** Shape of the agent endpoint's JSON response. */
@@ -33,7 +30,7 @@ interface WakeAgentResult {
  * HTTP response. The same ids also arrive on the channel as `ai-run-start`,
  * which is how the client resolves `run.runId` without reading this response.
  * @param api - The agent endpoint URL.
- * @param run - The run returned by `view.sendMessage` / `sendInput` / `regenerate` / `edit`.
+ * @param run - The run returned by `view.send` / `regenerate` / `edit`.
  * @returns The agent-minted run-id and invocation-id read back from the response.
  * @throws If the endpoint responds with a non-JSON body (e.g. an error page).
  */

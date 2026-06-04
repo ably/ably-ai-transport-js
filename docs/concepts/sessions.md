@@ -30,7 +30,7 @@ sequenceDiagram
 3. Your endpoint creates a run on the agent session, which reads the input off the channel (via rewind), calls the LLM, and pipes the response stream through the encoder to the channel.
 4. The client session receives messages from the channel subscription, decodes them through the codec, and updates the conversation state.
 
-The invocation POST is a cheap, retryable pointer — it carries only identifiers (`runId`, `inputEventId`, `sessionName`), not the conversation, which the agent reads from the channel. The agent mints the `invocationId` (one per request) and returns it on the response. The streamed output is available immediately via the channel subscription, not from the HTTP response body.
+The invocation POST is a cheap, retryable pointer — it carries only identifiers (`inputEventId`, `sessionName`, and `runId` only for a continuation), not the conversation, which the agent reads from the channel. A fresh run omits `runId`: the agent mints both the `runId` (for a fresh run) and the `invocationId` (one per request) and returns them on the response. The streamed output is available immediately via the channel subscription, not from the HTTP response body.
 
 ## Session lifecycle
 
@@ -95,8 +95,8 @@ view.on('update', () => {
 });
 
 // For raw per-event granularity, subscribe to the tree's `output` event
-// (keyed by runId). Framework adapters like Vercel's useChat build a
-// ReadableStream from it; most apps use the view instead.
+// (routed by inputCodecMessageId). Framework adapters like Vercel's useChat
+// build a ReadableStream from it; most apps use the view instead.
 ```
 
 In React, `ClientSessionProvider` creates the session and `useClientSession` reads it from context (the app still POSTs the invocation itself, as above):

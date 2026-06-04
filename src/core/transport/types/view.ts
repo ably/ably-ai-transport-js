@@ -204,30 +204,26 @@ export interface View<TInput extends CodecInputEvent, TMessage> {
   // --- Write operations ---
 
   /**
-   * Send one or more user messages and start a new run. Each TMessage is
-   * wrapped into a `UserMessage` TInput via `Codec.createUserMessage`
-   * before being published, so callers can pass TMessage values directly
-   * without manually constructing the input shape.
+   * Send one or more TInputs on the channel and fire a POST. Each TInput
+   * carries its own routing metadata (`parent` / `target` / `codecMessageId`)
+   * via the {@link CodecInputEvent} base; the SDK reads those fields
+   * directly without runtime classification.
+   *
+   * To send a fresh user message, wrap the domain message with
+   * {@link Codec.createUserMessage} and pass the result here, e.g.
+   * `view.send(codec.createUserMessage(message))`.
+   *
+   * Convention: a send containing at least one `UserMessage` is a
+   * fresh send (mints a new `runId`). A send containing only
+   * tool-resolution inputs is a continuation — pair with
+   * `options.runId` to extend a suspended run.
    *
    * The parent is auto-computed from this view's selected branch unless
    * overridden. The HTTP POST is fire-and-forget — the returned stream is
    * available immediately. If the POST fails, the error is surfaced via
    * the session's `on("error")` and the stream is errored.
    */
-  sendMessage(messages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveRun>;
-
-  /**
-   * Send one or more TInputs on the channel and fire a POST. Each TInput
-   * carries its own routing metadata (`parent` / `target` / `codecMessageId`)
-   * via the {@link CodecInputEvent} base; the SDK reads those fields
-   * directly without runtime classification.
-   *
-   * Convention: a send containing at least one `UserMessage` is a
-   * fresh send (mints a new `runId`). A send containing only
-   * tool-resolution inputs is a continuation — pair with
-   * `options.runId` to extend a suspended run.
-   */
-  sendInput(events: TInput | TInput[], options?: SendOptions): Promise<ActiveRun>;
+  send(events: TInput | TInput[], options?: SendOptions): Promise<ActiveRun>;
 
   /**
    * Regenerate an assistant message. Creates a new run that forks the

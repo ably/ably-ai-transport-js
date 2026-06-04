@@ -858,17 +858,17 @@ describe('AgentSession integration', () => {
     await clientSession.connect();
 
     try {
-      const activeRun = await clientSession.view.sendMessage([
-        {
+      const activeRun = await clientSession.view.send([
+        UIMessageCodec.createUserMessage({
           id: 'user-multi-1',
           role: 'user',
           parts: [{ type: 'text', text: 'First' }],
-        },
-        {
+        }),
+        UIMessageCodec.createUserMessage({
           id: 'user-multi-2',
           role: 'user',
           parts: [{ type: 'text', text: 'Second' }],
-        },
+        }),
       ]);
 
       // The agent is the run-id authority: it mints the reply run-id and

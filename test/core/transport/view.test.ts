@@ -721,26 +721,9 @@ describe('DefaultView', () => {
   // -------------------------------------------------------------------------
 
   describe('write operations', () => {
-    it('sendMessage wraps each TMessage via codec.createUserMessage and forwards to delegate', async () => {
-      await view.sendMessage({ id: 'a', content: 'hello' });
-      expect(sendDelegate).toHaveBeenCalledTimes(1);
-      const call = vi.mocked(sendDelegate).mock.calls[0];
-      if (!call) throw new Error('expected delegate call');
-      const events = call[0];
-      expect(events).toHaveLength(1);
-      // sendMessage wraps the TMessage as a user-message input without
-      // threading any codec-message-id — the session mints one at send time.
-      // The wrapped UserMessage carries the original message verbatim.
-      expect(events[0]).toMatchObject({
-        kind: 'user-message',
-        message: { id: 'a', content: 'hello' },
-      });
-      expect(events[0]).not.toHaveProperty('codecMessageId');
-    });
-
-    it('sendMessage forwards parentCodecMessageId', async () => {
+    it('send forwards parentCodecMessageId', async () => {
       apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'first' }, serial: 's1' });
-      await view.sendMessage({ id: 'b', content: 'second' });
+      await view.send({ kind: 'user-message', message: { id: 'b', content: 'second' } });
 
       const call = vi.mocked(sendDelegate).mock.calls[0];
       if (!call) throw new Error('expected delegate call');
@@ -748,22 +731,22 @@ describe('DefaultView', () => {
       expect(call[2]).toBe('m1');
     });
 
-    it('sendMessage with empty visible chain passes undefined parentCodecMessageId', async () => {
-      await view.sendMessage({ id: 'a', content: 'hi' });
+    it('send with empty visible chain passes undefined parentCodecMessageId', async () => {
+      await view.send({ kind: 'user-message', message: { id: 'a', content: 'hi' } });
       const call = vi.mocked(sendDelegate).mock.calls[0];
       if (!call) throw new Error('expected delegate call');
       expect(call[2]).toBeUndefined();
     });
 
-    it('sendMessage forwards options through to the delegate', async () => {
+    it('send forwards options through to the delegate', async () => {
       const opts = { runId: 'R-explicit', clientId: 'c-explicit' };
-      await view.sendMessage({ id: 'a', content: 'hi' }, opts);
+      await view.send({ kind: 'user-message', message: { id: 'a', content: 'hi' } }, opts);
       const call = vi.mocked(sendDelegate).mock.calls[0];
       if (!call) throw new Error('expected delegate call');
       expect(call[1]).toBe(opts);
     });
 
-    it('sendMessage uses view-local branch selection as history context', async () => {
+    it('send uses view-local branch selection as history context', async () => {
       // Build R1 (user) → R2 (assistant) with sibling R2alt at the assistant level.
       apply(tree, {
         runId: 'R1',
@@ -794,7 +777,7 @@ describe('DefaultView', () => {
       // to R2alt (anchor a1, index 1) and verify the delegate sees R2alt's
       // projection in history.
       view.selectSibling('a1', 1);
-      await view.sendMessage({ id: 'd', content: 'next' });
+      await view.send({ kind: 'user-message', message: { id: 'd', content: 'next' } });
 
       const call = vi.mocked(sendDelegate).mock.calls[0];
       if (!call) throw new Error('expected delegate call');
@@ -802,14 +785,14 @@ describe('DefaultView', () => {
       expect(call[2]).toBe('a2');
     });
 
-    it('sendInput normalises a single TInput', async () => {
-      await view.sendInput({ kind: 'user-message', message: { id: 'a', content: 'hi' } });
+    it('send normalises a single TInput', async () => {
+      await view.send({ kind: 'user-message', message: { id: 'a', content: 'hi' } });
       const events = vi.mocked(sendDelegate).mock.calls[0]?.[0];
       expect(events).toEqual([{ kind: 'user-message', message: { id: 'a', content: 'hi' } }]);
     });
 
-    it('sendInput normalises a TInput[] input', async () => {
-      await view.sendInput([
+    it('send normalises a TInput[] input', async () => {
+      await view.send([
         { kind: 'user-message', message: { id: 'a', content: 'hi' } },
         { kind: 'user-message', message: { id: 'b', content: 'bye' } },
       ]);
@@ -820,14 +803,14 @@ describe('DefaultView', () => {
       ]);
     });
 
-    it('sendInput forwards an input with a pinned codecMessageId targeting an existing message', async () => {
+    it('send forwards an input with a pinned codecMessageId targeting an existing message', async () => {
       // Inputs whose `codecMessageId` is set target an existing message
       // (continuation tool resolutions, approval responses). The View passes
       // them straight through — the routing field stays on the input itself.
       const input: TestInput[] = [
         { kind: 'user-message', message: { id: 'a', content: 'hi' }, codecMessageId: 'override' },
       ];
-      await view.sendInput(input);
+      await view.send(input);
       const events = vi.mocked(sendDelegate).mock.calls[0]?.[0];
       expect(events).toEqual(input);
     });
@@ -1977,9 +1960,9 @@ describe('DefaultView', () => {
       expect(onClose).toHaveBeenCalled();
     });
 
-    it('makes sendInput reject with InvalidArgument after close', async () => {
+    it('makes send reject with InvalidArgument after close', async () => {
       view.close();
-      await expect(view.sendInput({ kind: 'user-message', message: { id: 'a', content: 'hi' } })).rejects.toThrow(
+      await expect(view.send({ kind: 'user-message', message: { id: 'a', content: 'hi' } })).rejects.toThrow(
         /view is closed/,
       );
     });

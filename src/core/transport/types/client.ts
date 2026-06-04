@@ -87,8 +87,8 @@ export interface SendOptions {
 // ---------------------------------------------------------------------------
 
 /**
- * A handle to an active client-side run, returned by `sendMessage()`,
- * `sendInput()`, `regenerate()`, and `edit()`.
+ * A handle to an active client-side run, returned by `send()`,
+ * `regenerate()`, and `edit()`.
  *
  * The core no longer exposes a per-run output stream — streaming is a
  * consumer-layer concern (e.g. the Vercel ChatTransport builds a stream from
@@ -167,8 +167,8 @@ export interface ClientSession<
 
   /**
    * Subscribe to the channel and (implicitly) attach. Idempotent —
-   * subsequent calls return the same promise. `sendMessage()`,
-   * `sendInput()`, `regenerate()`, `edit()`, `update()`, and `cancel()`
+   * subsequent calls return the same promise. `send()`, `regenerate()`,
+   * `edit()`, `update()`, and `cancel()`
    * throw `InvalidArgument` until `connect()` resolves.
    */
   connect(): Promise<void>;

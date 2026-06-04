@@ -319,7 +319,8 @@ export interface CodecInputEvent {
 /**
  * Well-known input variant: a new user message in the codec's domain
  * representation. Pinned `kind: 'user-message'`. Produced by the SDK's
- * `Codec.createUserMessage` factory and surfaced via `View.sendMessage`.
+ * `Codec.createUserMessage` factory and published via `View.send`
+ * (e.g. `view.send(codec.createUserMessage(message))`).
  * @template TMessage - The codec's per-message domain type.
  */
 export interface UserMessage<TMessage> extends CodecInputEvent {

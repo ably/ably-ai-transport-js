@@ -441,7 +441,7 @@ describe('ClientSession', () => {
         channelName: 'test-channel',
         codec: createMockCodec(),
       });
-      await expect(s.view.sendInput({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
+      await expect(s.view.send({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
         ErrorCode.InvalidArgument,
       );
       await s.close();
@@ -530,7 +530,7 @@ describe('ClientSession', () => {
 
   describe('send', () => {
     it('returns an ActiveRun with a synchronous inputCodecMessageId, runId promise and cancel', async () => {
-      const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      const run = await fix.session.view.send({ kind: 'user-message', text: 'hi' });
       // The agent mints the run-id, so it is a promise; the synchronous routing
       // key (the triggering input's codec-message-id) is known immediately.
       expect(typeof run.inputCodecMessageId).toBe('string');
@@ -539,7 +539,7 @@ describe('ClientSession', () => {
     });
 
     it('inserts an optimistic user message into the tree', async () => {
-      await fix.session.view.sendInput({ kind: 'user-message', text: 'hello' });
+      await fix.session.view.send({ kind: 'user-message', text: 'hello' });
       const messages = fix.session.view.getMessages();
       expect(messages).toHaveLength(1);
       expect(messages[0]?.content).toBe('hello');
@@ -547,7 +547,7 @@ describe('ClientSession', () => {
 
     it('publishes the user-message TInput on the channel via encoder.publishInput with transport headers', async () => {
       const before = fix.codec.lastEncoder()?.publishCalls.length ?? 0;
-      await fix.session.view.sendInput({ kind: 'user-message', text: 'hello' });
+      await fix.session.view.send({ kind: 'user-message', text: 'hello' });
 
       const enc = fix.codec.lastEncoder();
       expect(enc).toBeDefined();
@@ -579,7 +579,7 @@ describe('ClientSession', () => {
       // header instead of minting a UUID. For a fresh user-message this
       // pins the message's own id (the TMessage.id == wire id convention);
       // for a continuation input it targets the assistant being amended.
-      await fix.session.view.sendInput([
+      await fix.session.view.send([
         { kind: 'user-message', text: 'first', codecMessageId: 'target-a' },
         { kind: 'user-message', text: 'second' },
       ]);
@@ -600,12 +600,13 @@ describe('ClientSession', () => {
 
     it('folds an optimistic user message even when it carries a caller-supplied codecMessageId', async () => {
       // Regression: a fresh user-message that pins its own codec-message-id
-      // (the path View.sendMessage takes for every message with an id) must
-      // still fold into the local projection synchronously. Treating the
+      // (the path a `view.send(codec.createUserMessage(...))` with a
+      // caller-supplied id takes) must still fold into the local projection
+      // synchronously. Treating the
       // presence of `codecMessageId` as "wire-only" suppressed the optimistic
       // fold, so the user bubble only appeared once the publish echoed back
       // off the channel — a round-trip race that flaked integration tests.
-      await fix.session.view.sendInput({
+      await fix.session.view.send({
         kind: 'user-message',
         text: 'hello',
         codecMessageId: 'pinned-id',
@@ -626,7 +627,7 @@ describe('ClientSession', () => {
     });
 
     it('mints a distinct event-id per user-message; ActiveRun.inputEventId is the last (primary trigger)', async () => {
-      const run = await fix.session.view.sendInput([
+      const run = await fix.session.view.send([
         { kind: 'user-message', text: 'first' },
         { kind: 'user-message', text: 'second' },
       ]);
@@ -661,7 +662,7 @@ describe('ClientSession', () => {
       // stamps the session-assigned codec-message-id onto TMessage.id).
       const seedCodecMessageId = seeded.view.getMessages()[0]?.id;
       expect(seedCodecMessageId).toBeDefined();
-      const run = await seeded.view.sendInput({ kind: 'user-message', text: 'next' });
+      const run = await seeded.view.send({ kind: 'user-message', text: 'next' });
 
       // The seed and the fresh send are both run-less user INPUT nodes; the new
       // send's optimistic input node must be parented at the seed's
@@ -676,7 +677,7 @@ describe('ClientSession', () => {
     });
 
     it('chains multi-message sends in a thread', async () => {
-      await fix.session.view.sendInput([
+      await fix.session.view.send([
         { kind: 'user-message', text: 'first' },
         { kind: 'user-message', text: 'second' },
       ]);
@@ -701,7 +702,7 @@ describe('ClientSession', () => {
     it('stamps forkOf on the publish headers when set', async () => {
       // forkOf rides the channel headers — the agent resolves it from the
       // first input-event lookup user-message header.
-      await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' }, { forkOf: 'msg-original' });
+      await fix.session.view.send({ kind: 'user-message', text: 'hi' }, { forkOf: 'msg-original' });
       const enc = fix.codec.lastEncoder();
       const headers = enc?.publishCalls.at(-1)?.opts?.extras?.headers;
       expect(headers?.['fork-of']).toBe('msg-original');
@@ -710,7 +711,7 @@ describe('ClientSession', () => {
     it('throws when session is closed', async () => {
       await fix.session.close();
       // View error wrapping: the view rejects with its "view is closed" error.
-      await expect(fix.session.view.sendInput({ kind: 'user-message', text: 'hi' })).rejects.toThrow();
+      await expect(fix.session.view.send({ kind: 'user-message', text: 'hi' })).rejects.toThrow();
     });
 
     for (const state of ['failed', 'suspended', 'detached', 'initialized'] as const) {
@@ -722,7 +723,7 @@ describe('ClientSession', () => {
           resumed: false,
         });
         fix.channel.state = state;
-        await expect(fix.session.view.sendInput({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
+        await expect(fix.session.view.send({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
           ErrorCode.ChannelNotReady,
         );
       });
@@ -735,7 +736,7 @@ describe('ClientSession', () => {
         resumed: false,
       });
       fix.channel.state = 'attaching';
-      const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      const run = await fix.session.view.send({ kind: 'user-message', text: 'hi' });
       // The agent mints the run-id, so it is a promise; the send-resolved-on-
       // publish guarantee is observable via the synchronous routing key.
       expect(typeof run.inputCodecMessageId).toBe('string');
@@ -748,11 +749,11 @@ describe('ClientSession', () => {
 
   describe('send — continuation', () => {
     it('reuses the runId for a continuation', async () => {
-      await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      await fix.session.view.send({ kind: 'user-message', text: 'hi' });
       // The agent mints the run-id on run-start; learn it before continuing.
       const { runId } = await ackPendingSend(fix.channel, fix.codec);
 
-      const cont = await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], { runId });
+      const cont = await fix.session.view.send([{ kind: 'user-message', text: 'more' }], { runId });
       // The continuation resume echoes the reused run-id back.
       await ackPendingSend(fix.channel, fix.codec);
 
@@ -760,13 +761,13 @@ describe('ClientSession', () => {
     });
 
     it('publishes the continuation user-message with HEADER_RUN_ID', async () => {
-      await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      await fix.session.view.send({ kind: 'user-message', text: 'hi' });
       const { runId } = await ackPendingSend(fix.channel, fix.codec);
       const enc = fix.codec.lastEncoder();
       // Drop the initial publish from the call count
       const baseCalls = enc?.publishCalls.length ?? 0;
 
-      await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], { runId });
+      await fix.session.view.send([{ kind: 'user-message', text: 'more' }], { runId });
 
       const newCalls = (enc?.publishCalls.length ?? 0) - baseCalls;
       expect(newCalls).toBe(1);
@@ -785,10 +786,10 @@ describe('ClientSession', () => {
     });
 
     it('surfaces the continuation trigger event id and run identity on the ActiveRun', async () => {
-      await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      await fix.session.view.send({ kind: 'user-message', text: 'hi' });
       const { runId } = await ackPendingSend(fix.channel, fix.codec);
 
-      const cont = await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], { runId });
+      const cont = await fix.session.view.send([{ kind: 'user-message', text: 'more' }], { runId });
       await ackPendingSend(fix.channel, fix.codec);
 
       expect(typeof cont.inputEventId).toBe('string');
@@ -796,11 +797,11 @@ describe('ClientSession', () => {
     });
 
     it('stamps the continuation event-id on the publish and surfaces it on the ActiveRun', async () => {
-      await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      await fix.session.view.send({ kind: 'user-message', text: 'hi' });
       const { runId } = await ackPendingSend(fix.channel, fix.codec);
       const before = fix.codec.lastEncoder()?.publishCalls.length ?? 0;
 
-      const cont = await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], { runId });
+      const cont = await fix.session.view.send([{ kind: 'user-message', text: 'more' }], { runId });
 
       const enc = fix.codec.lastEncoder();
       const contPublish = enc?.publishCalls
@@ -812,14 +813,14 @@ describe('ClientSession', () => {
     });
 
     it('continuation publishes carry HEADER_RUN_ID while fresh sends do not', async () => {
-      await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      await fix.session.view.send({ kind: 'user-message', text: 'hi' });
       const enc = fix.codec.lastEncoder();
       const freshHeaders = enc?.publishCalls.at(-1)?.opts?.extras?.headers;
       // Fresh sends carry no run-id on the wire — the agent mints it.
       expect(freshHeaders?.[HEADER_RUN_ID]).toBeUndefined();
       const { runId } = await ackPendingSend(fix.channel, fix.codec);
 
-      await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], { runId });
+      await fix.session.view.send([{ kind: 'user-message', text: 'more' }], { runId });
       const contHeaders = enc?.publishCalls.at(-1)?.opts?.extras?.headers;
       // The continuation stamps the reused run-id on the wire — this is what
       // signals the agent to re-enter the run via ai-run-resume.
@@ -827,7 +828,7 @@ describe('ClientSession', () => {
     });
 
     it('rejects an empty send (no inputs to publish)', async () => {
-      await expect(fix.session.view.sendInput([])).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await expect(fix.session.view.send([])).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
   });
 
@@ -859,7 +860,7 @@ describe('ClientSession', () => {
       const errors: Ably.ErrorInfo[] = [];
       s.on('error', (e) => errors.push(e));
 
-      await expect(s.view.sendInput({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
+      await expect(s.view.send({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
         ErrorCode.SessionSendFailed,
       );
       expect(errors.length).toBeGreaterThanOrEqual(1);
@@ -888,7 +889,7 @@ describe('ClientSession', () => {
         /* consume */
       });
 
-      await expect(s.view.sendInput({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
+      await expect(s.view.send({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
         ErrorCode.InsufficientCapability,
       );
       await s.close();
@@ -916,7 +917,7 @@ describe('ClientSession', () => {
         /* consume */
       });
 
-      await expect(s.view.sendInput({ kind: 'user-message', text: 'hi' })).rejects.toBeDefined();
+      await expect(s.view.send({ kind: 'user-message', text: 'hi' })).rejects.toBeDefined();
       // Optimistic node removed since publish failed before any ack
       expect(s.view.runs()).toHaveLength(0);
       await s.close();
@@ -940,7 +941,7 @@ describe('ClientSession', () => {
       // No run-start is ever simulated — send() must still resolve once the
       // input is published. The run-id is a promise (agent-minted); the
       // synchronous routing key proves the handle is usable immediately.
-      const run = await s.view.sendInput({ kind: 'user-message', text: 'hi' });
+      const run = await s.view.send({ kind: 'user-message', text: 'hi' });
       expect(typeof run.inputCodecMessageId).toBe('string');
       await s.close();
     });
@@ -956,7 +957,7 @@ describe('ClientSession', () => {
       });
       await s.connect();
 
-      const run = await s.view.sendInput({ kind: 'user-message', text: 'hi' });
+      const run = await s.view.send({ kind: 'user-message', text: 'hi' });
       const { runId } = await ackPendingSend(ch, codec);
       await expect(run.runId).resolves.toBe(runId);
       await s.close();
@@ -967,7 +968,7 @@ describe('ClientSession', () => {
       // codec-message-id it owned at send time. The agent mints the run-id; the
       // client learns it via the run-start's input-codec-message-id match, even
       // though the client never minted a run-id of its own.
-      const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      const run = await fix.session.view.send({ kind: 'user-message', text: 'hi' });
       const triggerCodecMessageId = run.optimisticCodecMessageIds.at(-1);
       expect(triggerCodecMessageId).toBeDefined();
 
@@ -988,9 +989,9 @@ describe('ClientSession', () => {
       // Once the agent emits ai-run-resume for a continuation, the
       // continuation's run-id resolves on the resume — keyed by the same
       // triggering input codec-message-id as a run-start would be.
-      await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      await fix.session.view.send({ kind: 'user-message', text: 'hi' });
       const { runId } = await ackPendingSend(fix.channel, fix.codec);
-      const cont = await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], { runId });
+      const cont = await fix.session.view.send([{ kind: 'user-message', text: 'more' }], { runId });
       const triggerCodecMessageId = cont.optimisticCodecMessageIds.at(-1);
       expect(triggerCodecMessageId).toBeDefined();
 
@@ -1010,13 +1011,13 @@ describe('ClientSession', () => {
       // A continuation reuses an existing run-id but must still carry a new
       // input event (a tool-result or approval). An empty input array is
       // rejected even when a run-id is supplied.
-      await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      await fix.session.view.send({ kind: 'user-message', text: 'hi' });
       const { runId } = await ackPendingSend(fix.channel, fix.codec);
-      await expect(fix.session.view.sendInput([], { runId })).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await expect(fix.session.view.send([], { runId })).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
 
     it('does not resolve run.runId for a run-start matching neither the trigger codec-message-id nor the runId', async () => {
-      const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      const run = await fix.session.view.send({ kind: 'user-message', text: 'hi' });
 
       // A run-start belonging to an unrelated send — neither its
       // input-codec-message-id nor its runId matches this send's tracker — must
@@ -1052,7 +1053,7 @@ describe('ClientSession', () => {
 
   describe('toInvocation', () => {
     it('carries the run identity and the channel name as sessionName', async () => {
-      const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      const run = await fix.session.view.send({ kind: 'user-message', text: 'hi' });
       const invocation = run.toInvocation();
       // The pointer carries no run-id (run identity lives on the channel) —
       // only the input-event-id and the session name.
@@ -1062,7 +1063,7 @@ describe('ClientSession', () => {
     });
 
     it('serialises to the InvocationData wire shape the agent reads', async () => {
-      const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      const run = await fix.session.view.send({ kind: 'user-message', text: 'hi' });
       // Fresh send: no run-id in the wire pointer (the agent mints it).
       expect(run.toInvocation().toJSON()).toEqual({
         inputEventId: run.inputEventId,
@@ -1249,7 +1250,7 @@ describe('ClientSession', () => {
 
       // Optimistic insert. The session mints a random tree codecMessageId; the
       // projection's UIMessage id is `domain-hi` (from our custom fold).
-      await s.view.sendInput({ kind: 'user-message', text: 'hi' });
+      await s.view.send({ kind: 'user-message', text: 'hi' });
       const lastPublish = customCodec.lastEncoder()?.publishCalls.at(-1);
       const optimisticMsgId = lastPublish?.opts?.extras?.headers?.[HEADER_CODEC_MESSAGE_ID];
       const runId = lastPublish?.opts?.extras?.headers?.[HEADER_RUN_ID];
@@ -1338,7 +1339,7 @@ describe('ClientSession', () => {
       });
       await s.connect();
 
-      const sendPromise = s.view.sendInput({ kind: 'user-message', text: 'hi' });
+      const sendPromise = s.view.send({ kind: 'user-message', text: 'hi' });
       const { runId, invocationId } = await ackPendingSend(ch, codec);
       await sendPromise;
 
@@ -1406,7 +1407,7 @@ describe('ClientSession', () => {
       });
       await s.connect();
 
-      const sendPromise = s.view.sendInput({ kind: 'user-message', text: 'hi' });
+      const sendPromise = s.view.send({ kind: 'user-message', text: 'hi' });
       const { runId } = await ackPendingSend(ch, codec);
       await sendPromise;
 
@@ -1433,7 +1434,7 @@ describe('ClientSession', () => {
       // itself terminate the core Run — only the wire run-end does. The
       // continuation's run-end must still mark the Run complete; otherwise
       // the Run stays at status=active and the UI sticks on "streaming".
-      await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      await fix.session.view.send({ kind: 'user-message', text: 'hi' });
       // The agent mints the run-id on run-start; learn it (and create the run
       // node) before suspending it.
       const { runId } = await ackPendingSend(fix.channel, fix.codec);
@@ -1448,7 +1449,7 @@ describe('ClientSession', () => {
         }),
       );
 
-      await fix.session.view.sendInput([{ kind: 'user-message', text: 'continue' }], { runId });
+      await fix.session.view.send([{ kind: 'user-message', text: 'continue' }], { runId });
 
       simulateMessage(
         fix.channel,
@@ -1492,7 +1493,7 @@ describe('ClientSession', () => {
       // run-suspend → continuation send → run-end complete.
       // R1.status must end at the continuation's reason, otherwise the
       // UI stays stuck on "streaming".
-      await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      await fix.session.view.send({ kind: 'user-message', text: 'hi' });
       const { runId } = await ackPendingSend(fix.channel, fix.codec);
 
       // First invocation suspends (e.g. tool call awaiting client output).
@@ -1508,7 +1509,7 @@ describe('ClientSession', () => {
 
       // Continuation send under the same runId; the agent mints a fresh
       // invocation-id when it wakes for the continuation.
-      await fix.session.view.sendInput([{ kind: 'user-message', text: 'continue' }], { runId });
+      await fix.session.view.send([{ kind: 'user-message', text: 'continue' }], { runId });
 
       // Continuation's run-resume (from agent) re-activates the run.
       simulateMessage(
@@ -1597,9 +1598,9 @@ describe('ClientSession', () => {
     it('processes a continuation run-end carrying a fresh invocation', async () => {
       // A continuation reuses the runId under a fresh invocation. The
       // continuation's run-end is applied and the run cleans up.
-      await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      await fix.session.view.send({ kind: 'user-message', text: 'hi' });
       const { runId } = await ackPendingSend(fix.channel, fix.codec);
-      await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], { runId });
+      await fix.session.view.send([{ kind: 'user-message', text: 'more' }], { runId });
 
       const runEnds: RunLifecycleEvent[] = [];
       fix.session.tree.on('run', (e) => {
@@ -1733,7 +1734,7 @@ describe('ClientSession', () => {
       // A fresh send has no run-id until the agent mints it on run-start, so
       // run.cancel() keys the cancel by the triggering input's
       // codec-message-id (= run.inputCodecMessageId) without awaiting run.runId.
-      const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      const run = await fix.session.view.send({ kind: 'user-message', text: 'hi' });
       await run.cancel();
       const headers = cancelHeadersOf(fix.channel);
       expect(headers?.[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe(run.inputCodecMessageId);
@@ -1743,7 +1744,7 @@ describe('ClientSession', () => {
     });
 
     it('run.cancel() on a continuation carries both the run-id and the input codec-message-id', async () => {
-      const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'cont' }, { runId: 'run-cont' });
+      const run = await fix.session.view.send({ kind: 'user-message', text: 'cont' }, { runId: 'run-cont' });
       await run.cancel();
       const headers = cancelHeadersOf(fix.channel);
       expect(headers?.[HEADER_RUN_ID]).toBe('run-cont');
@@ -1773,7 +1774,7 @@ describe('ClientSession', () => {
 
     it('closes the shared encoder', async () => {
       // Trigger creation of the shared encoder by sending
-      await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      await fix.session.view.send({ kind: 'user-message', text: 'hi' });
       const enc = fix.codec.lastEncoder();
       expect(enc).toBeDefined();
       await fix.session.close();
@@ -1803,7 +1804,7 @@ describe('ClientSession', () => {
 
       // send() resolves on publish; run.runId stays pending until run-start
       // (which never arrives here) or close.
-      const run = await s.view.sendInput({ kind: 'user-message', text: 'hi' });
+      const run = await s.view.send({ kind: 'user-message', text: 'hi' });
       const rejection = expect(run.runId).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
       await s.close();
       await rejection;
@@ -1936,7 +1937,7 @@ describe('ClientSession', () => {
     it('publishes a regenerate input without upserting the tree or folding the projection', async () => {
       // Seed a user message in the tree first. A fresh user-message send is a
       // run-less INPUT node — no reply run exists yet (the agent mints it).
-      await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
+      await fix.session.view.send({ kind: 'user-message', text: 'hi' });
       expect(fix.session.view.runs()).toHaveLength(0);
       const userMsgId = fix.session.view.getMessages()[0]?.id;
       expect(userMsgId).toBeDefined();
@@ -1945,7 +1946,7 @@ describe('ClientSession', () => {
       expect(inputNodeBefore?.kind).toBe('input');
 
       // Send a regenerate input — wire-only, carries parent/target on headers.
-      await fix.session.view.sendInput({
+      await fix.session.view.send({
         kind: 'regenerate',
         parent: userMsgId,
         target: 'asst-1',
@@ -1975,7 +1976,7 @@ describe('ClientSession', () => {
     });
 
     it('mints a fresh event-id for the regenerate input and surfaces it on the ActiveRun', async () => {
-      const run = await fix.session.view.sendInput({
+      const run = await fix.session.view.send({
         kind: 'regenerate',
         parent: 'u1',
         target: 'asst-1',

@@ -30,6 +30,7 @@ import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import { LogLevel, makeLogger } from '../../logger.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../codec/index.js';
+import { UIMessageCodec } from '../codec/index.js';
 import { createRunOutputStream } from './run-output-stream.js';
 
 // ---------------------------------------------------------------------------
@@ -270,7 +271,7 @@ const UNRESOLVED_TOOL_STATES = new Set(['input-streaming', 'input-available', 'a
  * in one step — no cross-message redirect-by-toolCallId fallback. Every
  * variant rides the `ai-input` wire, matching its publisher (client → input).
  *
- * The resulting inputs are passed alongside the continuation `view.sendInput`
+ * The resulting inputs are passed alongside the continuation `view.send`
  * so the channel publish and the continuation POST land as ONE atomic
  * operation — the agent's `loadProjection()` history fetch is guaranteed
  * to see them because the channel publish happens before the POST inside
@@ -578,11 +579,11 @@ export const createChatTransport = (
     //   existing forkOf machinery. The LLM receives the truncated history
     //   through U1 inclusive via the body.
     // - Fresh send / edit: publish the new user-message input(s) via
-    //   `view.sendInput`.
+    //   `view.send`.
     let run: ActiveRun;
     if (isContinuation) {
-      const sendInput = deriveContinuationInputs(pairs, messages);
-      run = await session.view.sendInput(sendInput, sendOpts);
+      const inputs = deriveContinuationInputs(pairs, messages);
+      run = await session.view.send(inputs, sendOpts);
     } else if (trigger === 'regenerate-message') {
       if (messageId === undefined) {
         throw new Ably.ErrorInfo(
@@ -602,8 +603,8 @@ export const createChatTransport = (
       }
       run = await session.view.regenerate(regenCodecId, sendOpts);
     } else {
-      const sendInput = newMessages.map((m): VercelInput => ({ kind: 'user-message', message: m }));
-      run = await session.view.sendInput(sendInput, sendOpts);
+      const inputs = newMessages.map((m) => UIMessageCodec.createUserMessage(m));
+      run = await session.view.send(inputs, sendOpts);
     }
 
     // Build the consumer-facing stream from the Tree's events for this run.
@@ -627,7 +628,7 @@ export const createChatTransport = (
       // useChat sets `status: 'submitted'` synchronously inside `makeRequest`
       // BEFORE awaiting `transport.sendMessages`. That immediately enables
       // the Stop button in the UI. If the user clicks Stop while
-      // `session.view.sendInput` is still awaiting the run-start ack (which
+      // `session.view.send` is still awaiting the run-start ack (which
       // can take seconds for a real LLM), useChat aborts the signal before
       // we ever get here. `addEventListener('abort', ...)` does not fire
       // for an already-aborted signal, so we'd silently lose the cancel

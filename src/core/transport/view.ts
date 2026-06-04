@@ -126,7 +126,7 @@ type BranchSelectionState =
  * Selection state for a regenerate group. Keyed by the anchor codec-message-id (the
  * assistant codec-message-id being regenerated). Distinct from {@link BranchSelectionState}
  * because regenerate groups are message-level (group members share an
- * anchor codec-message-id rather than a parentRunId), not Run-level forks.
+ * anchor codec-message-id), not edit forks of the user prompt.
  *
  * Unlike fork-of groups, regenerate groups do not "pin to current visible"
  * when a new member appears externally — the default for a regenerate
@@ -232,9 +232,9 @@ export class DefaultView<
   /**
    * View-local regenerate-group selections: anchor codec-message-id (the assistant
    * codec-message-id being regenerated) → selection intent. Distinct from
-   * {@link _branchSelections} because regenerate groups don't share a
-   * parentRunId — they're message-level alternatives at a single
-   * conversation slot. Groups not present here default to the latest
+   * {@link _branchSelections} because a regenerate group is a set of
+   * same-parent reply runs — message-level alternatives at a single
+   * conversation slot, not edit forks of the prompt. Groups not present here default to the latest
    * member (the most recent regenerator, or the original if no regen has
    * landed).
    */
@@ -1089,8 +1089,10 @@ export class DefaultView<
 
     const newVisibleCount = (): number => {
       let count = 0;
-      for (const n of this._tree.runs(this._resolveSelections())) {
-        if (!beforeRunIds.has(n.runId)) count++;
+      for (const n of this._tree.visibleNodes(this._resolveSelections())) {
+        // Pagination counts reply RUNS toward the target (an input node travels
+        // with the reply run it precedes — see `_splitReveal`).
+        if (n.kind === 'run' && !beforeRunIds.has(nodeKey(n))) count++;
       }
       return count;
     };

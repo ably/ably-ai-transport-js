@@ -152,8 +152,7 @@ const createMockRun = (runId: string, treeEmit: MockEmitter['emit']): MockRun =>
 const createMockTree = (treeEmitter: MockEmitter) =>
   ({
     flattenNodes: vi.fn(() => []),
-    getSiblingRuns: vi.fn(() => []),
-    hasSiblingRuns: vi.fn(() => false),
+    getSiblingNodes: vi.fn(() => []),
     getSelectedIndex: vi.fn(() => 0),
     select: vi.fn(),
     getRunNode: vi.fn(),

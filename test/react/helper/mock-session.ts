@@ -10,7 +10,6 @@ import type {
   BranchSelection,
   ClientSession,
   RunLifecycleEvent,
-  RunNode,
   Tree,
   View,
 } from '../../../src/core/transport/types.js';
@@ -94,29 +93,10 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
       };
     });
 
-  const initialNodes: RunNode<unknown>[] = initialMessages.map(
-    (_, i): RunNode<unknown> => ({
-      kind: 'run',
-      runId: `run-${String(i)}`,
-      parentRunId: i > 0 ? `run-${String(i - 1)}` : undefined,
-      parentCodecMessageId: undefined,
-      forkOf: undefined,
-      regeneratesCodecMessageId: undefined,
-      clientId: '',
-      invocationId: '',
-      status: 'complete',
-      projection: undefined,
-      startSerial: undefined,
-      endSerial: undefined,
-    }),
-  );
-
   const tree: Tree<CodecOutputEvent, unknown> = {
-    runs: vi.fn(() => initialNodes),
     getRunNode: vi.fn(),
     getNodeByCodecMessageId: vi.fn(),
-    getSiblingRuns: vi.fn(() => []),
-    hasSiblingRuns: vi.fn(() => false),
+    getSiblingNodes: vi.fn(() => []),
     // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires explicit undefined return for the contract
     getRegenerateGroup: vi.fn(() => undefined),
     on: makeTreeOn(treeHandlers),

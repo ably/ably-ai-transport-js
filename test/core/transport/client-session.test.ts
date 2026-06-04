@@ -494,10 +494,10 @@ describe('ClientSession', () => {
       expect(messages.map((m) => m.content)).toEqual(['first', 'second']);
       // Seeds are run-less user INPUT nodes in the two-node model — they carry
       // no run-id (the agent mints reply run-ids), so they surface as input
-      // nodes, not via tree.runs() (which is reply-run-shaped). The session
-      // assigns each seed a codec-message-id, which the mock codec stamps as
-      // the rendered message id.
-      expect(s.tree.runs()).toHaveLength(0);
+      // nodes, not as reply runs in view.runs() (which is reply-run-shaped).
+      // The session assigns each seed a codec-message-id, which the mock codec
+      // stamps as the rendered message id.
+      expect(s.view.runs()).toHaveLength(0);
       const id1 = messages[0]?.id;
       const id2 = messages[1]?.id;
       expect(id1).toBeDefined();
@@ -602,8 +602,8 @@ describe('ClientSession', () => {
       // No channel echo simulated — the message must be present purely from
       // the optimistic fold. The fresh send's optimistic insert is a run-less
       // user INPUT node keyed by its codec-message-id; there is no reply run
-      // until the agent's run-start, so tree.runs() (reply-run-shaped) is empty.
-      expect(fix.session.tree.runs()).toHaveLength(0);
+      // until the agent's run-start, so view.runs() (reply-run-shaped) is empty.
+      expect(fix.session.view.runs()).toHaveLength(0);
       const inputNode = fix.session.tree.getNodeByCodecMessageId('pinned-id');
       expect(inputNode?.kind).toBe('input');
 
@@ -907,7 +907,7 @@ describe('ClientSession', () => {
 
       await expect(s.view.sendInput({ kind: 'user-message', text: 'hi' })).rejects.toBeDefined();
       // Optimistic node removed since publish failed before any ack
-      expect(s.tree.runs()).toHaveLength(0);
+      expect(s.view.runs()).toHaveLength(0);
       await s.close();
     });
   });
@@ -1274,7 +1274,7 @@ describe('ClientSession', () => {
       // The tree must contain exactly one Run — the optimistic insert,
       // converged with the echo. The Run's projection holds a single
       // domain message keyed by the codec's domain-id convention.
-      expect(s.tree.runs()).toHaveLength(1);
+      expect(s.view.runs()).toHaveLength(1);
       const owningRun = s.tree.getNodeByCodecMessageId(optimisticMsgId);
       expect(owningRun).toBeDefined();
       // customCodec.fold uses `domain-${text}` as the id (not the wire codecMessageId);
@@ -1909,7 +1909,7 @@ describe('ClientSession', () => {
       // Seed a user message in the tree first. A fresh user-message send is a
       // run-less INPUT node — no reply run exists yet (the agent mints it).
       await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
-      expect(fix.session.tree.runs()).toHaveLength(0);
+      expect(fix.session.view.runs()).toHaveLength(0);
       const userMsgId = fix.session.view.getMessages()[0]?.id;
       expect(userMsgId).toBeDefined();
       if (!userMsgId) throw new Error('expected user message id');
@@ -1926,7 +1926,7 @@ describe('ClientSession', () => {
       // No new node materialised: the regenerate publishes wire-only and
       // skips both tree-upsert and projection fold. The original input node is
       // unchanged and still no reply run exists.
-      expect(fix.session.tree.runs()).toHaveLength(0);
+      expect(fix.session.view.runs()).toHaveLength(0);
       expect(fix.session.tree.getNodeByCodecMessageId(userMsgId)?.kind).toBe('input');
 
       // The regenerate input was published on the channel with correct headers.

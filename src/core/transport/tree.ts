@@ -1,20 +1,24 @@
 /**
- * Tree — materializes a branching conversation as a forest of Runs,
- * keyed by `run-id`.
+ * Tree — materializes a branching conversation as a forest of nodes. Each turn
+ * is two nodes: a user {@link InputNode} keyed by its client-owned
+ * codec-message-id and an agent {@link RunNode} keyed by the agent-minted
+ * run-id, parented to the input node.
  *
- * Each Run holds a per-Run codec {@link TProjection} which the Tree folds
+ * Each node holds a per-node codec {@link TProjection} which the Tree folds
  * from inbound events. The Tree owns the complete conversation state across
- * every observed Run. The {@link View} walks the parent chain to extract a
+ * every observed node. The {@link View} walks the parent chain to extract a
  * flat message list for rendering.
  *
  * `applyMessage()` is the entry point for inbound channel messages — it
- * routes by `run-id`, folds events into the Run's projection, and
- * maintains a secondary `codecMessageId -> runId` index. `applyRunLifecycle()`
- * handles run-start / run-end events.
+ * classifies a run-less user input into an input node (keyed by
+ * codec-message-id) or routes a run-bearing wire to its reply run (keyed by
+ * run-id), folds events into that node's projection, and maintains a secondary
+ * `codecMessageId -> nodeKey` index. `applyRunLifecycle()` handles run-start /
+ * run-end events.
  *
- * Sibling structure (edits / regenerates) is derived from RunNode.forkOf,
- * which the Tree resolves from the wire's `fork-of` header via the
- * codecMessageId index.
+ * Sibling structure: editing a prompt produces a sibling input node linked by
+ * {@link InputNode.forkOf}; regenerating a reply produces a sibling reply run
+ * sharing the same input-node parent (no fork-of).
  */
 
 import type * as Ably from 'ably';
@@ -106,15 +110,6 @@ export interface TreeInternal<
   getReplyRuns(inputCodecMessageId: string): RunNode<TProjection>[];
 
   /**
-   * Get the sibling group (both kinds) the node keyed by `key` belongs to:
-   * edit versions for an input node, regenerate runs for a reply run. Ordered
-   * oldest-first; a single-element array when there is no branch.
-   * @param key - The node key to look up.
-   * @returns The ordered sibling nodes.
-   */
-  getSiblingNodes(key: string): ConversationNode<TProjection>[];
-
-  /**
    * Resolve the regenerate sibling group anchored at `codecMessageId`.
    *
    * Returned in chronological order: the Run that owns `codecMessageId` first
@@ -129,13 +124,15 @@ export interface TreeInternal<
   /**
    * Apply an inbound channel message to the tree.
    *
-   * Three message kinds flow through here:
-   * 1. Fresh user prompt: creates Run if missing, folds events.
-   * 2. Continuation tool-resolution (`run-continue: 'true'`): routes to
-   *    existing Run via codecMessageIdToRunId, folds events.
-   * 3. Assistant/agent events: routes to existing Run by runId, folds events.
+   * Classifies the message and routes it to the owning node:
+   * 1. Run-less user input (no run-id, a `user`-role message carrying a
+   *    codec-message-id and input events): creates or promotes the input node
+   *    keyed by that codec-message-id, folds the input events.
+   * 2. Run-bearing wire (assistant output, continuation tool-resolution, or a
+   *    fresh agent-minted run): routes to the reply run by run-id (reconciling
+   *    an optimistic insert by codec-message-id), folds events.
    * @param events - Decoded codec events, split by wire direction. Both are
-   *   folded into the Run's projection, inputs first.
+   *   folded into the node's projection, inputs first.
    * @param events.inputs - Client-published events (`ai-input` wire).
    * @param events.outputs - Agent-published events (`ai-output` wire).
    * @param headers - Transport headers from the inbound Ably message.
@@ -260,12 +257,12 @@ export class DefaultTree<
   private _structuralVersion = 0;
 
   /**
-   * Cached sibling-group lookups keyed by runId. The walk over forkOf
-   * chains and the per-parent fan-out are pure functions of the Run
+   * Cached sibling-group lookups keyed by node key. The walk over forkOf
+   * chains and the per-parent fan-out are pure functions of the node
    * graph, so the cache is keyed against {@link _structuralVersion}:
    * any topology mutation drops the cache and the next lookup
    * recomputes. Hits matter most during a single render pass where
-   * the View calls `getSiblingRuns` once per visible Run plus extra
+   * the View calls `getSiblingNodes` once per visible node plus extra
    * per-message branch-anchor probes from React components.
    */
   private _siblingCache = new Map<string, InternalNode<TProjection>[]>();
@@ -508,7 +505,10 @@ export class DefaultTree<
       while (current.forkOf !== undefined) {
         if (visited.has(current.forkOf)) break;
         const forkTarget = this._nodeIndex.get(current.forkOf);
-        if (forkTarget?.node.kind !== 'input' || forkTarget.node.parentCodecMessageId !== current.parentCodecMessageId) {
+        if (
+          forkTarget?.node.kind !== 'input' ||
+          forkTarget.node.parentCodecMessageId !== current.parentCodecMessageId
+        ) {
           break;
         }
         current = forkTarget.node;
@@ -581,11 +581,6 @@ export class DefaultTree<
     return result;
   }
 
-  runs(selections: Map<string, string> = new Map<string, string>()): RunNode<TProjection>[] {
-    this._logger.trace('DefaultTree.runs();');
-    return this.visibleNodes(selections).filter((n): n is RunNode<TProjection> => n.kind === 'run');
-  }
-
   getRunNode(runId: string): RunNode<TProjection> | undefined {
     this._logger.trace('DefaultTree.getRunNode();', { runId });
     const node = this._nodeIndex.get(runId)?.node;
@@ -612,17 +607,6 @@ export class DefaultTree<
   getSiblingNodes(key: string): ConversationNode<TProjection>[] {
     this._logger.trace('DefaultTree.getSiblingNodes();', { key });
     return this._getSiblingGroup(key).map((n) => n.node);
-  }
-
-  getSiblingRuns(runId: string): RunNode<TProjection>[] {
-    this._logger.trace('DefaultTree.getSiblingRuns();', { runId });
-    return this._getSiblingGroup(runId)
-      .map((n) => n.node)
-      .filter((n): n is RunNode<TProjection> => n.kind === 'run');
-  }
-
-  hasSiblingRuns(runId: string): boolean {
-    return this._getSiblingGroup(runId).length > 1;
   }
 
   // -------------------------------------------------------------------------
@@ -1236,7 +1220,7 @@ export class DefaultTree<
 
 /**
  * Create a Tree that materializes branching conversation history from a flat
- * oplog of Ably messages, keyed by run-id.
+ * oplog of Ably messages as a two-node-per-turn forest (input node + reply run).
  * @param codec - Codec used to fold inbound events into per-Run projections.
  * @param logger - Logger for diagnostic output.
  * @returns A new {@link DefaultTree} instance. The session uses DefaultTree

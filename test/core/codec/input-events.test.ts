@@ -4,7 +4,6 @@ import { describe, expectTypeOf, it } from 'vitest';
 import type {
   CodecInputEvent,
   CodecOutputEvent,
-  Edit,
   Regenerate,
   ToolApprovalResponse,
   ToolApprovalResponsePayloadOf,
@@ -22,7 +21,7 @@ interface FakeMessage {
   body: string;
 }
 
-type ExampleInput = UserMessage<FakeMessage> | Regenerate | Edit<FakeMessage>;
+type ExampleInput = UserMessage<FakeMessage> | Regenerate;
 
 const dispatchByKind = (event: ExampleInput): string => {
   switch (event.kind) {
@@ -33,10 +32,6 @@ const dispatchByKind = (event: ExampleInput): string => {
     case 'regenerate': {
       expectTypeOf(event).toEqualTypeOf<Regenerate>();
       return `${event.target}<-${event.parent}`;
-    }
-    case 'edit': {
-      expectTypeOf(event).toEqualTypeOf<Edit<FakeMessage>>();
-      return event.message.id;
     }
   }
 };
@@ -130,45 +125,6 @@ describe('Codec input event well-known shapes', () => {
       void _missingBoth;
       void _missingParent;
       void _missingTarget;
-      void _ok;
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // Edit
-  // -------------------------------------------------------------------------
-
-  describe('Edit', () => {
-    it('pins the kind literal to "edit"', () => {
-      expectTypeOf<Edit<FakeMessage>>().toHaveProperty('kind').toEqualTypeOf<'edit'>();
-    });
-
-    it('requires `target` and `parent` as strings (not optional)', () => {
-      expectTypeOf<Edit<FakeMessage>>().toHaveProperty('target').toEqualTypeOf<string>();
-      expectTypeOf<Edit<FakeMessage>>().toHaveProperty('parent').toEqualTypeOf<string>();
-    });
-
-    it('carries the TMessage payload via `message`', () => {
-      expectTypeOf<Edit<FakeMessage>>().toHaveProperty('message').toEqualTypeOf<FakeMessage>();
-    });
-
-    it('is assignable to the CodecInputEvent base', () => {
-      expectTypeOf<Edit<FakeMessage>>().toExtend<CodecInputEvent>();
-    });
-
-    it('rejects values that omit `target`, `parent`, or `message`', () => {
-      // @ts-expect-error — missing required `target`, `parent`, `message`.
-      const _empty: Edit<FakeMessage> = { kind: 'edit' };
-      // @ts-expect-error — missing required `message`.
-      const _noMessage: Edit<FakeMessage> = { kind: 'edit', target: 'a', parent: 'u' };
-      const _ok: Edit<FakeMessage> = {
-        kind: 'edit',
-        target: 'a',
-        parent: 'u',
-        message: { id: 'x', body: 'edited' },
-      };
-      void _empty;
-      void _noMessage;
       void _ok;
     });
   });

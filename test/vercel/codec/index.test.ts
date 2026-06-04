@@ -27,14 +27,6 @@ describe('UIMessageCodec', () => {
     });
   });
 
-  describe('createEdit', () => {
-    it('builds an edit input carrying target, parent, and the replacement message', () => {
-      const message = { id: 'm2', role: 'user' as const, parts: [{ type: 'text' as const, text: 'edited' }] };
-      const input = UIMessageCodec.createEdit('user-U1', 'asst-A0', message);
-      expect(input).toEqual({ kind: 'edit', target: 'user-U1', parent: 'asst-A0', message });
-    });
-  });
-
   describe('createToolResult', () => {
     it('builds a tool-result input carrying codecMessageId and the domain payload', () => {
       const input = UIMessageCodec.createToolResult('asst-A1', { toolCallId: 'tc-1', output: { temp: 22 } });

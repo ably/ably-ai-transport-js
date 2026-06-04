@@ -279,15 +279,14 @@ export interface Decoder<TInput extends CodecInputEvent, TOutput extends CodecOu
  * The `kind` discriminator is required on every variant so the codec's
  * reducer can switch on it. Codec authors pick the literal value per
  * variant; the SDK ships well-known literals (`'user-message'`,
- * `'regenerate'`, `'edit'`) — see {@link UserMessage},
- * {@link Regenerate}, {@link Edit}.
+ * `'regenerate'`) — see {@link UserMessage}, {@link Regenerate}.
  */
 export interface CodecInputEvent {
   /**
    * Discriminator. Codec authors pick the literal value per variant. The
    * SDK reserves the literals used by well-known variants
-   * ({@link UserMessage}, {@link Regenerate}, {@link Edit});
-   * codec-specific variants pick any other literal.
+   * ({@link UserMessage}, {@link Regenerate}); codec-specific variants pick
+   * any other literal.
    */
   kind: string;
   /**
@@ -299,11 +298,11 @@ export interface CodecInputEvent {
   /**
    * Pointer to another codec-message this input references. The semantic
    * depends on `kind` — for `regenerate`, the assistant codec-message to
-   * regenerate; for `edit`, the codec-message to replace; codec-specific
-   * `kind`s may give it other meanings. The input event itself does not
-   * create a fork — it requests one. The fork relationship is established
-   * on the agent's response (and on `ai-run-start`), which the codec
-   * encoder maps `target` to via the wire's `fork-of` header.
+   * regenerate; codec-specific `kind`s may give it other meanings. The
+   * input event itself does not create a fork — it requests one. The fork
+   * relationship is established on the agent's response (and on
+   * `ai-run-start`), which the codec encoder maps `target` to via the
+   * wire's `fork-of` header.
    */
   target?: string;
   /**
@@ -346,29 +345,6 @@ export interface Regenerate extends CodecInputEvent {
   target: string;
   /** The codec-message-id of the parent user message the new assistant threads under. Required. */
   parent: string;
-}
-
-/**
- * Well-known input variant: request that an existing codec-message be
- * replaced with new content. Pinned `kind: 'edit'`. This event is a
- * signal, not itself a fork — `target` names the codec-message to
- * replace, and `parent` names the preceding codec-message on the new
- * branch. Carries the replacement content in the codec's domain
- * representation.
- *
- * Codecs opt in to edit support by including this variant in their
- * `TInput` union; the SDK does not require it.
- * @template TMessage - The codec's per-message domain type.
- */
-export interface Edit<TMessage> extends CodecInputEvent {
-  /** Discriminator. */
-  kind: 'edit';
-  /** The codec-message-id of the codec-message to replace. Required. */
-  target: string;
-  /** The codec-message-id of the preceding codec-message on the new branch. Required. */
-  parent: string;
-  /** The replacement content in the codec's domain representation. */
-  message: TMessage;
 }
 
 /**
@@ -571,17 +547,6 @@ export interface Codec<
    * @returns A `TInput` (the codec's {@link Regenerate} variant).
    */
   createRegenerate(target: string, parent: string): TInput;
-  /**
-   * Build an {@link Edit} for the codec, returned as a `TInput`. Replaces
-   * the codec-message at `target` with `message` on a new branch rooted at
-   * `parent`. Optional — only codecs whose `TInput` includes the
-   * {@link Edit} variant implement it.
-   * @param target - The codec-message-id of the codec-message to replace.
-   * @param parent - The codec-message-id of the preceding codec-message on the new branch.
-   * @param message - The replacement content in the codec's domain representation.
-   * @returns A `TInput` (the codec's {@link Edit} variant).
-   */
-  createEdit?(target: string, parent: string, message: TMessage): TInput;
   /**
    * Build a {@link ToolResult} for the codec, returned as a `TInput`.
    * Amends the assistant at `codecMessageId` with the codec's domain

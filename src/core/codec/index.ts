@@ -5,7 +5,6 @@ export type {
   CodecOutputEvent,
   DecodedMessage,
   Decoder,
-  Edit,
   Encoder,
   EncoderOptions,
   Extras,

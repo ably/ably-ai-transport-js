@@ -493,11 +493,11 @@ class DefaultClientSession<
 
       // The input's own routing fields override the auto-parent /
       // sendOptions defaults. For regenerate inputs, `target` becomes the
-      // `msg-regenerate` wire header; for edit inputs, it becomes
-      // `fork-of`. The transport reads them directly off the input
-      // without runtime classification.
+      // `msg-regenerate` wire header. The fork anchor comes from
+      // `sendOptions.forkOf` (set by `View.edit`). The transport reads
+      // these directly without runtime classification.
       const parent = entry.parent ?? (sendOptions?.parent === undefined ? autoParent : sendOptions.parent);
-      const forkOf = entry.kind === 'edit' ? entry.target : sendOptions?.forkOf;
+      const forkOf = sendOptions?.forkOf;
       const regenerates = entry.kind === 'regenerate' ? entry.target : undefined;
 
       const headers = buildTransportHeaders({

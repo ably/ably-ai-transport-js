@@ -26,7 +26,6 @@ import type { EncoderCore, EncoderCoreOptions } from '../../core/codec/encoder.j
 import { createEncoderCore } from '../../core/codec/encoder.js';
 import type {
   ChannelWriter,
-  Edit,
   Encoder,
   MessagePayload,
   ToolApprovalResponse,
@@ -62,13 +61,6 @@ class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
   async publishInput(input: VercelInput, options?: WriteOptions): Promise<void> {
     switch (input.kind) {
       case 'user-message': {
-        await this._publishUserMessage(input, options);
-        return;
-      }
-      case 'edit': {
-        // An edit publishes its replacement message identically to a fresh
-        // user message; the fork routing (target -> fork-of) is stamped on
-        // the transport headers by the client-session.
         await this._publishUserMessage(input, options);
         return;
       }
@@ -362,10 +354,7 @@ class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
    * @param input - The user-message input carrying the UIMessage to encode.
    * @param perWrite - Optional per-write overrides.
    */
-  private async _publishUserMessage(
-    input: UserMessage<AI.UIMessage> | Edit<AI.UIMessage>,
-    perWrite?: WriteOptions,
-  ): Promise<void> {
+  private async _publishUserMessage(input: UserMessage<AI.UIMessage>, perWrite?: WriteOptions): Promise<void> {
     const payloads = encodeMessagePayloads(input.message);
     // Stamp role (a transport header) on every payload so the decoder can
     // reconstruct a `role: 'user'` UIMessage.

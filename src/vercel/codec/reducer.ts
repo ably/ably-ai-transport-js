@@ -188,14 +188,6 @@ export const fold = (
         _foldUserMessage(state, event.message, meta);
         break;
       }
-      case 'edit': {
-        // An edit carries the replacement message; on this (optimistic)
-        // side it folds like a fresh user message keyed by the minted
-        // codec-message-id. The fork routing (target -> fork-of) lives on
-        // the wire headers, set by the client session.
-        _foldUserMessage(state, event.message, meta);
-        break;
-      }
       case 'regenerate': {
         // Regenerate input — wire-only signal. Carries no projection state;
         // the agent reads `target` / `parent` from the wire headers via
@@ -272,10 +264,6 @@ const _conflictKeyOf = (event: VercelInput | VercelOutput, meta: ReducerMeta): s
       case 'tool-result':
       case 'tool-result-error': {
         return `tool-output:${event.payload.toolCallId}`;
-      }
-      case 'edit': {
-        // Like user-message: dedup re-publishes by the wire codec-message-id.
-        return meta.messageId === undefined ? undefined : `edit:${meta.messageId}`;
       }
       case 'regenerate': {
         return undefined;

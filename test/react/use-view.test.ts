@@ -338,7 +338,7 @@ describe('useView', () => {
       const mock = createMockSession();
       const { result } = renderHook(() => useView({ session: mock.session }));
 
-      const replacement = { kind: 'edit' as const };
+      const replacement = { kind: 'user-message' as const };
       await act(async () => {
         await result.current.edit('msg-1', [replacement], { parent: 'p1' });
       });
@@ -350,7 +350,7 @@ describe('useView', () => {
       const mock = createMockSession();
       const { result } = renderHook(() => useView({ session: mock.session }));
 
-      const single = { kind: 'edit' as const };
+      const single = { kind: 'user-message' as const };
       await act(async () => {
         await result.current.edit('msg-1', single);
       });
@@ -370,7 +370,7 @@ describe('useView', () => {
       const { result } = renderHook(() => useView());
 
       await act(async () => {
-        await expect(result.current.edit('msg-1', { kind: 'edit' })).rejects.toMatchObject({
+        await expect(result.current.edit('msg-1', { kind: 'user-message' })).rejects.toMatchObject({
           code: ErrorCode.InvalidArgument,
           statusCode: 400,
         });

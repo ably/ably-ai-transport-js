@@ -275,15 +275,10 @@ export interface LoadConversationOptions {
 }
 
 /**
- * A server-side run with explicit lifecycle methods. Generic over the
- * full codec signature so callers can write `Run<TInput, TOutput,
- * TProjection, TMessage>` symmetrically with {@link AgentSession} and
- * {@link ClientSession}; `TInput` is unused by Run's surface today but
- * reserved so future input-driven methods can land without a breaking
- * generic-arity change.
+ * A server-side run with explicit lifecycle methods. Generic over the codec's
+ * output, projection, and message types.
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- TInput reserved for forward compatibility; see JSDoc.
-export interface Run<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage> {
+export interface Run<TOutput extends CodecOutputEvent, TProjection, TMessage> {
   /** The run's unique identifier. */
   readonly runId: string;
 
@@ -393,7 +388,7 @@ export interface Run<TInput extends CodecInputEvent, TOutput extends CodecOutput
 // ---------------------------------------------------------------------------
 
 /** Server-side session that manages run lifecycles over an Ably channel. */
-export interface AgentSession<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage> {
+export interface AgentSession<TOutput extends CodecOutputEvent, TProjection, TMessage> {
   /**
    * Subscribe to the cancel channel and (implicitly) attach. Idempotent —
    * subsequent calls return the same promise. All run methods (`start`,
@@ -411,7 +406,7 @@ export interface AgentSession<TInput extends CodecInputEvent, TOutput extends Co
    * @param runtime - Optional runtime hooks and external AbortSignal
    *   (e.g. the HTTP request's `req.signal`).
    */
-  createRun(invocation: Invocation, runtime?: RunRuntime<TOutput>): Run<TInput, TOutput, TProjection, TMessage>;
+  createRun(invocation: Invocation, runtime?: RunRuntime<TOutput>): Run<TOutput, TProjection, TMessage>;
 
   /** Unsubscribe from cancel messages, cancel all active runs, and clean up. */
   close(): void;

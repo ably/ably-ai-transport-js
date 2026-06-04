@@ -103,6 +103,33 @@ const withLiveMessages = (
 };
 
 /**
+ * Page through a channel's history and collect raw messages, bounded so a
+ * long-lived channel can't exhaust memory. No `untilAttach` — callers need
+ * messages published after the channel first attached (e.g. client tool-output
+ * amends on a suspended run).
+ * @param channel - The Ably channel to read history from.
+ * @param pageLimit - Messages requested per history page.
+ * @param maxMessages - Stop paging once this many messages are collected.
+ * @returns The collected messages in history order (newest first per Ably).
+ */
+const collectHistory = async (
+  channel: Ably.RealtimeChannel,
+  pageLimit: number,
+  maxMessages: number,
+): Promise<Ably.InboundMessage[]> => {
+  const collected: Ably.InboundMessage[] = [];
+  let page = await channel.history({ limit: pageLimit });
+  collected.push(...page.items);
+  while (page.hasNext() && collected.length < maxMessages) {
+    const nextPage: Ably.PaginatedResult<Ably.InboundMessage> | null = await page.next();
+    if (!nextPage) break;
+    collected.push(...nextPage.items);
+    page = nextPage;
+  }
+  return collected;
+};
+
+/**
  * Fold a pre-sorted array of wire messages for a single run into a projection.
  *
  * Skips lifecycle events (`ai-run-start` / `ai-run-suspend` / `ai-run-resume` /
@@ -229,23 +256,8 @@ const loadRunProjection = async <
 
   await channel.attach();
 
-  // No `untilAttach` — we need messages published AFTER the channel first
-  // attached (e.g. client-published tool-output amends on a suspended run
-  // that this agent session is resuming).
-  const wirePerPage = 200;
-  const collected: Ably.InboundMessage[] = [];
-  let page = await channel.history({ limit: wirePerPage });
-  collected.push(...page.items);
-  // Bound page-walk so a long-lived channel doesn't exhaust memory on
-  // resume. 2000 wire messages is generously more than any single run
-  // could possibly produce.
-  const collectedCap = 2000;
-  while (page.hasNext() && collected.length < collectedCap) {
-    const nextPage: Ably.PaginatedResult<Ably.InboundMessage> | null = await page.next();
-    if (!nextPage) break;
-    collected.push(...nextPage.items);
-    page = nextPage;
-  }
+  // 2000 wire messages is generously more than any single run could produce.
+  const collected = await collectHistory(channel, 200, 2000);
 
   const sorted = withLiveMessages(collected, liveMessages);
   const { projection, folded } = foldRunMessages(codec, sorted, runId);
@@ -1354,15 +1366,7 @@ class DefaultAgentSession<
         // merged in so the current run's just-published client wires don't depend
         // on Ably's history-indexing window. Deduped by serial (history wins),
         // sorted chronologically.
-        const collected: Ably.InboundMessage[] = [];
-        let page = await channel.history({ limit: pageLimit });
-        collected.push(...page.items);
-        while (page.hasNext() && collected.length < maxMessages) {
-          const nextPage: Ably.PaginatedResult<Ably.InboundMessage> | null = await page.next();
-          if (!nextPage) break;
-          collected.push(...nextPage.items);
-          page = nextPage;
-        }
+        const collected = await collectHistory(channel, pageLimit, maxMessages);
         const sortedMessages = withLiveMessages(collected, liveLookupMessages);
 
         // Index pass — build node metadata per codec-message-id from the

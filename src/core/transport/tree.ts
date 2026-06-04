@@ -986,32 +986,62 @@ export class DefaultTree<
     headers: Record<string, string>,
     serial: string | undefined,
   ): InternalNode<TProjection> {
-    const parentCodecMessageId = headers[HEADER_PARENT];
     const forkOfMsgId = headers[HEADER_FORK_OF];
-    // forkOf is resolved to the fork target's node key (an input node's
-    // codec-message-id, or a run's id) — the same space `_isSiblingOf` walks.
-    const forkOf = forkOfMsgId ? this._codecMessageIdToNodeKey.get(forkOfMsgId) : undefined;
-    const regeneratesCodecMessageId = headers[HEADER_MSG_REGENERATE];
+    return this._buildRunNode({
+      runId,
+      parentCodecMessageId: headers[HEADER_PARENT],
+      // forkOf is resolved to the fork target's node key (an input node's
+      // codec-message-id, or a run's id) — the same space `_isSiblingOf` walks.
+      forkOf: forkOfMsgId ? this._codecMessageIdToNodeKey.get(forkOfMsgId) : undefined,
+      regeneratesCodecMessageId: headers[HEADER_MSG_REGENERATE],
+      clientId: headers[HEADER_RUN_CLIENT_ID] ?? '',
+      invocationId: headers[HEADER_INVOCATION_ID] ?? '',
+      startSerial: serial,
+    });
+  }
 
+  /**
+   * Allocate and index a RunNode from already-resolved fields. Shared by the
+   * header-driven and lifecycle-driven run creators: both build the identical
+   * RunNode literal, index any regenerate edge, and stamp an insert sequence.
+   * @param params - The resolved run fields.
+   * @param params.runId - The run's id (its primary key).
+   * @param params.parentCodecMessageId - Structural parent codec-message-id, or undefined for a root.
+   * @param params.forkOf - The resolved fork target's node key (already mapped through the codec-message-id index), or undefined.
+   * @param params.regeneratesCodecMessageId - The codec-message-id this run regenerates, or undefined.
+   * @param params.clientId - The publishing client's id.
+   * @param params.invocationId - The agent invocation id.
+   * @param params.startSerial - Ably channel serial; undefined for optimistic inserts.
+   * @returns A newly-allocated internal run node ready for insertion.
+   */
+  private _buildRunNode(params: {
+    runId: string;
+    parentCodecMessageId: string | undefined;
+    forkOf: string | undefined;
+    regeneratesCodecMessageId: string | undefined;
+    clientId: string;
+    invocationId: string;
+    startSerial: string | undefined;
+  }): InternalNode<TProjection> {
     const node: RunNode<TProjection> = {
       kind: 'run',
-      runId,
+      runId: params.runId,
       // Reachability uses parentCodecMessageId (structural); the run→run
       // parentRunId derivation is retired in the two-node model.
       parentRunId: undefined,
-      parentCodecMessageId,
-      forkOf,
-      regeneratesCodecMessageId,
-      clientId: headers[HEADER_RUN_CLIENT_ID] ?? '',
-      invocationId: headers[HEADER_INVOCATION_ID] ?? '',
+      parentCodecMessageId: params.parentCodecMessageId,
+      forkOf: params.forkOf,
+      regeneratesCodecMessageId: params.regeneratesCodecMessageId,
+      clientId: params.clientId,
+      invocationId: params.invocationId,
       status: 'active',
       projection: this._codec.init(),
-      startSerial: serial,
+      startSerial: params.startSerial,
       endSerial: undefined,
     };
 
-    if (regeneratesCodecMessageId !== undefined) {
-      this._indexRegenerate(runId, regeneratesCodecMessageId);
+    if (params.regeneratesCodecMessageId !== undefined) {
+      this._indexRegenerate(params.runId, params.regeneratesCodecMessageId);
     }
 
     return { node, insertSeq: this._seqCounter++ };
@@ -1051,32 +1081,16 @@ export class DefaultTree<
    * @returns A newly-allocated internal run node ready for insertion.
    */
   private _createRunFromLifecycle(event: RunLifecycleEvent & { type: 'start' }): InternalNode<TProjection> {
-    const parentCodecMessageId = event.parent;
     const forkOfMsgId = event.forkOf;
-    const forkOf = forkOfMsgId ? this._codecMessageIdToNodeKey.get(forkOfMsgId) : undefined;
-    const regeneratesCodecMessageId = event.regenerates;
-
-    const node: RunNode<TProjection> = {
-      kind: 'run',
+    return this._buildRunNode({
       runId: event.runId,
-      // Reachability uses parentCodecMessageId; parentRunId is retired.
-      parentRunId: undefined,
-      parentCodecMessageId,
-      forkOf,
-      regeneratesCodecMessageId,
+      parentCodecMessageId: event.parent,
+      forkOf: forkOfMsgId ? this._codecMessageIdToNodeKey.get(forkOfMsgId) : undefined,
+      regeneratesCodecMessageId: event.regenerates,
       clientId: event.clientId,
       invocationId: event.invocationId,
-      status: 'active',
-      projection: this._codec.init(),
       startSerial: event.serial,
-      endSerial: undefined,
-    };
-
-    if (regeneratesCodecMessageId !== undefined) {
-      this._indexRegenerate(event.runId, regeneratesCodecMessageId);
-    }
-
-    return { node, insertSeq: this._seqCounter++ };
+    });
   }
 
   /**

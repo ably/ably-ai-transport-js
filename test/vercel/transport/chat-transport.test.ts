@@ -161,8 +161,7 @@ const createMockSession = (): MockSession => {
     run: vi.fn(),
     branchSelection: vi.fn(() => ({ hasSiblings: false, siblings: [], index: 0, selected: undefined })),
     selectSibling: vi.fn(),
-    sendMessage: vi.fn(),
-    sendInput: send,
+    send: send,
     regenerate,
     edit: vi.fn(),
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
@@ -288,13 +287,13 @@ describe('createChatTransport', () => {
 
   describe('sendMessages — regenerate-message', () => {
     it('delegates to view.regenerate so a wire-only regenerate event is published', async () => {
-      // Regenerate must route through `view.regenerate` (not `view.sendInput`)
+      // Regenerate must route through `view.regenerate` (not `view.send`)
       // so the View mints an `ait-regenerate` event. The event publishes
       // wire-only with `fork-of: A1`, `parent: U1` headers
       // — U1 is never re-published. The agent's input-event lookup catches the
       // regenerate event by its inputEventId and reads parent/forkOf from those
       // transport headers; the LLM receives history through U1 inclusive
-      // via the body. Routing through `sendInput([])` would skip this
+      // via the body. Routing through `send([])` would skip this
       // entirely and the agent would have no way to learn the run's
       // parent/forkOf.
       const { session, send, regenerate, view, mockRun } = createMockSession();
@@ -630,7 +629,7 @@ describe('createChatTransport', () => {
       // Repro: useChat sets `status: 'submitted'` synchronously before
       // awaiting `transport.sendMessages`. That exposes the Stop button to
       // the UI immediately. If the user clicks Stop while `sendMessages` is
-      // still awaiting `session.view.sendInput(...)` (e.g. waiting for the
+      // still awaiting `session.view.send(...)` (e.g. waiting for the
       // run-start ack — seconds for a real LLM), useChat fires the abort
       // *before* the adapter has the runId to attach a listener for. The
       // adapter must call `session.cancel(runId)` even when the signal is
@@ -639,13 +638,13 @@ describe('createChatTransport', () => {
       const chat = createChatTransport(session);
       const abortController = new AbortController();
 
-      // Defer the sendInput resolution so we can abort the signal while it
+      // Defer the send resolution so we can abort the signal while it
       // is still pending — this mirrors the run-start ack wait window.
       let resolveSend: ((run: typeof mockRun) => void) | undefined;
       const sendPromise = new Promise<typeof mockRun>((resolve) => {
         resolveSend = resolve;
       });
-      (view.sendInput as ReturnType<typeof vi.fn>).mockReturnValue(sendPromise);
+      (view.send as ReturnType<typeof vi.fn>).mockReturnValue(sendPromise);
 
       const streamPromise = chat.sendMessages({
         trigger: 'submit-message',
@@ -655,12 +654,12 @@ describe('createChatTransport', () => {
         abortSignal: abortController.signal,
       });
 
-      // Simulate the user clicking Stop while sendInput is still awaiting.
+      // Simulate the user clicking Stop while send is still awaiting.
       abortController.abort();
       expect(mockRun.cancel).not.toHaveBeenCalled();
 
-      // sendInput settles after the abort — by the time the adapter has the
-      // run handle, the signal is already aborted.
+      // send settles after the abort — by the time the adapter sees
+      // run.runId, the signal is already aborted.
       resolveSend?.(mockRun);
       const stream = await streamPromise;
 
@@ -1226,7 +1225,7 @@ describe('createChatTransport', () => {
 
       const [input] = send.mock.calls[0] as [VercelInput[]];
 
-      // chat-transport passes tool-resolution inputs to view.sendInput.
+      // chat-transport passes tool-resolution inputs to view.send.
       // Each input carries `codecMessageId` so the SDK stamps the wire
       // HEADER_CODEC_MESSAGE_ID to 'a1' — the reducer's direct-fold path
       // then matches by codec-message-id and folds onto the existing

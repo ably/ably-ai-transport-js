@@ -33,7 +33,7 @@ import {
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
 import { createClientSession } from '../../../src/core/transport/client-session.js';
 import { buildTransportHeaders } from '../../../src/core/transport/headers.js';
-import type { AgentSession, ClientSession, RunLifecycleEvent } from '../../../src/core/transport/types.js';
+import type { AgentSession, ClientSession, RunLifecycleEvent, View } from '../../../src/core/transport/types.js';
 import { getCodecHeaders, getTransportHeaders } from '../../../src/utils.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
 import { UIMessageCodec } from '../../../src/vercel/codec/index.js';
@@ -48,6 +48,17 @@ import { textResponseStream } from '../../integration/helpers.js';
 
 type ClientSessionT = ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 type AgentSessionT = AgentSession<VercelOutput, VercelProjection, AI.UIMessage>;
+
+/**
+ * Send a fresh user message: wrap the UIMessage as the codec's user-message
+ * input and publish it via `view.send`. Mirrors how an application composes
+ * `codec.createUserMessage` with `view.send`.
+ * @param view - The client view to send through.
+ * @param message - The user message to send.
+ * @returns The active run handle.
+ */
+const sendUserMessage = async (view: View<VercelInput, AI.UIMessage>, message: AI.UIMessage) =>
+  view.send(UIMessageCodec.createUserMessage(message));
 
 // Merged view of the transport and codec header tiers. The two tiers carry
 // disjoint keys, so merging is unambiguous and lets assertions read either
@@ -398,7 +409,7 @@ describe('ClientSession integration', () => {
     // agent is the run-id authority now: it mints the run-id and echoes the
     // triggering input's codec-message-id on run-start, which resolves the
     // client's `run.runId` promise.
-    const activeRun = await clientSession.view.sendMessage({
+    const activeRun = await sendUserMessage(clientSession.view, {
       id: 'user-msg-rt-1',
       role: 'user',
       parts: [{ type: 'text', text: 'Hello!' }],
@@ -463,7 +474,7 @@ describe('ClientSession integration', () => {
     });
     await clientSession.connect();
 
-    const activeRun = await clientSession.view.sendMessage({
+    const activeRun = await sendUserMessage(clientSession.view, {
       id: 'user-msg-stream-1',
       role: 'user',
       parts: [{ type: 'text', text: 'Test' }],
@@ -512,7 +523,7 @@ describe('ClientSession integration', () => {
     const runEvents: RunLifecycleEvent[] = [];
     clientSession.tree.on('run', (e) => runEvents.push(e));
 
-    const activeRun = await clientSession.view.sendMessage({
+    const activeRun = await sendUserMessage(clientSession.view, {
       id: 'user-lc-1',
       role: 'user',
       parts: [{ type: 'text', text: 'test' }],
@@ -559,7 +570,7 @@ describe('ClientSession integration', () => {
     });
     await clientSession.connect();
 
-    const clientRun = await clientSession.view.sendMessage({
+    const clientRun = await sendUserMessage(clientSession.view, {
       id: 'user-msg-cancel-1',
       role: 'user',
       parts: [{ type: 'text', text: 'Long request' }],
@@ -836,7 +847,7 @@ describe('ClientSession integration', () => {
     await observer.connect();
 
     try {
-      const activeRun = await clientSession.view.sendMessage({
+      const activeRun = await sendUserMessage(clientSession.view, {
         id: 'u-concurrent-1',
         role: 'user',
         parts: [{ type: 'text', text: 'hi from A' }],
@@ -1015,7 +1026,7 @@ describe('ClientSession integration', () => {
     });
     await clientSession.connect();
 
-    const activeRun = await clientSession.view.sendMessage({
+    const activeRun = await sendUserMessage(clientSession.view, {
       id: 'u-tool-1',
       role: 'user',
       parts: [{ type: 'text', text: "what's the weather like?" }],
@@ -1108,7 +1119,7 @@ describe('ClientSession integration', () => {
     const rawMessages: Ably.InboundMessage[] = [];
     clientSession.tree.on('ably-message', (msg) => rawMessages.push(msg));
 
-    const activeRun = await clientSession.view.sendMessage({
+    const activeRun = await sendUserMessage(clientSession.view, {
       id: 'user-raw-1',
       role: 'user',
       parts: [{ type: 'text', text: 'test' }],
@@ -1154,7 +1165,7 @@ describe('ClientSession integration', () => {
     });
     await clientSession.connect();
 
-    const activeRun = await clientSession.view.sendMessage({
+    const activeRun = await sendUserMessage(clientSession.view, {
       id: 'user-hdr-1',
       role: 'user',
       parts: [{ type: 'text', text: 'Question' }],
@@ -1219,9 +1230,10 @@ describe('ClientSession integration', () => {
     await clientSession.connect();
 
     // Client sends BEFORE any agent is up. send() resolves as soon as the
-    // input is published — it never blocks on run-start. The optimistic input
-    // node's codec-message-id is the stable client-owned key to locate it.
-    await clientSession.view.sendMessage({
+    // input is published — it never blocks on run-start. The SDK-minted
+    // codec-message-id (`activeRun.inputCodecMessageId`) is the stable key to
+    // locate it on the wire; the caller's `message.id` is decoupled from it.
+    const activeRun = await sendUserMessage(clientSession.view, {
       id: 'user-late-agent',
       role: 'user',
       parts: [{ type: 'text', text: 'is anybody home?' }],
@@ -1236,7 +1248,7 @@ describe('ClientSession integration', () => {
       const page = await channel.history({ limit: 10, direction: 'backwards' });
       found = page.items.find((m) => {
         const headers = getHeaders(m);
-        return headers[HEADER_ROLE] === 'user' && headers[HEADER_CODEC_MESSAGE_ID] === 'user-late-agent';
+        return headers[HEADER_ROLE] === 'user' && headers[HEADER_CODEC_MESSAGE_ID] === activeRun.inputCodecMessageId;
       });
     }
     expect(found).toBeDefined();
@@ -1271,13 +1283,14 @@ describe('ClientSession integration', () => {
     await clientSession.connect();
 
     // send() resolves promptly off the channel publish, with no agent present.
-    const activeRun = await clientSession.view.sendMessage({
+    const activeRun = await sendUserMessage(clientSession.view, {
       id: 'user-nonblocking-1',
       role: 'user',
       parts: [{ type: 'text', text: 'no-one is listening' }],
     });
-    // The synchronous routing key is the triggering input's codec-message-id.
-    expect(activeRun.inputCodecMessageId).toBe('user-nonblocking-1');
+    // The synchronous routing key is the triggering input's SDK-minted
+    // codec-message-id, decoupled from the caller's `message.id`.
+    expect(typeof activeRun.inputCodecMessageId).toBe('string');
 
     // `runId` must stay pending — no agent published run-start. Race it
     // against a short timer to prove it neither resolves nor rejects.
@@ -1442,7 +1455,7 @@ describe('ClientSession integration', () => {
 
     // send() resolves on publish and carries the run handle directly — no need
     // to snoop the channel for the published ids.
-    const activeRun = await clientSession.view.sendMessage({
+    const activeRun = await sendUserMessage(clientSession.view, {
       id: 'user-rs-happy-1',
       role: 'user',
       parts: [{ type: 'text', text: 'Need a run-start' }],
@@ -1514,7 +1527,7 @@ describe('ClientSession integration', () => {
 
     const codecMessageId = 'asst-tool-result-1';
     const toolCallId = 'tc-result-1';
-    await clientSession.view.sendInput({
+    await clientSession.view.send({
       kind: 'tool-result',
       codecMessageId,
       toolCallId,
@@ -1633,13 +1646,14 @@ describe('ClientSession integration', () => {
     await clientSession.connect();
 
     // Fresh send — the agent has not minted a run-id yet, so the only handle
-    // the client can cancel by is the triggering input's codec-message-id.
-    const activeRun = await clientSession.view.sendMessage({
+    // the client can cancel by is the triggering input's codec-message-id
+    // (SDK-minted, decoupled from the caller's `message.id`).
+    const activeRun = await sendUserMessage(clientSession.view, {
       id: 'user-cancel-before-start-1',
       role: 'user',
       parts: [{ type: 'text', text: 'cancel me before you even start' }],
     });
-    expect(activeRun.inputCodecMessageId).toBe('user-cancel-before-start-1');
+    expect(typeof activeRun.inputCodecMessageId).toBe('string');
 
     // Cancel BEFORE the agent creates its run. The wire cancel is keyed by the
     // input codec-message-id (no run-id exists yet), so the agent buffers it.
@@ -1711,20 +1725,23 @@ describe('ClientSession integration', () => {
     await clientSession.connect();
 
     // Two independent fresh sends, both before either agent run starts.
-    const runA = await clientSession.view.sendMessage({
+    const runA = await sendUserMessage(clientSession.view, {
       id: 'user-conc-a',
       role: 'user',
       parts: [{ type: 'text', text: 'question A' }],
     });
-    const runB = await clientSession.view.sendMessage({
+    const runB = await sendUserMessage(clientSession.view, {
       id: 'user-conc-b',
       role: 'user',
       parts: [{ type: 'text', text: 'question B' }],
     });
 
-    // Distinct input ids — the client routes outputs by these.
-    expect(runA.inputCodecMessageId).toBe('user-conc-a');
-    expect(runB.inputCodecMessageId).toBe('user-conc-b');
+    // Each send's routing key is a distinct SDK-minted codec-message-id
+    // (decoupled from the caller's `message.id`); outputs route by the
+    // agent-minted run-id resolved from each distinct triggering input.
+    expect(typeof runA.inputCodecMessageId).toBe('string');
+    expect(typeof runB.inputCodecMessageId).toBe('string');
+    expect(runA.inputCodecMessageId).not.toBe(runB.inputCodecMessageId);
     expect(runA.inputEventId).not.toBe(runB.inputEventId);
 
     // Each agent run mints its own run-id and drives off its own input event.
@@ -1764,15 +1781,15 @@ describe('ClientSession integration', () => {
     expect(textDeltaOf(eventsA)).toBe('answer A');
     expect(textDeltaOf(eventsB)).toBe('answer B');
 
-    // The View reconstructs both turns. The user prompt ids are client-owned
-    // and stable; the assistant message ids are agent-minted codec-message-ids
-    // (not the stream's chunk messageId), so associate each assistant reply
-    // with its run via `runOf` rather than by a guessed id.
+    // The View reconstructs both turns. Domain `message.id`s are decoupled
+    // from the SDK's codec-message-ids, so correlate each reply to its run by
+    // the codec-message-id from `getMessagesWithIds()` (via `runOf`) rather
+    // than by `message.id`. The user prompt ids stay client-owned and stable.
     await waitForMessages(clientSession, 4);
-    const messages = clientSession.view.getMessages();
+    const pairs = clientSession.view.getMessagesWithIds();
 
-    const userA = messages.find((m) => m.id === 'user-conc-a');
-    const userB = messages.find((m) => m.id === 'user-conc-b');
+    const userA = pairs.find((p) => p.message.id === 'user-conc-a')?.message;
+    const userB = pairs.find((p) => p.message.id === 'user-conc-b')?.message;
     expect(userA).toBeDefined();
     expect(userB).toBeDefined();
     if (userA) expect(textOfMessage(userA)).toBe('question A');
@@ -1780,9 +1797,11 @@ describe('ClientSession integration', () => {
 
     // Each assistant reply belongs to its own run — proof the View threaded
     // each reply run under its own input node with no cross-talk.
-    const asstMsgs = messages.filter((m) => m.role === 'assistant');
-    expect(asstMsgs).toHaveLength(2);
-    const asstTextByRunId = new Map(asstMsgs.map((m) => [clientSession?.view.runOf(m.id)?.runId, textOfMessage(m)]));
+    const asstPairs = pairs.filter((p) => p.message.role === 'assistant');
+    expect(asstPairs).toHaveLength(2);
+    const asstTextByRunId = new Map(
+      asstPairs.map((p) => [clientSession?.view.runOf(p.codecMessageId)?.runId, textOfMessage(p.message)]),
+    );
     expect(asstTextByRunId.get(runIdA)).toBe('answer A');
     expect(asstTextByRunId.get(runIdB)).toBe('answer B');
 

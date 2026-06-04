@@ -30,7 +30,7 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
     // eslint-disable-next-line @typescript-eslint/require-await -- mock fires synthetic run-start side effect; no awaitable work
     publish: vi.fn(async (msg: Ably.Message | Ably.Message[]) => {
       // When a client publishes a user message, simulate the agent's
-      // run-start response so `await session.view.sendInput(...)` resolves.
+      // run-start response so `await session.view.send(...)` resolves.
       const messages = Array.isArray(msg) ? msg : [msg];
       for (const m of messages) {
         const headers = (m.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport ?? {};
@@ -101,7 +101,7 @@ describe('Vercel createClientSession', () => {
     // The core session never sends HTTP — sending only publishes on the
     // channel. The run's invocation pointer reflects the channel name the
     // factory wired through, confirming the option plumbing.
-    const run = await session.view.sendInput({
+    const run = await session.view.send({
       kind: 'user-message',
       message: { id: '1', role: 'user', parts: [] },
     });

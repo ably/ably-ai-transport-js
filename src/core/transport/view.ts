@@ -154,12 +154,12 @@ type MessageBranchPoint<TProjection> =
 // ---------------------------------------------------------------------------
 
 /**
- * Normalise the two input shapes `View.sendInput` accepts (a single TInput
+ * Normalise the two input shapes `View.send` accepts (a single TInput
  * or an array) into the array shape the SendDelegate consumes.
- * @param input - The raw input from `View.sendInput`.
+ * @param input - The raw input from `View.send`.
  * @returns The normalised input array.
  */
-const _normaliseSendInput = <TInput extends CodecInputEvent>(input: TInput | TInput[]): TInput[] =>
+const _normaliseSend = <TInput extends CodecInputEvent>(input: TInput | TInput[]): TInput[] =>
   Array.isArray(input) ? input : [input];
 
 // ---------------------------------------------------------------------------
@@ -698,25 +698,14 @@ export class DefaultView<
   // Write operations
   // -------------------------------------------------------------------------
 
-  async sendMessage(messages: TMessage | TMessage[], options?: SendOptions): Promise<ActiveRun> {
-    this._logger.trace('DefaultView.sendMessage();');
-    const list = Array.isArray(messages) ? messages : [messages];
-    // Wrap each TMessage as the codec's well-known user-message input. The
-    // session mints a fresh codec-message-id per input; the caller's
-    // `message.id` is preserved on the reconstructed message but is never
-    // used for correlation.
-    const items: TInput[] = list.map((m) => this._codec.createUserMessage(m));
-    return this.sendInput(items, options);
-  }
-
   // Spec: AIT-CT3, AIT-CT4
-  async sendInput(input: TInput | TInput[], options?: SendOptions): Promise<ActiveRun> {
-    this._logger.trace('DefaultView.sendInput();');
+  async send(input: TInput | TInput[], options?: SendOptions): Promise<ActiveRun> {
+    this._logger.trace('DefaultView.send();');
     if (this._closed) {
       throw new Ably.ErrorInfo('unable to send; view is closed', ErrorCode.InvalidArgument, 400);
     }
 
-    const normalised = _normaliseSendInput<TInput>(input);
+    const normalised = _normaliseSend<TInput>(input);
 
     // The codec-message-id of the visible branch tail — the delegate uses it
     // for auto-parent routing on fresh user messages.
@@ -876,7 +865,7 @@ export class DefaultView<
     }
     const parentCodecMessageId = this._findParentMsgId(targetNode, messageId);
 
-    return this.sendInput(inputs, {
+    return this.send(inputs, {
       ...options,
       forkOf: messageId,
       parent: parentCodecMessageId,

@@ -77,10 +77,8 @@ export interface ViewHandle<TInput extends CodecInputEvent, TMessage> {
    * `codecMessageId` isn't a branch anchor. See {@link View.selectSibling}.
    */
   selectSibling: (codecMessageId: string, index: number) => void;
-  /** Send one or more user messages on the channel and fire a POST. See {@link View.sendMessage}. */
-  sendMessage: (messages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveRun>;
-  /** Send one or more TInputs on the channel and fire a POST. See {@link View.sendInput}. */
-  sendInput: (events: TInput | TInput[], options?: SendOptions) => Promise<ActiveRun>;
+  /** Send one or more TInputs on the channel and fire a POST. See {@link View.send}. */
+  send: (events: TInput | TInput[], options?: SendOptions) => Promise<ActiveRun>;
   /** Regenerate an assistant message, using this view's branch for history. */
   regenerate: (messageId: string, options?: SendOptions) => Promise<ActiveRun>;
   /** Edit a user message, forking from this view's branch. */
@@ -208,20 +206,11 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
   );
 
   // Write operation callbacks
-  const sendMessage = useCallback(
-    async (msgs: TMessage | TMessage[], opts?: SendOptions) => {
-      if (!resolvedView)
-        throw new Ably.ErrorInfo('unable to send; view is not available', ErrorCode.InvalidArgument, 400);
-      return resolvedView.sendMessage(msgs, opts);
-    },
-    [resolvedView],
-  );
-
-  const sendInput = useCallback(
+  const send = useCallback(
     async (events: TInput | TInput[], opts?: SendOptions) => {
       if (!resolvedView)
         throw new Ably.ErrorInfo('unable to send; view is not available', ErrorCode.InvalidArgument, 400);
-      return resolvedView.sendInput(events, opts);
+      return resolvedView.send(events, opts);
     },
     [resolvedView],
   );
@@ -254,8 +243,7 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
     run,
     branchSelection,
     selectSibling,
-    sendMessage,
-    sendInput,
+    send,
     regenerate,
     edit,
   };

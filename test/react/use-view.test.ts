@@ -268,49 +268,36 @@ describe('useView', () => {
     });
   });
 
-  describe('sendInput', () => {
-    it('delegates to view.sendInput', async () => {
+  describe('send', () => {
+    it('delegates to view.send', async () => {
       const mock = createMockSession();
       const { result } = renderHook(() => useView({ session: mock.session }));
 
       const input = { kind: 'user-message' as const };
       await act(async () => {
-        await result.current.sendInput([input], { parent: 'p1' });
+        await result.current.send([input], { parent: 'p1' });
       });
 
-      expect(mock.sendInput).toHaveBeenCalledWith([input], { parent: 'p1' });
+      expect(mock.send).toHaveBeenCalledWith([input], { parent: 'p1' });
     });
 
     it('returns a stable reference across rerenders', () => {
       const mock = createMockSession();
       const { result, rerender } = renderHook(() => useView({ session: mock.session }));
-      const first = result.current.sendInput;
+      const first = result.current.send;
       rerender();
-      expect(result.current.sendInput).toBe(first);
+      expect(result.current.send).toBe(first);
     });
 
     it('throws when no view is available', async () => {
       const { result } = renderHook(() => useView());
 
       await act(async () => {
-        await expect(result.current.sendInput([{ kind: 'user-message' }])).rejects.toMatchObject({
+        await expect(result.current.send([{ kind: 'user-message' }])).rejects.toMatchObject({
           code: ErrorCode.InvalidArgument,
           statusCode: 400,
         });
       });
-    });
-  });
-
-  describe('sendMessage', () => {
-    it('delegates to view.sendMessage', async () => {
-      const mock = createMockSession();
-      const { result } = renderHook(() => useView({ session: mock.session }));
-
-      await act(async () => {
-        await result.current.sendMessage('hello', { parent: 'p1' });
-      });
-
-      expect(mock.sendMessage).toHaveBeenCalledWith('hello', { parent: 'p1' });
     });
   });
 

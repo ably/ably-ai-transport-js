@@ -243,8 +243,8 @@ export class DefaultView<
   /** Spec: AIT-CT11c — runIds loaded from history but not yet revealed to the UI. */
   private readonly _withheldRunIds = new Set<string>();
 
-  /** Snapshot of visible node keys (runId for runs, codecMessageId for inputs) — used to detect structural changes and for selection pinning. */
-  private _lastVisibleRunIds: string[] = [];
+  /** Snapshot of visible node keys — used to detect structural changes and for selection pinning. */
+  private _lastVisibleNodeKeys: string[] = [];
 
   /**
    * Snapshot of visible projection references — used to detect in-place
@@ -255,8 +255,8 @@ export class DefaultView<
   /** Snapshot of visible flat messages — exposed via getMessages(). */
   private _lastVisibleMessages: TMessage[] = [];
 
-  /** Cached visible node-key Set (runIds + input codecMessageIds) — for O(1) lookup in event scoping. */
-  private _lastVisibleRunIdSet = new Set<string>();
+  /** Cached visible node-key Set — for O(1) lookup in event scoping. */
+  private _lastVisibleNodeKeySet = new Set<string>();
 
   /** Whether there are more history pages to fetch from the channel. */
   private _hasMoreHistory = false;
@@ -325,8 +325,8 @@ export class DefaultView<
     // (event.runId undefined — the agent mints run-ids, so an input fold has
     // none). Gate on whichever key the visible set holds.
     const folded =
-      (event.runId !== undefined && this._lastVisibleRunIdSet.has(event.runId)) ||
-      (event.inputCodecMessageId !== undefined && this._lastVisibleRunIdSet.has(event.inputCodecMessageId));
+      (event.runId !== undefined && this._lastVisibleNodeKeySet.has(event.runId)) ||
+      (event.inputCodecMessageId !== undefined && this._lastVisibleNodeKeySet.has(event.inputCodecMessageId));
     if (!folded) return;
 
     // The Tree emits `output` once per inbound message fold (with empty
@@ -1128,8 +1128,8 @@ export class DefaultView<
     const resolved = nodes ?? this._cachedNodes;
     // Identity key = nodeKey (runId for reply runs, codecMessageId for inputs),
     // so the visible set scopes events for both kinds and input-node parents.
-    this._lastVisibleRunIds = resolved.map((n) => nodeKey(n));
-    this._lastVisibleRunIdSet = new Set(this._lastVisibleRunIds);
+    this._lastVisibleNodeKeys = resolved.map((n) => nodeKey(n));
+    this._lastVisibleNodeKeySet = new Set(this._lastVisibleNodeKeys);
     this._lastVisibleProjections = resolved.map((n) => n.projection);
     this._lastVisibleMessages = this._extractMessages(resolved);
   }
@@ -1194,7 +1194,7 @@ export class DefaultView<
    * instead of pinning the old one.
    */
   private _pinBranchSelections(): void {
-    for (const key of this._lastVisibleRunIds) {
+    for (const key of this._lastVisibleNodeKeys) {
       const node = this._tree.getNodeByCodecMessageId(key) ?? this._tree.getRunNode(key);
       // Edit forks are INPUT-node sibling groups; only input nodes pin here.
       // Regenerate (reply-run) groups roll forward via _resolvePendingRegenSelections.
@@ -1244,14 +1244,14 @@ export class DefaultView<
       return;
     }
 
-    if (runId && this._lastVisibleRunIdSet.has(runId)) {
+    if (runId && this._lastVisibleNodeKeySet.has(runId)) {
       this._emitter.emit('ably-message', msg);
     }
   }
 
   private _onTreeRun(event: RunLifecycleEvent): void {
     // Check if the run is already on the visible branch.
-    if (this._lastVisibleRunIdSet.has(event.runId)) {
+    if (this._lastVisibleNodeKeySet.has(event.runId)) {
       this._emitter.emit('run', event);
       return;
     }
@@ -1260,7 +1260,7 @@ export class DefaultView<
     // messages arrive. Own runs have optimistic inserts (caught above).
     // Remote runs carry parent/forkOf from the agent.
     if (event.type === 'start' && this._isRunStartVisible(event)) {
-      this._lastVisibleRunIdSet.add(event.runId);
+      this._lastVisibleNodeKeySet.add(event.runId);
       this._emitter.emit('run', event);
     }
   }
@@ -1284,13 +1284,13 @@ export class DefaultView<
     // _updateVisibleSnapshot.
     const parentNode = this._tree.getNodeByCodecMessageId(parent);
     if (!parentNode) return true; // unknown parent: forward conservatively
-    return this._lastVisibleRunIdSet.has(nodeKey(parentNode));
+    return this._lastVisibleNodeKeySet.has(nodeKey(parentNode));
   }
 
   private _visibleChanged(newNodes: ConversationNode<TProjection>[]): boolean {
-    if (newNodes.length !== this._lastVisibleRunIds.length) return true;
+    if (newNodes.length !== this._lastVisibleNodeKeys.length) return true;
     for (const [i, node] of newNodes.entries()) {
-      if (nodeKey(node) !== this._lastVisibleRunIds[i]) return true;
+      if (nodeKey(node) !== this._lastVisibleNodeKeys[i]) return true;
       if (node.projection !== this._lastVisibleProjections[i]) return true;
     }
     return false;

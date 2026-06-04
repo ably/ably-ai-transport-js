@@ -17,7 +17,7 @@
 
 import type * as AI from 'ai';
 
-import type { Codec, Regenerate, UserMessage } from '../../core/codec/types.js';
+import type { Codec } from '../../core/codec/types.js';
 import { createDecoder } from './decoder.js';
 import { createEncoder } from './encoder.js';
 import type { VercelInput, VercelOutput } from './events.js';
@@ -39,8 +39,8 @@ const uiMessageCodecImpl = {
   createEncoder,
   createDecoder,
   getMessages,
-  createUserMessage: (message: AI.UIMessage): UserMessage<AI.UIMessage> => ({ kind: 'user-message', message }),
-  createRegenerate: (target: string, parent: string): Regenerate => ({
+  createUserMessage: (message: AI.UIMessage): VercelInput => ({ kind: 'user-message', message }),
+  createRegenerate: (target: string, parent: string): VercelInput => ({
     kind: 'regenerate',
     target,
     parent,

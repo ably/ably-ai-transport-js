@@ -11,7 +11,7 @@ import type * as Ably from 'ably';
 import { describe, expect, it } from 'vitest';
 
 import { EVENT_RUN_END, EVENT_RUN_START, HEADER_CODEC_MESSAGE_ID, HEADER_RUN_ID } from '../../../src/constants.js';
-import type { Codec, CodecInputEvent, Decoder } from '../../../src/core/codec/types.js';
+import type { Codec, Decoder, Regenerate, UserMessage } from '../../../src/core/codec/types.js';
 import { foldInputMessages, foldRunMessages, withLiveMessages } from '../../../src/core/transport/load-conversation.js';
 
 // ---------------------------------------------------------------------------
@@ -19,9 +19,7 @@ import { foldInputMessages, foldRunMessages, withLiveMessages } from '../../../s
 // getMessages reflects exactly which wires were folded and in what order.
 // ---------------------------------------------------------------------------
 
-interface TestInput extends CodecInputEvent {
-  kind: 'in';
-}
+type TestInput = UserMessage<TestMessage> | Regenerate;
 interface TestOutput {
   type: 'out';
 }

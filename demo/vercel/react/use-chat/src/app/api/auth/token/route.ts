@@ -2,9 +2,9 @@
  * Ably JWT token endpoint.
  *
  * Issues short-lived JWTs signed with the Ably API key secret.
- * The client connects to Ably with `authUrl` pointing here.
+ * The client connects to Ably with `authCallback` pointing here.
  *
- * See: https://ably.com/docs/ai-transport/sessions-identity/identifying-users-and-agents
+ * See: https://ably.com/docs/ai-transport/concepts/authentication
  */
 
 import jwt from 'jsonwebtoken';

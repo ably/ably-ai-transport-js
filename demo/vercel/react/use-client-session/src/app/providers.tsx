@@ -23,7 +23,7 @@ export function Providers({ clientId, children }: { clientId?: string; children:
     const ably = new Ably.Realtime({
       authCallback: async (_tokenParams, callback) => {
         try {
-          const response = await fetch(`/api/auth/ably-token${authParams}`);
+          const response = await fetch(`/api/auth/token${authParams}`);
           const jwt = await response.text();
           callback(null, jwt);
         } catch (err) {

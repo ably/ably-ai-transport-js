@@ -193,7 +193,7 @@ function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
 The Ably client authenticates via token auth. Create an endpoint that issues token requests:
 
 ```typescript
-// app/api/auth/ably-token/route.ts
+// app/api/auth/token/route.ts
 import Ably from 'ably';
 
 const ably = new Ably.Rest({ key: process.env.ABLY_API_KEY });
@@ -210,7 +210,7 @@ export async function GET(req: Request) {
 // Client-side Ably setup
 const ably = new Ably.Realtime({
   authCallback: async (_params, callback) => {
-    const response = await fetch('/api/auth/ably-token');
+    const response = await fetch('/api/auth/token');
     const token = await response.json();
     callback(null, token);
   },

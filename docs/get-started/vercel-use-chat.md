@@ -19,7 +19,7 @@ npm install @ably/ai-transport ably ai @ai-sdk/react @ai-sdk/anthropic react rea
 The client authenticates with Ably using short-lived JWTs. Create a server endpoint that signs tokens with your Ably API key:
 
 ```typescript
-// app/api/auth/ably-token/route.ts
+// app/api/auth/token/route.ts
 import jwt from 'jsonwebtoken';
 import { NextResponse } from 'next/server';
 
@@ -64,7 +64,7 @@ export function Providers({ clientId, children }: { clientId?: string; children:
     const ably = new Ably.Realtime({
       authCallback: async (_tokenParams, callback) => {
         try {
-          const response = await fetch(`/api/auth/ably-token?clientId=${encodeURIComponent(clientId ?? '')}`);
+          const response = await fetch(`/api/auth/token?clientId=${encodeURIComponent(clientId ?? '')}`);
           const jwt = await response.text();
           callback(null, jwt);
         } catch (err) {

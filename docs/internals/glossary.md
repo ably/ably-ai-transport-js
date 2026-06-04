@@ -127,7 +127,7 @@ A codec-provided component that assembles [decoder outputs](decoder.md#decoder-o
 
 ### Message materialization
 
-The act of producing a flat message list from the [conversation tree](conversation-tree.md). `view.flattenNodes()` returns the visible Run chain as `RunNode[]`; `view.getMessages()` walks each visible Run's `codec.getMessages(projection)` and concatenates them into the flat `TMessage[]` the UI renders. Both are cached in the View and refresh when the tree's structure changes (new Runs, deletions, selection changes, history reveal). All consumers go through the View: React hooks, `sendMessage()` (for the HTTP POST body), `view.loadOlder()` (for pagination snapshots). See [Message lifecycle](message-lifecycle.md#cached-message-list).
+The act of producing a flat message list from the [conversation tree](conversation-tree.md). `view.flattenNodes()` returns the visible Run chain as `RunNode[]`; `view.getMessages()` walks each visible Run's `codec.getMessages(projection)` and concatenates them into the flat `TMessage[]` the UI renders. Both are cached in the View and refresh when the tree's structure changes (new Runs, deletions, selection changes, history reveal). All consumers go through the View: React hooks, `send()` (for the HTTP POST body), `view.loadOlder()` (for pagination snapshots). See [Message lifecycle](message-lifecycle.md#cached-message-list).
 
 ### Flatten
 

@@ -41,11 +41,11 @@ The adapter builds a per-run `ReadableStream<UIMessageChunk>` from the session t
 
 Both `useChat` and `useMessageSync` accumulate messages in parallel: `useChat` builds from the stream, while `useMessageSync` pushes from the session's message store via `setMessages` (a full replacement). The session's version is always authoritative - both accumulators produce identical messages from the same chunks, and `setMessages` overwrites `useChat`'s state on every session event.
 
-The server encoder ensures `messageId` alignment by stamping the transport-assigned `codec-message-id` as a fallback domain `messageId` on the `start` chunk. This ensures both accumulators assign the same codec-message-id.
+Correlation does not rely on the domain `UIMessage.id`. The SDK keys every message on its own client-minted `codec-message-id` (carried on the wire header), and the reconstructed `UIMessage.id` is preserved as-is — an assistant id comes from the stream's `start` chunk `messageId`, a user id from the caller. The two ids are independent: the domain id is surfaced to the app, while the transport routes and reconciles on the separate `codec-message-id`.
 
 ### Abort signal
 
-When `useChat()` provides an `abortSignal` (e.g. the user clicks stop), the adapter wires it to `session.cancel(runId)` for the run produced by the just-issued send and closes that run's per-run stream so `useChat`'s reader ends immediately without waiting for the agent's run-end round-trip. The abort listener closes over the `runId` returned by `sendInput` / `regenerate`, so each stop fires exactly one cancel scoped to its originating send. (Because `useChat` enables Stop synchronously, the adapter also handles an already-aborted signal — firing the cancel directly rather than via the `abort` listener, which would never fire.)
+When `useChat()` provides an `abortSignal` (e.g. the user clicks stop), the adapter wires it to `session.cancel(runId)` for the run produced by the just-issued send and closes that run's per-run stream so `useChat`'s reader ends immediately without waiting for the agent's run-end round-trip. The abort listener closes over the `runId` returned by `send` / `regenerate`, so each stop fires exactly one cancel scoped to its originating send. (Because `useChat` enables Stop synchronously, the adapter also handles an already-aborted signal — firing the cancel directly rather than via the `abort` listener, which would never fire.)
 
 ## reconnectToStream
 

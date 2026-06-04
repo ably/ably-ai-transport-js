@@ -1,6 +1,6 @@
 # Client session
 
-The client session (`src/core/transport/client-session.ts`) manages the full client-side conversation lifecycle over a single Ably channel. It composes a [conversation tree](conversation-tree.md) and codec [decoder](decoder.md) to handle receiving streamed responses and managing conversation state. Write operations (`sendMessage`, `sendInput`, `regenerate`, `edit`) live on the View, which delegates to the session's internal send machinery.
+The client session (`src/core/transport/client-session.ts`) manages the full client-side conversation lifecycle over a single Ably channel. It composes a [conversation tree](conversation-tree.md) and codec [decoder](decoder.md) to handle receiving streamed responses and managing conversation state. Write operations (`send`, `regenerate`, `edit`) live on the View, which delegates to the session's internal send machinery.
 
 The client publishes user messages directly to the channel via the shared codec encoder. It does **not** send HTTP — the core session is a pure Ably-channel transport. Waking an agent is the application's concern: it POSTs `run.toInvocation().toJSON()` to its own endpoint if and when it wants one woken (the Vercel [chat transport](chat-transport.md) does this automatically for `useChat` parity). The agent locates the triggering input event by its `event-id` header (channel rewind + live subscribe), mints the `invocation-id` itself (one per HTTP request), and publishes [run lifecycle events](wire-protocol.md#lifecycle-events) plus assistant chunks. The channel is the durable session record — agents that weren't running at publish time can resume by reading channel rewind.
 
@@ -21,7 +21,7 @@ All sub-components are created in the constructor and share a single Ably channe
 
 ## Send flow
 
-`view.sendMessage()` / `view.sendInput()` is the primary entry point for starting a new run. It delegates to the session's internal `_internalSend` (exposed to views via a `SendDelegate`). The send flow:
+`view.send()` is the primary entry point for starting a new run. It accepts one or more codec inputs (compose user messages via `codec.createUserMessage(message)`). It delegates to the session's internal `_internalSend` (exposed to views via a `SendDelegate`). The send flow:
 
 1. **Generate identifiers** — per-message `codecMessageId`s and `inputEventId`s (all `crypto.randomUUID()`). Neither the `runId` nor the `invocationId` is minted here. The agent mints the `invocationId` per HTTP request, and the `runId` too for a fresh run; a continuation reuses the run id the caller passes in `options.runId`, which the client stamps on the continuation's `ai-input` (the agent reads it off the channel, not from the invocation body).
 2. **Auto-compute parent** — the View pre-computes `parentCodecMessageId` from the visible branch's tail message and passes it to the delegate. When neither `options.parent` nor `options.forkOf` is set, the delegate uses `parentCodecMessageId` as the auto-parent.
@@ -36,7 +36,7 @@ After `send()` returns, the application decides whether to wake an agent. `Activ
 
 ### Multi-message chaining
 
-When `sendMessage()` receives multiple messages, it chains them into a linear thread: each message after the first uses the previous message's `msg-id` as its `parent`. This produces a connected sequence rather than siblings at the same fork point.
+When `send()` receives multiple inputs, it chains them into a linear thread: each input after the first uses the previous one's `msg-id` as its `parent`. This produces a connected sequence rather than siblings at the same fork point.
 
 ## Optimistic reconciliation
 

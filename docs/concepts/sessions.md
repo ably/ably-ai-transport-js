@@ -71,14 +71,15 @@ The agent session also handles cancel routing - when a client publishes a cancel
 The client session manages conversation state: the message list, conversation tree (for branching), active runs, and history. It subscribes to the Ably channel before attaching, so no messages are lost.
 
 ```typescript
-import { createClientSession } from '@ably/ai-transport/vercel';
+import { createClientSession, UIMessageCodec } from '@ably/ai-transport/vercel';
 
 const session = createClientSession({ client: ably, channelName, clientId });
 await session.connect();
 const view = session.view;
 
-// Send a message - publishes on the channel and returns immediately with a run handle
-const run = await view.send(userMessage);
+// Send a message - compose the user message into a codec input, then send().
+// Publishes on the channel and returns immediately with a run handle.
+const run = await view.send(UIMessageCodec.createUserMessage(userMessage));
 
 // Wake the agent: POST the invocation pointer to your endpoint. The core
 // transport never sends HTTP — the app owns this step.

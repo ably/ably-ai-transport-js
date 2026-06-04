@@ -75,9 +75,10 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
       parts: [{ type: 'text', text }],
       createdAt: new Date(),
     };
-    // send() publishes the input on the channel and returns the run; then
-    // POST the invocation to wake the agent.
-    const run = await send([userMsg]);
+    // Compose the user message into a codec input, then send(). send()
+    // publishes the input on the channel and returns the run; then POST the
+    // invocation to wake the agent.
+    const run = await send(UIMessageCodec.createUserMessage(userMsg));
     await wakeAgent(run);
   };
 
@@ -165,9 +166,9 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
 |                       | useChat path                              | Generic hooks path                                                         |
 | --------------------- | ----------------------------------------- | -------------------------------------------------------------------------- |
 | **Message state**     | Managed by `useChat()`                    | Managed by `useView()`                                                     |
-| **Send**              | `sendMessage({ text })`                   | `send([uiMessage])` - you construct the `UIMessage`                        |
+| **Send**              | `sendMessage({ text })`                   | `send(codec.createUserMessage(uiMessage))` - you construct the `UIMessage` |
 | **Regenerate**        | `regenerate({ messageId })`               | `regenerate(messageId)`                                                    |
-| **Edit**              | Not built into `useChat()`                | `edit(messageId, [newMessage])`                                            |
+| **Edit**              | Not built into `useChat()`                | `edit(messageId, codec.createUserMessage(newMessage))`                     |
 | **Branch navigation** | Not available                             | `view.hasMessageSiblings()`, `view.selectMessageSibling()` via `useView()` |
 | **Stop**              | `stop()` from `useChat()`                 | `session.cancel(runId)` — read the runId off the latest visible node       |
 | **Observer sync**     | Requires `useMessageSync()`               | Built-in - `useView()` includes all clients                                |

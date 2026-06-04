@@ -373,9 +373,14 @@ export interface Edit<TMessage> extends CodecInputEvent {
 
 /**
  * Well-known input variant: client-published tool result (success). The
- * tool ran and produced this output. Mutates the assistant codec-message
- * addressed by `codecMessageId` — the codec's reducer applies the output
+ * tool ran and produced output. Mutates the assistant codec-message
+ * addressed by `codecMessageId` — the codec's reducer applies the result
  * onto the existing tool-call state of the referenced assistant.
+ *
+ * The core is domain-independent: it knows only that this input amends the
+ * assistant at `codecMessageId` and carries a codec-defined `payload`. The
+ * shape of `payload` (e.g. the tool-call id and output value) is supplied
+ * by the codec via `TPayload` — see the Vercel layer's payload type.
  *
  * Codecs opt in to client-side tool resolution by including this variant
  * in their `TInput` union. Codecs whose domain model doesn't natively
@@ -383,60 +388,77 @@ export interface Edit<TMessage> extends CodecInputEvent {
  * Anthropic Messages, where tool results are normally embedded in a
  * user-role message) can still use this variant — the codec's reducer
  * translates the wire-level update into the codec's domain representation.
+ * @template TPayload - The codec's domain payload for a tool result.
  */
-export interface ToolResult extends CodecInputEvent {
+export interface ToolResult<TPayload> extends CodecInputEvent {
   /** Discriminator. */
   kind: 'tool-result';
   /** The assistant codec-message containing the tool call. Required. */
   codecMessageId: string;
-  /** The tool call this result corresponds to. */
-  toolCallId: string;
-  /** The tool's output value. Codec- and tool-defined shape. */
-  output: unknown;
+  /** The codec's domain payload describing the tool result. */
+  payload: TPayload;
 }
 
 /**
  * Well-known input variant: client-published tool result (failure). The
- * tool ran and failed; `message` carries a human-readable description of
- * what went wrong. Mutates the assistant codec-message addressed by
- * `codecMessageId`.
- *
- * Codecs that want richer error shapes (structured codes, causes,
- * provider metadata) extend this interface with additional fields.
+ * tool ran and failed. Mutates the assistant codec-message addressed by
+ * `codecMessageId`. The failure detail (e.g. tool-call id and error text)
+ * is the codec's domain `payload` — see the Vercel layer's payload type.
+ * @template TPayload - The codec's domain payload for a tool-result failure.
  */
-export interface ToolResultError extends CodecInputEvent {
+export interface ToolResultError<TPayload> extends CodecInputEvent {
   /** Discriminator. */
   kind: 'tool-result-error';
   /** The assistant codec-message containing the tool call. Required. */
   codecMessageId: string;
-  /** The tool call this error corresponds to. */
-  toolCallId: string;
-  /** Human-readable description of the failure. */
-  message: string;
+  /** The codec's domain payload describing the failure. */
+  payload: TPayload;
 }
 
 /**
  * Well-known input variant: client-published response to an
  * agent-emitted tool-approval request. Mutates the assistant
  * codec-message addressed by `codecMessageId` — flipping the targeted
- * tool call from pending-approval to approved or denied.
+ * tool call from pending-approval to approved or denied. The decision
+ * detail (e.g. tool-call id, approved flag, reason) is the codec's domain
+ * `payload` — see the Vercel layer's payload type.
  *
  * Codecs may layer approval semantics on top of domain models that don't
  * natively support gating tool execution behind an approval — the codec
  * is responsible for mapping the decision into its own representation.
+ * @template TPayload - The codec's domain payload for an approval response.
  */
-export interface ToolApprovalResponse extends CodecInputEvent {
+export interface ToolApprovalResponse<TPayload> extends CodecInputEvent {
   /** Discriminator. */
   kind: 'tool-approval-response';
   /** The assistant codec-message containing the tool call. Required. */
   codecMessageId: string;
-  /** The tool call this approval responds to. */
-  toolCallId: string;
-  /** Whether the user approved the tool execution. */
-  approved: boolean;
-  /** Optional human-readable reason (typically used on denial). */
-  reason?: string;
+  /** The codec's domain payload describing the approval decision. */
+  payload: TPayload;
 }
+
+/**
+ * Extract the domain `payload` type of a codec's {@link ToolResult} member
+ * from its `TInput` union, or `never` if the codec has no tool-result
+ * variant. Used to type {@link Codec.createToolResult} without adding a
+ * standalone type parameter to the codec.
+ * @template TInput - The codec's input union.
+ */
+export type ToolResultPayloadOf<TInput> = TInput extends ToolResult<infer P> ? P : never;
+
+/**
+ * Extract the domain `payload` type of a codec's {@link ToolResultError}
+ * member from its `TInput` union, or `never` if absent.
+ * @template TInput - The codec's input union.
+ */
+export type ToolResultErrorPayloadOf<TInput> = TInput extends ToolResultError<infer P> ? P : never;
+
+/**
+ * Extract the domain `payload` type of a codec's {@link ToolApprovalResponse}
+ * member from its `TInput` union, or `never` if absent.
+ * @template TInput - The codec's input union.
+ */
+export type ToolApprovalResponsePayloadOf<TInput> = TInput extends ToolApprovalResponse<infer P> ? P : never;
 
 // ---------------------------------------------------------------------------
 // Codec output events — base shape for the output side
@@ -549,4 +571,42 @@ export interface Codec<
    * @returns A `TInput` (the codec's {@link Regenerate} variant).
    */
   createRegenerate(target: string, parent: string): TInput;
+  /**
+   * Build an {@link Edit} for the codec, returned as a `TInput`. Replaces
+   * the codec-message at `target` with `message` on a new branch rooted at
+   * `parent`. Optional — only codecs whose `TInput` includes the
+   * {@link Edit} variant implement it.
+   * @param target - The codec-message-id of the codec-message to replace.
+   * @param parent - The codec-message-id of the preceding codec-message on the new branch.
+   * @param message - The replacement content in the codec's domain representation.
+   * @returns A `TInput` (the codec's {@link Edit} variant).
+   */
+  createEdit?(target: string, parent: string, message: TMessage): TInput;
+  /**
+   * Build a {@link ToolResult} for the codec, returned as a `TInput`.
+   * Amends the assistant at `codecMessageId` with the codec's domain
+   * `payload`. Optional — only codecs whose `TInput` includes the
+   * {@link ToolResult} variant implement it.
+   * @param codecMessageId - The assistant codec-message the result amends.
+   * @param payload - The codec's domain tool-result payload.
+   * @returns A `TInput` (the codec's {@link ToolResult} variant).
+   */
+  createToolResult?(codecMessageId: string, payload: ToolResultPayloadOf<TInput>): TInput;
+  /**
+   * Build a {@link ToolResultError} for the codec, returned as a `TInput`.
+   * Optional — only codecs whose `TInput` includes the variant implement it.
+   * @param codecMessageId - The assistant codec-message the error amends.
+   * @param payload - The codec's domain tool-result-failure payload.
+   * @returns A `TInput` (the codec's {@link ToolResultError} variant).
+   */
+  createToolResultError?(codecMessageId: string, payload: ToolResultErrorPayloadOf<TInput>): TInput;
+  /**
+   * Build a {@link ToolApprovalResponse} for the codec, returned as a
+   * `TInput`. Optional — only codecs whose `TInput` includes the variant
+   * implement it.
+   * @param codecMessageId - The assistant codec-message the response amends.
+   * @param payload - The codec's domain approval-decision payload.
+   * @returns A `TInput` (the codec's {@link ToolApprovalResponse} variant).
+   */
+  createToolApprovalResponse?(codecMessageId: string, payload: ToolApprovalResponsePayloadOf<TInput>): TInput;
 }

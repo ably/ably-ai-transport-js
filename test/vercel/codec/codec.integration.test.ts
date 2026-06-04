@@ -654,8 +654,7 @@ describe('Vercel UIMessageCodec integration', () => {
       {
         kind: 'tool-result',
         codecMessageId: 'msg-1',
-        toolCallId: 'tc-1',
-        output: { latitude: 51.5, longitude: -0.1 },
+        payload: { toolCallId: 'tc-1', output: { latitude: 51.5, longitude: -0.1 } },
       },
       { messageId: continuationId },
     );

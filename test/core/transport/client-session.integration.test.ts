@@ -1527,12 +1527,9 @@ describe('ClientSession integration', () => {
 
     const codecMessageId = 'asst-tool-result-1';
     const toolCallId = 'tc-result-1';
-    await clientSession.view.send({
-      kind: 'tool-result',
-      codecMessageId,
-      toolCallId,
-      output: { temperature: 22 },
-    });
+    await clientSession.view.send(
+      UIMessageCodec.createToolResult(codecMessageId, { toolCallId, output: { temperature: 22 } }),
+    );
 
     await gotInput;
 

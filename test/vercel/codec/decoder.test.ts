@@ -1061,9 +1061,9 @@ describe('Vercel decoder', () => {
       const input = inputs[0];
       expect(input?.kind).toBe('tool-approval-response');
       if (input?.kind !== 'tool-approval-response') return;
-      expect(input.toolCallId).toBe('tc-1');
-      expect(input.approved).toBe(true);
-      expect(input.reason).toBe('ok');
+      expect(input.payload.toolCallId).toBe('tc-1');
+      expect(input.payload.approved).toBe(true);
+      expect(input.payload.reason).toBe('ok');
       expect(input.codecMessageId).toBe('continuation-codec-message-id');
     });
 
@@ -1087,8 +1087,8 @@ describe('Vercel decoder', () => {
       const input = inputs[0];
       expect(input?.kind).toBe('tool-result');
       if (input?.kind !== 'tool-result') return;
-      expect(input.toolCallId).toBe('tc-1');
-      expect(input.output).toEqual({ latitude: 51.5, longitude: -0.1 });
+      expect(input.payload.toolCallId).toBe('tc-1');
+      expect(input.payload.output).toEqual({ latitude: 51.5, longitude: -0.1 });
       expect(input.codecMessageId).toBe('continuation-codec-message-id');
     });
 
@@ -1110,8 +1110,8 @@ describe('Vercel decoder', () => {
       const input = inputs[0];
       expect(input?.kind).toBe('tool-result-error');
       if (input?.kind !== 'tool-result-error') return;
-      expect(input.toolCallId).toBe('tc-1');
-      expect(input.message).toBe('geolocation denied');
+      expect(input.payload.toolCallId).toBe('tc-1');
+      expect(input.payload.message).toBe('geolocation denied');
       expect(input.codecMessageId).toBe('continuation-codec-message-id');
     });
 

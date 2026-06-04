@@ -491,8 +491,7 @@ const decodeClientToolResult = (codecMessageId: string, r: VercelHeaderReader, d
     {
       kind: 'tool-result',
       codecMessageId,
-      toolCallId: r.strOr('toolCallId', ''),
-      output: parsed?.output,
+      payload: { toolCallId: r.strOr('toolCallId', ''), output: parsed?.output },
     },
   ];
 };
@@ -504,20 +503,21 @@ const decodeClientToolResultError = (codecMessageId: string, r: VercelHeaderRead
     {
       kind: 'tool-result-error',
       codecMessageId,
-      toolCallId: r.strOr('toolCallId', ''),
-      message: parsed?.message ?? '',
+      payload: { toolCallId: r.strOr('toolCallId', ''), message: parsed?.message ?? '' },
     },
   ];
 };
 
 const decodeClientToolApprovalResponse = (codecMessageId: string, r: VercelHeaderReader): VercelInput[] => [
-  stripUndefined({
-    kind: 'tool-approval-response' as const,
+  {
+    kind: 'tool-approval-response',
     codecMessageId,
-    toolCallId: r.strOr('toolCallId', ''),
-    approved: r.bool('approved') ?? false,
-    reason: r.str('reason'),
-  }),
+    payload: stripUndefined({
+      toolCallId: r.strOr('toolCallId', ''),
+      approved: r.bool('approved') ?? false,
+      reason: r.str('reason'),
+    }),
+  },
 ];
 
 // ---------------------------------------------------------------------------

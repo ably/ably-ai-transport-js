@@ -35,7 +35,13 @@ import type {
   ToolResultError,
 } from '../../core/codec/types.js';
 import { stripUndefined } from '../../utils.js';
-import type { VercelInput, VercelOutput } from './events.js';
+import type {
+  VercelInput,
+  VercelOutput,
+  VercelToolApprovalResponsePayload,
+  VercelToolResultErrorPayload,
+  VercelToolResultPayload,
+} from './events.js';
 import { toolBase, transitionToolPart } from './tool-transitions.js';
 
 // ---------------------------------------------------------------------------
@@ -182,6 +188,14 @@ export const fold = (
         _foldUserMessage(state, event.message, meta);
         break;
       }
+      case 'edit': {
+        // An edit carries the replacement message; on this (optimistic)
+        // side it folds like a fresh user message keyed by the minted
+        // codec-message-id. The fork routing (target -> fork-of) lives on
+        // the wire headers, set by the client session.
+        _foldUserMessage(state, event.message, meta);
+        break;
+      }
       case 'regenerate': {
         // Regenerate input — wire-only signal. Carries no projection state;
         // the agent reads `target` / `parent` from the wire headers via
@@ -248,7 +262,7 @@ const _conflictKeyOf = (event: VercelInput | VercelOutput, meta: ReducerMeta): s
         return meta.messageId === undefined ? undefined : `user-msg:${meta.messageId}`;
       }
       case 'tool-approval-response': {
-        return `tool-approval:${event.toolCallId}`;
+        return `tool-approval:${event.payload.toolCallId}`;
       }
       // Client tool results compete for the same final state of the tool
       // call (against agent-side `tool-output-available`/`tool-output-error`
@@ -257,7 +271,11 @@ const _conflictKeyOf = (event: VercelInput | VercelOutput, meta: ReducerMeta): s
       // agent-side chunks below.
       case 'tool-result':
       case 'tool-result-error': {
-        return `tool-output:${event.toolCallId}`;
+        return `tool-output:${event.payload.toolCallId}`;
+      }
+      case 'edit': {
+        // Like user-message: dedup re-publishes by the wire codec-message-id.
+        return meta.messageId === undefined ? undefined : `edit:${meta.messageId}`;
       }
       case 'regenerate': {
         return undefined;
@@ -338,26 +356,31 @@ const _foldUserMessage = (state: VercelProjection, message: AI.UIMessage, meta: 
  * holds the matching `toolCallId`. If the assistant is present, fold
  * directly; otherwise pend until the assistant arrives.
  * @param state - Projection to fold into.
- * @param event - The tool-result input (codecMessageId, toolCallId, output).
+ * @param event - The tool-result input (codecMessageId + domain payload).
  * @param meta - Transport-derived metadata.
  * @returns The same projection reference.
  */
-const _foldClientToolResult = (state: VercelProjection, event: ToolResult, meta: ReducerMeta): VercelProjection => {
-  const owner = _findOwner(state, event.codecMessageId, event.toolCallId);
+const _foldClientToolResult = (
+  state: VercelProjection,
+  event: ToolResult<VercelToolResultPayload>,
+  meta: ReducerMeta,
+): VercelProjection => {
+  const { toolCallId, output } = event.payload;
+  const owner = _findOwner(state, event.codecMessageId, toolCallId);
   if (owner) {
     owner.message.parts[owner.tracker.partIndex] = transitionToolPart(owner.part, {
       type: 'tool-output-available',
-      toolCallId: event.toolCallId,
-      output: event.output,
+      toolCallId,
+      output,
     });
     return state;
   }
 
   state.pendingToolResolutions.push({
     targetCodecMessageId: event.codecMessageId,
-    toolCallId: event.toolCallId,
+    toolCallId,
     serial: meta.serial,
-    resolution: { kind: 'tool-result', output: event.output },
+    resolution: { kind: 'tool-result', output },
   });
   return state;
 };
@@ -366,30 +389,31 @@ const _foldClientToolResult = (state: VercelProjection, event: ToolResult, meta:
  * Fold a client-published `ToolResultError`. Mirrors
  * {@link _foldClientToolResult} but with the error transition.
  * @param state - Projection to fold into.
- * @param event - The tool-result-error input (codecMessageId, toolCallId, message).
+ * @param event - The tool-result-error input (codecMessageId + domain payload).
  * @param meta - Transport-derived metadata.
  * @returns The same projection reference.
  */
 const _foldClientToolResultError = (
   state: VercelProjection,
-  event: ToolResultError,
+  event: ToolResultError<VercelToolResultErrorPayload>,
   meta: ReducerMeta,
 ): VercelProjection => {
-  const owner = _findOwner(state, event.codecMessageId, event.toolCallId);
+  const { toolCallId, message } = event.payload;
+  const owner = _findOwner(state, event.codecMessageId, toolCallId);
   if (owner) {
     owner.message.parts[owner.tracker.partIndex] = transitionToolPart(owner.part, {
       type: 'tool-output-error',
-      toolCallId: event.toolCallId,
-      errorText: event.message,
+      toolCallId,
+      errorText: message,
     });
     return state;
   }
 
   state.pendingToolResolutions.push({
     targetCodecMessageId: event.codecMessageId,
-    toolCallId: event.toolCallId,
+    toolCallId,
     serial: meta.serial,
-    resolution: { kind: 'tool-result-error', message: event.message },
+    resolution: { kind: 'tool-result-error', message },
   });
   return state;
 };
@@ -406,23 +430,24 @@ const _foldClientToolResultError = (
  */
 const _foldToolApprovalResponse = (
   state: VercelProjection,
-  event: ToolApprovalResponse,
+  event: ToolApprovalResponse<VercelToolApprovalResponsePayload>,
   meta: ReducerMeta,
 ): VercelProjection => {
-  const owner = _findOwner(state, event.codecMessageId, event.toolCallId);
+  const { toolCallId, approved, reason } = event.payload;
+  const owner = _findOwner(state, event.codecMessageId, toolCallId);
   if (owner) {
-    owner.message.parts[owner.tracker.partIndex] = _approvalTransition(owner.part, event.approved, event.reason);
+    owner.message.parts[owner.tracker.partIndex] = _approvalTransition(owner.part, approved, reason);
     return state;
   }
 
   state.pendingToolResolutions.push({
     targetCodecMessageId: event.codecMessageId,
-    toolCallId: event.toolCallId,
+    toolCallId,
     serial: meta.serial,
     resolution: {
       kind: 'tool-approval-response',
-      approved: event.approved,
-      ...(event.reason === undefined ? {} : { reason: event.reason }),
+      approved,
+      ...(reason === undefined ? {} : { reason }),
     },
   });
   return state;

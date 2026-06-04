@@ -223,6 +223,22 @@ describe('Vercel reducer', () => {
     });
   });
 
+  // -- edit -----------------------------------------------------------------
+
+  describe('edit', () => {
+    it('folds the replacement message keyed on the codec-message-id (like a user message)', () => {
+      let state = init();
+      const message: AI.UIMessage = { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'edited' }] };
+
+      // An edit carries the replacement content; the fork routing lives on
+      // the wire headers, so the reducer just folds the message under the
+      // minted codec-message-id.
+      state = fold(state, { kind: 'edit', target: 'cm-orig', parent: 'cm-prev', message }, meta('s1', 'cm-edit'));
+
+      expect(state.messages).toEqual([{ codecMessageId: 'cm-edit', message }]);
+    });
+  });
+
   // -- tool-approval-response -----------------------------------------------
 
   describe('tool-approval-response', () => {
@@ -242,8 +258,7 @@ describe('Vercel reducer', () => {
       const approval: VercelInput = {
         kind: 'tool-approval-response',
         codecMessageId: 'msg-1',
-        toolCallId: 'tc-1',
-        approved: true,
+        payload: { toolCallId: 'tc-1', approved: true },
       };
       state = fold(state, approval, meta('s3', 'continuation-codec-message-id'));
 
@@ -269,9 +284,7 @@ describe('Vercel reducer', () => {
       const denial: VercelInput = {
         kind: 'tool-approval-response',
         codecMessageId: 'msg-1',
-        toolCallId: 'tc-1',
-        approved: false,
-        reason: 'nope',
+        payload: { toolCallId: 'tc-1', approved: false, reason: 'nope' },
       };
       state = fold(state, denial, meta('s3', 'continuation-codec-message-id'));
 
@@ -287,8 +300,7 @@ describe('Vercel reducer', () => {
       const approval: VercelInput = {
         kind: 'tool-approval-response',
         codecMessageId: 'msg-1',
-        toolCallId: 'tc-1',
-        approved: true,
+        payload: { toolCallId: 'tc-1', approved: true },
       };
       state = fold(state, approval, meta('s1', 'continuation-codec-message-id'));
       expect(state.pendingToolResolutions).toHaveLength(1);
@@ -323,8 +335,7 @@ describe('Vercel reducer', () => {
       const toolOutput: VercelInput = {
         kind: 'tool-result',
         codecMessageId: 'msg-1',
-        toolCallId: 'tc-1',
-        output: { latitude: 51.5, longitude: -0.1 },
+        payload: { toolCallId: 'tc-1', output: { latitude: 51.5, longitude: -0.1 } },
       };
       state = fold(state, toolOutput, meta('s3', 'continuation-codec-message-id-0'));
 
@@ -350,12 +361,15 @@ describe('Vercel reducer', () => {
         meta('s2', 'msg-1'),
       );
 
-      const first: VercelInput = { kind: 'tool-result', codecMessageId: 'msg-1', toolCallId: 'tc-1', output: { v: 1 } };
+      const first: VercelInput = {
+        kind: 'tool-result',
+        codecMessageId: 'msg-1',
+        payload: { toolCallId: 'tc-1', output: { v: 1 } },
+      };
       const second: VercelInput = {
         kind: 'tool-result',
         codecMessageId: 'msg-1',
-        toolCallId: 'tc-1',
-        output: { v: 2 },
+        payload: { toolCallId: 'tc-1', output: { v: 2 } },
       };
 
       state = fold(state, first, meta('s3', 'continuation-codec-message-id-0'));
@@ -385,8 +399,7 @@ describe('Vercel reducer', () => {
       const errorInput: VercelInput = {
         kind: 'tool-result-error',
         codecMessageId: 'msg-1',
-        toolCallId: 'tc-1',
-        message: 'permission denied',
+        payload: { toolCallId: 'tc-1', message: 'permission denied' },
       };
       state = fold(state, errorInput, meta('s3', 'continuation-codec-message-id-0'));
 
@@ -403,8 +416,7 @@ describe('Vercel reducer', () => {
       const orphan: VercelInput = {
         kind: 'tool-result',
         codecMessageId: 'msg-1',
-        toolCallId: 'tc-1',
-        output: { v: 'x' },
+        payload: { toolCallId: 'tc-1', output: { v: 'x' } },
       };
       state = fold(state, orphan, meta('s1', 'continuation-codec-message-id-0'));
       expect(state.pendingToolResolutions).toHaveLength(1);

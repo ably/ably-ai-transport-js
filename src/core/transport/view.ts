@@ -145,6 +145,17 @@ type RegenSelection =
    */
   | { kind: 'pending'; carrierCodecMessageId: string };
 
+/**
+ * A resolved branch point: the group `kind` plus the sibling nodes that make
+ * up the alternatives. `fork-of` is an edit-style branch anchored at the user
+ * input node; `regen` is a regenerate-style branch anchored at the assistant
+ * slot. `groupRoot` is the group's key (input group root for fork-of, the
+ * original reply's group root for regen).
+ */
+type MessageBranchPoint<TProjection> =
+  | { kind: 'fork-of'; groupRoot: string; siblings: ConversationNode<TProjection>[] }
+  | { kind: 'regen'; groupRoot: string; siblings: ConversationNode<TProjection>[] };
+
 // ---------------------------------------------------------------------------
 // Send-input normalisation
 // ---------------------------------------------------------------------------
@@ -368,7 +379,7 @@ export class DefaultView<
    * @returns A fresh array of visible nodes (inputs + reply runs).
    */
   private _computeFlatNodes(): ConversationNode<TProjection>[] {
-    const treeNodes = this._tree.visibleNodes(this._resolveSelections());
+    const treeNodes = this._treeVisibleNodes();
     if (this._withheldRunIds.size === 0) return treeNodes;
     return treeNodes.filter((node) => !this._withheldRunIds.has(nodeKey(node)));
   }
@@ -607,11 +618,7 @@ export class DefaultView<
    * @param branch - Resolved branch-point descriptor from `_resolveMessageBranchPoint`.
    * @returns The selected sibling's index within `branch.siblings`.
    */
-  private _resolveSelectedIndex(
-    branch:
-      | { kind: 'fork-of'; groupRoot: string; siblings: ConversationNode<TProjection>[] }
-      | { kind: 'regen'; groupRoot: string; siblings: ConversationNode<TProjection>[] },
-  ): number {
+  private _resolveSelectedIndex(branch: MessageBranchPoint<TProjection>): number {
     if (branch.kind === 'fork-of') {
       const sel = this._branchSelections.get(branch.groupRoot);
       if (!sel) return branch.siblings.length - 1;
@@ -645,12 +652,7 @@ export class DefaultView<
    *   anchor codec-message-id for regen), or undefined when `codecMessageId` is not an
    *   anchor in either group type.
    */
-  private _resolveMessageBranchPoint(
-    codecMessageId: string,
-  ):
-    | { kind: 'fork-of'; groupRoot: string; siblings: ConversationNode<TProjection>[] }
-    | { kind: 'regen'; groupRoot: string; siblings: ConversationNode<TProjection>[] }
-    | undefined {
+  private _resolveMessageBranchPoint(codecMessageId: string): MessageBranchPoint<TProjection> | undefined {
     const node = this._tree.getNodeByCodecMessageId(codecMessageId);
     if (!node) return undefined;
 
@@ -978,7 +980,7 @@ export class DefaultView<
 
   private async _loadFirstPage(limit: number): Promise<void> {
     // Snapshot before loading: every Run already in the tree stays visible.
-    const beforeRunIds = new Set(this._tree.visibleNodes(this._resolveSelections()).map((n) => nodeKey(n)));
+    const beforeRunIds = new Set(this._treeVisibleNodes().map((n) => nodeKey(n)));
 
     // decodeHistory's limit counts complete domain messages per page (not
     // Runs); see `_RUN_TO_MESSAGE_FETCH_FACTOR` for the scaling rationale.
@@ -995,7 +997,7 @@ export class DefaultView<
   }
 
   private async _loadAndReveal(page: HistoryPage<TMessage>, limit: number): Promise<void> {
-    const alreadyKnown = new Set(this._tree.visibleNodes(this._resolveSelections()).map((n) => nodeKey(n)));
+    const alreadyKnown = new Set(this._treeVisibleNodes().map((n) => nodeKey(n)));
 
     const { newVisible, lastPage } = await this._loadUntilVisible(page, limit, alreadyKnown);
     if (this._closed) return;
@@ -1089,7 +1091,7 @@ export class DefaultView<
 
     const newVisibleCount = (): number => {
       let count = 0;
-      for (const n of this._tree.visibleNodes(this._resolveSelections())) {
+      for (const n of this._treeVisibleNodes()) {
         // Pagination counts reply RUNS toward the target (an input node travels
         // with the reply run it precedes — see `_splitReveal`).
         if (n.kind === 'run' && !beforeRunIds.has(nodeKey(n))) count++;
@@ -1104,7 +1106,7 @@ export class DefaultView<
       page = nextPage;
     }
 
-    const newVisible = this._tree.visibleNodes(this._resolveSelections()).filter((n) => !beforeRunIds.has(nodeKey(n)));
+    const newVisible = this._treeVisibleNodes().filter((n) => !beforeRunIds.has(nodeKey(n)));
     return { newVisible, lastPage: page };
   }
 
@@ -1181,6 +1183,16 @@ export class DefaultView<
       resolved.set(groupRoot, sel.selectedRunId);
     }
     return resolved;
+  }
+
+  /**
+   * The Tree's visible node chain under this view's current selections — the
+   * reachable, sibling-resolved nodes before the View's pagination window is
+   * applied.
+   * @returns The selection-resolved visible node chain.
+   */
+  private _treeVisibleNodes(): ConversationNode<TProjection>[] {
+    return this._tree.visibleNodes(this._resolveSelections());
   }
 
   /**

@@ -55,12 +55,18 @@ import type {
 } from './types.js';
 
 // ---------------------------------------------------------------------------
-// Run-state lookup helpers
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // Shared wire-message helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Whether an Ably message name is a run-lifecycle event (run-start, suspend,
+ * resume, end). Lifecycle events carry no codec content, so history folds and
+ * node-index passes skip them.
+ * @param name - The Ably message name.
+ * @returns True when the name is a lifecycle event.
+ */
+const isLifecycleEvent = (name: string | undefined): boolean =>
+  name === EVENT_RUN_START || name === EVENT_RUN_SUSPEND || name === EVENT_RUN_RESUME || name === EVENT_RUN_END;
 
 /**
  * Merge live-observed messages into a collection of history messages, then
@@ -123,13 +129,7 @@ const foldRunMessages = <TInput extends CodecInputEvent, TOutput extends CodecOu
     const h = getTransportHeaders(msg);
     if (h[HEADER_RUN_ID] !== runId) continue;
     // Lifecycle events carry no codec content — skip them.
-    if (
-      msg.name === EVENT_RUN_START ||
-      msg.name === EVENT_RUN_SUSPEND ||
-      msg.name === EVENT_RUN_RESUME ||
-      msg.name === EVENT_RUN_END
-    )
-      continue;
+    if (isLifecycleEvent(msg.name)) continue;
     const codecMsgId = h[HEADER_CODEC_MESSAGE_ID];
     if (truncateAt !== undefined && codecMsgId === truncateAt) break;
     const { inputs, outputs } = decoder.decode(msg);
@@ -327,7 +327,7 @@ const lookupInputEvents = async <
   TMessage,
 >(opts: {
   register: (callback: (msg: Ably.InboundMessage) => void) => () => void;
-  codec: import('../codec/types.js').Codec<TInput, TOutput, TProjection, TMessage>;
+  codec: Codec<TInput, TOutput, TProjection, TMessage>;
   invocationId: string;
   runId: string;
   expectedInputEventIds: readonly string[];
@@ -339,17 +339,17 @@ const lookupInputEvents = async <
   const expectedSet = new Set(expectedInputEventIds);
   const expectedCount = expectedSet.size;
 
-  /**
-   * Decode an inbound Ably message into MessageNodes via the codec.
-   * @param m - The inbound Ably message to decode.
-   * @returns The decoded MessageNodes carrying transport headers and serial.
-   */
   const collected: MessageNode<TMessage>[] = [];
   const rawMessages: Ably.InboundMessage[] = [];
   const matchedInputEventIds = new Set<string>();
   let firstHeaders: Record<string, string> | undefined;
   let firstClientId: string | undefined;
 
+  /**
+   * Decode an inbound Ably message into MessageNodes via the codec.
+   * @param m - The inbound Ably message to decode.
+   * @returns The decoded MessageNodes carrying transport headers and serial.
+   */
   const decode = (m: Ably.InboundMessage): MessageNode<TMessage>[] => {
     const decoder = codec.createDecoder();
     const headers = getTransportHeaders(m);
@@ -1380,14 +1380,7 @@ class DefaultAgentSession<
         const nodeMeta = new Map<string, NodeMeta>();
         const runIdToCodecMessageId = new Map<string, string>();
         for (const msg of sortedMessages) {
-          if (
-            msg.name === EVENT_RUN_START ||
-            msg.name === EVENT_RUN_SUSPEND ||
-            msg.name === EVENT_RUN_RESUME ||
-            msg.name === EVENT_RUN_END
-          ) {
-            continue;
-          }
+          if (isLifecycleEvent(msg.name)) continue;
           const h = getTransportHeaders(msg);
           const cid = h[HEADER_CODEC_MESSAGE_ID];
           if (cid === undefined) continue;

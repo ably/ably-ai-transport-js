@@ -702,112 +702,6 @@ describe('Tree', () => {
       expect(tree.getRunNode('R2')?.regeneratesCodecMessageId).toBe('a1');
     });
 
-    it('getRegenerateGroupByMsgId returns owner first, then regenerators by serial', () => {
-      apply(tree, {
-        runId: 'R1',
-        codecMessageId: 'a1',
-        role: 'assistant',
-        message: { id: 'asst1', content: 'reply' },
-        serial: 's1',
-      });
-      apply(tree, {
-        runId: 'R2',
-        codecMessageId: 'a2',
-        parent: 'a1',
-        regenerates: 'a1',
-        role: 'assistant',
-        message: { id: 'asst2', content: 'reply-2' },
-        serial: 's3',
-      });
-      apply(tree, {
-        runId: 'R3',
-        codecMessageId: 'a3',
-        parent: 'a1',
-        regenerates: 'a1',
-        role: 'assistant',
-        message: { id: 'asst3', content: 'reply-3' },
-        serial: 's5',
-      });
-      const group = tree.getRegenerateGroupByMsgId('a1');
-      expect(group.map((r) => r.runId)).toEqual(['R1', 'R2', 'R3']);
-    });
-
-    it('getRegenerateGroup(runId) resolves the group for a regenerator', () => {
-      apply(tree, {
-        runId: 'R1',
-        codecMessageId: 'a1',
-        role: 'assistant',
-        message: { id: 'asst1', content: 'reply' },
-        serial: 's1',
-      });
-      apply(tree, {
-        runId: 'R2',
-        codecMessageId: 'a2',
-        parent: 'a1',
-        regenerates: 'a1',
-        role: 'assistant',
-        message: { id: 'asst2', content: 'reply-2' },
-        serial: 's2',
-      });
-      const result = tree.getRegenerateGroup('R2');
-      expect(result?.anchorCodecMessageId).toBe('a1');
-      expect(result?.runs.map((r) => r.runId)).toEqual(['R1', 'R2']);
-    });
-
-    it('getRegenerateGroup(runId) resolves the group for the owner Run', () => {
-      apply(tree, {
-        runId: 'R1',
-        codecMessageId: 'a1',
-        role: 'assistant',
-        message: { id: 'asst1', content: 'reply' },
-        serial: 's1',
-      });
-      apply(tree, {
-        runId: 'R2',
-        codecMessageId: 'a2',
-        parent: 'a1',
-        regenerates: 'a1',
-        role: 'assistant',
-        message: { id: 'asst2', content: 'reply-2' },
-        serial: 's2',
-      });
-      const result = tree.getRegenerateGroup('R1');
-      expect(result?.anchorCodecMessageId).toBe('a1');
-      expect(result?.runs.map((r) => r.runId)).toEqual(['R1', 'R2']);
-    });
-
-    it('getRegenerateGroup(runId) returns undefined when neither end of the group is present', () => {
-      apply(tree, {
-        runId: 'R1',
-        codecMessageId: 'a1',
-        message: { id: 'asst1', content: 'reply' },
-        serial: 's1',
-      });
-      expect(tree.getRegenerateGroup('R1')).toBeUndefined();
-    });
-
-    it('delete(runId) on a regenerator removes it from the regenerate index', () => {
-      apply(tree, {
-        runId: 'R1',
-        codecMessageId: 'a1',
-        role: 'assistant',
-        message: { id: 'asst1', content: 'reply' },
-        serial: 's1',
-      });
-      apply(tree, {
-        runId: 'R2',
-        codecMessageId: 'a2',
-        parent: 'a1',
-        regenerates: 'a1',
-        role: 'assistant',
-        message: { id: 'asst2', content: 'reply-2' },
-        serial: 's2',
-      });
-      tree.delete('R2');
-      expect(tree.getRegenerateGroupByMsgId('a1').map((r) => r.runId)).toEqual(['R1']);
-      expect(tree.getRegenerateGroup('R1')).toBeUndefined();
-    });
-
     it('records regenerates field from run-start lifecycle when no prior wire arrived', () => {
       apply(tree, {
         runId: 'R1',
@@ -826,7 +720,6 @@ describe('Tree', () => {
         serial: 's2',
       });
       expect(tree.getRunNode('R2')?.regeneratesCodecMessageId).toBe('a1');
-      expect(tree.getRegenerateGroupByMsgId('a1').map((r) => r.runId)).toEqual(['R1', 'R2']);
     });
 
     it('backfills regenerates from run-start when the assistant wire raced ahead without the header', () => {
@@ -863,8 +756,6 @@ describe('Tree', () => {
         serial: 's3',
       });
       expect(tree.getRunNode('R2')?.regeneratesCodecMessageId).toBe('a1');
-      // The regenerate index now reflects the backfilled anchor too.
-      expect(tree.getRegenerateGroupByMsgId('a1').map((r) => r.runId)).toEqual(['R1', 'R2']);
     });
 
     it('adopts the agent-minted invocation-id from run-start onto the optimistic node', () => {

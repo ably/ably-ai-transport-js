@@ -97,8 +97,6 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
     getRunNode: vi.fn(),
     getNodeByCodecMessageId: vi.fn(),
     getSiblingNodes: vi.fn(() => []),
-    // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires explicit undefined return for the contract
-    getRegenerateGroup: vi.fn(() => undefined),
     on: makeTreeOn(treeHandlers),
   };
 

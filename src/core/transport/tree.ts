@@ -138,18 +138,6 @@ export interface TreeInternal<
   getReplyRuns(inputCodecMessageId: string): RunNode<TProjection>[];
 
   /**
-   * Resolve the regenerate sibling group anchored at `codecMessageId`.
-   *
-   * Returned in chronological order: the Run that owns `codecMessageId` first
-   * (lowest startSerial), then every Run with `regeneratesCodecMessageId === codecMessageId`
-   * in serial order. Empty when neither the owner nor any regenerator has
-   * been observed yet.
-   * @param codecMessageId - The codec-message-id that anchors the group.
-   * @returns Member Runs (owner first, then regenerators).
-   */
-  getRegenerateGroupByMsgId(codecMessageId: string): RunNode<TProjection>[];
-
-  /**
    * Apply an inbound channel message to the tree.
    *
    * Classifies the message and routes it to the owning node:
@@ -270,13 +258,6 @@ export class DefaultTree<
    * node).
    */
   private readonly _replyRunsByInput = new Map<string, Set<string>>();
-
-  /**
-   * Regenerated codec-message-id -> set of runIds that regenerate it. A Run with
-   * `regeneratesCodecMessageId` set inserts here on creation; the View uses this
-   * index to resolve message-level regenerate sibling groups in one lookup.
-   */
-  private readonly _regenerateByMsgId = new Map<string, Set<string>>();
 
   /** Monotonically increasing counter for insertion sequence. */
   private _seqCounter = 0;
@@ -929,7 +910,6 @@ export class DefaultTree<
       }
       if (node.regeneratesCodecMessageId === undefined && event.regenerates !== undefined) {
         node.regeneratesCodecMessageId = event.regenerates;
-        this._indexRegenerate(event.runId, event.regenerates);
         this._structuralVersion++;
       }
       // Adopt the agent-minted invocation-id onto the optimistic node. The
@@ -965,14 +945,9 @@ export class DefaultTree<
     this._removeFromParentIndex(entry.node.parentCodecMessageId, key);
     this._removeSortedRun(entry);
     this._nodeIndex.delete(key);
-    if (entry.node.kind === 'run') {
-      // Drop the reply→input reverse edge.
-      if (entry.node.parentCodecMessageId !== undefined) {
-        deleteFromSetMap(this._replyRunsByInput, entry.node.parentCodecMessageId, key);
-      }
-      if (entry.node.regeneratesCodecMessageId !== undefined) {
-        deleteFromSetMap(this._regenerateByMsgId, entry.node.regeneratesCodecMessageId, key);
-      }
+    // Drop the reply→input reverse edge.
+    if (entry.node.kind === 'run' && entry.node.parentCodecMessageId !== undefined) {
+      deleteFromSetMap(this._replyRunsByInput, entry.node.parentCodecMessageId, key);
     }
     // codecMessageIdToRunId entries pointing at this run linger but are harmless;
     // they'll be overwritten if the Run is re-created and remain dangling
@@ -1014,9 +989,9 @@ export class DefaultTree<
   }
 
   /**
-   * Allocate and index a RunNode from already-resolved fields. Shared by the
+   * Allocate a RunNode from already-resolved fields. Shared by the
    * header-driven and lifecycle-driven run creators: both build the identical
-   * RunNode literal, index any regenerate edge, and stamp an insert sequence.
+   * RunNode literal and stamp an insert sequence.
    * @param params - The resolved run fields.
    * @param params.runId - The run's id (its primary key).
    * @param params.parentCodecMessageId - Structural parent codec-message-id, or undefined for a root.
@@ -1049,10 +1024,6 @@ export class DefaultTree<
       startSerial: params.startSerial,
       endSerial: undefined,
     };
-
-    if (params.regeneratesCodecMessageId !== undefined) {
-      this._indexRegenerate(params.runId, params.regeneratesCodecMessageId);
-    }
 
     return { node, insertSeq: this._seqCounter++ };
   }
@@ -1101,92 +1072,6 @@ export class DefaultTree<
       invocationId: event.invocationId,
       startSerial: event.serial,
     });
-  }
-
-  /**
-   * Track a Run as a regenerator of the given codec-message-id. Maintained as a
-   * forward map (`regenerated codec-message-id -> set of runIds that regenerate it`)
-   * so the View can resolve regenerate sibling groups in one lookup.
-   * @param runId - The runId of the regenerating Run.
-   * @param regeneratesCodecMessageId - The codec-message-id the Run regenerates.
-   */
-  private _indexRegenerate(runId: string, regeneratesCodecMessageId: string): void {
-    addToSetMap(this._regenerateByMsgId, regeneratesCodecMessageId, runId);
-  }
-
-  /**
-   * Get all Runs (including the Run that owns the codec-message-id) that participate
-   * in the regenerate sibling group rooted at `codecMessageId`. Returns an empty
-   * array when neither the owner Run nor any regenerator is observed.
-   * @param codecMessageId - The codec-message-id that anchors the group (the "original" message).
-   * @returns Members ordered chronologically by startSerial — owner first
-   *   (it has the lowest serial), regenerators after.
-   */
-  getRegenerateGroupByMsgId(codecMessageId: string): RunNode<TProjection>[] {
-    const members: InternalNode<TProjection>[] = [];
-
-    const ownerRunId = this._codecMessageIdToNodeKey.get(codecMessageId);
-    if (ownerRunId) {
-      const owner = this._nodeIndex.get(ownerRunId);
-      if (owner?.node.kind === 'run') members.push(owner);
-    }
-
-    const regenIds = this._regenerateByMsgId.get(codecMessageId);
-    if (regenIds) {
-      for (const id of regenIds) {
-        const entry = this._nodeIndex.get(id);
-        if (entry?.node.kind === 'run') members.push(entry);
-      }
-    }
-
-    members.sort((a, b) => this._compareRuns(a, b));
-    return members.map((m) => m.node).filter((node): node is RunNode<TProjection> => node.kind === 'run');
-  }
-
-  /**
-   * Resolve the regenerate sibling group containing `runId`.
-   *
-   * A Run participates in a regenerate group if either:
-   * - the Run regenerates a known codec-message-id (the Run is a regenerator), or
-   * - the Run owns a codec-message-id that has been regenerated by another Run.
-   *
-   * The group's anchor is the "original" codec-message-id — the one being
-   * regenerated. The Run that owns that codec-message-id is the group's root.
-   * @param runId - The runId to look up.
-   * @returns The group's anchor codec-message-id and ordered members, or undefined
-   *   if `runId` is not in any regenerate group.
-   */
-  getRegenerateGroup(runId: string):
-    | {
-        /** The codec-message-id this group regenerates — anchor of the group. */
-        anchorCodecMessageId: string;
-        /** Ordered group members (owner first, then regenerators by serial). */
-        runs: RunNode<TProjection>[];
-      }
-    | undefined {
-    const entry = this._nodeIndex.get(runId);
-    if (!entry) return undefined;
-
-    // Case 1: this Run regenerates a known codec-message-id.
-    const regenTarget = entry.node.kind === 'run' ? entry.node.regeneratesCodecMessageId : undefined;
-    if (regenTarget !== undefined) {
-      const runs = this.getRegenerateGroupByMsgId(regenTarget);
-      return runs.length > 0 ? { anchorCodecMessageId: regenTarget, runs } : undefined;
-    }
-
-    // Case 2: this Run owns a codec-message-id that has been regenerated. Iterate
-    // the regenerate index and match ownership via `_codecMessageIdToNodeKey`. The
-    // index is keyed by regenerated codec-message-id, so the search is bounded by
-    // the number of distinct regen anchors in the tree (small in practice).
-    for (const [anchorCodecMessageId, regenRunIds] of this._regenerateByMsgId) {
-      if (regenRunIds.size === 0) continue;
-      const ownerRunId = this._codecMessageIdToNodeKey.get(anchorCodecMessageId);
-      if (ownerRunId !== runId) continue;
-      const runs = this.getRegenerateGroupByMsgId(anchorCodecMessageId);
-      if (runs.length > 1) return { anchorCodecMessageId, runs };
-    }
-
-    return undefined;
   }
 
   // -------------------------------------------------------------------------

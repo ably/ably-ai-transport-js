@@ -6,14 +6,14 @@
  * single module:
  *
  * - `shared.ts` — cross-cutting (RunEndReason, CancelRequest).
- * - `agent-types.ts` — agent session, run runtime, Run / AgentSession.
- * - `tree-types.ts` — conversation-tree nodes, lifecycle events, Tree.
- * - `view-types.ts` — history pagination, branch selection, View.
- * - `client-types.ts` — client session options, ActiveRun, ClientSession.
+ * - `agent.ts` — agent session, run runtime, Run / AgentSession.
+ * - `tree.ts` — conversation-tree nodes, lifecycle events, Tree.
+ * - `view.ts` — history pagination, branch selection, View.
+ * - `client.ts` — client session options, ActiveRun, ClientSession.
  */
 
-export type * from './types/agent-types.js';
-export type * from './types/client-types.js';
+export type * from './types/agent.js';
+export type * from './types/client.js';
 export type * from './types/shared.js';
-export type * from './types/tree-types.js';
-export type * from './types/view-types.js';
+export type * from './types/tree.js';
+export type * from './types/view.js';

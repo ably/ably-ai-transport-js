@@ -3,9 +3,9 @@
 import type * as Ably from 'ably';
 
 import type { CodecInputEvent } from '../../codec/types.js';
-import type { ActiveRun, SendOptions } from './client-types.js';
+import type { ActiveRun, SendOptions } from './client.js';
 import type { RunEndReason } from './shared.js';
-import type { RunLifecycleEvent } from './tree-types.js';
+import type { RunLifecycleEvent } from './tree.js';
 
 // ---------------------------------------------------------------------------
 // History / pagination

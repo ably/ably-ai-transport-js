@@ -5,8 +5,8 @@ import type * as Ably from 'ably';
 import type { Logger } from '../../../logger.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../../codec/types.js';
 import type { Invocation } from '../invocation.js';
-import type { Tree } from './tree-types.js';
-import type { View } from './view-types.js';
+import type { Tree } from './tree.js';
+import type { View } from './view.js';
 
 // ---------------------------------------------------------------------------
 // Client session options
